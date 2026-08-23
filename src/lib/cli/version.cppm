@@ -65,19 +65,34 @@ export auto shorten_sha(std::string_view sha) -> std::string_view {
 /// @return The resolved build_info for this compiled binary.
 export auto current_build_info() -> build_info;
 
-/// @brief Render `info` as the one-line `planar version` text form:
-/// `"planar <sha><dirty-marker> <date> cxx <compiler-version>\n"`.
+/// @brief Render `info` as the one-line version text form for a NAMED
+/// binary: `"<program> <sha><dirty-marker> <date> cxx <compiler-version>\n"`.
+///
+/// The leading program name is a parameter because it is operator-visible
+/// and per-binary, exactly as it is on the Zig side: each of
+/// zig/src/cmd/planar/handlers/version.zig,
+/// zig/src/cmd/planar-agent/handlers/version.zig and
+/// zig/src/cmd/planar-watch/handlers/version.zig hardcodes its OWN
+/// literal (`"planar "`, `"planar-agent "`, `"planar-watch "`), and that
+/// binary's own version.zig header says the prefix is the stable thing a
+/// shell grep keys on to tell the binaries apart. A single hardcoded
+/// `"planar "` here would make all three binaries claim to be the
+/// operator binary (plan 996, task 6107).
+///
 /// `sha` is truncated via `shorten_sha`; `dirty-marker` is `"+dirty"` when
 /// `info.dirty` is true, empty otherwise. `compiler_version` is a
 /// caller-supplied string (`compiler_version_string()` below) so this
 /// function stays pure/testable without depending on the actual
 /// compiling toolchain's preprocessor state.
+/// @param program The binary's own name, e.g. `"planar-watch"`.
 /// @param info The build metadata to render.
 /// @param compiler_version The compiler/runtime version string to print
 /// after the literal `"cxx "` tag.
 /// @return The rendered line, including the trailing newline.
-export auto render_version_text(build_info const& info, std::string_view compiler_version) -> std::string {
-  std::string out = "planar ";
+export auto render_version_text(std::string_view program, build_info const& info, std::string_view compiler_version)
+    -> std::string {
+  std::string out(program);
+  out += " ";
   out += shorten_sha(info.sha);
   if (info.dirty) {
     out += "+dirty";
@@ -88,6 +103,20 @@ export auto render_version_text(build_info const& info, std::string_view compile
   out += compiler_version;
   out += "\n";
   return out;
+}
+
+/// @brief Render `info` as the one-line `planar version` text form:
+/// `"planar <sha><dirty-marker> <date> cxx <compiler-version>\n"`.
+///
+/// The operator binary's spelling of the overload above; kept as its own
+/// name so the `planar` handler and this module's existing tests read
+/// unchanged.
+/// @param info The build metadata to render.
+/// @param compiler_version The compiler/runtime version string to print
+/// after the literal `"cxx "` tag.
+/// @return The rendered line, including the trailing newline.
+export auto render_version_text(build_info const& info, std::string_view compiler_version) -> std::string {
+  return render_version_text("planar", info, compiler_version);
 }
 
 /// @brief The compiler identifier + version string this translation unit
