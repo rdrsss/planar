@@ -166,13 +166,137 @@ auto workspace_verb() -> cli::cmd {
   };
 }
 
+/// @brief A boolean flag defaulting to false — the shape every `--verbose`
+/// / `--dry-run` / `--yes` node in the `workbench` group declares.
+/// @param name The canonical long name.
+/// @param desc The help line, or empty.
+/// @return The flag spec.
+auto bool_flag(std::string name, std::string desc = {}) -> cli::flag {
+  return cli::flag{.long_name     = std::move(name),
+                   .desc          = std::move(desc),
+                   .value_kind    = cli::kind::boolean,
+                   .default_value = cli::value{false}};
+}
+
+/// @brief The `--filter-mode` flag, declared identically on `push`,
+/// `archive`, `restore` and `gc`.
+/// @return The flag spec.
+auto filter_mode_flag() -> cli::flag {
+  return cli::flag{.long_name  = "--filter-mode",
+                   .desc       = "Terminal-status filter: 'failures' (default) or 'all'",
+                   .value_kind = cli::kind::string};
+}
+
+/// @brief The `workbench` group — transcribed from
+/// zig/src/cmd/planar/handlers/workbench/cmd.zig.
+///
+/// TEN of its thirteen subcommands are ported, so this group's own help
+/// page lists ten where the oracle lists thirteen — the same accounted-for
+/// divergence `workflow` and `workspace` already carry, and the same rule
+/// (omit an unported child rather than register a stub). `publish` waits on
+/// the external adapters, `edit` on a process-spawn seam, and
+/// `extract-questions` is deferred on size; see
+/// src/lib/engine/workbench/CMakeLists.txt.
+///
+/// Every PORTED leaf declares its flags and positionals exactly as the
+/// oracle does, because a leaf's own `--help` page IS oracle-comparable and
+/// a dropped flag would change its bytes. `archive` and `restore` therefore
+/// still declare `--filter-mode` even though the engine's `archive` ignores
+/// it (it has no write set to filter) — dropping it would be a visible
+/// divergence for a flag the oracle accepts.
+/// @return The node.
+auto workbench_verb() -> cli::cmd {
+  cli::cmd lint{
+      .name  = "lint",
+      .desc  = "Validate workbench Markdown frontmatter without syncing.",
+      .flags = {bool_flag("--all", "Validate every workbench tree"),
+                cli::flag{
+                    .long_name = "--path", .desc = "Validate one Markdown file or directory", .value_kind = cli::kind::string},
+                json_flag()},
+      .positionals = {cli::positional{.name = "plan", .required = false}},
+  };
+  cli::cmd pull{
+      .name        = "pull",
+      .desc        = "Apply FS→DB changes; report DB→FS drift.",
+      .flags       = {bool_flag("--verbose"), json_flag()},
+      .positionals = {cli::positional{.name = "plan", .required = true}},
+  };
+  cli::cmd push{
+      .name        = "push",
+      .desc        = "Apply DB→FS changes atomically; report FS→DB drift.",
+      .flags       = {bool_flag("--verbose"), json_flag(), filter_mode_flag(),
+                      bool_flag("--apply-cleanup", "Remove pre-existing FS files for entities this push would have filtered")},
+      .positionals = {cli::positional{.name = "plan", .required = true}},
+  };
+  cli::cmd status{
+      .name        = "status",
+      .desc        = "Show drift and conflicts without writing.",
+      .flags       = {bool_flag("--verbose"), json_flag()},
+      .positionals = {cli::positional{.name = "plan", .required = false}},
+  };
+  cli::cmd resolve{
+      .name        = "resolve",
+      .desc        = "Settle a sync conflict by choosing FS or DB.",
+      .flags       = {cli::flag{.long_name  = "--prefer",
+                                .desc       = "Which side to prefer (fs|db)",
+                                .value_kind = cli::kind::string,
+                                .required   = true},
+                      json_flag()},
+      .positionals = {cli::positional{.name = "event-id", .required = true}},
+  };
+  cli::cmd sync{
+      .name        = "sync",
+      .desc        = "Atomically apply FS and DB changes via a unified sync.",
+      .flags       = {bool_flag("--verbose"), json_flag()},
+      .positionals = {cli::positional{.name = "plan", .required = true}},
+  };
+  cli::cmd archive{
+      .name        = "archive",
+      .desc        = "Archive a feature's workbench filesystem tree.",
+      .flags       = {json_flag(), filter_mode_flag()},
+      .positionals = {cli::positional{.name = "plan", .required = true}},
+  };
+  cli::cmd restore{
+      .name        = "restore",
+      .desc        = "Restore an archived feature's workbench tree.",
+      .flags       = {json_flag(), filter_mode_flag()},
+      .positionals = {cli::positional{.name = "plan", .required = true}},
+  };
+  cli::cmd gc{
+      .name        = "gc",
+      .desc        = "Remove FS files whose backing entity is terminal in the DB.",
+      .flags       = {bool_flag("--dry-run", "Preview only; do not touch disk"),
+                      bool_flag("--yes", "Discard FS-content drift; remove drifted files anyway"), filter_mode_flag(),
+                      bool_flag("--all-scopes", "Walk every plan's workbench tree"), json_flag()},
+      .positionals = {cli::positional{.name = "plan", .required = false}},
+  };
+  cli::cmd list{
+      .name  = "list",
+      .desc  = "List features with workbench trees.",
+      .flags = {json_flag()},
+  };
+  return cli::cmd{
+      .name      = "workbench",
+      .desc      = "Manage workbench sync for plan feature directories.",
+      .long_desc = "Manage the bidirectional sync surface between the workbench\n"
+                   "  filesystem and the Planar database.\n\n"
+                   "  The workbench root resolution order (highest to lowest priority):\n"
+                   "    1. $PLANAR_WORKBENCH_ROOT env var\n"
+                   "    2. workbench.root in $PLANAR_CONFIG_PATH or ~/.planar/config.toml\n"
+                   "    3. Default: ~/.planar/workbench/",
+      .cmds      = {std::move(lint), std::move(pull), std::move(push), std::move(status), std::move(resolve), std::move(sync),
+                    std::move(archive), std::move(restore), std::move(gc), std::move(list)},
+  };
+}
+
 } // namespace
 
 auto root_command() -> cli::cmd {
   return cli::cmd{
       .name = "planar",
       .desc = "Planning + agent operations CLI.",
-      .cmds = {version_verb(), workflow_verb(), annotate_verb(), unlink_verb(), skills_verb(), workspace_verb()},
+      .cmds = {version_verb(), workflow_verb(), annotate_verb(), unlink_verb(), skills_verb(), workspace_verb(),
+               workbench_verb()},
   };
 }
 

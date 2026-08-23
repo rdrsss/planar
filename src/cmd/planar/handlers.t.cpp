@@ -87,6 +87,8 @@ import planar.cli;
 import planar.db;
 import planar.engine.external;
 import planar.engine.identity;
+import planar.db.migrate;
+import planar.engine.workbench.fsutil;
 import planar.cmd.planar.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
@@ -742,4 +744,383 @@ TEST_CASE("workspace doctor reports an unreadable config without repairing the r
   CHECK(std::ranges::count(got.out, '\n') == 5);
   // No root guidance was installed, because the shape could not be read.
   CHECK_FALSE(std::filesystem::exists(fx.root / "proj" / "AGENTS.md"));
+}
+
+// =========================================================================
+// task 6037 — the ten ported `workbench` leaves.
+//
+// ORACLE PROVENANCE. Captured under a scratch
+// PLANAR_DB/PLANAR_HOME/PLANAR_CONFIG_PATH/PLANAR_LOCAL_HOME/
+// PLANAR_WORKBENCH_ROOT/HOME, `cd` FIRST then `env` (the reverse silently
+// does not export past the `&&` on this platform's /bin/sh), each
+// invocation redirected to its OWN capture file (the Zig runtime uses
+// POSITIONAL writes, so two invocations sharing one target overwrite each
+// other):
+//
+//   $Z workbench list                  -> exit 0, b'no features found\n'
+//   $Z workbench list --json           -> exit 0, b'[]\n'
+//   $Z workbench status                -> exit 0, b'no active features found\n'
+//   $Z workbench status --json         -> exit 0, the SHORT totals payload
+//   $Z workbench push 999              -> exit 1, b'error: plan not found: 999\n'
+//   $Z workbench push nosuchslug       -> exit 1, b'error: plan not found: nosuchslug\n'
+//   $Z workbench push 0                -> exit 2, b"error: invalid plan '0'\n"
+//   $Z workbench push 1 --filter-mode nope
+//     exit 2, b"error: invalid --filter-mode 'nope' (expected 'failures' or 'all')\n"
+//   $Z workbench push 1 --filter-mode all --apply-cleanup
+//     exit 2, b'error: --apply-cleanup is mutually exclusive with --filter-mode all\n'
+//   $Z workbench gc                    -> exit 2,
+//     b'error: plan argument required unless --all-scopes is set\n'
+//   $Z workbench lint                  -> exit 2, and so does `lint 1 --all`,
+//     b'error: choose exactly one lint target: <plan>, --all, or --path <file-or-directory>\n'
+//   $Z workbench lint --path /nope.md  -> exit 1, b'error: lint target not found: /nope.md\n'
+//   $Z workbench lint --path x.sh      -> exit 2,
+//     b'error: lint target must be a Markdown file or directory: x.sh\n'
+//   $Z workbench resolve abc --prefer fs
+//     exit 2, b"error: event-id must be an integer, got 'abc'\n"
+//   $Z workbench resolve 1 --prefer sideways
+//     exit 2, b"error: --prefer must be fs|db, got 'sideways'\n"
+//   $Z workbench resolve 99 --prefer fs
+//     exit 1, b'error: workbench resolve failed: NotFound\n'
+//   $Z workbench gc <plan>   (one drifted terminal file, no --yes)
+//     exit 1, and NOTHING on either stream. That is an ORACLE DEFECT
+//     reproduced deliberately -- see task 6122 and the comment in
+//     handlers/workbench.cpp. Probed with stderr on a terminal, not
+//     redirected, so it is not a capture artifact.
+//
+// Every one of these was ALSO run live through BOTH binaries in identical
+// pinned arenas and diffed on stdout, stderr and exit code.
+
+namespace {
+
+/// @brief Give `fx` a workbench root inside its own scratch tree.
+///
+/// Without this the resolver would fall back to `$HOME/.planar/workbench`
+/// -- which is still inside the fixture (its `HOME` is `<root>/fakehome`),
+/// but naming the root explicitly is what makes the safety obvious at the
+/// call site rather than two indirections away.
+auto with_workbench_root(fixture& fx) -> std::filesystem::path {
+  auto const root = fx.root / "wb";
+  fx.vars.emplace("PLANAR_WORKBENCH_ROOT", root.string());
+  return root;
+}
+
+/// @brief Seed one association-scoped anchor plan with one task, directly.
+///
+/// The planning verbs are not ported, so the rows go in through SQL --
+/// which is legitimate here because the WORKBENCH surface is what is under
+/// test, and the same shapes were verified against an oracle-seeded arena.
+struct wb_seed {
+  std::int64_t plan_id = 0;
+  std::int64_t task_id = 0;
+};
+
+auto seed_workbench(const fixture& fx) -> wb_seed {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn).has_value());
+  auto const run = [&](std::string_view sql) { REQUIRE(conn->execute(sql).has_value()); };
+  auto const id  = [&](std::string_view sql) {
+    auto stmt = conn->prepare(sql);
+    REQUIRE(stmt.has_value());
+    auto step = stmt->step();
+    REQUIRE(step.has_value());
+    REQUIRE(*step == planar::db::step_result::row);
+    return stmt->column_int64(0);
+  };
+  run("insert into associations (slug, name, kind) values ('project:demo', 'demo', 'project')");
+  auto const assoc = id("select id from associations where slug = 'project:demo'");
+  run(std::format("insert into plans (scope_kind, scope_id, title, slug, status) "
+                  "values ('association', {}, 'Demo Feature', 'demo-feature', 'draft')",
+                  assoc));
+  wb_seed out;
+  out.plan_id = id("select id from plans where slug = 'demo-feature'");
+  run(std::format("insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+                  "values ('association', {}, {}, 'First Task', 'todo', 100)",
+                  assoc, out.plan_id));
+  out.task_id = id("select id from tasks where title = 'First Task'");
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("workbench list and status on an empty database", "[cmd][handlers][workbench][parity]") {
+  auto fx = make_fixture("wblist");
+  with_workbench_root(fx);
+  CHECK(dispatch(fx, {"workbench", "list"}).out == "no features found\n");
+  CHECK(dispatch(fx, {"workbench", "list", "--json"}).out == "[]\n");
+  CHECK(dispatch(fx, {"workbench", "status"}).out == "no active features found\n");
+  auto const totals = dispatch(fx, {"workbench", "status", "--json"});
+  CHECK(totals.code == 0);
+  // The SHORT payload: no `filter_mode`, no `entries`.
+  CHECK(totals.out == "{\"applied\":0,\"pending\":0,\"conflicts\":0,\"malformed\":0,\"malformed_files\":[],"
+                      "\"filtered\":0,\"pre_existing_terminal\":0,\"cleaned\":0}\n");
+}
+
+TEST_CASE("workbench list CREATES the workbench root; status does not", "[cmd][handlers][workbench][parity]") {
+  // The Zig split between `resolveAndEnsureWorkbenchRoot` and a plain
+  // `resolveRoot`, reproduced. It decides whether a bare `workbench status`
+  // on a fresh machine leaves a directory behind.
+  auto       fx   = make_fixture("wbroot");
+  auto const root = with_workbench_root(fx);
+  CHECK(dispatch(fx, {"workbench", "status"}).code == 0);
+  CHECK_FALSE(std::filesystem::exists(root));
+  CHECK(dispatch(fx, {"workbench", "list"}).code == 0);
+  CHECK(std::filesystem::exists(root));
+}
+
+TEST_CASE("workbench plan-argument failures split across exit 1 and exit 2", "[cmd][handlers][workbench][parity]") {
+  auto fx = make_fixture("wbplan");
+  with_workbench_root(fx);
+  seed_workbench(fx);
+
+  auto const missing = dispatch(fx, {"workbench", "push", "999"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: plan not found: 999\n");
+
+  auto const slug = dispatch(fx, {"workbench", "push", "nosuchslug"});
+  CHECK(slug.code == 1);
+  CHECK(slug.err == "error: plan not found: nosuchslug\n");
+
+  // Zero and negatives are INVALID, not not-found -- a different code and a
+  // different sentence.
+  auto const zero = dispatch(fx, {"workbench", "push", "0"});
+  CHECK(zero.code == 2);
+  CHECK(zero.err == "error: invalid plan '0'\n");
+}
+
+TEST_CASE("workbench push writes the tree and reports its summary line", "[cmd][handlers][workbench][parity]") {
+  auto       fx   = make_fixture("wbpush");
+  auto const root = with_workbench_root(fx);
+  auto const seed = seed_workbench(fx);
+
+  auto const pushed = dispatch(fx, {"workbench", "push", std::to_string(seed.plan_id)});
+  CHECK(pushed.code == 0);
+  CHECK(pushed.err.empty());
+  CHECK(pushed.out == std::format("workbench push: plan {} (demo-feature) - 2 applied, 0 pending, 0 filtered "
+                                  "(mode=failures), 0 conflict(s)\n",
+                                  seed.plan_id));
+  auto const dir = root / "project_demo" / std::format("p{}-demo-feature", seed.plan_id);
+  CHECK(std::filesystem::exists(dir / "README.md"));
+  CHECK(std::filesystem::exists(dir / ".sync"));
+
+  // A second push is a clean no-op.
+  auto const again = dispatch(fx, {"workbench", "push", std::to_string(seed.plan_id)});
+  CHECK(again.out.find("0 applied") != std::string::npos);
+}
+
+TEST_CASE("workbench push refuses a bad --filter-mode and the excluded flag pair", "[cmd][handlers][workbench][parity]") {
+  auto fx = make_fixture("wbmode");
+  with_workbench_root(fx);
+  auto const seed = seed_workbench(fx);
+  auto const plan = std::to_string(seed.plan_id);
+
+  auto const bad = dispatch(fx, {"workbench", "push", plan, "--filter-mode", "nope"});
+  CHECK(bad.code == 2);
+  CHECK(bad.err == "error: invalid --filter-mode 'nope' (expected 'failures' or 'all')\n");
+
+  auto const excluded = dispatch(fx, {"workbench", "push", plan, "--filter-mode", "all", "--apply-cleanup"});
+  CHECK(excluded.code == 2);
+  CHECK(excluded.err == "error: --apply-cleanup is mutually exclusive with --filter-mode all\n");
+  // Both refusals happen BEFORE any filesystem work.
+  CHECK(excluded.out.empty());
+}
+
+TEST_CASE("a malformed workbench file makes pull exit 1", "[cmd][handlers][workbench][parity]") {
+  auto       fx   = make_fixture("wbmal");
+  auto const root = with_workbench_root(fx);
+  auto const seed = seed_workbench(fx);
+  auto const plan = std::to_string(seed.plan_id);
+  REQUIRE(dispatch(fx, {"workbench", "push", plan}).code == 0);
+
+  auto const dir = root / "project_demo" / std::format("p{}-demo-feature", seed.plan_id);
+  REQUIRE(planar::engine::workbench::fsutil::write_file_atomic(dir / "tasks" / "cross" / "junk.md", "broken\n"));
+
+  auto const pulled = dispatch(fx, {"workbench", "pull", plan, "--verbose"});
+  CHECK(pulled.code == 1);
+  CHECK(pulled.out.find("MALFORMED: project_demo/") != std::string::npos);
+  CHECK(pulled.out.find("(MalformedFrontmatter)") != std::string::npos);
+  CHECK(pulled.err ==
+        std::format("error: {} malformed workbench file(s); run 'planar workbench lint {}' for details\n", 1, plan));
+}
+
+TEST_CASE("a conflict makes pull exit 3, and status exit 0", "[cmd][handlers][workbench][parity]") {
+  // The exit-code split matters: `status` REPORTS conflicts without failing,
+  // while every writing verb fails on them.
+  auto       fx   = make_fixture("wbconf");
+  auto const root = with_workbench_root(fx);
+  auto const seed = seed_workbench(fx);
+  auto const plan = std::to_string(seed.plan_id);
+  REQUIRE(dispatch(fx, {"workbench", "push", plan}).code == 0);
+
+  auto const dir  = root / "project_demo" / std::format("p{}-demo-feature", seed.plan_id);
+  auto const file = dir / "tasks" / "cross" / std::format("{}-first-task.md", seed.task_id);
+  auto const body = planar::engine::workbench::fsutil::read_file(file);
+  REQUIRE(body.has_value());
+  REQUIRE(planar::engine::workbench::fsutil::write_file_atomic(file, *body + "FS side extra\n"));
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute(std::format("update tasks set body = 'DB side', updated_at = "
+                                      "strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 second') where id = {}",
+                                      seed.task_id))
+                .has_value());
+  }
+
+  auto const peek = dispatch(fx, {"workbench", "status", plan});
+  CHECK(peek.code == 0);
+  CHECK(peek.out.find("CONFLICT [") != std::string::npos);
+
+  auto const pulled = dispatch(fx, {"workbench", "pull", plan});
+  CHECK(pulled.code == 3);
+  CHECK(pulled.err == "error: 1 conflict(s) require 'workbench resolve <event-id> --prefer fs|db'\n");
+}
+
+TEST_CASE("workbench resolve validates its argument and its flag before the engine", "[cmd][handlers][workbench][parity]") {
+  auto fx = make_fixture("wbres");
+  with_workbench_root(fx);
+  seed_workbench(fx);
+
+  auto const not_int = dispatch(fx, {"workbench", "resolve", "abc", "--prefer", "fs"});
+  CHECK(not_int.code == 2);
+  CHECK(not_int.err == "error: event-id must be an integer, got 'abc'\n");
+
+  auto const bad_prefer = dispatch(fx, {"workbench", "resolve", "1", "--prefer", "sideways"});
+  CHECK(bad_prefer.code == 2);
+  CHECK(bad_prefer.err == "error: --prefer must be fs|db, got 'sideways'\n");
+
+  // An unknown event is exit 1; the message interpolates the raw Zig tag.
+  auto const missing = dispatch(fx, {"workbench", "resolve", "99", "--prefer", "fs"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: workbench resolve failed: NotFound\n");
+}
+
+TEST_CASE("workbench gc requires a plan unless --all-scopes", "[cmd][handlers][workbench][parity]") {
+  auto fx = make_fixture("wbgc");
+  with_workbench_root(fx);
+  auto const seed = seed_workbench(fx);
+
+  auto const bare = dispatch(fx, {"workbench", "gc"});
+  CHECK(bare.code == 2);
+  CHECK(bare.err == "error: plan argument required unless --all-scopes is set\n");
+
+  auto const swept = dispatch(fx, {"workbench", "gc", "--all-scopes", "--json"});
+  CHECK(swept.code == 0);
+  CHECK(swept.out ==
+        "{\"removed\":0,\"kept\":0,\"drifted_skipped\":0,\"errors\":0,\"dry_run\":false,\"filter_mode\":\"failures\"}\n");
+  static_cast<void>(seed);
+}
+
+TEST_CASE("the gc drift refusal exits 1 with NOTHING printed", "[cmd][handlers][workbench][oracle-defect]") {
+  // Reproduces an ORACLE DEFECT deliberately (task 6122): the Zig handler
+  // writes its refusal to the buffered ctx.stderr and then calls
+  // std.process.exit(1) directly, skipping the runtime shutdown that would
+  // flush it. Verified against the oracle with stderr on a terminal.
+  // `render_cli::render_gc_drift_refusal` holds the intended text and is
+  // pinned in render_cli.t.cpp, ready to wire the moment the divergence is
+  // sanctioned.
+  auto       fx   = make_fixture("wbdrift");
+  auto const root = with_workbench_root(fx);
+  auto const seed = seed_workbench(fx);
+  auto const plan = std::to_string(seed.plan_id);
+  REQUIRE(dispatch(fx, {"workbench", "push", plan}).code == 0);
+
+  auto const dir  = root / "project_demo" / std::format("p{}-demo-feature", seed.plan_id);
+  auto const file = dir / "tasks" / "cross" / std::format("{}-first-task.md", seed.task_id);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute(std::format("update tasks set status = 'cancelled' where id = {}", seed.task_id)).has_value());
+  }
+  auto const body = planar::engine::workbench::fsutil::read_file(file);
+  REQUIRE(body.has_value());
+  REQUIRE(planar::engine::workbench::fsutil::write_file_atomic(file, *body + "unpulled edit\n"));
+
+  auto const refused = dispatch(fx, {"workbench", "gc", plan});
+  CHECK(refused.code == 1);
+  CHECK(refused.out.empty());
+  CHECK(refused.err.empty());
+  CHECK(std::filesystem::exists(file)); // held back, not removed
+
+  // `--yes` proceeds, and prints normally.
+  auto const forced = dispatch(fx, {"workbench", "gc", plan, "--yes"});
+  CHECK(forced.code == 0);
+  CHECK(forced.out.find("removed 1") != std::string::npos);
+  CHECK_FALSE(std::filesystem::exists(file));
+}
+
+TEST_CASE("workbench lint demands EXACTLY one target", "[cmd][handlers][workbench][parity]") {
+  auto fx = make_fixture("wblint");
+  with_workbench_root(fx);
+  auto const seed = seed_workbench(fx);
+
+  constexpr std::string_view expected = "error: choose exactly one lint target: <plan>, --all, or --path <file-or-directory>\n";
+  auto const                 none     = dispatch(fx, {"workbench", "lint"});
+  CHECK(none.code == 2);
+  CHECK(none.err == expected);
+  auto const two = dispatch(fx, {"workbench", "lint", std::to_string(seed.plan_id), "--all"});
+  CHECK(two.code == 2);
+  CHECK(two.err == expected);
+}
+
+TEST_CASE("workbench lint distinguishes a missing target from a non-Markdown one", "[cmd][handlers][workbench][parity]") {
+  auto fx = make_fixture("wblint2");
+  with_workbench_root(fx);
+  seed_workbench(fx);
+
+  auto const absent = dispatch(fx, {"workbench", "lint", "--path", (fx.root / "nope.md").string()});
+  CHECK(absent.code == 1);
+  CHECK(absent.err == std::format("error: lint target not found: {}\n", (fx.root / "nope.md").string()));
+
+  auto const script = fx.root / "run.sh";
+  REQUIRE(planar::engine::workbench::fsutil::write_file_atomic(script, "#!/bin/sh\n"));
+  auto const wrong_kind = dispatch(fx, {"workbench", "lint", "--path", script.string()});
+  CHECK(wrong_kind.code == 2);
+  CHECK(wrong_kind.err == std::format("error: lint target must be a Markdown file or directory: {}\n", script.string()));
+}
+
+TEST_CASE("workbench lint reports a coded diagnostic and fails on WARNINGS alone", "[cmd][handlers][workbench][parity]") {
+  auto fx = make_fixture("wblint3");
+  with_workbench_root(fx);
+  seed_workbench(fx);
+
+  auto const bad = fx.root / "bad_status.md";
+  REQUIRE(planar::engine::workbench::fsutil::write_file_atomic(
+      bad, "---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: bogus\n---\n"));
+  auto const errored = dispatch(fx, {"workbench", "lint", "--path", bad.string()});
+  CHECK(errored.code == 1);
+  CHECK(errored.out == std::format("{}:5:\n"
+                                   "  error[invalid_field_value]: front matter field 'status' has an unsupported "
+                                   "value\n"
+                                   "  hint: use one of: todo, doing, blocked, done, or cancelled\n"
+                                   "1 files scanned, 1 errors, 0 warnings.\n",
+                                   bad.string()));
+  CHECK(errored.err == "error: workbench lint found 1 error(s) and 0 warning(s)\n");
+
+  // Warnings alone still fail the verb.
+  auto const warned_file = fx.root / "no_anchor.md";
+  REQUIRE(planar::engine::workbench::fsutil::write_file_atomic(
+      warned_file, "---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\n---\n"));
+  auto const warned = dispatch(fx, {"workbench", "lint", "--path", warned_file.string(), "--json"});
+  CHECK(warned.code == 1);
+  CHECK(warned.out.find("\"severity\":\"warning\",\"code\":\"anchor_plan_not_found\"") != std::string::npos);
+  CHECK(warned.err == "error: workbench lint found 0 error(s) and 1 warning(s)\n");
+}
+
+TEST_CASE("workbench archive then restore round-trips the tree", "[cmd][handlers][workbench][parity]") {
+  auto       fx   = make_fixture("wbarch");
+  auto const root = with_workbench_root(fx);
+  auto const seed = seed_workbench(fx);
+  auto const plan = std::to_string(seed.plan_id);
+  REQUIRE(dispatch(fx, {"workbench", "push", plan}).code == 0);
+
+  auto const dir      = root / "project_demo" / std::format("p{}-demo-feature", seed.plan_id);
+  auto const archived = dispatch(fx, {"workbench", "archive", plan, "--json"});
+  CHECK(archived.code == 0);
+  CHECK(archived.out == std::format("{{\"archived\":true,\"plan\":{},\"feature_dir\":\"{}\"}}\n", plan, dir.string()));
+  CHECK_FALSE(std::filesystem::exists(dir));
+
+  auto const restored = dispatch(fx, {"workbench", "restore", plan});
+  CHECK(restored.code == 0);
+  CHECK(restored.out == std::format("restored: {} (plan {})\n", dir.string(), plan));
+  CHECK(std::filesystem::exists(dir / "README.md"));
 }

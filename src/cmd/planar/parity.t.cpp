@@ -509,3 +509,211 @@ TEST_CASE("C++ and Zig agree on workspace doctor's diagnose-and-repair pass", "[
     CHECK(std::filesystem::is_symlink(root / "proj" / "CLAUDE.md"));
   }
 }
+
+TEST_CASE("C++ and Zig agree byte-for-byte on the workbench leaves' help pages", "[cmd][parity][oracle][workbench]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+
+  // A LEAF's own `--help` page is the one page that stays oracle-comparable
+  // even when a group omits unported children, so every ported leaf's flags
+  // and positionals must be declared exactly. Half-porting one -- dropping
+  // `--filter-mode` from `archive` because the engine ignores it, say --
+  // would show up here and nowhere else.
+  //
+  // The GROUP page is deliberately NOT compared: `publish`,
+  // `extract-questions` and `edit` are unported, so `workbench --help`
+  // lists ten commands where the oracle lists thirteen. Same accounted-for
+  // divergence `workflow --help` and `workspace --help` already carry.
+  for (auto const& leaf : {"lint", "pull", "push", "status", "resolve", "sync", "archive", "restore", "gc", "list"}) {
+    std::vector<std::string> const args{"workbench", leaf, "--help"};
+    auto const                     tag   = std::format("wbhelp_{}", leaf);
+    auto const                     space = make_arena(tag);
+    auto const                     mine  = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const                     ref   = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("leaf: " << leaf);
+    CHECK(mine.code == ref.code);
+    CHECK(mine.out == ref.out);
+    CHECK(mine.err == ref.err);
+  }
+}
+
+TEST_CASE("C++ and Zig agree over a seeded workbench feature tree", "[cmd][parity][oracle][workbench]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+
+  // SEED EACH ARENA INDEPENDENTLY, never by copying one. `projects.root_path`
+  // is absolute, so a copied arena silently loses cwd-derived scope, and
+  // `task update` then touches a different set of rows on the two sides. The
+  // first draft of this fixture copied, and the resulting "divergence" was
+  // the harness, not the port.
+  auto const                                  space = make_arena("wbtree");
+  std::vector<std::vector<std::string>> const seed{
+      {"init", "--name", "demo", "--slug", "demo"},
+      {"assoc", "create", "project:demo", "--kind", "project"},
+      {"plan", "create", "Demo Feature", "--slug", "demo-feature", "--summary", "A demo."},
+      {"task", "add", "First Task", "--plan", "1", "--body", "Task body here.", "--editor=false"},
+      {"task", "add", "Second Task", "--plan", "1", "--editor=false"},
+      {"artifact", "add", "Tech Spec: Auth", "--kind", "tech_spec", "--plan", "1", "--body", "Spec body.", "--editor=false"},
+      {"decision", "add", "Use SQLite", "--plan", "1", "--body", "We use SQLite.", "--rationale", "Simple."},
+      {"question", "add", "Which format?", "--plan", "1"},
+      {"scenario", "add", "Round trip", "--plan", "1"},
+      {"plan", "create", "Child Milestone", "--slug", "child-ms", "--parent", "1"},
+  };
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    // `assoc add` needs the arena's own project directory, so it is issued
+    // per-arena rather than from the shared list above.
+    for (std::size_t i = 0; i < seed.size(); ++i) {
+      auto const tag = std::format("seed{}_{}", root == space.cpp_root ? "c" : "z", i);
+      auto const ran = run_pinned(zig_bin(), seed[i], root, tag);
+      INFO("seed step: " << tag << " -> " << ran.err);
+      REQUIRE(ran.code == 0);
+      if (i == 1) {
+        std::vector<std::string> const attach{"assoc", "add", "project:demo", (root / "proj").string()};
+        REQUIRE(run_pinned(zig_bin(), attach, root, std::format("{}attach", tag)).code == 0);
+      }
+    }
+  }
+
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  // An ORDERED sequence against ONE tree per binary. Each step depends on
+  // the one before: the filter counts only appear once a task is cancelled,
+  // and `restore` only means anything after `archive`.
+  std::vector<step> const steps{
+      {"wblist0", {"workbench", "list"}},
+      {"wbstat0", {"workbench", "status"}},
+      {"wbpush", {"workbench", "push", "1", "--verbose"}},
+      {"wbpushj", {"workbench", "push", "1", "--json"}},
+      {"wbstat1", {"workbench", "status", "1", "--verbose"}},
+      {"wblist1", {"workbench", "list", "--json"}},
+      {"wblint", {"workbench", "lint", "1"}},
+      {"wblintall", {"workbench", "lint", "--all"}},
+      {"wbgcdry", {"workbench", "gc", "1", "--dry-run"}},
+      {"wbpull", {"workbench", "pull", "1", "--verbose"}},
+      {"wbbadplan", {"workbench", "push", "999"}},
+      {"wbbadplan0", {"workbench", "push", "0"}},
+      {"wbchild", {"workbench", "push", "2"}},
+      {"wbbadmode", {"workbench", "push", "1", "--filter-mode", "nope"}},
+      {"wbexcl", {"workbench", "push", "1", "--filter-mode", "all", "--apply-cleanup"}},
+      {"wblintnone", {"workbench", "lint"}},
+      {"wbgcnoplan", {"workbench", "gc"}},
+      {"wbresbad", {"workbench", "resolve", "abc", "--prefer", "fs"}},
+      {"wbresnf", {"workbench", "resolve", "99", "--prefer", "fs"}},
+      {"wbarch", {"workbench", "archive", "1", "--json"}},
+      {"wbarch2", {"workbench", "archive", "1"}},
+      {"wbrest", {"workbench", "restore", "1", "--json"}},
+      {"wbgcall", {"workbench", "gc", "--all-scopes", "--json"}},
+  };
+
+  // `archive` and `restore` print the ABSOLUTE feature directory, which
+  // necessarily differs between the two arenas. Normalizing the arena root
+  // is what keeps those two steps comparable without weakening them.
+  auto const normalize = [](std::string_view text, const std::filesystem::path& root) {
+    std::string const needle = root.string();
+    std::string       out;
+    std::string_view  rest = text;
+    for (;;) {
+      auto const at = rest.find(needle);
+      if (at == std::string_view::npos) {
+        out.append(rest);
+        return out;
+      }
+      out.append(rest.substr(0, at));
+      out.append("<ARENA>");
+      rest.remove_prefix(at + needle.size());
+    }
+  };
+
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(normalize(mine.out, space.cpp_root) == normalize(ref.out, space.zig_root));
+    CHECK(normalize(mine.err, space.cpp_root) == normalize(ref.err, space.zig_root));
+  }
+
+  // The RENDERED FILES are the real product, and none of the summary lines
+  // above would notice a byte-level divergence in them. Every `.md` under
+  // each arena's workbench root is compared directly. `.sync` is compared
+  // on its first three columns only: the fourth is `last_synced_at`, which
+  // SQLite stamps at write time and cannot agree across two processes.
+  auto const tree_of = [](const std::filesystem::path& root) {
+    std::map<std::string, std::string> files;
+    auto const                         wb = root / "fakehome" / ".planar" / "workbench";
+    std::error_code                    ec;
+    if (!std::filesystem::is_directory(wb, ec)) {
+      return files;
+    }
+    for (auto const& entry : std::filesystem::recursive_directory_iterator(wb, ec)) {
+      std::error_code entry_ec;
+      if (!entry.is_regular_file(entry_ec)) {
+        continue;
+      }
+      auto const rel     = std::filesystem::relative(entry.path(), wb, entry_ec).generic_string();
+      auto       content = read_all(entry.path());
+      // The two arenas are seeded independently, so every entity's
+      // `created_at` / `updated_at` differs by however long the first seed
+      // took. Those reach the rendered file as `**Created:**` /
+      // `**Updated:**` lines; drop them from both sides, exactly as the
+      // annotate parity case drops its `created:` / `updated:` lines.
+      // Everything else in the file -- front matter, headings, body,
+      // hard-break double spaces -- is still compared byte for byte.
+      {
+        std::string kept;
+        for (auto const line : std::views::split(content, '\n')) {
+          std::string_view view{line.begin(), line.end()};
+          if (view.starts_with("**Created:**") || view.starts_with("**Updated:**")) {
+            continue;
+          }
+          kept.append(view);
+          kept += '\n';
+        }
+        content = std::move(kept);
+      }
+      if (rel.ends_with(".sync")) {
+        // `.sync` keeps only its FIRST TWO columns: the path and the
+        // `<kind>:<id>` pair. The third is the content hash -- which
+        // digests the timestamped file and therefore cannot agree across
+        // two arenas -- and the fourth is `last_synced_at`, stamped by
+        // SQLite at write time. Path and entity mapping are the part of
+        // this mirror that IS a contract, and they are compared in full.
+        std::string trimmed;
+        for (auto const line : std::views::split(content, '\n')) {
+          std::string_view view{line.begin(), line.end()};
+          if (view.empty()) {
+            continue;
+          }
+          auto const first_tab = view.find('\t');
+          if (first_tab == std::string_view::npos) {
+            trimmed.append(view);
+            trimmed += '\n';
+            continue;
+          }
+          auto const second_tab = view.find('\t', first_tab + 1);
+          trimmed.append(second_tab == std::string_view::npos ? view : view.substr(0, second_tab));
+          trimmed += '\n';
+        }
+        content = trimmed;
+      }
+      files.emplace(rel, std::move(content));
+    }
+    return files;
+  };
+  auto const mine_tree = tree_of(space.cpp_root);
+  auto const ref_tree  = tree_of(space.zig_root);
+  // A non-empty tree on both sides, so an arrangement where NEITHER wrote
+  // anything cannot pass this vacuously.
+  CHECK_FALSE(mine_tree.empty());
+  CHECK(mine_tree.size() == ref_tree.size());
+  for (auto const& [rel, content] : mine_tree) {
+    INFO("file: " << rel);
+    auto const it = ref_tree.find(rel);
+    REQUIRE(it != ref_tree.end());
+    CHECK(content == it->second);
+  }
+}

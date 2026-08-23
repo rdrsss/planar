@@ -158,6 +158,7 @@ planar_binary(planar
     handlers/unlink.cppm
     handlers/skills.cppm
     handlers/workspace.cppm
+    handlers/workbench.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -169,6 +170,7 @@ planar_binary(planar
     handlers/unlink.cpp
     handlers/skills.cpp
     handlers/workspace.cpp
+    handlers/workbench.cpp
     dispatch.cpp
   DEPENDS
     cli
@@ -177,6 +179,7 @@ planar_binary(planar
     engine_identity
     engine_planning
     engine_runtime
+    engine_workbench
     engine_workflows
     engine_workspace)
 

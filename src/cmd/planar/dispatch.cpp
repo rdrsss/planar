@@ -12,6 +12,7 @@ import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
+import planar.cmd.planar.handlers.workbench;
 import planar.cmd.planar.handlers.workflow;
 import planar.cmd.planar.handlers.workspace;
 
@@ -91,6 +92,16 @@ auto handlers() -> handler_table {
   // does nothing but render its own help page. See that handler's header.
   table.emplace("skills", handlers::skills);
   table.emplace("workspace doctor", handlers::workspace_doctor);
+  table.emplace("workbench lint", handlers::workbench_lint);
+  table.emplace("workbench pull", handlers::workbench_pull);
+  table.emplace("workbench push", handlers::workbench_push);
+  table.emplace("workbench status", handlers::workbench_status);
+  table.emplace("workbench resolve", handlers::workbench_resolve);
+  table.emplace("workbench sync", handlers::workbench_sync);
+  table.emplace("workbench archive", handlers::workbench_archive);
+  table.emplace("workbench restore", handlers::workbench_restore);
+  table.emplace("workbench gc", handlers::workbench_gc);
+  table.emplace("workbench list", handlers::workbench_list);
   return table;
 }
 

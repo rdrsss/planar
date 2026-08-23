@@ -94,6 +94,21 @@
 # deferred on size and on a missing xxh64, and `workspace init` is
 # architecturally blocked at layer 3 (see engine/workspace/CMakeLists.txt).
 
+# `engine/workbench` (plan 996, task 6037) is the bidirectional workbench
+# sync surface: the front-matter parser (and, more to the point, the set of
+# malformed files it REFUSES, which is what `workbench pull` enforces), the
+# DB<->FS classification engine behind pull/push/status/sync, the
+# `workbench_sync_state` manifest and its `.sync` mirror, the terminal-status
+# write-set filter, gc, archive/restore, and lint. It depends on `db` and
+# `json_text` only. Two same-layer pressures were resolved rather than
+# routed around -- the entity reads go straight to the tables (as the Zig
+# original's do), and the one `workbench.root` config lookup is a narrow
+# duplicated scan rather than an illegal edge onto `engine_config`. It is
+# also the bucket that unblocks the three deferred ingest leaves (task 6119),
+# which need `feature_dir_for`, `resolve_root` and `parse`. See
+# engine/workbench/CMakeLists.txt for the full account, the filesystem-safety
+# argument, and the three deferred verbs.
+
 add_subdirectory(core)
 add_subdirectory(db)
 add_subdirectory(cli)
@@ -115,3 +130,4 @@ add_subdirectory(engine/models)
 add_subdirectory(engine/workflows)
 add_subdirectory(engine/local)
 add_subdirectory(engine/workspace)
+add_subdirectory(engine/workbench)
