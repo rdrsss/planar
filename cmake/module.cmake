@@ -179,15 +179,60 @@ endfunction()
 # validation or normalization; the robustness lives in the consuming check,
 # not here — do not add a parallel name-based guard in this function, it
 # would just be a second literal to keep in sync.
+#
+# INTERFACE / MAIN / the test lane (plan 996, task 6105, M4b — the first
+# real cmd binary). Three additions, all forced by the same fact: a cmd
+# binary is ONE layer-3 target, and D18 forbids the obvious alternative.
+#
+#   - INTERFACE: the handler layer is written in C++26 module interface
+#     units like every other first-party file in this tree, so the
+#     executable needs a FILE_SET CXX_MODULES exactly as planar_module()
+#     sets one up. Without it a cmd binary could only be written as
+#     header-free plain .cpp files with no way to declare anything across
+#     translation units.
+#
+#   - MAIN + a test binary: planar_module() builds `<name>_tests` from the
+#     module's own *.t.cpp; planar_binary() built NOTHING and SILENTLY
+#     IGNORED any *.t.cpp beside it. That is the same class of coverage
+#     hole task 6050 found (a target outside the guard walk), one layer up:
+#     handler-layer tests would sit in the tree looking like coverage while
+#     never being compiled, let alone run. The obvious fix — put the
+#     handlers in their own planar_module() and have the binary link it —
+#     is a layer-3 -> layer-3 edge, which cmake/architecture.cmake FATALs
+#     (D18 keeps the same-layer prohibition for cmd_*, deliberately: "the
+#     one-handler-per-binary shape"). So the test binary is built from the
+#     SAME sources as the executable, minus the MAIN entry point (Catch2
+#     brings its own main), which keeps the binary a single layer-3 target
+#     and still gets its handler layer under test. MAIN names the entry
+#     point so this function knows which source to drop; it is also
+#     compiled into the executable, so callers list it only once.
+#
+# A cmd binary with *.t.cpp but no MAIN is a configure-time FATAL rather
+# than a silent skip: without knowing the entry point this function cannot
+# build a Catch2 binary at all, and silently not building one is the exact
+# failure mode this lane exists to close.
 function(planar_binary name)
   set(options)
-  set(one_value_args)
-  set(multi_value_args SOURCES DEPENDS)
+  set(one_value_args MAIN)
+  set(multi_value_args INTERFACE SOURCES DEPENDS TEST_DEPENDS)
   cmake_parse_arguments(ARG "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
   set(_target "planar_cmd_${name}")
 
-  add_executable(${_target} ${ARG_SOURCES})
+  add_executable(${_target})
+  if(ARG_INTERFACE)
+    target_sources(${_target}
+      PUBLIC
+        FILE_SET CXX_MODULES
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+        FILES ${ARG_INTERFACE})
+  endif()
+  if(ARG_SOURCES)
+    target_sources(${_target} PRIVATE ${ARG_SOURCES})
+  endif()
+  if(ARG_MAIN)
+    target_sources(${_target} PRIVATE ${ARG_MAIN})
+  endif()
   set_target_properties(${_target} PROPERTIES
     CXX_STANDARD 26
     CXX_STANDARD_REQUIRED ON
@@ -206,7 +251,79 @@ function(planar_binary name)
     target_link_libraries(${_target} PRIVATE ${_depend_targets})
   endif()
 
+  set(_test_depend_targets "")
+  foreach(dep IN LISTS ARG_TEST_DEPENDS)
+    list(APPEND _test_depend_targets "planar_${dep}")
+  endforeach()
+
   # Same registration planar_module() performs — see this function's
   # header comment for why a plain add_executable() must not skip it.
   set_property(GLOBAL APPEND PROPERTY PLANAR_MODULE_TARGETS "${_target}")
+
+  # --- test binary ------------------------------------------------------
+  file(GLOB _test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.t.cpp")
+  if(NOT _test_sources)
+    return()
+  endif()
+  if(NOT ARG_MAIN)
+    message(FATAL_ERROR
+      "planar_binary(${name}): *.t.cpp files exist but no MAIN was given. "
+      "The test binary is built from this target's own sources minus the "
+      "entry point (Catch2 supplies its own main), so MAIN must name the "
+      "entry-point source. Without it these tests would be silently never "
+      "compiled.")
+  endif()
+  if(NOT TARGET Catch2::Catch2WithMain)
+    message(WARNING
+      "planar_binary(${name}): *.t.cpp files exist but "
+      "Catch2::Catch2WithMain is not a target yet. ${_target}_tests is NOT "
+      "built this configure.")
+    return()
+  endif()
+
+  if(PLANAR_CATCH2_SOURCE_DIR)
+    list(APPEND CMAKE_MODULE_PATH "${PLANAR_CATCH2_SOURCE_DIR}/extras")
+  endif()
+  include(Catch OPTIONAL RESULT_VARIABLE _catch_module_found)
+
+  set(_test_target "${_target}_tests")
+  add_executable(${_test_target} ${_test_sources})
+  if(ARG_INTERFACE)
+    target_sources(${_test_target}
+      PUBLIC
+        FILE_SET CXX_MODULES
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+        FILES ${ARG_INTERFACE})
+  endif()
+  if(ARG_SOURCES)
+    target_sources(${_test_target} PRIVATE ${ARG_SOURCES})
+  endif()
+  set_target_properties(${_test_target} PROPERTIES
+    CXX_STANDARD 26
+    CXX_STANDARD_REQUIRED ON
+    CXX_MODULE_STD ON)
+  if(PLANAR_WARNINGS_AS_ERRORS)
+    target_compile_options(${_test_target} PRIVATE
+      $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:-Werror>)
+  endif()
+  target_link_libraries(${_test_target} PRIVATE
+    Catch2::Catch2WithMain
+    ${_depend_targets}
+    ${_test_depend_targets})
+
+  # The test binary is NOT registered into PLANAR_MODULE_TARGETS, matching
+  # planar_module()'s `<name>_tests`: a test binary is not part of the
+  # shipped architecture, and registering it would make the D15 walk police
+  # Catch2's own (layer-0, vendored) edges alongside first-party ones.
+
+  if(COMMAND catch_discover_tests)
+    catch_discover_tests(${_test_target}
+      TEST_PREFIX "planar.cmd_${name}."
+      PROPERTIES LABELS "cmd_${name}")
+  else()
+    message(WARNING
+      "planar_binary(${name}): catch_discover_tests unavailable — "
+      "${_test_target} is built but its TEST_CASEs are not registered "
+      "individually with ctest.")
+  endif()
 endfunction()
