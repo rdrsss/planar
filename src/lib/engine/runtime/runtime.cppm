@@ -10,3 +10,6 @@ export module planar.engine.runtime;
 export import planar.engine.runtime.session;
 export import planar.engine.runtime.snapshot;
 export import planar.engine.runtime.capture;
+export import planar.engine.runtime.agentactivity;
+export import planar.engine.runtime.agentatomic;
+export import planar.engine.runtime.agentrender;

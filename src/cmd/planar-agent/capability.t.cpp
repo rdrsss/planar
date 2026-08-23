@@ -87,11 +87,23 @@ TEST_CASE("planar-agent's registered verb set is exactly the ported subset", "[c
 
   // The oracle registers eighteen: pull, peek, claim, heartbeat,
   // claim-associate, complete, fail, release, block, action, ingest,
-  // reconcile, abort, version, schema, run, dispatch, context. Sixteen are
-  // blocked one layer down (see tree.cppm's per-verb inventory), so this
-  // asserts the two that ARE ported and nothing else — a completeness
-  // check against reality, not against the target.
-  CHECK(names == std::set<std::string, std::less<>>{"schema", "version"});
+  // reconcile, abort, version, schema, run, dispatch, context. FOURTEEN
+  // are ported (task 6038 landed the claim ritual); the remaining four are
+  // blocked one layer down on buckets this tree has never ported — see
+  // tree.cppm's per-verb inventory. This asserts exactly the ported set
+  // and nothing else: a completeness check against REALITY, not against
+  // the target, so an accidentally-registered stub fails it too.
+  CHECK(names == std::set<std::string, std::less<>>{"abort", "action", "block", "claim", "claim-associate", "complete", "end",
+                                                    "fail", "heartbeat", "peek", "pull", "reconcile", "release", "schema",
+                                                    "start", "version"});
+
+  // And the four that are NOT here, named explicitly. An absent verb is a
+  // clean `unknown subcommand`; a registered stub that exits 64 looks like
+  // a working verb to a script.
+  for (auto const& deferred : {"ingest", "run", "dispatch", "context"}) {
+    INFO("deferred verb: " << deferred);
+    CHECK_FALSE(names.contains(deferred));
+  }
 }
 
 TEST_CASE("planar-agent's root node names itself", "[cmd][agent][capability]") {

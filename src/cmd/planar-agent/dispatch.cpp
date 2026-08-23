@@ -8,7 +8,11 @@ import planar.cli;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
+import planar.cmd.planar_agent.handlers.action;
+import planar.cmd.planar_agent.handlers.claims;
+import planar.cmd.planar_agent.handlers.recovery;
 import planar.cmd.planar_agent.handlers.schema;
+import planar.cmd.planar_agent.handlers.terminal;
 import planar.cmd.planar_agent.handlers.version;
 
 namespace planar::cmd::agent {
@@ -70,6 +74,23 @@ auto handlers(const cli::cmd& root) -> handler_table {
   table.emplace("schema", [&root](context& ctx, const cli::match_result& args) -> handler_result {
     return handlers::schema(ctx, args, root);
   });
+  // The claim ritual. `unregistered_leaves` is what keeps this list honest
+  // against `tree.cpp`: a verb added to the tree and forgotten here shows
+  // up as an unwired leaf rather than as a `not implemented yet` an
+  // operator discovers at runtime.
+  table.emplace("pull", handlers::pull);
+  table.emplace("peek", handlers::peek);
+  table.emplace("claim", handlers::claim);
+  table.emplace("heartbeat", handlers::heartbeat);
+  table.emplace("claim-associate", handlers::claim_associate);
+  table.emplace("complete", handlers::complete);
+  table.emplace("fail", handlers::fail);
+  table.emplace("release", handlers::release);
+  table.emplace("block", handlers::block);
+  table.emplace("action start", handlers::action_start);
+  table.emplace("action end", handlers::action_end);
+  table.emplace("reconcile", handlers::reconcile);
+  table.emplace("abort", handlers::abort);
   return table;
 }
 

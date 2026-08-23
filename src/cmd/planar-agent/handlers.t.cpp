@@ -157,7 +157,16 @@ TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd
   CHECK(got.out.contains("\"root\":\"planar-agent\""));
   CHECK(got.out.contains("\"planar-agent version\""));
   CHECK(got.out.contains("\"planar-agent schema\""));
-  CHECK_FALSE(got.out.contains("\"planar-agent pull\""));
+  // Task 6038 landed the claim ritual, so these ARE in the catalog now.
+  CHECK(got.out.contains("\"planar-agent pull\""));
+  CHECK(got.out.contains("\"planar-agent complete\""));
+  CHECK(got.out.contains("\"planar-agent action start\""));
+  // ...and the four still-deferred verbs are NOT. A catalog naming a verb
+  // the binary cannot run would be worse than no catalog.
+  CHECK_FALSE(got.out.contains("\"planar-agent ingest\""));
+  CHECK_FALSE(got.out.contains("\"planar-agent run start\""));
+  CHECK_FALSE(got.out.contains("\"planar-agent dispatch preview\""));
+  CHECK_FALSE(got.out.contains("\"planar-agent context add\""));
 }
 
 TEST_CASE("planar-agent maps a parse failure to exit 1, not the operator binary's 2", "[cmd][agent][handlers][exitcode]") {

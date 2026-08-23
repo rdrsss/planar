@@ -1,0 +1,372 @@
+/// @file claims.cpp
+/// @brief Implementation of `planar.cmd.planar_agent.handlers.claims`.
+
+module;
+
+#include <glaze/json/read.hpp>
+
+module planar.cmd.planar_agent.handlers.claims;
+
+import std;
+import planar.cli;
+import planar.db;
+import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.agentatomic;
+import planar.engine.runtime.agentrender;
+import planar.engine.runtime.session;
+import planar.cmd.planar_agent.args;
+import planar.cmd.planar_agent.context;
+import planar.cmd.planar_agent.exit;
+import planar.cmd.planar_agent.handler;
+import planar.cmd.planar_agent.locality;
+import planar.cmd.planar_agent.policy;
+import planar.cmd.planar_agent.handlers.support;
+
+namespace planar::cmd::agent::handlers {
+
+namespace aa     = engine::runtime::agentactivity;
+namespace atomic = engine::runtime::agentatomic;
+namespace render = engine::runtime::agentrender;
+namespace ses    = engine::runtime::session;
+
+namespace {
+
+/// @brief View an optional string as an optional string_view.
+/// @param value The owning optional.
+/// @return A view over it, or unset.
+auto view(const std::optional<std::string>& value) -> std::optional<std::string_view> {
+  if (!value.has_value()) {
+    return std::nullopt;
+  }
+  return std::string_view{*value};
+}
+
+/// @brief `--stage` is meaningless without `--run` — the FK the stage
+/// annotates. Refused before anything is written.
+/// @param args The parsed arguments.
+/// @return The refusal, or unset when the pair is consistent.
+auto check_stage_requires_run(const cli::match_result& args) -> std::optional<domain_error> {
+  if (flag_string(args, "--stage").has_value() && !flag_int(args, "--run").has_value()) {
+    return invalid_input_error("--stage requires --run: provide a workflow_runs.id via --run <id>");
+  }
+  return std::nullopt;
+}
+
+/// @brief Split `--worktree` into an id or a path.
+///
+/// A value that parses as an integer is a `worktrees` row id (and is
+/// validated against that table); anything else is stored verbatim as a
+/// path. There is no flag to disambiguate, so a worktree literally named
+/// `"7"` would be read as an id — the Zig original has the same ambiguity.
+/// @param raw The `--worktree` value, or unset.
+/// @return The id and path, at most one of which is set.
+struct worktree_split {
+  std::optional<std::int64_t> id;   ///< The row id, when the value parsed as one.
+  std::optional<std::string>  path; ///< The path, otherwise.
+};
+
+auto split_worktree(const std::optional<std::string>& raw) -> worktree_split {
+  if (!raw.has_value()) {
+    return {};
+  }
+  if (auto const id = parse_int64_zig(*raw); id.has_value()) {
+    return worktree_split{.id = id};
+  }
+  return worktree_split{.path = raw};
+}
+
+/// @brief Refuse a `--metadata` value that is not well-formed JSON.
+///
+/// The engine stores the column opaquely and never parses it, so this is
+/// the ONLY thing standing between a malformed blob and the database.
+/// Validated with the same purpose-built probe `engine/config` and
+/// `engine/runs` use.
+/// @param raw The `--metadata` value, or unset.
+/// @return The refusal, or unset when absent or valid.
+auto check_metadata(const std::optional<std::string>& raw) -> std::optional<domain_error> {
+  if (!raw.has_value()) {
+    return std::nullopt;
+  }
+  if (glz::validate_json(*raw)) {
+    return invalid_input_error(std::format("--metadata is not valid JSON: {}", *raw));
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+auto pull(context& ctx, const cli::match_result& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  if (auto const refusal = check_stage_requires_run(args); refusal.has_value()) {
+    return std::unexpected(*refusal);
+  }
+
+  // An UNRECOGNISED --role degrades to `coder` rather than failing. That
+  // is deliberately laxer than `action start --kind`, which refuses an
+  // unknown kind outright: `--role` is a free-text label the tree's own
+  // help describes as `planner|coder|reviewer|test_coder|...`, and the
+  // trailing ellipsis is doing real work.
+  auto const role = flag_string(args, "--role");
+  auto const kind = role.has_value() ? aa::action_kind_from_text(*role).value_or(aa::action_kind::coder) : aa::action_kind::coder;
+
+  // Two independent reasons to skip: the operator asked, or this action
+  // kind does not probe by default. Pull picks a role kind, so its
+  // default is probe-on.
+  auto const skip = flag_bool(args, "--no-locality-probe") || !aa::probe_default(kind);
+  auto const loc  = resolve_locality(flag_string(args, "--repo-root"), ctx.cwd(), skip);
+
+  auto const worktree = split_worktree(flag_string(args, "--worktree"));
+
+  auto const vendor  = flag_string(args, "--vendor").value_or(std::string{"planar-agent"});
+  auto const vsid    = flag_string(args, "--vendor-session");
+  auto const session = ses::ensure_active(**conn, vendor, view(vsid));
+  if (!session) {
+    return std::unexpected(session_error_message(session.error()));
+  }
+
+  auto const ttl_raw = flag_string(args, "--ttl").value_or(std::string{"600"});
+  auto const ttl     = parse_ttl_seconds(ttl_raw);
+  if (!ttl.has_value()) {
+    return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
+  }
+
+  auto const metadata = flag_string(args, "--metadata");
+  if (auto const refusal = check_metadata(metadata); refusal.has_value()) {
+    return std::unexpected(*refusal);
+  }
+
+  // --parent-action is checked for EXISTENCE, not just range: a wrong
+  // action id in an orchestrator script would otherwise produce a claim
+  // whose tree edge points nowhere, and the mistake would only surface
+  // later in `planar-watch tree`.
+  auto const parent = flag_int(args, "--parent-action");
+  if (parent.has_value()) {
+    if (*parent <= 0) {
+      return std::unexpected(invalid_input_error(std::format("--parent-action must be a positive integer (got {})", *parent)));
+    }
+    auto stmt   = (*conn)->prepare("select 1 from agent_actions where id = ? limit 1");
+    bool exists = false;
+    if (stmt && stmt->bind_int64(1, *parent)) {
+      auto stepped = stmt->step();
+      exists       = stepped.has_value() && *stepped == db::step_result::row;
+    }
+    if (!exists) {
+      // NotFound, which `planar-agent`'s codeFor does not map — exit 1,
+      // not the 2 the neighbouring range check produces.
+      return std::unexpected(
+          error_from_body(cli::domain_error_kind::not_found, std::format("--parent-action {}: action not found", *parent)));
+    }
+  }
+
+  auto const purpose  = flag_string(args, "--purpose");
+  auto const base_ref = flag_string(args, "--base-ref");
+  auto const stage    = flag_string(args, "--stage");
+
+  auto const result = atomic::pull_next(**conn,
+                                        atomic::pull_args{
+                                            .plan_id           = positional_int(args, "plan-id").value_or(0),
+                                            .session_id        = *session,
+                                            .vendor            = vendor,
+                                            .vendor_session_id = view(vsid),
+                                            .role              = view(role),
+                                            .worktree_id       = worktree.id,
+                                            .worktree_path     = view(worktree.path),
+                                            .purpose           = view(purpose),
+                                            .base_ref          = view(base_ref),
+                                            .ttl_secs          = *ttl,
+                                            .loc               = loc,
+                                            .kind              = kind,
+                                            .metadata          = view(metadata),
+                                            .parent_action_id  = parent,
+                                            .run_id            = flag_int(args, "--run"),
+                                            .stage             = view(stage),
+                                        },
+                                        task_policy());
+  if (!result) {
+    return std::unexpected(verb_error("pull", result.error()));
+  }
+
+  auto const json = flag_bool(args, "--json");
+  if (result->no_work) {
+    ctx.out() << (json ? render::no_work_json() : render::no_work_text());
+    return {};
+  }
+
+  auto const task = aa::get_task(**conn, result->task_id);
+  if (!task) {
+    return std::unexpected(verb_error("task show", task.error()));
+  }
+  ctx.out() << (json ? render::pull_json(*result, *task) : render::pull_text(*result));
+  return {};
+}
+
+auto peek(context& ctx, const cli::match_result& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const result = atomic::peek_next(**conn, positional_int(args, "plan-id").value_or(0));
+  if (!result) {
+    return std::unexpected(verb_error("peek", result.error()));
+  }
+
+  auto const json = flag_bool(args, "--json");
+  if (result->no_work) {
+    ctx.out() << (json ? render::no_work_json() : render::no_work_text());
+    return {};
+  }
+  auto const task = aa::get_task(**conn, result->task_id);
+  if (!task) {
+    return std::unexpected(verb_error("task show", task.error()));
+  }
+  ctx.out() << (json ? render::peek_json(*task) : render::peek_text(*task));
+  return {};
+}
+
+auto claim(context& ctx, const cli::match_result& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  if (auto const refusal = check_stage_requires_run(args); refusal.has_value()) {
+    return std::unexpected(*refusal);
+  }
+
+  auto const entity_raw = flag_string(args, "--entity").value_or(std::string{});
+  auto const entity     = parse_entity_ref(entity_raw);
+  if (!entity) {
+    // The two refusal tags exit DIFFERENTLY — see `entity_ref_error`.
+    auto const kind = entity.error() == entity_ref_error::invalid_entity_ref ? cli::domain_error_kind::invalid_entity_ref
+                                                                             : cli::domain_error_kind::generic_failure;
+    return std::unexpected(
+        error_from_body(kind, std::format("invalid --entity '{}' ({}); expected task:<id>|plan:<id>|plan_step:<id>", entity_raw,
+                                          entity_ref_error_name(entity.error()))));
+  }
+
+  // NOTE: no `probe_default` gating here, unlike pull. `claim` records no
+  // action kind of its own to consult, so `--no-locality-probe` is the
+  // only thing that suppresses the probe.
+  auto const loc      = resolve_locality(flag_string(args, "--repo-root"), ctx.cwd(), flag_bool(args, "--no-locality-probe"));
+  auto const worktree = split_worktree(flag_string(args, "--worktree"));
+
+  auto const vendor  = flag_string(args, "--vendor").value_or(std::string{"planar-agent"});
+  auto const vsid    = flag_string(args, "--vendor-session");
+  auto const session = ses::ensure_active(**conn, vendor, view(vsid));
+  if (!session) {
+    return std::unexpected(session_error_message(session.error()));
+  }
+
+  auto const ttl_raw = flag_string(args, "--ttl").value_or(std::string{"600"});
+  auto const ttl     = parse_ttl_seconds(ttl_raw);
+  if (!ttl.has_value()) {
+    return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
+  }
+
+  auto const role    = flag_string(args, "--role");
+  auto const model   = flag_string(args, "--model");
+  auto const purpose = flag_string(args, "--purpose");
+  auto const stage   = flag_string(args, "--stage");
+
+  auto const acquired = atomic::claim_entity(**conn,
+                                             aa::acquire_args{
+                                                 .session_id        = *session,
+                                                 .kind              = entity->kind,
+                                                 .entity_id         = entity->id,
+                                                 .vendor            = vendor,
+                                                 .vendor_session_id = view(vsid),
+                                                 .role              = view(role),
+                                                 .model             = view(model),
+                                                 .worktree_id       = worktree.id,
+                                                 .worktree_path     = view(worktree.path),
+                                                 .purpose           = view(purpose),
+                                                 .ttl_secs          = *ttl,
+                                                 .loc               = loc,
+                                                 .force             = flag_bool(args, "--force"),
+                                                 .run_id            = flag_int(args, "--run"),
+                                                 .stage             = view(stage),
+                                             },
+                                             !flag_bool(args, "--no-transition"), task_policy());
+  if (!acquired) {
+    return std::unexpected(verb_error("claim", acquired.error()));
+  }
+
+  ctx.out() << (flag_bool(args, "--json") ? render::claim_json(*acquired) : render::claim_text(*acquired));
+  return {};
+}
+
+auto heartbeat(context& ctx, const cli::match_result& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const ttl_raw = flag_string(args, "--ttl").value_or(std::string{"600"});
+  auto const ttl     = parse_ttl_seconds(ttl_raw);
+  if (!ttl.has_value()) {
+    // BEFORE the transaction: a malformed duration should not open one.
+    return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
+  }
+  auto const token = flag_string(args, "--claim").value_or(std::string{});
+
+  auto tx = (*conn)->begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return std::unexpected(error_from_body(cli::domain_error_kind::generic_failure, "BEGIN IMMEDIATE: QueryFailed"));
+  }
+
+  auto refreshed = aa::heartbeat_claim(**conn, token, *ttl);
+  if (!refreshed) {
+    return std::unexpected(verb_error("heartbeat", refreshed.error()));
+  }
+
+  // `--status` present-and-empty is NOT the same as absent: an omitted
+  // flag writes no action row at all, while `--status ""` writes one with
+  // an empty summary. `flag_string` distinguishes them for us.
+  auto const status = flag_string(args, "--status");
+  if (status.has_value()) {
+    constexpr std::size_t k_status_cap = 256;
+    if (status->size() > k_status_cap) {
+      return std::unexpected(invalid_input_error(
+          std::format("--status payload is {} bytes; the cap is {}. Shorten the status string.", status->size(), k_status_cap)));
+    }
+    auto const action_id = aa::start_action(**conn, aa::start_action_args{
+                                                        .session_id = refreshed->session_id,
+                                                        .claim_id   = refreshed->id,
+                                                        .kind       = aa::action_kind::heartbeat,
+                                                        .vendor     = refreshed->vendor,
+                                                    });
+    if (!action_id) {
+      return std::unexpected(verb_error("heartbeat: startAction", action_id.error()));
+    }
+    auto const closed = aa::end_action(**conn, *action_id, aa::outcome::ok, view(status));
+    if (!closed) {
+      return std::unexpected(verb_error("heartbeat: endAction", closed.error()));
+    }
+  }
+
+  if (!tx->commit()) {
+    return std::unexpected(error_from_body(cli::domain_error_kind::generic_failure, "COMMIT: QueryFailed"));
+  }
+
+  ctx.out() << (flag_bool(args, "--json") ? render::claim_json(*refreshed) : render::heartbeat_text(*refreshed));
+  return {};
+}
+
+auto claim_associate(context& ctx, const cli::match_result& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const token   = flag_string(args, "--claim").value_or(std::string{});
+  auto const stage   = flag_string(args, "--stage");
+  auto const updated = aa::associate_claim_run(**conn, token, flag_int(args, "--run").value_or(0), view(stage));
+  if (!updated) {
+    return std::unexpected(verb_error("claim-associate", updated.error()));
+  }
+  ctx.out() << (flag_bool(args, "--json") ? render::associate_json(*updated) : render::associate_text(*updated, token));
+  return {};
+}
+
+} // namespace planar::cmd::agent::handlers

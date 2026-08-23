@@ -50,16 +50,75 @@
 # is per-RECORD rather than per-document. Both are pinned. See
 # `json_text/CMakeLists.txt` for the escaping half of the same contract.
 
+# --- the agent plane (plan 996, task 6038) ---------------------------------
+#
+# `agentactivity` / `agentatomic` / `agentrender` port
+# zig/src/engine/runtime/agentactivity/{types,store,atomic,json}.zig -- the
+# `agent_work_claims` + `agent_actions` store, the atomic claim-ritual
+# transactions, and the stdout payloads the claim verbs write.
+#
+# THEY LIVE IN THIS BUCKET, not a new one, because the claim store needs
+# `session::ensure_active` to mint the `sessions` row every claim's
+# `session_id` FK points at. A separate `engine_agent` bucket would have
+# needed an `engine_* -> engine_*` edge for that, which D15/D18 forbid and
+# cmake/architecture.cmake FATALs on. The Zig tree draws the same line:
+# `engine/runtime/session.zig` and `engine/runtime/agentactivity/` are
+# siblings under one bucket.
+#
+# TWO layer-2 dependencies could NOT be resolved that way, and are injected
+# instead of imported (see agentatomic.cppm's header for the full argument):
+#
+#   policy.status.check      -> `planar.engine.planning.transitions`
+#   plan.recomputeStatus     -> `planar.engine.planning.plan`
+#
+# Both are planning POLICY living in a sibling bucket. Duplicating them here
+# would put two copies of the task transition matrix and the plan roll-up
+# aggregate in the tree, free to drift; extracting them to layer 1 under D19
+# would put planning policy in a base library, which is the wrong shape (D19
+# is for shared PRIMITIVES -- `scope_ray`-style grammar, `json_text`-style
+# escaping). So `agentatomic::task_policy` takes them as callables and
+# `cmd_planar_agent` -- which is layer 3 and may depend on both buckets --
+# supplies the real ones. The side benefit is that the property this
+# milestone exists to prove ("the guard runs before the UPDATE, the roll-up
+# runs inside the same transaction") becomes directly observable: a test
+# passes a recording probe.
+#
+# NOT ported, named rather than dropped silently:
+#
+#   - `locality.probe`. Three `git` subprocess calls per claim
+#     (`symbolic-ref` / `rev-parse` / `status --porcelain`). `locality` is an
+#     INPUT to this bucket; the probe lives at layer 3, and what THAT port
+#     captures and does not is documented in
+#     src/cmd/planar-agent/locality.cppm. Same call `capture commits` and
+#     `bench harvest` already made.
+#   - `sessioncommits.recordClaimWindowBestEffort`, which the four terminal
+#     handlers call AFTER their transaction. Same git-subprocess dependency,
+#     and it is outside the transaction in the original, so nothing atomic
+#     rests on it.
+#   - `resolveClaimScope`, `listActive`, `listStale`, `listByEntity`,
+#     `listBySession`, `latestActiveClaimForSession`, `nextWork`,
+#     `recordEntityCreateAction`. Read paths for `planar-watch`'s display
+#     surfaces and for `planar` verbs, not for any `planar-agent` verb.
+#     Deferred with the binaries that consume them.
+#   - `policy.audit.record`, still absent tree-wide (task 6100, an open
+#     operator decision). No claim verb reads or emits audit rows.
+
 planar_module(engine_runtime
   INTERFACE
     session.cppm
     snapshot.cppm
     capture.cppm
+    agentactivity.cppm
+    agentatomic.cppm
+    agentrender.cppm
     runtime.cppm
   SOURCES
     session.cpp
     snapshot.cpp
     capture.cpp
+    agentactivity.cpp
+    agentatomic.cpp
+    agentrender.cpp
   DEPENDS
     db
     json_text)

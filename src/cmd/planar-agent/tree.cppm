@@ -23,21 +23,13 @@
 ///
 /// ## What this tree deliberately is NOT (yet)
 ///
-/// The oracle registers eighteen verbs. This tree registers TWO — `version`
-/// and `schema` — and that gap is a porting gap, not a capability
-/// statement. Every remaining verb (`pull`, `peek`, `claim`, `heartbeat`,
-/// `claim-associate`, `complete`, `fail`, `release`, `block`, `action`,
-/// `ingest`, `reconcile`, `abort`, `run`, `dispatch`, `context`) is
-/// blocked ONE LAYER DOWN, on layer-2 engine buckets this tree has never
-/// ported:
+/// The oracle registers eighteen verbs. This tree registers FOURTEEN —
+/// task 6038 landed the whole claim ritual (`pull`, `peek`, `claim`,
+/// `heartbeat`, `claim-associate`, `complete`, `fail`, `release`, `block`,
+/// `action start`/`end`, `reconcile`, `abort`) on top of `version` and
+/// `schema`. The remaining FOUR are blocked ONE LAYER DOWN, on layer-2
+/// buckets this tree has never ported:
 ///
-///   pull / peek / claim / heartbeat / complete / fail / release / block /
-///   abort / reconcile / claim-associate
-///                          need the `agent_work_claims` + `agent_actions`
-///                          store (zig `engine.runtime.agentactivity` and
-///                          the atomic terminal-verb transactions). No
-///                          equivalent bucket exists under src/lib/engine/.
-///   action                 same store.
 ///   ingest                 needs the vendor hook-event adapters.
 ///   run start / run end    write `workflow_runs`. NOTE this is a
 ///                          DIFFERENT table from the `runs` table
@@ -49,16 +41,21 @@
 ///                          Reusing the ported bucket here would write the
 ///                          wrong table; verified by reading
 ///                          zig/src/cmd/planar-agent/handlers/run/start.zig's
-///                          literal INSERT.
+///                          literal INSERT. (`reconcile` DOES sweep
+///                          `workflow_runs`, so the table is reachable —
+///                          what is missing is the run LIFECYCLE surface.)
 ///   dispatch / context     need the `routing_dispatch_*` and run-scoped
-///                          context tables.
+///                          context tables. `routing_dispatch_previews`
+///                          alone carries twenty-odd bound columns and a
+///                          single-use trigger; it is its own cycle.
 ///
 /// Omitting an unported child is the rule this tree inherits (task 6106:
 /// `planar workflow --help` lists two commands where the oracle lists
 /// three). The consequence, stated plainly because it is visible in
-/// output: `planar-agent --help` here lists two verbs where the oracle
-/// lists eighteen, and that page is therefore NOT oracle-comparable. LEAF
-/// pages ARE, and are pinned byte-for-byte in `tree.t.cpp`.
+/// output: `planar-agent --help` here lists fourteen verbs where the
+/// oracle lists eighteen, and that page is therefore still NOT
+/// oracle-comparable. LEAF pages ARE, and all fourteen are diffed
+/// byte-for-byte against the live oracle in `parity.t.cpp`.
 ///
 /// The alternative — registering all eighteen and binding the unported
 /// ones to a `not_implemented` stub so the root help page matched — was

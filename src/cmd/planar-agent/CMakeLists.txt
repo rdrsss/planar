@@ -63,22 +63,43 @@
 #   schema    The capability boundary made machine-readable, and a FRAGMENT
 #             renderer (schema_json documents "no trailing newline"), the
 #             counterexample to a blanket append-nothing rule.
+#   the claim ritual (task 6038)
+#             pull / peek / claim / heartbeat / claim-associate /
+#             complete / fail / release / block / action start|end /
+#             reconcile / abort. See the section below.
 #
 # Parse failures (exit 1 — NOT the operator binary's 2) are covered across
 # the set, so 0 and 1 are both produced by this binary and a mapping
 # collapsed to one code cannot pass.
 #
+# --- the claim ritual (plan 996, task 6038) ---------------------------------
+#
+# TWELVE more verbs, and the reason this target grew two engine DEPENDS:
+#
+#   engine_runtime   the agent_work_claims + agent_actions store, the atomic
+#                    claim-ritual transactions, and the stdout renderers
+#                    (agentactivity / agentatomic / agentrender).
+#   engine_planning  the task transition matrix and the plan roll-up, which
+#                    `agentatomic` may not import itself (both are layer 2,
+#                    D15/D18) and which THIS target injects into it as
+#                    `agentatomic::task_policy`. `policy.cpp` is the whole
+#                    of that seam -- one function, so every handler in this
+#                    binary runs under the same policy.
+#
+# Layer 3 depending on two layer-2 buckets is exactly what the layering
+# allows and what makes the injection legal; see engine/runtime's
+# CMakeLists for why the alternative (duplicating the matrix, or extracting
+# planning policy down to layer 1) was rejected.
+#
+# `locality.cpp` is the one file here that leaves the process: three `git`
+# subprocesses per claim, via popen. It sits at layer 3 deliberately so the
+# engine bucket takes a locality VALUE and needs no spawn dependency.
+#
 # --- NOT landed, each blocked at LAYER 2 -----------------------------------
 #
-# Sixteen of the oracle's eighteen verbs, and the blocker is the same bucket
-# for most of them. See `tree.cppm`'s header for the per-verb inventory; the
-# summary:
+# Four of the oracle's eighteen verbs. See `tree.cppm`'s header for the
+# per-verb inventory; the summary:
 #
-#   pull / peek / claim / heartbeat / claim-associate / complete / fail /
-#   release / block / abort / reconcile / action
-#                       need the agent_work_claims + agent_actions store
-#                       (zig engine.runtime.agentactivity, 5,702 lines) and
-#                       the atomic terminal-verb transactions. Not ported.
 #   ingest              needs the vendor hook-event adapters. Not ported.
 #   run start / run end write `workflow_runs` — a DIFFERENT table from the
 #                       `runs` table the ported `engine_runs` bucket owns.
@@ -88,9 +109,17 @@
 #   dispatch / context  need the routing_dispatch_* and run-scoped context
 #                       tables. Not ported.
 #
+# Also deferred, WITH the verbs that carry it: `sessioncommits.
+# recordClaimWindowBestEffort`, the git revision walk the four terminal
+# handlers run AFTER their transaction. `--no-locality-probe` is still
+# declared on all four (dropping a flag changes the --help bytes) and
+# currently gates nothing there. Same call `capture commits` and `bench
+# harvest` already made.
+#
 # Omitting an unported child from a group node stays the rule (task 6106),
-# so `planar-agent --help` lists two commands where the oracle lists
-# eighteen and is not oracle-comparable; the LEAF pages still are.
+# so `planar-agent --help` lists fourteen commands where the oracle lists
+# eighteen and is not oracle-comparable; all fourteen LEAF pages are, and
+# are diffed against the live oracle in parity.t.cpp.
 
 planar_binary(planar_agent
   MAIN
@@ -99,19 +128,44 @@ planar_binary(planar_agent
     exit.cppm
     context.cppm
     handler.cppm
+    args.cppm
+    locality.cppm
+    policy.cppm
     tree.cppm
+    handlers/support.cppm
     handlers/version.cppm
     handlers/schema.cppm
+    handlers/claims.cppm
+    handlers/terminal.cppm
+    handlers/recovery.cppm
+    handlers/action.cppm
     dispatch.cppm
   SOURCES
     context.cpp
+    locality.cpp
+    policy.cpp
     tree.cpp
     handlers/version.cpp
     handlers/schema.cpp
+    handlers/claims.cpp
+    handlers/terminal.cpp
+    handlers/recovery.cpp
+    handlers/action.cpp
     dispatch.cpp
   DEPENDS
     cli
-    db)
+    db
+    engine_runtime
+    engine_planning)
+
+# `--metadata` is validated with glz::validate_json -- the same purpose-built
+# probe engine/config and engine/runs use, and the only one that enables
+# Glaze's validate_trailing_whitespace (task 6086). PRIVATE: Glaze is an
+# implementation detail of two flag validators, not part of any interface.
+target_link_libraries(planar_cmd_planar_agent PRIVATE glaze::glaze)
+if(TARGET planar_cmd_planar_agent_tests)
+  target_link_libraries(planar_cmd_planar_agent_tests PRIVATE glaze::glaze SQLite::SQLite3)
+endif()
 
 if(TARGET planar_cmd_planar_agent_tests)
   # parity.t.cpp shells the built binary and diffs its stdout, stderr and
