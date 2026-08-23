@@ -37,8 +37,8 @@ auto append_json_string(std::string& out, std::string_view text) -> void {
       break;
     default:
       if (c < 0x20) {
-        // LOWERCASE hex, matching std.json — an uppercase `` would still
-        // be valid JSON and still be a parity break.
+        // LOWERCASE hex, matching std.json -- an uppercase `\u000B` would
+        // still be valid JSON and still be a parity break.
         out.append(std::format("\\u{:04x}", static_cast<unsigned>(c)));
       } else {
         // No escaping of `/`, and non-ASCII bytes pass through as raw UTF-8.

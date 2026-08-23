@@ -39,6 +39,19 @@
 #
 # `grouping.cppm` is the umbrella re-export, matching
 # `lib/engine/runtime/runtime.cppm`.
+#
+# STDOUT TERMINATOR CONTRACT (task 6114, resolving the M4 boundary review's
+# F1). A renderer in this tree that returns a COMPLETE stdout payload returns
+# the oracle's exact bytes INCLUDING the trailing newline; the layer-3 caller
+# writes the string verbatim and appends nothing. A renderer that returns a
+# FRAGMENT the caller composes into a larger line -- an error-message body
+# that becomes `error: <body>` on stderr -- returns no terminator and its
+# @return says so. The alternative shape ("renderer returns the body, caller
+# appends the terminator") cannot express two payloads this tree actually has:
+# a leaf whose empty output is ZERO BYTES rather than a bare newline
+# (`workflow list --json`, `local list --json`), and NDJSON, where the newline
+# is per-RECORD rather than per-document. Both are pinned. See
+# `json_text/CMakeLists.txt` for the escaping half of the same contract.
 
 planar_module(engine_grouping
   INTERFACE
@@ -49,7 +62,8 @@ planar_module(engine_grouping
     greedy.cpp
     load.cpp
   DEPENDS
-    db)
+    db
+    json_text)
 
 if(TARGET planar_engine_grouping_tests)
   # The test binary opens real on-disk scratch databases through

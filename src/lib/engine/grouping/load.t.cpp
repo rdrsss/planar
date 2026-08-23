@@ -212,7 +212,8 @@ constexpr std::string_view k_fixture1_json =
     R"("selected_greedy":false,"slices":[)"
     R"({"task_ids":[1,2],"union_symbols":["shared.sym","t1.only","t2.only","ww.sym"],"cost":63},)"
     R"({"task_ids":[3],"union_symbols":["t3.only","ww.sym"],"cost":53}],)"
-    R"("summary":{"slices":2,"total_cost":116}})";
+    R"("summary":{"slices":2,"total_cost":116}})"
+    "\n";
 
 constexpr std::string_view k_fixture1_text = "plan:1  budget:128000  open:3  solver:greedy  optimal_available:false  "
                                              "selected_greedy:false  slices:2  total_cost:116\n"
@@ -227,7 +228,8 @@ constexpr std::string_view k_fixture1_text = "plan:1  budget:128000  open:3  sol
 
 constexpr std::string_view k_empty_json =
     R"({"plan_id":2,"budget":128000,"open_tasks":0,"solver":"greedy","optimal_available":false,)"
-    R"("selected_greedy":false,"slices":[],"summary":{"slices":0,"total_cost":0}})";
+    R"("selected_greedy":false,"slices":[],"summary":{"slices":0,"total_cost":0}})"
+    "\n";
 
 constexpr std::string_view k_empty_text = "plan:2  budget:128000  open:0  solver:greedy  optimal_available:false  "
                                           "selected_greedy:false  slices:0  total_cost:0\n"

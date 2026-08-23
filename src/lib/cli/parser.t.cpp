@@ -691,8 +691,6 @@ TEST_CASE("parity: task add/done help and error behavior matches the reference p
   if (!std::filesystem::exists(zig_bin)) {
     SKIP(std::format("zig reference binary not built at {} — build it under zig/ (zig build) first", zig_bin.string()));
   }
-  auto const out_path = std::filesystem::temp_directory_path() / "planar_cli_parity_task_add.txt";
-
   // Pin the reference binary to a throwaway database. The Zig runtime resolves
   // $PLANAR_DB and otherwise falls back to ~/.planar/planar.db, applying
   // pending migrations automatically on first use — so an inherited
@@ -703,10 +701,20 @@ TEST_CASE("parity: task add/done help and error behavior matches the reference p
                             std::format("planar_cli_parity_env_{}", std::chrono::steady_clock::now().time_since_epoch().count());
   std::error_code mk_ec;
   std::filesystem::create_directories(scratch, mk_ec);
+  REQUIRE_FALSE(mk_ec);
+
+  // The capture file lives INSIDE that per-run directory. It used to be a
+  // CONSTANT name directly under temp_directory_path() (review finding F11),
+  // which every other helper in this file already avoids by appending a
+  // steady_clock counter — two concurrent `ctest` runs, or a `ctest -j` that
+  // ever schedules this suite twice, would have had both processes redirecting
+  // into the same path and read back each other's bytes.
 
   // "task add" with a duplicate — no missing-positional/flag error path;
   // this only re-confirms the exit code convention (2) still holds against
   // the live reference binary, in case exit.zig's mapping ever drifts.
+  auto const out_path = scratch / "task_done_stdout.txt";
+
   auto cmd_str = std::format("PLANAR_DB='{}' PLANAR_HOME='{}' PLANAR_CONFIG_PATH='{}' {} task done > {} 2>&1",
                              (scratch / "planar.db").string(), (scratch / "home").string(), (scratch / "config.toml").string(),
                              zig_bin.string(), out_path.string());
@@ -720,6 +728,8 @@ TEST_CASE("parity: task add/done help and error behavior matches the reference p
   REQUIRE_FALSE(outcome.has_value());
   CHECK(planar::cli::exit_code_for_parse_error_planar_binary(outcome.error().kind) == WEXITSTATUS(status));
 
+  // Remove the whole per-run directory, not just the capture file: the scratch
+  // db/home/config the reference binary created under it were leaking before.
   std::error_code ec;
-  std::filesystem::remove(out_path, ec);
+  std::filesystem::remove_all(scratch, ec);
 }

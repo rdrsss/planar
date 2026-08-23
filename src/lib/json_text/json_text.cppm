@@ -2,7 +2,7 @@
 /// @brief `planar.json_text` — the one JSON string-escaping primitive every
 /// hand-rolled renderer in the tree shares (plan 996, task 6109/6110/6111).
 ///
-/// ## Why this is a layer-1 module and not a seventh private copy
+/// ## Why this is a layer-1 module and not an eleventh private copy
 ///
 /// D18 forbids `engine_*` -> `engine_*` edges, so a helper two engine buckets
 /// both need has exactly two legal shapes: duplicated per bucket, or extracted
@@ -11,20 +11,26 @@
 /// `engine/workflows/render.cpp` wrote the rule down explicitly: extracting is
 /// "worth doing once a THIRD bucket needs it rather than on the second".
 ///
-/// That threshold had in fact already been passed several times over when it
-/// was written. At the point this module was created the tree carried SEVEN
-/// byte-identical definitions of the same function:
+/// That threshold had been passed several times over when it was written. The
+/// tree carried TEN definitions of this function under two different names:
 ///
-///   engine/closure/store.cpp        engine/models/render.cpp
-///   engine/grouping/load.cpp        engine/runs/render.cpp
-///   engine/ingest/render.cpp        engine/workflows/render.cpp
-///   engine/planning/test_spec_status.cpp
+///   append_json_string (7)          json_quote (3)
+///     engine/closure/store.cpp        engine/planning/annotation.cpp
+///     engine/grouping/load.cpp        engine/runtime/capture.cpp
+///     engine/ingest/render.cpp        engine/promotion/promotion.cpp
+///     engine/models/render.cpp
+///     engine/planning/test_spec_status.cpp
+///     engine/runs/render.cpp
+///     engine/workflows/render.cpp
 ///
-/// (Two spell the C0 test `c < 0x20` and five spell it `c <= 0x1F`; those are
-/// the same predicate, so all seven really were behaviorally identical.) The
-/// `local` / `workspace` / `models-resolve` buckets would have made eight,
-/// nine and ten. This module is that extraction; every call site above now
-/// imports it instead.
+/// The seven `append_json_string` copies really were behaviorally identical
+/// (two spell the C0 test `c < 0x20` and five spell it `c <= 0x1F`, which is
+/// the same predicate). The three `json_quote` copies were NOT: they sent 0x08
+/// and 0x0C to the `\u00xx` arm instead of emitting the short forms, which is
+/// a live parity break wherever the quoted field carries operator free text or
+/// extracted source. See json_text/CMakeLists.txt for the full account.
+///
+/// All ten now import this module. There is exactly one definition.
 ///
 /// ## The escaping table is a parity contract, not a style choice
 ///

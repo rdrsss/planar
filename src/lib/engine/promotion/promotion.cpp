@@ -6,10 +6,15 @@
 module planar.engine.promotion;
 
 import std;
+import planar.json_text;
 import planar.db;
 import planar.scope_ref;
 
 namespace planar::engine::promotion {
+
+// The one shared escape table, layer 1. See json_text.cppm -- the local
+// copy this replaced was missing the \b and \f short forms.
+using json_text::json_string;
 
 namespace {
 
@@ -120,44 +125,6 @@ auto scope_display(const scope_info& s) -> std::string {
   return s.scope_id.has_value() ? std::format("{}:{}", s.scope_kind, *s.scope_id) : s.scope_kind;
 }
 
-/// @brief Minimal JSON string escaper matching the subset of
-/// `std::json.Stringify.encodeJsonString` the oracle exercises for the
-/// two fields this module quotes (`kind`, `scope_kind`) — both of which
-/// are closed vocabularies of `[a-z_]` today. Kept honest anyway so a
-/// future kind carrying a quote or backslash cannot emit invalid JSON.
-auto json_quote(std::string_view s) -> std::string {
-  std::string out;
-  out.reserve(s.size() + 2);
-  out.push_back('"');
-  for (const char c : s) {
-    switch (c) {
-    case '"':
-      out += "\\\"";
-      break;
-    case '\\':
-      out += "\\\\";
-      break;
-    case '\n':
-      out += "\\n";
-      break;
-    case '\r':
-      out += "\\r";
-      break;
-    case '\t':
-      out += "\\t";
-      break;
-    default:
-      if (static_cast<unsigned char>(c) < 0x20) {
-        out += std::format("\\u{:04x}", static_cast<unsigned>(static_cast<unsigned char>(c)));
-      } else {
-        out.push_back(c);
-      }
-    }
-  }
-  out.push_back('"');
-  return out;
-}
-
 } // namespace
 
 auto read_entity_scope(db::connection& conn, std::string_view kind, std::int64_t id) -> std::expected<scope_info, promote_error> {
@@ -225,18 +192,19 @@ auto demote(db::connection& conn, std::string_view kind, std::int64_t id) -> std
 auto render_scope_change_json(std::string_view kind, std::int64_t id, const scope_info& current, const scope_info& previous)
     -> std::string {
   return std::format(R"({{"ok":true,"kind":{},"id":{},"scope_kind":{},"scope_id":{},)"
-                     R"("previous_scope_kind":{},"previous_scope_id":{}}})",
-                     json_quote(kind), id, json_quote(current.scope_kind), json_optional_int(current.scope_id),
-                     json_quote(previous.scope_kind), json_optional_int(previous.scope_id));
+                     R"("previous_scope_kind":{},"previous_scope_id":{}}})"
+                     "\n",
+                     json_string(kind), id, json_string(current.scope_kind), json_optional_int(current.scope_id),
+                     json_string(previous.scope_kind), json_optional_int(previous.scope_id));
 }
 
 auto render_promote_text(std::string_view kind, std::int64_t id, std::string_view to_scope, const scope_info& previous)
     -> std::string {
-  return std::format("{}:{} promoted to association {}  (was: {})", kind, id, to_scope, scope_display(previous));
+  return std::format("{}:{} promoted to association {}  (was: {})\n", kind, id, to_scope, scope_display(previous));
 }
 
 auto render_demote_text(std::string_view kind, std::int64_t id, const scope_info& previous) -> std::string {
-  return std::format("{}:{} demoted to global  (was: {})", kind, id, scope_display(previous));
+  return std::format("{}:{} demoted to global  (was: {})\n", kind, id, scope_display(previous));
 }
 
 } // namespace planar::engine::promotion

@@ -6,11 +6,16 @@
 module planar.engine.runtime.capture;
 
 import std;
+import planar.json_text;
 import planar.db;
 import planar.engine.runtime.session;
 import planar.engine.runtime.snapshot;
 
 namespace planar::engine::runtime::capture {
+
+// The one shared escape table, layer 1. See json_text.cppm -- the local
+// copy this replaced was missing the \b and \f short forms.
+using json_text::json_string;
 
 namespace {
 
@@ -36,48 +41,6 @@ auto from_snapshot_error(snapshot::snapshot_error e) -> capture_error {
     return capture_error::query_failed;
   }
   return capture_error::query_failed;
-}
-
-/// @brief Minimal JSON string escaper. The oracle's `capture` renderers
-/// interpolate `vendor` / `vendor_session_id` with a bare `{s}` and no
-/// escaping at all, so a vendor containing a quote would emit invalid
-/// JSON there. This port escapes instead of faithfully reproducing that
-/// bug: the two fields are operator-supplied, so emitting invalid JSON is
-/// a real defect rather than a contract worth preserving, and no oracle
-/// probe of a valid vendor identity can tell the two implementations
-/// apart. Called out in the coder report as a DELIBERATE, narrow
-/// divergence.
-auto json_quote(std::string_view s) -> std::string {
-  std::string out;
-  out.reserve(s.size() + 2);
-  out.push_back('"');
-  for (const char c : s) {
-    switch (c) {
-    case '"':
-      out += "\\\"";
-      break;
-    case '\\':
-      out += "\\\\";
-      break;
-    case '\n':
-      out += "\\n";
-      break;
-    case '\r':
-      out += "\\r";
-      break;
-    case '\t':
-      out += "\\t";
-      break;
-    default:
-      if (static_cast<unsigned char>(c) < 0x20) {
-        out += std::format("\\u{:04x}", static_cast<unsigned>(static_cast<unsigned char>(c)));
-      } else {
-        out.push_back(c);
-      }
-    }
-  }
-  out.push_back('"');
-  return out;
 }
 
 /// @brief The vendor tuple every `capture` leaf derives from the
@@ -223,14 +186,14 @@ auto compose_file_body(std::string_view path, std::optional<std::string_view> ro
 }
 
 auto render_session_json(const session::session& s) -> std::string {
-  std::string out = std::format(R"({{"ok":true,"id":{},"vendor":{})", s.id, json_quote(s.vendor));
+  std::string out = std::format(R"({{"ok":true,"id":{},"vendor":{})", s.id, json_string(s.vendor));
   if (s.vendor_session_id.has_value()) {
-    out += std::format(R"(,"vendor_session_id":{})", json_quote(*s.vendor_session_id));
+    out += std::format(R"(,"vendor_session_id":{})", json_string(*s.vendor_session_id));
   }
   if (s.task_id.has_value()) {
     out += std::format(R"(,"task_id":{})", *s.task_id);
   }
-  out += "}";
+  out += "}\n";
   return out;
 }
 
@@ -242,25 +205,25 @@ auto render_session_text(const session::session& s) -> std::string {
   if (s.task_id.has_value()) {
     out += std::format(", task: {}", *s.task_id);
   }
-  out += ")";
+  out += ")\n";
   return out;
 }
 
 auto render_append_json(std::int64_t session_id) -> std::string {
-  return std::format(R"({{"ok":true,"session_id":{}}})", session_id);
+  return std::format("{{\"ok\":true,\"session_id\":{}}}\n", session_id);
 }
 
 auto render_append_text(std::string_view what, std::int64_t session_id) -> std::string {
-  return std::format("captured {} in session {}", what, session_id);
+  return std::format("captured {} in session {}\n", what, session_id);
 }
 
 auto render_snapshot_json(const snapshot::snapshot& snap) -> std::string {
   std::string out =
-      std::format(R"({{"ok":true,"id":{},"session_id":{},"vendor":{})", snap.id, snap.session_id, json_quote(snap.vendor));
+      std::format(R"({{"ok":true,"id":{},"session_id":{},"vendor":{})", snap.id, snap.session_id, json_string(snap.vendor));
   if (snap.task_id.has_value()) {
     out += std::format(R"(,"task_id":{})", *snap.task_id);
   }
-  out += "}";
+  out += "}\n";
   return out;
 }
 
@@ -269,16 +232,16 @@ auto render_snapshot_text(const snapshot::snapshot& snap) -> std::string {
   if (snap.task_id.has_value()) {
     out += std::format(", task: {}", *snap.task_id);
   }
-  out += ")";
+  out += ")\n";
   return out;
 }
 
 auto render_end_json(std::int64_t session_id) -> std::string {
-  return std::format(R"({{"ok":true,"id":{}}})", session_id);
+  return std::format("{{\"ok\":true,\"id\":{}}}\n", session_id);
 }
 
 auto render_end_text(std::int64_t session_id) -> std::string {
-  return std::format("session {} ended", session_id);
+  return std::format("session {} ended\n", session_id);
 }
 
 auto resolve_next_action(db::connection& conn, std::optional<std::string_view> explicit_next_action,

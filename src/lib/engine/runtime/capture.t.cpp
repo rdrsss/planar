@@ -242,20 +242,25 @@ TEST_CASE("a conflicting task rebind surfaces as task_conflict", "[capture]") {
 }
 
 TEST_CASE("capture session renderers match the oracle byte for byte", "[capture][parity]") {
+  // Every expectation carries its TRAILING NEWLINE: these renderers return
+  // the leaf's COMPLETE stdout payload, and handlers/capture/session.zig:47
+  // and :53 write `}\n` / `)\n` from the same call that writes the body.
+  // See engine/runtime/CMakeLists.txt for the contract.
   sess::session plain{.id = 1, .vendor = "cli"};
-  CHECK(cap::render_session_json(plain) == R"({"ok":true,"id":1,"vendor":"cli"})");
-  CHECK(cap::render_session_text(plain) == "session 1 opened (vendor: cli)");
+  CHECK(cap::render_session_json(plain) == "{\"ok\":true,\"id\":1,\"vendor\":\"cli\"}\n");
+  CHECK(cap::render_session_text(plain) == "session 1 opened (vendor: cli)\n");
 
   sess::session vendored{.id = 2, .vendor = "claude", .vendor_session_id = std::string{"abc"}};
   // The oracle emitted NO "model" key even though --model m1 was passed
   // and stored -- the envelope carries id/vendor/vendor_session_id/task_id
   // only.
-  CHECK(cap::render_session_json(vendored) == R"({"ok":true,"id":2,"vendor":"claude","vendor_session_id":"abc"})");
-  CHECK(cap::render_session_text(vendored) == "session 2 opened (vendor: claude, vsid: abc)");
+  CHECK(cap::render_session_json(vendored) == "{\"ok\":true,\"id\":2,\"vendor\":\"claude\",\"vendor_session_id\":\"abc\"}\n");
+  CHECK(cap::render_session_text(vendored) == "session 2 opened (vendor: claude, vsid: abc)\n");
 
   sess::session bound{.id = 3, .task_id = 42, .vendor = "cli", .vendor_session_id = std::string{"z"}};
-  CHECK(cap::render_session_json(bound) == R"({"ok":true,"id":3,"vendor":"cli","vendor_session_id":"z","task_id":42})");
-  CHECK(cap::render_session_text(bound) == "session 3 opened (vendor: cli, vsid: z, task: 42)");
+  CHECK(cap::render_session_json(bound) ==
+        "{\"ok\":true,\"id\":3,\"vendor\":\"cli\",\"vendor_session_id\":\"z\",\"task_id\":42}\n");
+  CHECK(cap::render_session_text(bound) == "session 3 opened (vendor: cli, vsid: z, task: 42)\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -298,10 +303,10 @@ TEST_CASE("compose_file_body appends a bracketed role", "[capture][parity]") {
 }
 
 TEST_CASE("the append envelopes match the oracle byte for byte", "[capture][parity]") {
-  CHECK(cap::render_append_json(1) == R"({"ok":true,"session_id":1})");
-  CHECK(cap::render_append_text("note", 1) == "captured note in session 1");
-  CHECK(cap::render_append_text("command", 7) == "captured command in session 7");
-  CHECK(cap::render_append_text("file", 7) == "captured file in session 7");
+  CHECK(cap::render_append_json(1) == "{\"ok\":true,\"session_id\":1}\n");
+  CHECK(cap::render_append_text("note", 1) == "captured note in session 1\n");
+  CHECK(cap::render_append_text("command", 7) == "captured command in session 7\n");
+  CHECK(cap::render_append_text("file", 7) == "captured file in session 7\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -425,8 +430,8 @@ TEST_CASE("closing a nonexistent session is not_found", "[capture]") {
 }
 
 TEST_CASE("the capture end envelopes match the oracle byte for byte", "[capture][parity]") {
-  CHECK(cap::render_end_json(1) == R"({"ok":true,"id":1})");
-  CHECK(cap::render_end_text(1) == "session 1 ended");
+  CHECK(cap::render_end_json(1) == "{\"ok\":true,\"id\":1}\n");
+  CHECK(cap::render_end_text(1) == "session 1 ended\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -567,10 +572,10 @@ TEST_CASE("resolve_next_action with no task and no flag is absent, not an error"
 
 TEST_CASE("the capture snapshot envelopes match the oracle byte for byte", "[capture][parity]") {
   snap::snapshot plain{.id = 1, .session_id = 1, .vendor = "cli"};
-  CHECK(cap::render_snapshot_json(plain) == R"({"ok":true,"id":1,"session_id":1,"vendor":"cli"})");
-  CHECK(cap::render_snapshot_text(plain) == "snapshot 1 created (vendor: cli)");
+  CHECK(cap::render_snapshot_json(plain) == "{\"ok\":true,\"id\":1,\"session_id\":1,\"vendor\":\"cli\"}\n");
+  CHECK(cap::render_snapshot_text(plain) == "snapshot 1 created (vendor: cli)\n");
 
   snap::snapshot bound{.id = 2, .session_id = 1, .task_id = 42, .vendor = "cli"};
-  CHECK(cap::render_snapshot_json(bound) == R"({"ok":true,"id":2,"session_id":1,"vendor":"cli","task_id":42})");
-  CHECK(cap::render_snapshot_text(bound) == "snapshot 2 created (vendor: cli, task: 42)");
+  CHECK(cap::render_snapshot_json(bound) == "{\"ok\":true,\"id\":2,\"session_id\":1,\"vendor\":\"cli\",\"task_id\":42}\n");
+  CHECK(cap::render_snapshot_text(bound) == "snapshot 2 created (vendor: cli, task: 42)\n");
 }

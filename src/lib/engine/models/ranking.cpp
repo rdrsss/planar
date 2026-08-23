@@ -10,6 +10,10 @@ import planar.engine.models.registry;
 
 namespace planar::engine::models::ranking {
 
+// Exported (see ranking.cppm). Defined ahead of the anonymous namespace so
+// the private helpers below can call it.
+auto less_than(const row& lhs, const row& rhs) -> bool;
+
 namespace {
 
 /// @brief Guarantee a non-null `data()` pointer for an empty view.
@@ -55,35 +59,6 @@ auto compare_optional(std::optional<double> lhs, std::optional<double> rhs) -> s
     return std::nullopt;
   }
   return *lhs < *rhs;
-}
-
-/// @brief Lexicographic ordering among rows that cleared both gates.
-///
-/// In the order the acceptance criteria fix:
-///   1. Wilson lower bound, DESCENDING — confidence-adjusted quality first.
-///   2. Expected excess iterations, ascending — fewer retries.
-///   3. Gate-failure rate, ascending.
-///   4. Latency, then cost, ascending — only when both rows carry them.
-///   5. Configured fallback order, ascending — a deterministic
-///      operator-chosen tiebreak, so equal evidence never yields an arbitrary
-///      ordering between runs.
-auto less_than(const row& lhs, const row& rhs) -> bool {
-  if (lhs.wilson_lower != rhs.wilson_lower) {
-    return lhs.wilson_lower > rhs.wilson_lower;
-  }
-  if (lhs.expected_excess_iterations != rhs.expected_excess_iterations) {
-    return lhs.expected_excess_iterations < rhs.expected_excess_iterations;
-  }
-  if (lhs.gate_failure_rate != rhs.gate_failure_rate) {
-    return lhs.gate_failure_rate < rhs.gate_failure_rate;
-  }
-  if (const auto latency = compare_optional(lhs.mean_latency_ms, rhs.mean_latency_ms)) {
-    return *latency;
-  }
-  if (const auto cost = compare_optional(lhs.mean_cost_micros, rhs.mean_cost_micros)) {
-    return *cost;
-  }
-  return lhs.fallback_order < rhs.fallback_order;
 }
 
 /// @brief Eligible rows first (ranked among themselves), then gated-out rows
@@ -151,6 +126,29 @@ auto non_negative(std::int64_t value) -> std::uint64_t {
 }
 
 } // namespace
+
+// Exported. The key order, the descending primary, and the abstention rule for
+// keys 4a/4b are documented on the declaration in ranking.cppm; ranking.t.cpp
+// pins every one of the five keys against THIS function rather than a local
+// copy of its rules (task 6114, review finding F4).
+auto less_than(const row& lhs, const row& rhs) -> bool {
+  if (lhs.wilson_lower != rhs.wilson_lower) {
+    return lhs.wilson_lower > rhs.wilson_lower;
+  }
+  if (lhs.expected_excess_iterations != rhs.expected_excess_iterations) {
+    return lhs.expected_excess_iterations < rhs.expected_excess_iterations;
+  }
+  if (lhs.gate_failure_rate != rhs.gate_failure_rate) {
+    return lhs.gate_failure_rate < rhs.gate_failure_rate;
+  }
+  if (const auto latency = compare_optional(lhs.mean_latency_ms, rhs.mean_latency_ms)) {
+    return *latency;
+  }
+  if (const auto cost = compare_optional(lhs.mean_cost_micros, rhs.mean_cost_micros)) {
+    return *cost;
+  }
+  return lhs.fallback_order < rhs.fallback_order;
+}
 
 auto work_type_from_text(std::string_view text) -> std::optional<work_type> {
   if (text == "schema") {

@@ -677,6 +677,46 @@ TEST_CASE("the annotation transition arm matches the retention-tier matrix", "[a
   CHECK(unknown.error() == transition_error::unknown_status);
 }
 
+TEST_CASE("force does NOT bypass the annotation matrix", "[annotation][transitions]") {
+  // transitions.cppm:74 asserts this in prose ("`force` has no effect on this
+  // arm -- the annotate verbs expose no `--force`") and transitions.cpp
+  // implements it by scoping the bypass to `kind == transition_kind::task`.
+  // Nothing pinned it: every other annotation caller passes force=false, so
+  // relaxing that guard to a bare `if (force)` broke no test (review finding
+  // F5). It is pinned BEFORE layer 3 exists, because the day a `cmd_*` handler
+  // does thread a `--force` through, the regression is silent -- `archived`,
+  // the SOLE final state of the retention-tier model, quietly reopens.
+  const auto forced = [](std::string_view from, std::string_view to) {
+    return check_transition(transition_kind::annotation, from, to, true).has_value();
+  };
+
+  // Every edge the matrix REFUSES stays refused under force=true.
+  CHECK_FALSE(forced("resolved", "active"));
+  CHECK_FALSE(forced("resolved", "dismissed"));
+  CHECK_FALSE(forced("dismissed", "active"));
+  CHECK_FALSE(forced("dismissed", "resolved"));
+  CHECK_FALSE(forced("archived", "active"));
+  CHECK_FALSE(forced("archived", "resolved"));
+  CHECK_FALSE(forced("archived", "dismissed"));
+
+  // And the error is still a REFUSAL, not a masked unknown_status.
+  auto refused = check_transition(transition_kind::annotation, "archived", "active", true);
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error() == transition_error::illegal_transition);
+
+  // force=true does not break the legal edges either -- it is inert, not
+  // inverted. (Identity short-circuits ahead of the kind check, so it is
+  // unaffected by definition and is not re-asserted here.)
+  CHECK(forced("active", "resolved"));
+  CHECK(forced("resolved", "archived"));
+
+  // The contrast that makes the scoping visible: on the TASK arm the very
+  // same flag DOES bypass, so this is a per-kind rule rather than force being
+  // a no-op everywhere.
+  CHECK_FALSE(check_transition(transition_kind::task, "done", "todo", false).has_value());
+  CHECK(check_transition(transition_kind::task, "done", "todo", true).has_value());
+}
+
 TEST_CASE("is_terminal covers the three outcome states, not just archived", "[annotation]") {
   CHECK_FALSE(ann::is_terminal(ann::status::active));
   CHECK(ann::is_terminal(ann::status::resolved));
@@ -1225,17 +1265,52 @@ TEST_CASE("the tag and remove envelopes match the oracle byte for byte", "[annot
   CHECK(ann::render_remove_text(1) == "annotation 1 removed");
 }
 
-TEST_CASE("render_json escapes JSON metacharacters in operator-supplied text", "[annotation]") {
-  ann::annotation quoted{
+TEST_CASE("render_json escapes the WHOLE control-byte table, not just the metacharacters", "[annotation]") {
+  // `anchor.text` holds EXTRACTED SOURCE and `body` holds operator free text,
+  // so every byte below 0x20 is genuinely reachable here -- 0x0C in particular
+  // is a real character in source files that use form feeds as page breaks.
+  //
+  // ORACLE PROVENANCE. Captured from the live Zig binary against a scratch DB,
+  // driven from python3 because the shell mangles 0x08/0x0C:
+  //
+  //   env PLANAR_DB=/tmp/fix.db PLANAR_CONFIG_PATH=/tmp/fix.toml planar \
+  //     annotate add --anchor-path a.zig --line-start 1 --line-end 2 \
+  //     --commit-sha deadbeef --text-hash h --text <PROBE> --body <PROBE> --json
+  //
+  // where <PROBE> is bytes 0x01..0x1F followed by ` "\/ ` and 0x7F. The oracle
+  // answered with exactly the expectation below: SHORT forms for 0x08, 0x09,
+  // 0x0A, 0x0C and 0x0D; LOWERCASE `\u00xx` for every other C0 byte; a BARE
+  // `/`; and 0x7F passed through RAW. (0x00 is excluded -- argv cannot carry
+  // it, so it is not oracle-observable through this leaf.)
+  //
+  // The previous version of this test exercised only quote, backslash and
+  // newline under the same name. That is exactly how three local escapers in
+  // this tree dropped the `\b` / `\f` short forms for the whole of M4
+  // without a single test noticing.
+  constexpr std::string_view probe{"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17"
+                                   "\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\"\\/\x20\x7f"};
+  constexpr std::string_view escaped{
+      R"(\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f \"\\/ )"};
+
+  ann::annotation hostile{
       .id         = 1,
-      .anchor     = ann::anchor_fields{.path = R"(a"b\c)"},
-      .body       = "line1\nline2",
+      .anchor     = ann::anchor_fields{.path = R"(a"b\c)", .text = std::string{probe}},
+      .body       = std::string{probe},
       .created_at = "C",
       .updated_at = "U",
   };
-  const auto out = ann::render_json(quoted);
+  const auto out = ann::render_json(hostile);
+
+  // The two metacharacters the old test covered, kept.
   CHECK(out.find(R"("path":"a\"b\\c")") != std::string::npos);
-  CHECK(out.find(R"("body":"line1\nline2")") != std::string::npos);
+  // `text` and `body` are SEPARATE call sites inside render_json; either
+  // could regress alone, so both are pinned against the same table.
+  CHECK(out.find(std::format(R"("text":"{}")", escaped)) != std::string::npos);
+  CHECK(out.find(std::format(R"("body":"{}")", escaped)) != std::string::npos);
+  // And nothing below 0x20 survived RAW anywhere in the envelope.
+  for (unsigned char c = 0x01; c < 0x20; ++c) {
+    CHECK(out.find(static_cast<char>(c)) == std::string::npos);
+  }
 }
 
 TEST_CASE("status and scope_kind text round-trip", "[annotation]") {

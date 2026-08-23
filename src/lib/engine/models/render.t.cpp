@@ -184,11 +184,33 @@ TEST_CASE("models.render: registry list text matches the oracle byte for byte", 
 TEST_CASE("models.render: registry export adds a stderr warning, not a stdout one", "[models]") {
   const auto candidates = fixture_candidates();
   // `export` emits the SAME stdout envelope as `list --json` -- captured
-  // identical. The only difference is the stderr line, which keeps stdout
-  // parseable for a pipeline that omitted --json.
-  REQUIRE(rd::registry_json(candidates) == rd::registry_json(candidates));
-  REQUIRE(rd::registry_export_stderr_warning() == "warning: legacy catalog compatibility is one-window and non-authoritative\n");
-  REQUIRE(rd::registry_export_stderr_warning().find("{") == std::string::npos);
+  // identical -- which is why ONE function, registry_json, serves both leaves
+  // and they cannot drift. There is no second renderer to compare it against,
+  // so this test previously asserted `registry_json(x) == registry_json(x)`:
+  // literally X == X, which holds for any implementation whatsoever (review
+  // finding F7).
+  //
+  // What IS checkable, and what actually regresses, is the relationship
+  // between the two channels: the same `migration_warning` text must appear
+  // in the stdout envelope AND in the stderr line, and the stderr line must
+  // stay JSON-free so a pipeline that forgot --json still gets parseable
+  // stdout.
+  const auto json    = rd::registry_json(candidates);
+  const auto warning = rd::registry_export_stderr_warning();
+
+  REQUIRE(warning == std::format("warning: {}\n", rd::migration_warning));
+  REQUIRE(json.find(std::format(R"("migration_warning":"{}")", rd::migration_warning)) != std::string::npos);
+  // Byte-pinned as well as related, so redefining `migration_warning` cannot
+  // keep both sides "consistent" while silently changing the operator-visible
+  // text.
+  REQUIRE(warning == "warning: legacy catalog compatibility is one-window and non-authoritative\n");
+
+  // stdout is JSON; stderr is emphatically not.
+  REQUIRE(warning.find("{") == std::string::npos);
+  REQUIRE(json.starts_with("{"));
+  // And the warning goes to stderr ONLY -- no `warning: ` prefix leaks into
+  // the parseable stream.
+  REQUIRE(json.find("warning: ") == std::string::npos);
 }
 
 TEST_CASE("models.render: add and observe print a bare id line", "[models]") {
@@ -222,6 +244,28 @@ TEST_CASE("models.render: eligibility JSON matches the oracle byte for byte", "[
 }
 
 TEST_CASE("models.render: verify-identity JSON matches the oracle byte for byte", "[models]") {
+  // Three of the four outcomes below ARE oracle captures from
+  // `models registry verify-identity`. The fourth is not, and the file used to
+  // present all four as though they were (review finding F9). Re-probed
+  // against the live binary:
+  //
+  //   --actual-vendor and --actual-id are BOTH `required` in the schema, and
+  //   passing them EMPTY yields vendor_mismatch, not missing_actual_identity:
+  //
+  //     $Z models registry verify-identity --candidate 1 \
+  //         --actual-vendor "" --actual-id ""
+  //     -> exit 0, {"candidate":1,"identity":"vendor_mismatch"}
+  //
+  //   `missing_actual_identity` needs a NULL on one side, which this leaf
+  //   cannot produce. It is reachable only through the routing-store path
+  //   (zig/src/engine/routing/store.zig:590), where the columns are nullable.
+  //
+  // The pin stays: verify_identity_json is a pure function over the enum, the
+  // envelope shape is the SAME for every arm, and the enum spelling is pinned
+  // independently in registry.t.cpp. What is corrected is the claim about
+  // where the bytes came from -- on a project whose method is that
+  // expectations come from RUNNING the oracle, a false provenance note is what
+  // makes the next reader stop checking.
   REQUIRE(rd::verify_identity_json(1, reg::identity_verification::matched) == "{\"candidate\":1,\"identity\":\"matched\"}\n");
   REQUIRE(rd::verify_identity_json(1, reg::identity_verification::candidate_mismatch) ==
           "{\"candidate\":1,\"identity\":\"candidate_mismatch\"}\n");
@@ -502,40 +546,52 @@ TEST_CASE("models.render: outcomes text always names an exclusion's reason", "[m
   REQUIRE(rd::outcomes_text({}) == "no recorded terminal outcomes\n");
 }
 
-TEST_CASE("models.render: JSON string escaping matches std.json byte for byte", "[models]") {
-  // Candidate identifiers, vendors, roles and host ids are all OPAQUE
-  // operator-supplied data stored verbatim, so the escaping table is reachable
-  // from real input rather than theoretical.
-  auto quoted = [](std::string_view raw) {
-    std::string out;
-    rd::append_json_string(out, raw);
-    return out;
+TEST_CASE("models.render: the registry envelope routes opaque fields through the shared escape table", "[models]") {
+  // The escape TABLE itself is pinned once, in json_text.t.cpp. What this
+  // bucket owes is proof that the envelope actually routes its opaque
+  // operator-supplied fields through it rather than interpolating them raw --
+  // candidate ids, vendors, roles, host ids and evidence refs are all stored
+  // verbatim, so a raw `{}` on any one of them emits invalid JSON.
+  //
+  // Every metacharacter below is placed in a DIFFERENT field, so a single
+  // unescaped interpolation is named by the assertion that fails rather than
+  // masked by a neighbour.
+  reg::candidate hostile{
+      .registration_      = {.id                   = 1,
+                             .vendor               = "ven\"dor",
+                             .candidate_id         = std::string{"cand\bid\f!", 9},
+                             .enabled              = true,
+                             .fallback_order       = 1,
+                             .registration_version = 1,
+                             .compatibility_source = "back\\slash"},
+      .bindings           = {reg::binding{.candidate_id = 1, .role = "ro\nle", .tier_ = reg::tier::medium}},
+      .latest_observation = reg::host_observation{.id                  = 1,
+                                                  .candidate_id        = 1,
+                                                  .host_id             = std::string{"ho\x01st", 5},
+                                                  .observation_version = 1,
+                                                  .availability_       = reg::availability::available,
+                                                  .spawn_verification_ = reg::spawn_verification::verified,
+                                                  .evidence_ref        = "ev/1\tref",
+                                                  .captured_at         = "2026-08-01T00:00:00Z",
+                                                  .expires_at          = "2026-09-01T00:00:00Z"},
   };
+  const std::array<reg::candidate, 1> one{hostile};
+  const auto                          json = rd::registry_json(one);
 
-  REQUIRE(quoted("plain") == "\"plain\"");
-  REQUIRE(quoted("a\"b") == "\"a\\\"b\"");
-  REQUIRE(quoted("a\\b") == "\"a\\\\b\"");
-  REQUIRE(quoted("a\nb") == "\"a\\nb\"");
-  REQUIRE(quoted("a\rb") == "\"a\\rb\"");
-  REQUIRE(quoted("a\tb") == "\"a\\tb\"");
-  REQUIRE(quoted(std::string_view{"a\bb", 3}) == "\"a\\bb\"");
-  REQUIRE(quoted(std::string_view{"a\fb", 3}) == "\"a\\fb\"");
-
-  // `/` is NOT escaped, and non-ASCII passes through as raw UTF-8. Escaping
-  // either would still be valid JSON and still be a parity break.
-  REQUIRE(quoted("c/r") == "\"c/r\"");
-  REQUIRE(quoted("h\u20acu\u0308") == "\"h\u20acu\u0308\"");
-
-  // Remaining C0 bytes become LOWERCASE \u00xx. Deliberately chosen to
-  // include bytes whose hex spelling CONTAINS a letter (0x0b -> `\u000b`,
-  // 0x1f -> `\u001f`), because 0x01 alone would pass under an uppercase
-  // implementation too -- `\u0001` has no letter to get wrong.
-  REQUIRE(quoted(std::string_view{"\x01", 1}) == "\"\\u0001\"");
-  REQUIRE(quoted(std::string_view{"\x0b", 1}) == "\"\\u000b\"");
-  REQUIRE(quoted(std::string_view{"\x0e", 1}) == "\"\\u000e\"");
-  REQUIRE(quoted(std::string_view{"\x1f", 1}) == "\"\\u001f\"");
-  // 0x7f (DEL) is NOT a C0 byte and is NOT escaped.
-  REQUIRE(quoted(std::string_view{"\x7f", 1}) == "\"\x7f\"");
+  REQUIRE(json.find(R"("vendor":"ven\"dor")") != std::string::npos);
+  // \b and \f are the SHORT forms, not `\u0008` / `\u000c`. Oracle-verified:
+  // `annotate add --body <0x08><0x0c> --json` emits `\b` and `\f`.
+  REQUIRE(json.find(R"("candidate_id":"cand\bid\f!")") != std::string::npos);
+  REQUIRE(json.find(R"("compatibility_source":"back\\slash")") != std::string::npos);
+  REQUIRE(json.find(R"("role":"ro\nle")") != std::string::npos);
+  // A C0 byte with no short form takes LOWERCASE `\u00xx`.
+  REQUIRE(json.find(R"("host_id":"ho\u0001st")") != std::string::npos);
+  // `/` stays bare; the tab becomes `\t`.
+  REQUIRE(json.find(R"("evidence_ref":"ev/1\tref")") != std::string::npos);
+  // No raw control byte survived anywhere in the envelope.
+  REQUIRE(json.find('\x08') == std::string::npos);
+  REQUIRE(json.find('\x0c') == std::string::npos);
+  REQUIRE(json.find('\x01') == std::string::npos);
 }
 
 TEST_CASE("models.render: an opaque identifier survives into the rendered envelope", "[models]") {

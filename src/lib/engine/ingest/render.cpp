@@ -8,10 +8,14 @@
 module planar.engine.ingest.render;
 
 import std;
+import planar.json_text;
 import planar.engine.ingest.diff;
 import planar.engine.ingest.coverage;
 
 namespace planar::engine::ingest::render {
+
+// The one shared escape table, layer 1. See json_text.cppm.
+using json_text::append_json_string;
 namespace {
 
 constexpr std::size_t display_width = 36;
@@ -50,52 +54,6 @@ constexpr std::size_t display_width = 36;
     out.append(width - out.size(), ' ');
   }
   return out;
-}
-
-/// @brief Appends `s` to `out` as a quoted JSON string.
-///
-/// Escaping matches Zig's `std.json.Stringify.encodeJsonString` with default
-/// options: the two mandatory escapes, the five short forms, `\u00XX` for the
-/// remaining C0 control bytes, and — deliberately — NO escaping of `/` or of
-/// non-ASCII bytes, which pass through as raw UTF-8. Escaping either of those
-/// would still be valid JSON but would not be byte-identical, which is what
-/// the parity gate compares.
-auto append_json_string(std::string& out, std::string_view s) -> void {
-  out.push_back('"');
-  for (const char raw : s) {
-    const auto c = static_cast<unsigned char>(raw);
-    switch (c) {
-    case '\\':
-      out.append("\\\\");
-      break;
-    case '"':
-      out.append("\\\"");
-      break;
-    case 0x08:
-      out.append("\\b");
-      break;
-    case 0x0C:
-      out.append("\\f");
-      break;
-    case '\n':
-      out.append("\\n");
-      break;
-    case '\r':
-      out.append("\\r");
-      break;
-    case '\t':
-      out.append("\\t");
-      break;
-    default:
-      if (c <= 0x1F) {
-        out.append(std::format("\\u{:04x}", static_cast<unsigned>(c)));
-      } else {
-        out.push_back(raw);
-      }
-      break;
-    }
-  }
-  out.push_back('"');
 }
 
 /// @brief Appends one entity object to the JSON `entities` array.

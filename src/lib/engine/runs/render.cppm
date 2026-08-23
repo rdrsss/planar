@@ -153,7 +153,8 @@ export auto render_duplicate_seq(std::int64_t seq, std::string_view run_uid) -> 
 /// @param run_ The run header.
 /// @param events The journal rows, already in seq order.
 /// @param touches The touch rows, already in id order.
-/// @return The single-line JSON object, WITHOUT a trailing newline.
+/// @return The complete stdout payload: the single-line JSON object WITH
+/// its trailing newline, exactly as the oracle writes it.
 export auto render_bench_show_json(const lifecycle::run& run_, std::span<const lifecycle::event_row> events,
                                    std::span<const lifecycle::touch_row> touches) -> std::string;
 
@@ -177,7 +178,8 @@ export auto render_bench_show_text(const lifecycle::run& run_, std::span<const l
 /// events — no base_sha / config_hash / config_json / corpus_repo / touches.
 /// @param run_ The run header.
 /// @param events The journal rows, already in seq order.
-/// @return The single-line JSON object, WITHOUT a trailing newline.
+/// @return The complete stdout payload: the single-line JSON object WITH
+/// its trailing newline, exactly as the oracle writes it.
 export auto render_run_show_json(const lifecycle::run& run_, std::span<const lifecycle::event_row> events) -> std::string;
 
 /// @brief Render `run show`'s text form. Labels padded to width 12.
@@ -190,14 +192,14 @@ export auto render_run_show_text(const lifecycle::run& run_, std::span<const lif
 ///
 /// NOT JSON, and there is no `--json` flag on this leaf at all.
 /// @param run_uid The minted uid.
-/// @return The uid, WITHOUT a trailing newline.
+/// @return The complete stdout payload: the uid WITH its trailing newline.
 export auto render_bench_start(std::string_view run_uid) -> std::string;
 
 /// @brief Render the bare `ok` acknowledgement `bench event` / `bench touch`
 /// / `bench finish` print on success.
 ///
 /// All three leaves print exactly this and none of them accepts `--json`.
-/// @return The literal `ok`.
+/// @return The complete stdout payload: the literal `ok` plus a newline.
 export auto render_bench_ok() -> std::string;
 
 /// @brief Render `run start`'s output.
@@ -208,20 +210,23 @@ export auto render_bench_ok() -> std::string;
 /// @param run_uid The minted uid.
 /// @param plan_id The owning plan.
 /// @param arm The arm (`"op"`, or the `--workflow` value).
-/// @return The single-line JSON object, WITHOUT a trailing newline.
+/// @return The complete stdout payload: the single-line JSON object WITH
+/// its trailing newline, exactly as the oracle writes it.
 export auto render_run_start_json(std::string_view run_uid, std::int64_t plan_id, std::string_view arm) -> std::string;
 
 /// @brief Render `run event`'s output. Also emitted unconditionally.
 /// @param run_uid The run's uid, echoed from the argument (not re-read).
 /// @param seq The auto-incremented seq that was used.
 /// @param kind The event kind.
-/// @return The single-line JSON object, WITHOUT a trailing newline.
+/// @return The complete stdout payload: the single-line JSON object WITH
+/// its trailing newline, exactly as the oracle writes it.
 export auto render_run_event_json(std::string_view run_uid, std::int64_t seq, std::string_view kind) -> std::string;
 
 /// @brief Render `run finish`'s output. Also emitted unconditionally.
 /// @param run_uid The run's uid, echoed from the argument.
 /// @param status The terminal status that was set.
-/// @return The single-line JSON object, WITHOUT a trailing newline.
+/// @return The complete stdout payload: the single-line JSON object WITH
+/// its trailing newline, exactly as the oracle writes it.
 export auto render_run_finish_json(std::string_view run_uid, std::string_view status) -> std::string;
 
 } // namespace planar::engine::runs::render

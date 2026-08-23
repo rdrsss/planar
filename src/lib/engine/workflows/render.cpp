@@ -5,62 +5,15 @@
 module planar.engine.workflows.render;
 
 import std;
+import planar.json_text;
 import planar.engine.workflows.catalog;
 
 namespace planar::engine::workflows::render {
 
-namespace {
+// The one shared escape table, layer 1. See json_text.cppm.
+using json_text::append_json_string;
 
-/// @brief Append `text` to `out` as a quoted JSON string.
-///
-/// Same escaping table as engine/models/render.cpp's: the two mandatory
-/// escapes, the five short forms, LOWERCASE `\u00xx` for the remaining C0
-/// bytes, and no escaping of `/` or of non-ASCII. Duplicated rather than
-/// shared because the two buckets are layer-2 peers and a sideways
-/// `engine_*` -> `engine_*` dependency is forbidden (D15/D18); extracting it
-/// to layer 1 under D19 would be the alternative, and is worth doing once a
-/// THIRD bucket needs it rather than on the second.
-///
-/// This matters here specifically because a workflow's `path` and
-/// `description` are arbitrary operator-authored strings: a Windows-style
-/// path would carry backslashes, and a description can hold quotes.
-auto append_json_string(std::string& out, std::string_view text) -> void {
-  out.push_back('"');
-  for (const char raw : text) {
-    const auto c = static_cast<unsigned char>(raw);
-    switch (c) {
-    case '\\':
-      out.append("\\\\");
-      break;
-    case '"':
-      out.append("\\\"");
-      break;
-    case 0x08:
-      out.append("\\b");
-      break;
-    case 0x0C:
-      out.append("\\f");
-      break;
-    case '\n':
-      out.append("\\n");
-      break;
-    case '\r':
-      out.append("\\r");
-      break;
-    case '\t':
-      out.append("\\t");
-      break;
-    default:
-      if (c < 0x20) {
-        out.append(std::format("\\u{:04x}", static_cast<unsigned>(c)));
-      } else {
-        out.push_back(raw);
-      }
-      break;
-    }
-  }
-  out.push_back('"');
-}
+namespace {
 
 auto append_field(std::string& out, std::string_view key, std::string_view value) -> void {
   append_json_string(out, key);

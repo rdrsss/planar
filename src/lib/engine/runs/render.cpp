@@ -9,68 +9,15 @@ module;
 module planar.engine.runs.render;
 
 import std;
+import planar.json_text;
 import planar.engine.runs.lifecycle;
 
 namespace planar::engine::runs::render {
 
-namespace {
+// The one shared escape table, layer 1. See json_text.cppm.
+using json_text::append_json_string;
 
-/// @brief Append `s` to `out` as a quoted JSON string.
-///
-/// Escaping matches zig's `output.writeJsonString`, which is a thin wrapper
-/// over `std.json.Stringify.encodeJsonString` with default options: the two
-/// mandatory escapes, the five short forms, LOWERCASE `\u00xx` for the
-/// remaining C0 control bytes, and deliberately NO escaping of `/` or of
-/// non-ASCII bytes. Confirmed against the oracle rather than assumed:
-///
-///   $Z bench start 'q"uid\back' --arm 'a"rm<TAB>tab' --base-sha $'sha\nnl' \
-///      --config-hash 'h€ü' --corpus-repo 'c/r' ...
-///   $Z bench event 'q"uid\back' --kind $'k\x01ctl' --seq 1
-///   $Z bench show 'q"uid\back' --json
-///     -> "run_uid":"q\"uid\\back","arm":"a\"rm\ttab","base_sha":"sha\nnl",
-///        "config_hash":"h€ü","corpus_repo":"c/r", ... "kind":"k\u0001ctl"
-///
-/// Note `h€ü` passed through as raw UTF-8, `c/r` kept its bare slash, and the
-/// 0x01 byte became lowercase-hex `\u0001`. Escaping `/` or upper-casing the
-/// hex would still be valid JSON but would not be byte-identical, which is
-/// what parity compares.
-auto append_json_string(std::string& out, std::string_view s) -> void {
-  out.push_back('"');
-  for (const char raw : s) {
-    const auto c = static_cast<unsigned char>(raw);
-    switch (c) {
-    case '\\':
-      out.append("\\\\");
-      break;
-    case '"':
-      out.append("\\\"");
-      break;
-    case 0x08:
-      out.append("\\b");
-      break;
-    case 0x0C:
-      out.append("\\f");
-      break;
-    case '\n':
-      out.append("\\n");
-      break;
-    case '\r':
-      out.append("\\r");
-      break;
-    case '\t':
-      out.append("\\t");
-      break;
-    default:
-      if (c <= 0x1F) {
-        out.append(std::format("\\u{:04x}", static_cast<unsigned>(c)));
-      } else {
-        out.push_back(raw);
-      }
-      break;
-    }
-  }
-  out.push_back('"');
-}
+namespace {
 
 /// @brief Append a stored raw-JSON blob verbatim, or the literal `null`.
 ///
@@ -217,7 +164,7 @@ auto render_bench_show_json(const lifecycle::run& run_, std::span<const lifecycl
   }
   out.push_back(']');
 
-  out.push_back('}');
+  out.append("}\n");
   return out;
 }
 
@@ -264,7 +211,7 @@ auto render_run_show_json(const lifecycle::run& run_, std::span<const lifecycle:
 
   append_events_array(out, events);
 
-  out.push_back('}');
+  out.append("}\n");
   return out;
 }
 
@@ -285,11 +232,11 @@ auto render_run_show_text(const lifecycle::run& run_, std::span<const lifecycle:
 }
 
 auto render_bench_start(std::string_view run_uid) -> std::string {
-  return std::string{run_uid};
+  return std::format("{}\n", run_uid);
 }
 
 auto render_bench_ok() -> std::string {
-  return "ok";
+  return "ok\n";
 }
 
 auto render_run_start_json(std::string_view run_uid, std::int64_t plan_id, std::string_view arm) -> std::string {
@@ -297,7 +244,7 @@ auto render_run_start_json(std::string_view run_uid, std::int64_t plan_id, std::
   append_json_string(out, run_uid);
   out.append(std::format(",\"plan_id\":{},\"arm\":", plan_id));
   append_json_string(out, arm);
-  out.push_back('}');
+  out.append("}\n");
   return out;
 }
 
@@ -306,7 +253,7 @@ auto render_run_event_json(std::string_view run_uid, std::int64_t seq, std::stri
   append_json_string(out, run_uid);
   out.append(std::format(",\"seq\":{},\"kind\":", seq));
   append_json_string(out, kind);
-  out.push_back('}');
+  out.append("}\n");
   return out;
 }
 
@@ -315,7 +262,7 @@ auto render_run_finish_json(std::string_view run_uid, std::string_view status) -
   append_json_string(out, run_uid);
   out.append(",\"status\":");
   append_json_string(out, status);
-  out.push_back('}');
+  out.append("}\n");
   return out;
 }
 

@@ -80,7 +80,8 @@ constexpr std::string_view k_bench_show_full_json =
     R"({"id":2,"seq":2,"kind":"result","payload":{"a":1},"created_at":"2020-01-01T00:00:02.000Z"},)"
     R"({"id":3,"seq":9,"kind":"after","payload":null,"created_at":"2020-01-01T00:00:03.000Z"}],"touches":[)"
     R"({"id":1,"task_id":1,"path":"src/a.zig","kind":"declared","created_at":"2020-01-01T00:00:04.000Z"},)"
-    R"({"id":2,"task_id":2,"path":"src/b.zig","kind":"actual","created_at":"2020-01-01T00:00:05.000Z"}]})";
+    R"({"id":2,"task_id":2,"path":"src/b.zig","kind":"actual","created_at":"2020-01-01T00:00:05.000Z"}]})"
+    "\n";
 
 // Note the two blank lines before each section header, and that `config_json`
 // has NO text row at all even when set.
@@ -109,7 +110,8 @@ constexpr std::string_view k_run_show_full_json =
     R"("started_at":"2020-01-01T00:00:00.000Z","ended_at":"2020-01-02T00:00:00.000Z","events":[)"
     R"({"id":1,"seq":1,"kind":"dispatch","payload":null,"created_at":"2020-01-01T00:00:01.000Z"},)"
     R"({"id":2,"seq":2,"kind":"result","payload":{"a":1},"created_at":"2020-01-01T00:00:02.000Z"},)"
-    R"({"id":3,"seq":9,"kind":"after","payload":null,"created_at":"2020-01-01T00:00:03.000Z"}]})";
+    R"({"id":3,"seq":9,"kind":"after","payload":null,"created_at":"2020-01-01T00:00:03.000Z"}]})"
+    "\n";
 
 constexpr std::string_view k_run_show_full_text = "run:        full-uid\n"
                                                   "plan_id:    1\n"
@@ -127,7 +129,8 @@ constexpr std::string_view k_run_show_full_text = "run:        full-uid\n"
 constexpr std::string_view k_bench_show_min_json =
     R"({"id":2,"run_uid":"min-uid","plan_id":1,"arm":"op","base_sha":"","config_hash":"",)"
     R"("config_json":null,"corpus_repo":null,"status":"running",)"
-    R"("started_at":"2020-01-03T00:00:00.000Z","ended_at":null,"events":[],"touches":[]})";
+    R"("started_at":"2020-01-03T00:00:00.000Z","ended_at":null,"events":[],"touches":[]})"
+    "\n";
 
 // The empty base_sha / config_hash rows keep their label padding, so both
 // lines end in trailing whitespace. That is the oracle's byte sequence:
@@ -145,7 +148,8 @@ constexpr std::string_view k_bench_show_min_text = "run:         min-uid\n"
                                                    "touches (0):\n";
 
 constexpr std::string_view k_run_show_min_json = R"({"id":2,"run_uid":"min-uid","plan_id":1,"arm":"op","status":"running",)"
-                                                 R"("started_at":"2020-01-03T00:00:00.000Z","ended_at":null,"events":[]})";
+                                                 R"("started_at":"2020-01-03T00:00:00.000Z","ended_at":null,"events":[]})"
+                                                 "\n";
 
 constexpr std::string_view k_run_show_min_text = "run:        min-uid\n"
                                                  "plan_id:    1\n"
@@ -411,17 +415,23 @@ TEST_CASE("runs.render: string escaping matches the oracle's captured bytes", "[
 TEST_CASE("runs.render: the write leaves' envelopes match the oracle", "[runs]") {
   // `run start` / `run event` / `run finish` emit JSON unconditionally -- the
   // `--json` flag exists but changes nothing (oracle-confirmed).
+  //
+  // Every expectation here carries its TRAILING NEWLINE, because each of these
+  // renderers returns the leaf's COMPLETE stdout payload: handlers/run/
+  // {start,event,finish}.zig each write `}\n` from the same call that writes
+  // the body, and handlers/bench/{start,event,touch,finish}.zig likewise write
+  // `{s}\n` / `ok\n`. See engine/runs/CMakeLists.txt for the contract.
   REQUIRE(rr::render_run_start_json("c5678087d1831bc7fe1e47a35d35f5f3", 1, "op") ==
-          R"({"run_uid":"c5678087d1831bc7fe1e47a35d35f5f3","plan_id":1,"arm":"op"})");
+          "{\"run_uid\":\"c5678087d1831bc7fe1e47a35d35f5f3\",\"plan_id\":1,\"arm\":\"op\"}\n");
   // --workflow overrides the arm, it does not add a field.
   REQUIRE(rr::render_run_start_json("1dab822ffd79ff9e6463728b3fb6dfbb", 1, "wf1") ==
-          R"({"run_uid":"1dab822ffd79ff9e6463728b3fb6dfbb","plan_id":1,"arm":"wf1"})");
-  REQUIRE(rr::render_run_event_json("u", 3, "step2") == R"({"run_uid":"u","seq":3,"kind":"step2"})");
-  REQUIRE(rr::render_run_finish_json("u", "completed") == R"({"run_uid":"u","status":"completed"})");
+          "{\"run_uid\":\"1dab822ffd79ff9e6463728b3fb6dfbb\",\"plan_id\":1,\"arm\":\"wf1\"}\n");
+  REQUIRE(rr::render_run_event_json("u", 3, "step2") == "{\"run_uid\":\"u\",\"seq\":3,\"kind\":\"step2\"}\n");
+  REQUIRE(rr::render_run_finish_json("u", "completed") == "{\"run_uid\":\"u\",\"status\":\"completed\"}\n");
 
   // The bench write leaves are NOT json and have no --json flag at all.
-  REQUIRE(rr::render_bench_start("r1") == "r1");
-  REQUIRE(rr::render_bench_ok() == "ok");
+  REQUIRE(rr::render_bench_start("r1") == "r1\n");
+  REQUIRE(rr::render_bench_ok() == "ok\n");
 }
 
 TEST_CASE("runs.render: arms warn but are not refused; statuses are refused", "[runs]") {

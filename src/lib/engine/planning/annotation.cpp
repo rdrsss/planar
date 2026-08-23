@@ -6,11 +6,16 @@
 module planar.engine.planning.annotation;
 
 import std;
+import planar.json_text;
 import planar.db;
 import planar.scope_ref;
 import planar.engine.planning.transitions;
 
 namespace planar::engine::planning::annotation {
+
+// The one shared escape table, layer 1. See json_text.cppm -- the local
+// copy this replaced was missing the \b and \f short forms.
+using json_text::json_string;
 
 namespace {
 
@@ -292,45 +297,12 @@ auto sha256_hex(std::string_view data) -> std::string {
 
 // --- JSON helpers ----------------------------------------------------------
 
-auto json_quote(std::string_view s) -> std::string {
-  std::string out;
-  out.reserve(s.size() + 2);
-  out.push_back('"');
-  for (const char c : s) {
-    switch (c) {
-    case '"':
-      out += "\\\"";
-      break;
-    case '\\':
-      out += "\\\\";
-      break;
-    case '\n':
-      out += "\\n";
-      break;
-    case '\r':
-      out += "\\r";
-      break;
-    case '\t':
-      out += "\\t";
-      break;
-    default:
-      if (static_cast<unsigned char>(c) < 0x20) {
-        out += std::format("\\u{:04x}", static_cast<unsigned>(static_cast<unsigned char>(c)));
-      } else {
-        out.push_back(c);
-      }
-    }
-  }
-  out.push_back('"');
-  return out;
-}
-
 auto json_optional_int(std::optional<std::int64_t> v) -> std::string {
   return v.has_value() ? std::format("{}", *v) : std::string{"null"};
 }
 
 auto json_optional_string(const std::optional<std::string>& v) -> std::string {
-  return v.has_value() ? json_quote(*v) : std::string{"null"};
+  return v.has_value() ? json_string(*v) : std::string{"null"};
 }
 
 } // namespace
@@ -902,7 +874,7 @@ auto bulk_apply(db::connection& conn, const list_filter& filter, bulk_action act
 }
 
 auto render_bulk_json(std::string_view verb_name, std::size_t count) -> std::string {
-  return std::format(R"({{"ok":true,"action":{},"count":{}}})", json_quote(verb_name), count);
+  return std::format(R"({{"ok":true,"action":{},"count":{}}})", json_string(verb_name), count);
 }
 
 auto render_bulk_text(std::string_view verb_name, std::size_t count) -> std::string {
@@ -1004,7 +976,7 @@ auto render_verify_json(const std::vector<verify_row>& rows) -> std::string {
     if (i > 0) {
       out += ",";
     }
-    out += std::format(R"({{"id":{},"anchor_path":{},"state":"{}"}})", rows[i].id, json_quote(rows[i].anchor_path),
+    out += std::format(R"({{"id":{},"anchor_path":{},"state":"{}"}})", rows[i].id, json_string(rows[i].anchor_path),
                        verify_state_to_text(rows[i].state));
   }
   out += "]}";
@@ -1030,20 +1002,20 @@ auto render_json(const annotation& a) -> std::string {
   std::string out;
   out += std::format(R"({{"id":{},"scope_kind":"{}","scope_id":{},)", a.id, scope_kind_to_text(a.scope_kind_),
                      json_optional_int(a.scope_id));
-  out += std::format(R"("anchor":{{"path":{},"line_start":{},"line_end":{},)", json_quote(a.anchor.path),
+  out += std::format(R"("anchor":{{"path":{},"line_start":{},"line_end":{},)", json_string(a.anchor.path),
                      json_optional_int(a.anchor.line_start), json_optional_int(a.anchor.line_end));
-  out += std::format(R"("commit_sha":{},"text_hash":{},"text":{}}},)", json_quote(a.anchor.commit_sha),
-                     json_quote(a.anchor.text_hash), json_quote(a.anchor.text));
+  out += std::format(R"("commit_sha":{},"text_hash":{},"text":{}}},)", json_string(a.anchor.commit_sha),
+                     json_string(a.anchor.text_hash), json_string(a.anchor.text));
   out += std::format(R"("title":{},"slug":{},"body":{},"status":"{}","vendor":{},)", json_optional_string(a.title),
-                     json_optional_string(a.slug), json_quote(a.body), status_to_text(a.status_), json_quote(a.vendor));
+                     json_optional_string(a.slug), json_string(a.body), status_to_text(a.status_), json_string(a.vendor));
   out += std::format(R"("plan_id":{},"task_id":{},"tags":[)", json_optional_int(a.plan_id), json_optional_int(a.task_id));
   for (std::size_t i = 0; i < a.tags.size(); ++i) {
     if (i > 0) {
       out += ",";
     }
-    out += json_quote(a.tags[i]);
+    out += json_string(a.tags[i]);
   }
-  out += std::format(R"(],"created_at":{},"updated_at":{}}})", json_quote(a.created_at), json_quote(a.updated_at));
+  out += std::format(R"(],"created_at":{},"updated_at":{}}})", json_string(a.created_at), json_string(a.updated_at));
   return out;
 }
 
@@ -1132,7 +1104,7 @@ auto render_list_text(const std::vector<annotation>& items) -> std::string {
 }
 
 auto render_tag_json(std::int64_t id, std::string_view tag, bool removing) -> std::string {
-  return std::format(R"({{"ok":true,"id":{},"tag":{},"action":"{}"}})", id, json_quote(tag), removing ? "remove" : "add");
+  return std::format(R"({{"ok":true,"id":{},"tag":{},"action":"{}"}})", id, json_string(tag), removing ? "remove" : "add");
 }
 
 auto render_tag_text(std::int64_t id, std::string_view tag, bool removing) -> std::string {

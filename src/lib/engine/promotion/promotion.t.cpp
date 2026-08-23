@@ -370,16 +370,21 @@ TEST_CASE("promote and demote consult NO cross-scope guard", "[promotion][hazard
 
 TEST_CASE("the --json envelope is byte-identical to the oracle's", "[promotion][parity]") {
   // Captured verbatim from `$Z promote plan:1 --to alpha --json` and
-  // `$Z demote plan:1 --json` (see this file's header).
+  // `$Z demote plan:1 --json` (see this file's header), INCLUDING the trailing
+  // newline: handlers/promote.zig:117 writes `}\n` from the same call that
+  // writes the body, and these renderers return the leaf's complete stdout
+  // payload. See engine/promotion/CMakeLists.txt for the contract.
   CHECK(render_scope_change_json("plan", 1, scope_info{.scope_kind = "association", .scope_id = 1},
                                  scope_info{.scope_kind = "global", .scope_id = std::nullopt}) ==
         R"({"ok":true,"kind":"plan","id":1,"scope_kind":"association","scope_id":1,)"
-        R"("previous_scope_kind":"global","previous_scope_id":null})");
+        R"("previous_scope_kind":"global","previous_scope_id":null})"
+        "\n");
 
   CHECK(render_scope_change_json("plan", 1, scope_info{.scope_kind = "global", .scope_id = std::nullopt},
                                  scope_info{.scope_kind = "association", .scope_id = 2}) ==
         R"({"ok":true,"kind":"plan","id":1,"scope_kind":"global","scope_id":null,)"
-        R"("previous_scope_kind":"association","previous_scope_id":2})");
+        R"("previous_scope_kind":"association","previous_scope_id":2})"
+        "\n");
 }
 
 TEST_CASE("the text success lines are byte-identical to the oracle's", "[promotion][parity]") {
@@ -387,17 +392,17 @@ TEST_CASE("the text success lines are byte-identical to the oracle's", "[promoti
   // `$Z demote plan:1`. Note the DOUBLE space before `(was:` in both --
   // a single space here would silently diverge from the oracle.
   CHECK(render_promote_text("plan", 1, "beta", scope_info{.scope_kind = "association", .scope_id = 1}) ==
-        "plan:1 promoted to association beta  (was: association:1)");
+        "plan:1 promoted to association beta  (was: association:1)\n");
   CHECK(render_demote_text("plan", 1, scope_info{.scope_kind = "association", .scope_id = 1}) ==
-        "plan:1 demoted to global  (was: association:1)");
+        "plan:1 demoted to global  (was: association:1)\n");
   // A global previous scope renders as the bare kind, with no `:id` tail.
   CHECK(render_promote_text("task", 42, "acme", scope_info{.scope_kind = "global", .scope_id = std::nullopt}) ==
-        "task:42 promoted to association acme  (was: global)");
+        "task:42 promoted to association acme  (was: global)\n");
 }
 
 TEST_CASE("the text output echoes the --to flag verbatim, not the resolved slug", "[promotion][parity]") {
   // The oracle prints `args.to`, so an `assoc:`-prefixed value survives
   // into the output unnormalised.
   CHECK(render_promote_text("plan", 1, "assoc:beta", scope_info{.scope_kind = "global", .scope_id = std::nullopt}) ==
-        "plan:1 promoted to association assoc:beta  (was: global)");
+        "plan:1 promoted to association assoc:beta  (was: global)\n");
 }

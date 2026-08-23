@@ -204,54 +204,55 @@ export auto compose_file_body(std::string_view path, std::optional<std::string_v
 
 /// @brief Render `capture session --json`. Oracle-captured:
 /// `{"ok":true,"id":1,"vendor":"cli"}`, growing `,"vendor_session_id":".."`
-/// and `,"task_id":N` only when those fields are set. The caller appends
-/// the trailing newline.
+/// and `,"task_id":N` only when those fields are set. The trailing newline
+/// the oracle writes (handlers/capture/session.zig:47) is INCLUDED; the
+/// caller appends nothing.
 /// @param s The opened session.
-/// @return The single-line JSON object.
+/// @return The complete stdout payload: the JSON object WITH its newline.
 export auto render_session_json(const session::session& s) -> std::string;
 
 /// @brief Render `capture session`'s text line. Oracle-captured:
 /// `session 1 opened (vendor: cli)`, growing `, vsid: X` / `, task: N`.
 /// @param s The opened session.
-/// @return The text line, with no trailing newline.
+/// @return The complete stdout payload: the text line WITH its newline.
 export auto render_session_text(const session::session& s) -> std::string;
 
 /// @brief Render the `--json` envelope `capture note|command|file` share.
 /// Oracle-captured: `{"ok":true,"session_id":1}`.
 /// @param session_id The session appended to.
-/// @return The single-line JSON object.
+/// @return The complete stdout payload: the JSON object WITH its newline.
 export auto render_append_json(std::int64_t session_id) -> std::string;
 
 /// @brief Render the text line `capture note|command|file` share.
 /// Oracle-captured: `captured note in session 1`.
 /// @param what The literal leaf noun: `"note"`, `"command"` or `"file"`.
 /// @param session_id The session appended to.
-/// @return The text line, with no trailing newline.
+/// @return The complete stdout payload: the text line WITH its newline.
 export auto render_append_text(std::string_view what, std::int64_t session_id) -> std::string;
 
 /// @brief Render `capture snapshot --json`. Oracle-captured:
 /// `{"ok":true,"id":1,"session_id":1,"vendor":"cli"}`, growing
 /// `,"task_id":N` only when the snapshot is task-bound.
 /// @param snap The stored snapshot.
-/// @return The single-line JSON object.
+/// @return The complete stdout payload: the JSON object WITH its newline.
 export auto render_snapshot_json(const snapshot::snapshot& snap) -> std::string;
 
 /// @brief Render `capture snapshot`'s text line. Oracle-captured:
 /// `snapshot 2 created (vendor: cli)`, growing `, task: N`.
 /// @param snap The stored snapshot.
-/// @return The text line, with no trailing newline.
+/// @return The complete stdout payload: the text line WITH its newline.
 export auto render_snapshot_text(const snapshot::snapshot& snap) -> std::string;
 
 /// @brief Render `capture end --json`. Oracle-captured:
 /// `{"ok":true,"id":1}`.
 /// @param session_id The session closed.
-/// @return The single-line JSON object.
+/// @return The complete stdout payload: the JSON object WITH its newline.
 export auto render_end_json(std::int64_t session_id) -> std::string;
 
 /// @brief Render `capture end`'s text line. Oracle-captured:
 /// `session 1 ended`.
 /// @param session_id The session closed.
-/// @return The text line, with no trailing newline.
+/// @return The complete stdout payload: the text line WITH its newline.
 export auto render_end_text(std::int64_t session_id) -> std::string;
 
 /// @brief Resolve `capture snapshot`'s `next_action` fallback: an explicit

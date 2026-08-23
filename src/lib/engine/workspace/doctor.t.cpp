@@ -570,13 +570,40 @@ TEST_CASE("workspace doctor writes to root_path, NOT to the current directory") 
   auto               conn = open_migrated(tree);
   add_org(conn, "acme", "Acme", std::format(R"({{"root_path":"{}"}})", tree.workspace_root().string()));
 
-  const auto      original = std::filesystem::current_path();
+  // The restore is a SCOPE GUARD, not a trailing statement. It used to be a
+  // bare `current_path(original, ec)` sitting after both the REQUIRE_FALSE(ec)
+  // below and the dr::run below it (review finding F10). Catch2's REQUIRE
+  // throws and dr::run can throw, so either failure skipped the restore
+  // entirely and ~scratch_tree then remove_all()'d the directory the PROCESS
+  // was sitting in, leaving the run with cwd on a deleted inode.
+  //
+  // MEASURED, because the review's stated consequence did not reproduce and
+  // this file is not the place to repeat that mistake: forcing a failure here
+  // (`REQUIRE(reports->size() == 99)`) with the restore suppressed still gave
+  // 46 passed / 1 failed -- no cascade. Nothing later in this binary reads the
+  // process cwd, so today the leak is latent rather than contagious. The guard
+  // is kept anyway: leaving the process parked on a deleted inode is a real
+  // hazard for any future test here that does touch a relative path or call
+  // current_path(), and an RAII restore costs nothing to hold.
+  struct cwd_guard {
+    std::filesystem::path original;
+    cwd_guard() : original(std::filesystem::current_path()) {
+    }
+    cwd_guard(const cwd_guard&)                    = delete;
+    auto operator=(const cwd_guard&) -> cwd_guard& = delete;
+    ~cwd_guard() {
+      std::error_code restore_ec;
+      std::filesystem::current_path(original, restore_ec);
+    }
+  };
+  const cwd_guard guard;
+
   std::error_code ec;
   std::filesystem::current_path(tree.root_ / "elsewhere", ec);
   REQUIRE_FALSE(ec);
   const auto reports = dr::run(conn, tree.env());
-  std::filesystem::current_path(original, ec);
 
+  REQUIRE(reports.has_value());
   REQUIRE(reports->size() == 1);
   REQUIRE(std::filesystem::is_symlink(tree.workspace_root() / "AGENTS.md"));
   REQUIRE_FALSE(std::filesystem::exists(tree.root_ / "elsewhere" / "AGENTS.md"));

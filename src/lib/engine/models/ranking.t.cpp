@@ -648,31 +648,113 @@ TEST_CASE("models.ranking: an excluded sample never enters the math", "[models]"
 }
 
 TEST_CASE("models.ranking: quality outranks speed, and an unmeasured metric abstains", "[models]") {
-  // Two rows with the SAME quality: the measured-and-faster one wins on
-  // latency.
-  rk::row fast{.fallback_order = 9, .samples = 20, .successes = 16};
-  fast.mean_latency_ms = 100.0;
-  rk::row slow{.fallback_order = 1, .samples = 20, .successes = 16};
-  slow.mean_latency_ms = 900.0;
-  rk::finalize(fast, rk::gates{});
-  rk::finalize(slow, rk::gates{});
-  REQUIRE(exactly(fast.wilson_lower, slow.wilson_lower));
+  // This test calls the PRODUCTION comparator, `rk::less_than`. It used to
+  // sort with a locally-written lambda spelling the same rules and then assert
+  // on that lambda's output (review finding F4), which meant deleting the
+  // latency arm from ranking.cpp -- or inverting `compare_optional` -- left
+  // all thirteen tests in this file green. Keys 2, 3 and 4 and the abstention
+  // rule the test's own NAME advertises were never exercised at all.
+  auto ranked = [](rk::row lhs, rk::row rhs) {
+    rk::finalize(lhs, rk::gates{});
+    rk::finalize(rhs, rk::gates{});
+    return std::pair{lhs, rhs};
+  };
 
-  // With equal quality and both measured, latency decides -- overriding the
-  // fallback-order tiebreak, which would otherwise have preferred `slow`.
-  std::vector<rk::row> both{slow, fast};
-  std::stable_sort(both.begin(), both.end(), [](const rk::row& a, const rk::row& b) {
-    if (a.wilson_lower != b.wilson_lower) {
-      return a.wilson_lower > b.wilson_lower;
-    }
-    if (a.mean_latency_ms.has_value() && b.mean_latency_ms.has_value() && *a.mean_latency_ms != *b.mean_latency_ms) {
-      return *a.mean_latency_ms < *b.mean_latency_ms;
-    }
-    return a.fallback_order < b.fallback_order;
-  });
-  REQUIRE(exactly(*both[0].mean_latency_ms, 100.0));
+  // KEY 1, quality, DESCENDING. Beats every later key including a better
+  // fallback_order on the loser.
+  {
+    auto [good, worse] = ranked(rk::row{.fallback_order = 9, .samples = 20, .successes = 18},
+                                rk::row{.fallback_order = 1, .samples = 20, .successes = 12});
+    REQUIRE(good.wilson_lower > worse.wilson_lower);
+    REQUIRE(rk::less_than(good, worse));
+    REQUIRE_FALSE(rk::less_than(worse, good));
+  }
 
-  // But a FASTER, WORSE candidate must never outrank a slower correct one --
+  // KEY 2, expected_excess_iterations, ASCENDING. Equal quality, so the tie
+  // falls through to the retry count -- and the row with FEWER retries wins
+  // despite the worse fallback_order.
+  {
+    auto [few, many] = ranked(rk::row{.fallback_order = 9, .samples = 20, .successes = 16, .excess_attempts = 2},
+                              rk::row{.fallback_order = 1, .samples = 20, .successes = 16, .excess_attempts = 10});
+    REQUIRE(exactly(few.wilson_lower, many.wilson_lower));
+    REQUIRE(few.expected_excess_iterations < many.expected_excess_iterations);
+    REQUIRE(rk::less_than(few, many));
+    REQUIRE_FALSE(rk::less_than(many, few));
+  }
+
+  // KEY 3, gate_failure_rate, ASCENDING. Equal quality AND equal retries.
+  {
+    auto [clean, flaky] = ranked(rk::row{.fallback_order = 9, .samples = 20, .successes = 16, .gate_failures = 0},
+                                 rk::row{.fallback_order = 1, .samples = 20, .successes = 16, .gate_failures = 4});
+    REQUIRE(exactly(clean.wilson_lower, flaky.wilson_lower));
+    REQUIRE(exactly(clean.expected_excess_iterations, flaky.expected_excess_iterations));
+    REQUIRE(clean.gate_failure_rate < flaky.gate_failure_rate);
+    REQUIRE(rk::less_than(clean, flaky));
+    REQUIRE_FALSE(rk::less_than(flaky, clean));
+  }
+
+  // KEY 4a, latency, ASCENDING -- overriding the fallback-order tiebreak,
+  // which on its own would have preferred `slow`.
+  {
+    auto [fast, slow]    = ranked(rk::row{.fallback_order = 9, .samples = 20, .successes = 16},
+                                  rk::row{.fallback_order = 1, .samples = 20, .successes = 16});
+    fast.mean_latency_ms = 100.0;
+    slow.mean_latency_ms = 900.0;
+    REQUIRE(rk::less_than(fast, slow));
+    REQUIRE_FALSE(rk::less_than(slow, fast));
+
+    // Sorting a real sequence with the production comparator agrees.
+    std::vector<rk::row> both{slow, fast};
+    std::stable_sort(both.begin(), both.end(), rk::less_than);
+    REQUIRE(exactly(*both[0].mean_latency_ms, 100.0));
+  }
+
+  // KEY 4b, cost, ASCENDING -- consulted only after latency ties.
+  {
+    auto [cheap, dear]     = ranked(rk::row{.fallback_order = 9, .samples = 20, .successes = 16},
+                                    rk::row{.fallback_order = 1, .samples = 20, .successes = 16});
+    cheap.mean_latency_ms  = 500.0;
+    dear.mean_latency_ms   = 500.0;
+    cheap.mean_cost_micros = 10.0;
+    dear.mean_cost_micros  = 90.0;
+    REQUIRE(rk::less_than(cheap, dear));
+    REQUIRE_FALSE(rk::less_than(dear, cheap));
+  }
+
+  // ABSTENTION -- the rule this test's name advertises and which nothing
+  // exercised before. A metric only one side carries does NOT order: the pair
+  // falls through to `fallback_order`, so the UNMEASURED row wins when its
+  // configured order is lower. Treating the missing value as 0 would rank the
+  // unmeasured row first regardless; treating it as infinity would rank it
+  // last regardless. Both are visible here as a flipped assertion.
+  {
+    auto [unmeasured, measured] = ranked(rk::row{.fallback_order = 1, .samples = 20, .successes = 16},
+                                         rk::row{.fallback_order = 5, .samples = 20, .successes = 16});
+    measured.mean_latency_ms    = 1.0; // the fastest possible, and still ignored
+    REQUIRE_FALSE(unmeasured.mean_latency_ms.has_value());
+    REQUIRE(rk::less_than(unmeasured, measured));
+    REQUIRE_FALSE(rk::less_than(measured, unmeasured));
+
+    // Same pair, fallback_order swapped: now the MEASURED row wins -- proving
+    // the decision came from key 5 and not from the latency at all.
+    auto [unmeasured2, measured2] = ranked(rk::row{.fallback_order = 5, .samples = 20, .successes = 16},
+                                           rk::row{.fallback_order = 1, .samples = 20, .successes = 16});
+    measured2.mean_latency_ms     = 1.0;
+    REQUIRE(rk::less_than(measured2, unmeasured2));
+  }
+
+  // EQUAL measured values also abstain (compare_optional returns unset on
+  // equality), so key 5 decides.
+  {
+    auto [a, b]       = ranked(rk::row{.fallback_order = 1, .samples = 20, .successes = 16},
+                               rk::row{.fallback_order = 2, .samples = 20, .successes = 16});
+    a.mean_latency_ms = 400.0;
+    b.mean_latency_ms = 400.0;
+    REQUIRE(rk::less_than(a, b));
+    REQUIRE_FALSE(rk::less_than(b, a));
+  }
+
+  // And a FASTER, WORSE candidate must never outrank a slower correct one --
   // the floor gates it out before speed is ever consulted.
   rk::row fast_and_wrong{.samples = 20, .successes = 4};
   fast_and_wrong.mean_latency_ms = 1.0;

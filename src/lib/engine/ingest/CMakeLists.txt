@@ -63,4 +63,5 @@ planar_module(engine_ingest
     render.cpp
     materialize.cpp
   DEPENDS
-    db)
+    db
+    json_text)

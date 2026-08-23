@@ -231,6 +231,31 @@ export auto wilson_lower_bound(std::uint64_t successes, std::uint64_t n, double 
 /// @param gate_config The gates to apply.
 export auto finalize(row& aggregate, const gates& gate_config) -> void;
 
+/// @brief The strict-weak ordering applied among rows that cleared BOTH
+/// gates, in the order the acceptance criteria fix:
+///
+///   1. `wilson_lower`, DESCENDING — confidence-adjusted quality first.
+///   2. `expected_excess_iterations`, ascending — fewer retries.
+///   3. `gate_failure_rate`, ascending.
+///   4. `mean_latency_ms`, then `mean_cost_micros`, ascending — and ONLY
+///      when both rows carry the metric. An unmeasured metric ABSTAINS
+///      rather than ordering: treating a missing value as 0 would promote
+///      the candidate we know least about, and treating it as infinity
+///      would bury a candidate merely for not being instrumented.
+///   5. `fallback_order`, ascending — the deterministic operator-chosen
+///      tiebreak, so equal evidence never yields an arbitrary ordering.
+///
+/// EXPORTED so tests can pin the ordering DIRECTLY. It used to be private,
+/// and the consequence (task 6114, review finding F4) was that the only test
+/// naming it sorted with a locally-written copy of the same rules and then
+/// asserted on its own copy's output — keys 2, 3 and 4 and the whole
+/// abstention rule went untested, and deleting the latency arm from the real
+/// comparator broke nothing.
+/// @param lhs The left row.
+/// @param rhs The right row.
+/// @return True when `lhs` ranks strictly ahead of `rhs`.
+export auto less_than(const row& lhs, const row& rhs) -> bool;
+
 /// @brief Rank one exact cohort from declared-experiment evidence.
 ///
 /// Reads `routing_terminal_samples` joined to `routing_candidates`, filtered

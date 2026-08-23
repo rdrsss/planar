@@ -63,13 +63,16 @@
 # `json_text` (plan 996, task 6109, decision D19) is a layer-1 base library
 # holding the ONE JSON string-escaping primitive every hand-rolled renderer in
 # the tree shares. It was extracted after the per-bucket duplication D18 forces
-# (an `engine_*` may not depend on another `engine_*`) reached SEVEN
-# byte-identical copies — closure, grouping, ingest, models, planning, runs and
-# workflows — with `local` about to make an eighth. New buckets import it; the
-# seven pre-existing copies are left for their own mechanical sweep rather than
-# dragged into a twelve-leaf port cycle (see json_text/CMakeLists.txt). Same
-# shape as `scope_ref`: a shared engine primitive moved DOWN a layer so the
-# same-layer prohibition can stay strict without duplication.
+# (an `engine_*` may not depend on another `engine_*`) reached TEN copies under
+# two different names — seven `append_json_string` (closure, grouping, ingest,
+# models, planning, runs, workflows) and three `json_quote` (planning/
+# annotation, runtime/capture, promotion), the latter three of which had
+# silently DROPPED the `\b` and `\f` short forms. Task 6114 swept all ten:
+# every renderer in the tree now imports this module and there is exactly one
+# definition of the escape table (see json_text/CMakeLists.txt for the full
+# account and the oracle evidence). Same shape as `scope_ref`: a shared engine
+# primitive moved DOWN a layer so the same-layer prohibition can stay strict
+# without duplication.
 # `engine/local` (plan 996, task 6109) is the operator-local skills/agents
 # sandbox behind all five `planar local` leaves. It depends on NOTHING but
 # `json_text` -- the sandbox is pure filesystem state and holds no SQLite

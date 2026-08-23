@@ -220,11 +220,24 @@ TEST_CASE("workflows.render: show text omits empty fields entirely", "[workflows
 }
 
 TEST_CASE("workflows.render: the not-found line is identical for show and run", "[workflows]") {
-  // HAZARD 6. Both leaves were captured and both emit exactly this, single
-  // quotes included -- so one function serves both and they cannot drift.
+  // HAZARD 6. `workflow show nope` and `workflow run nope` were BOTH captured
+  // and both emit exactly this, single quotes included -- so one function
+  // serves both and they cannot drift.
   REQUIRE(rd::not_found_error("nope") == "error: workflow 'nope' not found\n");
-  REQUIRE(rd::not_found_error("") == "error: workflow '' not found\n");
   REQUIRE(rd::not_found_error("with space") == "error: workflow 'with space' not found\n");
+
+  // The empty name is NOT an oracle capture and the comment here used to
+  // claim it was (review finding F9). Re-probed against the live binary:
+  //
+  //   $Z workflow show ""   -> exit 2, `error: MissingRequiredPositional`
+  //
+  // The parser rejects an empty positional before the catalog is ever
+  // consulted, so this leaf can never reach not_found_error(""). The
+  // assertion is kept because it pins a real property of a PURE function --
+  // the quotes are unconditional, so an empty name still renders as `''`
+  // rather than collapsing to `error: workflow  not found` -- but it is
+  // labelled as a property, not as provenance.
+  REQUIRE(rd::not_found_error("") == "error: workflow '' not found\n");
 }
 
 TEST_CASE("workflows.render: JSON escaping survives a hostile path or description", "[workflows]") {

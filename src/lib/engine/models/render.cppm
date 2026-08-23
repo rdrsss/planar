@@ -32,12 +32,14 @@
 ///
 /// ## Escaping
 ///
-/// `append_json_string` matches zig's `std.json.Stringify.encodeJsonString`
-/// with default options: the two mandatory escapes, the five short forms,
-/// LOWERCASE `\u00xx` for the remaining C0 control bytes, and deliberately NO
-/// escaping of `/` or of non-ASCII bytes. This matters here specifically
-/// because candidate identifiers, vendor strings, roles, and host ids are all
-/// OPAQUE operator-supplied data that the registry stores verbatim.
+/// Every quoted field goes through `planar.json_text`, the layer-1 module
+/// that owns the one escape table this tree has: the two mandatory escapes,
+/// the five short forms (`\b \f \n \r \t`), LOWERCASE `\u00xx` for the
+/// remaining C0 control bytes, and deliberately NO escaping of `/` or of
+/// non-ASCII bytes. This matters here specifically because candidate
+/// identifiers, vendor strings, roles, and host ids are all OPAQUE
+/// operator-supplied data that the registry stores verbatim. The table
+/// itself is pinned in json_text.t.cpp, not re-pinned per bucket.
 
 module;
 
@@ -58,14 +60,6 @@ namespace planar::engine::models::render {
 /// by `models registry export` when `--json` is absent — see
 /// `registry_export_stderr_warning`.
 export inline constexpr std::string_view migration_warning = "legacy catalog compatibility is one-window and non-authoritative";
-
-/// @brief Append `text` to `out` as a quoted, escaped JSON string.
-///
-/// Exposed so tests can pin the escaping table directly rather than only
-/// through a whole envelope.
-/// @param out The buffer to append to.
-/// @param text The raw bytes to quote.
-export auto append_json_string(std::string& out, std::string_view text) -> void;
 
 /// @brief Render `models registry list --json` / `models registry export`.
 ///

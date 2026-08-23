@@ -595,19 +595,64 @@ TEST_CASE("legacy aggregate is deterministic across repeated runs") {
 
 TEST_CASE("legacy aggregate writes nothing") {
   // D8: read-only. A run must leave the tables it reads byte-identical.
+  //
+  // This used to compare `count(*)` only, which an UPDATE does not change:
+  // slipping `update agent_work_claims set status = \'counted\'` into
+  // aggregate() passed (review finding F8). Counts are now the LEAST of what
+  // is compared -- the whole content of every row is snapshotted, so an
+  // in-place mutation, a reordering, or a delete-plus-reinsert all surface.
   const scratch_db_path scratch;
   auto                  conn = open_migrated(scratch);
   seed_oracle_fixture(conn);
 
-  const auto count_rows = [&conn](std::string_view table) {
-    auto stmt = conn.prepare(std::format("select count(*) from {}", table));
+  // A stable, whole-content fingerprint of one table: every column of every
+  // row, in a deterministic order, rendered through SQLite's own `quote()` so
+  // NULL, '' and the text "NULL" stay distinguishable. Column names come from
+  // `pragma table_info`, so a schema change is picked up rather than silently
+  // narrowing what is compared.
+  const auto columns_of = [&conn](std::string_view table) {
+    auto stmt = conn.prepare(std::format("pragma table_info({})", table));
     REQUIRE(stmt.has_value());
-    REQUIRE(stmt->step().has_value());
-    return stmt->column_int64(0);
+    std::vector<std::string> names;
+    while (true) {
+      auto stepped = stmt->step();
+      REQUIRE(stepped.has_value());
+      if (*stepped == planar::db::step_result::done) {
+        break;
+      }
+      names.push_back(stmt->column_text(1));
+    }
+    REQUIRE_FALSE(names.empty());
+    return names;
   };
-  const auto before = std::tuple{count_rows("session_entries"), count_rows("agent_work_claims"), count_rows("agent_actions")};
+
+  const auto snapshot = [&](std::string_view table) {
+    std::string expr;
+    for (const auto& name : columns_of(table)) {
+      if (!expr.empty()) {
+        expr.append(" || char(31) || ");
+      }
+      expr.append(std::format("quote({})", name));
+    }
+    auto stmt = conn.prepare(std::format(
+        "select count(*), coalesce(group_concat({}, char(30)), '') from (select * from {} order by rowid)", expr, table));
+    REQUIRE(stmt.has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    return std::pair{stmt->column_int64(0), stmt->column_text(1)};
+  };
+
+  const auto before = std::array{snapshot("session_entries"), snapshot("agent_work_claims"), snapshot("agent_actions")};
+  // The fixture is non-empty in all three tables, so an all-empty snapshot
+  // cannot masquerade as "unchanged".
+  for (const auto& [rows, _] : before) {
+    REQUIRE(rows > 0);
+  }
+
   REQUIRE(lg::aggregate(conn).has_value());
-  const auto after = std::tuple{count_rows("session_entries"), count_rows("agent_work_claims"), count_rows("agent_actions")};
+
+  const auto after = std::array{snapshot("session_entries"), snapshot("agent_work_claims"), snapshot("agent_actions")};
   REQUIRE(before == after);
 }
 

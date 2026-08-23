@@ -107,7 +107,8 @@ export auto show(db::connection& conn, std::int64_t task_id) -> std::expected<st
 /// empty database still reports `{"task_id":999,"rows":[]}`.
 /// @param task_id The requested task id.
 /// @param rows The ordered rows.
-/// @return The single-line JSON object, WITHOUT a trailing newline.
+/// @return The complete stdout payload: the single-line JSON object WITH
+/// its trailing newline, exactly as the oracle writes it.
 export auto render_show_json(std::int64_t task_id, std::span<const row> rows) -> std::string;
 
 /// @brief Render `closure show`'s text form.

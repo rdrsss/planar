@@ -168,7 +168,8 @@ constexpr std::string_view k_show_json =
     R"({"id":4,"repo_id":1,"path":"a/first.zig","symbol":"z.zzz","role":"transitive","token_weight":7,)"
     R"("extractor_version":"v2","created_at":"2020-01-01T00:00:00.000Z"},)"
     R"({"id":5,"repo_id":1,"path":"m/mid.zig","symbol":"m.mmm","role":"transitive","token_weight":6,)"
-    R"("extractor_version":"v1","created_at":"2020-01-01T00:00:00.000Z"}]})";
+    R"("extractor_version":"v1","created_at":"2020-01-01T00:00:00.000Z"}]})"
+    "\n";
 
 constexpr std::string_view k_show_text = "closure for task 1 (6 rows):\n"
                                          "  [modify] a/first.zig::z.zzz  w=7\n"
@@ -282,7 +283,10 @@ TEST_CASE("closure.store: show text matches the oracle byte for byte", "[closure
 TEST_CASE("closure.store: the empty renderers echo the REQUESTED id", "[closure]") {
   // Both envelopes carry 999 despite no row anywhere mentioning it -- proof
   // the id is echoed from the argument, not derived from the result set.
-  REQUIRE(cs::render_show_json(999, {}) == R"({"task_id":999,"rows":[]})");
+  // Trailing newline INCLUDED -- handlers/closure/show.zig:60 writes `]}\n`
+  // from the same call that writes the body, and this renderer returns the
+  // leaf's complete stdout payload. See engine/closure/CMakeLists.txt.
+  REQUIRE(cs::render_show_json(999, {}) == "{\"task_id\":999,\"rows\":[]}\n");
   // Em dash, not a hyphen; and the hint names the exact command including the
   // id.
   REQUIRE(cs::render_show_text(999, {}) == "closure for task 999 (0 rows):\n"
@@ -312,22 +316,42 @@ TEST_CASE("closure.store: the text row form uses TWO spaces before w=", "[closur
   REQUIRE(out.find("(1 rows)") != std::string::npos);
 }
 
-TEST_CASE("closure.store: JSON escaping applies to path, symbol, and role", "[closure]") {
+TEST_CASE("closure.store: every quoted field goes through the escaper, not just some", "[closure]") {
+  // FIVE string fields are emitted through append_json_string in store.cpp --
+  // path, symbol, role, extractor_version, created_at -- and each is a SEPARATE
+  // call site that can regress on its own. This test used to be NAMED for
+  // `role` while giving it the value "modify", which has nothing to escape, and
+  // it never observed created_at at all; replacing either call with a raw
+  // std::format passed the entire file (review finding F6).
+  //
+  // `role` and `created_at` are closed-vocabulary columns TODAY. That is a
+  // property of the WRITER, not of this renderer, and the renderer is what is
+  // under test: it must escape whatever it is handed.
   const std::vector<cs::row> rows{
       cs::row{.id                = 1,
               .task_id           = 1,
               .repo_id           = 1,
               .path              = "a\"b\\c",
               .symbol            = "s\tsym",
-              .role              = "modify",
+              .role              = "mod\"ify",
               .token_weight      = 1,
               .extractor_version = "v\n1",
-              .created_at        = "2020-01-01T00:00:00.000Z"},
+              .created_at        = "2020-01-01T00:00:00.000Z\b"},
   };
   const auto out = cs::render_show_json(1, rows);
   REQUIRE(out.find(R"("path":"a\"b\\c")") != std::string::npos);
   REQUIRE(out.find(R"("symbol":"s\tsym")") != std::string::npos);
+  REQUIRE(out.find(R"("role":"mod\"ify")") != std::string::npos);
   REQUIRE(out.find(R"("extractor_version":"v\n1")") != std::string::npos);
+  REQUIRE(out.find(R"("created_at":"2020-01-01T00:00:00.000Z\b")") != std::string::npos);
+  // Nothing leaked RAW. The only newline in the payload is the TERMINATOR
+  // at the very end (see this bucket's CMakeLists), so the body is checked
+  // with it stripped.
+  REQUIRE(out.ends_with("\n"));
+  const auto body = std::string_view{out}.substr(0, out.size() - 1);
+  REQUIRE(body.find('\t') == std::string_view::npos);
+  REQUIRE(body.find('\n') == std::string_view::npos);
+  REQUIRE(body.find('\b') == std::string_view::npos);
 }
 
 TEST_CASE("closure.store: the invalid-id message is NOT leaf-prefixed", "[closure]") {

@@ -5,53 +5,15 @@
 module planar.engine.closure.store;
 
 import std;
+import planar.json_text;
 import planar.db;
 
 namespace planar::engine::closure::store {
 
-namespace {
+// The one shared escape table, layer 1. See json_text.cppm.
+using json_text::append_json_string;
 
-/// @brief Append `s` to `out` as a quoted JSON string — same escaping as
-/// engine/runs/render.cpp's copy (zig's `output.writeJsonString`).
-auto append_json_string(std::string& out, std::string_view s) -> void {
-  out.push_back('"');
-  for (const char raw : s) {
-    const auto c = static_cast<unsigned char>(raw);
-    switch (c) {
-    case '\\':
-      out.append("\\\\");
-      break;
-    case '"':
-      out.append("\\\"");
-      break;
-    case 0x08:
-      out.append("\\b");
-      break;
-    case 0x0C:
-      out.append("\\f");
-      break;
-    case '\n':
-      out.append("\\n");
-      break;
-    case '\r':
-      out.append("\\r");
-      break;
-    case '\t':
-      out.append("\\t");
-      break;
-    default:
-      if (c <= 0x1F) {
-        out.append(std::format("\\u{:04x}", static_cast<unsigned>(c)));
-      } else {
-        out.push_back(raw);
-      }
-      break;
-    }
-  }
-  out.push_back('"');
-}
-
-} // namespace
+namespace {} // namespace
 
 auto show(db::connection& conn, std::int64_t task_id) -> std::expected<std::vector<row>, closure_error> {
   // The role ordering is an explicit CASE, not an alphabetical sort. It
@@ -115,7 +77,7 @@ auto render_show_json(std::int64_t task_id, std::span<const row> rows) -> std::s
     append_json_string(out, r.created_at);
     out.push_back('}');
   }
-  out.append("]}");
+  out.append("]}\n");
   return out;
 }
 

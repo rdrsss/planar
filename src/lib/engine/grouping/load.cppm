@@ -154,7 +154,8 @@ export auto load_deps(db::connection& conn, std::span<const std::int64_t> open_i
 
 /// @brief Render `groups recommend --json`.
 /// @param rec The recommendation.
-/// @return The single-line JSON object, WITHOUT a trailing newline.
+/// @return The complete stdout payload: the single-line JSON object WITH
+/// its trailing newline, exactly as the oracle writes it.
 export auto render_json(const recommendation& rec) -> std::string;
 
 /// @brief Render `groups recommend`'s text form.

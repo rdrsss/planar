@@ -126,7 +126,9 @@ export auto read_entity_scope(db::connection& conn, std::string_view kind, std::
 
 /// @brief Render the `--json` envelope both `promote` and `demote` emit on
 /// success. Byte-identical to the oracle's, including key order and the
-/// absence of any whitespace; the caller appends the trailing newline.
+/// absence of any interior whitespace, and INCLUDING the trailing newline the
+/// oracle writes (handlers/promote.zig:117 prints `}}\n` from the same call
+/// that printed the body). The caller appends nothing.
 ///
 /// Oracle-captured shape:
 /// `{"ok":true,"kind":"plan","id":1,"scope_kind":"association","scope_id":1,`
@@ -136,13 +138,14 @@ export auto read_entity_scope(db::connection& conn, std::string_view kind, std::
 /// @param id The entity's row id.
 /// @param current The scope read AFTER the mutation.
 /// @param previous The scope read BEFORE the mutation.
-/// @return The single-line JSON object, with no trailing newline.
+/// @return The complete stdout payload: the single-line JSON object WITH
+/// its trailing newline.
 export auto render_scope_change_json(std::string_view kind, std::int64_t id, const scope_info& current,
                                      const scope_info& previous) -> std::string;
 
 /// @brief Render `promote`'s non-`--json` success line. Byte-identical to
-/// the oracle's, including the DOUBLE space before `(was:`; the caller
-/// appends the trailing newline.
+/// the oracle's, including the DOUBLE space before `(was:` and the trailing
+/// newline. The caller appends nothing.
 ///
 /// Oracle-captured shape:
 /// `plan:1 promoted to association beta  (was: association:1)`
@@ -152,20 +155,20 @@ export auto render_scope_change_json(std::string_view kind, std::int64_t id, con
 /// @param to_scope The `--to` value as the operator typed it (NOT the
 /// resolved association id — the oracle echoes the raw flag).
 /// @param previous The scope read BEFORE the mutation.
-/// @return The success line, with no trailing newline.
+/// @return The complete stdout payload: the success line WITH its newline.
 export auto render_promote_text(std::string_view kind, std::int64_t id, std::string_view to_scope, const scope_info& previous)
     -> std::string;
 
 /// @brief Render `demote`'s non-`--json` success line. Byte-identical to
-/// the oracle's, including the DOUBLE space before `(was:`; the caller
-/// appends the trailing newline.
+/// the oracle's, including the DOUBLE space before `(was:` and the trailing
+/// newline. The caller appends nothing.
 ///
 /// Oracle-captured shape: `plan:1 demoted to global  (was: association:1)`
 ///
 /// @param kind The entity kind text.
 /// @param id The entity's row id.
 /// @param previous The scope read BEFORE the mutation.
-/// @return The success line, with no trailing newline.
+/// @return The complete stdout payload: the success line WITH its newline.
 export auto render_demote_text(std::string_view kind, std::int64_t id, const scope_info& previous) -> std::string;
 
 } // namespace planar::engine::promotion
