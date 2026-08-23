@@ -49,6 +49,17 @@
 # its OWN query rather than depending on that bucket (a layer-2-to-layer-2
 # edge would FATAL), mirroring what the Zig originals do. The optional
 # `mtkahypar` solver arm is deferred with its subprocess dependency.
+# `engine/models` (plan 996, task 6096) is the opaque candidate registry, the
+# 95%-Wilson-lower-bound cohort ranking behind `models evals`, and the
+# read-only routing-evidence views — thirteen of the fourteen `models` schema
+# leaves. It depends only on `db`; `models resolve` is deferred with its
+# roles/profile/packet subsystem (see engine/models/CMakeLists.txt).
+# `engine/workflows` (plan 996, task 6096) is Lua-workflow discovery and
+# `@meta` parsing behind `workflow list` / `workflow show`. It depends on
+# NOTHING -- it holds no SQLite handle -- and resolves its directories from an
+# explicit env-lookup callable rather than `std::getenv`, so it cannot reach a
+# real `~/.planar` by accident. `workflow run` is deferred with its
+# process-spawn dependency (see engine/workflows/CMakeLists.txt).
 
 add_subdirectory(core)
 add_subdirectory(db)
@@ -65,3 +76,5 @@ add_subdirectory(engine/runtime)
 add_subdirectory(engine/runs)
 add_subdirectory(engine/closure)
 add_subdirectory(engine/grouping)
+add_subdirectory(engine/models)
+add_subdirectory(engine/workflows)
