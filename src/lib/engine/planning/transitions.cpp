@@ -50,6 +50,26 @@ auto check_task(std::string_view from, std::string_view to) -> std::expected<voi
   return {};
 }
 
+auto check_annotation(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
+  bool legal = false;
+  if (from == "active") {
+    legal = to == "resolved" || to == "dismissed" || to == "archived";
+  } else if (from == "resolved" || from == "dismissed") {
+    // Outcome states under the retention-tier model (plan 692): only
+    // progression to `archived` is legal -- never back to `active` and
+    // never across to each other.
+    legal = to == "archived";
+  } else if (from == "archived") {
+    legal = false; // the sole final state; no outgoing edges.
+  } else {
+    return std::unexpected(transition_error::unknown_status);
+  }
+  if (!legal) {
+    return std::unexpected(transition_error::illegal_transition);
+  }
+  return {};
+}
+
 } // namespace
 
 auto check_transition(transition_kind kind, std::string_view from, std::string_view to, bool force)
@@ -65,6 +85,8 @@ auto check_transition(transition_kind kind, std::string_view from, std::string_v
     return check_plan(from, to);
   case transition_kind::task:
     return check_task(from, to);
+  case transition_kind::annotation:
+    return check_annotation(from, to);
   }
   return std::unexpected(transition_error::unknown_status);
 }

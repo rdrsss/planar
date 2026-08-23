@@ -3,16 +3,21 @@
 /// transition rules (tech-spec § "engine buckets", plan 996 task
 /// cpp-planning-verbs).
 ///
-/// Behavior-preserving port (D2) of the `.plan` and `.task` arms ONLY of
-/// zig/src/engine/policy/status.zig's `check`. The Zig module also
-/// enforces `.question`, `.scenario`, `.decision`, `.artifact`,
-/// `.handoff`, and `.annotation` arms; those entity kinds are not ported
-/// by this task at all (see this task's coder report and
-/// engine_planning's CMakeLists.txt file header for the scoping
-/// rationale), so porting their transition arms here would be dead code
-/// with no caller. Only the two arms this task's entities actually need
-/// are ported; the rest is intentionally left for the task(s) that port
-/// those entities.
+/// Behavior-preserving port (D2) of the `.plan`, `.task` and `.annotation`
+/// arms of zig/src/engine/policy/status.zig's `check`. The Zig module also
+/// enforces `.question`, `.scenario`, `.decision`, `.artifact` and
+/// `.handoff` arms; those entity kinds are not ported yet, so porting
+/// their transition arms here would be dead code with no caller. Only the
+/// arms whose entities exist in this tree are ported; the rest is
+/// intentionally left for the task(s) that port those entities.
+///
+/// The `.annotation` arm landed with task 6094 alongside
+/// `planar.engine.planning.annotation`, which is the caller that needed
+/// it. `annotation::transition` maps this module's
+/// `illegal_transition` AND `unknown_status` back to its own
+/// `annotation_error::terminal_status`, exactly as zig's
+/// `annotation.transition` does — that spelling is what `bulk-*` and
+/// `sweep` observe.
 module;
 
 export module planar.engine.planning.transitions;
@@ -26,6 +31,7 @@ namespace planar::engine::planning {
 export enum class transition_kind : std::uint8_t {
   plan,
   task,
+  annotation,
 };
 
 /// @brief Error surface for `check_transition`.
@@ -57,6 +63,16 @@ export enum class transition_error : std::uint8_t {
 ///   done, cancelled -> terminal for bare update; `force=true` bypasses
 ///   the matrix entirely (the call site is responsible for recording any
 ///   reopen-audit row it wants).
+///
+/// Annotation matrix (status set: active, resolved, dismissed, archived —
+/// the retention-tier model, plan 692):
+///   active            -> {resolved, dismissed, archived}
+///   resolved          -> {archived}   (outcome state may progress)
+///   dismissed         -> {archived}   (outcome state may progress)
+///   archived          -> terminal; the SOLE final state, no outgoing edges
+/// `resolved -> dismissed` and `dismissed -> resolved` are refused: outcome
+/// states never move laterally. `force` has no effect on this arm — the
+/// annotate verbs expose no `--force`.
 ///
 /// @param kind Which entity's matrix to apply.
 /// @param from The current status text.
