@@ -146,7 +146,7 @@ TEST_CASE("render_help: leaf help renders USAGE, FLAGS, and POSITIONAL ARGUMENTS
   CHECK(text.find("--priority            (int) default=100") != std::string::npos);
   CHECK(text.find("--editor              (bool) default=true") != std::string::npos);
   CHECK(text.find("POSITIONAL ARGUMENTS:\n  <title>         (string)\n") != std::string::npos);
-  // FLAGS section precedes POSITIONAL ARGUMENTS, matching etcli's fixed
+  // FLAGS section precedes POSITIONAL ARGUMENTS, matching etcli-zig's fixed
   // section order.
   CHECK(text.find("FLAGS:") < text.find("POSITIONAL ARGUMENTS:"));
 }

@@ -198,17 +198,30 @@
             },
         },
         .{
-            .name = "etcli",
+            // Renamed from "etcli" to "etcli-zig" so the name is free for the
+            // separate C++26 library at github.com/rdrsss/etcli, which the
+            // rewrite/cpp26 tree will consume. This entry is the ZIG CLI
+            // parser and nothing else.
+            .name = "etcli-zig",
             .version = "0.2.0",
             // Direct codeload URL. The friendlier
-            // github.com/rdrsss/etcli/archive/refs/tags/v0.2.0.tar.gz form
+            // github.com/rdrsss/etcli-zig/archive/refs/tags/v0.2.0.tar.gz form
             // 302-redirects to this; vendor_sync's std.http fetch does not
             // follow redirects (it hard-fails on any non-200), so pin the
-            // redirect target directly. Identical bytes, identical sha256.
-            .url = "https://codeload.github.com/rdrsss/etcli/tar.gz/refs/tags/v0.2.0",
-            .sha256 = "56cbe09ecd069d0ccb89dc5e514c37f0fffb5fd8e588d94c2dd5bd4579e545d4",
+            // redirect target directly.
+            //
+            // The URL and sha256 both changed with the GitHub rename, and the
+            // OLD pin was already broken: codeload does NOT follow repo
+            // renames, so the previous URL returns 404 (verified), which would
+            // have failed the next `zig build vendor-sync`. The hash changed
+            // even though the source did not, because a GitHub tarball embeds
+            // the repository name in its single top-level directory
+            // ("etcli-0.2.0/" -> "etcli-zig-0.2.0/"). After strip_prefix the
+            // vendored tree is byte-identical to what was already checked in.
+            .url = "https://codeload.github.com/rdrsss/etcli-zig/tar.gz/refs/tags/v0.2.0",
+            .sha256 = "0e29cfd141d1f99578a82829336ca88295415b461aa1f9019d02392583e9bafb",
             .archive = .tar_gz,
-            // zig fetch strips the single top-level dir ("etcli-0.2.0/"); the
+            // zig fetch strips the single top-level dir ("etcli-zig-0.2.0/"); the
             // normalised tree has build.zig + src/cli/ at root. Library only —
             // examples/integration_tests/docs/scripts/CHANGELOG are dropped, as
             // Planar only consumes the `cli` module via a path dependency.

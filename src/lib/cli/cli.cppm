@@ -1,7 +1,7 @@
 /// @file cli.cppm
 /// @brief `planar.cli` — single import point re-exporting the whole `lib/cli`
 /// surface (tech-spec § File-level tree: "cli.cppm; cmd, parser, flag,
-/// help, completion, validate, schema — the etcli port").
+/// help, completion, validate, schema — the etcli-zig port").
 ///
 /// `validate` (authoring-time tree-shape lint) is a separate, still-open
 /// task and is not re-exported here yet. `schema` (task 6029, the JSON

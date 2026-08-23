@@ -8,7 +8,7 @@
 # M0 seed module proving the planar_module() + architecture-gate machinery
 # configures and builds. `db` (plan 996, task cpp-db-wrapper) is the first
 # real layer-1 base library; `cli` (plan 996, task cpp-cli-tree-parity) is
-# the etcli command-tree/parser/help/completion port. `log` (plan 996, task
+# the etcli-zig command-tree/parser/help/completion port. `log` (plan 996, task
 # cpp-cli-output-logging, D11) is the spdlog-backed text/JSON dual-mode
 # logging setup. `scope_ref` (plan 996, task 6089, decision D19) is a
 # layer-1 base library holding the scope-ref grammar (`global` /

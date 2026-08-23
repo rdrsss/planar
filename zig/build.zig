@@ -305,16 +305,19 @@ pub fn build(b: *std.Build) void {
 
     // -----------------------------------------------------------------
     // `cli` module: comptime-driven command-tree argument parser.
-    // Sourced from the etcli package (vendored under vendor/etcli;
+    // Sourced from the etcli-zig package (vendored under vendor/etcli-zig;
     // declared in build.zig.zon as a path dependency). Previously
     // lived in-tree under src/cli/; extracted upstream so it can be
     // shared across Planar and other CLI projects.
+    //
+    // etcli-zig, not etcli: the bare name now belongs to the separate C++26
+    // library the rewrite/cpp26 tree targets.
     // -----------------------------------------------------------------
-    const etcli_dep = b.dependency("etcli", .{
+    const etcli_zig_dep = b.dependency("etcli_zig", .{
         .target = target,
         .optimize = optimize,
     });
-    const cli_mod = etcli_dep.module("cli");
+    const cli_mod = etcli_zig_dep.module("cli");
 
     // -----------------------------------------------------------------
     // `runtime` module: shared process-context bootstrap. Linked into

@@ -137,7 +137,7 @@ var stdout_buffer: [4096]u8 = undefined;
 var stderr_buffer: [1024]u8 = undefined;
 
 pub fn main(init: std.process.Init) !void {
-    // etcli's dispatch materializes the complete leaf catalog at comptime.
+    // etcli-zig's dispatch materializes the complete leaf catalog at comptime.
     // Keep the quota at the Planar call site so adding public leaves does not
     // require modifying the pinned vendored parser.
     @setEvalBranchQuota(20_000_000);

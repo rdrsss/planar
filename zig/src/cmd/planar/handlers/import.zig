@@ -21,7 +21,7 @@ pub const verb: cli.Cmd = .{
         .{ .long = "--apply", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--apply-removals", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--no-status-inference", .kind = .bool, .default = .{ .bool = false } },
-        // `--no-interpret` is auto-provided by etcli's implicit bool negation.
+        // `--no-interpret` is auto-provided by etcli-zig's implicit bool negation.
         .{ .long = "--interpret", .kind = .bool, .default = .{ .bool = false } },
         .{ .long = "--accept-spec", .kind = .string, .desc = "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'" },
         .{ .long = "--no-forward-specs", .kind = .bool, .default = .{ .bool = false }, .desc = "Skip forward-spec processing entirely" },

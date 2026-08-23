@@ -2,7 +2,7 @@
 /// @brief `planar.cli.cmd` — the `cmd` tree-node type and the tree-walk
 /// helpers the parser, help renderer, and completion generator all share.
 ///
-/// Behavior-preserving port of zig/vendor/etcli/src/cli/cmd.zig (D2, D9).
+/// Behavior-preserving port of zig/vendor/etcli-zig/src/cli/cmd.zig (D2, D9).
 /// The Zig source is `Cmd` as pure comptime data plus a family of
 /// `comptime`-only tree-traversal functions (`findCmd`, `allNodes`,
 /// `allLeaves`, `collectInheritedFlags`) that exist ONLY to feed the
@@ -28,7 +28,7 @@ namespace planar::cli {
 /// @brief One node in the command tree. `cmds` nests sub-commands;
 /// `long_desc` (when non-empty) is the multi-line prose lead-in for this
 /// command's own help page, while `desc` stays the one-line summary shown
-/// in the parent's COMMANDS table (etcli's `long_desc`/`desc` split).
+/// in the parent's COMMANDS table (etcli-zig's `long_desc`/`desc` split).
 export struct cmd {
   std::string              name;           ///< The command's own name (matched literally against argv).
   std::vector<std::string> aliases;        ///< Additional names that also resolve to this command.
@@ -119,7 +119,7 @@ inline auto walk_nodes(cmd const& node, std::vector<std::string> const& prefix, 
 /// @param out Accumulator, appended to in place.
 inline auto walk_leaves(cmd const& node, std::vector<std::string> const& prefix, std::vector<node_ref>& out) -> void {
   // A node is a leaf when it has no children — this port carries no `run`
-  // handler field (see file comment), so etcli's `node.run != null or
+  // handler field (see file comment), so etcli-zig's `node.run != null or
   // node.cmds.len == 0` collapses to just the second disjunct here.
   bool const is_leaf = node.cmds.empty();
   if (is_leaf && !prefix.empty()) {
@@ -147,7 +147,7 @@ export auto all_nodes(cmd const& root) -> std::vector<node_ref> {
 }
 
 /// @brief Gather every leaf command (any node with no children). Excludes
-/// the root when the root itself has no children (matches etcli: a leaf
+/// the root when the root itself has no children (matches etcli-zig: a leaf
 /// entry requires `prefix.len > 0`, so a childless root yields no leaves).
 /// @param root The tree root to walk.
 /// @return Every leaf node paired with its root-relative path.

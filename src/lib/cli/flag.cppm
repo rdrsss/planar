@@ -3,7 +3,7 @@
 /// `flag_group` spec types the operator declares when building a `cmd`
 /// tree (see `planar.cli.cmd`).
 ///
-/// Behavior-preserving port of zig/vendor/etcli/src/cli/flag.zig (D2, D9),
+/// Behavior-preserving port of zig/vendor/etcli-zig/src/cli/flag.zig (D2, D9),
 /// deliberately NOT a transliteration: the Zig source generates a distinct
 /// comptime `ArgsType` struct per leaf command so each flag gets its own
 /// statically-typed field. C++26 has no equivalent comptime struct
@@ -28,7 +28,7 @@ import std;
 
 namespace planar::cli {
 
-/// @brief Value kind for a flag or positional. Mirrors etcli's `Kind` enum
+/// @brief Value kind for a flag or positional. Mirrors etcli-zig's `Kind` enum
 /// exactly (bool/string/int/float/duration/path/choice) so a later schema
 /// catalog pass can round-trip kind names without a remapping table.
 /// `choice` is a string constrained at parse time to a declared `choices`
@@ -48,13 +48,13 @@ export enum class kind : std::uint8_t {
 /// `::positionals` rather than relying on a null variant alternative, since
 /// SQLite-style optionality (absent vs explicit) is a map-membership
 /// question, not a variant-alternative question. `duration` values are
-/// nanoseconds stored in the `std::int64_t` alternative (etcli's `u64` is
+/// nanoseconds stored in the `std::int64_t` alternative (etcli-zig's `u64` is
 /// widened to fit `int64_t` uniformly with `integer`, avoiding a second
 /// integral alternative). `list`-flag accumulation stores repeated string
 /// values as `std::vector<std::string>`.
 export using value = std::variant<std::monostate, bool, std::int64_t, double, std::string, std::vector<std::string>>;
 
-/// @brief Mode for a command-level flag group (etcli's `FlagGroupMode`).
+/// @brief Mode for a command-level flag group (etcli-zig's `FlagGroupMode`).
 export enum class flag_group_mode : std::uint8_t {
   mutually_exclusive,
   required_one,
@@ -102,7 +102,7 @@ export struct flag {
   std::optional<value>     default_value;    ///< Fallback value applied when the flag is absent.
   bool                     required = false; ///< Parse-time error if absent and no `default_value`.
   /// Documented in help output as an env-var fallback name. Parsing itself
-  /// is env-unaware (matches etcli: `cli.run` reads the environment, `parse`
+  /// is env-unaware (matches etcli-zig: `cli.run` reads the environment, `parse`
   /// does not) — no engine `run` surface exists in this port to own that
   /// concern.
   std::optional<std::string> env;
@@ -124,7 +124,7 @@ export struct positional {
 };
 
 /// @brief Derive the schema/help identifier for a flag: strip the leading
-/// `-`/`--` and leave hyphens as-is (etcli strips to a Zig field name;
+/// `-`/`--` and leave hyphens as-is (etcli-zig strips to a Zig field name;
 /// this port has no generated struct field to serve, so the identifier is
 /// only ever used for map lookups / catalog emission — hyphens stay
 /// intact there). Exposed for the future schema-catalog pass (task 6029).

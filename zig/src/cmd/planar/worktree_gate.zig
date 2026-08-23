@@ -9,7 +9,7 @@
 //!
 //!   1. Parser resolves the verb path from argv.       (this module)
 //!   2. Worktree gate checks classification + cwd.     (this module)
-//!   3. cli.dispatch enters the leaf handler.          (etcli)
+//!   3. cli.dispatch enters the leaf handler.          (etcli-zig)
 //!   4. Handler calls scope.resolve which runs the
 //!      existing cross-scope guard if applicable.       (handlers/*)
 //!

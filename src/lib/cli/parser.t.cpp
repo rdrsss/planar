@@ -286,7 +286,7 @@ TEST_CASE("parse: --flag=value inline attachment on a long flag", "[parser][synt
 //
 // Oracle-derived: `./zig/zig-out/bin/planar task add probe --priority <v>`
 // against the live zig binary (which coerces via
-// vendor/etcli/src/cli/parser.zig's std.fmt.parseInt/parseFloat calls),
+// vendor/etcli-zig/src/cli/parser.zig's std.fmt.parseInt/parseFloat calls),
 // run 2026-08-22:
 //   int   '+5'    -> exit 0   int   '9_96'  -> exit 0
 //   int   '9__6'  -> exit 0   int   '_5'    -> exit 2 (rejected)

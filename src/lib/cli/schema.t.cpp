@@ -421,7 +421,7 @@ TEST_CASE("schema_json: inherited flags, flag groups, env metadata, hidden exclu
 
 /// @brief B3 (M2 boundary review, plan 996 task 6066): a VISIBLE child of a
 /// HIDDEN parent must be OMITTED from the catalog entirely, matching
-/// zig/vendor/etcli/src/cli/schema.zig's `renderDescendantCommands`, which
+/// zig/vendor/etcli-zig/src/cli/schema.zig's `renderDescendantCommands`, which
 /// `continue`s past a hidden child WITHOUT recursing into it — the whole
 /// subtree is pruned, not just the hidden node itself. Before the fix,
 /// `schema_json` walked via `all_nodes` (which flattens unconditionally)

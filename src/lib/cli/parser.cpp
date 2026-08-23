@@ -176,7 +176,7 @@ auto parse_bool_value(std::string_view raw) -> std::optional<bool> {
 }
 
 /// @brief Minimal duration parser: bare integers are seconds; `<n><unit>`
-/// accepts `ns`/`us`/`ms`/`s`/`m`/`h` (etcli's `duration.zig` contract,
+/// accepts `ns`/`us`/`ms`/`s`/`m`/`h` (etcli-zig's `duration.zig` contract,
 /// ported at reduced scope — no modeled verb in this task's subset uses a
 /// `kind::duration` flag, so this exists only to keep the `kind` switch
 /// exhaustive and round-trippable for a future schema catalog).
@@ -277,7 +277,7 @@ auto match_flag(std::vector<flag> const& flags, std::string_view tok) -> std::op
 /// `std::from_chars` itself understands, matching zig's
 /// `std.fmt.parseInt`/`std.fmt.parseFloat` accept-set (both are the
 /// actual oracle behind `--plan`/`--priority`/etc, see
-/// vendor/etcli/src/cli/parser.zig:651,1039,1046,658,1046).
+/// vendor/etcli-zig/src/cli/parser.zig:651,1039,1046,658,1046).
 ///
 /// Both zig parsers accept a single leading '+' (which `from_chars`
 /// rejects outright) and '_' digit separators (which `from_chars` never
@@ -719,7 +719,7 @@ auto parse_leaf(leaf_parse_context const& ctx, std::span<std::string const> tail
         break;
       }
       case kind::choice:
-        // Positionals never carry kind::choice (matches etcli's `unreachable`
+        // Positionals never carry kind::choice (matches etcli-zig's `unreachable`
         // guard); treated as a plain string here to keep the switch total
         // without a real code path exercising it.
         coerced = std::string(tok);

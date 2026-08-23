@@ -2,14 +2,14 @@
 /// @brief `planar.cli.parser` — the runtime argv parser: subcommand-path
 /// resolution, flag/positional coercion, and `--help` detection.
 ///
-/// Behavior-preserving port of zig/vendor/etcli/src/cli/parser.zig (D2,
+/// Behavior-preserving port of zig/vendor/etcli-zig/src/cli/parser.zig (D2,
 /// D9). The two-pass shape survives intact: pass 1 walks argv, folding
 /// recognized subcommand tokens into a resolved path and copying every
 /// other token (flags, their values, positionals, everything after `--`)
 /// into a "tail" sequence; pass 2 (`parse_leaf`) walks the tail against the
 /// matched leaf's flag/positional specs. What does NOT survive is Zig's
 /// module-static backing-buffer machinery (`rest_buf`, `list_buf`,
-/// `help_path_buf`, …) — those exist only because etcli returns slices
+/// `help_path_buf`, …) — those exist only because etcli-zig returns slices
 /// INTO a comptime-sized, single-threaded-by-construction buffer so the
 /// zero-allocation contract holds across a `*const anyopaque`-typed args
 /// struct. This port returns an ordinary owned `match_result` (a
@@ -40,7 +40,7 @@ export struct match_result {
 };
 
 /// @brief Outcome of `parse`: either a resolved `match`, or a help request
-/// (etcli's `.help` variant) carrying the path whose help page the caller
+/// (etcli-zig's `.help` variant) carrying the path whose help page the caller
 /// should render.
 export struct parse_outcome {
   bool                     is_help = false; ///< True when `--help`/`-h` (or a bare parent verb) was seen.

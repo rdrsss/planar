@@ -687,7 +687,7 @@ test "inline span extraction finds invocations in prose" {
 }
 
 test "FlagJson: short field parses as string — emitter shape match (task 3235)" {
-    // The etcli emitter serializes `short` as a JSON string: "short":"v", NOT
+    // The etcli-zig emitter serializes `short` as a JSON string: "short":"v", NOT
     // a JSON number. Confirms ?[]const u8 parses the emitter output correctly
     // (the prior ?u8 declaration would have produced ParseFailed on any binary
     // that defines a short flag).

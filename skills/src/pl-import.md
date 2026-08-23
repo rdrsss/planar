@@ -237,7 +237,7 @@ planar import <path> --apply                      # commit additions + updates
 planar import <path> --apply --apply-removals     # commit + soft-cancel removed entities
 planar import <path> --interpret                  # opt into LLM pass
 planar import <path> --interpret --apply
-planar import <path> --no-interpret               # explicitly deterministic-only (cli-lint-ignore: etcli implicit bool negation, valid at runtime)
+planar import <path> --no-interpret               # explicitly deterministic-only (cli-lint-ignore: etcli-zig implicit bool negation, valid at runtime)
 planar import <path> --strict --apply             # every task must clear --threshold
 planar import <path> --threshold 0.0 --apply      # disable the confidence floor
 planar import <path> --no-status-inference --apply # docs-only / greenfield: all tasks land todo

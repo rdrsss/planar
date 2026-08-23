@@ -73,7 +73,7 @@ auto visible_flag(flag const& f) -> bool {
   return !f.hidden;
 }
 
-// etcli's Kind tag names (zig/vendor/etcli/src/cli/flag.zig: `pub const Kind
+// etcli-zig's Kind tag names (zig/vendor/etcli-zig/src/cli/flag.zig: `pub const Kind
 // = enum { bool, string, int, float, duration, path, choice };`).
 auto kind_name(kind k) -> std::string_view {
   switch (k) {
@@ -356,7 +356,7 @@ auto render_command(cmd const& root, cmd const& node, std::span<std::string cons
 
 /// @brief Depth-first pre-order walk emitting every VISIBLE descendant of
 /// `node`, PRUNING an entire subtree the moment a hidden child is reached —
-/// matches zig/vendor/etcli/src/cli/schema.zig's `renderDescendantCommands`
+/// matches zig/vendor/etcli-zig/src/cli/schema.zig's `renderDescendantCommands`
 /// (`if (!visibleCmd(child, options)) continue;` inside the per-child
 /// loop: the loop `continue`s past the child WITHOUT ever recursing into
 /// it, so nothing beneath a hidden node is walked at all, let alone

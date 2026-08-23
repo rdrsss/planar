@@ -89,7 +89,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
 
     // --compiled-from: optional comma-separated list of record ids.
     // Field name derived from --compiled-from by stripping -- and converting
-    // hyphens to underscores (etcli convention: flagFieldName).
+    // hyphens to underscores (etcli-zig convention: flagFieldName).
     const compiled_from_val: []const u8 = args.compiled_from orelse "";
     const compiled_from: ?[]const u8 = if (compiled_from_val.len > 0) compiled_from_val else null;
 

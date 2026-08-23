@@ -3,7 +3,7 @@
 /// `tools/cli_usage_lint` consumes (`<bin> schema`).
 ///
 /// Behavior-preserving port of
-/// zig/vendor/etcli/src/cli/schema.zig::json (D2, D9). The Zig source
+/// zig/vendor/etcli-zig/src/cli/schema.zig::json (D2, D9). The Zig source
 /// builds this string entirely at comptime because it is `.rodata` for a
 /// fixed comptime command tree; this port has no comptime tree (`cmd` is
 /// ordinary runtime data — see cmd.cppm/flag.cppm's file comments) so

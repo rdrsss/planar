@@ -2,9 +2,9 @@
 /// @brief `planar.cli.error` — parse-error kinds, structured detail, the
 /// human-readable formatter, and the exit-code mapping table.
 ///
-/// Behavior-preserving port of zig/vendor/etcli/src/cli/error.zig (D2, D9).
+/// Behavior-preserving port of zig/vendor/etcli-zig/src/cli/error.zig (D2, D9).
 /// `parse_error_kind` and `format_error`'s message wording/ordering are a
-/// deliberate line-for-line match of etcli's `Parse` error set and
+/// deliberate line-for-line match of etcli-zig's `Parse` error set and
 /// `format()` — these strings are captured, verbatim, from
 /// `./zig/zig-out/bin/planar` invocations in `parser.t.cpp` (task brief:
 /// derive expected values by running the reference binary, never
@@ -15,7 +15,7 @@
 /// operator binary's table — the tech-spec's "exit-code mapping" reference
 /// point). Note this table is a *policy* each binary's own `exit.zig`
 /// applies to the `Parse` error it receives back from
-/// `cli.dispatch`/`cli.parse` — etcli's parser itself never calls
+/// `cli.dispatch`/`cli.parse` — etcli-zig's parser itself never calls
 /// `std.process.exit`. `zig/src/cmd/planar-agent/exit.zig` verifiably
 /// applies a DIFFERENT policy (falls through to the generic-1 bucket for
 /// every `Parse.*` kind except none — verified via `./zig/zig-out/bin/
@@ -35,7 +35,7 @@ import planar.cli.flag;
 
 namespace planar::cli {
 
-/// @brief Tagged parse-error kinds, mirroring etcli's `Parse` error set.
+/// @brief Tagged parse-error kinds, mirroring etcli-zig's `Parse` error set.
 export enum class parse_error_kind : std::uint8_t {
   unknown_flag,
   missing_value,
@@ -50,7 +50,7 @@ export enum class parse_error_kind : std::uint8_t {
 };
 
 /// @brief Structured error context returned alongside a parse failure.
-/// Fields mirror etcli's `Detail` struct field-for-field.
+/// Fields mirror etcli-zig's `Detail` struct field-for-field.
 export struct parse_error_detail {
   parse_error_kind               kind{};          ///< Which parse-error kind occurred.
   std::optional<std::string>     arg;             ///< The offending argv token, when applicable.
@@ -66,7 +66,7 @@ export struct parse_error_detail {
 
 /// @brief Stable snake_case name for a `parse_error_kind`, suitable for
 /// JSON/structured-log output. Renaming one is a breaking change (matches
-/// etcli's own `kindName` contract note).
+/// etcli-zig's own `kindName` contract note).
 /// @param k The error kind to name.
 /// @return The kind's stable, machine-readable name.
 export auto kind_name(parse_error_kind k) -> std::string_view {
@@ -147,7 +147,7 @@ inline auto group_mode_name(flag_group_mode mode) -> std::string_view {
 } // namespace detail
 
 /// @brief Render a parse error as `"error: <kind>: <context>...\n"`,
-/// matching etcli's `format()` field order exactly: message, flag,
+/// matching etcli-zig's `format()` field order exactly: message, flag,
 /// positional, group (+mode +flags), arg, cmd_path, suggestion.
 /// @param d The structured error detail to render.
 /// @return The rendered one-line (trailing-newline) message.

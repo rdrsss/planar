@@ -2,8 +2,8 @@
 /// @brief `planar.cli.help` — renders the `--help` text for a command tree
 /// node: USAGE/COMMANDS/FLAGS/FLAG GROUPS/POSITIONAL ARGUMENTS sections.
 ///
-/// Behavior-preserving port of zig/vendor/etcli/src/cli/help.zig (D2, D9).
-/// etcli builds this string entirely at comptime (`.rodata`, zero runtime
+/// Behavior-preserving port of zig/vendor/etcli-zig/src/cli/help.zig (D2, D9).
+/// etcli-zig builds this string entirely at comptime (`.rodata`, zero runtime
 /// cost beyond the final write) because Zig's `comptime` block is the only
 /// tool it has for "build this once, cheaply". C++26 has no equivalent
 /// need here — help text is rendered on demand, once per `--help`
@@ -17,7 +17,7 @@
 /// help.t.cpp — see that file for the captured reference text). Colorized
 /// (ANSI) rendering, hidden/deprecated filtering, and the `width`-driven
 /// compact layout are deferred — no modeled verb in this task's subset
-/// needs them, and etcli's own `Options` struct documents them as optional
+/// needs them, and etcli-zig's own `Options` struct documents them as optional
 /// knobs layered on top of the same section-builder shape this port
 /// keeps.
 module;
@@ -34,7 +34,7 @@ namespace planar::cli {
 /// @param root The command tree root.
 /// @param path The path to the node whose help page should render (empty
 /// for the root's own page).
-/// @return The rendered help text (matches etcli's `helpText` section
+/// @return The rendered help text (matches etcli-zig's `helpText` section
 /// layout: header/USAGE/COMMANDS/FLAGS/FLAG GROUPS/POSITIONAL ARGUMENTS).
 export auto render_help(cmd const& root, std::span<std::string const> path) -> std::string;
 

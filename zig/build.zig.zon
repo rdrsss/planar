@@ -32,14 +32,20 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        // etcli — comptime CLI parser, extracted from Planar's former
-        // src/cli/ and published at github.com/rdrsss/etcli. Vendored
-        // in-tree under vendor/etcli/ from the v0.2.0 **release archive**
+        // etcli_zig — comptime CLI parser, extracted from Planar's former
+        // src/cli/ and published at github.com/rdrsss/etcli-zig. Vendored
+        // in-tree under vendor/etcli-zig/ from the v0.2.0 **release archive**
         // (managed by vendor/manifest.zon + `zig build vendor-sync`),
         // not a git checkout. Path dep so the build stays hermetic — no
         // network, no auth.
-        .etcli = .{
-            .path = "vendor/etcli",
+        //
+        // Named etcli_zig, not etcli: the bare name now belongs to the
+        // separate C++26 library at github.com/rdrsss/etcli that the
+        // rewrite/cpp26 tree targets. The vendored package still calls
+        // ITSELF `etcli` in its own build.zig.zon — that is upstream content
+        // at tag v0.2.0 and is not ours to rewrite.
+        .etcli_zig = .{
+            .path = "vendor/etcli-zig",
         },
         // libvaxis — Zig TUI library (v0.6.0, MIT). Cockpit (planar explore)
         // foundation. Vendored under vendor/libvaxis/; re-vendor per

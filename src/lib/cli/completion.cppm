@@ -3,16 +3,16 @@
 /// a `cmd` tree.
 ///
 /// Reduced-scope, behavior-preserving port of
-/// zig/vendor/etcli/src/cli/completion.zig (D2, D9). etcli's generator
+/// zig/vendor/etcli-zig/src/cli/completion.zig (D2, D9). etcli-zig's generator
 /// additionally wires per-flag *value* completion (a declared `values`
 /// list, `files`/`directories`, or a `dynamic` runtime callback reached via
 /// a `__complete` sub-invocation) and attached-`=value` completion cases.
-/// This port keeps the mechanism etcli itself calls out as the durable
+/// This port keeps the mechanism etcli-zig itself calls out as the durable
 /// part — "take the current command-line tokens, strip flags, join the
 /// remainder into a path string, and switch on that path to decide which
 /// subcommands and flags to suggest" — for command-name and flag-name
 /// completion, and defers flag-*value* completion (the `completion`
-/// metadata on `flag`/`positional` that etcli's `meta.Completion` carries)
+/// metadata on `flag`/`positional` that etcli-zig's `meta.Completion` carries)
 /// as out of scope: no verb this task models declares a value-completion
 /// set, and the path-keyed script-generation shape below is unchanged by
 /// adding it later.

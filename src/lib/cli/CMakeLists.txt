@@ -1,4 +1,4 @@
-# planar.cli — the etcli command-tree/parser/help/completion/schema port
+# planar.cli — the etcli-zig command-tree/parser/help/completion/schema port
 # (plan 996, tasks cpp-cli-tree-parity + cpp-cli-schema-catalog). Layer-1
 # base module: no DEPENDS on engine/cmd (D15). `validate`
 # (authoring-time tree-shape lint) is still a separate, not-yet-landed

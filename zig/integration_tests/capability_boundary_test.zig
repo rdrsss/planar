@@ -571,7 +571,7 @@ fn runSqliteScalar(gpa: std.mem.Allocator, db_path: []const u8, sql: []const u8)
 //
 // planar-execute is the deterministic, spawn-free Lua workflow engine (plan
 // 633 D5 + D7). Unlike the other four binaries, planar-execute uses manual
-// arg parsing (not the etcli COMMANDS table), so we cannot apply the
+// arg parsing (not the etcli-zig COMMANDS table), so we cannot apply the
 // parseHelpVerbs/assertExactSet pattern. Instead we:
 //
 //   1. Assert `--help` exits 0 (the binary is functional).

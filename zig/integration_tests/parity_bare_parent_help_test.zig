@@ -18,7 +18,7 @@
 //! Today: every verb fails the contract → 21 failures recorded, test
 //! reports `expect(false)`. Phase 4 lands a parser change in
 //! the CLI parser (then in-tree under src/cli/parser.zig, now in
-//! vendor/etcli/src/cli/parser.zig) that turns this test green.
+//! vendor/etcli-zig/src/cli/parser.zig) that turns this test green.
 
 const std = @import("std");
 const harness = @import("harness");

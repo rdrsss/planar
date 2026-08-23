@@ -185,7 +185,7 @@ auto render_flag_line(flag const& f) -> std::string {
     out += " default=" + render_default(*f.default_value);
   }
   if (!f.desc.empty()) {
-    out += " \xe2\x80\x94 " + f.desc; // em dash, matches etcli's " — " separator
+    out += " \xe2\x80\x94 " + f.desc; // em dash, matches etcli-zig's " — " separator
   }
   return out;
 }

@@ -290,7 +290,7 @@ flowchart LR
         PW["planar-watch/<br/>main + handlers/"]
     end
 
-    subgraph CLI["vendor/etcli/ — vendored CLI parser"]
+    subgraph CLI["vendor/etcli-zig/ — vendored CLI parser"]
         CLI1["cmd · parser · flag · help · completion · validate"]
     end
 
@@ -353,9 +353,9 @@ Subsystem modules live at the engine root:
 | `src/engine/workspace/` (+ `workspace.zig`) | Workspace state directory model: routing table, generated AGENTS.md, symlink lifecycle. |
 | `src/engine/llm/` (+ `llm.zig`), `entitylink.zig`, `health.zig`, `policy/`, `promotion.zig`, `local/`, `docs.zig`, `search.zig`, `init.zig` | Cross-cutting subsystem modules. |
 
-### CLI parser ([`vendor/etcli/`](https://github.com/rdrsss/etcli))
+### CLI parser ([`vendor/etcli-zig/`](https://github.com/rdrsss/etcli-zig))
 
-Comptime-driven argv parser — no third-party CLI framework, just a small purpose-built library extracted from Planar's former in-tree `src/cli/` into [etcli](https://github.com/rdrsss/etcli). Vendored under `vendor/etcli/` and consumed via a path dependency in `build.zig.zon`; `build.zig` wires it into every binary as the `cli` module. Files in the upstream tree mirror Planar's prior layout: `cmd.zig`, `parser.zig`, `flag.zig`, `help.zig`, `completion.zig`, `validate.zig`, `error.zig`, `duration.zig`, `platform/`. Each binary's `main.zig` builds a `cli.Cmd` tree and dispatches to its handlers.
+Comptime-driven argv parser — no third-party CLI framework, just a small purpose-built library extracted from Planar's former in-tree `src/cli/` into [etcli-zig](https://github.com/rdrsss/etcli-zig). Vendored under `vendor/etcli-zig/` and consumed via a path dependency in `build.zig.zon`; `build.zig` wires it into every binary as the `cli` module. Files in the upstream tree mirror Planar's prior layout: `cmd.zig`, `parser.zig`, `flag.zig`, `help.zig`, `completion.zig`, `validate.zig`, `error.zig`, `duration.zig`, `platform/`. Each binary's `main.zig` builds a `cli.Cmd` tree and dispatches to its handlers.
 
 ### Database layer (`src/db/`)
 
@@ -388,7 +388,7 @@ resetting their disposition to `untriaged`. The `planar feedback triage` read
 leaves are deterministic and `set` uses the normal entity scope guard. It never
 writes agent tables or external systems.
 
-`planar` is a Zig executable with a thin `main` in `src/cmd/planar/main.zig` that builds a `cli.Cmd` tree against the [etcli](https://github.com/rdrsss/etcli) parser (vendored under `vendor/etcli/`). Each subcommand domain maps to one entity kind or system surface. Parsing, help rendering, shell completion, and validation are all in the etcli library — Planar does not vendor a CLI framework like cobra or clap.
+`planar` is a Zig executable with a thin `main` in `src/cmd/planar/main.zig` that builds a `cli.Cmd` tree against the [etcli-zig](https://github.com/rdrsss/etcli-zig) parser (vendored under `vendor/etcli-zig/`). Each subcommand domain maps to one entity kind or system surface. Parsing, help rendering, shell completion, and validation are all in the etcli-zig library — Planar does not vendor a CLI framework like cobra or clap.
 
 ### Handler layout
 

@@ -304,7 +304,7 @@ test "cli-log-hook: failed invocation records non-zero exit and error_category" 
 }
 
 test "cli-log-hook: args_shape never contains inline flag value (--flag=value form)" {
-    // etcli accepts --flag=value as a single token. parseArgs must strip
+    // etcli-zig accepts --flag=value as a single token. parseArgs must strip
     // the =value portion and record only the flag name.
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
