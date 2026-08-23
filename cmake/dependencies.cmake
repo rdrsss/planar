@@ -140,6 +140,34 @@ CPMAddPackage(
   EXCLUDE_FROM_ALL YES
 )
 
+# --- CLI11 (D21 — replaces the hand-rolled parser half of planar.cli) ---------
+#
+# Ships a real C++20 module (`export module cli11;`, src/modules/CLI11.cppm)
+# wired through FILE_SET CXX_MODULES, which is why this is a viable swap at
+# all. NOTE it is a header-WRAPPING module: the .cppm opens a global module
+# fragment and `#include <CLI/CLI.hpp>` into it, so the whole header still
+# lands in the TU. That interacts with `import std` and is the thing to watch
+# if a build ever goes strange here.
+#
+# Scope of the swap: CLI11 owns TOKENIZATION and VALUE COERCION only. Planar
+# keeps its own help renderer, schema-catalog emitter, exit-code mapping and
+# completion generator, because those are pinned byte-for-byte against the
+# Zig oracle and CLI11 does not emit them.
+CPMAddPackage(
+  NAME CLI11
+  URL https://github.com/CLIUtils/CLI11/archive/refs/tags/v2.7.2.tar.gz
+  URL_HASH SHA256=46eef3101da70852ec7af026e09d485ccee81813331c8c6052d39344443b83da
+  SYSTEM YES
+  EXCLUDE_FROM_ALL YES
+  OPTIONS
+    "CLI11_MODULES ON"
+    "CLI11_PRECOMPILED ON"
+    "CLI11_BUILD_TESTS OFF"
+    "CLI11_BUILD_EXAMPLES OFF"
+    "CLI11_BUILD_DOCS OFF"
+    "CLI11_INSTALL OFF"
+)
+
 # --- spdlog (D11) -------------------------------------------------------------
 #
 # Replaces std.log's scoped logging; keep text/JSON dual mode per the

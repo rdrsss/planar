@@ -1,0 +1,80 @@
+name: Docs
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  apidocs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Doxygen
+        run: |
+          curl -fsSL https://github.com/doxygen/doxygen/releases/download/Release_1_17_0/doxygen-1.17.0.linux.bin.tar.gz | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/doxygen-1.17.0/bin" >> "$GITHUB_PATH"
+
+      - name: Get version from Version.hpp
+        run: |
+          version=$(sed -n 's/#define CLI11_VERSION[ \t]*"\(.*\)"/\1/p' include/CLI/Version.hpp)
+          echo "CLI11_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build API docs
+        run: doxygen docs/Doxyfile
+
+      - name: Create redirects for old URLs
+        run: |
+          redirect() {
+            printf '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=%s"><link rel="canonical" href="https://cliutils.github.io/CLI11/%s"><title>Page moved</title></head><body><p>This page moved to <a href="%s">%s</a>.</p></body></html>\n' "$1" "$2" "$1" "$2" > "$3"
+          }
+          mkdir -p html/book/chapters
+          redirect ../book-installation.html book-installation.html html/book/index.html
+          redirect book-installation.html book-installation.html html/book.html
+          redirect "index.html#api-reference" "index.html#api-reference" html/api.html
+          for f in book/chapters/*.md; do
+            name=$(basename "$f" .md)
+            redirect "../../book-$name.html" "book-$name.html" "html/book/chapters/$name.html"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: html
+
+  pages:
+    runs-on: ubuntu-latest
+    needs: [apidocs]
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    if: >
+      success()
+      && github.ref == 'refs/heads/main'
+      && github.repository == 'CLIUtils/CLI11'
+    steps:
+      - uses: actions/configure-pages@v5
+        id: pages
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-docs
+          path: _site
+
+      - uses: actions/upload-pages-artifact@v3
+
+      - uses: actions/deploy-pages@v4
+        id: deployment

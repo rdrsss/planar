@@ -1,0 +1,148 @@
+# Advanced topics {#book-advanced-topics}
+
+## Environment variables
+
+Environment variables can be used to fill in the value of an option:
+
+```cpp
+std::string opt;
+app.add_option("--my_option", opt)->envname("MY_OPTION");
+```
+
+If not given on the command line, the environment variable will be checked and
+read from if it exists. All the standard tools, like default and required, work
+as expected. If passed on the command line, this will ignore the environment
+variable.
+
+## Needs/excludes
+
+You can set a network of requirements. For example, if flag a needs flag b but
+cannot be given with flag c, that would be:
+
+```cpp
+auto a = app.add_flag("-a");
+auto b = app.add_flag("-b");
+auto c = app.add_flag("-c");
+
+a->needs(b);
+a->excludes(c);
+```
+
+CLI11 will make sure your network of requirements makes sense, and will throw an
+error immediately if it does not.
+
+## Custom option callbacks
+
+You can make a completely generic option with a custom callback. For example, if
+you wanted to add a complex number (already exists, so please don't actually do
+this):
+
+```cpp
+CLI::Option *
+add_option(CLI::App &app, std::string name, cx &variable, std::string description = "", bool defaulted = false) {
+    CLI::callback_t fun = [&variable](CLI::results_t res) {
+        double x, y;
+        bool worked = CLI::detail::lexical_cast(res[0], x) && CLI::detail::lexical_cast(res[1], y);
+        if(worked)
+            variable = cx(x, y);
+        return worked;
+    };
+
+    CLI::Option *opt = app.add_option(name, fun, description, defaulted);
+    opt->type_name("COMPLEX");
+    opt->type_size(2);
+    if(defaulted) {
+        std::stringstream out;
+        out << variable;
+        opt->default_str(out.str());
+    }
+    return opt;
+}
+```
+
+Then you could use it like this:
+
+```cpp
+std::complex<double> comp{0, 0};
+add_option(app, "-c,--complex", comp);
+```
+
+## Timers
+
+`CLI/Timer.hpp` is independent of the rest of the library and is not part of
+`CLI11.hpp` single file header. It times a block of code:
+
+```cpp
+#include <CLI/Timer.hpp>
+
+{
+    CLI::AutoTimer timer{"My Long Process", CLI::Timer::Big};
+    some_long_running_process();
+}
+```
+
+An `AutoTimer` prints the elapsed time when it is destroyed at the end of the
+block. A plain `Timer` does not; use `to_string()` or stream it when you want
+the value. The first argument is the title, which defaults to `Timer`. The
+second is the print function, either the provided `CLI::Timer::Simple` (the
+default) or `CLI::Timer::Big`, or any function that takes the title and the time
+as strings and returns the line to print. `time_it(func)` runs a function
+repeatedly and reports the average.
+
+## Custom converters
+
+You can add your own converters to allow CLI11 to accept more option types in
+the standard calls. These can only be used for "single" size options (so
+complex, vector, etc. are a separate topic). If you set up a custom
+`istringstream& operator>>` overload before include CLI11, you can support
+different conversions. If you place this in the CLI namespace, you can even keep
+this from affecting the rest of your code. Note that `std::optional` is
+supported natively and does not need a custom converter. The next section shows
+a complete example.
+
+## Custom converters and type names: std::chrono example
+
+An example of adding a custom converter and typename for `std::chrono` follows:
+
+```cpp
+namespace CLI
+{
+    template <typename T, typename R>
+    std::istringstream &operator>>(std::istringstream &in, std::chrono::duration<T,R> &val)
+    {
+        T v;
+        in >> v;
+        val = std::chrono::duration<T,R>(v);
+        return in;
+    }
+
+    template <typename T, typename R>
+    std::stringstream &operator<<(std::stringstream &in, std::chrono::duration<T,R> &val)
+    {
+        in << val.count();
+        return in;
+    }
+ }
+
+#include <CLI/CLI.hpp>
+
+namespace CLI
+{
+    namespace detail
+    {
+        template <>
+        constexpr const char *type_name<std::chrono::hours>()
+        {
+            return "TIME [H]";
+        }
+
+        template <>
+        constexpr const char *type_name<std::chrono::minutes>()
+        {
+            return "TIME [MIN]";
+        }
+        }
+}
+```
+
+Thanks to Olivier Hartmann for the example.
