@@ -28,7 +28,14 @@
 # `entity_links` CRUD primitive plus the `task_touch_paths` path-level
 # "touches" surface; it depends only on `db` (same D15/D18 same-layer
 # prohibition — see engine/entitylink/CMakeLists.txt for why it needed no
-# extraction to layer 1 under D19). `engine/ingest` (plan 996, task 6035) is
+# extraction to layer 1 under D19). `engine/external` (plan 996, task 6106)
+# is the `external_links` create/show/delete surface — the local-entity ↔
+# external-ticket binding — stood up because `planar unlink` needed it:
+# task 6105 recorded that leaf as "blocked on layer 3", and it was the only
+# one of those six whose LAYER-2 dependency was ALSO missing. It depends
+# only on `db`; the `list` / sync-state / external-system / adapter
+# surfaces are deferred with the verb families that need them (see
+# engine/external/CMakeLists.txt). `engine/ingest` (plan 996, task 6035) is
 # the READ side of the spec-ingest pipeline — workbench markdown parsing, the
 # proposed-entity diff, the `--strict` gate's coverage object, the text/JSON
 # preview renderers, and the provenance-bearing routing-fact materializer. It
@@ -97,6 +104,7 @@ add_subdirectory(engine/identity)
 add_subdirectory(engine/config)
 add_subdirectory(engine/planning)
 add_subdirectory(engine/entitylink)
+add_subdirectory(engine/external)
 add_subdirectory(engine/ingest)
 add_subdirectory(engine/promotion)
 add_subdirectory(engine/runtime)

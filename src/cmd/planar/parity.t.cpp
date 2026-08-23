@@ -1,7 +1,8 @@
 // @file parity.t.cpp
 // @brief Differential tests: run the built C++ `planar` binary and the Zig
 // reference binary over identical argv in identical scratch environments,
-// and require identical stdout, stderr and exit code (plan 996, task 6105).
+// and require identical stdout, stderr and exit code (plan 996, tasks 6105
+// and 6106).
 //
 // This pattern did not exist before this task — there was no C++ binary to
 // run. It is the strongest evidence available at this layer, because it
@@ -43,6 +44,8 @@
 #include <sys/wait.h>
 
 import std;
+import planar.db;
+import planar.db.migrate;
 
 namespace {
 
@@ -306,5 +309,203 @@ TEST_CASE("neither binary touches a database on a no-database leaf", "[cmd][pari
     INFO("args: " << std::format("{}", args));
     CHECK_FALSE(std::filesystem::exists(db));
     CHECK(got.code != -1);
+  }
+}
+
+// =========================================================================
+// Task 6106 — `unlink`, `skills`, `workspace doctor`.
+// =========================================================================
+
+TEST_CASE("C++ and Zig agree byte-for-byte on the task-6106 no-fixture leaves", "[cmd][parity][oracle]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+
+  struct leaf {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  std::vector<leaf> const leaves{
+      // `skills` is the interesting one: on the Zig side a childless node
+      // with no `.run` renders its own help for free, while here it is a
+      // LEAF that needed a handler. Both routes to that page — the verb and
+      // `--help` — are diffed.
+      {"sk", {"skills"}},
+      {"skhelp", {"skills", "--help"}},
+      {"skextra", {"skills", "extra"}},
+      {"ulhelp", {"unlink", "--help"}},
+      {"ulnopos", {"unlink"}},
+      {"wdhelp", {"workspace", "doctor", "--help"}},
+      // Empty database, both render modes. The text mode is ZERO BYTES
+      // where `--json` is `{"orgs":[]}` — a disagreement inside one leaf.
+      {"wd", {"workspace", "doctor"}},
+      {"wdj", {"workspace", "doctor", "--json"}},
+      // The id parser, end to end. `1_0` and `007` reach the not-found path
+      // naming the PARSED value; `_10` and the overflow are refusals.
+      {"ulmiss", {"unlink", "999"}},
+      {"ulmissj", {"unlink", "999", "--json"}},
+      {"ulsep", {"unlink", "1_0"}},
+      {"ulpad", {"unlink", "007"}},
+      {"ulplus", {"unlink", "+12"}},
+      {"ulbad", {"unlink", "abc"}},
+      {"ullead", {"unlink", "_10"}},
+      {"ultrail", {"unlink", "10_"}},
+      {"ulhex", {"unlink", "0x10"}},
+      {"ulovf", {"unlink", "9223372036854775808"}},
+      {"ulmax", {"unlink", "9223372036854775807"}},
+  };
+
+  for (auto const& [tag, args] : leaves) {
+    auto const space = make_arena(tag);
+    auto const mine  = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref   = run_pinned(zig_bin(), args, space.zig_root, tag);
+
+    INFO("leaf: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(mine.out == ref.out);
+    CHECK(mine.err == ref.err);
+  }
+}
+
+TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][parity][oracle]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+
+  // `init`, `ext register` and `link` are NOT ported, so the fixture is
+  // built by running the ORACLE in BOTH arenas. That is legitimate here
+  // and worth being explicit about: the subject under test is `unlink`,
+  // and seeding both sides with the same binary means the two databases
+  // start identical by construction rather than by assertion.
+  auto const                                  space = make_arena("ulseed");
+  std::vector<std::vector<std::string>> const seed{
+      {"init"},
+      {"ext", "register", "github", "gh", "--project", "owner/repo"},
+      {"link", "plan:1", "--to", "gh:42", "--json"},
+      {"link", "plan:2", "--to", "gh:43", "--json"},
+  };
+  for (std::size_t i = 0; i < seed.size(); ++i) {
+    auto const tag = std::format("seed{}", i);
+    auto const a   = run_pinned(zig_bin(), seed[i], space.cpp_root, tag);
+    auto const b   = run_pinned(zig_bin(), seed[i], space.zig_root, tag);
+    INFO("seed step: " << tag);
+    REQUIRE(a.code == 0);
+    REQUIRE(b.code == 0);
+  }
+
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  // Ordered against ONE database per binary: the second `unlink 1` only
+  // reaches the not-found path because the first one succeeded.
+  std::vector<step> const steps{
+      {"ul1", {"unlink", "1"}},
+      {"ul2j", {"unlink", "2", "--json"}},
+      {"ul1again", {"unlink", "1"}},
+  };
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(mine.out == ref.out);
+    CHECK(mine.err == ref.err);
+  }
+
+  // The audit trail is part of the contract and is invisible in stdout, so
+  // it is read back out of each arena's database and diffed too. No verb
+  // renders `session_entries` (there is no `capture show`), so the rows are
+  // read directly. Without this, a port that dropped the `session_entries`
+  // append entirely would pass every assertion above.
+  auto const entries = [](const std::filesystem::path& root) {
+    auto conn = planar::db::connection::open((root / "planar.db").string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare("select s.vendor, e.prefix, e.body from session_entries e "
+                              "join sessions s on s.id = e.session_id order by e.session_id, e.ordinal");
+    REQUIRE(stmt.has_value());
+    std::string rendered;
+    for (;;) {
+      auto stepped = stmt->step();
+      REQUIRE(stepped.has_value());
+      if (*stepped == planar::db::step_result::done) {
+        break;
+      }
+      rendered += std::format("{}|{}|{}\n", stmt->column_text(0), stmt->column_text(1), stmt->column_text(2));
+    }
+    return rendered;
+  };
+  auto const mine_entries = entries(space.cpp_root);
+  CHECK(mine_entries == entries(space.zig_root));
+  CHECK(mine_entries == "cli|action|unlink: removed external link 1\n"
+                        "cli|action|unlink: removed external link 2\n");
+}
+
+TEST_CASE("C++ and Zig agree on workspace doctor's diagnose-and-repair pass", "[cmd][parity][oracle]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+
+  // `workspace init` refuses without child directories containing `.git`,
+  // and building two of those per arena just to reach `doctor` would make
+  // the fixture about `init`. The org row is inserted directly instead —
+  // through `planar.db`, into each arena's own scratch database, with that
+  // arena's own `proj/` as the recorded `root_path`.
+  //
+  // Because the two arenas are at DIFFERENT paths and doctor's output
+  // carries absolute paths, the comparison substitutes each side's root
+  // prefix with a placeholder before diffing. That is the only normalized
+  // comparison in this file; everything else is raw bytes. The substitution
+  // is total — if either binary emitted a path outside its own arena the
+  // placeholder would not cover it and the diff would fail.
+  auto const space = make_arena("wdorg");
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    auto conn = planar::db::connection::open((root / "planar.db").string());
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::db::apply_all(*conn).has_value());
+    auto stmt = conn->prepare("insert into associations (slug, name, kind, config_json) values ('acme','acme','org',?)");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_text(1, std::format(R"({{"root_path":"{}"}})", (root / "proj").string())).has_value());
+    REQUIRE(stmt->step().has_value());
+  }
+
+  auto const normalize = [](std::string text, const std::filesystem::path& root) {
+    auto const       needle = root.string();
+    std::string      out;
+    std::string_view rest{text};
+    for (;;) {
+      auto const at = rest.find(needle);
+      if (at == std::string_view::npos) {
+        out.append(rest);
+        break;
+      }
+      out.append(rest.substr(0, at));
+      out.append("<ARENA>");
+      rest.remove_prefix(at + needle.size());
+    }
+    return out;
+  };
+
+  for (auto const& [tag, args] : std::vector<std::pair<std::string, std::vector<std::string>>>{
+           {"wdrepair", {"workspace", "doctor"}},
+           // Second pass: the state directory now exists, so the `fix` line
+           // is gone and the issue count drops. Running it twice is what
+           // proves the first pass REPAIRED rather than merely reported.
+           {"wdsecond", {"workspace", "doctor", "--json"}},
+       }) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(normalize(mine.out, space.cpp_root) == normalize(ref.out, space.zig_root));
+    CHECK(mine.err == ref.err);
+  }
+
+  // The repair reached the filesystem on BOTH sides, identically.
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    INFO("arena: " << root.string());
+    CHECK(std::filesystem::exists(root / "home" / "workspaces" / "1"));
+    CHECK(std::filesystem::is_symlink(root / "proj" / "AGENTS.md"));
+    CHECK(std::filesystem::is_symlink(root / "proj" / "CLAUDE.md"));
   }
 }

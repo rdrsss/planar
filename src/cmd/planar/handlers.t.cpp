@@ -1,6 +1,6 @@
 // @file handlers.t.cpp
-// @brief In-process tests for the five ported verb handlers (plan 996,
-// task 6105).
+// @brief In-process tests for the ported verb handlers (plan 996, tasks
+// 6105 and 6106).
 //
 // These run the REAL handlers through the REAL dispatch, with no
 // subprocess: that is what the explicit-`context` design buys, and it is
@@ -47,6 +47,36 @@
 //   $Z annotate add                 (no --anchor-path)
 //     exit 2, stdout b'', stderr b'error: --anchor-path is required\n'
 //
+// Task 6106's leaves, captured the same way. `unlink`'s success cases were
+// seeded by running the ORACLE's own `init` + `ext register github gh
+// --project owner/repo` + `link plan:1 --to gh:42` first, because neither
+// of those verbs is ported:
+//
+//   $Z unlink 999
+//     exit 1, stdout b'', stderr b'error: link 999 not found\n'
+//   $Z unlink abc
+//     exit 2, stdout b'', stderr b"error: invalid link id 'abc'\n"
+//     …AND $PLANAR_DB was created and migrated before the refusal.
+//   $Z unlink 1
+//     exit 0, stdout b'unlinked: external link 1 removed\n'
+//   $Z unlink 2 --json
+//     exit 0, stdout b'{"ok":true,"id":2}\n'
+//   sqlite3 $PLANAR_DB 'select prefix, body from session_entries'
+//     action|unlink: removed external link 1
+//     action|unlink: removed external link 2   <- on a session `ensure_active`
+//                                                created; there was none before
+//   $Z unlink 1_0     -> exit 1, b'error: link 10 not found\n'  (SEPARATORS)
+//   $Z unlink 007     -> exit 1, b'error: link 7 not found\n'
+//   $Z unlink _10     -> exit 2, b"error: invalid link id '_10'\n"
+//   $Z workspace doctor          (empty database) -> exit 0, stdout b''
+//   $Z workspace doctor --json   (empty database) -> exit 0, b'{"orgs":[]}\n'
+//   $Z workspace doctor          (one healthy org)
+//     exit 0, stdout b'org:acme ok\n'
+//   $Z workspace doctor --json   (same)
+//     b'{"orgs":[{"slug":"acme","org_id":1,"issues_found":0,
+//       "issues_repaired":[]}]}\n'
+//   $Z skills   -> exit 0, its own help page on stdout (see the case below)
+//
 // Timestamps are the only fields not asserted literally — they are wall
 // clock. Everything around them is.
 
@@ -54,7 +84,10 @@
 
 import std;
 import planar.cli;
+import planar.db;
+import planar.engine.external;
 import planar.engine.identity;
+import planar.cmd.planar.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
@@ -355,4 +388,358 @@ TEST_CASE("annotate list rejects an unknown --status with exit 1", "[cmd][handle
   CHECK(got.code == 1);
   CHECK(got.out.empty());
   CHECK(got.err == "error: unknown status 'bogus'\n");
+}
+
+// =========================================================================
+// Task 6106 — the leaves that were waiting for this layer.
+// =========================================================================
+
+TEST_CASE("parse_int64_zig reproduces std.fmt.parseInt, separators included", "[cmd][args][parity]") {
+  using planar::cmd::parse_int64_zig;
+
+  // Every one of these was captured through `planar unlink <arg>` against
+  // the oracle; the message interpolates the PARSED value, so a divergence
+  // is operator-visible. See parse_int64_zig's doc comment for the table.
+  CHECK(parse_int64_zig("12") == 12);
+  CHECK(parse_int64_zig("+12") == 12);
+  CHECK(parse_int64_zig("-5") == -5);
+  CHECK(parse_int64_zig("007") == 7);
+  CHECK(parse_int64_zig("0") == 0);
+  // The case a `std::from_chars`-only port silently gets wrong.
+  CHECK(parse_int64_zig("1_0") == 10);
+  CHECK(parse_int64_zig("1__0") == 10);
+  CHECK(parse_int64_zig("9223372036854775807") == 9223372036854775807LL);
+
+  CHECK_FALSE(parse_int64_zig("abc").has_value());
+  CHECK_FALSE(parse_int64_zig("12abc").has_value());
+  CHECK_FALSE(parse_int64_zig(" 12").has_value());
+  CHECK_FALSE(parse_int64_zig("12 ").has_value());
+  CHECK_FALSE(parse_int64_zig("0x10").has_value());
+  CHECK_FALSE(parse_int64_zig("_10").has_value());
+  CHECK_FALSE(parse_int64_zig("10_").has_value());
+  CHECK_FALSE(parse_int64_zig("+_1").has_value());
+  CHECK_FALSE(parse_int64_zig("-_1").has_value());
+  CHECK_FALSE(parse_int64_zig("++5").has_value());
+  CHECK_FALSE(parse_int64_zig("").has_value());
+  CHECK_FALSE(parse_int64_zig("+").has_value());
+  CHECK_FALSE(parse_int64_zig("-").has_value());
+  CHECK_FALSE(parse_int64_zig("_").has_value());
+  // Exactly at the i64 boundary, which is where an unchecked accumulator
+  // would wrap instead of refusing.
+  CHECK_FALSE(parse_int64_zig("9223372036854775808").has_value());
+  CHECK_FALSE(parse_int64_zig("99999999999999999999").has_value());
+}
+
+TEST_CASE("unlink on a missing id exits 1 naming the PARSED id", "[cmd][handlers][parity]") {
+  auto const fx  = make_fixture("ulmiss");
+  auto const got = dispatch(fx, {"unlink", "999"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: link 999 not found\n");
+  CHECK(got.db_open);
+
+  // `1_0` addresses link 10 on the reference binary, and the message says
+  // so. This is the assertion that fails if the separator handling is
+  // dropped — the plain "not found" path would still pass on `10`.
+  auto const separated = dispatch(fx, {"unlink", "1_0"});
+  CHECK(separated.code == 1);
+  CHECK(separated.err == "error: link 10 not found\n");
+
+  auto const padded = dispatch(fx, {"unlink", "007"});
+  CHECK(padded.code == 1);
+  CHECK(padded.err == "error: link 7 not found\n");
+}
+
+TEST_CASE("unlink on an unparseable id exits 2 AFTER opening the database", "[cmd][handlers][parity]") {
+  // The ordering is the Zig handler's and it is observable from outside:
+  // `unlink abc` leaves a created, migrated $PLANAR_DB behind. Validating
+  // first would be tidier and would diverge, so `db_open` is asserted TRUE
+  // here where `annotate add`'s equivalent refusal asserts it FALSE.
+  auto const fx  = make_fixture("ulbad");
+  auto const got = dispatch(fx, {"unlink", "abc"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: invalid link id 'abc'\n");
+  CHECK(got.db_open);
+
+  auto const lead = dispatch(fx, {"unlink", "_10"});
+  CHECK(lead.code == 2);
+  CHECK(lead.err == "error: invalid link id '_10'\n");
+}
+
+TEST_CASE("unlink composes engine_external and engine_runtime end to end", "[cmd][handlers][parity][composition]") {
+  // The D20 composition this milestone was named for, and the second
+  // instance of it in the binary. `link::remove` reaches engine_external,
+  // `session::ensure_active` + `append_entry` reach engine_runtime, and
+  // cmake/architecture.cmake FATALs on an edge between them — so the audit
+  // row and the delete can only meet here.
+  auto const fx = make_fixture("ulok");
+
+  std::int64_t first  = 0;
+  std::int64_t second = 0;
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+
+    // `external_systems` has no engine entry point in this tree — the
+    // system surface is not ported (see engine/external/CMakeLists.txt) —
+    // so this one row is raw SQL. The links themselves go through the
+    // engine.
+    auto sys = (*conn)->prepare("insert into external_systems (kind, slug, default_project, auth_method, auth_ref) "
+                                "values ('github-issues', 'gh', 'owner/repo', 'gh-cli', '') returning id");
+    REQUIRE(sys.has_value());
+    auto stepped = sys->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    auto const system_id = sys->column_int64(0);
+
+    namespace link = planar::engine::external::link;
+    auto a         = link::create(
+        **conn, {.entity_kind = link::external_entity_kind::plan, .entity_id = 1, .system_id = system_id, .external_id = "42"});
+    REQUIRE(a.has_value());
+    first  = a->id;
+    auto b = link::create(
+        **conn, {.entity_kind = link::external_entity_kind::plan, .entity_id = 2, .system_id = system_id, .external_id = "43"});
+    REQUIRE(b.has_value());
+    second = b->id;
+  }
+
+  auto const text = dispatch(fx, {"unlink", std::to_string(first)});
+  CHECK(text.code == 0);
+  CHECK(text.err.empty());
+  CHECK(text.out == std::format("unlinked: external link {} removed\n", first));
+
+  auto const json = dispatch(fx, {"unlink", std::to_string(second), "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out == std::format("{{\"ok\":true,\"id\":{}}}\n", second));
+
+  // Gone, and a second attempt is the not-found path.
+  auto const again = dispatch(fx, {"unlink", std::to_string(first)});
+  CHECK(again.code == 1);
+  CHECK(again.err == std::format("error: link {} not found\n", first));
+
+  // The engine_runtime half. There was no session before this test ran, so
+  // `ensure_active` created one — and BOTH unlinks appended to it, in
+  // order. Asserting only "some row exists" would pass with the append
+  // removed from one branch.
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    auto stmt = (*conn)->prepare("select prefix, body from session_entries order by session_id, ordinal");
+    REQUIRE(stmt.has_value());
+
+    std::vector<std::pair<std::string, std::string>> rows;
+    for (;;) {
+      auto stepped = stmt->step();
+      REQUIRE(stepped.has_value());
+      if (*stepped == planar::db::step_result::done) {
+        break;
+      }
+      rows.emplace_back(stmt->column_text(0), stmt->column_text(1));
+    }
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].first == "action");
+    CHECK(rows[0].second == std::format("unlink: removed external link {}", first));
+    CHECK(rows[1].second == std::format("unlink: removed external link {}", second));
+  }
+}
+
+TEST_CASE("unlink attributes the audit row to $PLANAR_VENDOR", "[cmd][handlers][composition]") {
+  // The vendor comes off the CONTEXT's env-lookup, not std::getenv — which
+  // is what lets this case exist at all. It is also the assertion that
+  // fails if the handler is "simplified" to call
+  // `session::vendor_from_env()`: that function reads the real process
+  // environment, where PLANAR_VENDOR is unset, so the session would be
+  // attributed to `cli` regardless of the fixture.
+  auto fx = make_fixture("ulvendor");
+  fx.vars.emplace("PLANAR_VENDOR", "claude");
+  fx.vars.emplace("PLANAR_VENDOR_SESSION_ID", "abc123");
+
+  auto const got = dispatch(fx, {"unlink", "999"});
+  REQUIRE(got.code == 1); // no link, but the refusal path writes no session either
+
+  // Now a real one, so a session is actually opened.
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    auto sys = (*conn)->prepare("insert into external_systems (kind, slug, default_project, auth_method, auth_ref) "
+                                "values ('github-issues', 'gh', 'owner/repo', 'gh-cli', '') returning id");
+    REQUIRE(sys.has_value());
+    auto stepped = sys->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    namespace link = planar::engine::external::link;
+    REQUIRE(link::create(**conn, {.entity_kind = link::external_entity_kind::task,
+                                  .entity_id   = 7,
+                                  .system_id   = sys->column_int64(0),
+                                  .external_id = "77"})
+                .has_value());
+  }
+  REQUIRE(dispatch(fx, {"unlink", "1"}).code == 0);
+
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    auto stmt = (*conn)->prepare("select vendor, vendor_session_id from sessions");
+    REQUIRE(stmt.has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    CHECK(stmt->column_text(0) == "claude");
+    CHECK(stmt->column_text(1) == "abc123");
+  }
+}
+
+TEST_CASE("skills renders its own help page and exits 0 without a database", "[cmd][handlers][parity]") {
+  // A childless node is a LEAF here (planar.cli.cmd), so without a handler
+  // this verb would answer `error: not implemented yet` and exit 64. The
+  // oracle answers exit 0 and a help page; these bytes are that page.
+  auto const fx  = make_fixture("skills");
+  auto const got = dispatch(fx, {"skills"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK_FALSE(got.db_open);
+  CHECK(got.out == "skills\n"
+                   "\n"
+                   "The unified skill source tree under skills/src/ is rendered by the\n"
+                   "  external scriptorium binary (plan 918). Planar no longer renders vendor\n"
+                   "  projections nor tracks their install-drift in-band; use `scriptorium\n"
+                   "  check`/`scriptorium status` instead. This command has no subcommands.\n"
+                   "\n"
+                   "USAGE:\n"
+                   "  skills\n");
+
+  // `planar skills --help` renders the SAME page through dispatch's help
+  // path rather than the handler. Both routes must agree — if they did not,
+  // the handler would be rendering something the tree does not say.
+  auto const helped = dispatch(fx, {"skills", "--help"});
+  CHECK(helped.code == 0);
+  CHECK(helped.out == got.out);
+}
+
+TEST_CASE("skills rejects a positional the way a flagless leaf must", "[cmd][handlers][parity]") {
+  auto const fx  = make_fixture("skillsx");
+  auto const got = dispatch(fx, {"skills", "extra"});
+  CHECK(got.code == 2);
+  CHECK(got.out == "error: too many positional arguments (got extra)\n");
+  CHECK(got.err == "error: TooManyPositionals\n");
+}
+
+TEST_CASE("workspace doctor on an empty database: zero bytes vs {\"orgs\":[]}", "[cmd][handlers][parity][terminator]") {
+  // The two render modes of ONE leaf disagreeing on empty. Both renderers
+  // return COMPLETE payloads and the handler appends to neither; a blanket
+  // append would put a stray newline on the text path.
+  auto const fx = make_fixture("wdempty");
+
+  auto const text = dispatch(fx, {"workspace", "doctor"});
+  CHECK(text.code == 0);
+  CHECK(text.out.empty());
+  CHECK(text.err.empty());
+  CHECK(text.db_open);
+
+  auto const json = dispatch(fx, {"workspace", "doctor", "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out == "{\"orgs\":[]}\n");
+}
+
+TEST_CASE("workspace doctor diagnoses and repairs a registered org", "[cmd][handlers][parity]") {
+  // Doctor is NOT read-only: it creates the state directory as a side
+  // effect of being asked what is wrong, and it writes to the root recorded
+  // in the association's config_json — not to the cwd. Both are asserted,
+  // because both are the reason this leaf is only safe against a scratch
+  // $PLANAR_DB.
+  auto const fx        = make_fixture("wdorg");
+  auto const root_path = (fx.root / "proj").string();
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    auto const created =
+        planar::engine::identity::create(**conn, {.slug        = "acme",
+                                                  .kind        = planar::engine::identity::association_kind::org,
+                                                  .config_json = std::format(R"({{"root_path":"{}"}})", root_path)});
+    REQUIRE(created.has_value());
+  }
+
+  auto const state_dir = fx.root / "home" / "workspaces" / "1";
+  REQUIRE_FALSE(std::filesystem::exists(state_dir));
+
+  auto const first = dispatch(fx, {"workspace", "doctor"});
+  CHECK(first.code == 0);
+  CHECK(first.err.empty());
+  // Five entries, and the shape is worth reading: the AGENTS.md target is
+  // reported `missing` and symlinked TO in the SAME pass, so the links
+  // dangle until `workspace regenerate` writes it. That is the oracle's
+  // behavior, captured against this exact fixture (an org association with
+  // a `root_path` and nothing on disk yet), not an artifact of the port.
+  // Note both links point at AGENTS.md — CLAUDE.md is an alias, not a
+  // second target.
+  CHECK(first.out == std::format("fix: created state dir {0}\n"
+                                 "missing: {0}/AGENTS.md (run `planar workspace regenerate` after M3)\n"
+                                 "missing: {0}/routing-table.json (run `planar workspace regenerate` after M3)\n"
+                                 "fix: reinstalled symlink {1}/AGENTS.md \xe2\x86\x92 {0}/AGENTS.md\n"
+                                 "fix: reinstalled symlink {1}/CLAUDE.md \xe2\x86\x92 {0}/AGENTS.md\n"
+                                 "org:acme repaired 5 issues\n",
+                                 state_dir.string(), root_path));
+  // The repair actually happened, in $PLANAR_HOME — not the cwd.
+  CHECK(std::filesystem::exists(state_dir));
+  // And the root guidance links landed at the DATABASE's root_path.
+  CHECK(std::filesystem::is_symlink(fx.root / "proj" / "AGENTS.md"));
+  CHECK(std::filesystem::is_symlink(fx.root / "proj" / "CLAUDE.md"));
+
+  // Second pass: the state dir now exists, so the `fix` line is gone and
+  // `issues_found` drops. That the count MOVES is what proves the first
+  // pass repaired rather than merely reported.
+  auto const second = dispatch(fx, {"workspace", "doctor", "--json"});
+  CHECK(second.code == 0);
+  CHECK(second.out == std::format("{{\"orgs\":[{{\"slug\":\"acme\",\"org_id\":1,\"issues_found\":2,"
+                                  "\"issues_repaired\":[{{\"kind\":\"missing\",\"detail\":"
+                                  "\"{}/AGENTS.md (run `planar workspace regenerate` after M3)\"}},"
+                                  "{{\"kind\":\"missing\",\"detail\":"
+                                  "\"{}/routing-table.json (run `planar workspace regenerate` after M3)\"}}]}}]}}\n",
+                                  state_dir.string(), state_dir.string()));
+}
+
+TEST_CASE("workspace doctor reports an unreadable config without repairing the root", "[cmd][handlers][parity]") {
+  // `uncertain` is the shape that both skips the repair AND says why. A
+  // handler that dropped the error entry would look identical on the happy
+  // path.
+  auto const fx = make_fixture("wdbad");
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::engine::identity::create(
+                **conn,
+                {.slug = "acme", .kind = planar::engine::identity::association_kind::org, .config_json = std::string{"{oops"}})
+                .has_value());
+  }
+
+  auto const got = dispatch(fx, {"workspace", "doctor"});
+  CHECK(got.code == 0);
+  // Four, not five: the two `missing` targets and the created state dir are
+  // still reported, but the two symlink `fix` lines the readable-config
+  // fixture produces are ABSENT — the repair was skipped, which is the
+  // whole point of `uncertain`.
+  CHECK(got.out.ends_with("error: workspace config_json is malformed; skipping root guidance repair\n"
+                          "org:acme repaired 4 issues\n"));
+  CHECK(std::ranges::count(got.out, '\n') == 5);
+  // No root guidance was installed, because the shape could not be read.
+  CHECK_FALSE(std::filesystem::exists(fx.root / "proj" / "AGENTS.md"));
 }

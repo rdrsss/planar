@@ -42,6 +42,66 @@
 # mapping is pinned with 0, 1, 2 and 64 all produced by the same binary so a
 # mapping collapsed to a single code cannot pass.
 #
+# --- task 6106: the leaves that were waiting on this layer ----------------
+#
+# Three more, drawn from the six this file's original header listed as
+# blocked. They are NOT interchangeable, and the difference is the cycle's
+# main finding:
+#
+#   unlink             Blocked TWICE. Layer 3 was missing AND so was its
+#                      layer-2 bucket -- there was no engine_external in
+#                      the tree at all. src/lib/engine/external/ was stood
+#                      up here (create/show/delete only; see that
+#                      directory's CMakeLists for what is deferred and with
+#                      which verb). The leaf then composes engine_external
+#                      + engine_runtime, two buckets the guard FATALs an
+#                      edge between -- the second instance of the D20 shape
+#                      `annotate add` proves, and the one this milestone
+#                      was named for.
+#   workspace doctor   Blocked ONLY on layer 3. engine_workspace (task
+#                      6110) already carried the diagnose-and-repair pass
+#                      and BOTH renderers, so the handler is nine lines of
+#                      wiring. That thinness is evidence, not a shortcut.
+#   skills             Retired upstream (plan 918 M5) and reduced to a
+#                      placeholder node -- but a placeholder that this
+#                      tree, unlike the Zig one, must bind to a handler,
+#                      because `planar.cli.cmd` classifies a childless node
+#                      as a LEAF and dispatch would otherwise answer exit
+#                      64 against the oracle's help page and exit 0.
+#
+# NOT landed, each blocked at LAYER 2 rather than layer 3 -- which corrects
+# the premise this file was written under. The dependency inventory is in
+# task 6106's coder report; the summary:
+#
+#   dashboard                  needs engine.runtime.agentactivity (5,702
+#                              lines across seven Zig files; claims,
+#                              next-work, claim-scope resolution, the
+#                              latest-action fold-in and its JSON writers).
+#                              Not ported.
+#   report                     needs engine.introspect AND
+#                              engine.introspection_adapters. Neither is
+#                              ported. Its OTHER reputed blocker -- that it
+#                              scans the operator's home directory for
+#                              vendor transcripts and is therefore not
+#                              hermetically testable -- does not survive a
+#                              probe: run under this file's own pinned
+#                              arena, `report --json` reports every vendor
+#                              as {"state":"unavailable","scanned":0} and
+#                              cli_log as "disabled". The scan follows
+#                              $HOME, which run_pinned() already redirects,
+#                              so the leaf IS testable here exactly like
+#                              every other one. The unported buckets are
+#                              the whole of what blocks it.
+#   spec ingest --apply        needs engine.ingestor.apply (1,616 lines)
+#                              and engine.workbench (unported entirely).
+#                              engine_ingest here is the READ side only.
+#   import / synthesize        need engine.import / engine.synthesize +
+#                              engine.llm. None ported.
+#
+# Omitting an unported child from a group node stays the rule (`workflow
+# run`), so `planar workspace --help` lists one command where the oracle
+# lists four and remains not oracle-comparable; the LEAF pages still are.
+#
 # --- terminator contract ---------------------------------------------------
 #
 # Inherited from commit 5728133 (the M4 boundary review's F1) and NOT
@@ -95,6 +155,9 @@ planar_binary(planar
     handlers/version.cppm
     handlers/workflow.cppm
     handlers/annotate.cppm
+    handlers/unlink.cppm
+    handlers/skills.cppm
+    handlers/workspace.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -103,13 +166,19 @@ planar_binary(planar
     handlers/version.cpp
     handlers/workflow.cpp
     handlers/annotate.cpp
+    handlers/unlink.cpp
+    handlers/skills.cpp
+    handlers/workspace.cpp
     dispatch.cpp
   DEPENDS
     cli
     db
+    engine_external
     engine_identity
     engine_planning
-    engine_workflows)
+    engine_runtime
+    engine_workflows
+    engine_workspace)
 
 if(TARGET planar_cmd_planar_tests)
   # parity.t.cpp shells the built binary and diffs its stdout, stderr and

@@ -9,8 +9,11 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.annotate;
+import planar.cmd.planar.handlers.skills;
+import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workflow;
+import planar.cmd.planar.handlers.workspace;
 
 namespace planar::cmd {
 
@@ -82,6 +85,12 @@ auto handlers() -> handler_table {
   table.emplace("workflow show", handlers::workflow_show);
   table.emplace("annotate add", handlers::annotate_add);
   table.emplace("annotate list", handlers::annotate_list);
+  table.emplace("unlink", handlers::unlink);
+  // `skills` has no subcommands, so `planar.cli.cmd` classifies it as a
+  // leaf and it needs an entry here even though the verb is retired and
+  // does nothing but render its own help page. See that handler's header.
+  table.emplace("skills", handlers::skills);
+  table.emplace("workspace doctor", handlers::workspace_doctor);
   return table;
 }
 

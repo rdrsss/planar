@@ -13,11 +13,13 @@
 /// porting the remaining verbs is the milestones that follow. The
 /// consequence to be clear about, because it is visible in output: any
 /// help page for a node whose children are only PARTLY ported lists only
-/// the ported children. `planar --help` shows four verbs, not
-/// forty-seven; `planar workflow --help` shows `list` and `show` but not
-/// `run` (deferred with its process-spawn dependency —
-/// `src/lib/engine/workflows/CMakeLists.txt` records why). Those pages are
-/// therefore NOT oracle-comparable and no test claims they are.
+/// the ported children. `planar --help` shows six verbs, not forty-seven;
+/// `planar workflow --help` shows `list` and `show` but not `run`
+/// (deferred with its process-spawn dependency —
+/// `src/lib/engine/workflows/CMakeLists.txt` records why), and `planar
+/// workspace --help` shows `doctor` alone where the oracle shows four.
+/// Those pages are therefore NOT oracle-comparable and no test claims they
+/// are.
 ///
 /// LEAF help pages are a different matter and ARE pinned byte-for-byte:
 /// a leaf's page is derived entirely from its own node — name, desc,
