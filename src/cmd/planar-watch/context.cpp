@@ -8,7 +8,6 @@ module;
 module planar.cmd.planar_watch.context;
 
 import std;
-import planar.cli;
 import planar.db;
 import planar.db.migrate;
 import planar.db.migrations;
@@ -70,7 +69,7 @@ auto resolve_db_path(const env_lookup& env) -> std::expected<std::filesystem::pa
   }
   auto const home = env("HOME");
   if (!home.has_value()) {
-    return std::unexpected(error_from_body(cli::domain_error_kind::generic_failure,
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
                                            "neither PLANAR_DB nor HOME is set; cannot locate the Planar database"));
   }
   return std::filesystem::path{*home} / ".planar" / "planar.db";
@@ -99,7 +98,7 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   auto opened = db::connection::open_read_only(_db_path.string());
   if (!opened) {
     return std::unexpected(
-        error_from_body(cli::domain_error_kind::generic_failure,
+        error_from_body(domain_error_kind::generic_failure,
                         std::format("failed to open database {}: {}", _db_path.string(), opened.error().message_)));
   }
   _db.emplace(std::move(*opened));
@@ -119,7 +118,7 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
                          "run `planar init` to apply migrations\n",
                          stored, _db_path.string(), maximum);
     _db.reset();
-    return std::unexpected(error_from_body(cli::domain_error_kind::schema_version_behind, "SchemaVersionBehind"));
+    return std::unexpected(error_from_body(domain_error_kind::schema_version_behind, "SchemaVersionBehind"));
   }
   if (stored > maximum) {
     err() << std::format("error: schema version {} in {} is newer than this binary's embedded max ({}); "
@@ -128,7 +127,7 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
                          "then retry\n",
                          stored, _db_path.string(), maximum, stored);
     _db.reset();
-    return std::unexpected(error_from_body(cli::domain_error_kind::schema_version_ahead, "SchemaVersionAhead"));
+    return std::unexpected(error_from_body(domain_error_kind::schema_version_ahead, "SchemaVersionAhead"));
   }
 
   return &*_db;

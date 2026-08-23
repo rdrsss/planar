@@ -1,5 +1,5 @@
 /// @file version.cpp
-/// @brief Implementation of `planar.cli.version` (see version.cppm).
+/// @brief Implementation of `planar.cliapp.version` (see version.cppm).
 ///
 /// Oracle capture this module's text-rendering shape was checked against
 /// (task brief: derive expected values by running the reference binary,
@@ -14,11 +14,11 @@
 /// contract below.
 module;
 
-module planar.cli.version;
+module planar.cliapp.version;
 
 import std;
 
-namespace planar::cli {
+namespace planar::cliapp {
 
 auto current_build_info() -> build_info {
   build_info info{};
@@ -45,4 +45,4 @@ auto compiler_version_string() -> std::string {
 #endif
 }
 
-} // namespace planar::cli
+} // namespace planar::cliapp

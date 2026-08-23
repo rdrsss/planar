@@ -28,7 +28,8 @@ module;
 export module planar.cmd.planar_agent.handlers.claims;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
 
@@ -38,7 +39,7 @@ namespace planar::cmd::agent::handlers {
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto pull(context& ctx, const cli::match_result& args) -> handler_result;
+export auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent peek <plan-id> [--json]`.
 ///
@@ -48,13 +49,13 @@ export auto pull(context& ctx, const cli::match_result& args) -> handler_result;
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto peek(context& ctx, const cli::match_result& args) -> handler_result;
+export auto peek(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent claim --entity <ref> [flags]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto claim(context& ctx, const cli::match_result& args) -> handler_result;
+export auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent heartbeat --claim <token> [flags]`.
 ///
@@ -66,7 +67,7 @@ export auto claim(context& ctx, const cli::match_result& args) -> handler_result
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto heartbeat(context& ctx, const cli::match_result& args) -> handler_result;
+export auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent claim-associate --claim <token> --run <id>`.
 ///
@@ -77,6 +78,6 @@ export auto heartbeat(context& ctx, const cli::match_result& args) -> handler_re
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto claim_associate(context& ctx, const cli::match_result& args) -> handler_result;
+export auto claim_associate(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::agent::handlers

@@ -43,7 +43,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.dispatch;
@@ -97,9 +98,9 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::agent::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto const         tree  = planar::cmd::agent::root_command();
-  auto const         table = planar::cmd::agent::handlers(tree);
-  int const          code  = planar::cmd::agent::run(ctx, tree, table);
+  auto const         tree  = planar::cmd::agent::root_app();
+  auto const         table = planar::cmd::agent::handlers(*tree);
+  int const          code  = planar::cmd::agent::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
 }
 
@@ -122,7 +123,7 @@ TEST_CASE("planar-agent version names THIS binary and opens no database", "[cmd]
   CHECK(got.out.ends_with("\n"));
 
   // FIELD COUNT DOES NOT MATCH, and this assertion records that rather
-  // than asserting the claim. `planar.cli.version`'s module header says the
+  // than asserting the claim. `planar.cliapp.version`'s module header says the
   // `cxx` divergence "preserves the field COUNT — a script splitting on
   // whitespace still finds five tokens". It does not:
   // `compiler_version_string()` returns `Clang 22.1.8`, which itself
@@ -130,7 +131,7 @@ TEST_CASE("planar-agent version names THIS binary and opens no database", "[cmd]
   // `planar-agent dev dev zig 0.16.0` splits into five. Task 6106 found
   // this on the operator binary (src/cmd/planar/handlers.t.cpp) and filed
   // it against layer 1; this case confirms it is not binary-specific.
-  // Pinned at the ACTUAL value so a later fix in `planar.cli.version` shows
+  // Pinned at the ACTUAL value so a later fix in `planar.cliapp.version` shows
   // up here as a failing test rather than passing silently.
   auto const fields = std::ranges::count(got.out, ' ') + 1;
   CHECK(fields == 6);
@@ -178,15 +179,21 @@ TEST_CASE("planar-agent maps a parse failure to exit 1, not the operator binary'
   auto const unknown_verb = dispatch(fx, {"nosuchverb"});
   CHECK(unknown_verb.code == 1);
   // Both streams, and that is the oracle's shape too — a reasonable person
-  // would have put the parse error on stderr alone and been wrong.
-  CHECK(unknown_verb.out == "error: unknown subcommand (got nosuchverb) [in: planar-agent]\n");
-  CHECK(unknown_verb.err == "error: UnknownSubcommand\n");
+  // would have put the parse error on stderr alone and been wrong. Task
+  // 6123 re-baselined the WORDING onto CLI11's (pinned exactly below) but
+  // kept the shape and, critically, the exit code.
+  CHECK(unknown_verb.out == "error: planar-agent: The following argument was not expected: nosuchverb\n");
+  CHECK(unknown_verb.err == "error: ExtrasError\n");
   CHECK_FALSE(unknown_verb.db_open);
 
   auto const unknown_flag = dispatch(fx, {"version", "--badflag"});
   CHECK(unknown_flag.code == 1);
-  CHECK(unknown_flag.out == "error: unknown flag (got --badflag)\n");
-  CHECK(unknown_flag.err == "error: UnknownFlag\n");
+  // CLI11 reports an unknown FLAG and an unknown SUBCOMMAND under the same
+  // `ExtrasError` name, where etcli distinguished `UnknownFlag` from
+  // `UnknownSubcommand`. A named coarsening of the swap; the stdout line
+  // still identifies the offending token and the command that rejected it.
+  CHECK(unknown_flag.out == "error: version: The following argument was not expected: --badflag\n");
+  CHECK(unknown_flag.err == "error: ExtrasError\n");
 }
 
 TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][handlers]") {
@@ -196,11 +203,34 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   CHECK(explicit_help.code == 0);
   CHECK(explicit_help.err.empty());
   CHECK_FALSE(explicit_help.db_open);
-  CHECK(explicit_help.out.starts_with("planar-agent\n"));
-  // The desc renders INDENTED, which is `planar.cli.help`'s desc branch —
-  // this root deliberately carries no long_desc. See tree.cpp.
-  CHECK(
-      explicit_help.out.contains("\n  Agent-callable coordination binary (pull / claim / complete / heartbeat / reconcile).\n"));
+  // Task 6123: the root page is CLI11's now. It leads with the
+  // description (wrapped to the formatter's width) and then lists the
+  // fourteen ported verbs. The ROOT page is still not oracle-comparable —
+  // the oracle lists eighteen — so this checks the content that is this
+  // binary's own contract rather than pinning a page that is expected to
+  // grow as verbs land.
+  CHECK(explicit_help.out.starts_with("Agent-callable coordination binary (pull / claim / complete / heartbeat /\n"
+                                      "reconcile).\n"));
+  CHECK(explicit_help.out.contains("SUBCOMMANDS:"));
+  // Matched as a LISTING LINE (`"\n  <verb>"`), not as a bare substring.
+  // CLI11 indents a subcommand entry by exactly two spaces and wraps its
+  // description to a deeper column, so this form matches an entry and
+  // nothing else — which matters for the negative loop below, where a bare
+  // `contains("dispatch")` is satisfied by `claim-associate`'s own
+  // description ("...at dispatch time"). That false positive is exactly
+  // what a substring check would have shipped.
+  auto const listed = [&](std::string_view verb) { return explicit_help.out.contains("\n  " + std::string{verb}); };
+  for (auto const& verb : {"pull", "peek", "claim", "heartbeat", "claim-associate", "complete", "fail", "release", "block",
+                           "action", "reconcile", "abort", "version", "schema"}) {
+    INFO("ported verb missing from the root page: " << verb);
+    CHECK(listed(verb));
+  }
+  // And the four deferred verbs are absent from the page as well as the
+  // tree — a page that advertised them would be a lie to an operator.
+  for (auto const& deferred : {"ingest", "dispatch", "context", "run"}) {
+    INFO("deferred verb advertised on the root page: " << deferred);
+    CHECK_FALSE(listed(deferred));
+  }
 
   // A bare invocation is the same page, exit 0 — matching the oracle.
   auto const bare = dispatch(fx, {});
@@ -209,25 +239,31 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
 
   auto const leaf_help = dispatch(fx, {"version", "--help"});
   CHECK(leaf_help.code == 0);
-  // Leaf help pages ARE oracle-comparable byte for byte: a leaf's page is
-  // derived entirely from its own node, so a leaf ported at all is ported
-  // completely.
-  CHECK(leaf_help.out == "version\n"
+  // A leaf's page is derived entirely from its own node, so a leaf ported
+  // at all is ported completely — which is why leaf pages are pinned
+  // EXACTLY (trailing spaces included) rather than loosened to a
+  // `contains` check. Task 6123 re-baselined these bytes from the oracle's
+  // renderer onto CLI11's; the reason to pin them did not change.
+  CHECK(leaf_help.out == "Print the planar-agent version, commit, and zig runtime.\n"
                          "\n"
-                         "  Print the planar-agent version, commit, and zig runtime.\n"
                          "\n"
-                         "USAGE:\n"
-                         "  version\n");
+                         "version [OPTIONS]\n"
+                         "\n"
+                         "\n"
+                         "OPTIONS:\n"
+                         "  -h,     --help              Print this help message and exit\n");
 }
 
-TEST_CASE("planar-agent leaf help for schema matches the oracle byte for byte", "[cmd][agent][handlers]") {
+TEST_CASE("planar-agent leaf help for schema is pinned exactly", "[cmd][agent][handlers]") {
   auto const fx  = make_fixture("schemahelp");
   auto const got = dispatch(fx, {"schema", "--help"});
   CHECK(got.code == 0);
-  CHECK(got.out == "schema\n"
+  CHECK(got.out == "Print the full command tree as a JSON catalog (flags, aliases, positionals).\n"
                    "\n"
-                   "  Print the full command tree as a JSON catalog (flags, aliases, positionals).\n"
                    "\n"
-                   "USAGE:\n"
-                   "  schema\n");
+                   "schema [OPTIONS]\n"
+                   "\n"
+                   "\n"
+                   "OPTIONS:\n"
+                   "  -h,     --help              Print this help message and exit\n");
 }

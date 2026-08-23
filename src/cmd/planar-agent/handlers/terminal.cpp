@@ -4,7 +4,8 @@
 module planar.cmd.planar_agent.handlers.terminal;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.agentrender;
@@ -58,21 +59,21 @@ auto emit(context& ctx, const atomic::terminal_result& result, bool json) -> han
 
 } // namespace
 
-auto complete(context& ctx, const cli::match_result& args) -> handler_result {
+auto complete(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const summary = flag_string(args, "--summary");
+  auto const summary = cliapp::flag_string(args, "--summary");
   auto const result =
-      atomic::complete_work(**conn, flag_string(args, "--claim").value_or(std::string{}), view(summary), task_policy());
+      atomic::complete_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(summary), task_policy());
   if (!result) {
     return std::unexpected(verb_error("complete", result.error()));
   }
-  return emit(ctx, *result, flag_bool(args, "--json"));
+  return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
 }
 
-auto fail(context& ctx, const cli::match_result& args) -> handler_result {
+auto fail(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -81,43 +82,43 @@ auto fail(context& ctx, const cli::match_result& args) -> handler_result {
   // to "unknown", so this lookup cannot miss — but it falls back rather
   // than asserting, because a tree-authoring mistake should not abort in
   // an operator's shell.
-  auto const category_text = flag_string(args, "--category").value_or(std::string{"unknown"});
+  auto const category_text = cliapp::flag_string(args, "--category").value_or(std::string{"unknown"});
   auto const category      = aa::failure_category_from_text(category_text).value_or(aa::failure_category::unknown);
-  auto const reason        = flag_string(args, "--reason").value_or(std::string{});
+  auto const reason        = cliapp::flag_string(args, "--reason").value_or(std::string{});
   auto const result =
-      atomic::fail_work(**conn, flag_string(args, "--claim").value_or(std::string{}), reason, category, task_policy());
+      atomic::fail_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), reason, category, task_policy());
   if (!result) {
     return std::unexpected(verb_error("fail", result.error()));
   }
-  return emit(ctx, *result, flag_bool(args, "--json"));
+  return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
 }
 
-auto release(context& ctx, const cli::match_result& args) -> handler_result {
+auto release(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const reason = flag_string(args, "--reason");
+  auto const reason = cliapp::flag_string(args, "--reason");
   auto const result =
-      atomic::release_work(**conn, flag_string(args, "--claim").value_or(std::string{}), view(reason), task_policy());
+      atomic::release_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(reason), task_policy());
   if (!result) {
     return std::unexpected(verb_error("release", result.error()));
   }
-  return emit(ctx, *result, flag_bool(args, "--json"));
+  return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
 }
 
-auto block(context& ctx, const cli::match_result& args) -> handler_result {
+auto block(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const reason = flag_string(args, "--reason");
-  auto const result = atomic::block_work(**conn, flag_string(args, "--claim").value_or(std::string{}),
-                                         flag_int(args, "--blocker").value_or(0), view(reason), task_policy());
+  auto const reason = cliapp::flag_string(args, "--reason");
+  auto const result = atomic::block_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}),
+                                         cliapp::flag_int(args, "--blocker").value_or(0), view(reason), task_policy());
   if (!result) {
     return std::unexpected(verb_error("block", result.error()));
   }
-  return emit(ctx, *result, flag_bool(args, "--json"));
+  return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
 }
 
 } // namespace planar::cmd::agent::handlers

@@ -1,139 +1,40 @@
 /// @file args.cppm
-/// @brief `planar.cmd.planar_agent.args` — typed accessors over a parsed
-/// `cli::match_result`, plus the two value parsers every claim verb runs
-/// on operator input (plan 996, task 6038).
+/// @brief `planar.cmd.planar_agent.args` — the two value parsers that
+/// exist ONLY in this binary (plan 996, tasks 6038 and 6123).
 ///
-/// ## Why this is a second copy of `planar.cmd.planar.args`
+/// ## Task 6123 deleted the copies; this is what was actually
+/// binary-specific
 ///
-/// Because D18 forbids a `cmd_* -> cmd_*` edge and
-/// `cmake/architecture.cmake` FATALs at configure time on one. The four
-/// accessors below ARE byte-for-byte what the operator binary's `args`
-/// module holds, and that duplication is the same trade this directory
-/// already made for `context`, `exit`, `handler`, `dispatch` and `tree`:
-/// ~60 lines of identical-looking code beats one shared module that has to
-/// carry a `binary_kind` parameter nobody can see at a call site. See
-/// `src/cmd/planar-agent/CMakeLists.txt`'s header for the full argument.
+/// This module used to open with four accessors (`flag_bool`,
+/// `flag_string`, `flag_int`, `positional_int`) and `parse_int64_zig` that
+/// were byte-for-byte the operator binary's, duplicated because D18
+/// forbids a `cmd_* -> cmd_*` edge. All five now live once, at layer 1, in
+/// `planar.cliapp.args` — reachable DOWNWARD by every binary, which D18
+/// has always permitted. That is the "consolidate on the survivor"
+/// instruction from the task brief, applied to its root cause rather than
+/// to one of its two copies: the tree carried THREE implementations of
+/// Zig's `parseInt` semantics (this one, `cmd/planar/args.cppm`'s, and
+/// `cli/parser.cpp`'s `numeric::normalize_int_token`) and now carries one.
 ///
-/// What is NOT a copy is everything below `parse_int64_zig` —
-/// `parse_ttl_seconds` and `parse_entity_ref` exist only in this binary,
-/// because only this binary has leases and entity refs.
+/// Handler call sites now spell them
+/// `cliapp::flag_string(args, "--claim")`, qualified rather than
+/// re-exported through a using-declaration: the qualification says where
+/// the one definition lives, and a re-export would put an undocumented
+/// alias in this module's Doxygen surface for no reading benefit.
+///
+/// What was NEVER a copy is everything below — `parse_ttl_seconds` and
+/// `parse_entity_ref` exist only in this binary, because only this binary
+/// has leases and entity refs.
 module;
 
 export module planar.cmd.planar_agent.args;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.engine.runtime.agentactivity;
 
 namespace planar::cmd::agent {
-
-/// @brief Read a boolean flag.
-/// @param args The parsed result.
-/// @param name The canonical long name, e.g. `"--json"`.
-/// @param fallback Returned when absent or not a boolean.
-/// @return The flag's value.
-export auto flag_bool(const cli::match_result& args, std::string_view name, bool fallback = false) -> bool {
-  auto const it = args.flags.find(std::string{name});
-  if (it == args.flags.end()) {
-    return fallback;
-  }
-  if (auto const* value = std::get_if<bool>(&it->second)) {
-    return *value;
-  }
-  return fallback;
-}
-
-/// @brief Read a string flag.
-///
-/// Returns unset for an ABSENT flag. Note that an explicitly-empty
-/// `--status ""` is present-and-empty, not absent, and the two behave
-/// differently at the heartbeat call site — see that handler.
-/// @param args The parsed result.
-/// @param name The canonical long name, e.g. `"--claim"`.
-/// @return The flag's value, or unset when absent or not a string.
-export auto flag_string(const cli::match_result& args, std::string_view name) -> std::optional<std::string> {
-  auto const it = args.flags.find(std::string{name});
-  if (it == args.flags.end()) {
-    return std::nullopt;
-  }
-  if (auto const* value = std::get_if<std::string>(&it->second)) {
-    return *value;
-  }
-  return std::nullopt;
-}
-
-/// @brief Read an integer flag.
-/// @param args The parsed result.
-/// @param name The canonical long name, e.g. `"--blocker"`.
-/// @return The flag's value, or unset when absent or not an integer.
-export auto flag_int(const cli::match_result& args, std::string_view name) -> std::optional<std::int64_t> {
-  auto const it = args.flags.find(std::string{name});
-  if (it == args.flags.end()) {
-    return std::nullopt;
-  }
-  if (auto const* value = std::get_if<std::int64_t>(&it->second)) {
-    return *value;
-  }
-  return std::nullopt;
-}
-
-/// @brief Read an integer positional.
-/// @param args The parsed result.
-/// @param name The positional's declared name, e.g. `"plan-id"`.
-/// @return The value, or unset when absent or not an integer.
-export auto positional_int(const cli::match_result& args, std::string_view name) -> std::optional<std::int64_t> {
-  auto const it = args.positionals.find(std::string{name});
-  if (it == args.positionals.end()) {
-    return std::nullopt;
-  }
-  if (auto const* value = std::get_if<std::int64_t>(&it->second)) {
-    return *value;
-  }
-  return std::nullopt;
-}
-
-/// @brief Parse a decimal integer exactly as Zig's
-/// `std.fmt.parseInt(i64, s, 10)` does.
-///
-/// The same function `planar.cmd.planar.args` carries, and for the same
-/// reason: Zig accepts a leading `+` and UNDERSCORE digit separators
-/// (`1_0` is 10), both of which `std::from_chars` rejects and both of
-/// which are operator-reachable. See that module's doc comment for the
-/// full capture table.
-/// @param raw The raw argument text.
-/// @return The parsed value, or unset when Zig's parser would have raised.
-export auto parse_int64_zig(std::string_view raw) -> std::optional<std::int64_t> {
-  std::string_view body     = raw;
-  bool             negative = false;
-  if (!body.empty() && (body.front() == '+' || body.front() == '-')) {
-    negative = body.front() == '-';
-    body.remove_prefix(1);
-  }
-  auto const is_digit = [](char c) { return c >= '0' && c <= '9'; };
-  if (body.empty() || !is_digit(body.front()) || !is_digit(body.back())) {
-    return std::nullopt;
-  }
-  std::string digits;
-  digits.reserve(body.size() + 1);
-  if (negative) {
-    digits.push_back('-');
-  }
-  for (char const c : body) {
-    if (c == '_') {
-      continue;
-    }
-    if (!is_digit(c)) {
-      return std::nullopt;
-    }
-    digits.push_back(c);
-  }
-  std::int64_t value   = 0;
-  auto const [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), value, 10);
-  if (ec != std::errc{} || ptr != digits.data() + digits.size()) {
-    return std::nullopt;
-  }
-  return value;
-}
 
 /// @brief Parse a `--ttl` / `--stale-after` value into whole seconds.
 ///
@@ -267,7 +168,7 @@ export auto parse_entity_ref(std::string_view text) -> std::expected<entity_ref,
   if (id_text.empty()) {
     return std::unexpected(entity_ref_error::invalid_entity_ref);
   }
-  auto const id = parse_int64_zig(id_text);
+  auto const id = cliapp::parse_int64_zig(id_text);
   if (!id.has_value()) {
     return std::unexpected(entity_ref_error::invalid_entity_ref);
   }

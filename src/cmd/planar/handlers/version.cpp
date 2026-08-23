@@ -4,17 +4,18 @@
 module planar.cmd.planar.handlers.version;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.version;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 
 namespace planar::cmd::handlers {
 
-auto version(context& ctx, const cli::match_result& args) -> handler_result {
+auto version(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   (void)args;
   // `render_version_text` returns the complete stdout payload, trailing
   // newline included. Written verbatim; nothing is appended.
-  ctx.out() << cli::render_version_text(cli::current_build_info(), cli::compiler_version_string());
+  ctx.out() << cliapp::render_version_text(cliapp::current_build_info(), cliapp::compiler_version_string());
   return {};
 }
 

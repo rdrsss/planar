@@ -25,7 +25,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
 import planar.cmd.planar_agent.context;
@@ -91,7 +92,7 @@ TEST_CASE("planar-agent refuses a database it would have to migrate", "[cmd][age
   // init`" case zig/src/runtime/runtime.zig calls out.
   auto const opened = ctx.ensure_db();
   REQUIRE_FALSE(opened.has_value());
-  CHECK(opened.error().kind == planar::cli::domain_error_kind::schema_version_behind);
+  CHECK(opened.error().kind == planar::cmd::agent::domain_error_kind::schema_version_behind);
 
   // Exit 7, and this is the second per-binary divergence task 6066 found:
   // `planar` has NO SchemaVersionBehind arm and falls through to 1.

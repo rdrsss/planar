@@ -21,7 +21,9 @@ import std;
 import planar.db;
 import planar.db.migrate;
 import planar.db.migrations;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
+import planar.cmd.planar.exit;
 import planar.cmd.planar.context;
 
 namespace {
@@ -85,7 +87,7 @@ TEST_CASE("resolve_db_path fails when neither PLANAR_DB nor HOME is set", "[cmd]
   auto const env = planar::cmd::map_env({});
   auto const got = planar::cmd::resolve_db_path(env);
   REQUIRE_FALSE(got.has_value());
-  CHECK(got.error().kind == planar::cli::domain_error_kind::generic_failure);
+  CHECK(got.error().kind == planar::cmd::domain_error_kind::generic_failure);
 }
 
 TEST_CASE("operator_cwd is PWD-first", "[cmd][context]") {
@@ -174,8 +176,8 @@ TEST_CASE("ensure_db refuses a database migrated past this binary's chain", "[cm
   auto               ctx  = make_context({}, root, db_path, out, err);
   auto               conn = ctx.ensure_db();
   REQUIRE_FALSE(conn.has_value());
-  CHECK(conn.error().kind == planar::cli::domain_error_kind::schema_version_ahead);
-  CHECK(planar::cli::exit_code_for(conn.error().kind, planar::cli::binary_kind::planar) == 7);
+  CHECK(conn.error().kind == planar::cmd::domain_error_kind::schema_version_ahead);
+  CHECK(planar::cmd::exit_code_for(conn.error().kind) == 7);
   // The handle is dropped rather than handed back half-usable.
   CHECK_FALSE(ctx.db_opened());
 }

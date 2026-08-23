@@ -4,43 +4,46 @@
 module planar.cmd.planar_watch.tree;
 
 import std;
-import planar.cli;
+import cli11;
 
 namespace planar::cmd::watch {
 
-auto root_command() -> cli::cmd {
-  cli::cmd version{.name = "version", .desc = "Print the planar-watch version, commit, and zig runtime."};
-  cli::cmd completion{
-      .name        = "completion",
-      .desc        = "Generate the autocompletion script for the specified shell.",
-      .positionals = {cli::positional{.name = "shell", .desc = "Shell: bash, zsh, or fish", .required = true}},
-  };
-  cli::cmd schema{.name = "schema", .desc = "Print the full command tree as a JSON catalog (flags, aliases, positionals)."};
+auto root_app() -> std::unique_ptr<CLI::App> {
+  // The root's description is the multi-line block the oracle's own
+  // `--help` renders; `planar-watch schema` reports the one-line
+  // "Read-only viewer for live agent activity (…)" as its summary. A
+  // `CLI::App` carries ONE description string where `cli::cmd` carried
+  // `desc` and `long_desc` separately, so the longer, operator-facing one
+  // is what survives — see `planar.cliapp.schema`'s header, divergence 1.
+  // The em dash and the `→` are the oracle's own bytes and must survive
+  // verbatim.
+  auto app = std::make_unique<CLI::App>("planar-watch is the human-facing live cockpit for agent activity.\n"
+                                        "\n"
+                                        "  The default invocation with no args is the activity feed.\n"
+                                        "  Subcommands narrow the view; `--follow` turns each one into a\n"
+                                        "  streaming view that emits new rows as the underlying tables\n"
+                                        "  change. The binary opens the database in strict read-only mode\n"
+                                        "  (SQLITE_OPEN_READONLY) \xe2\x80\x94 every write SQL string is rejected by\n"
+                                        "  the SQLite driver itself, the second line of defense behind\n"
+                                        "  this binary's `no write verbs registered` capability boundary.\n"
+                                        "\n"
+                                        "  `tree` renders the orchestrator \xe2\x86\x92 sub-agent forest by walking\n"
+                                        "  agent_actions.parent_action_id chains.",
+                                        "planar-watch");
 
-  // Unlike `planar-agent`, this root has a genuinely DISTINCT `long_desc`:
-  // `planar-watch schema` reports a "summary" ("Read-only viewer for live
-  // agent activity (…)") different from its "description" (the multi-line
-  // block below), and `planar-watch --help` renders that block FLUSH LEFT,
-  // which is `planar.cli.help`'s long_desc branch. Both strings are
-  // transcribed from the oracle catalog; the em dash and the `→` are the
-  // oracle's own bytes and must survive verbatim.
-  return cli::cmd{
-      .name      = "planar-watch",
-      .desc      = "Read-only viewer for live agent activity (feed / ps / claims / actions / plans / log / tree / run).",
-      .long_desc = "planar-watch is the human-facing live cockpit for agent activity.\n"
-                   "\n"
-                   "  The default invocation with no args is the activity feed.\n"
-                   "  Subcommands narrow the view; `--follow` turns each one into a\n"
-                   "  streaming view that emits new rows as the underlying tables\n"
-                   "  change. The binary opens the database in strict read-only mode\n"
-                   "  (SQLITE_OPEN_READONLY) — every write SQL string is rejected by\n"
-                   "  the SQLite driver itself, the second line of defense behind\n"
-                   "  this binary's `no write verbs registered` capability boundary.\n"
-                   "\n"
-                   "  `tree` renders the orchestrator → sub-agent forest by walking\n"
-                   "  agent_actions.parent_action_id chains.",
-      .cmds      = {version, completion, schema},
-  };
+  // A bare `planar-watch` must render root help rather than fail, so the
+  // root requires no subcommand and `dispatch::run` treats "matched a node
+  // that has children, but none of them" as a help request.
+  app->require_subcommand(0);
+
+  app->add_subcommand("version", "Print the planar-watch version, commit, and zig runtime.");
+
+  CLI::App* completion = app->add_subcommand("completion", "Generate the autocompletion script for the specified shell.");
+  completion->add_option("shell")->description("Shell: bash, zsh, or fish")->required();
+
+  app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
+
+  return app;
 }
 
 auto forbidden_verbs() -> std::vector<std::string_view> {

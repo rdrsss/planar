@@ -1,6 +1,7 @@
 /// @file tree.cppm
 /// @brief `planar.cmd.planar_agent.tree` — the `planar-agent` binary's root
-/// command tree (plan 996, task 6107).
+/// command tree, built directly as a `CLI::App` (plan 996, tasks 6107
+/// and 6123).
 ///
 /// Port target: the `root` constant in zig/src/cmd/planar-agent/main.zig
 /// plus each `handlers/<verb>.zig`'s `pub const verb: cli.Cmd`.
@@ -16,7 +17,7 @@
 /// this function. There is no second check at runtime to fall back on.
 ///
 /// So the FORBIDDEN direction is absolute and is pinned by
-/// `tree.t.cpp`: none of `plan`, `task`, `decision`, `question`,
+/// `capability.t.cpp`: none of `plan`, `task`, `decision`, `question`,
 /// `scenario`, `artifact`, `annotate`, `init`, `workbench`, `doc`, `spec`,
 /// `templates`, `ext`, `sync`, `promote`, `demote`, `capture`,
 /// `dashboard`, `tree`, `health` may appear here, at any depth, ever.
@@ -67,13 +68,24 @@ module;
 export module planar.cmd.planar_agent.tree;
 
 import std;
-import planar.cli;
+import cli11;
 
 namespace planar::cmd::agent {
 
 /// @brief Build the `planar-agent` root command tree.
-/// @return The root node.
-export auto root_command() -> cli::cmd;
+///
+/// Returns a `unique_ptr` rather than a value: `CLI::App` holds raw
+/// parent/child back-pointers, so a moved or copied tree would leave every
+/// subcommand pointing at a dead parent. Pointer-stable ownership is not a
+/// style choice here.
+///
+/// Task 6123 replaced the hand-rolled `cli::cmd` tree with a `CLI::App`
+/// built here. The four binaries deliberately do NOT share a tree builder
+/// — D18 makes a `cmd_* -> cmd_*` edge a configure-time FATAL, and this
+/// binary's verb set IS the capability boundary. What they share is
+/// layer-1 `planar.cliapp`, which only ever DESCRIBES a tree it is handed.
+/// @return The root app, owning every subcommand beneath it.
+export auto root_app() -> std::unique_ptr<CLI::App>;
 
 /// @brief The planning-entity verbs that must NEVER appear in this
 /// binary's tree, at any depth — the forbidden half of the capability

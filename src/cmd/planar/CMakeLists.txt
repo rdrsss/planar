@@ -65,7 +65,7 @@
 #   skills             Retired upstream (plan 918 M5) and reduced to a
 #                      placeholder node -- but a placeholder that this
 #                      tree, unlike the Zig one, must bind to a handler,
-#                      because `planar.cli.cmd` classifies a childless node
+#                      because `cliapp::leaf_keys` classifies a childless node
 #                      as a LEAF and dispatch would otherwise answer exit
 #                      64 against the oracle's help page and exit 0.
 #
@@ -115,7 +115,8 @@
 # newline"). Reading each renderer's own @return is the rule; a blanket
 # always-append or never-append breaks one of the two.
 #
-# Note this is also why `planar.cli.output`'s emit()/emit_list() are NOT used
+# Note this is also why the deleted `planar.cli.output`'s emit()/emit_list()
+# were never used
 # by any renderer-backed leaf here: those helpers unconditionally append '\n'
 # after the Glaze payload, which predates the 5728133 contract and would
 # break `workflow list --json`'s zero-byte case. They remain correct for a
@@ -148,7 +149,6 @@ planar_binary(planar
   INTERFACE
     exit.cppm
     context.cppm
-    args.cppm
     handler.cppm
     scope.cppm
     tree.cppm
@@ -173,7 +173,7 @@ planar_binary(planar
     handlers/workbench.cpp
     dispatch.cpp
   DEPENDS
-    cli
+    cliapp
     db
     engine_external
     engine_identity
@@ -193,4 +193,20 @@ if(TARGET planar_cmd_planar_tests)
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\""
     "PLANAR_ZIG_BIN=\"${CMAKE_SOURCE_DIR}/zig/zig-out/bin/planar\"")
   add_dependencies(planar_cmd_planar_tests planar_cmd_planar)
+endif()
+
+# Each binary builds its own CLI::App tree directly (plan 996, task 6123),
+# so the CLI11 module target is linked per binary rather than laundered
+# through a shared layer-1 wrapper.
+target_link_libraries(planar_cmd_planar PRIVATE CLI11::CLI11_Module)
+if(TARGET planar_cmd_planar_tests)
+  target_link_libraries(planar_cmd_planar_tests PRIVATE CLI11::CLI11_Module)
+  # `../catalog_parity.hpp` — the declaration-level oracle comparison that
+  # replaced the deleted help-page byte diffs (plan 996, task 6123). A plain
+  # header, included rather than linked, for the reason parity_harness.hpp's
+  # own header gives: D18 forbids a `cmd_* -> cmd_*` edge and a shared
+  # layer-1 library for test scaffolding would be worse. It parses JSON with
+  # Glaze, hence the link.
+  target_include_directories(planar_cmd_planar_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  target_link_libraries(planar_cmd_planar_tests PRIVATE glaze::glaze)
 endif()

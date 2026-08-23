@@ -1,7 +1,8 @@
 // @file parity.t.cpp
 // @brief Differential tests: run the built C++ `planar-agent` and the Zig
 // reference over identical argv in identical pinned scratch environments,
-// and require identical stdout, stderr and exit code (plan 996, task 6107).
+// and require identical stdout, stderr and exit code (plan 996, tasks 6107
+// and 6123).
 //
 // The harness lives in `../parity_harness.hpp` — a plain header, included
 // rather than linked, because D18 forbids a `cmd_* -> cmd_*` edge and a
@@ -16,19 +17,33 @@
 //
 // ## What is compared, and what deliberately is not
 //
-// COMPARED: every argv shape whose output is derived entirely from a ported
-// node — leaf help pages, and every parse-failure path (which is where this
-// binary's exit-code divergence lives).
+// COMPARED: every argv shape whose output is derived from ENGINE state or
+// engine renderers — the claim-ritual verbs' payloads — plus the EXIT CODE
+// of every parse-failure path, which is where this binary's divergence from
+// the operator binary lives and which task 6123 was required to preserve.
+//
+// ALSO COMPARED, and this is the task-6123 replacement for the leaf-help
+// diffs: the DECLARED SURFACE of every ported command, taken from the
+// `schema` catalog both binaries emit. See `../catalog_parity.hpp` for the
+// full argument — the short version is that a rendered help page was only
+// ever a proxy for "were these flags/positionals transcribed correctly",
+// CLI11 renders help now so the page is no longer comparable, and the
+// catalog answers the underlying question directly and more precisely.
 //
 // NOT COMPARED, each for a stated reason:
 //
 //   `version`   The `cxx <compiler>` vs `zig <version>` divergence is
-//               inherited from `planar.cli.version` and shared with the
+//               inherited from `planar.cliapp.version` and shared with the
 //               operator binary. Shape is pinned in handlers.t.cpp.
-//   `--help`    The ROOT page lists this tree's FOURTEEN verbs against the
-//               oracle's eighteen — `ingest`, `run`, `dispatch` and
-//               `context` are not ported. Not comparable until they land.
-//   `schema`    Same: the catalog is a description of the tree.
+//   `--help`    CLI11 renders help now (task 6123), so no page in this
+//               binary is oracle-comparable. Leaf pages are pinned exactly
+//               against the built binary in handlers.t.cpp instead; the
+//               ROOT page additionally lists this tree's FOURTEEN verbs
+//               against the oracle's eighteen.
+//   parse-error
+//   BYTES       CLI11 writes its own wording (task 6123). The two-stream
+//               SHAPE and the exit CODE are still compared; the bytes are
+//               pinned against the built binary.
 //
 // SKIP, not fail, when the oracle is absent: `zig/zig-out/bin/planar-agent`
 // is a build artifact, not a checked-in file (D6).
@@ -42,6 +57,7 @@
 import std;
 import planar.db;
 
+#include "catalog_parity.hpp"
 #include "parity_harness.hpp"
 
 namespace {
@@ -93,43 +109,118 @@ TEST_CASE("the pinned environment actually reaches planar-agent", "[cmd][agent][
   CHECK(got.out == (arena.cpp_root / "planar.db").string());
 }
 
-TEST_CASE("planar-agent parity: parse failures match byte for byte, exit 1 included", "[cmd][agent][parity][exitcode]") {
+TEST_CASE("planar-agent parity: parse failures still exit 1, not the operator binary's 2", "[cmd][agent][parity][exitcode]") {
   if (!oracle_available()) {
     SKIP("Zig oracle not built (zig/zig-out/bin/planar-agent)");
   }
 
   // The whole reason this binary needed its own exit module. If the port
   // had reused `planar`'s policy these would come back 2 and this case
-  // would fail on the code alone, before any byte comparison.
+  // would fail on the code alone.
+  //
+  // The exit CODE is still diffed live against the oracle — that is the
+  // contract. The BYTES are CLI11's as of task 6123 and are pinned against
+  // the built binary instead, exactly rather than loosely.
   auto const [cpp_verb, zig_verb] = both("unknownverb", {"nosuchverb"});
   CHECK(cpp_verb.code == zig_verb.code);
   CHECK(cpp_verb.code == 1);
-  CHECK(cpp_verb.out == zig_verb.out);
-  CHECK(cpp_verb.err == zig_verb.err);
+  CHECK(cpp_verb.out == "error: planar-agent: The following argument was not expected: nosuchverb\n");
+  CHECK(cpp_verb.err == "error: ExtrasError\n");
 
   auto const [cpp_flag, zig_flag] = both("unknownflag", {"version", "--badflag"});
   CHECK(cpp_flag.code == zig_flag.code);
   CHECK(cpp_flag.code == 1);
-  CHECK(cpp_flag.out == zig_flag.out);
-  CHECK(cpp_flag.err == zig_flag.err);
+  CHECK(cpp_flag.out == "error: version: The following argument was not expected: --badflag\n");
+  CHECK(cpp_flag.err == "error: ExtrasError\n");
 }
 
-TEST_CASE("planar-agent parity: leaf help pages match byte for byte", "[cmd][agent][parity]") {
+TEST_CASE("planar-agent parity: every ported command declares what the oracle declares", "[cmd][agent][parity][catalog]") {
   if (!oracle_available()) {
     SKIP("Zig oracle not built (zig/zig-out/bin/planar-agent)");
   }
 
-  // A leaf's help page is derived entirely from its own node — name, desc,
-  // long_desc, flags, positionals — so a leaf ported at all is ported
-  // completely, and a transcription slip in `tree.cpp` shows up here.
-  for (auto const& leaf : {"version", "schema", "pull", "peek", "claim", "heartbeat", "claim-associate", "complete", "fail",
-                           "release", "block", "reconcile", "abort", "action"}) {
-    auto const [cpp, zig] = both(leaf, {leaf, "--help"});
-    INFO("leaf: " << leaf);
-    CHECK(cpp.code == zig.code);
-    CHECK(cpp.code == 0);
-    CHECK(cpp.out == zig.out);
-    CHECK(cpp.err == zig.err);
+  // TASK 6123. This case replaces "leaf help pages match byte for byte",
+  // which diffed each of the fourteen ported leaves' `--help` output
+  // against the oracle. CLI11 renders help now, so that diff cannot pass
+  // — but the question it existed to answer ("did `tree.cpp` transcribe
+  // the oracle's flags, required-ness and positionals correctly?") is
+  // answered here directly, off the `schema` catalog both binaries emit.
+  //
+  // Strictly stronger in two ways: it covers PARENT nodes and the root as
+  // well as leaves, and it distinguishes a required flag from an optional
+  // one explicitly rather than through a rendered `REQUIRED` marker. It is
+  // weaker in exactly one: it says nothing about help LAYOUT, which is
+  // CLI11's now and is pinned against the built binary in handlers.t.cpp.
+  auto const [cpp, zig] = both("catalog", {"schema"});
+  REQUIRE(cpp.code == 0);
+  REQUIRE(zig.code == 0);
+
+  auto const mine = planar::cmd::parity::parse_catalog(cpp.out);
+  REQUIRE(mine.has_value());
+  auto const theirs = planar::cmd::parity::parse_catalog(zig.out);
+  REQUIRE(theirs.has_value());
+
+  // Non-vacuous: a comparison over an empty left-hand side would pass
+  // trivially, and a catalog that failed to parse would look identical to
+  // a clean one.
+  CHECK(mine->size() >= 14);
+  CHECK(theirs->size() > mine->size());
+  CHECK(mine->contains("planar-agent fail"));
+  CHECK(mine->contains("planar-agent action start"));
+
+  auto const problems = planar::cmd::parity::diff_against_oracle(*mine, *theirs);
+  INFO("declaration mismatches:\n" << std::format("{}", problems));
+  CHECK(problems.empty());
+}
+
+TEST_CASE("planar-agent parity: the catalog comparison actually discriminates", "[cmd][agent][parity][catalog][break-probe]") {
+  // Break-probe in permanent form. `diff_against_oracle` returning an empty
+  // vector is the pass condition above, and a function that always returned
+  // one would pass just as happily. These four mutations are the exact
+  // transcription slips the deleted help-page diff used to catch; each must
+  // produce at least one problem.
+  using planar::cmd::parity::catalog_map;
+  using planar::cmd::parity::command_surface;
+  using planar::cmd::parity::diff_against_oracle;
+
+  catalog_map const oracle{
+      {"planar-agent fail", command_surface{.flags          = {"--category", "--claim", "--json", "--reason"},
+                                            .required_flags = {"--claim", "--reason"},
+                                            .positionals    = {},
+                                            .subcommands    = {}}},
+      {"planar-agent", command_surface{.subcommands = {"fail", "pull"}}},
+  };
+
+  SECTION("a dropped flag is caught") {
+    catalog_map const mutated{
+        {"planar-agent fail", command_surface{.flags = {"--category", "--claim", "--json"}, .required_flags = {"--claim"}}}};
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("a flag that lost its required-ness is caught") {
+    catalog_map const mutated{{"planar-agent fail", command_surface{.flags = {"--category", "--claim", "--json", "--reason"},
+                                                                    .required_flags = {"--claim"}}}};
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("an invented positional is caught") {
+    catalog_map const mutated{{"planar-agent fail", command_surface{.flags = {"--category", "--claim", "--json", "--reason"},
+                                                                    .required_flags = {"--claim", "--reason"},
+                                                                    .positionals    = {{"task-id", true}}}}};
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("a subcommand the oracle does not have is caught") {
+    catalog_map const mutated{{"planar-agent", command_surface{.subcommands = {"fail", "invented"}}}};
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("a command the oracle does not have at all is caught") {
+    catalog_map const mutated{{"planar-agent nosuchverb", command_surface{}}};
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("a faithful subset produces no problems") {
+    // The other half of the probe: it must not report a problem for the
+    // legitimate case, or "empty" above would mean nothing.
+    catalog_map const faithful{{"planar-agent fail", command_surface{.flags = {"--category", "--claim", "--json", "--reason"},
+                                                                     .required_flags = {"--claim", "--reason"}}}};
+    CHECK(diff_against_oracle(faithful, oracle).empty());
   }
 }
 
@@ -166,7 +257,7 @@ TEST_CASE("planar-agent parity: version diverges only in the runtime tag", "[cmd
   CHECK(cpp_fields[3] == "cxx");
   CHECK(zig_fields[3] == "zig");
 
-  // AND the field COUNTS differ, which `planar.cli.version`'s header
+  // AND the field COUNTS differ, which `planar.cliapp.version`'s header
   // claims they do not — see this binary's handlers.t.cpp for the full
   // finding. Asserted here against the LIVE oracle rather than a
   // transcription, which is the strongest form the observation takes:

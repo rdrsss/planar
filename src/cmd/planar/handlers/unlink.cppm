@@ -51,7 +51,8 @@ module;
 export module planar.cmd.planar.handlers.unlink;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 
@@ -62,6 +63,6 @@ namespace planar::cmd::handlers {
 /// @param args The parsed arguments.
 /// @return Success, `invalid_input` (exit 2) when `<link-id>` is not an
 /// integer, or `generic_failure` (exit 1) when no such link exists.
-export auto unlink(context& ctx, const cli::match_result& args) -> handler_result;
+export auto unlink(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

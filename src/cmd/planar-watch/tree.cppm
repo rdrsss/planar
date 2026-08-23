@@ -1,6 +1,7 @@
 /// @file tree.cppm
 /// @brief `planar.cmd.planar_watch.tree` — the `planar-watch` binary's root
-/// command tree (plan 996, task 6107).
+/// command tree, built directly as a `CLI::App` (plan 996, tasks 6107 and
+/// 6123).
 ///
 /// Port target: the `root` constant in zig/src/cmd/planar-watch/main.zig.
 ///
@@ -12,8 +13,8 @@
 /// the driver itself rejects write SQL." This function is level (1).
 /// `planar.cmd.planar_watch.context::ensure_db` is level (2). Neither
 /// subsumes the other, and both are tested independently — the verb-set
-/// half by `tree.t.cpp`, the handle half by `context.t.cpp` executing a
-/// real `insert` through the handle and requiring it to fail.
+/// half by `capability.t.cpp`, the handle half by `context.t.cpp`
+/// executing a real `insert` through the handle and requiring it to fail.
 ///
 /// The forbidden set is BOTH of the other binaries' write surfaces: every
 /// `planar-agent` write verb (`pull`, `claim`, `heartbeat`, `complete`,
@@ -25,50 +26,48 @@
 /// `PATH` cannot touch anything at all, and that sentence is true only
 /// because this function keeps it true.
 ///
+/// ## Task 6123: this is a `CLI::App`, and each binary owns its own
+///
+/// The tree used to be `cli::cmd` data walked by a hand-rolled parser in
+/// `src/lib/cli`. That library is gone; CLI11 owns tokenization, value
+/// coercion, subcommand resolution and help rendering now. The four
+/// binaries deliberately do NOT share a tree builder — D18 makes a
+/// `cmd_* -> cmd_*` edge a configure-time FATAL, and this binary's tree is
+/// the thing the capability boundary is ABOUT. What they share is layer-1
+/// `planar.cliapp`, which only ever DESCRIBES a tree it is handed.
+///
+/// `root_app` returns a `unique_ptr` rather than a value: `CLI::App` holds
+/// raw parent/child back-pointers, so a moved or copied tree would leave
+/// every subcommand pointing at a dead parent. Pointer-stable ownership is
+/// not a style choice here.
+///
 /// ## What this tree deliberately is NOT (yet)
 ///
 /// The oracle registers twelve verbs. This tree registers THREE —
-/// `version`, `schema`, `completion` — and, as with `planar-agent`, the gap
-/// is a porting gap, not a capability statement.
+/// `version`, `schema`, `completion` — and the gap is a porting gap, not a
+/// capability statement. `feed`, `ps`, `claims`, `actions`, `plans`,
+/// `log`, `tree` and `run` all read through zig
+/// `engine.runtime.agentactivity` (store/types/json — 5,702 lines across
+/// seven files), which this tree has never ported; `sync-events` reaches
+/// into `ps` for its shared `generated_at` emitter and needs `follow.zig`'s
+/// SIGINT/poll loop for `--follow`.
 ///
-/// EVERY remaining verb is blocked one layer down, and on the SAME bucket:
-/// `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree` and `run` all
-/// read through zig `engine.runtime.agentactivity` (its `store`, `types`
-/// and `json` submodules — 5,702 lines across seven files), which this tree
-/// has never ported. That is the identical blocker task 6106 found under
-/// `planar dashboard`; it is one bucket gating nine leaves across two
-/// binaries, which is what makes it a milestone of its own rather than
-/// something to chip at.
-///
-/// `sync-events` is the one exception worth naming precisely, because it
-/// LOOKS portable and is not quite: its own query is over `sync_events`
-/// joined to `external_links` (both reachable from the ported
-/// `engine_external` bucket), but it reaches into `ps` for the shared
-/// `generated_at` emitter and interval parsing, and its `--follow` arm
-/// needs the SIGINT/poll loop `follow.zig` owns. It is the cheapest next
-/// read verb, not a free one.
-///
-/// Two consequences visible in output, stated rather than hidden:
-///
-///   - `planar-watch --help` lists three verbs where the oracle lists
-///     twelve, so the ROOT page is not oracle-comparable. Leaf pages are,
-///     and are pinned byte-for-byte in `tree.t.cpp`.
-///   - The oracle's DEFAULT VERB on a bare invocation is `feed`. `feed` is
-///     unported, so a bare `planar-watch` here renders the root help page
-///     instead. That is a real divergence, not a rendering accident, and
-///     it disappears when `feed` lands.
+/// Two consequences visible in output, stated rather than hidden: the ROOT
+/// help page lists three verbs where the oracle lists twelve, and a BARE
+/// `planar-watch` renders the root help page where the oracle runs its
+/// default `feed` verb.
 module;
 
 export module planar.cmd.planar_watch.tree;
 
 import std;
-import planar.cli;
+import cli11;
 
 namespace planar::cmd::watch {
 
 /// @brief Build the `planar-watch` root command tree.
-/// @return The root node.
-export auto root_command() -> cli::cmd;
+/// @return The root app, owning every subcommand beneath it.
+export auto root_app() -> std::unique_ptr<CLI::App>;
 
 /// @brief The verbs that must NEVER appear in this binary's tree, at any
 /// depth: every `planar-agent` write verb plus every `planar`

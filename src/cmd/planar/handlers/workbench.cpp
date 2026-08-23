@@ -4,10 +4,11 @@
 module planar.cmd.planar.handlers.workbench;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.engine.workbench;
-import planar.cmd.planar.args;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -18,15 +19,15 @@ namespace wb = engine::workbench;
 
 namespace {
 
-using kind_t = cli::domain_error_kind;
+using kind_t = domain_error_kind;
 
 /// @brief `--json` was passed.
-auto wants_json(const cli::match_result& args) -> bool {
+auto wants_json(const cliapp::parsed_args& args) -> bool {
   return flag_bool(args, "--json");
 }
 
 /// @brief Read a positional that the tree declares as optional.
-auto optional_positional(const cli::match_result& args, std::string_view name) -> std::optional<std::string> {
+auto optional_positional(const cliapp::parsed_args& args, std::string_view name) -> std::optional<std::string> {
   return positional_string(args, name);
 }
 
@@ -68,7 +69,7 @@ auto resolve_plan(context& ctx, db::connection& conn, std::string_view argument)
 }
 
 /// @brief Parse `--filter-mode`, defaulting to `failures` when absent or empty.
-auto parse_filter_mode(const cli::match_result& args) -> std::expected<wb::terminal::mode, domain_error> {
+auto parse_filter_mode(const cliapp::parsed_args& args) -> std::expected<wb::terminal::mode, domain_error> {
   auto const raw = flag_string(args, "--filter-mode");
   if (!raw || raw->empty()) {
     return wb::terminal::mode::failures;
@@ -101,7 +102,7 @@ auto sync_error_tag(wb::sync::sync_error err) -> std::string_view {
 ///
 /// The ORDER is observable — a run with both a malformed file and a
 /// conflict exits 1, not 3, because the malformed check comes first.
-auto finish_sync_run(context& ctx, const cli::match_result& args, const wb::sync::anchor& plan, wb::sync::mode run_mode,
+auto finish_sync_run(context& ctx, const cliapp::parsed_args& args, const wb::sync::anchor& plan, wb::sync::mode run_mode,
                      std::string_view verb, const wb::sync::result& value) -> handler_result {
   if (wants_json(args)) {
     ctx.out() << wb::render_cli::render_sync_result_json(value);
@@ -120,7 +121,7 @@ auto finish_sync_run(context& ctx, const cli::match_result& args, const wb::sync
 }
 
 /// @brief `pull` / `push` / `sync` share everything but their engine call.
-auto run_sync_verb(context& ctx, const cli::match_result& args, wb::sync::mode run_mode, std::string_view verb,
+auto run_sync_verb(context& ctx, const cliapp::parsed_args& args, wb::sync::mode run_mode, std::string_view verb,
                    const auto& invoke) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
@@ -145,19 +146,19 @@ auto run_sync_verb(context& ctx, const cli::match_result& args, wb::sync::mode r
 
 } // namespace
 
-auto workbench_pull(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return run_sync_verb(
       ctx, args, wb::sync::mode::pull, "pull",
       [](db::connection& conn, std::int64_t plan_id, std::string_view root) { return wb::sync::pull(conn, plan_id, root); });
 }
 
-auto workbench_sync(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_sync(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return run_sync_verb(
       ctx, args, wb::sync::mode::sync, "sync",
       [](db::connection& conn, std::int64_t plan_id, std::string_view root) { return wb::sync::sync_both(conn, plan_id, root); });
 }
 
-auto workbench_push(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_push(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const filter_mode = parse_filter_mode(args);
   if (!filter_mode) {
     return std::unexpected(filter_mode.error());
@@ -176,7 +177,7 @@ auto workbench_push(context& ctx, const cli::match_result& args) -> handler_resu
                        });
 }
 
-auto workbench_status(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_status(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -246,13 +247,13 @@ auto workbench_status(context& ctx, const cli::match_result& args) -> handler_re
   return {};
 }
 
-auto workbench_resolve(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
   auto const raw_event = positional_string(args, "event-id").value_or(std::string{});
-  auto const event_id  = parse_int64_zig(raw_event);
+  auto const event_id  = cliapp::parse_int64_zig(raw_event);
   if (!event_id) {
     return std::unexpected(
         error_from_body(kind_t::invalid_input, std::format("event-id must be an integer, got '{}'", raw_event)));
@@ -287,7 +288,7 @@ auto workbench_resolve(context& ctx, const cli::match_result& args) -> handler_r
   return {};
 }
 
-auto workbench_archive(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_archive(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -317,7 +318,7 @@ auto workbench_archive(context& ctx, const cli::match_result& args) -> handler_r
   return {};
 }
 
-auto workbench_restore(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_restore(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -344,7 +345,7 @@ auto workbench_restore(context& ctx, const cli::match_result& args) -> handler_r
   return {};
 }
 
-auto workbench_gc(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_gc(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -412,7 +413,7 @@ auto workbench_gc(context& ctx, const cli::match_result& args) -> handler_result
   return {};
 }
 
-auto workbench_list(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -430,7 +431,7 @@ auto workbench_list(context& ctx, const cli::match_result& args) -> handler_resu
   return {};
 }
 
-auto workbench_lint(context& ctx, const cli::match_result& args) -> handler_result {
+auto workbench_lint(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());

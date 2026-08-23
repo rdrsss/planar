@@ -1,5 +1,5 @@
 /// @file version.cppm
-/// @brief `planar.cli.version` — build-metadata resolution and the
+/// @brief `planar.cliapp.version` — build-metadata resolution and the
 /// `planar version` text rendering (task cpp-cli-output-logging).
 ///
 /// Behavior-preserving in *contract*, not in literal wording, of
@@ -19,11 +19,11 @@
 /// 0.16.0`).
 module;
 
-export module planar.cli.version;
+export module planar.cliapp.version;
 
 import std;
 
-namespace planar::cli {
+namespace planar::cliapp {
 
 /// @brief Resolved build-time metadata for one binary. Mirrors the three
 /// `build_options` fields zig/build.zig exposes to
@@ -55,7 +55,7 @@ export auto shorten_sha(std::string_view sha) -> std::string_view {
 
 /// @brief Return this process's compiled-in build metadata. Reads the
 /// configure-time macros `PLANAR_GIT_SHA` / `PLANAR_BUILD_DATE` /
-/// `PLANAR_GIT_DIRTY` (set by src/lib/cli/CMakeLists.txt only when the
+/// `PLANAR_GIT_DIRTY` (set by src/lib/cliapp/CMakeLists.txt only when the
 /// `PLANAR_VERSION_META` CMake option is explicitly enabled — default
 /// off, mirroring zig's `-Dversion-meta` opt-in). When the option is off
 /// (the default dev-build configuration), every field is the `"dev"`
@@ -127,4 +127,4 @@ export auto render_version_text(build_info const& info, std::string_view compile
 /// @return The compiler name and version, space-separated.
 export auto compiler_version_string() -> std::string;
 
-} // namespace planar::cli
+} // namespace planar::cliapp

@@ -1,24 +1,15 @@
 /// @file completion.cpp
-/// @brief Implementation of `planar.cli.completion::generate_script`.
-module;
+/// @brief Implementation of `planar.cliapp.completion::generate_script`.
 
-module planar.cli.completion;
+module planar.cliapp.completion;
 
 import std;
-import planar.cli.flag;
-import planar.cli.cmd;
+import cli11;
+import planar.cliapp.walk;
 
-namespace planar::cli {
+namespace planar::cliapp {
 
 namespace {
-
-auto visible_cmd(cmd const& c) -> bool {
-  return !c.hidden;
-}
-
-auto visible_flag(flag const& f) -> bool {
-  return !f.hidden;
-}
 
 auto join_path(std::span<std::string const> path) -> std::string {
   std::string out;
@@ -31,36 +22,31 @@ auto join_path(std::span<std::string const> path) -> std::string {
   return out;
 }
 
-auto join_cmd_names(std::vector<cmd> const& cmds) -> std::string {
+auto join_cmd_names(const CLI::App& node) -> std::string {
   std::string out;
   bool        first = true;
-  for (auto const& c : cmds) {
-    if (!visible_cmd(c)) {
-      continue;
-    }
+  for (const CLI::App* child : children(node)) {
     if (!first) {
       out += " ";
     }
     first = false;
-    out += c.name;
+    out += child->get_name();
   }
   return out;
 }
 
-auto join_flag_names(std::vector<flag> const& flags) -> std::string {
+auto join_flag_names(std::span<const CLI::Option* const> flags) -> std::string {
   std::string out;
   bool        first = true;
-  for (auto const& f : flags) {
-    if (!visible_flag(f)) {
-      continue;
-    }
+  for (const CLI::Option* opt : flags) {
     if (!first) {
       out += " ";
     }
     first = false;
-    out += f.long_name;
-    if (f.short_name) {
-      out += std::string(" -") + *f.short_name;
+    out += canonical_name(*opt);
+    auto const& shorts = opt->get_snames();
+    if (!shorts.empty()) {
+      out += " -" + shorts.front();
     }
   }
   if (!first) {
@@ -70,16 +56,19 @@ auto join_flag_names(std::vector<flag> const& flags) -> std::string {
   return out;
 }
 
-auto merged_flag_names(std::vector<flag> const& inherited, std::vector<flag> const& owned) -> std::string {
-  std::vector<flag> merged = inherited;
+auto visible_flags_at(const CLI::App& root, std::span<std::string const> path, const CLI::App& node)
+    -> std::vector<const CLI::Option*> {
+  auto merged = inherited_flags(root, path);
+  auto owned  = local_flags(node);
   merged.insert(merged.end(), owned.begin(), owned.end());
-  return join_flag_names(merged);
+  return merged;
 }
 
-auto bash_script(cmd const& root) -> std::string {
+auto bash_script(const CLI::App& root) -> std::string {
+  auto const  name = root.get_name();
   std::string out;
-  out += "# " + root.name + " bash completion (auto-generated)\n\n";
-  out += "_" + root.name + "() {\n";
+  out += "# " + name + " bash completion (auto-generated)\n\n";
+  out += "_" + name + "() {\n";
   out += "    local cur path cmds flags i\n";
   out += "    cur=\"${COMP_WORDS[COMP_CWORD]}\"\n";
   out += "    path=\"\"\n";
@@ -97,18 +86,14 @@ auto bash_script(cmd const& root) -> std::string {
   out += "    done\n\n";
   out += "    case \"$path\" in\n";
   out += "        \"\")\n";
-  out += "            cmds=\"" + join_cmd_names(root.cmds) + "\"\n";
-  out += "            flags=\"" + join_flag_names(root.flags) + "\"\n";
+  out += "            cmds=\"" + join_cmd_names(root) + "\"\n";
+  out += "            flags=\"" + join_flag_names(local_flags(root)) + "\"\n";
   out += "            ;;\n";
 
-  for (auto const& n : all_nodes(root)) {
-    if (!visible_cmd(*n.node)) {
-      continue;
-    }
-    out += "        \"" + join_path(n.path) + "\")\n";
-    out += "            cmds=\"" + join_cmd_names(n.node->cmds) + "\"\n";
-    auto inherited = collect_inherited_flags(root, n.path);
-    out += "            flags=\"" + merged_flag_names(inherited, n.node->flags) + "\"\n";
+  for (auto const& node : all_nodes(root)) {
+    out += "        \"" + join_path(node.path) + "\")\n";
+    out += "            cmds=\"" + join_cmd_names(*node.node) + "\"\n";
+    out += "            flags=\"" + join_flag_names(visible_flags_at(root, node.path, *node.node)) + "\"\n";
     out += "            ;;\n";
   }
 
@@ -123,13 +108,13 @@ auto bash_script(cmd const& root) -> std::string {
   out += "        COMPREPLY=( $(compgen -W \"$cmds\" -- \"$cur\") )\n";
   out += "    fi\n";
   out += "}\n\n";
-  out += "complete -F _" + root.name + " " + root.name + "\n";
+  out += "complete -F _" + name + " " + name + "\n";
   return out;
 }
 
-auto zsh_escape_desc(std::string_view s) -> std::string {
+auto zsh_escape_desc(std::string_view text) -> std::string {
   std::string out;
-  for (char c : s) {
+  for (char const c : text) {
     switch (c) {
     case '\\':
       out += "\\\\";
@@ -153,34 +138,28 @@ auto zsh_escape_desc(std::string_view s) -> std::string {
   return out;
 }
 
-auto zsh_cmd_pairs(std::vector<cmd> const& cmds) -> std::string {
+auto zsh_cmd_pairs(const CLI::App& node) -> std::string {
   std::string out;
   bool        first = true;
-  for (auto const& c : cmds) {
-    if (!visible_cmd(c)) {
-      continue;
-    }
+  for (const CLI::App* child : children(node)) {
     if (!first) {
       out += " ";
     }
     first = false;
-    out += "\"" + c.name + ":" + zsh_escape_desc(c.desc) + "\"";
+    out += "\"" + child->get_name() + ":" + zsh_escape_desc(child->get_description()) + "\"";
   }
   return out;
 }
 
-auto zsh_flag_pairs(std::vector<flag> const& flags) -> std::string {
+auto zsh_flag_pairs(std::span<const CLI::Option* const> flags) -> std::string {
   std::string out;
   bool        first = true;
-  for (auto const& f : flags) {
-    if (!visible_flag(f)) {
-      continue;
-    }
+  for (const CLI::Option* opt : flags) {
     if (!first) {
       out += " ";
     }
     first = false;
-    out += "\"" + f.long_name + ":" + zsh_escape_desc(f.desc) + "\"";
+    out += "\"" + canonical_name(*opt) + ":" + zsh_escape_desc(opt->get_description()) + "\"";
   }
   if (!first) {
     out += " ";
@@ -189,11 +168,12 @@ auto zsh_flag_pairs(std::vector<flag> const& flags) -> std::string {
   return out;
 }
 
-auto zsh_script(cmd const& root) -> std::string {
+auto zsh_script(const CLI::App& root) -> std::string {
+  auto const  name = root.get_name();
   std::string out;
-  out += "#compdef " + root.name + "\n";
-  out += "# " + root.name + " zsh completion (auto-generated)\n\n";
-  out += "_" + root.name + "() {\n";
+  out += "#compdef " + name + "\n";
+  out += "# " + name + " zsh completion (auto-generated)\n\n";
+  out += "_" + name + "() {\n";
   out += "    local cur path i\n";
   out += "    cur=\"${words[CURRENT]}\"\n";
   out += "    path=\"\"\n";
@@ -212,19 +192,14 @@ auto zsh_script(cmd const& root) -> std::string {
   out += "    local -a cmds flags\n";
   out += "    case \"$path\" in\n";
   out += "        \"\")\n";
-  out += "            cmds=(" + zsh_cmd_pairs(root.cmds) + ")\n";
-  out += "            flags=(" + zsh_flag_pairs(root.flags) + ")\n";
+  out += "            cmds=(" + zsh_cmd_pairs(root) + ")\n";
+  out += "            flags=(" + zsh_flag_pairs(local_flags(root)) + ")\n";
   out += "            ;;\n";
 
-  for (auto const& n : all_nodes(root)) {
-    if (!visible_cmd(*n.node)) {
-      continue;
-    }
-    out += "        \"" + join_path(n.path) + "\")\n";
-    out += "            cmds=(" + zsh_cmd_pairs(n.node->cmds) + ")\n";
-    auto inherited = collect_inherited_flags(root, n.path);
-    inherited.insert(inherited.end(), n.node->flags.begin(), n.node->flags.end());
-    out += "            flags=(" + zsh_flag_pairs(inherited) + ")\n";
+  for (auto const& node : all_nodes(root)) {
+    out += "        \"" + join_path(node.path) + "\")\n";
+    out += "            cmds=(" + zsh_cmd_pairs(*node.node) + ")\n";
+    out += "            flags=(" + zsh_flag_pairs(visible_flags_at(root, node.path, *node.node)) + ")\n";
     out += "            ;;\n";
   }
 
@@ -235,13 +210,13 @@ auto zsh_script(cmd const& root) -> std::string {
   out += "        _describe -t commands 'commands' cmds\n";
   out += "    fi\n";
   out += "}\n\n";
-  out += "_" + root.name + " \"$@\"\n";
+  out += "_" + name + " \"$@\"\n";
   return out;
 }
 
-auto fish_single_quote(std::string_view s) -> std::string {
+auto fish_single_quote(std::string_view text) -> std::string {
   std::string out;
-  for (char c : s) {
+  for (char const c : text) {
     if (c == '\\') {
       out += "\\\\";
     } else if (c == '\'') {
@@ -253,39 +228,43 @@ auto fish_single_quote(std::string_view s) -> std::string {
   return out;
 }
 
-auto fish_cmd_line(std::string_view bin, std::string_view path, cmd const& c) -> std::string {
+auto fish_cmd_line(std::string_view bin, std::string_view path, const CLI::App& child) -> std::string {
   std::string out = "complete -c " + std::string(bin) + " -n '__fish_" + std::string(bin) + "_path \"" + std::string(path) +
-                    "\"' -f -a '" + fish_single_quote(c.name) + "'";
-  if (!c.desc.empty()) {
-    out += " -d '" + fish_single_quote(c.desc) + "'";
+                    "\"' -f -a '" + fish_single_quote(child.get_name()) + "'";
+  auto const  description = child.get_description();
+  if (!description.empty()) {
+    out += " -d '" + fish_single_quote(description) + "'";
   }
   out += "\n";
   return out;
 }
 
-auto fish_flag_line(std::string_view bin, std::string_view path, flag const& f) -> std::string {
-  std::string_view long_bare = f.long_name;
+auto fish_flag_line(std::string_view bin, std::string_view path, const CLI::Option& opt) -> std::string {
+  std::string const canonical = canonical_name(opt);
+  std::string_view  long_bare = canonical;
   if (long_bare.starts_with("--")) {
     long_bare = long_bare.substr(2);
   } else if (long_bare.starts_with("-")) {
     long_bare = long_bare.substr(1);
   }
-  std::string out = "complete -c " + std::string(bin) + " -n '__fish_" + std::string(bin) + "_path \"" + std::string(path) +
-                    "\"' -f -l '" + fish_single_quote(long_bare) + "'";
-  if (f.short_name) {
-    out += std::string(" -s ") + *f.short_name;
+  std::string out    = "complete -c " + std::string(bin) + " -n '__fish_" + std::string(bin) + "_path \"" + std::string(path) +
+                       "\"' -f -l '" + fish_single_quote(long_bare) + "'";
+  auto const& shorts = opt.get_snames();
+  if (!shorts.empty()) {
+    out += " -s " + shorts.front();
   }
-  if (!f.desc.empty()) {
-    out += " -d '" + fish_single_quote(f.desc) + "'";
+  if (!opt.get_description().empty()) {
+    out += " -d '" + fish_single_quote(opt.get_description()) + "'";
   }
   out += "\n";
   return out;
 }
 
-auto fish_script(cmd const& root) -> std::string {
+auto fish_script(const CLI::App& root) -> std::string {
+  auto const  name = root.get_name();
   std::string out;
-  out += "# " + root.name + " fish completion (auto-generated)\n\n";
-  out += "function __fish_" + root.name + "_path\n";
+  out += "# " + name + " fish completion (auto-generated)\n\n";
+  out += "function __fish_" + name + "_path\n";
   out += "    set -l cmd (commandline -opc)\n";
   out += "    set -l path\n";
   out += "    set -l first 1\n";
@@ -304,35 +283,20 @@ auto fish_script(cmd const& root) -> std::string {
   out += "    test \"$path\" = \"$argv[1]\"\n";
   out += "end\n\n";
 
-  for (auto const& c : root.cmds) {
-    if (!visible_cmd(c)) {
-      continue;
-    }
-    out += fish_cmd_line(root.name, "", c);
+  for (const CLI::App* child : children(root)) {
+    out += fish_cmd_line(name, "", *child);
   }
-  for (auto const& f : root.flags) {
-    if (!visible_flag(f)) {
-      continue;
-    }
-    out += fish_flag_line(root.name, "", f);
+  for (const CLI::Option* opt : local_flags(root)) {
+    out += fish_flag_line(name, "", *opt);
   }
 
-  for (auto const& n : all_nodes(root)) {
-    if (!visible_cmd(*n.node)) {
-      continue;
+  for (auto const& node : all_nodes(root)) {
+    auto const path_str = join_path(node.path);
+    for (const CLI::App* child : children(*node.node)) {
+      out += fish_cmd_line(name, path_str, *child);
     }
-    auto const path_str = join_path(n.path);
-    for (auto const& c : n.node->cmds) {
-      if (!visible_cmd(c)) {
-        continue;
-      }
-      out += fish_cmd_line(root.name, path_str, c);
-    }
-    for (auto const& f : n.node->flags) {
-      if (!visible_flag(f)) {
-        continue;
-      }
-      out += fish_flag_line(root.name, path_str, f);
+    for (const CLI::Option* opt : local_flags(*node.node)) {
+      out += fish_flag_line(name, path_str, *opt);
     }
   }
 
@@ -341,7 +305,7 @@ auto fish_script(cmd const& root) -> std::string {
 
 } // namespace
 
-auto generate_script(cmd const& root, shell sh) -> std::string {
+auto generate_script(const CLI::App& root, shell sh) -> std::string {
   switch (sh) {
   case shell::bash:
     return bash_script(root);
@@ -353,4 +317,4 @@ auto generate_script(cmd const& root, shell sh) -> std::string {
   return {};
 }
 
-} // namespace planar::cli
+} // namespace planar::cliapp

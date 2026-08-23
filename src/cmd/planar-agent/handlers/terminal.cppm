@@ -41,7 +41,8 @@ module;
 export module planar.cmd.planar_agent.handlers.terminal;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
 
@@ -51,24 +52,24 @@ namespace planar::cmd::agent::handlers {
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto complete(context& ctx, const cli::match_result& args) -> handler_result;
+export auto complete(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent fail --claim <token> --reason <text> [--category <c>]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto fail(context& ctx, const cli::match_result& args) -> handler_result;
+export auto fail(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent release --claim <token> [--reason <text>]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto release(context& ctx, const cli::match_result& args) -> handler_result;
+export auto release(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent block --claim <token> --blocker <id> [--reason <text>]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto block(context& ctx, const cli::match_result& args) -> handler_result;
+export auto block(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::agent::handlers

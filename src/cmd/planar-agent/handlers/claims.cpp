@@ -8,7 +8,8 @@ module;
 module planar.cmd.planar_agent.handlers.claims;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentatomic;
@@ -45,8 +46,8 @@ auto view(const std::optional<std::string>& value) -> std::optional<std::string_
 /// annotates. Refused before anything is written.
 /// @param args The parsed arguments.
 /// @return The refusal, or unset when the pair is consistent.
-auto check_stage_requires_run(const cli::match_result& args) -> std::optional<domain_error> {
-  if (flag_string(args, "--stage").has_value() && !flag_int(args, "--run").has_value()) {
+auto check_stage_requires_run(const cliapp::parsed_args& args) -> std::optional<domain_error> {
+  if (cliapp::flag_string(args, "--stage").has_value() && !cliapp::flag_int(args, "--run").has_value()) {
     return invalid_input_error("--stage requires --run: provide a workflow_runs.id via --run <id>");
   }
   return std::nullopt;
@@ -69,7 +70,7 @@ auto split_worktree(const std::optional<std::string>& raw) -> worktree_split {
   if (!raw.has_value()) {
     return {};
   }
-  if (auto const id = parse_int64_zig(*raw); id.has_value()) {
+  if (auto const id = cliapp::parse_int64_zig(*raw); id.has_value()) {
     return worktree_split{.id = id};
   }
   return worktree_split{.path = raw};
@@ -95,7 +96,7 @@ auto check_metadata(const std::optional<std::string>& raw) -> std::optional<doma
 
 } // namespace
 
-auto pull(context& ctx, const cli::match_result& args) -> handler_result {
+auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -109,31 +110,31 @@ auto pull(context& ctx, const cli::match_result& args) -> handler_result {
   // unknown kind outright: `--role` is a free-text label the tree's own
   // help describes as `planner|coder|reviewer|test_coder|...`, and the
   // trailing ellipsis is doing real work.
-  auto const role = flag_string(args, "--role");
+  auto const role = cliapp::flag_string(args, "--role");
   auto const kind = role.has_value() ? aa::action_kind_from_text(*role).value_or(aa::action_kind::coder) : aa::action_kind::coder;
 
   // Two independent reasons to skip: the operator asked, or this action
   // kind does not probe by default. Pull picks a role kind, so its
   // default is probe-on.
-  auto const skip = flag_bool(args, "--no-locality-probe") || !aa::probe_default(kind);
-  auto const loc  = resolve_locality(flag_string(args, "--repo-root"), ctx.cwd(), skip);
+  auto const skip = cliapp::flag_bool(args, "--no-locality-probe") || !aa::probe_default(kind);
+  auto const loc  = resolve_locality(cliapp::flag_string(args, "--repo-root"), ctx.cwd(), skip);
 
-  auto const worktree = split_worktree(flag_string(args, "--worktree"));
+  auto const worktree = split_worktree(cliapp::flag_string(args, "--worktree"));
 
-  auto const vendor  = flag_string(args, "--vendor").value_or(std::string{"planar-agent"});
-  auto const vsid    = flag_string(args, "--vendor-session");
+  auto const vendor  = cliapp::flag_string(args, "--vendor").value_or(std::string{"planar-agent"});
+  auto const vsid    = cliapp::flag_string(args, "--vendor-session");
   auto const session = ses::ensure_active(**conn, vendor, view(vsid));
   if (!session) {
     return std::unexpected(session_error_message(session.error()));
   }
 
-  auto const ttl_raw = flag_string(args, "--ttl").value_or(std::string{"600"});
+  auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::string{"600"});
   auto const ttl     = parse_ttl_seconds(ttl_raw);
   if (!ttl.has_value()) {
     return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
   }
 
-  auto const metadata = flag_string(args, "--metadata");
+  auto const metadata = cliapp::flag_string(args, "--metadata");
   if (auto const refusal = check_metadata(metadata); refusal.has_value()) {
     return std::unexpected(*refusal);
   }
@@ -142,7 +143,7 @@ auto pull(context& ctx, const cli::match_result& args) -> handler_result {
   // action id in an orchestrator script would otherwise produce a claim
   // whose tree edge points nowhere, and the mistake would only surface
   // later in `planar-watch tree`.
-  auto const parent = flag_int(args, "--parent-action");
+  auto const parent = cliapp::flag_int(args, "--parent-action");
   if (parent.has_value()) {
     if (*parent <= 0) {
       return std::unexpected(invalid_input_error(std::format("--parent-action must be a positive integer (got {})", *parent)));
@@ -157,17 +158,17 @@ auto pull(context& ctx, const cli::match_result& args) -> handler_result {
       // NotFound, which `planar-agent`'s codeFor does not map — exit 1,
       // not the 2 the neighbouring range check produces.
       return std::unexpected(
-          error_from_body(cli::domain_error_kind::not_found, std::format("--parent-action {}: action not found", *parent)));
+          error_from_body(domain_error_kind::not_found, std::format("--parent-action {}: action not found", *parent)));
     }
   }
 
-  auto const purpose  = flag_string(args, "--purpose");
-  auto const base_ref = flag_string(args, "--base-ref");
-  auto const stage    = flag_string(args, "--stage");
+  auto const purpose  = cliapp::flag_string(args, "--purpose");
+  auto const base_ref = cliapp::flag_string(args, "--base-ref");
+  auto const stage    = cliapp::flag_string(args, "--stage");
 
   auto const result = atomic::pull_next(**conn,
                                         atomic::pull_args{
-                                            .plan_id           = positional_int(args, "plan-id").value_or(0),
+                                            .plan_id           = cliapp::positional_int(args, "plan-id").value_or(0),
                                             .session_id        = *session,
                                             .vendor            = vendor,
                                             .vendor_session_id = view(vsid),
@@ -181,7 +182,7 @@ auto pull(context& ctx, const cli::match_result& args) -> handler_result {
                                             .kind              = kind,
                                             .metadata          = view(metadata),
                                             .parent_action_id  = parent,
-                                            .run_id            = flag_int(args, "--run"),
+                                            .run_id            = cliapp::flag_int(args, "--run"),
                                             .stage             = view(stage),
                                         },
                                         task_policy());
@@ -189,7 +190,7 @@ auto pull(context& ctx, const cli::match_result& args) -> handler_result {
     return std::unexpected(verb_error("pull", result.error()));
   }
 
-  auto const json = flag_bool(args, "--json");
+  auto const json = cliapp::flag_bool(args, "--json");
   if (result->no_work) {
     ctx.out() << (json ? render::no_work_json() : render::no_work_text());
     return {};
@@ -203,17 +204,17 @@ auto pull(context& ctx, const cli::match_result& args) -> handler_result {
   return {};
 }
 
-auto peek(context& ctx, const cli::match_result& args) -> handler_result {
+auto peek(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const result = atomic::peek_next(**conn, positional_int(args, "plan-id").value_or(0));
+  auto const result = atomic::peek_next(**conn, cliapp::positional_int(args, "plan-id").value_or(0));
   if (!result) {
     return std::unexpected(verb_error("peek", result.error()));
   }
 
-  auto const json = flag_bool(args, "--json");
+  auto const json = cliapp::flag_bool(args, "--json");
   if (result->no_work) {
     ctx.out() << (json ? render::no_work_json() : render::no_work_text());
     return {};
@@ -226,7 +227,7 @@ auto peek(context& ctx, const cli::match_result& args) -> handler_result {
   return {};
 }
 
-auto claim(context& ctx, const cli::match_result& args) -> handler_result {
+auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -235,12 +236,12 @@ auto claim(context& ctx, const cli::match_result& args) -> handler_result {
     return std::unexpected(*refusal);
   }
 
-  auto const entity_raw = flag_string(args, "--entity").value_or(std::string{});
+  auto const entity_raw = cliapp::flag_string(args, "--entity").value_or(std::string{});
   auto const entity     = parse_entity_ref(entity_raw);
   if (!entity) {
     // The two refusal tags exit DIFFERENTLY — see `entity_ref_error`.
-    auto const kind = entity.error() == entity_ref_error::invalid_entity_ref ? cli::domain_error_kind::invalid_entity_ref
-                                                                             : cli::domain_error_kind::generic_failure;
+    auto const kind = entity.error() == entity_ref_error::invalid_entity_ref ? domain_error_kind::invalid_entity_ref
+                                                                             : domain_error_kind::generic_failure;
     return std::unexpected(
         error_from_body(kind, std::format("invalid --entity '{}' ({}); expected task:<id>|plan:<id>|plan_step:<id>", entity_raw,
                                           entity_ref_error_name(entity.error()))));
@@ -249,26 +250,27 @@ auto claim(context& ctx, const cli::match_result& args) -> handler_result {
   // NOTE: no `probe_default` gating here, unlike pull. `claim` records no
   // action kind of its own to consult, so `--no-locality-probe` is the
   // only thing that suppresses the probe.
-  auto const loc      = resolve_locality(flag_string(args, "--repo-root"), ctx.cwd(), flag_bool(args, "--no-locality-probe"));
-  auto const worktree = split_worktree(flag_string(args, "--worktree"));
+  auto const loc =
+      resolve_locality(cliapp::flag_string(args, "--repo-root"), ctx.cwd(), cliapp::flag_bool(args, "--no-locality-probe"));
+  auto const worktree = split_worktree(cliapp::flag_string(args, "--worktree"));
 
-  auto const vendor  = flag_string(args, "--vendor").value_or(std::string{"planar-agent"});
-  auto const vsid    = flag_string(args, "--vendor-session");
+  auto const vendor  = cliapp::flag_string(args, "--vendor").value_or(std::string{"planar-agent"});
+  auto const vsid    = cliapp::flag_string(args, "--vendor-session");
   auto const session = ses::ensure_active(**conn, vendor, view(vsid));
   if (!session) {
     return std::unexpected(session_error_message(session.error()));
   }
 
-  auto const ttl_raw = flag_string(args, "--ttl").value_or(std::string{"600"});
+  auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::string{"600"});
   auto const ttl     = parse_ttl_seconds(ttl_raw);
   if (!ttl.has_value()) {
     return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
   }
 
-  auto const role    = flag_string(args, "--role");
-  auto const model   = flag_string(args, "--model");
-  auto const purpose = flag_string(args, "--purpose");
-  auto const stage   = flag_string(args, "--stage");
+  auto const role    = cliapp::flag_string(args, "--role");
+  auto const model   = cliapp::flag_string(args, "--model");
+  auto const purpose = cliapp::flag_string(args, "--purpose");
+  auto const stage   = cliapp::flag_string(args, "--stage");
 
   auto const acquired = atomic::claim_entity(**conn,
                                              aa::acquire_args{
@@ -284,36 +286,36 @@ auto claim(context& ctx, const cli::match_result& args) -> handler_result {
                                                  .purpose           = view(purpose),
                                                  .ttl_secs          = *ttl,
                                                  .loc               = loc,
-                                                 .force             = flag_bool(args, "--force"),
-                                                 .run_id            = flag_int(args, "--run"),
+                                                 .force             = cliapp::flag_bool(args, "--force"),
+                                                 .run_id            = cliapp::flag_int(args, "--run"),
                                                  .stage             = view(stage),
                                              },
-                                             !flag_bool(args, "--no-transition"), task_policy());
+                                             !cliapp::flag_bool(args, "--no-transition"), task_policy());
   if (!acquired) {
     return std::unexpected(verb_error("claim", acquired.error()));
   }
 
-  ctx.out() << (flag_bool(args, "--json") ? render::claim_json(*acquired) : render::claim_text(*acquired));
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? render::claim_json(*acquired) : render::claim_text(*acquired));
   return {};
 }
 
-auto heartbeat(context& ctx, const cli::match_result& args) -> handler_result {
+auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
 
-  auto const ttl_raw = flag_string(args, "--ttl").value_or(std::string{"600"});
+  auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::string{"600"});
   auto const ttl     = parse_ttl_seconds(ttl_raw);
   if (!ttl.has_value()) {
     // BEFORE the transaction: a malformed duration should not open one.
     return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
   }
-  auto const token = flag_string(args, "--claim").value_or(std::string{});
+  auto const token = cliapp::flag_string(args, "--claim").value_or(std::string{});
 
   auto tx = (*conn)->begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(error_from_body(cli::domain_error_kind::generic_failure, "BEGIN IMMEDIATE: QueryFailed"));
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "BEGIN IMMEDIATE: QueryFailed"));
   }
 
   auto refreshed = aa::heartbeat_claim(**conn, token, *ttl);
@@ -324,7 +326,7 @@ auto heartbeat(context& ctx, const cli::match_result& args) -> handler_result {
   // `--status` present-and-empty is NOT the same as absent: an omitted
   // flag writes no action row at all, while `--status ""` writes one with
   // an empty summary. `flag_string` distinguishes them for us.
-  auto const status = flag_string(args, "--status");
+  auto const status = cliapp::flag_string(args, "--status");
   if (status.has_value()) {
     constexpr std::size_t k_status_cap = 256;
     if (status->size() > k_status_cap) {
@@ -347,25 +349,25 @@ auto heartbeat(context& ctx, const cli::match_result& args) -> handler_result {
   }
 
   if (!tx->commit()) {
-    return std::unexpected(error_from_body(cli::domain_error_kind::generic_failure, "COMMIT: QueryFailed"));
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "COMMIT: QueryFailed"));
   }
 
-  ctx.out() << (flag_bool(args, "--json") ? render::claim_json(*refreshed) : render::heartbeat_text(*refreshed));
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? render::claim_json(*refreshed) : render::heartbeat_text(*refreshed));
   return {};
 }
 
-auto claim_associate(context& ctx, const cli::match_result& args) -> handler_result {
+auto claim_associate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const token   = flag_string(args, "--claim").value_or(std::string{});
-  auto const stage   = flag_string(args, "--stage");
-  auto const updated = aa::associate_claim_run(**conn, token, flag_int(args, "--run").value_or(0), view(stage));
+  auto const token   = cliapp::flag_string(args, "--claim").value_or(std::string{});
+  auto const stage   = cliapp::flag_string(args, "--stage");
+  auto const updated = aa::associate_claim_run(**conn, token, cliapp::flag_int(args, "--run").value_or(0), view(stage));
   if (!updated) {
     return std::unexpected(verb_error("claim-associate", updated.error()));
   }
-  ctx.out() << (flag_bool(args, "--json") ? render::associate_json(*updated) : render::associate_text(*updated, token));
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? render::associate_json(*updated) : render::associate_text(*updated, token));
   return {};
 }
 

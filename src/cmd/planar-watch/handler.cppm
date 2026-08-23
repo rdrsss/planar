@@ -6,7 +6,8 @@ module;
 export module planar.cmd.planar_watch.handler;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 
@@ -17,6 +18,6 @@ namespace planar::cmd::watch {
 export using handler_result = std::expected<void, domain_error>;
 
 /// @brief The erased handler type the dispatch table stores.
-export using handler_fn = std::function<handler_result(context&, const cli::match_result&)>;
+export using handler_fn = std::function<handler_result(context&, const cliapp::parsed_args&)>;
 
 } // namespace planar::cmd::watch

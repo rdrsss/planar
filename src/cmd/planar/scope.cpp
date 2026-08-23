@@ -4,7 +4,8 @@
 module planar.cmd.planar.scope;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.engine.identity;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -51,14 +52,14 @@ auto map_scope_error(engine::identity::scope_error err, std::string_view verb) -
   auto const kind = [err] {
     switch (err) {
     case engine::identity::scope_error::scope_mismatch:
-      return cli::domain_error_kind::scope_mismatch;
+      return domain_error_kind::scope_mismatch;
     case engine::identity::scope_error::invalid_path:
-      return cli::domain_error_kind::invalid_input;
+      return domain_error_kind::invalid_input;
     case engine::identity::scope_error::slug_not_found:
     case engine::identity::scope_error::query_failed:
-      return cli::domain_error_kind::generic_failure;
+      return domain_error_kind::generic_failure;
     }
-    return cli::domain_error_kind::generic_failure;
+    return domain_error_kind::generic_failure;
   }();
   return error_from_body(kind, std::format("{}: resolving scope failed: {}", verb, zig_error_name(err)));
 }

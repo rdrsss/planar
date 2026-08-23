@@ -31,7 +31,7 @@
 ///
 /// ## The generated script is NOT byte-comparable to the oracle
 ///
-/// `planar.cli.completion`'s own header says so: the port keeps
+/// `planar.cliapp.completion`'s own header says so: the port keeps
 /// command-name and flag-name completion and DEFERS flag-*value*
 /// completion (etcli-zig's `values` / `files` / `dynamic` metadata). No
 /// verb in this tree declares a value-completion set, so nothing is lost
@@ -43,7 +43,8 @@ module;
 export module planar.cmd.planar_watch.handlers.completion;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.handler;
 
@@ -56,6 +57,6 @@ namespace planar::cmd::watch::handlers {
 /// @return Success, or an `invalid_input` (exit 2) carrying the oracle's
 /// `unsupported shell '<x>'; supported: bash, zsh, fish` body when the
 /// positional names something other than bash/zsh/fish.
-export auto completion(context& ctx, const cli::match_result& args, const cli::cmd& root) -> handler_result;
+export auto completion(context& ctx, const cliapp::parsed_args& args, const CLI::App& root) -> handler_result;
 
 } // namespace planar::cmd::watch::handlers

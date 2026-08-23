@@ -10,7 +10,7 @@
 ///
 /// It is also the ONE leaf in this subset that is deliberately not
 /// byte-identical to the oracle, and the divergence is inherited, not
-/// introduced: `planar.cli.version`'s port renders `cxx <compiler-version>`
+/// introduced: `planar.cliapp.version`'s port renders `cxx <compiler-version>`
 /// where the Zig binary renders `zig <zig-version>`, because this binary
 /// has no Zig runtime to report. The field POSITION and COUNT match — a
 /// script splitting the line on whitespace still finds five tokens. See
@@ -21,7 +21,8 @@ module;
 export module planar.cmd.planar.handlers.version;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 
@@ -31,6 +32,6 @@ namespace planar::cmd::handlers {
 /// @param ctx The invocation context.
 /// @param args The parsed arguments (the leaf declares none).
 /// @return Success; this leaf has no failure path.
-export auto version(context& ctx, const cli::match_result& args) -> handler_result;
+export auto version(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

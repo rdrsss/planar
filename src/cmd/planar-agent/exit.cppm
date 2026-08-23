@@ -1,56 +1,91 @@
 /// @file exit.cppm
 /// @brief `planar.cmd.planar_agent.exit` — the `planar-agent` binary's
-/// failure envelope: a typed domain error a handler returns, its process
-/// exit code under THIS binary's policy, and how it reaches stderr
-/// (plan 996, task 6107).
+/// failure envelope AND its complete exit-code table (plan 996, tasks 6107
+/// and 6123).
 ///
-/// ## Why this is a second module and not a parameter on the first
+/// ## Task 6123 moved the TABLE in here, on purpose
 ///
-/// `planar.cmd.planar.exit` (task 6105) is byte-for-byte the same SHAPE:
-/// same `domain_error`, same `from_body`/`from_rendered` split, same
-/// `report`. The only thing that differs is the single line inside
-/// `exit_code`, which passes `binary_kind::planar_agent` instead of
-/// `binary_kind::planar`. Sharing the module and taking the binary as a
-/// parameter was considered and rejected, and the reason is recorded in
-/// that module's own header: the divergences are real and silent.
+/// This module used to hold only the `domain_error` value and delegate the
+/// numbers to layer 1's `planar.cli.exit::exit_code_for(kind,
+/// binary_kind)`. That shared, binary-PARAMETERIZED helper is exactly the
+/// shape task 6066 spent a rename fighting: overload resolution picked
+/// between a binary-aware and a binary-blind `exit_code_for` purely by
+/// argument count, so a call site written one token short silently applied
+/// the `planar` operator binary's policy from an agent/watch code path.
+/// The task 6123 brief is explicit — "do not reintroduce one" — so the
+/// switch below is complete, local, and takes no binary parameter. There
+/// is no way to reach it from another binary and no argument that could
+/// select the wrong row.
 ///
-///   `parse_error`           exit 2 on `planar`, exit 1 here.
-///   `schema_version_behind` exit 1 on `planar`, exit 7 here.
+/// ## This binary's policy, and where it differs
 ///
-/// Both were verified against the reference binaries, not inferred — see
-/// `planar.cli.exit`'s header for the captures, and this task re-confirmed
-/// the first one directly: `planar-agent nosuchverb` exits 1 while `planar
-/// nosuchverb` exits 2, from the same argv shape. A shared helper carrying
-/// a `binary_kind` argument is one defaulted parameter or one copy-pasted
-/// call site away from applying the wrong policy, with nothing but a code
-/// review standing between the mistake and shipping it. Layer 1 already
-/// owns the TABLE (`planar.cli.exit::exit_code_for`) so the numbers are not
-/// duplicated; what is duplicated is a one-line binding of this binary to
-/// its own row of it, in a file that is compiled into this binary alone and
-/// cannot be reached from another.
+/// Verified against the reference binaries rather than inferred:
 ///
-/// That is also why `cmd_* -> cmd_*` being forbidden (D18) is not a problem
-/// to work around here: the thing the four binaries appear to "share" is
-/// exactly the thing that must not be shared.
+///     parse_error            exit 2 on `planar`, exit 1 HERE.
+///     schema_version_behind  exit 1 on `planar`, exit 7 HERE.
+///
+/// `planar-agent nosuchverb` exits 1 while `planar nosuchverb` exits 2,
+/// from the same argv shape; separately, `planar-agent claim --entity
+/// task:abc` exits 2 (InvalidEntityRef) while `--entity bogus:1` exits 1
+/// (UnsupportedEntityKind falls through to the generic bucket) — that pair
+/// is what makes a collapsed mapping impossible to pass.
+/// `zig/src/cmd/planar-agent/exit.zig` folds `SchemaVersionBehind` into
+/// the same 7 as `SchemaVersionAhead`, where `zig/src/cmd/planar/exit.zig`
+/// has no `SchemaVersionBehind` arm at all and falls through to its
+/// generic 1. Reproduced, not "fixed" (D2). `exit_codes.t.cpp` pins every
+/// row.
+///
+/// ## Why a returned `std::expected`, not Zig's `die()`
+///
+/// `zig/src/cmd/planar-agent/exit.zig`'s `die(ctx, err, fmt, args)` is
+/// `noreturn`. That shape cannot be unit-tested in-process — a Catch2 case
+/// reaching it would kill the whole test binary — and it forces the
+/// exit-code decision to hundreds of scattered call sites. Handlers here
+/// return `std::expected<void, domain_error>` and exactly one place
+/// (`dispatch::run`) turns that into bytes and a code.
 module;
 
 export module planar.cmd.planar_agent.exit;
 
 import std;
-import planar.cli;
 
 namespace planar::cmd::agent {
+
+/// @brief The domain-error taxonomy this binary's handlers raise.
+export enum class domain_error_kind : std::uint8_t {
+  generic_failure,
+  not_found,
+  invalid_input,
+  invalid_entity_ref,
+  parse_error,
+  sync_conflict,
+  scope_mismatch,
+  slug_conflict,
+  already_exists,
+  schema_version_ahead,
+  schema_version_behind,
+  not_implemented,
+};
+
+// The exit-code convention, as named constants rather than magic numbers.
+export inline constexpr int exit_success               = 0;  ///< Success.
+export inline constexpr int exit_generic_failure       = 1;  ///< Unmapped/generic failure.
+export inline constexpr int exit_user_input            = 2;  ///< Bad flag value / invalid entity ref.
+export inline constexpr int exit_sync_conflict         = 3;  ///< Operational-plane sync conflict.
+export inline constexpr int exit_scope_violation       = 5;  ///< Cross-scope write refused.
+export inline constexpr int exit_precondition_conflict = 6;  ///< Slug conflict / already-exists.
+export inline constexpr int exit_schema_version        = 7;  ///< DB schema newer/older than this binary supports.
+export inline constexpr int exit_not_implemented       = 64; ///< Placeholder / not-yet-implemented handler.
 
 /// @brief A handler failure: which exit-code bucket it falls in, plus the
 /// stderr text.
 export struct domain_error {
-  /// @brief The exit-code bucket, mapped through `planar.cli.exit`.
-  cli::domain_error_kind kind = cli::domain_error_kind::generic_failure;
+  /// @brief The exit-code bucket.
+  domain_error_kind kind = domain_error_kind::generic_failure;
   /// @brief The stderr text. Interpreted per `rendered`.
   std::string text;
   /// @brief When true, `text` is a COMPLETE stderr payload written
-  /// verbatim (prefix and terminator already present). When false, `text`
-  /// is a message body and the reporting site composes
+  /// verbatim. When false, the reporting site composes
   /// `"error: " + text + "\n"` around it.
   bool rendered = false;
 };
@@ -60,7 +95,7 @@ export struct domain_error {
 /// @param kind The exit-code bucket.
 /// @param body The message body.
 /// @return The constructed error.
-export auto error_from_body(cli::domain_error_kind kind, std::string body) -> domain_error {
+export auto error_from_body(domain_error_kind kind, std::string body) -> domain_error {
   return domain_error{.kind = kind, .text = std::move(body), .rendered = false};
 }
 
@@ -69,20 +104,48 @@ export auto error_from_body(cli::domain_error_kind kind, std::string body) -> do
 /// @param kind The exit-code bucket.
 /// @param payload The complete stderr payload, terminator included.
 /// @return The constructed error.
-export auto error_from_rendered(cli::domain_error_kind kind, std::string payload) -> domain_error {
+export auto error_from_rendered(domain_error_kind kind, std::string payload) -> domain_error {
   return domain_error{.kind = kind, .text = std::move(payload), .rendered = true};
 }
 
-/// @brief The process exit code for `err`, under the `planar-agent`
-/// binary's policy.
-///
-/// Hard-wired to `binary_kind::planar_agent` for the reason this file's
-/// header gives at length: the policy differs from `planar`'s on two kinds
-/// and the difference is invisible at a call site.
+/// @brief The process exit code for `kind`, under the `planar-agent`
+/// binary's policy. Complete and local — see this file's header for why it
+/// takes no binary parameter.
+/// @param kind The domain-error kind a handler raised.
+/// @return The process exit code.
+export auto exit_code_for(domain_error_kind kind) -> int {
+  switch (kind) {
+  case domain_error_kind::generic_failure:
+  case domain_error_kind::not_found:
+    return exit_generic_failure;
+  case domain_error_kind::invalid_input:
+  case domain_error_kind::invalid_entity_ref:
+    return exit_user_input;
+  case domain_error_kind::parse_error:
+    // NOT the operator binary's 2. Oracle-captured on THIS binary.
+    return exit_generic_failure;
+  case domain_error_kind::sync_conflict:
+    return exit_sync_conflict;
+  case domain_error_kind::scope_mismatch:
+    return exit_scope_violation;
+  case domain_error_kind::slug_conflict:
+  case domain_error_kind::already_exists:
+    return exit_precondition_conflict;
+  case domain_error_kind::schema_version_ahead:
+  case domain_error_kind::schema_version_behind:
+    // Both fold to 7 here, where `planar` has no `behind` arm at all.
+    return exit_schema_version;
+  case domain_error_kind::not_implemented:
+    return exit_not_implemented;
+  }
+  return exit_generic_failure;
+}
+
+/// @brief The process exit code for `err`.
 /// @param err The handler failure.
 /// @return The process exit code.
 export auto exit_code(const domain_error& err) -> int {
-  return cli::exit_code_for(err.kind, cli::binary_kind::planar_agent);
+  return exit_code_for(err.kind);
 }
 
 /// @brief Write `err`'s stderr text to `err_stream`, composing the

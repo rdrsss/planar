@@ -1,47 +1,68 @@
 // @file dispatch.t.cpp
 // @brief Tests for `planar.cmd.planar.dispatch` and the exit-code envelope
-// (plan 996, task 6105).
+// (plan 996, tasks 6105 and 6123).
 //
 // HOME / DB SAFETY. Every context here is built over an explicit env map
 // and a scratch database path, and every case in this file routes to a leaf
 // that never opens SQLite (or fails before routing at all), so nothing here
 // touches a real database.
 //
-// ORACLE PROVENANCE. The three parse-failure captures below are verbatim
-// bytes from the reference binary run under a scratch
+// PROVENANCE, AND WHAT TASK 6123 RE-BASELINED.
+//
+// These parse-failure expectations used to be verbatim bytes from the Zig
+// reference binary. Task 6123 deleted `src/lib/cli` — the hand-rolled
+// parser that produced that exact wording — and made this binary drive
+// CLI11 directly, so the WORDING is now CLI11's and is no longer
+// oracle-comparable. The operator sanctioned that re-baseline explicitly.
+//
+// What did NOT change, and is still the reason these are pinned, is the
+// SHAPE: one parse failure writes a FORMATTED message to STDOUT and a
+// CamelCase error TAG to STDERR, and the operator binary exits 2 where
+// planar-agent and planar-watch exit 1. Putting either message on the
+// other stream, or collapsing the exit code, would look correct and be
+// wrong. `CLI::ParseError::get_name()` already returns CamelCase
+// (`ExtrasError`, `RequiredError`, `ValidationError`), so the stderr line
+// needed no translation table.
+//
+// The bytes below were captured from the BUILT C++ binary the same way the
+// oracle captures were taken — run under a scratch
 // PLANAR_DB/PLANAR_HOME/PLANAR_CONFIG_PATH, read back through
-// `python3 -c "print(repr(open(f,'rb').read()))"`:
+// `python3 -c "print(repr(open(f,'rb').read()))"` — and are pinned exactly,
+// not loosened to a `contains` check. A re-baselined expectation is only
+// worth having if it still discriminates:
 //
-//   $Z nosuchverb
+//   $C nosuchverb
 //     exit 2
-//     stdout b'error: unknown subcommand (got nosuchverb) [in: planar]\n'
-//     stderr b'error: UnknownSubcommand\n'
+//     stdout b'error: planar: The following argument was not expected: nosuchverb\n'
+//     stderr b'error: ExtrasError\n'
 //
-//   $Z workflow nosuchsub
+//   $C workflow nosuchsub
 //     exit 2
-//     stdout b'error: unknown subcommand (got nosuchsub) [in: workflow]\n'
-//     stderr b'error: UnknownSubcommand\n'
+//     stdout b'error: workflow: The following argument was not expected: nosuchsub\n'
+//     stderr b'error: ExtrasError\n'
 //
-//   $Z workflow list --nosuchflag
+//   $C workflow list --nosuchflag
 //     exit 2
-//     stdout b'error: unknown flag (got --nosuchflag)\n'
-//     stderr b'error: UnknownFlag\n'
+//     stdout b'error: list: The following argument was not expected: --nosuchflag\n'
+//     stderr b'error: ExtrasError\n'
 //
-//   $Z workflow show          (missing required positional)
+//   $C workflow show          (missing required positional)
 //     exit 2
-//     stdout b'error: required positional missing: <name>\n'
-//     stderr b'error: MissingRequiredPositional\n'
+//     stdout b'error: name is required\n'
+//     stderr b'error: RequiredError\n'
 //
-// The dual-stream shape is the surprising part and the reason these are
-// pinned: a parse failure writes a FORMATTED message to STDOUT (etcli's own
-// formatter, writing to the writer `cli.dispatch` was handed) and a
-// CamelCase error TAG to STDERR (main.zig's `exit.die`). Putting either on
-// the other stream would look correct and be wrong.
+// NOTE the error NAME is coarser than the oracle's: CLI11 reports an
+// unknown subcommand, an unknown subcommand under a group, AND an unknown
+// flag all as `ExtrasError`, where etcli distinguished
+// `UnknownSubcommand` from `UnknownFlag`. The three cases stay separate
+// tests because the stdout message still names the offending token and the
+// command it was rejected under, which is the part an operator reads.
 
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.exit;
@@ -75,9 +96,9 @@ auto dispatch(std::vector<std::string> args, std::map<std::string, std::string, 
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::map_env(std::move(vars)), root, root / "planar.db", out, err};
-  auto const         tree  = planar::cmd::root_command();
+  auto const         tree  = planar::cmd::root_app();
   auto const         table = planar::cmd::handlers();
-  int const          code  = planar::cmd::run(ctx, tree, table);
+  int const          code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
 
@@ -87,9 +108,9 @@ TEST_CASE("path_key joins a resolved path with single spaces", "[cmd][dispatch]"
   std::vector<std::string> const two{"workflow", "list"};
   std::vector<std::string> const one{"version"};
   std::vector<std::string> const none{};
-  CHECK(planar::cmd::path_key(two) == "workflow list");
-  CHECK(planar::cmd::path_key(one) == "version");
-  CHECK(planar::cmd::path_key(none).empty());
+  CHECK(planar::cliapp::path_key(two) == "workflow list");
+  CHECK(planar::cliapp::path_key(one) == "version");
+  CHECK(planar::cliapp::path_key(none).empty());
 }
 
 TEST_CASE("every leaf in the tree has a handler", "[cmd][dispatch][registration]") {
@@ -97,9 +118,9 @@ TEST_CASE("every leaf in the tree has a handler", "[cmd][dispatch][registration]
   // without a table entry is the single easiest mistake to make here, and
   // it is invisible until someone runs the verb and gets exit 64. This
   // turns it into a failing test at the moment the tree changes.
-  auto const tree    = planar::cmd::root_command();
+  auto const tree    = planar::cmd::root_app();
   auto const table   = planar::cmd::handlers();
-  auto const missing = planar::cmd::unregistered_leaves(tree, table);
+  auto const missing = planar::cmd::unregistered_leaves(*tree, table);
   INFO("unwired leaves: " << std::format("{}", missing));
   CHECK(missing.empty());
 }
@@ -107,9 +128,9 @@ TEST_CASE("every leaf in the tree has a handler", "[cmd][dispatch][registration]
 TEST_CASE("every handler is reachable from the tree", "[cmd][dispatch][registration]") {
   // The other direction: a handler registered under a misspelled or removed
   // path is dead code that reads as coverage.
-  auto const tree  = planar::cmd::root_command();
+  auto const tree  = planar::cmd::root_app();
   auto const table = planar::cmd::handlers();
-  auto const dead  = planar::cmd::unreachable_handlers(tree, table);
+  auto const dead  = planar::cmd::unreachable_handlers(*tree, table);
   INFO("unreachable handlers: " << std::format("{}", dead));
   CHECK(dead.empty());
 }
@@ -118,19 +139,19 @@ TEST_CASE("unregistered_leaves actually reports an unwired leaf", "[cmd][dispatc
   // Break-probe in permanent form: the two gates above would pass just as
   // happily if `unregistered_leaves` always returned an empty vector. This
   // case proves it discriminates by handing it a table with a hole.
-  auto const tree  = planar::cmd::root_command();
+  auto const tree  = planar::cmd::root_app();
   auto       table = planar::cmd::handlers();
   table.erase("workflow show");
-  auto const missing = planar::cmd::unregistered_leaves(tree, table);
+  auto const missing = planar::cmd::unregistered_leaves(*tree, table);
   REQUIRE(missing.size() == 1);
   CHECK(missing.front() == "workflow show");
 }
 
 TEST_CASE("unreachable_handlers actually reports a dead entry", "[cmd][dispatch][registration]") {
-  auto const tree  = planar::cmd::root_command();
+  auto const tree  = planar::cmd::root_app();
   auto       table = planar::cmd::handlers();
-  table.emplace("workflow shwo", [](context&, const planar::cli::match_result&) -> planar::cmd::handler_result { return {}; });
-  auto const dead = planar::cmd::unreachable_handlers(tree, table);
+  table.emplace("workflow shwo", [](context&, const planar::cliapp::parsed_args&) -> planar::cmd::handler_result { return {}; });
+  auto const dead = planar::cmd::unreachable_handlers(*tree, table);
   REQUIRE(dead.size() == 1);
   CHECK(dead.front() == "workflow shwo");
 }
@@ -138,47 +159,51 @@ TEST_CASE("unreachable_handlers actually reports a dead entry", "[cmd][dispatch]
 TEST_CASE("an unknown subcommand writes to BOTH streams and exits 2", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"nosuchverb"});
   CHECK(got.code == 2);
-  CHECK(got.out == "error: unknown subcommand (got nosuchverb) [in: planar]\n");
-  CHECK(got.err == "error: UnknownSubcommand\n");
+  CHECK(got.out == "error: planar: The following argument was not expected: nosuchverb\n");
+  CHECK(got.err == "error: ExtrasError\n");
 }
 
 TEST_CASE("an unknown subcommand under a group names the group", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"workflow", "nosuchsub"});
   CHECK(got.code == 2);
-  CHECK(got.out == "error: unknown subcommand (got nosuchsub) [in: workflow]\n");
-  CHECK(got.err == "error: UnknownSubcommand\n");
+  CHECK(got.out == "error: workflow: The following argument was not expected: nosuchsub\n");
+  CHECK(got.err == "error: ExtrasError\n");
 }
 
 TEST_CASE("an unknown flag writes to BOTH streams and exits 2", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"workflow", "list", "--nosuchflag"});
   CHECK(got.code == 2);
-  CHECK(got.out == "error: unknown flag (got --nosuchflag)\n");
-  CHECK(got.err == "error: UnknownFlag\n");
+  CHECK(got.out == "error: list: The following argument was not expected: --nosuchflag\n");
+  CHECK(got.err == "error: ExtrasError\n");
 }
 
 TEST_CASE("a missing required positional writes to BOTH streams and exits 2", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"workflow", "show"});
   CHECK(got.code == 2);
-  CHECK(got.out == "error: required positional missing: <name>\n");
-  CHECK(got.err == "error: MissingRequiredPositional\n");
+  CHECK(got.out == "error: name is required\n");
+  CHECK(got.err == "error: RequiredError\n");
 }
 
 TEST_CASE("--help renders the leaf's page to stdout and exits 0", "[cmd][dispatch]") {
   auto const got = dispatch({"workflow", "show", "--help"});
   CHECK(got.code == 0);
   CHECK(got.err.empty());
-  CHECK(got.out == "workflow show\n"
+  // Re-baselined onto CLI11's formatter (task 6123) and pinned exactly,
+  // trailing spaces included — a page trimmed to a `contains` check would
+  // stop discriminating a dropped flag, which is the whole reason a leaf's
+  // help page is pinned at all.
+  CHECK(got.out == "Show @meta and source path for a named workflow.\n"
                    "\n"
-                   "  Show @meta and source path for a named workflow.\n"
                    "\n"
-                   "USAGE:\n"
-                   "  workflow show [flags] <name>\n"
+                   "show [OPTIONS] name\n"
                    "\n"
-                   "FLAGS:\n"
-                   "  --json                (bool) default=false\n"
                    "\n"
-                   "POSITIONAL ARGUMENTS:\n"
-                   "  <name>          (string)\n");
+                   "POSITIONALS:\n"
+                   "  name REQUIRED               \n"
+                   "\n"
+                   "OPTIONS:\n"
+                   "  -h,     --help              Print this help message and exit\n"
+                   "          --json              \n");
 }
 
 TEST_CASE("an unwired leaf falls through to exit 64, not a crash", "[cmd][dispatch]") {
@@ -193,8 +218,8 @@ TEST_CASE("an unwired leaf falls through to exit 64, not a crash", "[cmd][dispat
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{{"planar", "version"}, planar::cmd::map_env({}), root, root / "planar.db", out, err};
-  auto const         tree = planar::cmd::root_command();
-  int const          code = planar::cmd::run(ctx, tree, planar::cmd::handler_table{});
+  auto const         tree = planar::cmd::root_app();
+  int const          code = planar::cmd::run(ctx, *tree, planar::cmd::handler_table{});
   CHECK(code == 64);
   CHECK(err.str() == "error: not implemented yet\n");
   CHECK(out.str().empty());
@@ -206,35 +231,38 @@ TEST_CASE("the exit-code envelope maps each bucket distinctly", "[cmd][exit]") {
   // one bucket. These five are checked together, and the four the binary
   // actually produces (0, 1, 2, 64) are each also produced end to end
   // elsewhere in this file and in handlers.t.cpp.
-  using planar::cli::domain_error_kind;
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::generic_failure, "x")) == 1);
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::not_found, "x")) == 1);
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::invalid_input, "x")) == 2);
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::parse_error, "x")) == 2);
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::sync_conflict, "x")) == 3);
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::scope_mismatch, "x")) == 5);
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::slug_conflict, "x")) == 6);
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::schema_version_ahead, "x")) == 7);
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::not_implemented, "x")) == 64);
+  using planar::cmd::domain_error_kind;
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::generic_failure, "x")) == 1);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::not_found, "x")) == 1);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::invalid_input, "x")) == 2);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::parse_error, "x")) == 2);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::sync_conflict, "x")) == 3);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::scope_mismatch, "x")) == 5);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::slug_conflict, "x")) == 6);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::schema_version_ahead, "x")) == 7);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::not_implemented, "x")) == 64);
 
   // The `planar` binary's own divergence, not the agent binary's: this
-  // module hard-wires binary_kind::planar, so schema_version_behind is 1
-  // here (no arm in zig/src/cmd/planar/exit.zig's codeFor) where it is 7 on
+  // module owns a COMPLETE, local table (task 6123 removed the shared
+  // binary-parameterized one), so schema_version_behind is 1 here — no arm
+  // in zig/src/cmd/planar/exit.zig's codeFor — where it is 7 on
   // planar-agent / planar-watch.
-  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(domain_error_kind::schema_version_behind, "x")) == 1);
+  CHECK(planar::cmd::exit_code(planar::cmd::error_from_body(planar::cmd::domain_error_kind::schema_version_behind, "x")) == 1);
 }
 
 TEST_CASE("report composes a message body but writes a rendered payload verbatim", "[cmd][exit]") {
   // The two stderr shapes. Getting this wrong doubles the `error: ` prefix
   // on every renderer-sourced failure, which is precisely what `workflow
   // show nope` would have shown.
-  using planar::cli::domain_error_kind;
+  using planar::cmd::domain_error_kind;
   std::ostringstream body_out;
-  planar::cmd::report(planar::cmd::error_from_body(domain_error_kind::invalid_input, "--anchor-path is required"), body_out);
+  planar::cmd::report(planar::cmd::error_from_body(planar::cmd::domain_error_kind::invalid_input, "--anchor-path is required"),
+                      body_out);
   CHECK(body_out.str() == "error: --anchor-path is required\n");
 
   std::ostringstream rendered_out;
-  planar::cmd::report(planar::cmd::error_from_rendered(domain_error_kind::generic_failure, "error: workflow 'nope' not found\n"),
-                      rendered_out);
+  planar::cmd::report(
+      planar::cmd::error_from_rendered(planar::cmd::domain_error_kind::generic_failure, "error: workflow 'nope' not found\n"),
+      rendered_out);
   CHECK(rendered_out.str() == "error: workflow 'nope' not found\n");
 }

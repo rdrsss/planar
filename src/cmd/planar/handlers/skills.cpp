@@ -4,20 +4,23 @@
 module planar.cmd.planar.handlers.skills;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
+import planar.cliapp.walk;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.tree;
 
 namespace planar::cmd::handlers {
 
-auto skills(context& ctx, const cli::match_result& args) -> handler_result {
+auto skills(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   static_cast<void>(args);
-  // `render_help` returns the COMPLETE page, terminator included — the
-  // same contract `dispatch::run` already relies on for `--help`. Nothing
-  // is appended here.
-  std::vector<std::string> const path{"skills"};
-  ctx.out() << cli::render_help(root_command(), path);
+  // `CLI::App::help()` returns the COMPLETE page, terminator included —
+  // the same contract `dispatch::run` already relies on for `--help`.
+  // Nothing is appended here.
+  auto const      root = root_app();
+  const CLI::App* node = cliapp::find_node(*root, std::array<std::string, 1>{"skills"});
+  ctx.out() << (node != nullptr ? node->help() : root->help());
   return {};
 }
 

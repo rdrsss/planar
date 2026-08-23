@@ -53,7 +53,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
 import planar.cmd.planar_watch.context;
@@ -206,7 +207,7 @@ TEST_CASE("planar-watch: an unmigrated database is refused with exit 7 and a rem
 
   auto const opened = ctx.ensure_db();
   REQUIRE_FALSE(opened.has_value());
-  CHECK(opened.error().kind == planar::cli::domain_error_kind::schema_version_behind);
+  CHECK(opened.error().kind == planar::cmd::watch::domain_error_kind::schema_version_behind);
   // 7 here, where the OPERATOR binary maps the same kind to 1 (it has no
   // SchemaVersionBehind arm at all) — plan 996 task 6066's finding.
   CHECK(planar::cmd::watch::exit_code(opened.error()) == 7);

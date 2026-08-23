@@ -1,6 +1,6 @@
 /// @file tree.cppm
 /// @brief `planar.cmd.planar.tree` — the `planar` binary's root command
-/// tree (plan 996, task 6105).
+/// tree, built directly as a `CLI::App` (plan 996, tasks 6105 and 6123).
 ///
 /// Port target: the `root` constant in zig/src/cmd/planar/main.zig, plus
 /// the `pub const verb: cli.Cmd` each `handlers/<verb>.zig` /
@@ -29,33 +29,50 @@
 ///
 /// ## Node metadata is transcribed, not invented
 ///
-/// Every `desc` / `long_desc` / flag name / default below is transcribed
-/// from the Zig node definition and then CHECKED against the oracle's
-/// rendered `--help` bytes, which is the direction that actually catches a
-/// mistake: a wrong default or a dropped flag changes the rendered page.
+/// Every description / flag name / default below is transcribed from the
+/// Zig node definition and then CHECKED against the oracle — as of task
+/// 6123 against its `schema` CATALOG rather than its rendered `--help`
+/// bytes, since CLI11 renders help now and the pages no longer compare.
+/// The catalog is the better check anyway: it states flags, required-ness
+/// and positionals directly instead of through a layout. See
+/// `src/cmd/planar/parity.t.cpp`'s "every ported command declares what the
+/// oracle declares".
 ///
-/// The `run` handler field etcli's `Cmd` carries has no counterpart here.
-/// `planar.cli.cmd` is a LAYER-1 type and deliberately models no handler
-/// (its own header says so); binding a leaf to code is layer 3's business
-/// and lives in `planar.cmd.planar.dispatch`'s table instead.
+/// NOTE `CLI::App` carries ONE description string where `cli::cmd` carried
+/// a one-line `desc` and a multi-line `long_desc` separately. Where a node
+/// had both, the longer operator-facing prose is what survives — a named
+/// loss of the swap, recorded in `planar.cliapp.schema`'s header.
+///
+/// CLI11 CAN bind a callback per subcommand (`App::callback`), and this
+/// tree deliberately does not use it: a handler needs this binary's
+/// `context` and returns its `domain_error`, neither of which fits a
+/// `std::function<void()>` captured at tree-build time. Binding a leaf to
+/// code is layer 3's business and lives in `planar.cmd.planar.dispatch`'s
+/// path-keyed table instead — see that module's header.
 module;
 
 export module planar.cmd.planar.tree;
 
 import std;
-import planar.cli;
+import cli11;
 
 namespace planar::cmd {
 
 /// @brief Build the `planar` root command tree.
 ///
-/// Returned by value rather than exposed as a namespace-scope constant:
-/// `cli::cmd` is ordinary runtime data (see `planar.cli.cmd`'s header —
-/// nothing here needs compile-time evaluation to pay for itself), and a
-/// function keeps the tree out of static-initialisation order entirely.
-/// Callers that need it more than once should build it once and pass it
-/// around; `dispatch::run` does exactly that.
-/// @return The root node.
-export auto root_command() -> cli::cmd;
+/// Returns a `unique_ptr` rather than a value: `CLI::App` holds raw
+/// parent/child back-pointers, so a moved or copied tree would leave every
+/// subcommand pointing at a dead parent. Pointer-stable ownership is not a
+/// style choice here.
+///
+/// Task 6123 replaced the hand-rolled `cli::cmd` data tree with a
+/// `CLI::App` built here; CLI11 now owns tokenization, value coercion,
+/// subcommand resolution, required/choice enforcement and help rendering.
+/// The four binaries deliberately do NOT share a tree builder — D18 makes a
+/// `cmd_* -> cmd_*` edge a configure-time FATAL, and the binaries genuinely
+/// differ. What they share is layer-1 `planar.cliapp`, which only ever
+/// DESCRIBES a tree it is handed.
+/// @return The root app, owning every subcommand beneath it.
+export auto root_app() -> std::unique_ptr<CLI::App>;
 
 } // namespace planar::cmd

@@ -43,7 +43,8 @@ module;
 export module planar.cmd.planar.handlers.workflow;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 
@@ -54,7 +55,7 @@ namespace planar::cmd::handlers {
 /// @param args The parsed arguments.
 /// @return Success; this leaf has no failure path (an absent workflows
 /// directory is an EMPTY catalog, never an error).
-export auto workflow_list(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workflow_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar workflow show <name> [--json]`.
 /// @param ctx The invocation context.
@@ -62,6 +63,6 @@ export auto workflow_list(context& ctx, const cli::match_result& args) -> handle
 /// @return Success, or a `generic_failure` (exit 1) carrying the engine's
 /// complete `error: workflow '<name>' not found` line when no workflow
 /// matches.
-export auto workflow_show(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workflow_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

@@ -10,7 +10,7 @@
 ///
 /// Same inherited `cxx` vs `zig` divergence as the other two binaries'
 /// version leaves: no Zig runtime here to report. Note that the field
-/// COUNT does NOT survive it, contrary to `planar.cli.version`'s header —
+/// COUNT does NOT survive it, contrary to `planar.cliapp.version`'s header —
 /// `compiler_version_string()` returns `Clang 22.1.8`, whose own space
 /// makes the line six tokens against the oracle's five. Task 6106 found it
 /// first on the operator binary; see
@@ -28,7 +28,8 @@ module;
 export module planar.cmd.planar_watch.handlers.version;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.handler;
 
@@ -38,6 +39,6 @@ namespace planar::cmd::watch::handlers {
 /// @param ctx The invocation context.
 /// @param args The parsed arguments (the leaf declares none).
 /// @return Success; this leaf has no failure path.
-export auto version(context& ctx, const cli::match_result& args) -> handler_result;
+export auto version(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::watch::handlers

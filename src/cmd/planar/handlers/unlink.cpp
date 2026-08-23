@@ -4,11 +4,12 @@
 module planar.cmd.planar.handlers.unlink;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.engine.external;
 import planar.engine.runtime;
-import planar.cmd.planar.args;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -77,7 +78,7 @@ auto append_audit(const context& ctx, db::connection& conn, std::int64_t link_id
 
 } // namespace
 
-auto unlink(context& ctx, const cli::match_result& args) -> handler_result {
+auto unlink(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // The database is opened BEFORE the id is parsed, and the order is
   // observable: `planar unlink abc` exits 2 having already CREATED and
   // migrated `$PLANAR_DB` (oracle-captured against a scratch root). Moving
@@ -90,9 +91,9 @@ auto unlink(context& ctx, const cli::match_result& args) -> handler_result {
   // `--scope` is read by neither implementation. See this leaf's module
   // header — link verbs are unguarded by design.
   auto const raw     = positional_string(args, "link-id").value_or(std::string{});
-  auto const link_id = parse_int64_zig(raw);
+  auto const link_id = cliapp::parse_int64_zig(raw);
   if (!link_id.has_value()) {
-    return std::unexpected(error_from_body(cli::domain_error_kind::invalid_input, std::format("invalid link id '{}'", raw)));
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("invalid link id '{}'", raw)));
   }
 
   // Resolved first so a missing id yields the precise message BEFORE the
@@ -102,21 +103,19 @@ auto unlink(context& ctx, const cli::match_result& args) -> handler_result {
   auto const found = link::show(**conn, *link_id);
   if (!found) {
     if (found.error() == link::link_error::not_found) {
-      return std::unexpected(
-          error_from_body(cli::domain_error_kind::generic_failure, std::format("link {} not found", *link_id)));
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("link {} not found", *link_id)));
     }
     return std::unexpected(
-        error_from_body(cli::domain_error_kind::generic_failure, std::format("unlink: lookup link {}: QueryFailed", *link_id)));
+        error_from_body(domain_error_kind::generic_failure, std::format("unlink: lookup link {}: QueryFailed", *link_id)));
   }
 
   auto const removed = link::remove(**conn, *link_id);
   if (!removed) {
     if (removed.error() == link::link_error::not_found) {
-      return std::unexpected(
-          error_from_body(cli::domain_error_kind::generic_failure, std::format("link {} not found", *link_id)));
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("link {} not found", *link_id)));
     }
     return std::unexpected(
-        error_from_body(cli::domain_error_kind::generic_failure, std::format("unlink: delete link {}: QueryFailed", *link_id)));
+        error_from_body(domain_error_kind::generic_failure, std::format("unlink: delete link {}: QueryFailed", *link_id)));
   }
 
   append_audit(ctx, **conn, *link_id);

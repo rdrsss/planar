@@ -35,7 +35,8 @@ module;
 export module planar.cmd.planar_agent.handlers.support;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.session;
 import planar.cmd.planar_agent.exit;
@@ -48,7 +49,7 @@ namespace planar::cmd::agent {
 /// @param err The engine failure.
 /// @return The domain error to return from the handler.
 export auto verb_error(std::string_view verb, engine::runtime::agentactivity::agent_error err) -> domain_error {
-  return error_from_body(cli::domain_error_kind::generic_failure,
+  return error_from_body(domain_error_kind::generic_failure,
                          std::format("{}: {}", verb, engine::runtime::agentactivity::error_name(err)));
 }
 
@@ -76,7 +77,7 @@ export auto session_error_message(engine::runtime::session::session_error err, b
     tag = "QueryFailed";
     break;
   }
-  return error_from_body(cli::domain_error_kind::generic_failure,
+  return error_from_body(domain_error_kind::generic_failure,
                          std::format("ensureActive{}: {}", aborting ? " (aborting)" : "", tag));
 }
 
@@ -88,7 +89,7 @@ export auto session_error_message(engine::runtime::session::session_error err, b
 /// @param body The message body, no `error: ` prefix and no newline.
 /// @return The domain error to return from the handler.
 export auto invalid_input_error(std::string body) -> domain_error {
-  return error_from_body(cli::domain_error_kind::invalid_input, std::move(body));
+  return error_from_body(domain_error_kind::invalid_input, std::move(body));
 }
 
 /// @brief A message that exits 1 — the `InvalidValue` bucket.
@@ -101,7 +102,7 @@ export auto invalid_input_error(std::string body) -> domain_error {
 /// @param body The message body, no `error: ` prefix and no newline.
 /// @return The domain error to return from the handler.
 export auto invalid_value_error(std::string body) -> domain_error {
-  return error_from_body(cli::domain_error_kind::generic_failure, std::move(body));
+  return error_from_body(domain_error_kind::generic_failure, std::move(body));
 }
 
 /// @brief The literal `--ttl` refusal text, shared by every verb that

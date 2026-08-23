@@ -30,8 +30,7 @@
 //
 // SKIP, not fail, when an oracle binary is absent: `zig/zig-out/bin/*` are
 // build artifacts, not checked-in files. Same posture src/lib/db/migrate.t.cpp
-// and src/lib/cli/help.t.cpp already take (D6: the zig/ tree is the parity
-// oracle until M10).
+// already takes (D6: the zig/ tree is the parity oracle until M10).
 #pragma once
 
 #include <sys/wait.h>

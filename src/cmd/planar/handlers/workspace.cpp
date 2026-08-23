@@ -4,9 +4,10 @@
 module planar.cmd.planar.handlers.workspace;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.engine.workspace;
-import planar.cmd.planar.args;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -15,7 +16,7 @@ namespace planar::cmd::handlers {
 
 namespace doctor = engine::workspace::doctor;
 
-auto workspace_doctor(context& ctx, const cli::match_result& args) -> handler_result {
+auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -33,8 +34,7 @@ auto workspace_doctor(context& ctx, const cli::match_result& args) -> handler_re
     // to `nullopt`, and `listOrgs`'s only failure tag is `QueryFailed`, so
     // the tag is transcribed rather than captured — the path needs a
     // broken `associations` table to reach and no oracle probe produced it.
-    return std::unexpected(
-        error_from_body(cli::domain_error_kind::generic_failure, "listing org associations failed: QueryFailed"));
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "listing org associations failed: QueryFailed"));
   }
 
   // Both renderers return COMPLETE payloads and this layer appends

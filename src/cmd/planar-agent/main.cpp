@@ -52,9 +52,9 @@ auto main(int argc, char** argv) -> int {
   }
 
   planar::cmd::agent::context ctx{std::move(args), env, planar::cmd::agent::operator_cwd(env), *db_path, std::cout, std::cerr};
-  auto const                  root  = planar::cmd::agent::root_command();
-  auto const                  table = planar::cmd::agent::handlers(root);
-  int const                   code  = planar::cmd::agent::run(ctx, root, table);
+  auto const                  root  = planar::cmd::agent::root_app();
+  auto const                  table = planar::cmd::agent::handlers(*root);
+  int const                   code  = planar::cmd::agent::run(ctx, *root, table);
   std::cout.flush();
   std::cerr.flush();
   return code;

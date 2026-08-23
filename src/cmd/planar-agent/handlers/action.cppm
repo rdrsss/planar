@@ -32,7 +32,8 @@ module;
 export module planar.cmd.planar_agent.handlers.action;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
 
@@ -42,7 +43,7 @@ namespace planar::cmd::agent::handlers {
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto action_start(context& ctx, const cli::match_result& args) -> handler_result;
+export auto action_start(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent action end --action <id> [--outcome <o>]`.
 ///
@@ -52,6 +53,6 @@ export auto action_start(context& ctx, const cli::match_result& args) -> handler
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto action_end(context& ctx, const cli::match_result& args) -> handler_result;
+export auto action_end(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::agent::handlers

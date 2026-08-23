@@ -12,7 +12,7 @@
 /// decoration. zig/src/cmd/planar-watch/handlers/version.zig's own header
 /// says the prefix exists "so operators can tell the three binaries apart
 /// in scripts" and that the field order is stable so "a shell grep on the
-/// leading `planar-watch ` prefix" works. `planar.cli.version` grew a
+/// leading `planar-watch ` prefix" works. `planar.cliapp.version` grew a
 /// program-name overload in this task for exactly that; the previous
 /// single-argument form hardcoded `"planar "` and would have made this
 /// binary report itself as the operator one.
@@ -22,7 +22,7 @@
 /// this tree renders `cxx <compiler-version>` where the Zig binary renders
 /// `zig <zig-version>`, because there is no Zig runtime here to report.
 ///
-/// DO NOT REPEAT `planar.cli.version`'s claim that this "preserves the
+/// DO NOT REPEAT `planar.cliapp.version`'s claim that this "preserves the
 /// field COUNT". It does not, and task 6106 already recorded the same
 /// finding on the operator binary: `compiler_version_string()` returns
 /// `Clang 22.1.8`, which contains a space of its own, so the line splits
@@ -37,7 +37,8 @@ module;
 export module planar.cmd.planar_agent.handlers.version;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
 
@@ -47,6 +48,6 @@ namespace planar::cmd::agent::handlers {
 /// @param ctx The invocation context.
 /// @param args The parsed arguments (the leaf declares none).
 /// @return Success; this leaf has no failure path.
-export auto version(context& ctx, const cli::match_result& args) -> handler_result;
+export auto version(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::agent::handlers

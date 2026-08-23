@@ -4,7 +4,9 @@
 module planar.cmd.planar.dispatch;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
+import planar.cliapp.walk;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -20,64 +22,31 @@ namespace planar::cmd {
 
 namespace {
 
-/// @brief The Zig `Parse` error tag for a `parse_error_kind`.
+/// @brief The deepest node CLI11 actually matched, and the path taken to
+/// reach it.
 ///
-/// main.zig writes `error: <@errorName(e)>` to stderr for every parse
-/// failure, so these CamelCase tags are operator-visible bytes. Three were
-/// captured directly (`UnknownSubcommand`, `UnknownFlag`,
-/// `MissingRequiredPositional`); the rest are transcribed from
-/// zig/vendor/etcli/src/cli/error.zig's `Parse` error set, whose members
-/// map one-for-one onto this port's `parse_error_kind`.
-///
-/// `flag_group_violation` is a DELIBERATE divergence, called out rather
-/// than hidden. It is a member of etcli's `Parse` set but has NO arm in
-/// main.zig's switch, so on the Zig side it escapes `die` entirely and
-/// propagates out of `main` as an unhandled error. Reproducing that is
-/// neither possible nor desirable here, so it is mapped like every other
-/// parse failure. It is unreachable through this task's verb subset —
-/// none of the ported leaves declares a flag group — so nothing observable
-/// changes; a later milestone that ports a flag-group-bearing leaf should
-/// capture the oracle's actual behaviour before relying on this arm.
-/// @param k The parse-error kind.
-/// @return The Zig error tag.
-auto zig_parse_error_name(cli::parse_error_kind k) -> std::string_view {
-  switch (k) {
-  case cli::parse_error_kind::unknown_flag:
-    return "UnknownFlag";
-  case cli::parse_error_kind::missing_value:
-    return "MissingValue";
-  case cli::parse_error_kind::invalid_value:
-    return "InvalidValue";
-  case cli::parse_error_kind::missing_required:
-    return "MissingRequired";
-  case cli::parse_error_kind::missing_required_positional:
-    return "MissingRequiredPositional";
-  case cli::parse_error_kind::too_many_positionals:
-    return "TooManyPositionals";
-  case cli::parse_error_kind::unknown_subcommand:
-    return "UnknownSubcommand";
-  case cli::parse_error_kind::unexpected_argument:
-    return "UnexpectedArgument";
-  case cli::parse_error_kind::duplicate_flag:
-    return "DuplicateFlag";
-  case cli::parse_error_kind::flag_group_violation:
-    return "FlagGroupViolation";
+/// `CLI::App::get_subcommands()` returns the PARSED children at each
+/// level, so following `.front()` down walks exactly the chain argv
+/// selected. A node reached this way that still has children of its own
+/// means the operator named a group without naming a leaf under it —
+/// `run` renders that node's help page, matching what the deleted parser
+/// did for a bare parent verb.
+/// @param root The parsed root app.
+/// @return The matched node and its root-relative path.
+auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::string>> {
+  CLI::App*                node = &root;
+  std::vector<std::string> path;
+  while (true) {
+    auto const matched = node->get_subcommands();
+    if (matched.empty()) {
+      return {node, path};
+    }
+    node = matched.front();
+    path.push_back(node->get_name());
   }
-  return "UnknownParseError";
 }
 
 } // namespace
-
-auto path_key(std::span<const std::string> path) -> std::string {
-  std::string key;
-  for (auto const& segment : path) {
-    if (!key.empty()) {
-      key += ' ';
-    }
-    key += segment;
-  }
-  return key;
-}
 
 auto handlers() -> handler_table {
   handler_table table;
@@ -87,9 +56,9 @@ auto handlers() -> handler_table {
   table.emplace("annotate add", handlers::annotate_add);
   table.emplace("annotate list", handlers::annotate_list);
   table.emplace("unlink", handlers::unlink);
-  // `skills` has no subcommands, so `planar.cli.cmd` classifies it as a
-  // leaf and it needs an entry here even though the verb is retired and
-  // does nothing but render its own help page. See that handler's header.
+  // `skills` has no subcommands, so it is a LEAF and needs an entry here
+  // even though the verb is retired and does nothing but render its own
+  // help page. See that handler's header.
   table.emplace("skills", handlers::skills);
   table.emplace("workspace doctor", handlers::workspace_doctor);
   table.emplace("workbench lint", handlers::workbench_lint);
@@ -105,10 +74,9 @@ auto handlers() -> handler_table {
   return table;
 }
 
-auto unregistered_leaves(const cli::cmd& root, const handler_table& table) -> std::vector<std::string> {
+auto unregistered_leaves(const CLI::App& root, const handler_table& table) -> std::vector<std::string> {
   std::vector<std::string> missing;
-  for (auto const& leaf : cli::all_leaves(root)) {
-    auto key = path_key(leaf.path);
+  for (auto& key : cliapp::leaf_keys(root)) {
     if (!table.contains(key)) {
       missing.push_back(std::move(key));
     }
@@ -116,12 +84,10 @@ auto unregistered_leaves(const cli::cmd& root, const handler_table& table) -> st
   return missing;
 }
 
-auto unreachable_handlers(const cli::cmd& root, const handler_table& table) -> std::vector<std::string> {
-  std::set<std::string, std::less<>> leaf_keys;
-  for (auto const& leaf : cli::all_leaves(root)) {
-    leaf_keys.insert(path_key(leaf.path));
-  }
-  std::vector<std::string> dead;
+auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> std::vector<std::string> {
+  auto const                         keys = cliapp::leaf_keys(root);
+  std::set<std::string, std::less<>> leaf_keys(keys.begin(), keys.end());
+  std::vector<std::string>           dead;
   for (auto const& [key, unused] : table) {
     if (!leaf_keys.contains(key)) {
       dead.push_back(key);
@@ -130,39 +96,53 @@ auto unreachable_handlers(const cli::cmd& root, const handler_table& table) -> s
   return dead;
 }
 
-auto run(context& ctx, const cli::cmd& root, const handler_table& table) -> int {
-  auto const argv   = ctx.argv();
-  auto       parsed = cli::parse(root, argv);
-  if (!parsed) {
-    // Both streams — see this module's header for the oracle capture.
-    ctx.out() << cli::format_error(parsed.error());
-    ctx.err() << "error: " << zig_parse_error_name(parsed.error().kind) << '\n';
-    return cli::exit_code_for_parse_error_planar_binary(parsed.error().kind);
+auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
+  auto const argv = ctx.argv();
+  // CLI11's vector overload consumes argv[1..] in REVERSE order and never
+  // sees argv[0] (see CLI::App::parse_char_t, which builds exactly this).
+  std::vector<std::string> reversed;
+  if (argv.size() > 1) {
+    reversed.assign(argv.rbegin(), argv.rend() - 1);
   }
 
-  if (parsed->is_help) {
-    ctx.out() << cli::render_help(root, parsed->help_path);
-    return cli::exit_success;
+  try {
+    root.parse(std::move(reversed));
+  } catch (const CLI::CallForHelp&) {
+    auto const [node, unused] = matched_node(root);
+    ctx.out() << node->help();
+    return exit_success;
+  } catch (const CLI::ParseError& e) {
+    // Both streams — see this module's header for the oracle capture and
+    // for why task 6123 kept the shape while re-baselining the wording.
+    ctx.out() << "error: " << e.what() << '\n';
+    ctx.err() << "error: " << e.get_name() << '\n';
+    // This binary's policy is exit 1, NOT the operator binary's 2.
+    return exit_code_for(domain_error_kind::parse_error);
   }
 
-  auto const key   = path_key(parsed->match.path);
+  auto const [node, path] = matched_node(root);
+  if (!cliapp::children(*node).empty()) {
+    // A group named without a leaf beneath it — including a bare
+    // `planar`, since this tree has no cockpit to route to.
+    ctx.out() << node->help();
+    return exit_success;
+  }
+
+  auto       args  = cliapp::harvest(root);
+  auto const key   = cliapp::path_key(args.path);
   auto const found = table.find(key);
   if (found == table.end()) {
-    // Only reachable for a tree leaf with no table entry, which
-    // `unregistered_leaves` makes a test failure. Exit 64 matches
-    // zig/src/cmd/planar/exit.zig's `error.NotImplemented => 64` and
-    // main.zig's "not implemented yet" message.
-    auto const err = error_from_body(cli::domain_error_kind::not_implemented, "not implemented yet");
+    auto const err = error_from_body(domain_error_kind::not_implemented, "not implemented yet");
     report(err, ctx.err());
     return exit_code(err);
   }
 
-  auto const outcome = found->second(ctx, parsed->match);
+  auto const outcome = found->second(ctx, args);
   if (!outcome) {
     report(outcome.error(), ctx.err());
     return exit_code(outcome.error());
   }
-  return cli::exit_success;
+  return exit_success;
 }
 
 } // namespace planar::cmd

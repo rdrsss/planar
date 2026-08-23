@@ -54,7 +54,8 @@ module;
 export module planar.cmd.planar.handlers.workspace;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 
@@ -65,6 +66,6 @@ namespace planar::cmd::handlers {
 /// @param args The parsed arguments.
 /// @return Success, or `generic_failure` (exit 1) when the org listing
 /// query fails.
-export auto workspace_doctor(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

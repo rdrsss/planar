@@ -26,7 +26,8 @@ module;
 export module planar.cmd.planar_agent.handlers.recovery;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
 
@@ -40,7 +41,7 @@ namespace planar::cmd::agent::handlers {
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto reconcile(context& ctx, const cli::match_result& args) -> handler_result;
+export auto reconcile(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar-agent abort --claim <token> [flags]`.
 ///
@@ -51,6 +52,6 @@ export auto reconcile(context& ctx, const cli::match_result& args) -> handler_re
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
-export auto abort(context& ctx, const cli::match_result& args) -> handler_result;
+export auto abort(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::agent::handlers

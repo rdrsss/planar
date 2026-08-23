@@ -7,8 +7,16 @@
 # decision, and the association read/write surface it needs. `core` is the
 # M0 seed module proving the planar_module() + architecture-gate machinery
 # configures and builds. `db` (plan 996, task cpp-db-wrapper) is the first
-# real layer-1 base library; `cli` (plan 996, task cpp-cli-tree-parity) is
-# the etcli-zig command-tree/parser/help/completion port. `log` (plan 996, task
+# real layer-1 base library. `cliapp` (plan 996, task 6123) is what
+# survived deleting `cli`: the hand-rolled command-tree/parser/help/
+# exit-table port was removed entirely in favour of CLI11, which each
+# `src/cmd/<binary>/` now drives directly, and `cliapp` holds only the
+# pieces CLI11 has no equivalent for and that are TOOLING contracts rather
+# than parser concerns — the `<bin> schema` catalog `zig/tools/
+# cli_usage_lint` consumes, the shell-completion generator, the shared
+# CLI::App tree-walk primitives, the parsed-argv accessors (including the
+# single surviving `parse_int64_zig`), and build-metadata/version
+# rendering. See cliapp/CMakeLists.txt. `log` (plan 996, task
 # cpp-cli-output-logging, D11) is the spdlog-backed text/JSON dual-mode
 # logging setup. `scope_ref` (plan 996, task 6089, decision D19) is a
 # layer-1 base library holding the scope-ref grammar (`global` /
@@ -111,7 +119,7 @@
 
 add_subdirectory(core)
 add_subdirectory(db)
-add_subdirectory(cli)
+add_subdirectory(cliapp)
 add_subdirectory(log)
 add_subdirectory(scope_ref)
 add_subdirectory(json_text)

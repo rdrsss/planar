@@ -46,7 +46,8 @@ module;
 export module planar.cmd.planar.handlers.annotate;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 
@@ -57,13 +58,13 @@ namespace planar::cmd::handlers {
 /// @param args The parsed arguments.
 /// @return Success, or `invalid_input` (exit 2) when `--anchor-path` is
 /// missing, or the mapped engine failure.
-export auto annotate_add(context& ctx, const cli::match_result& args) -> handler_result;
+export auto annotate_add(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar annotate list [filters] [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or a `generic_failure` (exit 1) for an unrecognized
 /// `--status`, or the mapped engine failure.
-export auto annotate_list(context& ctx, const cli::match_result& args) -> handler_result;
+export auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

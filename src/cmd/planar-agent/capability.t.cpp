@@ -18,7 +18,7 @@
 //   "no planning verb is reachable" is true of a subset exactly as it is
 //   true of the full surface, so `refuses every planning-entity verb`
 //   below is the real thing, not a placeholder. It walks the WHOLE tree
-//   (`cli::all_nodes`), not just the root's children, so a planning verb
+//   (`cliapp::all_nodes`), not just the root's children, so a planning verb
 //   smuggled in as a SUBcommand of a legitimate one is caught too — the
 //   Zig version only parses the root `--help` listing and would miss that.
 //
@@ -42,7 +42,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
+import planar.cliapp.walk;
 import planar.cmd.planar_agent.dispatch;
 import planar.cmd.planar_agent.tree;
 
@@ -54,13 +56,13 @@ namespace {
 /// reachable from argv as one at the root, and is harder to spot by eye.
 /// @param root The tree to walk.
 /// @return The set of names.
-auto all_node_names(const planar::cli::cmd& root) -> std::set<std::string, std::less<>> {
+auto all_node_names(const CLI::App& root) -> std::set<std::string, std::less<>> {
   std::set<std::string, std::less<>> names;
-  for (auto const& node : planar::cli::all_nodes(root)) {
+  for (auto const& node : planar::cliapp::all_nodes(root)) {
     if (node.path.empty()) {
       continue;
     }
-    names.insert(node.node->name);
+    names.insert(node.node->get_name());
   }
   return names;
 }
@@ -68,8 +70,8 @@ auto all_node_names(const planar::cli::cmd& root) -> std::set<std::string, std::
 } // namespace
 
 TEST_CASE("planar-agent refuses every planning-entity verb, at any depth", "[cmd][agent][capability]") {
-  auto const root  = planar::cmd::agent::root_command();
-  auto const names = all_node_names(root);
+  auto const root  = planar::cmd::agent::root_app();
+  auto const names = all_node_names(*root);
 
   // The forbidden list is the binary's documented contract (exported from
   // `tree.cppm` rather than hidden here) and is transcribed from
@@ -82,8 +84,8 @@ TEST_CASE("planar-agent refuses every planning-entity verb, at any depth", "[cmd
 }
 
 TEST_CASE("planar-agent's registered verb set is exactly the ported subset", "[cmd][agent][capability]") {
-  auto const root  = planar::cmd::agent::root_command();
-  auto const names = all_node_names(root);
+  auto const root  = planar::cmd::agent::root_app();
+  auto const names = all_node_names(*root);
 
   // The oracle registers eighteen: pull, peek, claim, heartbeat,
   // claim-associate, complete, fail, release, block, action, ingest,
@@ -110,31 +112,31 @@ TEST_CASE("planar-agent's root node names itself", "[cmd][agent][capability]") {
   // Not cosmetic: the root's name is the `[in: planar-agent]` suffix in a
   // parse-error message and the `"root"` field of the schema catalog, both
   // of which are oracle-compared in parity.t.cpp.
-  CHECK(planar::cmd::agent::root_command().name == "planar-agent");
+  CHECK(planar::cmd::agent::root_app()->get_name() == "planar-agent");
 }
 
 TEST_CASE("every planar-agent leaf is wired to a handler", "[cmd][agent][dispatch]") {
-  auto const root  = planar::cmd::agent::root_command();
-  auto const table = planar::cmd::agent::handlers(root);
+  auto const root  = planar::cmd::agent::root_app();
+  auto const table = planar::cmd::agent::handlers(*root);
 
-  auto const missing = planar::cmd::agent::unregistered_leaves(root, table);
+  auto const missing = planar::cmd::agent::unregistered_leaves(*root, table);
   INFO("leaves with no handler: " << missing.size());
   CHECK(missing.empty());
 }
 
 TEST_CASE("no planar-agent handler is unreachable from argv", "[cmd][agent][dispatch]") {
-  auto const root  = planar::cmd::agent::root_command();
-  auto const table = planar::cmd::agent::handlers(root);
+  auto const root  = planar::cmd::agent::root_app();
+  auto const table = planar::cmd::agent::handlers(*root);
 
   // The other direction: a handler registered under a misspelled path is
   // dead code that looks exactly like working coverage.
-  auto const dead = planar::cmd::agent::unreachable_handlers(root, table);
+  auto const dead = planar::cmd::agent::unreachable_handlers(*root, table);
   INFO("handlers no argv can reach: " << dead.size());
   CHECK(dead.empty());
 }
 
 TEST_CASE("planar-agent path_key joins segments with single spaces", "[cmd][agent][dispatch]") {
   std::vector<std::string> const path{"run", "start"};
-  CHECK(planar::cmd::agent::path_key(path) == "run start");
-  CHECK(planar::cmd::agent::path_key(std::vector<std::string>{}).empty());
+  CHECK(planar::cliapp::path_key(path) == "run start");
+  CHECK(planar::cliapp::path_key(std::vector<std::string>{}).empty());
 }

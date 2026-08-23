@@ -83,13 +83,14 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.engine.external;
 import planar.engine.identity;
 import planar.db.migrate;
 import planar.engine.workbench.fsutil;
-import planar.cmd.planar.args;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
@@ -143,9 +144,9 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto const         tree  = planar::cmd::root_command();
+  auto const         tree  = planar::cmd::root_app();
   auto const         table = planar::cmd::handlers();
-  int const          code  = planar::cmd::run(ctx, tree, table);
+  int const          code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
 }
 
@@ -173,7 +174,7 @@ TEST_CASE("version writes the build line and exits 0 without opening the databas
   CHECK(got.out.starts_with("planar dev dev cxx "));
   CHECK(got.out.ends_with("\n"));
 
-  // FINDING, pinned rather than papered over. `planar.cli.version`'s module
+  // FINDING, pinned rather than papered over. `planar.cliapp.version`'s module
   // header claims the divergence preserves the field COUNT — "a script
   // splitting on whitespace still finds five tokens". It does not:
   // `compiler_version_string()` returns `Clang 22.1.8`, which contains a
@@ -181,7 +182,7 @@ TEST_CASE("version writes the build line and exits 0 without opening the databas
   // into five. The claim was written before the function was wired to a
   // real compiler string. This assertion records the actual behaviour so
   // the discrepancy is visible; fixing it means changing
-  // `planar.cli.version` (a layer-1 module owned by an earlier task), which
+  // `planar.cliapp.version` (a layer-1 module owned by an earlier task), which
   // is out of this task's scope and is filed separately.
   auto const tokens = std::ranges::count(got.out, ' ') + 1;
   CHECK(tokens == 6);
@@ -396,8 +397,13 @@ TEST_CASE("annotate list rejects an unknown --status with exit 1", "[cmd][handle
 // Task 6106 — the leaves that were waiting for this layer.
 // =========================================================================
 
+// The parser itself now lives once, at layer 1 (`planar.cliapp.args`) —
+// task 6123 collapsed the three copies the tree carried. This case stays
+// HERE, in the operator binary's suite, because `planar unlink <arg>` is
+// where every one of these values was captured against the oracle and
+// where the behaviour is operator-visible.
 TEST_CASE("parse_int64_zig reproduces std.fmt.parseInt, separators included", "[cmd][args][parity]") {
-  using planar::cmd::parse_int64_zig;
+  using planar::cliapp::parse_int64_zig;
 
   // Every one of these was captured through `planar unlink <arg>` against
   // the oracle; the message interpolates the PARSED value, so a divergence
@@ -605,7 +611,7 @@ TEST_CASE("unlink attributes the audit row to $PLANAR_VENDOR", "[cmd][handlers][
 }
 
 TEST_CASE("skills renders its own help page and exits 0 without a database", "[cmd][handlers][parity]") {
-  // A childless node is a LEAF here (planar.cli.cmd), so without a handler
+  // A childless node is a LEAF here (`cliapp::leaf_keys`), so without a handler
   // this verb would answer `error: not implemented yet` and exit 64. The
   // oracle answers exit 0 and a help page; these bytes are that page.
   auto const fx  = make_fixture("skills");
@@ -613,15 +619,21 @@ TEST_CASE("skills renders its own help page and exits 0 without a database", "[c
   CHECK(got.code == 0);
   CHECK(got.err.empty());
   CHECK_FALSE(got.db_open);
-  CHECK(got.out == "skills\n"
+  // Re-baselined onto CLI11's formatter by task 6123 and pinned exactly.
+  // The PROSE is still the oracle's, verbatim — that text is the operator's
+  // only pointer to scriptorium, and losing it would silently strand
+  // anyone who runs the retired verb.
+  CHECK(got.out == "The unified skill source tree under skills/src/ is rendered by the\n"
+                   "external scriptorium binary (plan 918). Planar no longer renders vendor\n"
+                   "projections nor tracks their install-drift in-band; use `scriptorium\n"
+                   "check`/`scriptorium status` instead. This command has no subcommands.\n"
                    "\n"
-                   "The unified skill source tree under skills/src/ is rendered by the\n"
-                   "  external scriptorium binary (plan 918). Planar no longer renders vendor\n"
-                   "  projections nor tracks their install-drift in-band; use `scriptorium\n"
-                   "  check`/`scriptorium status` instead. This command has no subcommands.\n"
                    "\n"
-                   "USAGE:\n"
-                   "  skills\n");
+                   "skills [OPTIONS]\n"
+                   "\n"
+                   "\n"
+                   "OPTIONS:\n"
+                   "  -h,     --help              Print this help message and exit\n");
 
   // `planar skills --help` renders the SAME page through dispatch's help
   // path rather than the handler. Both routes must agree — if they did not,
@@ -634,9 +646,14 @@ TEST_CASE("skills renders its own help page and exits 0 without a database", "[c
 TEST_CASE("skills rejects a positional the way a flagless leaf must", "[cmd][handlers][parity]") {
   auto const fx  = make_fixture("skillsx");
   auto const got = dispatch(fx, {"skills", "extra"});
+  // The EXIT CODE is the contract and did not move: 2 on the operator
+  // binary, where planar-agent and planar-watch would say 1. Task 6123
+  // re-baselined the wording — CLI11 reports a rejected extra token as
+  // `ExtrasError` where etcli distinguished `TooManyPositionals` — and the
+  // new bytes are pinned exactly.
   CHECK(got.code == 2);
-  CHECK(got.out == "error: too many positional arguments (got extra)\n");
-  CHECK(got.err == "error: TooManyPositionals\n");
+  CHECK(got.out == "error: skills: The following argument was not expected: extra\n");
+  CHECK(got.err == "error: ExtrasError\n");
 }
 
 TEST_CASE("workspace doctor on an empty database: zero bytes vs {\"orgs\":[]}", "[cmd][handlers][parity][terminator]") {

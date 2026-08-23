@@ -1,0 +1,85 @@
+/// @file schema.cppm
+/// @brief `planar.cliapp.schema` — emits the deterministic flat JSON
+/// catalog `zig/tools/cli_usage_lint` consumes (`<bin> schema`), walking a
+/// built `CLI::App` (plan 996, task 6123).
+///
+/// ## The catalog survived the CLI11 swap; here is the measurement
+///
+/// Decision 948 recorded a RISK — "CLI11 must expose enough structure to
+/// rebuild the schema catalog (every command, subcommand, flag, with the
+/// `deprecated` and `doc` fields task 6065 requires). If it does not, the
+/// catalog emitter needs to keep its own tree representation" — and the
+/// task brief carried it forward as an open verdict. It is closed here,
+/// against the consumer rather than against the emitter:
+///
+/// `zig/tools/cli_usage_lint.zig` declares the ENTIRE subset of this
+/// document it reads, as three structs:
+///
+///     SchemaJson  { commands: []CommandJson }
+///     CommandJson { command, subcommands, flags }
+///     FlagJson    { long, aliases, short }
+///
+/// Six keys. `deprecated` and the twelve-key `doc` blob are not among
+/// them — the lint resolves a command path, collects its allowed flag
+/// tokens, and reports an authored `--flag` the binary does not expose.
+/// Nothing else in the document reaches it.
+///
+/// And the `deprecated`/`docs` gap was never real on the C++ side to begin
+/// with: the emitter this one replaces (`planar.cli.schema`) had NO
+/// `deprecated` field and NO per-node `doc` field on its own `cmd` type
+/// either — its file header says so, and it emitted both as hardcoded
+/// constants (`"deprecated":null` and the Zig `Doc{}` empty-default
+/// shape). Those constants are reproduced verbatim below, so this emitter
+/// carries exactly as much information as its predecessor did. The swap
+/// costs the catalog nothing.
+///
+/// VERDICT: `cli_usage_lint` runs UNMODIFIED against this emitter's
+/// output. `schema.t.cpp`'s `[lint-parity]` case is the standing proof —
+/// it builds the real, unmodified lint tool from
+/// `zig/tools/cli_usage_lint.zig` and runs it against a stub binary that
+/// answers `schema` from a `CLI::App` built here.
+///
+/// ## What this emitter DOES lose relative to `planar.cli.schema`
+///
+/// Named rather than hidden, because the operator asked for the accounting
+/// and none of the four is consumed by the lint:
+///
+///   1. `"summary"` vs `"description"`. `cli::cmd` carried `desc` (the
+///      one-line summary) and `long_desc` (the multi-line prose lead-in)
+///      as separate fields; `CLI::App` carries ONE description string. The
+///      catalog therefore emits the same string for both keys. Note the
+///      Zig oracle's catalog cannot distinguish the two either — its
+///      emitter falls back to `desc` when `long_desc` is empty, which is
+///      why `planar-agent`'s tree comment had to read the DIFFERENCE off
+///      the rendered help page rather than off the catalog.
+///   2. `"kind"` and `"choices"` are DERIVED from `CLI::Option::
+///      get_type_name()` rather than declared. CLI11 populates that string
+///      from the option's validators (`:{a,b,c}` for `CLI::IsMember`), so
+///      a choice set survives; a flag with no validator and a value is
+///      reported as `string`, where the old tree could have declared it
+///      `path` or `duration`. No binary's tree in this repo declares
+///      either kind, so nothing observable moves today.
+///   3. `"list"` / `"count"` are derived from the option's expected-count
+///      range instead of two declared booleans.
+///   4. `"env"` is always `null`. `CLI11::Option` has `get_envname()`, but
+///      no tree in this repo declares an env fallback, so wiring it would
+///      be untested code.
+module;
+
+export module planar.cliapp.schema;
+
+import std;
+import cli11;
+import planar.cliapp.walk;
+
+namespace planar::cliapp {
+
+/// @brief Emit the flat JSON schema catalog for the tree rooted at `root`.
+/// @param root The command tree root (its own `get_name()` becomes the
+/// JSON `"root"` value and the first path segment of every `"command"`
+/// string).
+/// @return The catalog as a single-line JSON document (no trailing
+/// newline — the `schema` verb appends one at the write site).
+export auto schema_json(const CLI::App& root) -> std::string;
+
+} // namespace planar::cliapp

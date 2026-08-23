@@ -15,7 +15,7 @@
 ///
 /// ## Terminator: this renderer returns a FRAGMENT
 ///
-/// `planar.cli.schema::schema_json`'s `@return` says so in as many words —
+/// `planar.cliapp.schema::schema_json`'s `@return` says so in as many words —
 /// "no trailing newline — callers matching `handlers/schema.zig`'s
 /// `planar schema` verb append one at the write site, not here" — and the
 /// Zig handler does exactly that (`writeAll(catalog)` then
@@ -33,7 +33,8 @@ module;
 export module planar.cmd.planar_agent.handlers.schema;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
 
@@ -45,6 +46,6 @@ namespace planar::cmd::agent::handlers {
 /// @param root The command tree to emit — passed in rather than rebuilt so
 /// the catalog is provably the same tree dispatch just routed through.
 /// @return Success; this leaf has no failure path.
-export auto schema(context& ctx, const cli::match_result& args, const cli::cmd& root) -> handler_result;
+export auto schema(context& ctx, const cliapp::parsed_args& args, const CLI::App& root) -> handler_result;
 
 } // namespace planar::cmd::agent::handlers

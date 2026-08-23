@@ -40,17 +40,18 @@ planar_module(engine_identity
   DEPENDS
     db
     scope_ref
-  TEST_DEPENDS
-    cli)
+  )
 
-# `cli` is a TEST-only dependency: scope.t.cpp imports `planar.cli.exit` to
-# pin `check_scope_guard`'s `scope_error::scope_mismatch` against the SAME
-# `domain_error_kind::scope_mismatch -> exit 5` mapping a future `cmd/`
-# handler will reuse (task brief: "reuse it rather than re-deriving"),
-# rather than asserting a bare enumerator value with no tie back to the
-# oracle-captured exit code. No production `.cpp` in this module names
-# `planar.cli` at all, so it belongs under `planar_module()`'s
-# TEST_DEPENDS (task 6079) — linked into `planar_engine_identity_tests`
-# only, never into the production `planar_engine_identity` target, so
-# `engine_identity` does not carry an unused `planar_cli` edge for
-# `cmake/architecture.cmake`'s D15 walk to police.
+# TEST_DEPENDS is empty as of task 6123. It used to name `cli`, because
+# scope.t.cpp imported `planar.cli.exit` to pin `check_scope_guard`'s
+# `scope_error::scope_mismatch` against the shared, binary-parameterized
+# `domain_error_kind::scope_mismatch -> exit 5` mapping a `cmd/`
+# handler would reuse. Task 6123 deleted `src/lib/cli` and moved the
+# exit-code policy into each binary's own `src/cmd/<binary>/exit.cppm`, so
+# there is no layer-1 table left to import — and an engine test may not
+# reach a `cmd_*` module (upward layer-2 -> layer-3, which
+# `cmake/architecture.cmake` FATALs on). The `scope_mismatch -> 5`
+# assertion moved down-stream into all three `src/cmd/*/exit_codes.t.cpp`
+# rather than being dropped; scope.t.cpp keeps the engine-level fact those
+# tests key off. TEST_DEPENDS itself (task 6079) remains available for the
+# next module that needs a test-only edge.

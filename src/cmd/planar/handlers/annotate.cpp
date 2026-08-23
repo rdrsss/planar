@@ -4,9 +4,10 @@
 module planar.cmd.planar.handlers.annotate;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.engine.planning;
-import planar.cmd.planar.args;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -62,8 +63,8 @@ auto zig_error_name(ann::annotation_error err) -> std::string_view {
 /// @param leaf The leaf name to lead the message with, e.g. `"annotate add"`.
 /// @return The mapped failure.
 auto map_annotation_error(ann::annotation_error err, std::string_view leaf) -> domain_error {
-  auto const kind = err == ann::annotation_error::slug_conflict ? cli::domain_error_kind::slug_conflict
-                                                                : cli::domain_error_kind::generic_failure;
+  auto const kind =
+      err == ann::annotation_error::slug_conflict ? domain_error_kind::slug_conflict : domain_error_kind::generic_failure;
   return error_from_body(kind, std::format("{}: {}", leaf, zig_error_name(err)));
 }
 
@@ -110,14 +111,14 @@ auto as_view(const std::optional<std::string>& owned) -> std::optional<std::stri
 
 } // namespace
 
-auto annotate_add(context& ctx, const cli::match_result& args) -> handler_result {
+auto annotate_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // The Zig handler refuses BEFORE resolving scope or touching the engine,
   // with a hand-written message rather than a parse error — `--anchor-path`
   // is declared optional in the tree and required by the handler. Captured:
   // stdout empty, stderr `error: --anchor-path is required`, exit 2.
   auto const anchor_path = flag_string(args, "--anchor-path");
   if (!anchor_path.has_value()) {
-    return std::unexpected(error_from_body(cli::domain_error_kind::invalid_input, "--anchor-path is required"));
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--anchor-path is required"));
   }
 
   auto const scope_flag = flag_string(args, "--scope");
@@ -175,7 +176,7 @@ auto annotate_add(context& ctx, const cli::match_result& args) -> handler_result
   return {};
 }
 
-auto annotate_list(context& ctx, const cli::match_result& args) -> handler_result {
+auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -204,7 +205,7 @@ auto annotate_list(context& ctx, const cli::match_result& args) -> handler_resul
       // bucket — NOT the exit-2 user-input bucket the message's shape
       // might suggest.
       return std::unexpected(
-          error_from_body(cli::domain_error_kind::generic_failure, std::format("unknown status '{}'", *status_text)));
+          error_from_body(domain_error_kind::generic_failure, std::format("unknown status '{}'", *status_text)));
     }
     filter.status_ = *parsed;
   }

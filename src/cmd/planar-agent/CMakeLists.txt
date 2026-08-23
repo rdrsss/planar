@@ -153,7 +153,7 @@ planar_binary(planar_agent
     handlers/action.cpp
     dispatch.cpp
   DEPENDS
-    cli
+    cliapp
     db
     engine_runtime
     engine_planning)
@@ -176,4 +176,12 @@ if(TARGET planar_cmd_planar_agent_tests)
     "PLANAR_ZIG_BIN=\"${CMAKE_SOURCE_DIR}/zig/zig-out/bin/planar-agent\"")
   target_include_directories(planar_cmd_planar_agent_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
   add_dependencies(planar_cmd_planar_agent_tests planar_cmd_planar_agent)
+endif()
+
+# Each binary builds its own CLI::App tree directly (plan 996, task 6123),
+# so the CLI11 module target is linked per binary rather than laundered
+# through a shared layer-1 wrapper.
+target_link_libraries(planar_cmd_planar_agent PRIVATE CLI11::CLI11_Module)
+if(TARGET planar_cmd_planar_agent_tests)
+  target_link_libraries(planar_cmd_planar_agent_tests PRIVATE CLI11::CLI11_Module)
 endif()

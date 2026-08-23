@@ -49,7 +49,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.dispatch;
@@ -103,9 +104,9 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto const         tree  = planar::cmd::watch::root_command();
-  auto const         table = planar::cmd::watch::handlers(tree);
-  int const          code  = planar::cmd::watch::run(ctx, tree, table);
+  auto const         tree  = planar::cmd::watch::root_app();
+  auto const         table = planar::cmd::watch::handlers(*tree);
+  int const          code  = planar::cmd::watch::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
 }
 
@@ -152,7 +153,7 @@ TEST_CASE("planar-watch completion emits a distinct script per shell and opens n
   CHECK(bash.out.contains("planar-watch"));
   CHECK(bash.out.contains("completion"));
 
-  // NOT oracle-byte-compared: planar.cli.completion defers flag-VALUE
+  // NOT oracle-byte-compared: `planar.cliapp.completion` defers flag-VALUE
   // completion (see its module header), so the emitted script differs from
   // the reference's. Nothing here claims otherwise.
 }
@@ -171,8 +172,12 @@ TEST_CASE("planar-watch completion: a bad shell exits 2, a missing positional ex
   // (the operator binary would say 2). Two streams, as the oracle does.
   auto const missing = dispatch(fx, {"completion"});
   CHECK(missing.code == 1);
-  CHECK(missing.out == "error: required positional missing: <shell>\n");
-  CHECK(missing.err == "error: MissingRequiredPositional\n");
+  // Re-baselined onto CLI11's wording by task 6123 and pinned exactly. The
+  // pair of exit codes out of ONE verb — 2 for the handler's refusal above,
+  // 1 for the parser's here — is the part that cannot be satisfied by a
+  // collapsed mapping, and it did not move.
+  CHECK(missing.out == "error: shell is required\n");
+  CHECK(missing.err == "error: RequiredError\n");
 }
 
 TEST_CASE("planar-watch schema appends the terminator its renderer omits", "[cmd][watch][handlers]") {
@@ -195,26 +200,41 @@ TEST_CASE("planar-watch parse failures exit 1 and write both streams", "[cmd][wa
   auto const fx  = make_fixture("parse");
   auto const got = dispatch(fx, {"nosuchverb"});
   CHECK(got.code == 1);
-  CHECK(got.out == "error: unknown subcommand (got nosuchverb) [in: planar-watch]\n");
-  CHECK(got.err == "error: UnknownSubcommand\n");
+  // Re-baselined onto CLI11's wording by task 6123 and pinned exactly.
+  // The SHAPE is the contract and did not move: formatted message to
+  // stdout, CamelCase tag to stderr, exit 1 (NOT the operator binary's 2).
+  CHECK(got.out == "error: planar-watch: The following argument was not expected: nosuchverb\n");
+  CHECK(got.err == "error: ExtrasError\n");
   CHECK_FALSE(got.db_open);
 }
 
-TEST_CASE("planar-watch help renders the long_desc flush left", "[cmd][watch][handlers]") {
+TEST_CASE("planar-watch help leads with the read-only prose block", "[cmd][watch][handlers]") {
   auto const fx  = make_fixture("help");
   auto const got = dispatch(fx, {"--help"});
   CHECK(got.code == 0);
   CHECK(got.err.empty());
   CHECK_FALSE(got.db_open);
 
-  // The long_desc branch of `planar.cli.help` emits FLUSH LEFT; the desc
-  // branch indents by two. planar-agent's root uses the latter. Getting
-  // this backwards shifts every line of the page two columns and is
-  // exactly what reading the SCHEMA catalog instead of the rendered page
-  // would have caused (the catalog's "description" falls back to the
-  // summary when long_desc is empty, so it cannot tell them apart).
-  CHECK(got.out.starts_with("planar-watch\n\nplanar-watch is the human-facing live cockpit for agent activity.\n"));
-  CHECK(got.out.contains("SQLITE_OPEN_READONLY"));
+  // Task 6123 re-baseline. This case used to pin the `long_desc` branch of
+  // the deleted `planar.cli.help` renderer, which emitted FLUSH LEFT where
+  // the `desc` branch indented by two — planar-agent's root used the
+  // latter, and getting the two backwards shifted every line of the page.
+  // `CLI::App` carries ONE description string, so that distinction is gone
+  // from the surface entirely (recorded in capability.t.cpp and in
+  // `planar.cliapp.schema`'s header). What remains worth pinning is that
+  // the OPERATOR-FACING CONTRACT STATEMENT still leads the page: the
+  // sentence that tells a reader the handle is SQLITE_OPEN_READONLY and
+  // that the verb set is the first line of defense. Losing it in
+  // transcription would quietly delete the binary's own statement of what
+  // it guarantees.
+  CHECK(got.out.starts_with("planar-watch is the human-facing live cockpit for agent activity.\n"));
+  CHECK(got.out.contains("(SQLITE_OPEN_READONLY) \xe2\x80\x94 every write SQL string is rejected by"));
+  CHECK(got.out.contains("`no write verbs registered` capability boundary."));
+  // The three ported verbs are listed; nothing else is.
+  CHECK(got.out.contains("SUBCOMMANDS:"));
+  CHECK(got.out.contains("version"));
+  CHECK(got.out.contains("completion"));
+  CHECK(got.out.contains("schema"));
 
   // A bare invocation renders the same page. DIVERGENCE, declared: the
   // oracle's default verb is `feed`, which is unported.

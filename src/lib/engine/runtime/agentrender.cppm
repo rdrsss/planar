@@ -15,7 +15,8 @@
 /// `append_*` helpers are the other half of the contract: they are
 /// FRAGMENTS composed into a larger document and return no terminator.
 /// Each `@return` says which it is; the rule is per-function, not a
-/// blanket policy (task 6114, and `planar.cli.output`'s `emit()` is
+/// blanket policy (task 6114, and the since-deleted `planar.cli.output`'s
+/// `emit()` was
 /// explicitly NOT for renderer-backed leaves because it appends
 /// unconditionally).
 ///

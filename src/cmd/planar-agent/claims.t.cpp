@@ -39,7 +39,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
 import planar.engine.runtime.agentactivity;
@@ -88,14 +89,14 @@ struct invocation {
 /// scratch database. This is the whole binary minus `main`'s process
 /// plumbing — the same path an operator's invocation takes.
 auto run_verb(const scratch_dir& scratch, std::vector<std::string> argv) -> invocation {
-  auto const root  = agent::root_command();
-  auto const table = agent::handlers(root);
+  auto const root  = agent::root_app();
+  auto const table = agent::handlers(*root);
   argv.insert(argv.begin(), "planar-agent");
 
   std::ostringstream out;
   std::ostringstream err;
   agent::context     ctx{argv, agent::map_env({}), scratch.path_, scratch.db_path(), out, err};
-  auto const         code = agent::run(ctx, root, table);
+  auto const         code = agent::run(ctx, *root, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
 

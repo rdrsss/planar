@@ -15,7 +15,6 @@ import std;
 import planar.db;
 import planar.db.migrate;
 import planar.engine.identity.scope;
-import planar.cli.exit;
 
 namespace {
 
@@ -362,15 +361,23 @@ TEST_CASE("check_scope_guard's exit-code mapping matches the captured Zig oracle
   // in scope 'acme' but operator write scope is 'global'; pass --scope
   // acme to write to that scope from here". This module raises
   // `scope_error::scope_mismatch`; a future `cmd/` handler maps it onto
-  // `planar.cli.exit`'s `domain_error_kind::scope_mismatch`, which this
-  // assertion pins to the SAME exit code the oracle produced, per the
-  // task brief's "reuse it rather than re-deriving" instruction.
+  // its own binary's `domain_error_kind::scope_mismatch`.
+  //
+  // This case used to ALSO assert `exit_code_for(scope_mismatch, ...) == 5`
+  // against layer-1's shared, binary-parameterized table. Task 6123 deleted
+  // that table: the exit-code policy now lives once per binary, in each
+  // `src/cmd/<binary>/exit.cppm`, precisely so no shared helper can apply
+  // the wrong binary's row (see those files' headers, and task 6066's
+  // rename which fought the same hazard). An engine test cannot import a
+  // `cmd_*` module — that is an upward layer-2 -> layer-3 edge and
+  // `cmake/architecture.cmake` FATALs on it — so the `scope_mismatch -> 5`
+  // assertion moved DOWN-STREAM rather than being dropped: all three of
+  // `src/cmd/*/exit_codes.t.cpp` pin the complete table, scope_mismatch
+  // included, which is strictly more coverage than the two lines removed
+  // here. What stays here is the engine-level fact those tests key off.
   auto res = check_scope_guard("acme", std::nullopt);
   REQUIRE_FALSE(res.has_value());
   CHECK(res.error() == scope_error::scope_mismatch);
-
-  CHECK(planar::cli::exit_code_for(planar::cli::domain_error_kind::scope_mismatch, planar::cli::binary_kind::planar) == 5);
-  CHECK(planar::cli::exit_code_for(planar::cli::domain_error_kind::scope_mismatch, planar::cli::binary_kind::planar_agent) == 5);
 }
 
 TEST_CASE("guard_write: --no-scope-check bypasses a genuine mismatch (the documented escape hatch)",

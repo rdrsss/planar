@@ -42,7 +42,8 @@ module;
 export module planar.cmd.planar.handlers.workbench;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 
@@ -52,62 +53,62 @@ namespace planar::cmd::handlers {
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_lint(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_lint(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench pull <plan> [--verbose] [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_pull(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_pull(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench push <plan> [--verbose] [--json] [--filter-mode m]
 /// [--apply-cleanup]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_push(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_push(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench status [<plan>] [--verbose] [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_status(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_status(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench resolve <event-id> --prefer fs|db [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_resolve(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench sync <plan> [--verbose] [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_sync(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_sync(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench archive <plan> [--json] [--filter-mode m]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_archive(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_archive(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench restore <plan> [--json] [--filter-mode m]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_restore(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_restore(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench gc [<plan>] [--dry-run] [--yes] [--filter-mode m]
 /// [--all-scopes] [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_gc(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_gc(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar workbench list [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
-export auto workbench_list(context& ctx, const cli::match_result& args) -> handler_result;
+export auto workbench_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

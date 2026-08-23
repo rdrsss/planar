@@ -46,7 +46,7 @@
 #               positional is 1 — parse error, this binary's policy). That
 #               pair is what makes a collapsed exit mapping impossible to
 #               pass. Its generated SCRIPT is not oracle-byte-comparable —
-#               `planar.cli.completion` defers flag-VALUE completion — and no
+#               `planar.cliapp.completion` defers flag-VALUE completion — and no
 #               test claims it is.
 #
 # --- NOT landed: nine leaves, ONE bucket -----------------------------------
@@ -89,8 +89,16 @@ planar_binary(planar_watch
     handlers/completion.cpp
     dispatch.cpp
   DEPENDS
-    cli
+    cliapp
     db)
+
+# Each binary builds its own CLI::App tree directly (plan 996, task 6123),
+# so the CLI11 module target is linked per binary rather than laundered
+# through a shared layer-1 wrapper.
+target_link_libraries(planar_cmd_planar_watch PRIVATE CLI11::CLI11_Module)
+if(TARGET planar_cmd_planar_watch_tests)
+  target_link_libraries(planar_cmd_planar_watch_tests PRIVATE CLI11::CLI11_Module)
+endif()
 
 if(TARGET planar_cmd_planar_watch_tests)
   target_compile_definitions(planar_cmd_planar_watch_tests PRIVATE

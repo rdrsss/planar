@@ -8,7 +8,8 @@ module;
 module planar.cmd.planar.context;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
 import planar.db.migrations;
@@ -43,7 +44,7 @@ auto resolve_db_path(const env_lookup& env) -> std::expected<std::filesystem::pa
   }
   auto const home = env("HOME");
   if (!home.has_value()) {
-    return std::unexpected(error_from_body(cli::domain_error_kind::generic_failure,
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
                                            "neither PLANAR_DB nor HOME is set; cannot locate the Planar database"));
   }
   return std::filesystem::path{*home} / ".planar" / "planar.db";
@@ -79,7 +80,7 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   auto opened = db::connection::open(_db_path.string());
   if (!opened) {
     return std::unexpected(
-        error_from_body(cli::domain_error_kind::generic_failure,
+        error_from_body(domain_error_kind::generic_failure,
                         std::format("failed to open database {}: {}", _db_path.string(), opened.error().message_)));
   }
   _db.emplace(std::move(*opened));
@@ -87,13 +88,13 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   if (auto applied = db::apply_all(*_db); !applied) {
     _db.reset();
     return std::unexpected(
-        error_from_body(cli::domain_error_kind::generic_failure, std::format("migration failed: {}", applied.error().message_)));
+        error_from_body(domain_error_kind::generic_failure, std::format("migration failed: {}", applied.error().message_)));
   }
 
   auto const stored = db::current_version(*_db);
   if (!stored) {
     _db.reset();
-    return std::unexpected(error_from_body(cli::domain_error_kind::generic_failure,
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
                                            std::format("reading schema version failed: {}", stored.error().message_)));
   }
   auto const    chain        = db::migrations();
@@ -104,7 +105,7 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   if (*stored > embedded_max) {
     _db.reset();
     return std::unexpected(
-        error_from_body(cli::domain_error_kind::schema_version_ahead,
+        error_from_body(domain_error_kind::schema_version_ahead,
                         std::format("database schema version {} is newer than this binary supports ({}); upgrade planar", *stored,
                                     embedded_max)));
   }

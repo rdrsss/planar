@@ -13,8 +13,31 @@
 //
 // SKIP, not fail, when the oracle is absent: `zig/zig-out/bin/planar` is a
 // build artifact, not a checked-in file. Same posture as
-// src/lib/db/migrate.t.cpp and src/lib/cli/help.t.cpp (D6 — the zig/ tree
-// is the parity oracle until M10 cutover).
+// src/lib/db/migrate.t.cpp (D6 — the zig/ tree is the parity oracle until
+// M10 cutover).
+//
+// ## WHAT TASK 6123 CHANGED HERE
+//
+// `src/lib/cli` — the hand-rolled parser, help renderer and parse-error
+// formatter — is deleted; this binary drives CLI11 directly. So every argv
+// shape whose output came from THAT layer (a `--help` page, a parse
+// failure) is no longer oracle-comparable, and the operator sanctioned
+// re-baselining it. Those shapes moved out of the live-diff cases below
+// into `the CLI surface is CLI11's now, and pinned`, where the C++ bytes
+// are captured and asserted EXACTLY — not loosened to a `contains` check,
+// because a re-baselined expectation that no longer discriminates is a
+// rubber stamp, not a test.
+//
+// Everything ENGINE-derived — every renderer payload, every JSON document,
+// every exit code, and the whole `unlink` id-parsing table — is still a
+// live byte-for-byte diff against the oracle and still passes UNCHANGED.
+// That is the load-bearing fact of this swap: nothing under
+// `src/lib/engine/` moved.
+//
+// And the question the deleted help-page diffs actually answered — "was
+// this tree transcribed from the oracle correctly?" — is now answered
+// directly by `every ported command declares what the oracle declares`
+// below, off the `schema` catalog. See ../catalog_parity.hpp.
 //
 // DATABASE SAFETY IS THE WHOLE REASON THIS FILE IS CAREFUL.
 // Both binaries resolve $PLANAR_DB and otherwise fall back to
@@ -44,8 +67,13 @@
 #include <sys/wait.h>
 
 import std;
+import cli11;
+import planar.cliapp.schema;
+import planar.cmd.planar.tree;
 import planar.db;
 import planar.db.migrate;
+
+#include "catalog_parity.hpp"
 
 namespace {
 
@@ -214,16 +242,15 @@ TEST_CASE("C++ and Zig agree byte-for-byte on the no-database leaves", "[cmd][pa
       {"wll", {"workflow", "list", "--local"}},
       {"wsmiss", {"workflow", "show", "nope"}},
       {"wsmissj", {"workflow", "show", "nope", "--json"}},
-      {"wlhelp", {"workflow", "list", "--help"}},
-      {"wshelp", {"workflow", "show", "--help"}},
-      {"vhelp", {"version", "--help"}},
-      {"badverb", {"nosuchverb"}},
-      {"badsub", {"workflow", "nosuchsub"}},
-      {"badflag", {"workflow", "list", "--nosuchflag"}},
-      {"missingpos", {"workflow", "show"}},
-      {"aahelp", {"annotate", "add", "--help"}},
-      {"alhelp", {"annotate", "list", "--help"}},
+      // A HANDLER-level refusal, not a parser one: still a true oracle diff
+      // after task 6123, and deliberately kept here as the control showing
+      // the re-baselining is confined to parser- and help-produced bytes.
       {"aareq", {"annotate", "add"}},
+      // The nine `--help` / parse-failure shapes that used to live in this
+      // list moved to `the CLI surface is CLI11\'s now, and pinned` below —
+      // CLI11 renders help and writes parse errors as of task 6123, so
+      // those bytes are no longer oracle-comparable. They are pinned
+      // against the built binary rather than dropped or loosened.
   };
 
   for (auto const& [tag, args] : leaves) {
@@ -326,16 +353,10 @@ TEST_CASE("C++ and Zig agree byte-for-byte on the task-6106 no-fixture leaves", 
     std::vector<std::string> args; ///< The argv tail.
   };
   std::vector<leaf> const leaves{
-      // `skills` is the interesting one: on the Zig side a childless node
-      // with no `.run` renders its own help for free, while here it is a
-      // LEAF that needed a handler. Both routes to that page — the verb and
-      // `--help` — are diffed.
-      {"sk", {"skills"}},
-      {"skhelp", {"skills", "--help"}},
-      {"skextra", {"skills", "extra"}},
-      {"ulhelp", {"unlink", "--help"}},
-      {"ulnopos", {"unlink"}},
-      {"wdhelp", {"workspace", "doctor", "--help"}},
+      // `skills`, `skills --help`, `skills extra`, `unlink --help`,
+      // `unlink` (no positional) and `workspace doctor --help` used to be
+      // here. All six are help pages or parse failures, i.e. CLI11-produced
+      // as of task 6123; they moved to the pinned-bytes case below.
       // Empty database, both render modes. The text mode is ZERO BYTES
       // where `--json` is `{"orgs":[]}` — a disagreement inside one leaf.
       {"wd", {"workspace", "doctor"}},
@@ -510,31 +531,294 @@ TEST_CASE("C++ and Zig agree on workspace doctor's diagnose-and-repair pass", "[
   }
 }
 
-TEST_CASE("C++ and Zig agree byte-for-byte on the workbench leaves' help pages", "[cmd][parity][oracle][workbench]") {
+TEST_CASE("every ported command declares what the oracle declares", "[cmd][parity][oracle][catalog]") {
   if (!oracle_available()) {
     SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
   }
 
-  // A LEAF's own `--help` page is the one page that stays oracle-comparable
-  // even when a group omits unported children, so every ported leaf's flags
-  // and positionals must be declared exactly. Half-porting one -- dropping
-  // `--filter-mode` from `archive` because the engine ignores it, say --
-  // would show up here and nowhere else.
+  // TASK 6123. This case replaces "C++ and Zig agree byte-for-byte on the
+  // workbench leaves' help pages", which diffed ten rendered pages against
+  // the oracle. That diff existed to catch a half-ported leaf — dropping
+  // `--filter-mode` from `archive` because the engine ignores it, say —
+  // and a rendered page was the observable proxy for the declaration.
+  // CLI11 renders help now, so the proxy is gone; the declaration is not,
+  // and this compares it directly and across the WHOLE tree rather than
+  // ten leaves. See ../catalog_parity.hpp for the full argument.
   //
-  // The GROUP page is deliberately NOT compared: `publish`,
-  // `extract-questions` and `edit` are unported, so `workbench --help`
-  // lists ten commands where the oracle lists thirteen. Same accounted-for
-  // divergence `workflow --help` and `workspace --help` already carry.
-  for (auto const& leaf : {"lint", "pull", "push", "status", "resolve", "sync", "archive", "restore", "gc", "list"}) {
-    std::vector<std::string> const args{"workbench", leaf, "--help"};
-    auto const                     tag   = std::format("wbhelp_{}", leaf);
-    auto const                     space = make_arena(tag);
-    auto const                     mine  = run_pinned(cpp_bin(), args, space.cpp_root, tag);
-    auto const                     ref   = run_pinned(zig_bin(), args, space.zig_root, tag);
-    INFO("leaf: " << leaf);
-    CHECK(mine.code == ref.code);
-    CHECK(mine.out == ref.out);
-    CHECK(mine.err == ref.err);
+  // This binary has no `schema` verb ported yet, so its catalog is built
+  // in-process from the same `root_app()` the binary itself dispatches
+  // against. The ORACLE's side is its real `planar schema` output.
+  auto const space = make_arena("catalog");
+  auto const ref   = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "catalog");
+  REQUIRE(ref.code == 0);
+
+  auto const root = planar::cmd::root_app();
+  auto const mine = planar::cmd::parity::parse_catalog(planar::cliapp::schema_json(*root));
+  REQUIRE(mine.has_value());
+  auto const theirs = planar::cmd::parity::parse_catalog(ref.out);
+  REQUIRE(theirs.has_value());
+
+  // Non-vacuous: an empty left-hand side would pass trivially, and the
+  // named entries below are the ones whose declarations this task most
+  // easily could have got wrong.
+  CHECK(mine->size() >= 18);
+  CHECK(theirs->size() > 200);
+  CHECK(mine->contains("planar workbench gc"));
+  CHECK(mine->contains("planar workbench archive"));
+  CHECK(mine->contains("planar annotate add"));
+  CHECK(mine->contains("planar unlink"));
+
+  auto const problems = planar::cmd::parity::diff_against_oracle(*mine, *theirs);
+  INFO("declaration mismatches:\n" << std::format("{}", problems));
+  CHECK(problems.empty());
+}
+
+TEST_CASE("the CLI surface is CLI11's now, and pinned", "[cmd][parity][cli-surface]") {
+  // TASK 6123 RE-BASELINE, in one place so the whole cost of the swap is
+  // readable at a glance. Every expectation here used to be a live diff
+  // against the Zig oracle in one of the two "no-database leaves" cases
+  // above. `src/lib/cli` produced those bytes; CLI11 produces these.
+  //
+  // Captured from the BUILT binary exactly the way the oracle captures
+  // were taken, and pinned EXACTLY — trailing spaces included. Loosening
+  // any of these to a `contains` check would replace a pinned contract
+  // with a rubber stamp: a dropped flag would stop failing.
+  //
+  // The EXIT CODES are not re-baselined and are the part that still had to
+  // survive: 2 for every parse failure on the OPERATOR binary, where
+  // planar-agent and planar-watch both say 1.
+  //
+  // Runs without the oracle — it is an assertion about this binary, not a
+  // comparison — so it stays live on a checkout with no zig/ build.
+  auto const space = make_arena("clisurface");
+  auto const run   = [&](std::vector<std::string> args, std::string_view tag) {
+    return run_pinned(cpp_bin(), args, space.cpp_root, tag);
+  };
+
+  SECTION("parse failures write BOTH streams and exit 2") {
+    // The dual-stream shape is the surprising part and the reason these
+    // are pinned at all: a formatted message on STDOUT and a CamelCase tag
+    // on STDERR, from one invocation. A reasonable person would have put
+    // the parse error on stderr alone and been wrong. That shape is the
+    // oracle's and did not move.
+    auto const bad_verb = run({"nosuchverb"}, "badverb");
+    CHECK(bad_verb.code == 2);
+    CHECK(bad_verb.out == "error: planar: The following argument was not expected: nosuchverb\n");
+    CHECK(bad_verb.err == "error: ExtrasError\n");
+
+    auto const bad_sub = run({"workflow", "nosuchsub"}, "badsub");
+    CHECK(bad_sub.code == 2);
+    CHECK(bad_sub.out == "error: workflow: The following argument was not expected: nosuchsub\n");
+    CHECK(bad_sub.err == "error: ExtrasError\n");
+
+    auto const bad_flag = run({"workflow", "list", "--nosuchflag"}, "badflag");
+    CHECK(bad_flag.code == 2);
+    CHECK(bad_flag.out == "error: list: The following argument was not expected: --nosuchflag\n");
+    CHECK(bad_flag.err == "error: ExtrasError\n");
+
+    auto const missing_pos = run({"workflow", "show"}, "missingpos");
+    CHECK(missing_pos.code == 2);
+    CHECK(missing_pos.out == "error: name is required\n");
+    CHECK(missing_pos.err == "error: RequiredError\n");
+
+    auto const unlink_no_pos = run({"unlink"}, "ulnopos");
+    CHECK(unlink_no_pos.code == 2);
+    CHECK(unlink_no_pos.out == "error: link-id is required\n");
+    CHECK(unlink_no_pos.err == "error: RequiredError\n");
+
+    auto const skills_extra = run({"skills", "extra"}, "skextra");
+    CHECK(skills_extra.code == 2);
+    CHECK(skills_extra.out == "error: skills: The following argument was not expected: extra\n");
+    CHECK(skills_extra.err == "error: ExtrasError\n");
+  }
+
+  SECTION("leaf help pages render every declared flag and positional") {
+    auto const version_help = run({"version", "--help"}, "vhelp");
+    CHECK(version_help.code == 0);
+    CHECK(version_help.err.empty());
+    CHECK(version_help.out == "Print the planar version, commit, and zig runtime.\n"
+                              "\n"
+                              "\n"
+                              "version [OPTIONS]\n"
+                              "\n"
+                              "\n"
+                              "OPTIONS:\n"
+                              "  -h,     --help              Print this help message and exit\n");
+
+    auto const list_help = run({"workflow", "list", "--help"}, "wlhelp");
+    CHECK(list_help.code == 0);
+    CHECK(list_help.out == "List shipped and sandbox workflows.\n"
+                           "\n"
+                           "\n"
+                           "list [OPTIONS]\n"
+                           "\n"
+                           "\n"
+                           "OPTIONS:\n"
+                           "  -h,     --help              Print this help message and exit\n"
+                           "          --local             \n"
+                           "          --json              \n");
+
+    auto const show_help = run({"workflow", "show", "--help"}, "wshelp");
+    CHECK(show_help.code == 0);
+    CHECK(show_help.out == "Show @meta and source path for a named workflow.\n"
+                           "\n"
+                           "\n"
+                           "show [OPTIONS] name\n"
+                           "\n"
+                           "\n"
+                           "POSITIONALS:\n"
+                           "  name REQUIRED               \n"
+                           "\n"
+                           "OPTIONS:\n"
+                           "  -h,     --help              Print this help message and exit\n"
+                           "          --json              \n");
+
+    // The widest leaf in the binary: fifteen flags, two of them integer-
+    // kinded. The `:INT` type tag comes from `cliapp::zig_int_validator`,
+    // which is also what enforces Zig's underscore-separator semantics at
+    // parse time — so this page is where a lost validator shows up.
+    auto const annotate_add_help = run({"annotate", "add", "--help"}, "aahelp");
+    CHECK(annotate_add_help.code == 0);
+    CHECK(annotate_add_help.out == "Create a new annotation.\n"
+                                   "\n"
+                                   "\n"
+                                   "add [OPTIONS]\n"
+                                   "\n"
+                                   "\n"
+                                   "OPTIONS:\n"
+                                   "  -h,     --help              Print this help message and exit\n"
+                                   "          --anchor-path       \n"
+                                   "          --line-start :INT   \n"
+                                   "          --line-end :INT     \n"
+                                   "          --commit-sha        \n"
+                                   "          --text-hash         \n"
+                                   "          --text              \n"
+                                   "          --title             \n"
+                                   "          --slug              \n"
+                                   "          --body              \n"
+                                   "          --vendor            \n"
+                                   "          --plan :INT         \n"
+                                   "          --task :INT         \n"
+                                   "          --tags              \n"
+                                   "          --scope             \n"
+                                   "          --json              \n");
+
+    auto const annotate_list_help = run({"annotate", "list", "--help"}, "alhelp");
+    CHECK(annotate_list_help.code == 0);
+    CHECK(annotate_list_help.out == "List annotations.\n"
+                                    "\n"
+                                    "\n"
+                                    "list [OPTIONS]\n"
+                                    "\n"
+                                    "\n"
+                                    "OPTIONS:\n"
+                                    "  -h,     --help              Print this help message and exit\n"
+                                    "          --anchor-path       \n"
+                                    "          --status            \n"
+                                    "          --plan :INT         \n"
+                                    "          --task :INT         \n"
+                                    "          --vendor            \n"
+                                    "          --tag               \n"
+                                    "          --scope             \n"
+                                    "          --json              \n");
+
+    // The only top-level LEAF with a positional AND a described flag.
+    auto const unlink_help = run({"unlink", "--help"}, "ulhelp");
+    CHECK(unlink_help.code == 0);
+    CHECK(unlink_help.out == "Remove an external_links row by its link id.\n"
+                             "\n"
+                             "Associated sync_events rows are detached by setting link_id to null\n"
+                             "rather than cascade-deleted; they are no longer reachable through\n"
+                             "the deleted link's audit trail.\n"
+                             "\n"
+                             "\n"
+                             "unlink [OPTIONS] link-id\n"
+                             "\n"
+                             "\n"
+                             "POSITIONALS:\n"
+                             "  link-id REQUIRED            External-link id (integer)\n"
+                             "\n"
+                             "OPTIONS:\n"
+                             "  -h,     --help              Print this help message and exit\n"
+                             "          --scope             Scope for the cross-scope guard (currently informational)\n"
+                             "          --json              \n");
+
+    auto const doctor_help = run({"workspace", "doctor", "--help"}, "wdhelp");
+    CHECK(doctor_help.code == 0);
+    CHECK(doctor_help.out == "Scan and fix workspace registration and state consistency.\n"
+                             "\n"
+                             "\n"
+                             "doctor [OPTIONS]\n"
+                             "\n"
+                             "\n"
+                             "OPTIONS:\n"
+                             "  -h,     --help              Print this help message and exit\n"
+                             "          --json              \n");
+  }
+
+  SECTION("workbench leaf pages keep every flag the oracle accepts") {
+    // Two of the ten `workbench` leaves, chosen as the two whose flag sets
+    // are hardest to get right: `push` carries the only wrapped
+    // description in the tree, and `gc` carries the most flags plus an
+    // OPTIONAL positional (rendered `[plan]`, not `plan`). Declaration
+    // fidelity for all ten — including `archive`/`restore` still declaring
+    // `--filter-mode` even though the engine ignores it — is covered
+    // against the oracle by the catalog case above; these two pin that the
+    // RENDERING of a declared surface is intact.
+    auto const push_help = run({"workbench", "push", "--help"}, "wbpush");
+    CHECK(push_help.code == 0);
+    CHECK(push_help.out == "Apply DB\xe2\x86\x92"
+                           "FS changes atomically; report FS\xe2\x86\x92"
+                           "DB drift.\n"
+                           "\n"
+                           "\n"
+                           "push [OPTIONS] plan\n"
+                           "\n"
+                           "\n"
+                           "POSITIONALS:\n"
+                           "  plan REQUIRED               \n"
+                           "\n"
+                           "OPTIONS:\n"
+                           "  -h,     --help              Print this help message and exit\n"
+                           "          --verbose           \n"
+                           "          --json              \n"
+                           "          --filter-mode       Terminal-status filter: 'failures' (default) or 'all'\n"
+                           "          --apply-cleanup     Remove pre-existing FS files for entities this push would have\n"
+                           "                              filtered\n");
+
+    auto const gc_help = run({"workbench", "gc", "--help"}, "wbgc");
+    CHECK(gc_help.code == 0);
+    CHECK(gc_help.out == "Remove FS files whose backing entity is terminal in the DB.\n"
+                         "\n"
+                         "\n"
+                         "gc [OPTIONS] [plan]\n"
+                         "\n"
+                         "\n"
+                         "POSITIONALS:\n"
+                         "  plan                        \n"
+                         "\n"
+                         "OPTIONS:\n"
+                         "  -h,     --help              Print this help message and exit\n"
+                         "          --dry-run           Preview only; do not touch disk\n"
+                         "          --yes               Discard FS-content drift; remove drifted files anyway\n"
+                         "          --filter-mode       Terminal-status filter: 'failures' (default) or 'all'\n"
+                         "          --all-scopes        Walk every plan's workbench tree\n"
+                         "          --json              \n");
+  }
+
+  SECTION("the retired `skills` verb still points operators at scriptorium") {
+    // Both routes to that page — the bare verb (which needs a HANDLER
+    // here, because a childless node is a leaf) and `--help` (which goes
+    // through dispatch) — must agree, or the handler is rendering
+    // something the tree does not say.
+    auto const bare   = run({"skills"}, "sk");
+    auto const helped = run({"skills", "--help"}, "skhelp");
+    CHECK(bare.code == 0);
+    CHECK(helped.code == 0);
+    CHECK(bare.out == helped.out);
+    CHECK(bare.out.starts_with("The unified skill source tree under skills/src/ is rendered by the\n"
+                               "external scriptorium binary (plan 918)."));
+    CHECK(bare.out.contains("`scriptorium\ncheck`/`scriptorium status` instead."));
   }
 }
 

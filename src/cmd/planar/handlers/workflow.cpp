@@ -4,9 +4,10 @@
 module planar.cmd.planar.handlers.workflow;
 
 import std;
-import planar.cli;
+import cli11;
+import planar.cliapp.args;
 import planar.engine.workflows;
-import planar.cmd.planar.args;
+import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -16,7 +17,7 @@ namespace planar::cmd::handlers {
 namespace catalog = engine::workflows::catalog;
 namespace render  = engine::workflows::render;
 
-auto workflow_list(context& ctx, const cli::match_result& args) -> handler_result {
+auto workflow_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const local_only = flag_bool(args, "--local");
   auto const dirs       = catalog::resolve_dirs(ctx.env());
   auto const entries    = catalog::list(dirs, local_only);
@@ -29,7 +30,7 @@ auto workflow_list(context& ctx, const cli::match_result& args) -> handler_resul
   return {};
 }
 
-auto workflow_show(context& ctx, const cli::match_result& args) -> handler_result {
+auto workflow_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const name = positional_string(args, "name").value_or(std::string{});
   auto const dirs = catalog::resolve_dirs(ctx.env());
   auto const hit  = catalog::find(dirs, name);
@@ -38,7 +39,7 @@ auto workflow_show(context& ctx, const cli::match_result& args) -> handler_resul
     // trailing newline included — so it is a RENDERED payload, not a
     // message body. Wrapping it with `error_from_body` would emit
     // `error: error: workflow 'nope' not found`.
-    return std::unexpected(error_from_rendered(cli::domain_error_kind::generic_failure, render::not_found_error(name)));
+    return std::unexpected(error_from_rendered(domain_error_kind::generic_failure, render::not_found_error(name)));
   }
   ctx.out() << (flag_bool(args, "--json") ? render::entry_json(*hit) : render::show_text(*hit));
   return {};

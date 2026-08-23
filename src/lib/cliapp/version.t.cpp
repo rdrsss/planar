@@ -1,5 +1,5 @@
 // @file version.t.cpp
-// @brief Unit tests for `planar.cli.version` (task cpp-cli-output-logging).
+// @brief Unit tests for `planar.cliapp.version` (task cpp-cli-output-logging).
 //
 // Oracle capture (task brief: derive expected values by running the
 // reference binary, never hand-assumed):
@@ -15,11 +15,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cli.version;
+import planar.cliapp.version;
 
-using planar::cli::build_info;
-using planar::cli::render_version_text;
-using planar::cli::shorten_sha;
+using planar::cliapp::build_info;
+using planar::cliapp::render_version_text;
+using planar::cliapp::shorten_sha;
 
 TEST_CASE("shorten_sha truncates a 40-char hex sha to 12 chars", "[cli][version]") {
   const std::string long_sha = "0123456789abcdef0123456789abcdef01234567";
@@ -84,7 +84,7 @@ TEST_CASE("render_version_text: clean (non-dirty) real sha has no dirty marker",
 // bearing assertion for "a dev build must not bake in git sha/dirty
 // state" (task brief).
 TEST_CASE("current_build_info: default (dev) configure never claims dirty=true", "[cli][version]") {
-  auto info = planar::cli::current_build_info();
+  auto info = planar::cliapp::current_build_info();
   // Whether or not PLANAR_VERSION_META was passed to this particular test
   // build, dirty must be a real boolean resolved from an actual git check
   // -- it must never be true by accident of an unset macro. We can only

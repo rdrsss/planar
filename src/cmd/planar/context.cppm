@@ -114,7 +114,7 @@ export auto operator_cwd(const env_lookup& env) -> std::filesystem::path;
 ///
 /// Move-only, because it owns the database connection. Nothing that varies
 /// per invocation lives anywhere else: `--json`, `--scope` and friends stay
-/// in the parsed `cli::match_result` and are read at the call site, exactly
+/// in the parsed `cliapp::parsed_args` and are read at the call site, exactly
 /// as zig/src/runtime/runtime.zig's own "Things explicitly NOT on Ctx" note
 /// requires.
 export class context {
