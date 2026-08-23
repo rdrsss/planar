@@ -10,3 +10,4 @@ export import planar.engine.models.registry;
 export import planar.engine.models.ranking;
 export import planar.engine.models.views;
 export import planar.engine.models.render;
+export import planar.engine.models.legacy;

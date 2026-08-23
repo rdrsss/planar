@@ -29,16 +29,13 @@
 #     `error: --task is required for task-bound role 'coder'`, and
 #     `--role nosuch` exits 2 with `error: unknown role 'nosuch'`.
 #
-#   - The LEGACY (no-cohort-flags) branch of `models evals`. Supplying no
-#     cohort flags falls back to a note-convention scorecard mined out of
-#     `session_entries` / `agent_work_claims` / `agent_actions` -- a
-#     pre-routing-evidence-plane surface the oracle itself labels "not
-#     evidence-backed". Its EMPTY-input shape is pinned in render.t.cpp so
-#     the cycle that ports it starts from a captured baseline:
-#     `{"scorecard":[],"recommendations":[],"signals_sourced":
-#     {"reviewer_disposition":true,"iteration_count":true,
-#     "quality_gate_pass_fail":false,"test_coder_expansion":true},
-#     "legacy_dispatch_notes_skipped":0}`.
+#   (The LEGACY no-cohort-flags branch of `models evals` WAS deferred here and
+#   has since landed -- see legacy.cppm, plan 996 task 6111. It reads the
+#   `dispatch_shape` / `model_choice` note convention out of `session_entries`
+#   and joins it against `agent_work_claims` and `agent_actions`. It needed no
+#   new DEPENDS beyond `db` and the layer-1 `json_text`; the config read the Zig
+#   handler performs on that path is NOT reproduced here -- see legacy.cppm's
+#   "A config read that feeds nothing" note and engine/models/legacy.cpp.)
 #
 #   - `policy.audit.record` calls. There is still no `policy.audit` module in
 #     the C++ tree; `engine_planning/CMakeLists.txt`,
@@ -55,14 +52,17 @@ planar_module(engine_models
     ranking.cppm
     views.cppm
     render.cppm
+    legacy.cppm
     models.cppm
   SOURCES
     registry.cpp
     ranking.cpp
     views.cpp
     render.cpp
+    legacy.cpp
   DEPENDS
-    db)
+    db
+    json_text)
 
 # Floating-point contraction OFF, for the module and its tests alike.
 #
@@ -100,8 +100,15 @@ set_source_files_properties(ranking.cpp PROPERTIES COMPILE_OPTIONS "${_planar_mo
 # so under the same rounding rules as the code it compares against.
 set_source_files_properties(ranking.t.cpp PROPERTIES COMPILE_OPTIONS "${_planar_models_fp_strict}")
 
+# Glaze (D8) parses the legacy branch's `model_choice:` value, which is
+# arbitrary operator-authored JSON rather than a fixed struct (it is a map keyed
+# by task id). PRIVATE: the exported interface speaks only in this bucket's own
+# types. The JSON this bucket EMITS is still hand-rolled, because the target is
+# not "valid JSON" but the exact bytes zig's std.json.Stringify produces.
+target_link_libraries(planar_engine_models PRIVATE glaze::glaze)
+
 if(TARGET planar_engine_models_tests)
   # The test binary opens real on-disk scratch databases through
   # planar.db.migrate, exactly as engine/runs' and engine/runtime's suites do.
-  target_link_libraries(planar_engine_models_tests PRIVATE SQLite::SQLite3)
+  target_link_libraries(planar_engine_models_tests PRIVATE SQLite::SQLite3 glaze::glaze)
 endif()

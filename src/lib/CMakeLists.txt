@@ -60,12 +60,36 @@
 # explicit env-lookup callable rather than `std::getenv`, so it cannot reach a
 # real `~/.planar` by accident. `workflow run` is deferred with its
 # process-spawn dependency (see engine/workflows/CMakeLists.txt).
+# `json_text` (plan 996, task 6109, decision D19) is a layer-1 base library
+# holding the ONE JSON string-escaping primitive every hand-rolled renderer in
+# the tree shares. It was extracted after the per-bucket duplication D18 forces
+# (an `engine_*` may not depend on another `engine_*`) reached SEVEN
+# byte-identical copies — closure, grouping, ingest, models, planning, runs and
+# workflows — with `local` about to make an eighth. New buckets import it; the
+# seven pre-existing copies are left for their own mechanical sweep rather than
+# dragged into a twelve-leaf port cycle (see json_text/CMakeLists.txt). Same
+# shape as `scope_ref`: a shared engine primitive moved DOWN a layer so the
+# same-layer prohibition can stay strict without duplication.
+# `engine/local` (plan 996, task 6109) is the operator-local skills/agents
+# sandbox behind all five `planar local` leaves. It depends on NOTHING but
+# `json_text` -- the sandbox is pure filesystem state and holds no SQLite
+# handle -- and resolves its root from an explicit env-lookup callable, which
+# matters more here than anywhere else in the tree because the surface writes
+# symlinks into the operator's REAL `~/.claude` / `~/.codex` / `~/.copilot`
+# (see engine/local/CMakeLists.txt for the `PLANAR_LOCAL_HOME` trap).
+# `engine/workspace` (plan 996, task 6110) is org-association selection, the
+# `$PLANAR_HOME/workspaces/<id>/` state-directory layout, and the
+# diagnose-and-repair pass behind `workspace doctor` -- ONE of the five
+# `workspace` leaves. `routing build`, `routing show` and `regenerate` are
+# deferred on size and on a missing xxh64, and `workspace init` is
+# architecturally blocked at layer 3 (see engine/workspace/CMakeLists.txt).
 
 add_subdirectory(core)
 add_subdirectory(db)
 add_subdirectory(cli)
 add_subdirectory(log)
 add_subdirectory(scope_ref)
+add_subdirectory(json_text)
 add_subdirectory(engine/identity)
 add_subdirectory(engine/config)
 add_subdirectory(engine/planning)
@@ -78,3 +102,5 @@ add_subdirectory(engine/closure)
 add_subdirectory(engine/grouping)
 add_subdirectory(engine/models)
 add_subdirectory(engine/workflows)
+add_subdirectory(engine/local)
+add_subdirectory(engine/workspace)
