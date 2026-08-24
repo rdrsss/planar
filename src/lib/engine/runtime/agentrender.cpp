@@ -68,11 +68,27 @@ template <typename T> auto field_enum(std::string& out, std::string_view key, co
 // =========================================================================
 
 auto append_claim(std::string& out, const aa::claim& value) -> void {
+  append_claim_view(out, value, claim_view_extras{});
+}
+
+auto append_claim_view(std::string& out, const aa::claim& value, const claim_view_extras& extras) -> void {
   out.append(std::format("{{\"id\":{},\"claim_token\":", value.id));
   append_json_string(out, value.claim_token);
   out.append(std::format(",\"session_id\":{},\"entity_kind\":", value.session_id));
   append_json_string(out, aa::to_text(value.kind));
-  out.append(std::format(",\"entity_id\":{},\"claim_scope\":", value.entity_id));
+  out.append(std::format(",\"entity_id\":{}", value.entity_id));
+  if (extras.entity_scope.has_value()) {
+    out.append(",\"entity_scope\":{\"kind\":");
+    append_json_string(out, extras.entity_scope->kind);
+    out.append(",\"slug\":");
+    if (extras.entity_scope->slug.has_value()) {
+      append_json_string(out, *extras.entity_scope->slug);
+    } else {
+      out.append("null");
+    }
+    out.push_back('}');
+  }
+  out.append(",\"claim_scope\":");
   append_json_string(out, aa::to_text(value.scope));
   out.append(",\"status\":");
   append_json_string(out, aa::to_text(value.status));
@@ -116,6 +132,20 @@ auto append_claim(std::string& out, const aa::claim& value) -> void {
   field_int(out, "run_id", value.run_id);
   out.push_back(',');
   field_text(out, "stage", value.stage);
+  if (extras.include_latest_action) {
+    out.append(",\"latest_action\":");
+    if (extras.latest_action.has_value()) {
+      out.append("{\"kind\":");
+      append_json_string(out, aa::to_text(extras.latest_action->kind));
+      out.push_back(',');
+      field_text(out, "summary", extras.latest_action->summary);
+      out.append(",\"started_at\":");
+      append_json_string(out, extras.latest_action->started_at);
+      out.push_back('}');
+    } else {
+      out.append("null");
+    }
+  }
   out.push_back('}');
 }
 

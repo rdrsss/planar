@@ -57,6 +57,48 @@ namespace aa = agentactivity;
 /// `*_text` functions below return COMPLETE payloads instead.
 export auto append_claim(std::string& out, const aa::claim& value) -> void;
 
+/// @brief The two OPTIONAL fields `planar-watch`'s operator-facing claim
+/// surfaces add to the shared ClaimRow shape (task 6120).
+///
+/// Both are opt-in, and the shape is opt-in for a reason worth stating:
+/// `planar-agent`'s payloads and `planar-watch log`'s timeline entries emit
+/// the LEAN claim object, and adding either field unconditionally would
+/// change bytes those surfaces' parity tests already pin. Zig draws the
+/// same line with two entry points (`writeClaim` / `writeClaimWithActivity`)
+/// and a nullable `entity_scope` argument.
+export struct claim_view_extras {
+  /// @brief Emitted as `"entity_scope":{"kind":…,"slug":…}` immediately
+  /// after `entity_id` when set — the "which entity" reference and the
+  /// "where is it stored" context sit next to each other in the shape.
+  /// Carried by `ps` and `claims`; omitted entirely by everything else.
+  std::optional<aa::claim_scope_info> entity_scope;
+
+  /// @brief Whether to emit a trailing `"latest_action"` field AT ALL.
+  ///
+  /// Separate from `latest_action` below because the three states are
+  /// genuinely distinct: field absent (every surface but `ps`), field
+  /// present and `null` (`ps`, claim with no actions), field present and
+  /// populated. Collapsing the first two would change `claims`' bytes.
+  bool include_latest_action = false;
+
+  /// @brief The newest action on the claim; unset emits `null`. Only read
+  /// when `include_latest_action` is true.
+  std::optional<aa::action> latest_action;
+};
+
+/// @brief Append a claim as a JSON object, with `planar-watch`'s optional
+/// `entity_scope` and `latest_action` fields.
+///
+/// `append_claim(out, value)` is exactly this with default `extras`, and is
+/// implemented as such so the two can never drift in the 27 fields they
+/// share.
+/// @param out The buffer to append to.
+/// @param value The claim.
+/// @param extras Which optional fields to emit.
+///
+/// NOTE: appends a FRAGMENT — no trailing newline.
+export auto append_claim_view(std::string& out, const aa::claim& value, const claim_view_extras& extras) -> void;
+
 /// @brief Append a task as a JSON object.
 /// @param out The buffer to append to.
 /// @param value The task row.

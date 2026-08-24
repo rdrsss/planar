@@ -60,12 +60,33 @@
 ///   in the C++ tree; `engine_planning`, `engine_identity`,
 ///   `engine_promotion`, `engine_runs` and `engine_runtime` all record the
 ///   same omission. No claim verb reads or emits audit rows.
-/// - **`resolve_claim_scope`, `list_active`, `list_stale`,
-///   `list_by_entity`, `list_by_session`, `latest_active_claim_for_session`,
-///   `next_work`, `record_entity_create_action`.** Read paths that exist
-///   for `planar-watch`'s display surfaces and for `planar` verbs, not for
-///   any `planar-agent` verb. Deferred with the binaries that consume
-///   them.
+/// - **`latest_active_claim_for_session`, `next_work`,
+///   `record_entity_create_action`.** The remaining read paths, which
+///   serve `planar` verbs (`resume`, `status`, entity-create auditing)
+///   rather than any leaf landed so far. Deferred with the verbs that
+///   consume them. Task 6120 landed the `planar-watch` half —
+///   `resolve_claim_scope`, `list_claims`, `list_active_claims_sorted`,
+///   `list_stale_claims`, `list_actions*`, `list_claims_by_*`,
+///   `latest_action_for_claim`, `collect_plan_activity`,
+///   `walk_action_forest` — see § "Read paths" below.
+///
+/// ## Read paths (task 6120)
+///
+/// The display half of zig's `store.zig` plus the four per-verb query
+/// families the Zig tree kept inline in
+/// `zig/src/cmd/planar-watch/handlers/{ps,claims,actions,plans,log,tree}.zig`.
+/// They are HERE rather than in those handlers for one concrete reason:
+/// `k_claim_columns` and `read_claim_row` are the single place the 27-column
+/// projection's ORDER is written down, and the Zig tree paid for its
+/// alternative — six handler files each carrying a verbatim copy of that
+/// SELECT and its decoder, free to drift. Every read below composes the
+/// shared projection with a WHERE/ORDER tail.
+///
+/// They are also in THIS module rather than a sibling `agentread` for the
+/// same reason: the projection constant and the row decoder live in this
+/// translation unit's anonymous namespace, and a sibling module could only
+/// reuse them by exporting them (widening the public surface for one
+/// caller) or by copying them (the drift the constant exists to prevent).
 /// - **The git locality probe.** `locality` is an INPUT here: the caller
 ///   hands over whatever snapshot it managed to take. The probe itself
 ///   shells `git` three times and lives at layer 3 (see
@@ -721,5 +742,252 @@ export auto pid_alive(std::int64_t pid) -> bool;
 /// @return The sweep result, or `query_failed`.
 export auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id)
     -> std::expected<reconcile_runs_result, agent_error>;
+
+// =========================================================================
+// Read paths — the display half (task 6120)
+//
+// Every function below is a pure SELECT. None opens a transaction, none
+// writes, and none is reachable from a `planar-agent` verb; they exist for
+// `planar-watch`'s six read verbs. That property is what lets the READ-ONLY
+// binary link this module at all.
+// =========================================================================
+
+/// @brief Where the entity under a claim is STORED — the answer to "which
+/// project/association does this claim's task belong to", which the claim
+/// row itself does not carry.
+///
+/// Port of zig `store.resolveClaimScope`. Degrades rather than fails: any
+/// query failure, missing row, or unrecognised `scope_kind` yields
+/// `kind = "?"` with no slug, because a viewer that refused to render a
+/// claim because its entity had been deleted would be less useful than one
+/// that renders `scope:?`.
+export struct claim_scope_info {
+  /// @brief `global`, `association`, `repo`, or `?` when unresolvable.
+  std::string kind = "?";
+  /// @brief The association/project slug; unset for `global` and `?`, and
+  /// for a scope row that no longer exists.
+  std::optional<std::string> slug;
+
+  /// @brief The single-token form the text columns print after `scope:`.
+  /// @return The slug when present, otherwise `kind`.
+  [[nodiscard]] auto label() const -> std::string_view {
+    return slug.has_value() ? std::string_view{*slug} : std::string_view{kind};
+  }
+};
+
+/// @brief Resolve where `value`'s entity is stored.
+/// @param conn An open connection (read-only is sufficient).
+/// @param value The claim whose entity to resolve.
+/// @return The resolved scope, or the degraded `?` form.
+export auto resolve_claim_scope(db::connection& conn, const claim& value) -> claim_scope_info;
+
+/// @brief `planar-watch claims --status`'s three arms.
+export enum class claim_status_filter : std::uint8_t {
+  /// @brief `status='active'` AND an unexpired lease.
+  active,
+  /// @brief `status='stale'` OR an expired-lease `active` row.
+  stale,
+  /// @brief Every row in the ledger.
+  all,
+};
+
+/// @brief Parse a `--status` value.
+///
+/// TOTAL, and deliberately so: zig's `parseStatus` maps an unrecognised
+/// value onto `.active` rather than raising, so `--status nonsense` lists
+/// active claims on the reference binary. Reproduced (D2), not "fixed".
+/// @param text The flag value, or unset when the flag was absent.
+/// @return The filter; `active` for absent AND for unrecognised.
+export auto parse_claim_status_filter(std::optional<std::string_view> text) -> claim_status_filter;
+
+/// @brief List ledger claims under `filter`, newest-claimed first.
+/// @param conn An open connection.
+/// @param filter Which arm to list.
+/// @return The rows, or `query_failed`.
+export auto list_claims(db::connection& conn, claim_status_filter filter) -> std::expected<std::vector<claim>, agent_error>;
+
+/// @brief `planar-watch ps --sort-by`'s two arms.
+export enum class ps_sort : std::uint8_t {
+  /// @brief `last_heartbeat_at desc`, NULLs last. The default.
+  heartbeat,
+  /// @brief `claimed_at desc` — the pre-M3 ordering.
+  lease,
+};
+
+/// @brief Parse a `--sort-by` value.
+///
+/// NOT total, unlike `parse_claim_status_filter`: zig's `parseSortBy`
+/// raises `InvalidValue` on an unrecognised value and `ps` dies with a
+/// specific message. The two flags really do differ in strictness on the
+/// reference binary.
+/// @param text The flag value, or unset when the flag was absent.
+/// @return The sort order, or unset when the value is unrecognised.
+export auto parse_ps_sort(std::optional<std::string_view> text) -> std::optional<ps_sort>;
+
+/// @brief List every `status='active'` claim for `ps`.
+///
+/// NOTE THE MISSING LEASE PREDICATE, which is not an oversight here: zig's
+/// `listActiveSorted` filters on the STATUS COLUMN ALONE, where
+/// `list_claims(active)` also requires an unexpired lease. The observable
+/// consequence is that under `ps --stale` an expired-but-not-yet-reconciled
+/// claim appears in BOTH the `active` and `stale` buckets. Reproduced (D2);
+/// `agentactivity.t.cpp` pins it so a later "cleanup" cannot quietly change
+/// what `ps` shows.
+/// @param conn An open connection.
+/// @param sort The ordering.
+/// @return The rows, or `query_failed`.
+export auto list_active_claims_sorted(db::connection& conn, ps_sort sort) -> std::expected<std::vector<claim>, agent_error>;
+
+/// @brief List `status='stale'` claims plus expired-lease `active` ones.
+/// @param conn An open connection.
+/// @return The rows, newest-claimed first, or `query_failed`.
+export auto list_stale_claims(db::connection& conn) -> std::expected<std::vector<claim>, agent_error>;
+
+/// @brief List `agent_actions`, newest-started first, capped at `limit`.
+/// @param conn An open connection.
+/// @param limit The row cap.
+/// @return The rows, or `query_failed`.
+export auto list_actions(db::connection& conn, std::int64_t limit) -> std::expected<std::vector<action>, agent_error>;
+
+/// @brief The newest action attached to a claim — what `ps` and `tree`
+/// render in their `activity:` column.
+///
+/// Distinct from `latest_open_action_for_claim`, which requires
+/// `ended_at IS NULL`; this one takes the newest action whether it is still
+/// running or not.
+/// @param conn An open connection.
+/// @param claim_id The claim's row id.
+/// @return The action, unset when the claim has none, or `query_failed`.
+export auto latest_action_for_claim(db::connection& conn, std::int64_t claim_id)
+    -> std::expected<std::optional<action>, agent_error>;
+
+/// @brief `planar-watch log`'s action source, filtered to one entity.
+/// @param conn An open connection.
+/// @param entity_kind The stored `entity_kind` token, verbatim — NOT parsed
+/// into the enum, because `log --entity nonsense:1` must return no rows
+/// rather than raise, exactly as the reference binary does.
+/// @param entity_id The entity's row id.
+/// @param limit The row cap.
+/// @return The rows OLDEST-first (a timeline, not a feed), or `query_failed`.
+export auto list_actions_by_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t limit)
+    -> std::expected<std::vector<action>, agent_error>;
+
+/// @brief `planar-watch log --session`'s action source.
+/// @param conn An open connection.
+/// @param session_id The session's row id.
+/// @param limit The row cap.
+/// @return The rows oldest-first, or `query_failed`.
+export auto list_actions_by_session(db::connection& conn, std::int64_t session_id, std::int64_t limit)
+    -> std::expected<std::vector<action>, agent_error>;
+
+/// @brief `planar-watch log --claim`'s action source.
+/// @param conn An open connection.
+/// @param token The claim token.
+/// @param limit The row cap.
+/// @return The rows oldest-first, or `query_failed`.
+export auto list_actions_by_claim_token(db::connection& conn, std::string_view token, std::int64_t limit)
+    -> std::expected<std::vector<action>, agent_error>;
+
+/// @brief `planar-watch log`'s claim source, filtered to one entity.
+/// @param conn An open connection.
+/// @param entity_kind The stored token, verbatim (see `list_actions_by_entity`).
+/// @param entity_id The entity's row id.
+/// @return The rows oldest-claimed first, or `query_failed`.
+export auto list_claims_by_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id)
+    -> std::expected<std::vector<claim>, agent_error>;
+
+/// @brief `planar-watch log --session`'s claim source.
+/// @param conn An open connection.
+/// @param session_id The session's row id.
+/// @return The rows oldest-claimed first, or `query_failed`.
+export auto list_claims_by_session(db::connection& conn, std::int64_t session_id)
+    -> std::expected<std::vector<claim>, agent_error>;
+
+/// @brief `planar-watch log --claim`'s claim source.
+/// @param conn An open connection.
+/// @param token The claim token.
+/// @return The matching row as a (0-or-1 element) list, or `query_failed`.
+export auto list_claims_by_token(db::connection& conn, std::string_view token) -> std::expected<std::vector<claim>, agent_error>;
+
+/// @brief Does a CLAIM on `(kind, id)` roll up to `plan_id`?
+///
+/// Port of zig `planfilter.claimBelongsToPlan`: `--plan N` is WIDENED to
+/// match a plan-direct claim, a claim on a task whose `plan_id` is N, and a
+/// claim on a `plan_step` under N. Matching only the first was the pre-fix
+/// behavior and silently dropped every task claim, which is the case that
+/// actually occurs.
+/// @param conn An open connection.
+/// @param kind The claim's entity kind.
+/// @param entity_id The claim's entity id.
+/// @param plan_id The plan to test against.
+/// @return `true` when the claim rolls up to the plan.
+export auto claim_belongs_to_plan(db::connection& conn, entity_kind kind, std::int64_t entity_id, std::int64_t plan_id) -> bool;
+
+/// @brief Does an ACTION on `(kind, id)` roll up to `plan_id`?
+///
+/// The action's entity kind is a strict superset of the claim's. The four
+/// extra kinds (`question`, `test_scenario`, `artifact`, `decision`) have no
+/// direct plan link in the schema and therefore NEVER match `--plan`; zig's
+/// `actionBelongsToPlan` says so explicitly and this reproduces it.
+/// @param conn An open connection.
+/// @param kind The action's entity kind.
+/// @param entity_id The action's entity id.
+/// @param plan_id The plan to test against.
+/// @return `true` when the action rolls up to the plan.
+export auto action_belongs_to_plan(db::connection& conn, action_entity_kind kind, std::int64_t entity_id, std::int64_t plan_id)
+    -> bool;
+
+/// @brief One plan's in-flight summary, as `planar-watch plans` renders it.
+export struct plan_activity {
+  /// @brief Claims with `status='active'` and an unexpired lease on the
+  /// plan or on a task under it.
+  std::int64_t active_claims = 0;
+  /// @brief `agent_actions` rows with `ended_at IS NULL` on the plan or on
+  /// a task under it.
+  std::int64_t active_actions = 0;
+  /// @brief The newest watermark across the plan's claim and action rows;
+  /// unset when the plan has no recorded agent activity at all.
+  std::optional<std::string> last_event_at;
+};
+
+/// @brief Summarize one plan's agent activity.
+///
+/// NOTE the asymmetry with `claim_belongs_to_plan` above, which is zig's
+/// and is preserved: these three aggregates match `plan` and `task` rows
+/// only — a `plan_step` claim rolls up under `--plan` on `ps`/`claims` but
+/// is NOT counted here. Reproduced (D2) rather than harmonised.
+/// @param conn An open connection.
+/// @param plan_id The plan's row id.
+/// @return The summary, or `query_failed`.
+export auto collect_plan_activity(db::connection& conn, std::int64_t plan_id) -> std::expected<plan_activity, agent_error>;
+
+/// @brief Does a `sessions` row with this id exist?
+/// @param conn An open connection.
+/// @param session_id The row id to probe.
+/// @return `true` when present, or `query_failed`.
+export auto session_exists(db::connection& conn, std::int64_t session_id) -> std::expected<bool, agent_error>;
+
+/// @brief One node of the `agent_actions.parent_action_id` forest.
+export struct forest_node {
+  std::int64_t                id{};             ///< The action's row id.
+  std::optional<std::int64_t> parent_action_id; ///< Parent, unset at a root.
+  std::int64_t                session_id{};     ///< The action's session.
+  std::optional<std::int64_t> claim_id;         ///< Linked claim, when any.
+  std::int64_t                depth{};          ///< 0 at a root.
+  /// @brief Whether this node has no later sibling — the `└──` vs `├──`
+  /// decision. Computed in a second pass over the flattened walk.
+  bool is_last_sibling = false;
+};
+
+/// @brief Walk the orchestrator -> sub-agent action forest.
+///
+/// Roots are `parent_action_id IS NULL`; children extend through a
+/// `WITH RECURSIVE` term. Rows come back ordered by `id asc`, which is the
+/// order `tree` renders and the order `is_last_sibling` is computed against.
+/// @param conn An open connection.
+/// @param root_session_id Scope to one session's roots; unset walks all.
+/// @return The flattened forest, or `query_failed`.
+export auto walk_action_forest(db::connection& conn, std::optional<std::int64_t> root_session_id)
+    -> std::expected<std::vector<forest_node>, agent_error>;
 
 } // namespace planar::engine::runtime::agentactivity

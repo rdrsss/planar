@@ -860,3 +860,428 @@ TEST_CASE("a worktree id passes through opaquely while no worktrees table exists
   REQUIRE(held.has_value());
   REQUIRE(held->worktree_id == 4242);
 }
+
+// ===========================================================================
+// Read paths (task 6120)
+//
+// The display half. Every expectation below was first observed by running
+// `zig/zig-out/bin/planar-watch` against a seeded scratch database and
+// reading the bytes; these cases pin the ENGINE behaviour those bytes rest
+// on, so a regression is localized to the query rather than surfacing only
+// as a diff in a handler test.
+// ===========================================================================
+
+TEST_CASE("resolve_claim_scope reaches the slug through each entity kind", "[agentactivity][read]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+
+  // `seed` makes a GLOBAL plan, and a global scope has no slug at all —
+  // the degenerate case, and the one a naive implementation would render
+  // as the empty string rather than as `global`.
+  auto       args = basic_args(fx, task_id_at(conn, 0));
+  auto const held = aa::acquire_claim(conn, args);
+  REQUIRE(held.has_value());
+  auto const global_scope = aa::resolve_claim_scope(conn, *held);
+  CHECK(global_scope.kind == "global");
+  CHECK_FALSE(global_scope.slug.has_value());
+  CHECK(global_scope.label() == "global");
+
+  // An association-scoped task resolves through `associations.slug`, which
+  // is the case every real `planar-watch ps` row hits.
+  exec(conn, "insert into associations (slug, name, kind) values ('project:demo','project:demo','project')");
+  auto const assoc_id = scalar_int(conn, "select id from associations where slug = 'project:demo'");
+  exec(conn, std::format("insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+                         "values ('association', {}, {}, 'scoped', 'todo', 100)",
+                         assoc_id, fx.plan_id));
+  auto const scoped_task = scalar_int(conn, "select id from tasks where title = 'scoped'");
+  auto       scoped_args = basic_args(fx, scoped_task);
+  auto const scoped_held = aa::acquire_claim(conn, scoped_args);
+  REQUIRE(scoped_held.has_value());
+  auto const assoc_scope = aa::resolve_claim_scope(conn, *scoped_held);
+  CHECK(assoc_scope.kind == "association");
+  REQUIRE(assoc_scope.slug.has_value());
+  CHECK(*assoc_scope.slug == "project:demo");
+  CHECK(assoc_scope.label() == "project:demo");
+
+  // A claim whose ENTITY NO LONGER EXISTS degrades to `?` rather than
+  // failing. A viewer that refused to list a claim because its task had
+  // been deleted would be less useful than one that renders `scope:?`, and
+  // this is the path that keeps the whole render alive.
+  aa::claim orphan   = *scoped_held;
+  orphan.entity_id   = 999999;
+  auto const unknown = aa::resolve_claim_scope(conn, orphan);
+  CHECK(unknown.kind == "?");
+  CHECK_FALSE(unknown.slug.has_value());
+  CHECK(unknown.label() == "?");
+}
+
+TEST_CASE("list_claims' three arms partition the ledger the way --status promises", "[agentactivity][read]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 3);
+
+  auto       live_args = basic_args(fx, task_id_at(conn, 0));
+  auto const live      = aa::acquire_claim(conn, live_args);
+  REQUIRE(live.has_value());
+
+  // An EXPIRED-BUT-STILL-'active' claim. Minted through the negative-TTL
+  // door the module header documents, so the case is deterministic rather
+  // than resting on a sleep.
+  auto expired_args     = basic_args(fx, task_id_at(conn, 1));
+  expired_args.ttl_secs = -3600;
+  auto const expired    = aa::acquire_claim(conn, expired_args);
+  REQUIRE(expired.has_value());
+  REQUIRE(expired->status == aa::claim_status::active);
+
+  auto       released_args = basic_args(fx, task_id_at(conn, 2));
+  auto const released_in   = aa::acquire_claim(conn, released_args);
+  REQUIRE(released_in.has_value());
+  auto const released = aa::release_claim(conn, released_in->claim_token, aa::claim_status::released, "done", std::nullopt);
+  REQUIRE(released.has_value());
+
+  auto const active = aa::list_claims(conn, aa::claim_status_filter::active);
+  REQUIRE(active.has_value());
+  REQUIRE(active->size() == 1);
+  CHECK(active->front().claim_token == live->claim_token);
+
+  // The expired one lands in `stale` DESPITE its status column still
+  // reading 'active' — that conjunction is the whole point of the arm.
+  auto const stale = aa::list_claims(conn, aa::claim_status_filter::stale);
+  REQUIRE(stale.has_value());
+  REQUIRE(stale->size() == 1);
+  CHECK(stale->front().claim_token == expired->claim_token);
+  CHECK(stale->front().status == aa::claim_status::active);
+
+  auto const all = aa::list_claims(conn, aa::claim_status_filter::all);
+  REQUIRE(all.has_value());
+  CHECK(all->size() == 3);
+}
+
+TEST_CASE("ps's active list omits the lease predicate, so a stale claim appears twice", "[agentactivity][read]") {
+  // THE POINT OF THIS CASE is that `list_active_claims_sorted` and
+  // `list_claims(active)` disagree, on purpose. The reference binary's
+  // `ps` filters on the status column alone; `claims --status active` also
+  // requires a live lease. Anyone "harmonising" the two would change what
+  // `planar-watch ps --stale` shows without meaning to, and this fails
+  // when they do.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+
+  auto args          = basic_args(fx, task_id_at(conn, 0));
+  args.ttl_secs      = -3600;
+  auto const expired = aa::acquire_claim(conn, args);
+  REQUIRE(expired.has_value());
+
+  auto const ledger_active = aa::list_claims(conn, aa::claim_status_filter::active);
+  REQUIRE(ledger_active.has_value());
+  CHECK(ledger_active->empty());
+
+  auto const ps_active = aa::list_active_claims_sorted(conn, aa::ps_sort::heartbeat);
+  REQUIRE(ps_active.has_value());
+  CHECK(ps_active->size() == 1);
+
+  auto const stale = aa::list_stale_claims(conn);
+  REQUIRE(stale.has_value());
+  CHECK(stale->size() == 1);
+  // Same row, both buckets. That is what the operator sees under
+  // `ps --stale`.
+  CHECK(ps_active->front().claim_token == stale->front().claim_token);
+}
+
+TEST_CASE("the two ps sort orders really do differ", "[agentactivity][read]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 2);
+
+  auto const first = aa::acquire_claim(conn, basic_args(fx, task_id_at(conn, 0)));
+  REQUIRE(first.has_value());
+  auto const second = aa::acquire_claim(conn, basic_args(fx, task_id_at(conn, 1)));
+  REQUIRE(second.has_value());
+
+  // BOTH timestamps on BOTH rows are pinned, and the two orderings are set
+  // OPPOSITE to each other on purpose.
+  //
+  // The first version of this case backdated one heartbeat and left
+  // `claimed_at` to the clock. That FLAKED in ctest: two claims acquired
+  // inside the same millisecond share a `claimed_at` to the resolution
+  // SQLite stores, `order by claimed_at desc` is then not a total order,
+  // and the tiebreak is SQLite's to choose. It passed when run by hand and
+  // failed in the gate — the classic "passes for the wrong reason" shape,
+  // and the reason the pinning below is explicit rather than incidental.
+  exec(conn, std::format("update agent_work_claims set claimed_at = '2020-01-01T00:00:00.000Z', "
+                         "last_heartbeat_at = '2030-01-01T00:00:00.000Z' where id = {}",
+                         first->id));
+  exec(conn, std::format("update agent_work_claims set claimed_at = '2030-01-01T00:00:00.000Z', "
+                         "last_heartbeat_at = '2020-01-01T00:00:00.000Z' where id = {}",
+                         second->id));
+
+  auto const by_heartbeat = aa::list_active_claims_sorted(conn, aa::ps_sort::heartbeat);
+  REQUIRE(by_heartbeat.has_value());
+  REQUIRE(by_heartbeat->size() == 2);
+  CHECK(by_heartbeat->front().id == first->id);
+
+  auto const by_lease = aa::list_active_claims_sorted(conn, aa::ps_sort::lease);
+  REQUIRE(by_lease.has_value());
+  REQUIRE(by_lease->size() == 2);
+  CHECK(by_lease->front().id == second->id);
+}
+
+TEST_CASE("the status filter parses permissively and the sort order does not", "[agentactivity][read]") {
+  // The asymmetry is the reference binary's, and it is operator-visible:
+  // `claims --status nonsense` succeeds and lists ACTIVE claims, while
+  // `ps --sort-by nonsense` exits non-zero with a message naming the
+  // accepted values.
+  CHECK(aa::parse_claim_status_filter(std::nullopt) == aa::claim_status_filter::active);
+  CHECK(aa::parse_claim_status_filter(std::string_view{"stale"}) == aa::claim_status_filter::stale);
+  CHECK(aa::parse_claim_status_filter(std::string_view{"all"}) == aa::claim_status_filter::all);
+  CHECK(aa::parse_claim_status_filter(std::string_view{"nonsense"}) == aa::claim_status_filter::active);
+  CHECK(aa::parse_claim_status_filter(std::string_view{""}) == aa::claim_status_filter::active);
+
+  CHECK(aa::parse_ps_sort(std::nullopt) == aa::ps_sort::heartbeat);
+  CHECK(aa::parse_ps_sort(std::string_view{"heartbeat"}) == aa::ps_sort::heartbeat);
+  CHECK(aa::parse_ps_sort(std::string_view{"lease"}) == aa::ps_sort::lease);
+  CHECK_FALSE(aa::parse_ps_sort(std::string_view{"nonsense"}).has_value());
+}
+
+TEST_CASE("latest_action_for_claim takes the newest action, open or closed", "[agentactivity][read]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+  auto const      task = task_id_at(conn, 0);
+
+  auto const held = aa::acquire_claim(conn, basic_args(fx, task));
+  REQUIRE(held.has_value());
+
+  CHECK_FALSE(aa::latest_action_for_claim(conn, held->id)->has_value());
+
+  auto const first = aa::start_action(conn, aa::start_action_args{.session_id = fx.session_id,
+                                                                  .claim_id   = held->id,
+                                                                  .kind       = aa::action_kind::coder,
+                                                                  .entity     = aa::action_entity_kind::task,
+                                                                  .entity_id  = task,
+                                                                  .vendor     = "test"});
+  REQUIRE(first.has_value());
+  auto const closed = aa::end_action(conn, *first, aa::outcome::ok, "first summary");
+  REQUIRE(closed.has_value());
+
+  auto const second = aa::start_action(conn, aa::start_action_args{.session_id = fx.session_id,
+                                                                   .claim_id   = held->id,
+                                                                   .kind       = aa::action_kind::tool_call,
+                                                                   .entity     = aa::action_entity_kind::task,
+                                                                   .entity_id  = task,
+                                                                   .vendor     = "test"});
+  REQUIRE(second.has_value());
+
+  // The newest is the STILL-OPEN one. This is what separates this function
+  // from `latest_open_action_for_claim`, which would also return the second
+  // here but would have returned nothing before it existed.
+  auto const latest = aa::latest_action_for_claim(conn, held->id);
+  REQUIRE(latest.has_value());
+  REQUIRE(latest->has_value());
+  CHECK((*latest)->id == *second);
+  CHECK_FALSE((*latest)->summary.has_value());
+}
+
+TEST_CASE("the plan filter widens to task-on-plan and plan_step-on-plan claims", "[agentactivity][read]") {
+  // NAMED WITHOUT A LEADING `--`, deliberately. `catch_discover_tests`
+  // registers each case with ctest and selects it by passing its NAME as
+  // the filter argument, and Catch2's own CLI reads a leading `--` as an
+  // option: `Unrecognised token: --plan`, a FAILING ctest entry for a case
+  // that passes when the binary is run directly. Cost one gate run to find.
+  // The pre-fix behavior matched plan-DIRECT claims only, which silently
+  // dropped every task claim — i.e. every claim that actually occurs.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+  auto const      task = task_id_at(conn, 0);
+
+  exec(conn, std::format("insert into plan_steps (plan_id, ordinal, body) values ({}, 1, 'step')", fx.plan_id));
+  auto const step = scalar_int(conn, "select id from plan_steps where body = 'step'");
+
+  CHECK(aa::claim_belongs_to_plan(conn, aa::entity_kind::plan, fx.plan_id, fx.plan_id));
+  CHECK_FALSE(aa::claim_belongs_to_plan(conn, aa::entity_kind::plan, fx.plan_id + 1, fx.plan_id));
+  CHECK(aa::claim_belongs_to_plan(conn, aa::entity_kind::task, task, fx.plan_id));
+  CHECK_FALSE(aa::claim_belongs_to_plan(conn, aa::entity_kind::task, task, fx.plan_id + 1));
+  CHECK(aa::claim_belongs_to_plan(conn, aa::entity_kind::plan_step, step, fx.plan_id));
+
+  // A task that does not exist must not match ANY plan. The lookup uses -1
+  // as its miss sentinel, so a plan whose id happened to be -1 would be the
+  // only way this could go wrong — and plan ids start at 1.
+  CHECK_FALSE(aa::claim_belongs_to_plan(conn, aa::entity_kind::task, 999999, fx.plan_id));
+
+  // Actions carry four entity kinds beyond the claim's three, and NONE of
+  // them matches `--plan` because the schema has no link to traverse.
+  CHECK(aa::action_belongs_to_plan(conn, aa::action_entity_kind::task, task, fx.plan_id));
+  CHECK_FALSE(aa::action_belongs_to_plan(conn, aa::action_entity_kind::question, task, fx.plan_id));
+  CHECK_FALSE(aa::action_belongs_to_plan(conn, aa::action_entity_kind::artifact, task, fx.plan_id));
+  CHECK_FALSE(aa::action_belongs_to_plan(conn, aa::action_entity_kind::decision, task, fx.plan_id));
+  CHECK_FALSE(aa::action_belongs_to_plan(conn, aa::action_entity_kind::test_scenario, task, fx.plan_id));
+}
+
+TEST_CASE("collect_plan_activity counts only LIVE work and watermarks the rest", "[agentactivity][read]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 2);
+  auto const      task = task_id_at(conn, 0);
+
+  auto const idle = aa::collect_plan_activity(conn, fx.plan_id);
+  REQUIRE(idle.has_value());
+  CHECK(idle->active_claims == 0);
+  CHECK(idle->active_actions == 0);
+  CHECK_FALSE(idle->last_event_at.has_value());
+
+  auto const held = aa::acquire_claim(conn, basic_args(fx, task));
+  REQUIRE(held.has_value());
+  auto const opened = aa::start_action(conn, aa::start_action_args{.session_id = fx.session_id,
+                                                                   .claim_id   = held->id,
+                                                                   .kind       = aa::action_kind::coder,
+                                                                   .entity     = aa::action_entity_kind::task,
+                                                                   .entity_id  = task,
+                                                                   .vendor     = "test"});
+  REQUIRE(opened.has_value());
+
+  auto const live = aa::collect_plan_activity(conn, fx.plan_id);
+  REQUIRE(live.has_value());
+  CHECK(live->active_claims == 1);
+  CHECK(live->active_actions == 1);
+  REQUIRE(live->last_event_at.has_value());
+
+  // Closing the action drops `active_actions` but must NOT drop the
+  // watermark — `last_event_at` coalesces to `ended_at`, so it moves
+  // FORWARD. A summary that reported "no recent activity" for a plan whose
+  // work had just finished would be exactly backwards.
+  auto const closed = aa::end_action(conn, *opened, aa::outcome::ok, "done");
+  REQUIRE(closed.has_value());
+  auto const after = aa::collect_plan_activity(conn, fx.plan_id);
+  REQUIRE(after.has_value());
+  CHECK(after->active_actions == 0);
+  CHECK(after->active_claims == 1);
+  REQUIRE(after->last_event_at.has_value());
+  CHECK(*after->last_event_at >= *live->last_event_at);
+
+  // An EXPIRED lease stops counting as an active claim even though the
+  // status column still says 'active' — the same conjunction every other
+  // liveness predicate in this module spells out.
+  exec(conn, std::format("update agent_work_claims set lease_expires_at = '2020-01-01T00:00:00.000Z' where id = {}", held->id));
+  auto const expired = aa::collect_plan_activity(conn, fx.plan_id);
+  REQUIRE(expired.has_value());
+  CHECK(expired->active_claims == 0);
+}
+
+TEST_CASE("walk_action_forest returns pre-order depth and marks the last sibling", "[agentactivity][read]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+  auto const      task = task_id_at(conn, 0);
+
+  CHECK(aa::walk_action_forest(conn, std::nullopt)->empty());
+
+  auto const held = aa::acquire_claim(conn, basic_args(fx, task));
+  REQUIRE(held.has_value());
+  auto const make = [&](std::optional<std::int64_t> parent) {
+    auto const id = aa::start_action(conn, aa::start_action_args{.session_id       = fx.session_id,
+                                                                 .parent_action_id = parent,
+                                                                 .claim_id         = held->id,
+                                                                 .kind             = aa::action_kind::coder,
+                                                                 .entity           = aa::action_entity_kind::task,
+                                                                 .entity_id        = task,
+                                                                 .vendor           = "test"});
+    REQUIRE(id.has_value());
+    return *id;
+  };
+
+  auto const root  = make(std::nullopt);
+  auto const kid_a = make(root);
+  auto const kid_b = make(root);
+  auto const grand = make(kid_a);
+
+  auto const nodes = aa::walk_action_forest(conn, std::nullopt);
+  REQUIRE(nodes.has_value());
+  REQUIRE(nodes->size() == 4);
+
+  // Ordered by id, which is the order the renderer walks.
+  CHECK((*nodes)[0].id == root);
+  CHECK((*nodes)[0].depth == 0);
+  CHECK((*nodes)[1].id == kid_a);
+  CHECK((*nodes)[1].depth == 1);
+  CHECK((*nodes)[2].id == kid_b);
+  CHECK((*nodes)[2].depth == 1);
+  CHECK((*nodes)[3].id == grand);
+  CHECK((*nodes)[3].depth == 2);
+
+  // `is_last_sibling` decides between `└──` and `├──`, so getting it
+  // backwards is silently wrong output rather than a crash.
+  CHECK((*nodes)[0].is_last_sibling);       // the only root
+  CHECK_FALSE((*nodes)[1].is_last_sibling); // kid_b follows
+  CHECK((*nodes)[2].is_last_sibling);       // last child of root
+  CHECK((*nodes)[3].is_last_sibling);       // only child of kid_a
+
+  // `--root-session` scopes to one session's ROOTS. An unrelated session's
+  // subtree must vanish entirely, not merely lose its root.
+  exec(conn, "insert into sessions (vendor) values ('other')");
+  auto const other = scalar_int(conn, "select id from sessions where vendor = 'other'");
+  CHECK(aa::walk_action_forest(conn, other)->empty());
+  CHECK(aa::walk_action_forest(conn, fx.session_id)->size() == 4);
+
+  CHECK(aa::session_exists(conn, fx.session_id).value());
+  CHECK_FALSE(aa::session_exists(conn, 999999).value());
+}
+
+TEST_CASE("log's source queries are oldest-first and honour their limit", "[agentactivity][read]") {
+  // The ORDER is the contract here, and it is the OPPOSITE of the feed
+  // verbs': a timeline reads forwards, a listing reads newest-first. A
+  // copy-paste of `list_actions`' `desc` into these would reverse every
+  // `planar-watch log` an operator reads.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+  auto const      task = task_id_at(conn, 0);
+
+  auto const held = aa::acquire_claim(conn, basic_args(fx, task));
+  REQUIRE(held.has_value());
+  std::vector<std::int64_t> ids;
+  for (int i = 0; i < 3; ++i) {
+    auto const id = aa::start_action(conn, aa::start_action_args{.session_id = fx.session_id,
+                                                                 .claim_id   = held->id,
+                                                                 .kind       = aa::action_kind::coder,
+                                                                 .entity     = aa::action_entity_kind::task,
+                                                                 .entity_id  = task,
+                                                                 .vendor     = "test"});
+    REQUIRE(id.has_value());
+    ids.push_back(*id);
+  }
+
+  auto const by_entity = aa::list_actions_by_entity(conn, "task", task, 100);
+  REQUIRE(by_entity.has_value());
+  REQUIRE(by_entity->size() == 3);
+  CHECK(by_entity->front().id == ids.front());
+  CHECK(by_entity->back().id == ids.back());
+
+  // The cap takes the OLDEST N, because the sort runs before the limit.
+  auto const capped = aa::list_actions_by_entity(conn, "task", task, 1);
+  REQUIRE(capped.has_value());
+  REQUIRE(capped->size() == 1);
+  CHECK(capped->front().id == ids.front());
+
+  // The listing verb's order, for contrast — same rows, reversed.
+  auto const listing = aa::list_actions(conn, 100);
+  REQUIRE(listing.has_value());
+  REQUIRE(listing->size() == 3);
+  CHECK(listing->front().id == ids.back());
+
+  CHECK(aa::list_actions_by_session(conn, fx.session_id, 100)->size() == 3);
+  CHECK(aa::list_actions_by_claim_token(conn, held->claim_token, 100)->size() == 3);
+  CHECK(aa::list_claims_by_entity(conn, "task", task)->size() == 1);
+  CHECK(aa::list_claims_by_session(conn, fx.session_id)->size() == 1);
+  CHECK(aa::list_claims_by_token(conn, held->claim_token)->size() == 1);
+
+  // An UNRECOGNISED entity kind returns nothing rather than raising: the
+  // token is passed to SQL verbatim precisely so `log --entity
+  // nonsense:1` behaves like a filter that matched no rows, which is what
+  // the reference binary does.
+  CHECK(aa::list_actions_by_entity(conn, "nonsense", task, 100)->empty());
+  CHECK(aa::list_claims_by_entity(conn, "nonsense", task)->empty());
+  CHECK(aa::list_claims_by_token(conn, "deadbeef")->empty());
+}

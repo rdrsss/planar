@@ -49,25 +49,44 @@
 #               `planar.cliapp.completion` defers flag-VALUE completion — and no
 #               test claims it is.
 #
-# --- NOT landed: nine leaves, ONE bucket -----------------------------------
+#   ps          The six READ verbs task 6120 landed, all resting on
+#   claims      `planar.engine.runtime.agentactivity`'s read paths. This is
+#   actions     what finally gives the read-only handle a VERB CONSUMER:
+#   plans       before them, level 2 above was proved only at the context
+#   log         level, by a unit test that opened the handle and executed an
+#   tree        `insert` through it. `handlers.t.cpp`'s read-only case now
+#               runs a real verb end to end against a seeded database, in
+#               both directions — the SELECT returns the seeded rows AND a
+#               write through the same handle is refused — so "the handle
+#               the verbs actually use is the read-only one" is an
+#               observation rather than an inference.
 #
-# `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree` and `run` all read
-# through zig `engine.runtime.agentactivity` (store/types/json — 5,702 lines
-# across seven files), which this tree has never ported. That is the
-# identical blocker task 6106 found under `planar dashboard`: one bucket
-# gating nine leaves across two binaries, which makes it a milestone rather
-# than something to chip at.
+# --- NOT landed, named rather than dropped silently ------------------------
 #
-# `sync-events` is the near miss worth recording: its own query is over
-# `sync_events` joined to `external_links`, both reachable from the ported
-# `engine_external` bucket — but it reaches into `ps` for the shared
-# `generated_at` emitter and interval parsing, and its `--follow` arm needs
-# the SIGINT/poll loop `follow.zig` owns. Cheapest next read verb, not free.
+# `feed`, `run` and `sync-events`, three of the oracle's twelve verbs:
 #
-# Two consequences visible in output, stated rather than hidden: the ROOT
-# help page lists three verbs where the oracle lists twelve (not
-# oracle-comparable; leaf pages are), and a BARE invocation renders root help
-# where the oracle runs its default `feed` verb.
+#   feed          648 lines plus follow.zig's SIGINT loop. It is the DEFAULT
+#                 verb, so its absence is also why a bare `planar-watch`
+#                 renders root help here where the oracle streams the feed.
+#   run           `run list` / `run show`, over `workflow_runs` +
+#                 `context_records`. A different bucket entirely
+#                 (`engine_runs`), not agentactivity — it was gated by this
+#                 milestone only by association.
+#   sync-events   Its query is over `sync_events` joined to `external_links`,
+#                 both reachable from the ported `engine_external` bucket;
+#                 what it borrowed from `ps` — the `generated_at` emitter —
+#                 now exists at `handlers/format.cppm`. Cheapest next verb.
+#
+# `--follow` and `--interval` on every verb that declares them. The flags ARE
+# declared (catalog parity compares declared flag sets), and the handler
+# returns not_implemented (exit 64) rather than emitting one snapshot and
+# exiting 0. A silent single-shot would read as a working stream to any
+# script that pipes it. The arm needs a SIGINT handler and a poll/wake loop,
+# neither of which exists anywhere in this tree.
+#
+# One consequence still visible in output, stated rather than hidden: the
+# ROOT help page lists nine verbs where the oracle lists twelve. Leaf pages
+# are pinned; the root page is not oracle-comparable.
 
 planar_binary(planar_watch
   MAIN
@@ -77,20 +96,29 @@ planar_binary(planar_watch
     context.cppm
     handler.cppm
     tree.cppm
+    handlers/format.cppm
     handlers/version.cppm
     handlers/schema.cppm
     handlers/completion.cppm
+    handlers/ledger.cppm
+    handlers/live.cppm
     dispatch.cppm
   SOURCES
     context.cpp
     tree.cpp
+    handlers/format.cpp
     handlers/version.cpp
     handlers/schema.cpp
     handlers/completion.cpp
+    handlers/ledger.cpp
+    handlers/live.cpp
     dispatch.cpp
   DEPENDS
     cliapp
-    db)
+    db
+    json_text
+    engine_planning
+    engine_runtime)
 
 # Each binary builds its own CLI::App tree directly (plan 996, task 6123),
 # so the CLI11 module target is linked per binary rather than laundered

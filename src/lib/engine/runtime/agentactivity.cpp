@@ -1425,4 +1425,500 @@ auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64
   return result;
 }
 
+// =========================================================================
+// Read paths — the display half (task 6120)
+// =========================================================================
+
+namespace {
+
+/// @brief Run `sql` (already composed onto `k_claim_columns`) and decode
+/// every row.
+/// @param conn The connection.
+/// @param sql The complete statement.
+/// @param bind Applies the statement's bound parameters; may be empty.
+/// @return The rows, or `query_failed`.
+auto collect_claims(db::connection& conn, std::string_view sql, const std::function<bool(db::statement&)>& bind)
+    -> std::expected<std::vector<claim>, agent_error> {
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  if (bind && !bind(*stmt)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  std::vector<claim> rows;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped != db::step_result::row) {
+      return rows;
+    }
+    auto row = read_claim_row(*stmt);
+    if (!row) {
+      return std::unexpected(row.error());
+    }
+    rows.push_back(std::move(*row));
+  }
+}
+
+/// @brief Run `sql` (already composed onto `k_action_columns`) and decode
+/// every row.
+/// @param conn The connection.
+/// @param sql The complete statement.
+/// @param bind Applies the statement's bound parameters; may be empty.
+/// @return The rows, or `query_failed`.
+auto collect_actions(db::connection& conn, std::string_view sql, const std::function<bool(db::statement&)>& bind)
+    -> std::expected<std::vector<action>, agent_error> {
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  if (bind && !bind(*stmt)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  std::vector<action> rows;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped != db::step_result::row) {
+      return rows;
+    }
+    auto row = read_action_row(*stmt);
+    if (!row) {
+      return std::unexpected(row.error());
+    }
+    rows.push_back(std::move(*row));
+  }
+}
+
+/// @brief The lease-liveness half of the `active` predicate, spelled once.
+auto lease_live() -> std::string {
+  return std::format("lease_expires_at >= {}", k_now);
+}
+
+/// @brief The `stale` predicate, spelled once: reconcile-marked OR expired.
+auto stale_predicate() -> std::string {
+  return std::format("status = 'stale'\n   or (status = 'active' and lease_expires_at < {})", k_now);
+}
+
+/// @brief Read a single integer out of a one-parameter query.
+/// @param conn The connection.
+/// @param sql The statement.
+/// @param param The value to bind at position 1.
+/// @return The value, or unset when the query failed or matched no row.
+auto int_query_1(db::connection& conn, std::string_view sql, std::int64_t param) -> std::optional<std::int64_t> {
+  auto stmt = conn.prepare(sql);
+  if (!stmt || !stmt->bind_int64(1, param)) {
+    return std::nullopt;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != db::step_result::row) {
+    return std::nullopt;
+  }
+  return stmt->column_int64(0);
+}
+
+/// @brief The `plan_id` a task rolls up to.
+///
+/// A missing task and a NULL `plan_id` both yield `-1`, zig's sentinel. A
+/// real plan id is always >= 1, so the sentinel can never collide with one.
+/// @param conn The connection.
+/// @param task_id The task's row id.
+/// @return The plan id, or `-1`.
+auto task_plan(db::connection& conn, std::int64_t task_id) -> std::int64_t {
+  return int_query_1(conn, "select coalesce(plan_id, -1) from tasks where id = ?", task_id).value_or(-1);
+}
+
+/// @brief The `plan_id` a plan_step rolls up to.
+/// @param conn The connection.
+/// @param step_id The step's row id.
+/// @return The plan id, or `-1`.
+auto plan_step_plan(db::connection& conn, std::int64_t step_id) -> std::int64_t {
+  return int_query_1(conn, "select plan_id from plan_steps where id = ?", step_id).value_or(-1);
+}
+
+/// @brief Mark each node that has no later sibling.
+///
+/// Port of zig's `annotateLastSibling`, INCLUDING its treatment of roots:
+/// two roots are siblings only when they share a `session_id`. That makes
+/// the last root of every session render with `└──`'s depth-0 equivalent
+/// (no prefix) rather than the forest as a whole having one last root. The
+/// walk is ordered by `id asc`, so "later" is "further along the vector".
+/// @param nodes The flattened walk, mutated in place.
+auto annotate_last_sibling(std::span<forest_node> nodes) -> void {
+  for (std::size_t i = nodes.size(); i > 0; --i) {
+    auto&      self        = nodes[i - 1];
+    bool       found_later = false;
+    auto const rest        = nodes.subspan(i);
+    for (auto const& later : rest) {
+      bool const same_parent = self.parent_action_id.has_value()
+                                   ? (later.parent_action_id.has_value() && *later.parent_action_id == *self.parent_action_id)
+                                   : (!later.parent_action_id.has_value() && later.session_id == self.session_id);
+      if (same_parent) {
+        found_later = true;
+        break;
+      }
+    }
+    self.is_last_sibling = !found_later;
+  }
+}
+
+} // namespace
+
+auto resolve_claim_scope(db::connection& conn, const claim& value) -> claim_scope_info {
+  // Not `constexpr`: the struct holds a `std::string`, so it is not a
+  // literal type. The default member initialisers ARE the degraded form.
+  claim_scope_info const k_unknown{};
+
+  std::string_view scope_sql;
+  switch (value.kind) {
+  case entity_kind::plan:
+    scope_sql = "select scope_kind, scope_id from plans where id = ?";
+    break;
+  case entity_kind::task:
+    scope_sql = "select scope_kind, scope_id from tasks where id = ?";
+    break;
+  case entity_kind::plan_step:
+    // plan_steps carry no scope columns of their own (00003_work_items);
+    // they inherit the parent plan's.
+    scope_sql = "select p.scope_kind, p.scope_id from plan_steps ps\n"
+                "  join plans p on ps.plan_id = p.id where ps.id = ?";
+    break;
+  }
+
+  auto stmt = conn.prepare(scope_sql);
+  if (!stmt || !stmt->bind_int64(1, value.entity_id)) {
+    return k_unknown;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != db::step_result::row) {
+    return k_unknown;
+  }
+
+  auto const  raw = stmt->column_text(0);
+  std::string kind;
+  if (raw == "global" || raw == "association" || raw == "repo") {
+    kind = raw;
+  } else {
+    kind = "?";
+  }
+  if (kind == "global") {
+    return claim_scope_info{.kind = "global", .slug = std::nullopt};
+  }
+  auto const scope_id = opt_int(*stmt, 1);
+  if (!scope_id.has_value()) {
+    return claim_scope_info{.kind = kind, .slug = std::nullopt};
+  }
+
+  std::string_view const slug_sql =
+      kind == "association" ? "select slug from associations where id = ?" : "select slug from projects where id = ?";
+  auto slug_stmt = conn.prepare(slug_sql);
+  if (!slug_stmt || !slug_stmt->bind_int64(1, *scope_id)) {
+    return claim_scope_info{.kind = kind, .slug = std::nullopt};
+  }
+  auto slug_stepped = slug_stmt->step();
+  if (!slug_stepped || *slug_stepped != db::step_result::row) {
+    return claim_scope_info{.kind = kind, .slug = std::nullopt};
+  }
+  return claim_scope_info{.kind = kind, .slug = slug_stmt->column_text(0)};
+}
+
+auto parse_claim_status_filter(std::optional<std::string_view> text) -> claim_status_filter {
+  if (!text.has_value()) {
+    return claim_status_filter::active;
+  }
+  if (*text == "stale") {
+    return claim_status_filter::stale;
+  }
+  if (*text == "all") {
+    return claim_status_filter::all;
+  }
+  // "active" AND every unrecognised value. See the declaration's note.
+  return claim_status_filter::active;
+}
+
+auto list_claims(db::connection& conn, claim_status_filter filter) -> std::expected<std::vector<claim>, agent_error> {
+  std::string sql{k_claim_columns};
+  switch (filter) {
+  case claim_status_filter::active:
+    sql += std::format("where status = 'active'\n  and {}\norder by claimed_at desc", lease_live());
+    break;
+  case claim_status_filter::stale:
+    sql += std::format("where {}\norder by claimed_at desc", stale_predicate());
+    break;
+  case claim_status_filter::all:
+    sql += "order by claimed_at desc";
+    break;
+  }
+  return collect_claims(conn, sql, {});
+}
+
+auto parse_ps_sort(std::optional<std::string_view> text) -> std::optional<ps_sort> {
+  if (!text.has_value() || *text == "heartbeat") {
+    return ps_sort::heartbeat;
+  }
+  if (*text == "lease") {
+    return ps_sort::lease;
+  }
+  return std::nullopt;
+}
+
+auto list_active_claims_sorted(db::connection& conn, ps_sort sort) -> std::expected<std::vector<claim>, agent_error> {
+  std::string sql{k_claim_columns};
+  // No lease predicate. See the declaration — this is zig's behavior and
+  // the reason a stale claim can appear twice under `ps --stale`.
+  sql += "where status = 'active'\n";
+  if (sort == ps_sort::heartbeat) {
+    // SQLite has no NULLS LAST; the CASE expression is the idiom.
+    sql += "order by case when last_heartbeat_at is null then 1 else 0 end asc,\n"
+           "         last_heartbeat_at desc, id desc";
+  } else {
+    sql += "order by claimed_at desc";
+  }
+  return collect_claims(conn, sql, {});
+}
+
+auto list_stale_claims(db::connection& conn) -> std::expected<std::vector<claim>, agent_error> {
+  return collect_claims(conn, std::string{k_claim_columns} + std::format("where {}\norder by claimed_at desc", stale_predicate()),
+                        {});
+}
+
+auto list_actions(db::connection& conn, std::int64_t limit) -> std::expected<std::vector<action>, agent_error> {
+  return collect_actions(conn, std::string{k_action_columns} + std::format("order by started_at desc, id desc\nlimit {}", limit),
+                         {});
+}
+
+auto latest_action_for_claim(db::connection& conn, std::int64_t claim_id) -> std::expected<std::optional<action>, agent_error> {
+  auto rows =
+      collect_actions(conn, std::string{k_action_columns} + "where claim_id = ?\norder by started_at desc, id desc\nlimit 1",
+                      [claim_id](db::statement& stmt) { return stmt.bind_int64(1, claim_id).has_value(); });
+  if (!rows) {
+    return std::unexpected(rows.error());
+  }
+  if (rows->empty()) {
+    return std::optional<action>{};
+  }
+  return std::optional<action>{std::move(rows->front())};
+}
+
+auto list_actions_by_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t limit)
+    -> std::expected<std::vector<action>, agent_error> {
+  return collect_actions(
+      conn,
+      std::string{k_action_columns} +
+          std::format("where entity_kind = ? and entity_id = ?\norder by started_at asc, id asc\nlimit {}", limit),
+      [entity_kind, entity_id](db::statement& stmt) {
+        return stmt.bind_text(1, nn(entity_kind)).has_value() && stmt.bind_int64(2, entity_id).has_value();
+      });
+}
+
+auto list_actions_by_session(db::connection& conn, std::int64_t session_id, std::int64_t limit)
+    -> std::expected<std::vector<action>, agent_error> {
+  return collect_actions(
+      conn, std::string{k_action_columns} + std::format("where session_id = ?\norder by started_at asc, id asc\nlimit {}", limit),
+      [session_id](db::statement& stmt) { return stmt.bind_int64(1, session_id).has_value(); });
+}
+
+auto list_actions_by_claim_token(db::connection& conn, std::string_view token, std::int64_t limit)
+    -> std::expected<std::vector<action>, agent_error> {
+  return collect_actions(conn,
+                         std::string{k_action_columns} +
+                             std::format("where claim_id = (select id from agent_work_claims where claim_token = ?)\n"
+                                         "order by started_at asc, id asc\nlimit {}",
+                                         limit),
+                         [token](db::statement& stmt) { return stmt.bind_text(1, nn(token)).has_value(); });
+}
+
+auto list_claims_by_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id)
+    -> std::expected<std::vector<claim>, agent_error> {
+  return collect_claims(conn, std::string{k_claim_columns} + "where entity_kind = ? and entity_id = ?\norder by claimed_at asc",
+                        [entity_kind, entity_id](db::statement& stmt) {
+                          return stmt.bind_text(1, nn(entity_kind)).has_value() && stmt.bind_int64(2, entity_id).has_value();
+                        });
+}
+
+auto list_claims_by_session(db::connection& conn, std::int64_t session_id) -> std::expected<std::vector<claim>, agent_error> {
+  return collect_claims(conn, std::string{k_claim_columns} + "where session_id = ?\norder by claimed_at asc",
+                        [session_id](db::statement& stmt) { return stmt.bind_int64(1, session_id).has_value(); });
+}
+
+auto list_claims_by_token(db::connection& conn, std::string_view token) -> std::expected<std::vector<claim>, agent_error> {
+  return collect_claims(conn, std::string{k_claim_columns} + "where claim_token = ?",
+                        [token](db::statement& stmt) { return stmt.bind_text(1, nn(token)).has_value(); });
+}
+
+auto claim_belongs_to_plan(db::connection& conn, entity_kind kind, std::int64_t entity_id, std::int64_t plan_id) -> bool {
+  switch (kind) {
+  case entity_kind::plan:
+    return entity_id == plan_id;
+  case entity_kind::task:
+    return task_plan(conn, entity_id) == plan_id;
+  case entity_kind::plan_step:
+    return plan_step_plan(conn, entity_id) == plan_id;
+  }
+  return false;
+}
+
+auto action_belongs_to_plan(db::connection& conn, action_entity_kind kind, std::int64_t entity_id, std::int64_t plan_id) -> bool {
+  switch (kind) {
+  case action_entity_kind::plan:
+    return entity_id == plan_id;
+  case action_entity_kind::task:
+    return task_plan(conn, entity_id) == plan_id;
+  case action_entity_kind::plan_step:
+    return plan_step_plan(conn, entity_id) == plan_id;
+  case action_entity_kind::question:
+  case action_entity_kind::test_scenario:
+  case action_entity_kind::artifact:
+  case action_entity_kind::decision:
+    // No plan link in the schema. See the declaration.
+    return false;
+  }
+  return false;
+}
+
+auto collect_plan_activity(db::connection& conn, std::int64_t plan_id) -> std::expected<plan_activity, agent_error> {
+  plan_activity result;
+
+  {
+    auto stmt = conn.prepare(std::format("select count(*) from agent_work_claims c\n"
+                                         "where c.status = 'active'\n"
+                                         "  and c.{}\n"
+                                         "  and (\n"
+                                         "    (c.entity_kind = 'plan' and c.entity_id = ?)\n"
+                                         "    or (c.entity_kind = 'task' and exists (\n"
+                                         "         select 1 from tasks t where t.id = c.entity_id and t.plan_id = ?))\n"
+                                         "  )",
+                                         lease_live()));
+    if (!stmt || !stmt->bind_int64(1, plan_id) || !stmt->bind_int64(2, plan_id)) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped == db::step_result::row) {
+      result.active_claims = stmt->column_int64(0);
+    }
+  }
+
+  {
+    auto stmt = conn.prepare("select count(*) from agent_actions a\n"
+                             "where a.ended_at is null\n"
+                             "  and (\n"
+                             "    (a.entity_kind = 'plan' and a.entity_id = ?)\n"
+                             "    or (a.entity_kind = 'task' and exists (\n"
+                             "         select 1 from tasks t where t.id = a.entity_id and t.plan_id = ?))\n"
+                             "  )");
+    if (!stmt || !stmt->bind_int64(1, plan_id) || !stmt->bind_int64(2, plan_id)) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped == db::step_result::row) {
+      result.active_actions = stmt->column_int64(0);
+    }
+  }
+
+  {
+    // `max(a, b, c)` with several arguments is SQLite's SCALAR max, not the
+    // aggregate; the outer `max(event_at)` over the union IS the aggregate.
+    // Both spellings appear here deliberately and are zig's.
+    auto stmt = conn.prepare("select max(event_at) from (\n"
+                             "  select max(claimed_at, last_heartbeat_at, coalesce(released_at, claimed_at)) as event_at\n"
+                             "  from agent_work_claims c\n"
+                             "  where (c.entity_kind = 'plan' and c.entity_id = ?)\n"
+                             "     or (c.entity_kind = 'task' and exists (\n"
+                             "         select 1 from tasks t where t.id = c.entity_id and t.plan_id = ?))\n"
+                             "  union all\n"
+                             "  select coalesce(ended_at, started_at) as event_at\n"
+                             "  from agent_actions a\n"
+                             "  where (a.entity_kind = 'plan' and a.entity_id = ?)\n"
+                             "     or (a.entity_kind = 'task' and exists (\n"
+                             "         select 1 from tasks t where t.id = a.entity_id and t.plan_id = ?))\n"
+                             ")");
+    if (!stmt) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    for (int i = 1; i <= 4; ++i) {
+      if (!stmt->bind_int64(i, plan_id)) {
+        return std::unexpected(agent_error::query_failed);
+      }
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped == db::step_result::row) {
+      result.last_event_at = opt_text(*stmt, 0);
+    }
+  }
+
+  return result;
+}
+
+auto session_exists(db::connection& conn, std::int64_t session_id) -> std::expected<bool, agent_error> {
+  auto stmt = conn.prepare("select 1 from sessions where id = ? limit 1");
+  if (!stmt || !stmt->bind_int64(1, session_id)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  return *stepped == db::step_result::row;
+}
+
+auto walk_action_forest(db::connection& conn, std::optional<std::int64_t> root_session_id)
+    -> std::expected<std::vector<forest_node>, agent_error> {
+  std::string const anchor_filter =
+      root_session_id.has_value() ? "where parent_action_id is null and session_id = ?" : "where parent_action_id is null";
+  auto const sql = std::format("with recursive tree(action_id, parent_action_id, session_id, claim_id, depth) as (\n"
+                               "  select id, parent_action_id, session_id, claim_id, 0\n"
+                               "  from agent_actions\n"
+                               "  {}\n"
+                               "  union all\n"
+                               "  select a.id, a.parent_action_id, a.session_id, a.claim_id, t.depth + 1\n"
+                               "  from agent_actions a\n"
+                               "  join tree t on a.parent_action_id = t.action_id\n"
+                               ")\n"
+                               "select action_id, parent_action_id, session_id, claim_id, depth\n"
+                               "from tree\n"
+                               "order by action_id asc",
+                               anchor_filter);
+
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  if (root_session_id.has_value() && !stmt->bind_int64(1, *root_session_id)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+
+  std::vector<forest_node> nodes;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped != db::step_result::row) {
+      break;
+    }
+    nodes.push_back(forest_node{.id               = stmt->column_int64(0),
+                                .parent_action_id = opt_int(*stmt, 1),
+                                .session_id       = stmt->column_int64(2),
+                                .claim_id         = opt_int(*stmt, 3),
+                                .depth            = stmt->column_int64(4),
+                                .is_last_sibling  = false});
+  }
+  annotate_last_sibling(nodes);
+  return nodes;
+}
+
 } // namespace planar::engine::runtime::agentactivity

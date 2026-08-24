@@ -52,6 +52,8 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.db.migrate;
+import planar.engine.runtime.agentactivity;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.dispatch;
 import planar.cmd.planar_watch.tree;
@@ -108,6 +110,90 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   auto const         table = planar::cmd::watch::handlers(*tree);
   int const          code  = planar::cmd::watch::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+}
+
+/// @brief Count the newline-terminated lines in a payload.
+/// @param text The payload.
+/// @return The line count.
+auto count_lines(std::string_view text) -> std::size_t {
+  return static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
+}
+
+/// @brief Run one statement on a WRITABLE connection, failing the test if
+/// it does not succeed.
+/// @param conn The connection.
+/// @param sql The statement.
+auto exec(planar::db::connection& conn, std::string_view sql) -> void {
+  auto ok = conn.execute(sql);
+  REQUIRE(ok.has_value());
+}
+
+/// @brief Create and populate the fixture's database through a WRITABLE
+/// connection.
+///
+/// The seed goes in through `planar.db` and
+/// `planar.engine.runtime.agentactivity` rather than through the binary
+/// under test, and that is not incidental: `planar-watch` CANNOT create
+/// this state, which is the property the whole file exists to check. A
+/// fixture the subject could have built itself would prove nothing.
+///
+/// Two claims on two tasks under one association-scoped plan, on two
+/// different vendors so the filter cases have something to discriminate.
+/// @param fx The fixture whose `db_path` to populate.
+auto seed_database(const fixture& fx) -> void {
+  namespace aa = planar::engine::runtime::agentactivity;
+
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto applied = planar::db::apply_all(*conn);
+  REQUIRE(applied.has_value());
+
+  exec(*conn, "insert into associations (slug, name, kind) values ('project:seed','project:seed','project')");
+  exec(*conn, "insert into sessions (vendor) values ('seedvendor')");
+  exec(*conn, "insert into plans (scope_kind, scope_id, title, slug, status) "
+              "values ('association', 1, 'Seed plan', 'seed-plan', 'active')");
+  exec(*conn, "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+              "values ('association', 1, 1, 'First', 'todo', 100)");
+  exec(*conn, "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+              "values ('association', 1, 1, 'Second', 'todo', 101)");
+
+  auto const first = aa::acquire_claim(
+      *conn, aa::acquire_args{.session_id = 1, .kind = aa::entity_kind::task, .entity_id = 1, .vendor = "seedvendor"});
+  REQUIRE(first.has_value());
+  auto const second = aa::acquire_claim(
+      *conn, aa::acquire_args{.session_id = 1, .kind = aa::entity_kind::task, .entity_id = 2, .vendor = "othervendor"});
+  REQUIRE(second.has_value());
+}
+
+/// @brief Create a MIGRATED but otherwise empty database.
+///
+/// Distinct from "no database at all", which `context.t.cpp` covers: this
+/// is the state a viewer sees right after `planar init`, and it is where
+/// the empty-result sentinels (`(no action chains)`, `claims: 0`) live.
+/// @param fx The fixture whose `db_path` to create.
+auto seed_empty_database(const fixture& fx) -> void {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto applied = planar::db::apply_all(*conn);
+  REQUIRE(applied.has_value());
+}
+
+/// @brief The token of the claim `seed_database` created first.
+///
+/// Read back rather than remembered, because the token is minted in SQL
+/// and a test that hardcoded one would be asserting against its own
+/// fiction.
+/// @param fx The seeded fixture.
+/// @return The claim token.
+auto seeded_claim_token(const fixture& fx) -> std::string {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select claim_token from agent_work_claims where vendor = 'seedvendor'");
+  REQUIRE(stmt.has_value());
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+  REQUIRE(*stepped == planar::db::step_result::row);
+  return stmt->column_text(0);
 }
 
 } // namespace
@@ -241,4 +327,368 @@ TEST_CASE("planar-watch help leads with the read-only prose block", "[cmd][watch
   auto const bare = dispatch(fx, {});
   CHECK(bare.code == 0);
   CHECK(bare.out == got.out);
+}
+
+// ===========================================================================
+// The six read verbs (task 6120)
+//
+// ORACLE PROVENANCE, as above. Every expected string below was first
+// observed by running `zig/zig-out/bin/planar-watch` against a scratch
+// database seeded through `zig/zig-out/bin/planar` and
+// `zig/zig-out/bin/planar-agent`, and the C++ binary was diffed against it
+// over 100 invocations across two fixtures (a minimal one and one carrying
+// an expired lease, a terminal claim with a failure category, a
+// three-generation action forest, a NULL role, a global-scope entity, a
+// long worktree path and three activity summaries straddling the 80-byte
+// truncation boundary). What is pinned HERE is the subset a unit test can
+// state precisely without the oracle present.
+//
+// ## Break-probes run against these cases
+//
+//   - Swapped `context::ensure_db`'s `open_read_only` for `open` -> `the
+//     read-only handle is exercised END TO END by a real verb` FAILS on
+//     the write-refusal half while the read half still passes. That
+//     ordering is the whole design: the read runs FIRST, so a failure on
+//     the write half cannot be explained by a dead handle. Restored ->
+//     green.
+//   - Re-added the `claim_matches` filter to `ps`'s ungrouped text arm ->
+//     `ps ignores --vendor in the ungrouped text arm` FAILS. Restored ->
+//     green. (That probe is the inverse of the usual one: the MUTANT is
+//     the reasonable-looking code, and the test exists to keep the
+//     oracle's quirk from being tidied away.)
+//   - Moved `claims`' row count below the filter -> `the row count is
+//     printed BEFORE the filter runs` FAILS. Restored -> green.
+//   - Changed `--follow`'s refusal from `not_implemented` to a silent
+//     success -> `--follow is refused loudly, not answered with a single
+//     snapshot` FAILS. Restored -> green.
+//   - Dropped the `entity_scope` field from `claims --json` -> `claims
+//     --json carries entity_scope; log --json does not` FAILS on the
+//     first half; dropping it from `log`'s lean shape instead fails the
+//     second. Restored -> green.
+
+TEST_CASE("planar-watch: the read-only handle is exercised END TO END by a real verb", "[cmd][watch][handlers][readonly]") {
+  // WHAT THIS PROVES, precisely: the handle a READ VERB actually used to
+  // answer an invocation is the write-refusing one. Before task 6120 the
+  // read-only property was proved only in `context.t.cpp`, against a handle
+  // no verb consumed — every read verb was unported. The gap that left is
+  // not hypothetical: a handler could have opened its own connection with
+  // `db::connection::open`, and every context-level test would still have
+  // passed.
+  //
+  // The ORDER below is load-bearing and is the shape commit 2dba671
+  // established:
+  //
+  //   1. run a real verb and require it RETURNED THE SEEDED DATA, so
+  //      everything after this point is known to be talking to a live,
+  //      populated database rather than a dead handle;
+  //   2. reach for the SAME cached handle the verb used and attempt a real
+  //      `insert` AND a real `create table` — both must be refused. Two
+  //      statements, because SQLite's read-only refusal covers DML and DDL
+  //      by different internal paths;
+  //   3. re-count the rows through an INDEPENDENT writable connection, so
+  //      "the write was refused" is confirmed by the database's contents
+  //      and not only by the driver's return value;
+  //   4. check `is_read_only()` LAST, so the LABEL can never stand in for
+  //      the BEHAVIOUR. A port that returned `true` from a hardcoded flag
+  //      would still fail steps 2 and 3.
+  auto const fx = make_fixture("roexec");
+  seed_database(fx);
+
+  std::vector<std::string> argv{"planar-watch", "claims", "--json"};
+  std::ostringstream       out;
+  std::ostringstream       err;
+  context                  ctx{std::move(argv), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto const               tree  = planar::cmd::watch::root_app();
+  auto const               table = planar::cmd::watch::handlers(*tree);
+  int const                code  = planar::cmd::watch::run(ctx, *tree, table);
+
+  // --- 1. a LIVE READ ------------------------------------------------------
+  REQUIRE(code == 0);
+  REQUIRE(err.str().empty());
+  REQUIRE(ctx.db_opened());
+  auto const rendered = out.str();
+  REQUIRE(rendered.contains("\"claim_token\":\"" + seeded_claim_token(fx) + "\""));
+  REQUIRE(rendered.contains("\"vendor\":\"seedvendor\""));
+
+  // --- 2. the SAME handle refuses to write ---------------------------------
+  auto handle = ctx.ensure_db();
+  REQUIRE(handle.has_value());
+  auto const insert_result = (*handle)->execute("insert into sessions (vendor) values ('smuggled')");
+  CHECK_FALSE(insert_result.has_value());
+  auto const ddl_result = (*handle)->execute("create table smuggled (id integer primary key)");
+  CHECK_FALSE(ddl_result.has_value());
+
+  // --- 3. the DATABASE agrees ----------------------------------------------
+  {
+    auto writable = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(writable.has_value());
+    auto stmt = writable->prepare("select count(*) from sessions where vendor = 'smuggled'");
+    REQUIRE(stmt.has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    CHECK(stmt->column_int64(0) == 0);
+
+    auto tables = writable->prepare("select count(*) from sqlite_master where name = 'smuggled'");
+    REQUIRE(tables.has_value());
+    auto table_step = tables->step();
+    REQUIRE(table_step.has_value());
+    REQUIRE(*table_step == planar::db::step_result::row);
+    CHECK(tables->column_int64(0) == 0);
+  }
+
+  // --- 4. and only now, the label ------------------------------------------
+  CHECK((*handle)->is_read_only());
+}
+
+TEST_CASE("planar-watch: every read verb answers from the same cached read-only handle", "[cmd][watch][handlers][readonly]") {
+  // The companion to the case above, over the whole verb set: no handler
+  // may open its own connection. Proved by IDENTITY — the pointer the
+  // handler consumed is the pointer the context caches — which is stronger
+  // than "it also worked", because a handler that opened a second
+  // WRITABLE connection would produce identical output.
+  for (auto const& argv :
+       std::vector<std::vector<std::string>>{{"ps"}, {"claims"}, {"actions"}, {"plans"}, {"tree"}, {"log", "--task", "1"}}) {
+    auto const fx = make_fixture("rohandle");
+    seed_database(fx);
+
+    std::vector<std::string> full{"planar-watch"};
+    full.insert(full.end(), argv.begin(), argv.end());
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{std::move(full), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto const         tree  = planar::cmd::watch::root_app();
+    auto const         table = planar::cmd::watch::handlers(*tree);
+
+    INFO("verb: " << argv.front());
+    CHECK(planar::cmd::watch::run(ctx, *tree, table) == 0);
+    CHECK(err.str().empty());
+    REQUIRE(ctx.db_opened());
+    auto handle = ctx.ensure_db();
+    REQUIRE(handle.has_value());
+    CHECK((*handle)->is_read_only());
+    CHECK_FALSE((*handle)->execute("insert into sessions (vendor) values ('x')").has_value());
+  }
+}
+
+TEST_CASE("planar-watch: the row count is printed BEFORE the filter runs", "[cmd][watch][handlers]") {
+  // A reference-binary quirk, reproduced under D2 and pinned so a later
+  // reader does not "correct" it into a silent divergence: the text header
+  // comes off the row vector's size and the `--vendor` / `--plan`
+  // predicates are applied in the emit loop below it. So `claims: 2` can
+  // sit above one line.
+  auto const fx = make_fixture("countfilter");
+  seed_database(fx);
+
+  auto const all = dispatch(fx, {"claims"});
+  REQUIRE(all.code == 0);
+  CHECK(all.out.starts_with("claims: 2\n"));
+  CHECK(count_lines(all.out) == 3);
+
+  auto const filtered = dispatch(fx, {"claims", "--vendor", "seedvendor"});
+  REQUIRE(filtered.code == 0);
+  // The COUNT does not move…
+  CHECK(filtered.out.starts_with("claims: 2\n"));
+  // …but a row is gone.
+  CHECK(count_lines(filtered.out) == 2);
+  CHECK(filtered.out.contains("seedvendor"));
+  CHECK_FALSE(filtered.out.contains("othervendor"));
+}
+
+TEST_CASE("planar-watch ps ignores --vendor in the ungrouped text arm", "[cmd][watch][handlers]") {
+  // THE MUTANT IS THE REASONABLE CODE. `zig/src/cmd/planar-watch/handlers/
+  // ps.zig`'s `emitText` is the one emitter of its four that takes no
+  // `args` parameter, so `claimMatches` is unreachable from it and
+  // `ps --vendor X` prints every active claim. Found by differential
+  // testing, not by reading; confirmed on the reference binary. The JSON
+  // and `--group-by` arms DO filter, which is what makes this pin
+  // meaningful rather than "the filter is unimplemented".
+  auto const fx = make_fixture("psfilter");
+  seed_database(fx);
+
+  auto const text = dispatch(fx, {"ps", "--vendor", "seedvendor"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.starts_with("active: 2\n"));
+  CHECK(text.out.contains("othervendor"));
+
+  // Same flag, JSON arm: filtered.
+  auto const json = dispatch(fx, {"ps", "--vendor", "seedvendor", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.contains("\"vendor\":\"seedvendor\""));
+  CHECK_FALSE(json.out.contains("\"vendor\":\"othervendor\""));
+
+  // Same flag, grouped text arm: filtered.
+  auto const grouped = dispatch(fx, {"ps", "--vendor", "seedvendor", "--group-by", "vendor"});
+  REQUIRE(grouped.code == 0);
+  CHECK(grouped.out.starts_with("[group: seedvendor]\n"));
+  CHECK_FALSE(grouped.out.contains("othervendor"));
+}
+
+TEST_CASE("planar-watch: --follow is refused loudly, not answered with a single snapshot", "[cmd][watch][handlers][exitcode]") {
+  // The streaming arm needs a SIGINT handler and a poll/wake loop, neither
+  // of which exists in this tree. Emitting one snapshot and exiting 0 would
+  // look like a working stream to any script that pipes it — the failure
+  // would surface as "the stream ended immediately", which is
+  // indistinguishable from an idle database. Exit 64 is unambiguous.
+  auto const fx = make_fixture("follow");
+  seed_database(fx);
+
+  for (auto const& verb : {"ps", "claims", "actions", "plans", "tree"}) {
+    auto const got = dispatch(fx, {verb, "--follow"});
+    INFO("verb: " << verb);
+    CHECK(got.code == 64);
+    CHECK(got.out.empty());
+    CHECK(got.err == std::format("error: {}: --follow is not implemented in this build\n", verb));
+  }
+
+  // `log` declares no `--follow` at all, matching the oracle — so the flag
+  // is a PARSE error there, not a handler refusal, and lands on this
+  // binary's exit 1.
+  auto const on_log = dispatch(fx, {"log", "--task", "1", "--follow"});
+  CHECK(on_log.code == 1);
+  CHECK(on_log.err == "error: ExtrasError\n");
+}
+
+TEST_CASE("planar-watch log requires exactly one filter and says how many it got", "[cmd][watch][handlers][exitcode]") {
+  auto const fx = make_fixture("logfilters");
+  seed_database(fx);
+
+  auto const none = dispatch(fx, {"log"});
+  CHECK(none.code == 2);
+  CHECK(none.err == "error: log: exactly one of --task / --plan / --entity / --session / --claim required (got 0)\n");
+
+  auto const two = dispatch(fx, {"log", "--task", "1", "--plan", "1"});
+  CHECK(two.code == 2);
+  CHECK(two.err == "error: log: exactly one of --task / --plan / --entity / --session / --claim required (got 2)\n");
+
+  // A malformed `--entity` names the OFFENDING VALUE, where `actions`
+  // reports only the error tag. That asymmetry is the reference binary's:
+  // `log` raises per-cause with its own message, `actions` funnels every
+  // emit failure through one `"actions: {errorName}"` site.
+  auto const no_colon = dispatch(fx, {"log", "--entity", "nocolon"});
+  CHECK(no_colon.code == 2);
+  CHECK(no_colon.err == "error: log: --entity expects kind:id (got 'nocolon')\n");
+
+  auto const bad_id = dispatch(fx, {"log", "--entity", "task:abc"});
+  CHECK(bad_id.code == 2);
+  CHECK(bad_id.err == "error: log: --entity id is not an integer ('task:abc')\n");
+
+  auto const actions_bad = dispatch(fx, {"actions", "--entity", "nocolon"});
+  CHECK(actions_bad.code == 2);
+  CHECK(actions_bad.err == "error: actions: InvalidInput\n");
+}
+
+TEST_CASE("planar-watch ps rejects a bad --sort-by / --group-by with exit 1, not 2", "[cmd][watch][handlers][exitcode]") {
+  // Note the code: these are exit 1 where `log`'s and `actions`' bad input
+  // above is exit 2. Both are handler-level refusals of a flag VALUE, so
+  // nothing about the shape of the failure explains the difference — it is
+  // the reference binary's mapping, verified per-verb rather than inferred
+  // from one of them.
+  auto const fx = make_fixture("psvalues");
+  seed_database(fx);
+
+  auto const sort = dispatch(fx, {"ps", "--sort-by", "bogus"});
+  CHECK(sort.code == 1);
+  CHECK(sort.err == "error: ps: --sort-by: accepted values are 'heartbeat' (default) or 'lease'\n");
+
+  auto const group = dispatch(fx, {"ps", "--group-by", "bogus"});
+  CHECK(group.code == 1);
+  CHECK(group.err == "error: ps: --group-by: accepted values are 'role', 'scope', or 'vendor'\n");
+
+  // `claims --status` is the counterpart that does NOT refuse: an
+  // unrecognised value falls back to `active` and exits 0.
+  auto const status = dispatch(fx, {"claims", "--status", "bogus"});
+  CHECK(status.code == 0);
+  CHECK(status.err.empty());
+  CHECK(status.out.starts_with("claims: 2\n"));
+}
+
+TEST_CASE("planar-watch tree validates --root-session before walking", "[cmd][watch][handlers][exitcode]") {
+  auto const fx = make_fixture("treesession");
+  seed_database(fx);
+
+  auto const zero = dispatch(fx, {"tree", "--root-session", "0"});
+  CHECK(zero.code == 1);
+  CHECK(zero.err == "error: tree: --root-session: must be a positive integer\n");
+
+  auto const missing = dispatch(fx, {"tree", "--root-session", "9999"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: tree: --root-session 9999: session not found\n");
+
+  // The empty-forest sentinel is a LINE, not zero bytes — a consumer that
+  // tested for empty output would read "no chains" as "command produced
+  // nothing".
+  auto const empty_fx = make_fixture("treeempty");
+  seed_empty_database(empty_fx);
+  auto const empty = dispatch(empty_fx, {"tree"});
+  CHECK(empty.code == 0);
+  CHECK(empty.out == "(no action chains)\n");
+}
+
+TEST_CASE("planar-watch claims --json carries entity_scope; log --json does not", "[cmd][watch][handlers]") {
+  // Two surfaces, one claim row shape, and the difference is deliberate:
+  // `ps` and `claims` answer "what is running and where does it live", so
+  // they carry the entity's storage scope per row. A `log` entry is already
+  // scoped by the `entity` header above it, and `planar-agent`'s payloads
+  // pin the lean shape byte-for-byte — emitting the field unconditionally
+  // would change bytes those tests already hold.
+  auto const fx = make_fixture("scopeshape");
+  seed_database(fx);
+
+  auto const claims = dispatch(fx, {"claims", "--json"});
+  REQUIRE(claims.code == 0);
+  CHECK(claims.out.contains("\"entity_scope\":{\"kind\":\"association\",\"slug\":\"project:seed\"}"));
+  // `claims` does NOT carry `latest_action`; only `ps` does.
+  CHECK_FALSE(claims.out.contains("\"latest_action\""));
+
+  auto const ps = dispatch(fx, {"ps", "--json"});
+  REQUIRE(ps.code == 0);
+  CHECK(ps.out.contains("\"entity_scope\":{\"kind\":\"association\",\"slug\":\"project:seed\"}"));
+  CHECK(ps.out.contains("\"latest_action\":null"));
+
+  auto const log = dispatch(fx, {"log", "--task", "1", "--json"});
+  REQUIRE(log.code == 0);
+  CHECK(log.out.contains("\"claim\":{"));
+  CHECK_FALSE(log.out.contains("\"entity_scope\""));
+  CHECK_FALSE(log.out.contains("\"latest_action\""));
+}
+
+TEST_CASE("planar-watch: every read verb's JSON arm is exactly one line", "[cmd][watch][handlers]") {
+  // The terminator contract, checked at the surface: each of these
+  // renderers returns a COMPLETE payload including its trailing newline and
+  // the handler writes it verbatim. A double terminator or a missing one is
+  // invisible in a `contains` assertion and breaks a line-oriented
+  // consumer.
+  auto const fx = make_fixture("terminator");
+  seed_database(fx);
+
+  for (auto const& argv : std::vector<std::vector<std::string>>{{"ps", "--json"},
+                                                                {"claims", "--json"},
+                                                                {"actions", "--json"},
+                                                                {"plans", "--json"},
+                                                                {"log", "--task", "1", "--json"},
+                                                                {"ps", "--group-by", "role", "--json"}}) {
+    auto const got = dispatch(fx, argv);
+    INFO("argv: " << argv.front());
+    REQUIRE(got.code == 0);
+    REQUIRE(got.out.ends_with("\n"));
+    CHECK(got.out.find('\n') == got.out.size() - 1);
+  }
+}
+
+TEST_CASE("planar-watch schema now catalogs the nine ported verbs and no others", "[cmd][watch][handlers]") {
+  auto const fx  = make_fixture("schema9");
+  auto const got = dispatch(fx, {"schema"});
+  REQUIRE(got.code == 0);
+  CHECK_FALSE(got.db_open);
+  for (auto const* verb : {"ps", "claims", "actions", "plans", "log", "tree", "version", "completion", "schema"}) {
+    INFO("verb: " << verb);
+    CHECK(got.out.contains(std::format("\"planar-watch {}\"", verb)));
+  }
+  // A catalog that named an unported verb would be worse than no catalog:
+  // tools/cli_usage_lint.zig validates authored surfaces against it.
+  for (auto const* verb : {"feed", "run", "sync-events"}) {
+    INFO("unported verb: " << verb);
+    CHECK_FALSE(got.out.contains(std::format("\"planar-watch {}\"", verb)));
+  }
 }

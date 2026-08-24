@@ -11,6 +11,8 @@ import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
 import planar.cmd.planar_watch.handlers.completion;
+import planar.cmd.planar_watch.handlers.ledger;
+import planar.cmd.planar_watch.handlers.live;
 import planar.cmd.planar_watch.handlers.schema;
 import planar.cmd.planar_watch.handlers.version;
 
@@ -46,6 +48,15 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
 
 auto handlers(const CLI::App& root) -> handler_table {
   handler_table table;
+  // The six read verbs task 6120 landed. They take no `root`, unlike
+  // `schema` and `completion` below, because they describe DATA rather than
+  // the tree.
+  table.emplace("ps", handlers::ps);
+  table.emplace("claims", handlers::claims);
+  table.emplace("actions", handlers::actions);
+  table.emplace("plans", handlers::plans);
+  table.emplace("log", handlers::log);
+  table.emplace("tree", handlers::tree);
   table.emplace("version", handlers::version);
   table.emplace("schema", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return handlers::schema(ctx, args, root);

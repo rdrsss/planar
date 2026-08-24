@@ -97,9 +97,26 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   // header.
   auto opened = db::connection::open_read_only(_db_path.string());
   if (!opened) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::generic_failure,
-                        std::format("failed to open database {}: {}", _db_path.string(), opened.error().message_)));
+    // `OpenFailed` — the oracle's error TAG, and nothing else.
+    //
+    // TASK 6120 CHANGED THIS LINE, and the reason is worth recording. It
+    // used to render `failed to open database <path>: <sqlite message>`,
+    // which is strictly more informative. It was also UNREACHABLE: until
+    // the six read verbs landed, no leaf in this binary opened a database
+    // at all, so no test and no operator ever saw either string. The
+    // moment `planar-watch ps` existed, the differential against
+    // `zig/zig-out/bin/planar-watch` reported it on the first run:
+    //
+    //     $ planar-watch ps          # against a path with no database
+    //     stderr: error: OpenFailed
+    //     exit:   1
+    //
+    // Matched (D2) rather than kept. This is the FIRST thing an operator
+    // sees when they point the viewer somewhere wrong, and a script
+    // greps it. The path detail is a real loss; the operator can still
+    // read the path out of `$PLANAR_DB`, and diverging on the very first
+    // stderr line of the very first verb would have been the worse trade.
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "OpenFailed"));
   }
   _db.emplace(std::move(*opened));
 

@@ -75,11 +75,26 @@ TEST_CASE("planar-watch's registered verb set is exactly the ported subset", "[c
   auto const names = all_node_names(*root);
 
   // The oracle registers twelve: feed, ps, claims, actions, plans, log,
-  // tree, run, sync-events, version, completion, schema. Nine of them are
-  // blocked on ONE unported bucket (engine.runtime.agentactivity) and
-  // sync-events on that bucket's shared helpers — see tree.cppm. So this
-  // asserts the three that ARE ported and nothing else.
-  CHECK(names == std::set<std::string, std::less<>>{"completion", "schema", "version"});
+  // tree, run, sync-events, version, completion, schema. Task 6120 landed
+  // the six read verbs that rest on `engine.runtime.agentactivity`; `feed`,
+  // `run` and `sync-events` remain unported — see CMakeLists.txt for what
+  // each still needs. So this asserts the nine that ARE ported, and nothing
+  // else.
+  //
+  // THE EXACT-SET FORM IS LOAD-BEARING, not a stylistic choice. A
+  // `contains` check would let a write verb in; equality means adding ANY
+  // node to this binary's tree — including an innocent-looking one — has to
+  // come through this line, which is a deliberate stop for a binary whose
+  // whole contract is what it cannot do.
+  //
+  // Note `plans` and `tree` sit one character from `plan` and one word from
+  // planar's own `tree` verb, and NEITHER is forbidden: `forbidden_verbs`
+  // lists `plan` (the planning-entity verb), and membership is tested by
+  // whole-name equality, not by prefix. `planar-watch plans` LISTS plans;
+  // `planar plan` mutates them. The test above would fail on `plan` and
+  // passes on `plans`, which is the distinction actually intended.
+  CHECK(names ==
+        std::set<std::string, std::less<>>{"actions", "claims", "completion", "log", "plans", "ps", "schema", "tree", "version"});
 }
 
 TEST_CASE("planar-watch's root advertises the read-only invariant to operators", "[cmd][watch][capability]") {
