@@ -12,6 +12,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.surface;
+import planar.cmd.planar.worktree_gate;
 import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.assoc;
 import planar.cmd.planar.handlers.capture;
@@ -176,6 +177,14 @@ auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> s
 }
 
 auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
+  // The worktree gate fires BEFORE the parser, which is the oracle's
+  // ordering and is deliberate: a planning verb run from a worktree must
+  // exit 8 even when its arguments also fail to parse. See
+  // `planar.cmd.planar.worktree_gate`'s header.
+  if (auto const refused = worktree_gate::check(ctx, root)) {
+    return *refused;
+  }
+
   auto const argv = cliapp::hoist_subcommands(root, ctx.argv());
   // CLI11's vector overload consumes argv[1..] in REVERSE order and never
   // sees argv[0] (see CLI::App::parse_char_t, which builds exactly this).

@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.git;
 import planar.engine.runtime.capture;
 import planar.engine.runtime.session;
 import planar.engine.runtime.snapshot;
@@ -128,12 +129,36 @@ auto capture_session(context& ctx, const cliapp::parsed_args& args) -> handler_r
   }
   auto const model = flag_string(args, "--model");
 
-  auto opened = cap::open_session(**conn, cap::open_args{
-                                              .vendor            = tuple.vendor,
-                                              .vendor_session_id = as_view(tuple.vendor_session_id),
-                                              .task_id           = flag_int(args, "--task"),
-                                              .model             = as_view(model),
-                                          });
+  // The git start-context (task 6128). `cap::open_session`'s third
+  // argument defaults to `std::nullopt`, and taking that default is what
+  // made this verb SILENTLY write `repo_root = NULL` and
+  // `head_sha_at_start = NULL` on every invocation while exiting 0 with
+  // byte-identical stdout to the oracle. Downstream, `capture commits` is
+  // documented as a no-op whenever either column is NULL, so those sessions
+  // looked captured and reconciled to nothing.
+  //
+  // Best-effort by design, exactly as zig's `openSession` is: `probe`
+  // reports unset outside a repository or before the first commit, and the
+  // stamping step is then skipped rather than half-applied. That is NOT the
+  // silent degradation above — the oracle behaves identically in the same
+  // situation, and the row it writes there is the same row this writes.
+  auto const                            git_probe = git::probe_start_context(ctx.cwd());
+  std::optional<cap::start_git_context> git_ctx;
+  if (git_probe.has_value()) {
+    git_ctx = cap::start_git_context{
+        .repo_root         = git_probe->repo_root,
+        .head_sha_at_start = git_probe->head_sha_at_start,
+    };
+  }
+
+  auto opened = cap::open_session(**conn,
+                                  cap::open_args{
+                                      .vendor            = tuple.vendor,
+                                      .vendor_session_id = as_view(tuple.vendor_session_id),
+                                      .task_id           = flag_int(args, "--task"),
+                                      .model             = as_view(model),
+                                  },
+                                  git_ctx);
   if (!opened) {
     if (opened.error() == cap::capture_error::task_conflict) {
       return std::unexpected(error_from_body(kind_t::generic_failure, "session already bound to a different task"));

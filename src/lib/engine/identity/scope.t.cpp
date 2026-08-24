@@ -22,7 +22,9 @@ using planar::engine::identity::check_scope_guard;
 using planar::engine::identity::derive_from_cwd;
 using planar::engine::identity::derive_reason;
 using planar::engine::identity::guard_write;
+using planar::engine::identity::meta_write_resolution;
 using planar::engine::identity::resolve_for_write;
+using planar::engine::identity::resolve_meta_workspace_write_scope;
 using planar::engine::identity::resolve_slug;
 using planar::engine::identity::scope_error;
 using planar::engine::identity::scope_kind;
@@ -89,6 +91,26 @@ auto link_project_association(planar::db::connection& conn, std::int64_t project
   auto stmt = conn.prepare("insert into project_associations (project_id, association_id, source) values (?, ?, 'user')");
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->bind_int64(1, project_id).has_value());
+  REQUIRE(stmt->bind_int64(2, assoc_id).has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+}
+
+/// @brief Mark an association as a meta workspace rooted at `root_path`.
+///
+/// This is the registration `workspace init` will perform. It is done here
+/// with raw SQL for the reason task 6134 exists: no verb in this tree can
+/// create one yet, which is precisely why the missing arm was UNREACHABLE
+/// and therefore invisible. Seeding the row directly makes it reachable now
+/// instead of the day the verb lands.
+/// @param conn The connection.
+/// @param assoc_id The association row.
+/// @param root_path The workspace root.
+auto mark_meta_workspace(planar::db::connection& conn, std::int64_t assoc_id, std::string_view root_path) -> void {
+  auto stmt = conn.prepare("update associations set config_json = json_object('workspace_shape', 'meta-repo', "
+                           "'root_path', ?) where id = ?");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, root_path).has_value());
   REQUIRE(stmt->bind_int64(2, assoc_id).has_value());
   auto step = stmt->step();
   REQUIRE(step.has_value());
@@ -319,6 +341,153 @@ TEST_CASE("resolve_for_write: explicit --scope global is threaded through as the
   CHECK(res->from_explicit_flag);
   REQUIRE(res->scope.has_value());
   CHECK(*res->scope == "global");
+}
+
+// --- resolve_for_write: the meta-workspace arm (task 6134) --------------
+//
+// Zig's `resolveForWrite` calls `resolveMetaWorkspaceWriteScope` and can
+// REFUSE with "ambiguous meta workspace root". This port went straight to
+// `derive_from_cwd`, so the refusal simply did not exist. It was unreachable
+// while nothing could register a meta workspace — and would have become a
+// silent wrong answer the moment `workspace init` landed, which is the same
+// class as tasks 6128 and 6132. These cases seed the registration by hand so
+// the arm is reachable and pinned NOW.
+
+TEST_CASE("resolve_for_write: an ambiguous meta workspace root REFUSES and names both choices",
+          "[scope][resolve_for_write][6134]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  // The defining shape: the org's root_path and the root repo's root_path
+  // are the SAME directory. Standing there, the cwd names both scopes
+  // equally well and no default is safe.
+  const auto project_id = insert_project(conn, "meta-root-repo", "/work/meta");
+  const auto assoc_id   = insert_association(conn, "meta-org");
+  link_project_association(conn, project_id, assoc_id);
+  mark_meta_workspace(conn, assoc_id, "/work/meta");
+
+  auto res = resolve_for_write(conn, std::nullopt, "/work/meta");
+  REQUIRE_FALSE(res.has_value());
+  CHECK(res.error().code == scope_error::scope_mismatch);
+  // The refusal carries the two `--scope` values the operator may pick, in
+  // the oracle's spelling. Without them the caller would have to re-run the
+  // probe purely to render its own message.
+  REQUIRE(res.error().ambiguity.has_value());
+  CHECK(res.error().ambiguity->assoc_scope == "assoc:meta-org");
+  CHECK(res.error().ambiguity->repo_scope == "repo:meta-root-repo");
+}
+
+TEST_CASE("resolve_for_write: an explicit --scope settles the meta ambiguity without probing",
+          "[scope][resolve_for_write][6134]") {
+  // The oracle returns on the override BEFORE it probes, and that ordering
+  // is the whole remedy the refusal message points at: telling an operator
+  // to pass `--scope` would be useless if passing it still refused.
+  scratch_db_path scratch;
+  auto            conn       = open_migrated(scratch);
+  const auto      project_id = insert_project(conn, "meta-root-repo", "/work/meta");
+  const auto      assoc_id   = insert_association(conn, "meta-org");
+  link_project_association(conn, project_id, assoc_id);
+  mark_meta_workspace(conn, assoc_id, "/work/meta");
+
+  auto res = resolve_for_write(conn, "assoc:meta-org", "/work/meta");
+  REQUIRE(res.has_value());
+  CHECK(res->from_explicit_flag);
+  REQUIRE(res->scope.has_value());
+  CHECK(*res->scope == "assoc:meta-org");
+}
+
+TEST_CASE("resolve_for_write: BELOW a meta workspace root, the write lands on the member repo",
+          "[scope][resolve_for_write][6134]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  // Org rooted at /work/meta, with a member repo one level down. There is
+  // no ambiguity here — the cwd is under exactly one member — so the write
+  // resolves to that repo rather than to the org.
+  const auto org_project = insert_project(conn, "meta-root-repo", "/work/meta");
+  const auto member      = insert_project(conn, "member-a", "/work/meta/member-a");
+  const auto assoc_id    = insert_association(conn, "meta-org");
+  link_project_association(conn, org_project, assoc_id);
+  link_project_association(conn, member, assoc_id);
+  mark_meta_workspace(conn, assoc_id, "/work/meta");
+
+  auto res = resolve_for_write(conn, std::nullopt, "/work/meta/member-a/src");
+  REQUIRE(res.has_value());
+  CHECK_FALSE(res->from_explicit_flag);
+  REQUIRE(res->scope.has_value());
+  // `repo:` prefixed, NOT the association slug: a write inside a meta
+  // workspace must land on a concrete repository.
+  CHECK(*res->scope == "repo:member-a");
+}
+
+TEST_CASE("resolve_for_write: the member match is the LONGEST root, not the first", "[scope][resolve_for_write][6134]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  // A nested member inside another member. `order by length(root_path)
+  // desc` is what makes the inner one win; inserting the outer FIRST means
+  // a naive "first row that matches" implementation returns the wrong one.
+  const auto outer    = insert_project(conn, "outer", "/work/meta/outer");
+  const auto inner    = insert_project(conn, "inner", "/work/meta/outer/inner");
+  const auto assoc_id = insert_association(conn, "meta-org");
+  link_project_association(conn, outer, assoc_id);
+  link_project_association(conn, inner, assoc_id);
+  mark_meta_workspace(conn, assoc_id, "/work/meta");
+
+  auto res = resolve_for_write(conn, std::nullopt, "/work/meta/outer/inner/src");
+  REQUIRE(res.has_value());
+  REQUIRE(res->scope.has_value());
+  CHECK(*res->scope == "repo:inner");
+}
+
+TEST_CASE("resolve_for_write: a SIBLING path sharing a prefix is not inside the workspace", "[scope][resolve_for_write][6134]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  // `/work/meta-other` starts with `/work/meta` as a STRING but is a
+  // different directory. A plain prefix test would pull an unrelated
+  // repository into the workspace and silently rescope its writes.
+  const auto org_project = insert_project(conn, "meta-root-repo", "/work/meta");
+  const auto assoc_id    = insert_association(conn, "meta-org");
+  link_project_association(conn, org_project, assoc_id);
+  mark_meta_workspace(conn, assoc_id, "/work/meta");
+
+  const auto other_project = insert_project(conn, "other", "/work/meta-other");
+  const auto other_assoc   = insert_association(conn, "other-org");
+  link_project_association(conn, other_project, other_assoc);
+
+  auto res = resolve_for_write(conn, std::nullopt, "/work/meta-other/src");
+  REQUIRE(res.has_value());
+  REQUIRE(res->scope.has_value());
+  CHECK(*res->scope == "other-org");
+}
+
+TEST_CASE("resolve_for_write: an org WITHOUT the meta-repo shape is not a meta workspace", "[scope][resolve_for_write][6134]") {
+  // An ordinary `kind = 'org'` association with no `workspace_shape` must
+  // not trip the meta arm — otherwise every existing association in every
+  // database would start refusing writes at its own root.
+  scratch_db_path scratch;
+  auto            conn       = open_migrated(scratch);
+  const auto      project_id = insert_project(conn, "myrepo", "/work/myrepo");
+  const auto      assoc_id   = insert_association(conn, "myorg");
+  link_project_association(conn, project_id, assoc_id);
+
+  auto res = resolve_for_write(conn, std::nullopt, "/work/myrepo");
+  REQUIRE(res.has_value());
+  REQUIRE(res->scope.has_value());
+  CHECK(*res->scope == "myorg");
+}
+
+TEST_CASE("resolve_meta_workspace_write_scope: reports `none` when no meta workspace is registered",
+          "[scope][resolve_for_write][6134]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto probe = resolve_meta_workspace_write_scope(conn, "/anywhere");
+  REQUIRE(probe.has_value());
+  CHECK(probe->which == meta_write_resolution::arm::none);
+  CHECK_FALSE(probe->repo_scope.has_value());
+  CHECK_FALSE(probe->choices.has_value());
 }
 
 // --- check_scope_guard / guard_write: the cross-scope guard's refusal ---

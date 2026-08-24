@@ -18,15 +18,24 @@
 ///     type it is about, subject to being split out if/when a `policy`
 ///     bucket lands.
 ///
-/// `detectWorktree` — the Zig module's git-worktree-cwd classifier — is
-/// NOT ported here. The task brief pointed at it as "already ported by
-/// M1", but no such port exists anywhere under `src/` as of this task
-/// (verified: `grep -ril worktree src/lib` before this change matched only
-/// an unrelated CLI test fixture string). Worktree-aware cwd derivation is
-/// therefore left for a future task; `derive_from_cwd` below always
-/// resolves the literal `cwd` argument, with no worktree-to-parent-repo
-/// redirection. This is a documented residual gap, not a silent omission
-/// — see this task's coder report.
+/// `detectWorktree` — the Zig module's git-worktree-cwd classifier — LANDED
+/// at task 6137, but in `planar.git` (layer 1) rather than here. The Zig
+/// original keeps it in this file because its `deriveFromCwd` USES it, to
+/// redirect a worktree cwd to the parent repo for lookups. This port's
+/// `derive_from_cwd` does not do that redirection, so a copy here would
+/// have no caller inside the module and would only force `engine_identity`
+/// to carry a subprocess dependency it does not use. `planar.git` is where
+/// both actual consumers reach it from: the `cmd/planar` worktree gate,
+/// and (when the redirection is ported) this module.
+///
+/// The REDIRECTION itself is still a residual gap, narrower than before and
+/// named rather than silently dropped: `derive_from_cwd` below always
+/// resolves the literal `cwd` argument. For the orchestrator's own
+/// `.worktrees/<...>` convention this is invisible — the worktree lives
+/// UNDER the project root, so the ordinary longest-prefix match already
+/// finds the parent project. It is observable only for a linked worktree
+/// created outside the project root, where a read resolves to no project
+/// instead of the parent's scope.
 ///
 /// `resolve_for_write` models the CLI-side `--scope` override precedence
 /// (explicit flag wins outright; otherwise fall back to cwd derivation)
@@ -37,8 +46,15 @@
 /// `resolveForWrite` (workspace-root refusal, specificity ranking,
 /// membership-aware candidate sets — all `cmd/`-layer concerns explicitly
 /// out of scope for this task per the brief's CONSTRAINTS: "no cmd/ binary
-/// yet"). This module's `resolve_for_write` covers only the
-/// engine-layer-appropriate subset: explicit-flag-wins-over-cwd-derivation.
+/// yet"). This module's `resolve_for_write` covers
+/// explicit-flag-wins-over-cwd-derivation, plus — since task 6134 — the
+/// META-WORKSPACE arm (`resolve_meta_workspace_write_scope`), which the
+/// original port omitted entirely. That omission was unreachable while no
+/// meta workspace could be registered and would have become a silent wrong
+/// answer the moment `workspace init` landed: a cwd that should refuse as
+/// ambiguous would instead have resolved to whatever `derive_from_cwd`
+/// happened to return. The specificity ranking and membership-aware
+/// candidate sets remain cmd-layer read-path concerns and stay out.
 /// `guard_write`'s `no_scope_check` bypass parameter models the documented
 /// `--no-scope-check` escape hatch (docs/concepts.md §cross-scope-guard,
 /// "Escape hatch") as an engine-layer primitive; the current Zig binary
@@ -199,6 +215,67 @@ export auto check_scope_guard(std::optional<std::string_view> entity_scope, std:
 export auto guard_write(std::optional<std::string_view> entity_scope, std::optional<std::string_view> write_scope,
                         bool no_scope_check) -> std::expected<void, scope_error>;
 
+/// @brief The two scope refs an ambiguous meta-workspace root offers the
+/// operator. Mirrors zig's `MetaWriteResolution.ambiguous`
+/// (zig/src/cmd/planar/scope.zig:474).
+export struct meta_ambiguity {
+  std::string assoc_scope; ///< `assoc:\<org-slug\>` — cross-repo / meta-level work.
+  std::string repo_scope;  ///< `repo:\<project-slug\>` — root-repo work.
+};
+
+/// @brief What the meta-workspace probe concluded about a cwd. Mirrors
+/// zig's `MetaWriteResolution` union.
+export struct meta_write_resolution {
+  /// @brief Which arm this is.
+  enum class arm : std::uint8_t {
+    none,       ///< Not inside any meta workspace. Fall through to `derive_from_cwd`.
+    repo_scope, ///< Inside a meta workspace, BELOW its root: the member repo's scope.
+    ambiguous,  ///< Standing exactly ON the meta root, which is also the root repo's path.
+  };
+
+  arm                           which = arm::none; ///< The arm.
+  std::optional<std::string>    repo_scope;        ///< Set for `arm::repo_scope`.
+  std::optional<meta_ambiguity> choices;           ///< Set for `arm::ambiguous`.
+};
+
+/// @brief A `resolve_for_write` failure, carrying the ambiguity detail
+/// when there is one.
+///
+/// `scope_error` alone cannot express the meta-workspace refusal: that
+/// message NAMES the two `--scope` values the operator may choose between,
+/// and a caller handed a bare `scope_mismatch` would have to re-run the
+/// probe purely to recover values the resolution already computed. Modelled
+/// as a richer error rather than as a defaulted out-parameter deliberately
+/// — a defaulted argument a caller forgets to pass is exactly the failure
+/// shape task 6128 closed.
+export struct write_scope_failure {
+  scope_error                   code;      ///< The error bucket.
+  std::optional<meta_ambiguity> ambiguity; ///< Set only for the meta-ambiguous refusal.
+};
+
+/// @brief Probe `cwd` against the registered meta workspaces.
+///
+/// Port of zig's `resolveMetaWorkspaceWriteScope`
+/// (zig/src/cmd/planar/scope.zig:491). A meta workspace is an
+/// `associations` row with `kind = 'org'` whose `config_json` carries
+/// `workspace_shape = 'meta-repo'` and a `root_path`.
+///
+/// Two queries, in this order, and the order IS the rule:
+///
+///   1. Is `cwd` EXACTLY both the org's `root_path` and a member project's
+///      `root_path`? Then the cwd names two different scopes equally well
+///      and neither default is safe -> `ambiguous`.
+///   2. Otherwise, find the longest member project root that `cwd` sits
+///      under, where `cwd` is also under the org root -> that repo's scope.
+///
+/// Reads stay workspace-shaped; only WRITES are forced onto a concrete
+/// repo. See zig's `resolveForWrite` doc comment.
+/// @param conn An open, migrated database connection.
+/// @param cwd The absolute working-directory path.
+/// @return The conclusion, or `scope_error::query_failed` on a SQL failure.
+export auto resolve_meta_workspace_write_scope(db::connection& conn, std::string_view cwd)
+    -> std::expected<meta_write_resolution, scope_error>;
+
 /// @brief Resolve the operator's write scope, applying the `--scope`
 /// override precedence: an explicit flag always wins over cwd derivation
 /// (never overridden — the flag is the user's stated intent).
@@ -216,10 +293,12 @@ export auto guard_write(std::optional<std::string_view> entity_scope, std::optio
 /// @param conn An open, migrated database connection.
 /// @param scope_flag The `--scope` flag's raw value, when passed.
 /// @param cwd The absolute working-directory path to fall back to deriving from.
-/// @return The resolution, or `scope_error::invalid_path` when falling
-/// back to `derive_from_cwd` on an invalid `cwd`, or
-/// `scope_error::query_failed` on a SQL failure.
+/// @return The resolution, or a `write_scope_failure`:
+/// `scope_error::invalid_path` when falling back to `derive_from_cwd` on an
+/// invalid `cwd`, `scope_error::query_failed` on a SQL failure, or
+/// `scope_error::scope_mismatch` WITH `ambiguity` set when `cwd` is an
+/// ambiguous meta-workspace root (see `resolve_meta_workspace_write_scope`).
 export auto resolve_for_write(db::connection& conn, std::optional<std::string_view> scope_flag, std::string_view cwd)
-    -> std::expected<write_scope_resolution, scope_error>;
+    -> std::expected<write_scope_resolution, write_scope_failure>;
 
 } // namespace planar::engine::identity

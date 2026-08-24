@@ -17,17 +17,16 @@
 /// cannot get for itself, `context::ensure_db()` and `context::cwd()`, and
 /// maps the engine's `scope_error` onto this binary's exit-code buckets.
 ///
-/// OMISSION, named rather than silently dropped: the worktree gate.
-/// zig/src/cmd/planar/scope.zig probes for a git worktree on every resolve
-/// so zig/src/cmd/planar/worktree_gate.zig can refuse planning verbs run
-/// from inside one — and `--scope` deliberately does NOT override that
-/// refusal. `planar.engine.identity.scope`'s port carries no
-/// worktree-detection fields at all (its own header says so), so there is
-/// nothing here to forward; the gate needs a git-subprocess seam that does
-/// not exist anywhere in this tree yet, the same dependency that deferred
-/// `bench harvest`, `capture commits` and `workflow run`. Deferred WITH its
-/// dependency, not quietly skipped: a verb ported later that relies on the
-/// gate must not assume this module already enforces it.
+/// FORMER OMISSION, now CLOSED (task 6137): the worktree gate. This header
+/// used to record it as deferred WITH its git-subprocess dependency, and
+/// task 6135 turned that deferral from theoretical into observable —
+/// planning verbs succeeded from inside a worktree with a real row written,
+/// where the oracle refuses. The seam landed as `planar.git` and the gate
+/// as `planar.cmd.planar.worktree_gate`, wired into `dispatch::run` ahead
+/// of the parser. It does NOT run through this module: the gate consults
+/// cwd-derived state ONLY and `--scope` deliberately does not override it,
+/// so routing it through a function whose whole job is `--scope`
+/// precedence would have invited exactly the override the rule forbids.
 module;
 
 export module planar.cmd.planar.scope;
@@ -64,5 +63,19 @@ export auto resolve_write_scope(context& ctx, std::optional<std::string_view> sc
 /// @param verb The verb name to lead the message with, e.g. `"annotate add"`.
 /// @return The mapped failure.
 export auto map_scope_error(engine::identity::scope_error err, std::string_view verb) -> domain_error;
+
+/// @brief Map a `resolve_for_write` failure, which may carry the
+/// meta-workspace ambiguity detail, onto this binary's exit-code bucket.
+///
+/// The meta-workspace refusal (task 6134) does NOT use `map_scope_error`'s
+/// generic "resolving scope failed: \<Name\>" shape: its message names the
+/// two `--scope` values the operator may choose between, and the oracle
+/// renders it verbatim. Everything else delegates.
+/// @param failure The engine failure.
+/// @param cwd The cwd to interpolate into the ambiguity message.
+/// @param verb The verb name to lead a generic message with.
+/// @return The mapped failure.
+export auto map_scope_failure(const engine::identity::write_scope_failure& failure, std::string_view cwd, std::string_view verb)
+    -> domain_error;
 
 } // namespace planar::cmd

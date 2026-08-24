@@ -1,11 +1,6 @@
 /// @file init.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.init`.
 
-module;
-
-#include <cstdio>
-#include <sys/wait.h>
-
 module planar.cmd.planar.handlers.init;
 
 import std;
@@ -13,6 +8,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
+import planar.git;
 import planar.engine.config.init;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -21,46 +17,11 @@ import planar.cmd.planar.handler;
 namespace planar::cmd::handlers {
 
 namespace cfg = engine::config;
+namespace git = planar::git;
 
 namespace {
 
 using kind_t = domain_error_kind;
-
-/// @brief Single-quote one argument for the `/bin/sh` line below.
-///
-/// The one interpolated value is a filesystem path that can contain
-/// spaces, quotes and shell metacharacters, so nothing reaches the shell
-/// unquoted. Same helper, and the same reason for it, as
-/// `planar.cmd.planar_agent.locality`'s.
-/// @param value The argument.
-/// @return The single-quoted form.
-auto shell_quote(std::string_view value) -> std::string {
-  std::string quoted = "'";
-  for (char const c : value) {
-    if (c == '\'') {
-      quoted += "'\\''";
-    } else {
-      quoted += c;
-    }
-  }
-  quoted += "'";
-  return quoted;
-}
-
-/// @brief Trim ASCII whitespace from both ends, mirroring the oracle's
-/// `std.mem.trim(u8, out, " \t\r\n")`.
-/// @param text The text to trim.
-/// @return The trimmed view's contents; empty when `text` is all
-/// whitespace.
-auto trim_ascii(std::string_view text) -> std::string {
-  constexpr std::string_view k_space = " \t\r\n";
-  auto const                 begin   = text.find_first_not_of(k_space);
-  if (begin == std::string_view::npos) {
-    return {};
-  }
-  auto const end = text.find_last_not_of(k_space);
-  return std::string{text.substr(begin, end - begin + 1)};
-}
 
 /// @brief The `init_error` name the oracle's `@errorName` would print.
 /// @param err The engine failure.
@@ -78,35 +39,17 @@ auto error_name(cfg::init_error err) -> std::string_view {
 } // namespace
 
 auto probe_git_origin(const std::filesystem::path& dir) -> std::optional<std::string> {
-  // Stderr goes to /dev/null: the probe is best-effort and git's "not a
-  // git repository" complaint would otherwise land on the operator's
-  // terminal interleaved with the verb's real output. The oracle captures
-  // and discards it for the same reason.
-  std::string const line = "git -C " + shell_quote(dir.string()) + " remote get-url origin 2>/dev/null";
-
-  std::FILE* pipe = ::popen(line.c_str(), "r");
-  if (pipe == nullptr) {
-    return std::nullopt;
-  }
-  std::string           output;
-  std::array<char, 512> buffer{};
-  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-    output.append(buffer.data());
-  }
-  int const status = ::pclose(pipe);
-  // A non-zero exit, a signal, or a failure to reap are all "no answer" —
-  // the three arms of the oracle's own `switch (result.term)`.
-  if (status == -1 || WIFEXITED(status) == 0 || WEXITSTATUS(status) != 0) {
-    return std::nullopt;
-  }
-  auto trimmed = trim_ascii(output);
-  if (trimmed.empty()) {
-    // Empty output is NOT an empty remote: the oracle rejects it after the
-    // exit-status check, so `git` answering with a blank line stores NULL
-    // rather than the empty string.
-    return std::nullopt;
-  }
-  return trimmed;
+  // Delegates to the layer-1 seam (plan 996, task 6128). This function used
+  // to carry its own `popen` + `shell_quote` + trim + exit-status copy;
+  // `planar.git` now owns all four, and `planar-agent/locality.cpp` had a
+  // second copy of the same code. It stays exported under this name because
+  // it is the oracle-named probe `init` runs and `init.t.cpp` tests every
+  // one of its negative arms directly.
+  //
+  // Empty output is NOT an empty remote: the oracle rejects it after the
+  // exit-status check, so `git` answering with a blank line stores SQL NULL.
+  // `run_trimmed` is where that rule now lives.
+  return git::probe_origin_url(dir);
 }
 
 auto init(context& ctx, const cliapp::parsed_args& args) -> handler_result {

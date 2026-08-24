@@ -225,8 +225,75 @@ auto guard_write(std::optional<std::string_view> entity_scope, std::optional<std
   return check_scope_guard(entity_scope, write_scope);
 }
 
+auto resolve_meta_workspace_write_scope(db::connection& conn, std::string_view cwd)
+    -> std::expected<meta_write_resolution, scope_error> {
+  // Query 1: is `cwd` EXACTLY both the org root and a member project root?
+  // Then it names two scopes equally well and there is no safe default.
+  {
+    auto stmt = conn.prepare("select a.slug, p.slug "
+                             "from associations a "
+                             "join project_associations pa on pa.association_id = a.id "
+                             "join projects p on p.id = pa.project_id "
+                             "where a.kind = 'org' "
+                             "  and p.root_path = ? "
+                             "  and json_extract(a.config_json, '$.root_path') = ? "
+                             "  and json_extract(a.config_json, '$.workspace_shape') = 'meta-repo' "
+                             "order by a.id "
+                             "limit 1");
+    if (!stmt) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (!stmt->bind_text(1, cwd) || !stmt->bind_text(2, cwd)) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (*step == db::step_result::row) {
+      return meta_write_resolution{
+          .which   = meta_write_resolution::arm::ambiguous,
+          .choices = meta_ambiguity{.assoc_scope = std::format("assoc:{}", stmt->column_text(0)),
+                                    .repo_scope  = std::format("repo:{}", stmt->column_text(1))},
+      };
+    }
+  }
+
+  // Query 2: the longest member project root `cwd` sits under, where `cwd`
+  // is also under the org root. `order by length(p.root_path) desc` makes
+  // the first match the most specific one, so nested member repositories
+  // resolve to the inner one.
+  auto stmt = conn.prepare("select p.slug, p.root_path, json_extract(a.config_json, '$.root_path') "
+                           "from projects p "
+                           "join project_associations pa on pa.project_id = p.id "
+                           "join associations a on a.id = pa.association_id "
+                           "where a.kind = 'org' "
+                           "  and p.root_path is not null "
+                           "  and json_extract(a.config_json, '$.workspace_shape') = 'meta-repo' "
+                           "  and json_extract(a.config_json, '$.root_path') is not null "
+                           "order by length(p.root_path) desc, p.id");
+  if (!stmt) {
+    return std::unexpected(scope_error::query_failed);
+  }
+  while (true) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      return meta_write_resolution{.which = meta_write_resolution::arm::none};
+    }
+    auto const slug         = stmt->column_text(0);
+    auto const project_root = stmt->column_text(1);
+    auto const org_root     = stmt->column_text(2);
+    if (path_has_prefix(cwd, org_root) && path_has_prefix(cwd, project_root)) {
+      return meta_write_resolution{.which = meta_write_resolution::arm::repo_scope, .repo_scope = std::format("repo:{}", slug)};
+    }
+  }
+}
+
 auto resolve_for_write(db::connection& conn, std::optional<std::string_view> scope_flag, std::string_view cwd)
-    -> std::expected<write_scope_resolution, scope_error> {
+    -> std::expected<write_scope_resolution, write_scope_failure> {
   if (scope_flag.has_value()) {
     // Threaded through VERBATIM — no DB lookup, no validation. Mirrors
     // zig's resolveForWrite (zig/src/cmd/planar/scope.zig:84-93), which
@@ -241,9 +308,35 @@ auto resolve_for_write(db::connection& conn, std::optional<std::string_view> sco
         .scope = std::string(*scope_flag), .from_explicit_flag = true, .reason = derive_reason::no_project_match};
   }
 
+  // The meta-workspace arm (task 6134), which runs ONLY when no explicit
+  // `--scope` was passed — the flag above is the operator's stated intent
+  // and settles the ambiguity by itself, which is why the oracle returns
+  // before ever probing.
+  auto meta = resolve_meta_workspace_write_scope(conn, cwd);
+  if (!meta) {
+    return std::unexpected(write_scope_failure{.code = meta.error()});
+  }
+  switch (meta->which) {
+  case meta_write_resolution::arm::ambiguous:
+    // Refuse rather than pick. Standing exactly on a meta root, `cwd` names
+    // the org and the root repo equally well, and silently resolving to
+    // either is the silent-wrong-answer class this port has been closing.
+    return std::unexpected(write_scope_failure{.code = scope_error::scope_mismatch, .ambiguity = meta->choices});
+  case meta_write_resolution::arm::repo_scope:
+    // Writes inside a meta workspace land on the concrete member repo.
+    // `reason` is `project_single_association` to match zig, which reports
+    // the same reason for this arm.
+    return write_scope_resolution{.scope              = meta->repo_scope,
+                                  .from_explicit_flag = false,
+                                  .reason             = derive_reason::project_single_association,
+                                  .project_slug       = std::nullopt};
+  case meta_write_resolution::arm::none:
+    break;
+  }
+
   auto derived = derive_from_cwd(conn, cwd);
   if (!derived) {
-    return std::unexpected(derived.error());
+    return std::unexpected(write_scope_failure{.code = derived.error()});
   }
   return write_scope_resolution{
       .scope = derived->scope, .from_explicit_flag = false, .reason = derived->reason, .project_slug = derived->project_slug};

@@ -29,7 +29,8 @@
       "description": "Unoptimized build with debug info and warnings-as-errors",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "PLANAR_WARNINGS_AS_ERRORS": "ON"
+        "PLANAR_WARNINGS_AS_ERRORS": "ON",
+        "PLANAR_TEST_BINARY": "ON"
       }
     },
     {

@@ -1264,6 +1264,58 @@ auto seed_task(const fixture& fx, std::string_view title, std::optional<std::str
   return stmt->column_int64(0);
 }
 
+/// @brief The `sessions` row columns task 6128 is about, with NULL kept
+/// DISTINGUISHABLE from the empty string.
+///
+/// That distinction is the whole point. `capture session` exited 0 with the
+/// oracle's byte-identical stdout while writing SQL NULL into both columns;
+/// no exit code and no stdout diff can see it, and a reader that collapsed
+/// NULL to `""` could not either.
+struct session_git_row {
+  std::int64_t id                = 0;    ///< The session id.
+  bool         repo_root_is_null = true; ///< `repo_root IS NULL`.
+  bool         head_sha_is_null  = true; ///< `head_sha_at_start IS NULL`.
+  std::string  repo_root;                ///< The value, when not NULL.
+  std::string  head_sha_at_start;        ///< The value, when not NULL.
+};
+
+/// @brief Read the newest `sessions` row's git columns.
+/// @param fx The fixture.
+/// @return The row, or unset when there is none.
+auto read_session_git(const fixture& fx) -> std::optional<session_git_row> {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return std::nullopt;
+  }
+  auto stmt = conn->prepare("select id, repo_root, head_sha_at_start from sessions order by id desc limit 1");
+  if (!stmt) {
+    return std::nullopt;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != planar::db::step_result::row) {
+    return std::nullopt;
+  }
+  return session_git_row{
+      .id                = stmt->column_int64(0),
+      .repo_root_is_null = stmt->is_null(1),
+      .head_sha_is_null  = stmt->is_null(2),
+      .repo_root         = stmt->is_null(1) ? std::string{} : stmt->column_text(1),
+      .head_sha_at_start = stmt->is_null(2) ? std::string{} : stmt->column_text(2),
+  };
+}
+
+/// @brief Turn the fixture's `proj` directory into a repository with one
+/// commit.
+/// @param fx The fixture.
+/// @return True when every fixture step succeeded.
+auto seed_git_commit(const fixture& fx) -> bool {
+  auto const dir  = (fx.root / "proj").string();
+  auto const line = std::format("git -C '{0}' init -q -b main && git -C '{0}' config user.email planar@example.invalid && "
+                                "git -C '{0}' config user.name Planar && git -C '{0}' commit -q --allow-empty -m seed",
+                                dir);
+  return std::system(std::format("{} >/dev/null 2>&1", line).c_str()) == 0;
+}
+
 } // namespace
 
 TEST_CASE("capture session opens a session and reuses it on a second call", "[cmd][handlers][capture]") {
@@ -1279,6 +1331,112 @@ TEST_CASE("capture session opens a session and reuses it on a second call", "[cm
   auto const second = dispatch(fx, {"capture", "session"});
   CHECK(second.code == 0);
   CHECK(second.out == "session 1 opened (vendor: cli)\n");
+}
+
+TEST_CASE("capture session STAMPS repo_root and head_sha_at_start onto the row", "[cmd][handlers][capture][6128]") {
+  // THE 6128 GUARD, and the reason it asserts on COLUMNS.
+  //
+  // Before this change the handler called `open_session` with three fields
+  // and let the optional git context default to `nullopt`, so every session
+  // this binary ever created carried `repo_root = NULL` and
+  // `head_sha_at_start = NULL` — while exiting 0 with stdout byte-identical
+  // to the oracle's. The engine's own unit tests passed throughout, because
+  // they exercise the stamping arm the handler never took.
+  //
+  // `capture commits` is documented as a no-op whenever either column is
+  // NULL, so those sessions looked captured and reconciled to nothing. The
+  // ONLY observable that can tell the fixed handler from the broken one is
+  // the row, with NULL held distinct from "".
+  auto const fx = make_fixture("capgit");
+  if (!seed_git_commit(fx)) {
+    SKIP("git unavailable — the stamping arm cannot be exercised");
+  }
+
+  auto const got = dispatch(fx, {"capture", "session", "--json"});
+  CHECK(got.code == 0);
+  // Unchanged stdout is part of the contract, not incidental: the fix must
+  // not move the bytes the oracle emits.
+  CHECK(got.out == "{\"ok\":true,\"id\":1,\"vendor\":\"cli\"}\n");
+
+  auto const row = read_session_git(fx);
+  REQUIRE(row.has_value());
+  CHECK(row->id == 1);
+  // NOT NULL, and not the empty string either — a stamping path that wrote
+  // `""` would satisfy a naive `IS NOT NULL` check and still be wrong.
+  CHECK_FALSE(row->repo_root_is_null);
+  CHECK_FALSE(row->head_sha_is_null);
+  CHECK_FALSE(row->repo_root.empty());
+  CHECK(row->head_sha_at_start.size() == 40);
+  CHECK(row->head_sha_at_start.find_first_not_of("0123456789abcdef") == std::string::npos);
+  // The root recorded is THIS repository. Compared canonically because the
+  // fixture lives under a temp dir that is itself a symlink on macOS.
+  CHECK(std::filesystem::canonical(row->repo_root) == std::filesystem::canonical(fx.root / "proj"));
+}
+
+TEST_CASE("capture session leaves both git columns NULL outside a repository", "[cmd][handlers][capture][6128]") {
+  // The other half of the contract, and the reason the fix is a PROBE and
+  // not an unconditional write. The oracle skips the stamping step whenever
+  // its own probe fails, so outside a repository the correct row is exactly
+  // the row the BROKEN handler wrote. Asserting only the positive arm would
+  // let an implementation that fabricates a value pass.
+  auto const fx  = make_fixture("capnogit");
+  auto const got = dispatch(fx, {"capture", "session", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out == "{\"ok\":true,\"id\":1,\"vendor\":\"cli\"}\n");
+
+  auto const row = read_session_git(fx);
+  REQUIRE(row.has_value());
+  CHECK(row->repo_root_is_null);
+  CHECK(row->head_sha_is_null);
+}
+
+TEST_CASE("capture session leaves both git columns NULL before the first commit", "[cmd][handlers][capture][6128]") {
+  // A repository with no commits ANSWERS `rev-parse --show-toplevel` and
+  // REFUSES `rev-parse HEAD`. The two columns are written together or not
+  // at all: a half-stamped row (a root with no sha) is the degraded shape
+  // this task is about, arrived at from the other direction.
+  auto const fx  = make_fixture("capnocommit");
+  auto const dir = (fx.root / "proj").string();
+  if (std::system(std::format("git -C '{}' init -q -b main >/dev/null 2>&1", dir).c_str()) != 0) {
+    SKIP("git unavailable");
+  }
+
+  auto const got = dispatch(fx, {"capture", "session", "--json"});
+  CHECK(got.code == 0);
+
+  auto const row = read_session_git(fx);
+  REQUIRE(row.has_value());
+  CHECK(row->repo_root_is_null);
+  CHECK(row->head_sha_is_null);
+}
+
+TEST_CASE("capture session's stamp is write-once across a reuse", "[cmd][handlers][capture][6128]") {
+  // `capture session` is open-or-reuse, and the engine stamps through
+  // `set_start_git_context_if_unset`. The second call must not re-stamp:
+  // the whole point of `head_sha_at_start` is that it is the HEAD the
+  // session STARTED at, so a session that keeps re-reading HEAD as commits
+  // land would make the commit window collapse to nothing.
+  auto const fx = make_fixture("capgitreuse");
+  if (!seed_git_commit(fx)) {
+    SKIP("git unavailable");
+  }
+
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+  auto const first = read_session_git(fx);
+  REQUIRE(first.has_value());
+  REQUIRE_FALSE(first->head_sha_is_null);
+
+  // Move HEAD, then reuse the same vendor tuple.
+  auto const dir = (fx.root / "proj").string();
+  REQUIRE(std::system(std::format("git -C '{}' commit -q --allow-empty -m second >/dev/null 2>&1", dir).c_str()) == 0);
+  auto const second_call = dispatch(fx, {"capture", "session"});
+  CHECK(second_call.code == 0);
+  CHECK(second_call.out == "session 1 opened (vendor: cli)\n");
+
+  auto const second = read_session_git(fx);
+  REQUIRE(second.has_value());
+  CHECK(second->id == first->id);
+  CHECK(second->head_sha_at_start == first->head_sha_at_start);
 }
 
 TEST_CASE("capture session honours --vendor over the environment", "[cmd][handlers][capture]") {

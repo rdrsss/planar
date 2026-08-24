@@ -17,8 +17,6 @@
 ///     root help page, which is exactly what the Zig binary does when the
 ///     gate refuses (non-TTY, `TERM=dumb`, `PLANAR_NO_TUI`) — i.e. what
 ///     every scripted invocation already sees.
-///   - The worktree gate (`worktree_gate.check`), deferred with its
-///     git-subprocess dependency. See `planar.cmd.planar.scope`'s header.
 ///   - `cli_log.record`, the fail-open invocation-capture row. No
 ///     `cli_log` surface exists in this tree yet.
 // Not a module unit: `main` must have external linkage in the global module,

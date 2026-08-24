@@ -64,15 +64,33 @@ auto map_scope_error(engine::identity::scope_error err, std::string_view verb) -
   return error_from_body(kind, std::format("{}: resolving scope failed: {}", verb, zig_error_name(err)));
 }
 
+auto map_scope_failure(const engine::identity::write_scope_failure& failure, std::string_view cwd, std::string_view verb)
+    -> domain_error {
+  if (failure.ambiguity.has_value()) {
+    // The meta-workspace refusal (task 6134). Its message NAMES the two
+    // `--scope` values the operator may choose between, so it does not go
+    // through `map_scope_error`'s generic "resolving scope failed: <Name>"
+    // shape at all. Wording is verbatim from the oracle
+    // (zig/src/cmd/planar/scope.zig:108-114), which is why the two choices
+    // have to travel out of the engine rather than be recomputed here.
+    return error_from_body(domain_error_kind::scope_mismatch,
+                           std::format("ambiguous meta workspace root {}: choose `--scope {}` for cross-repo/meta-level "
+                                       "work or `--scope {}` for root-repo work",
+                                       cwd, failure.ambiguity->assoc_scope, failure.ambiguity->repo_scope));
+  }
+  return map_scope_error(failure.code, verb);
+}
+
 auto resolve_write_scope(context& ctx, std::optional<std::string_view> scope_flag, std::string_view verb)
     -> std::expected<engine::identity::write_scope_resolution, domain_error> {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto resolved = engine::identity::resolve_for_write(**conn, scope_flag, ctx.cwd().string());
+  auto const cwd      = ctx.cwd().string();
+  auto       resolved = engine::identity::resolve_for_write(**conn, scope_flag, cwd);
   if (!resolved) {
-    return std::unexpected(map_scope_error(resolved.error(), verb));
+    return std::unexpected(map_scope_failure(resolved.error(), cwd, verb));
   }
   return *resolved;
 }

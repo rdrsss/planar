@@ -31,9 +31,19 @@
 ///   `start_git_context` argument: pass it and the row is stamped through
 ///   `session::set_start_git_context_if_unset` (whose write-once semantics
 ///   ARE ported and tested); omit it and the stamping step is skipped,
-///   exactly as the Zig original skips it when the probe fails. No caller
-///   in this tree can spawn a process yet, so nothing is lost today, and
-///   the DB-visible half of the behavior is fully covered.
+///   exactly as the Zig original skips it when the probe fails.
+///
+///   SINCE TASK 6128 the `capture session` handler DOES supply it, probing
+///   through the layer-1 `planar.git` seam. The note above used to end "no
+///   caller in this tree can spawn a process yet, so nothing is lost
+///   today" — that was true of the ENGINE and false of the VERB: taking
+///   the default meant every session this binary opened carried NULL in
+///   both columns while emitting the oracle's exact stdout, and the
+///   `commits` no-op two paragraphs down therefore applied to every one of
+///   them. The optional stays optional (an engine caller outside a
+///   repository legitimately has nothing to pass), but a HANDLER that omits
+///   it is a defect, and `handlers.t.cpp`'s `[6128]` cases assert the row
+///   rather than the stdout precisely because nothing else can see it.
 /// - **`close_session`'s `recordSessionWindow`.** Same reason: it walks
 ///   git commits between `head_sha_at_start` and HEAD. It is a no-op
 ///   whenever `repo_root` or `head_sha_at_start` is NULL, which is every

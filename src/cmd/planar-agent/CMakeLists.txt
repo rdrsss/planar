@@ -92,8 +92,14 @@
 # planning policy down to layer 1) was rejected.
 #
 # `locality.cpp` is the one file here that leaves the process: three `git`
-# subprocesses per claim, via popen. It sits at layer 3 deliberately so the
-# engine bucket takes a locality VALUE and needs no spawn dependency.
+# subprocesses per claim. It sits at layer 3 deliberately so the engine
+# bucket takes a locality VALUE and needs no spawn dependency. Since plan
+# 996 task 6128 it no longer owns the spawning itself — the `popen` +
+# quoting + trim + exit-status handling moved to the layer-1 `planar.git`
+# seam (DEPENDS git, below), which `src/cmd/planar/handlers/init.cpp` had
+# independently duplicated and which `engine/identity` needs for worktree
+# detection. What stays here is the locality POLICY: which three commands
+# to run and how to read their answers.
 #
 # --- NOT landed, each blocked at LAYER 2 -----------------------------------
 #
@@ -157,6 +163,7 @@ planar_binary(planar_agent
   DEPENDS
     cliapp
     db
+    git
     engine_runtime
     engine_planning)
 

@@ -92,6 +92,16 @@
 # account and the oracle evidence). Same shape as `scope_ref`: a shared engine
 # primitive moved DOWN a layer so the same-layer prohibition can stay strict
 # without duplication.
+# `git` (plan 996, tasks 6128 and 6137) is the layer-1 git-subprocess seam —
+# `git -C <dir> <args>`, trimmed, with every non-zero exit collapsing to "no
+# answer". Its absence is what deferred FOUR separate ports (`capture
+# session`'s start-context stamp, the worktree gate, `bench harvest`,
+# `capture commits`) and it had already been duplicated privately inside two
+# `cmd_*` binaries (`handlers/init.cpp`'s `probe_git_origin`,
+# `planar-agent/locality.cpp`'s `run_git`), both of which are now thin
+# wrappers over it. Layer 1 is forced rather than chosen: `detect_worktree`
+# is called from `engine/identity` (layer 2), which cannot reach a `cmd_*`
+# copy without the layer-2 -> layer-3 edge D15 forbids. DEPENDS nothing.
 # `engine/local` (plan 996, task 6109) is the operator-local skills/agents
 # sandbox behind all five `planar local` leaves. It depends on NOTHING but
 # `json_text` -- the sandbox is pure filesystem state and holds no SQLite
@@ -149,6 +159,7 @@ add_subdirectory(cliapp)
 add_subdirectory(log)
 add_subdirectory(scope_ref)
 add_subdirectory(json_text)
+add_subdirectory(git)
 add_subdirectory(http)
 add_subdirectory(adapter)
 add_subdirectory(engine/identity)

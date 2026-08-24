@@ -269,10 +269,14 @@ planar_binary(planar
     handlers/task.cppm
     handlers/handoff.cppm
     handlers/resume.cppm
+    verb_classification.cppm
+    worktree_gate.cppm
     dispatch.cppm
   SOURCES
     context.cpp
     scope.cpp
+    verb_classification.cpp
+    worktree_gate.cpp
     tree.cpp
     surface.cpp
     handlers/version.cpp
@@ -295,6 +299,7 @@ planar_binary(planar
   DEPENDS
     cliapp
     db
+    git
     json_text
     engine_config
     engine_external

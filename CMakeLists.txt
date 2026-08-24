@@ -84,6 +84,22 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # configure fail on those, not on Planar's own code.
 option(PLANAR_WARNINGS_AS_ERRORS "Build planar_* targets with -Werror" OFF)
 
+# Layer 1 of the worktree gate's two-layer bypass (plan 996 task 6137;
+# src/cmd/planar/worktree_gate.cppm), mirroring zig's `-Dtest-binary=true`.
+# When OFF — the default, and therefore every production build — the
+# `PLANAR_DISABLE_WORKTREE_GATE` environment check is `if constexpr`-dead
+# and the gate CANNOT be defeated from the environment. It is ON in the
+# `debug` preset only, because that is the build the zig integration
+# harness runs against through `make test-parity-cpp`, and the harness
+# injects that variable so fixture paths which incidentally live under
+# `.worktrees/` do not trip the gate for tests that are not about it.
+# Deliberately not a per-target property: it is a posture of the whole
+# build, and a binary built without it must be un-bypassable.
+option(PLANAR_TEST_BINARY "Compile in the worktree gate's env-var bypass (test/parity builds only)" OFF)
+if(PLANAR_TEST_BINARY)
+  add_compile_definitions(PLANAR_TEST_BINARY)
+endif()
+
 enable_testing()
 
 # D15 guard standing tests (plan 996 task 6050, M2 pre-work;
