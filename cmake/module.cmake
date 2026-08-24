@@ -233,10 +233,32 @@ function(planar_binary name)
   if(ARG_MAIN)
     target_sources(${_target} PRIVATE ${ARG_MAIN})
   endif()
+  # Land the executable at <build>/bin/<dashed-name> (plan 996, task
+  # 6129). Without this the binary is written to
+  # <build>/src/cmd/<dir>/planar_cmd_<name> — the TARGET name, carrying
+  # the `planar_cmd_` prefix this function adds for the D15 walk's benefit
+  # — which is not a name any operator, script, or the Makefile's
+  # `test-parity-cpp` lane would ever guess. That lane defaults
+  # CPP_BIN_DIR to `build/debug/bin` and looks for `planar`,
+  # `planar-agent`, `planar-watch`, `planar-execute`; it had never once
+  # run as documented, and every parity measurement this project has taken
+  # was preceded by four hand-made symlinks. The prefix exists for the
+  # architecture guard, so it is the guard's business, not the shipped
+  # artifact's.
+  #
+  # Underscores become dashes because that is what the four binaries are
+  # actually called (`planar-agent`, not `planar_agent`) and what the Zig
+  # oracle emits, so the two trees' outputs are directly comparable by
+  # name. The TEST binary below deliberately keeps the default location:
+  # it is not a shipped artifact, and putting it in bin/ would put a
+  # `planar-agent_tests` next to `planar-agent`.
+  string(REPLACE "_" "-" _output_name "${name}")
   set_target_properties(${_target} PROPERTIES
     CXX_STANDARD 26
     CXX_STANDARD_REQUIRED ON
-    CXX_MODULE_STD ON)
+    CXX_MODULE_STD ON
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    OUTPUT_NAME "${_output_name}")
 
   if(PLANAR_WARNINGS_AS_ERRORS)
     target_compile_options(${_target} PRIVATE

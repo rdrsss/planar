@@ -120,6 +120,43 @@ pre-commit/format-check script must reference this path explicitly (e.g. via
 `CMAKE_CXX_STDLIB_MODULES_JSON` discovery in `tabula`'s top-level
 `CMakeLists.txt` uses), not a bare `clang-format` invocation.
 
+`make cpp-lint` implements exactly that derivation (plan 996, task 6054).
+It resolves the prefix from `build/debug`'s `CMakeCache.txt`
+(`CMAKE_CXX_COMPILER`, up two directories), so the formatter is by
+construction the same LLVM that built the tree; falls back to
+`brew --prefix llvm` when no build directory exists; honours an explicit
+`LLVM_PREFIX=` / `CLANG_FORMAT_BIN=` / `CLANG_TIDY_BIN=` override; and
+**fails loudly** with the override to set rather than falling back to a
+`PATH` binary. The literal `/opt/homebrew/opt/llvm/...` paths it used to
+carry made the target Homebrew-ARM-macOS-only.
+
+## Break-probes against the C++ tree
+
+`scripts/break-probe.sh` runs one break-probe — mutate, rebuild, assert
+the named ctest case fails, restore, rebuild, assert it passes — and
+enforces the four checks that otherwise make a probe pass silently
+meaningless:
+
+| Trap | What it looks like | What the script does |
+|---|---|---|
+| Restoring a backup with `mv F.bak F` puts back an **older** mtime, so ninja skips the rebuild and the **mutant stays linked** | "all mutants killed", from a binary that was never rebuilt | restores by content and `touch`es, then rebuilds and re-runs the test to prove the restore took |
+| The mutation's anchor matched zero occurrences | a green test, indistinguishable from a survivor | diffs each `--file` against its backup and refuses a no-op mutation |
+| The mutant does not compile | looks like a kill | fails loudly; a compiler-rejected mutant is not a kill |
+| `ctest -R` matched zero tests | proves nothing, either exit code | asserts the filter names at least one real ctest test (Catch2 **tags** are not ctest names) |
+
+```
+scripts/break-probe.sh \
+  --file src/cmd/planar-watch/tree.cpp \
+  --label "drop --json from the 'ps' node" \
+  --mutate "sed -i '' 's|^  add_json(\*ps);$||' src/cmd/planar-watch/tree.cpp" \
+  --test 'planar-watch parity: every command declares what the oracle declares'
+```
+
+Exit 0 is `killed`, exit 1 is `SURVIVOR`, exit 2 is a broken probe. A
+survivor is a finding about the test, not a footnote — see
+[`agents/methodology.md`](../agents/methodology.md) § Break-probe
+discipline.
+
 ## Validation evidence
 
 All commands below ran in the foreground on this machine (macOS, Apple

@@ -129,27 +129,52 @@
 # fragile and give a false sense of coverage for the genex forms it didn't
 # anticipate. Rather than silently ignore a genex entry (the pre-existing
 # behavior — it simply never matched the `^planar_(.+)$` pattern), the walk
-# now DETECTS a link entry containing BOTH `$<` and `planar_` — i.e. a
-# generator expression that plausibly names a planar_* target — and refuses
-# configure with a diagnostic naming the offending target and entry, before
-# it would even get a chance to be misclassified. The `planar_` co-match is
-# deliberate, not an evasion of the detection: real vendored dependencies
-# routinely produce genex entries CMake generates for its OWN
-# imported-target plumbing against THIRD-PARTY targets (observed in
-# practice — a vendored `SQLite::SQLite3` import lands
-# `$<LINK_ONLY:SQLite::SQLite3>` in `planar_db`'s
-# `INTERFACE_LINK_LIBRARIES`), which are already out of this walk's scope
-# (layer 0, "vendored/third-party targets", per the layer table above)
-# whether genex-wrapped or not — refusing configure on every `$<` would
-# make this file unable to configure the real Planar build at all. This is
-# a deliberate over-approximation on the planar_*-plausible side (SOME
-# generator expressions might be provably layer-safe, e.g. a config-gated
-# choice between two targets in the same layer) traded for
-# correctness: a false-positive refusal that names the fix ("split the
-# target" / "use a plain name") is recoverable in seconds; a false-negative
-# silent pass is exactly the blind spot this task exists to close. See
-# cmake/tests/architecture-guard-fixture/genex-edge/ for the standing
-# proof.
+# now DETECTS a link entry containing `$<` and refuses configure with a
+# diagnostic naming the offending target and entry, before it would even
+# get a chance to be misclassified. This is a deliberate
+# over-approximation (SOME generator expressions might be provably
+# layer-safe, e.g. a config-gated choice between two targets in the same
+# layer) traded for correctness: a false-positive refusal that names the
+# fix ("split the target" / "use a plain name") is recoverable in seconds;
+# a false-negative silent pass is exactly the blind spot this task exists
+# to close. See cmake/tests/architecture-guard-fixture/genex-edge/ for the
+# standing proof.
+#
+# Dropping the `planar_` co-match (plan 996, task 6074): task 6069 could
+# only afford to refuse a genex that ALSO contained the literal `planar_`,
+# because an unscoped match broke the real configure — CMake's own
+# imported-target plumbing lands `$<LINK_ONLY:SQLite::SQLite3>` in
+# `planar_db`'s `INTERFACE_LINK_LIBRARIES`, and refusing every `$<` made
+# this file unable to configure Planar at all. Task 6078 then added the
+# unconditional `$<LINK_ONLY:...>` unwrap below (for a different reason:
+# the textbook `target_link_libraries(planar_X PRIVATE planar_Y)` spelling
+# was tripping the refusal), and that unwrap incidentally removes exactly
+# the entries that forced the narrowing. MEASURED, not assumed: with the
+# unwrap in place, the fully configured Planar graph contains ZERO
+# remaining `$<` entries across every registered planar_* target's merged
+# LINK_LIBRARIES + INTERFACE_LINK_LIBRARIES. So the co-match now costs
+# nothing to remove and closes a real hole — a genex that computes a
+# planar_* target name WITHOUT that literal substring (the smallest form
+# is `$<TARGET_PROPERTY:some_non_planar_holder,DEP>`, which resolves at
+# generate time to whatever that property holds) used to pass the walk
+# entirely. See cmake/tests/architecture-guard-fixture/genex-no-literal/
+# for the standing proof; that fixture configures CLEANLY against the
+# pre-task-6074 check and FATALs against this one, which is what makes it
+# a discriminating fixture rather than a restatement of genex-edge/.
+#
+# Re-entrancy (plan 996, task 6074): CMake has no local mutable
+# containers, so the cycle DFS and the reachability BFS below keep their
+# traversal state in GLOBAL properties. `planar_check_architecture()` is
+# called exactly once per configure today, but nothing enforced that, and
+# a SECOND call inherited the first call's `black` colouring for every
+# node it had already finished — pass 2 skips a node whose state is
+# already set, so a cycle introduced between two calls among
+# already-visited nodes was silently not detected. The function now clears
+# every piece of its own traversal state at entry (see the "Pass 0" block)
+# rather than asserting single-invocation, so a second call is simply
+# correct. See cmake/tests/architecture-guard-fixture/reentrant-cycle/ for
+# the standing proof: it calls the guard twice, adding the cycle in
+# between, and configures CLEANLY without the reset.
 #
 # Layer-1 cycles (plan 996, task 6069, M3 pre-work): D17 (decision 943)
 # permits layer-1-to-layer-1 edges because base libraries legitimately
@@ -276,6 +301,21 @@ endfunction()
 function(planar_check_architecture)
   get_property(_planar_targets GLOBAL PROPERTY PLANAR_MODULE_TARGETS)
 
+  # Pass 0: clear this function's own GLOBAL traversal state, so a SECOND
+  # invocation in the same configure is correct rather than silently
+  # weaker (see the header comment, "Re-entrancy"). The adjacency is
+  # rebuilt from scratch in pass 1 and would be overwritten anyway; the
+  # load-bearing one is `_planar_arch_cycle_state_*`, which pass 2 reads
+  # as "already visited, skip" and which would otherwise carry the
+  # previous call's `black` colouring into this one.
+  foreach(_tgt IN LISTS _planar_targets)
+    string(REGEX REPLACE "^planar_" "" _name "${_tgt}")
+    set_property(GLOBAL PROPERTY _planar_arch_cycle_state_${_name} "")
+    set_property(GLOBAL PROPERTY _planar_arch_adj_${_name} "")
+  endforeach()
+  set_property(GLOBAL PROPERTY _planar_arch_cycle_path "")
+  set_property(GLOBAL PROPERTY _planar_arch_cycle_found FALSE)
+
   # Pass 1: build the merged (LINK_LIBRARIES + INTERFACE_LINK_LIBRARIES)
   # planar_* adjacency for every registered target, refusing configure
   # outright on any generator expression found along the way (see header
@@ -319,21 +359,16 @@ function(planar_check_architecture)
       if(_entry MATCHES "^\\$<LINK_ONLY:(.+)>$")
         set(_entry "${CMAKE_MATCH_1}")
       endif()
-      # Scoped to genex entries that plausibly reference a planar_* target
-      # (contain BOTH "$<" and "planar_"), not every generator expression
-      # in the graph: CMake's own imported-target plumbing routinely emits
-      # genex entries against THIRD-PARTY targets — e.g. a vendored
-      # SQLite::SQLite3 import lands `$<LINK_ONLY:SQLite::SQLite3>` in
-      # planar_db's INTERFACE_LINK_LIBRARIES — and those are already out of
-      # scope for this walk (see the "everything else" / layer-0 note in
-      # the header comment) whether or not they are wrapped in a genex.
-      # Refusing configure on every "$<" would make this file impossible
-      # to actually build against real vendored dependencies. A genex that
-      # somehow computes a planar_* target name WITHOUT that substring
-      # appearing literally is not caught here — undetectable without
-      # actually evaluating the expression, which this walk deliberately
-      # does not attempt (see header comment).
-      if(_entry MATCHES "\\$<" AND _entry MATCHES "planar_")
+      # EVERY remaining generator expression is refused, not only those
+      # containing the literal `planar_` (plan 996, task 6074 — see the
+      # header comment, "Generator expressions", for the measurement that
+      # made this affordable). The `planar_` co-match this check used to
+      # carry was a false negative by construction: a genex that computes
+      # a planar_* target name without that substring appearing literally
+      # — `$<TARGET_PROPERTY:some_holder,DEP>` is the smallest example —
+      # slipped through undetected, and no amount of pattern-matching
+      # short of evaluating the expression can tell the two apart.
+      if(_entry MATCHES "\\$<")
         message(FATAL_ERROR
           "D15 violation: ${_tgt} links a generator expression "
           "('${_entry}') that cannot be evaluated at configure time — the "
@@ -341,7 +376,12 @@ function(planar_check_architecture)
           "generated build output, so a genex-hidden dependency edge would "
           "silently bypass D15. Replace it with a plain target name "
           "(splitting the target if the conditional differs per "
-          "configuration) so the edge is visible to this walk.")
+          "configuration) so the edge is visible to this walk. If a "
+          "VENDORED package put this entry here, the fix is to stop "
+          "linking that package directly into a planar_* target, or to "
+          "extend the unconditional $<LINK_ONLY:...> unwrap above if the "
+          "new form is, like that one, CMake's own generated plumbing "
+          "naming its target literally.")
       endif()
       if(_entry MATCHES "^planar_(.+)$")
         set(_dep_name "${CMAKE_MATCH_1}")
@@ -373,6 +413,23 @@ function(planar_check_architecture)
   # closure query below consumes it. See
   # cmake/tests/architecture-guard-fixture/unregistered-target-caught/ for
   # the standing proof.
+  #
+  # Plan 996 task 6087 widened this from "is a real TARGET but
+  # unregistered" to "is not in _all_names", full stop. The original check
+  # tested TARGET-ness first, so a planar_-prefixed dependency that is not
+  # a CMake target AT ALL — a typo, or a hand-written `-lplanar_x` — was
+  # skipped entirely: CMake does not error on it (it becomes a raw link
+  # flag), and pass 3 below classifies it by NAME, where anything not
+  # matching `^cmd_`/`^engine_` reads as a layer-1 base library and is a
+  # legal downward edge from every layer. So `planar_scop_ref` (one letter
+  # short) configured clean, passed the layer walk, and failed at link
+  # time. Both halves now FATAL, with distinct diagnostics naming the
+  # actual fix. See
+  # cmake/tests/architecture-guard-fixture/nontarget-dep-caught/ for the
+  # standing proof. The "D15 violation" prefix is kept on both even though
+  # this is registration hygiene rather than layering: it keeps the
+  # fixture matcher and grep-ability consistent with every other refusal
+  # this file emits (M3 review iteration 2 recommendation).
   foreach(_tgt IN LISTS _planar_targets)
     if(NOT TARGET ${_tgt})
       continue()
@@ -380,7 +437,10 @@ function(planar_check_architecture)
     string(REGEX REPLACE "^planar_" "" _name "${_tgt}")
     get_property(_dep_names GLOBAL PROPERTY _planar_arch_adj_${_name})
     foreach(dep_name IN LISTS _dep_names)
-      if(NOT dep_name IN_LIST _all_names AND TARGET "planar_${dep_name}")
+      if(dep_name IN_LIST _all_names)
+        continue()
+      endif()
+      if(TARGET "planar_${dep_name}")
         message(FATAL_ERROR
           "D15 violation: ${_tgt} depends on planar_${dep_name}, which is "
           "a real CMake target but was never registered via "
@@ -390,6 +450,17 @@ function(planar_check_architecture)
           "planar_${dep_name} through planar_module()/planar_binary() so "
           "its own dependency edges are checked too.")
       endif()
+      message(FATAL_ERROR
+        "D15 violation: ${_tgt} depends on planar_${dep_name}, which is "
+        "not a CMake target at all — CMake passes an unresolvable name "
+        "straight through to the linker as a raw '-lplanar_${dep_name}' "
+        "flag, so a typo (or a hand-written -l for a planar_* library) "
+        "configures cleanly and surfaces only at link time with a far "
+        "worse diagnostic. It is also invisible to this walk's layer and "
+        "closure checks, which classify a dep by NAME: `planar_typo` "
+        "reads as a layer-1 base library and is therefore a legal "
+        "downward edge from anywhere. Fix the name, or register the "
+        "target via planar_module()/planar_binary().")
     endforeach()
   endforeach()
 

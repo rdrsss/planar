@@ -606,6 +606,39 @@ target-specific commands.
 - [ ] No references to files that have been renamed or deleted (grep for
       all file paths cited in changed documents).
 
+## Break-probe discipline
+
+A break-probe is the standing evidence that a new test discriminates:
+mutate the implementation, confirm the NAMED test fails, restore, confirm
+it passes again. A test authored alongside the code it covers can pass
+vacuously, and a suite that has never been shown to fail proves nothing.
+
+Every step of that sequence has a silent-failure mode, and each one looks
+exactly like success:
+
+- **The restore leaves an OLDER mtime.** `cp F F.bak; <mutate>; build;
+  <test>; mv F.bak F` puts back the backup's original timestamp.
+  Incremental build systems that compare mtimes (ninja, make) see nothing
+  newer than the object file, skip the rebuild, and leave the MUTANT
+  linked — so every probe after the first in that pass measures the wrong
+  binary while reporting "all mutants killed". Always `touch` the file
+  after restoring, rebuild, and re-run the test to prove the restore took.
+- **The anchor matched zero occurrences.** A mutation that changed nothing
+  produces a green test that is indistinguishable from a survivor. Verify
+  the substitution count, or diff the file against the backup.
+- **The mutant did not compile.** A compiler-rejected mutant proves the
+  compiler works, not that the test discriminates. It is not a kill.
+- **The test filter matched nothing.** Confirm the filter names real test
+  names, not framework tags, and that it selected at least one.
+
+A survivor is a finding, not a footnote: either the test needs rebuilding
+around what is actually observable, or the mutation is provably equivalent
+— and "provably" means the difference was measured, not argued.
+
+In the Planar repository the C++ tree ships `scripts/break-probe.sh`,
+which enforces all four checks around one probe and reports
+`killed` / `SURVIVOR`. Prefer it over a hand-run sequence.
+
 ## Dispatch Granularity
 
 Tasks created by the ingestor are deliberately fine-grained: one roadmap bullet → one task row. That granularity is correct for *tracking* but is often wrong as a coder→reviewer iteration unit — eight tasks that all touch the same helper file are naturally a single PR, not eight separate review cycles. Conversely, some users want strict one-task-per-commit history for easy bisect and rollback. The right shape is a per-feature judgement call, not a fixed policy.

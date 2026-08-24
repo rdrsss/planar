@@ -188,6 +188,30 @@ _planar_add_architecture_guard_test(private-link-legal succeed)
 # transitive closure for a real carrier->db violation reachable through it.
 _planar_add_architecture_guard_test(unregistered-target-caught fail
   MESSAGES "D15 violation" "planar_cmd_execute depends on planar_engine_middleware")
+# Residual 1 (plan 996 task 6074): the genex refusal used to fire only on
+# an entry containing the LITERAL `planar_`, so a generator expression
+# that computes a planar_* target name any other way was invisible. This
+# fixture configures cleanly against that check and must FATAL against
+# the current one.
+_planar_add_architecture_guard_test(genex-no-literal fail
+  MESSAGES "D15 violation" "generator expression")
+# Residual 2 (plan 996 task 6074): the cycle DFS keeps its colouring in
+# GLOBAL properties, so a SECOND planar_check_architecture() call in the
+# same configure used to walk nothing and detect nothing.
+_planar_add_architecture_guard_test(reentrant-cycle fail
+  MESSAGES "D15 violation" "dependency cycle detected")
+# Residual 3 (plan 996 task 6087): pass 1b tested TARGET-ness first, so a
+# planar_-prefixed dep that is not a CMake target at all (a typo, or a
+# hand-written -lplanar_x) was skipped entirely and read as a legal
+# layer-1 edge.
+# The second matcher is a SINGLE TOKEN on purpose: message(FATAL_ERROR)
+# re-wraps its text to the terminal width, so a multi-word phrase can be
+# split across a newline (this one was, between "not a" and "CMake target
+# at all") and stop matching for reasons that have nothing to do with the
+# guard. `-lplanar_scop_ref` cannot be broken and appears only in this
+# diagnostic.
+_planar_add_architecture_guard_test(nontarget-dep-caught fail
+  MESSAGES "D15 violation" "-lplanar_scop_ref")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 

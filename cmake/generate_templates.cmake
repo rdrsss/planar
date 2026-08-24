@@ -35,7 +35,14 @@ function(planar_generate_templates)
       "planar_generate_templates: TEMPLATES_DIR, OUT_FILE, and MODULE_NAME are all required")
   endif()
 
-  file(GLOB _system_dirs LIST_DIRECTORIES true "${ARG_TEMPLATES_DIR}/*")
+  # CONFIGURE_DEPENDS on the OUTER glob too (plan 996, task 6084). The
+  # inner *.json glob has always carried it, so adding a template to an
+  # EXISTING system directory re-triggers configure — but adding a whole
+  # new templates/defaults/<system>/ did not, and the new system was
+  # silently absent from the embedded set until someone reconfigured by
+  # hand. A silently-missing propagation system is a much worse failure
+  # than a slightly slower build check.
+  file(GLOB _system_dirs LIST_DIRECTORIES true CONFIGURE_DEPENDS "${ARG_TEMPLATES_DIR}/*")
   if(NOT _system_dirs)
     message(FATAL_ERROR
       "planar_generate_templates: no system directories found under ${ARG_TEMPLATES_DIR}")
@@ -50,7 +57,15 @@ function(planar_generate_templates)
 
     file(GLOB _kind_paths CONFIGURE_DEPENDS "${_sys_dir}/*.json")
     foreach(_kp IN LISTS _kind_paths)
-      get_filename_component(_kind "${_kp}" NAME_WE)
+      # Strip ONLY the `.json` suffix (plan 996, task 6084). NAME_WE splits
+      # at the FIRST dot, so `zig/tools/gen_templates.zig`'s kind for
+      # `issue.v2.json` is `issue.v2` where NAME_WE answered `issue` — a
+      # silently different kind name in the embedded set, and one that
+      # would then never match a lookup. LAST_EXT semantics, expressed
+      # directly so the intent survives a reader who does not know the
+      # NAME_WE / NAME_WLE distinction.
+      get_filename_component(_kind "${_kp}" NAME)
+      string(REGEX REPLACE "\\.json$" "" _kind "${_kind}")
       list(APPEND _sort_keys "${_system}\t${_kind}")
     endforeach()
   endforeach()
@@ -118,5 +133,16 @@ namespace {
     "}\n\n"
     "} // namespace planar::engine::config\n")
 
-  file(WRITE "${ARG_OUT_FILE}" "${_content}")
+  # Write-if-different, for the reason (and with the measured depfile
+  # justification) spelled out in cmake/generate_migrations.cmake — this
+  # generator had the identical unconditional-rewrite churn, and fixing
+  # one while leaving the other would have left half the invariant
+  # standing.
+  set(_existing "")
+  if(EXISTS "${ARG_OUT_FILE}")
+    file(READ "${ARG_OUT_FILE}" _existing)
+  endif()
+  if(NOT _existing STREQUAL _content)
+    file(WRITE "${ARG_OUT_FILE}" "${_content}")
+  endif()
 endfunction()

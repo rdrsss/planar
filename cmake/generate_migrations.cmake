@@ -112,5 +112,27 @@ namespace {
     "}\n\n"
     "} // namespace planar::db\n")
 
-  file(WRITE "${ARG_OUT_FILE}" "${_content}")
+  # WRITE-IF-DIFFERENT (plan 996, task 6061). An unconditional file(WRITE)
+  # rewrites this translation unit on EVERY configure, which bumps its
+  # mtime and forces a rebuild of planar_db and everything downstream even
+  # when not one byte changed — the exact rebuild churn CLAUDE.md's two
+  # build-cache invariants exist against.
+  #
+  # The unconditional rewrite also happened to cover the case
+  # CONFIGURE_DEPENDS does not: that glob re-triggers only when the SET of
+  # matched files changes, not when a matched file's CONTENT changes.
+  # Dropping the rewrite is safe anyway, and MEASURED rather than assumed:
+  # clang emits every `#embed` input into the depfile, so ninja rebuilds
+  # this TU on a .sql content edit through its own dependency graph.
+  # Verified with `ninja -C build/debug -t deps` — the entry for
+  # migrations.generated.cpp.o lists all 66 up/down .sql files. (Editing a
+  # released migration in place is forbidden regardless; see
+  # migrations/README.md.)
+  set(_existing "")
+  if(EXISTS "${ARG_OUT_FILE}")
+    file(READ "${ARG_OUT_FILE}" _existing)
+  endif()
+  if(NOT _existing STREQUAL _content)
+    file(WRITE "${ARG_OUT_FILE}" "${_content}")
+  endif()
 endfunction()

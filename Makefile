@@ -153,9 +153,45 @@ test-integration-files: ## Run integration tests as one executable per test file
 # Pinned toolchain per docs/toolchain-parity.md — always the pinned LLVM's
 # own binaries, never a PATH-resolved clang-format/clang-tidy, which may
 # belong to a different LLVM release and disagree under the same config.
-CLANG_FORMAT_BIN := /opt/homebrew/opt/llvm/bin/clang-format
-CLANG_TIDY_BIN   := /opt/homebrew/opt/llvm/bin/clang-tidy
+#
+# DISCOVERED, not hardcoded (plan 996, task 6054). These used to be the
+# literal Homebrew-ARM-macOS paths `/opt/homebrew/opt/llvm/bin/clang-*`,
+# which made `make cpp-lint` unrunnable on an Intel Mac
+# (`/usr/local/opt/llvm`) or any Linux box, and was one of the two stated
+# reasons cpp-lint is not composed into test-all. The resolution order
+# below keeps the pin STRICTER than a PATH lookup rather than looser:
+#
+#   1. An explicit LLVM_PREFIX= / CLANG_FORMAT_BIN= / CLANG_TIDY_BIN= on
+#      the command line or in the environment always wins.
+#   2. Otherwise the prefix is read out of $(CPP_BUILD_DIR)'s CMakeCache —
+#      i.e. the LLVM that ACTUALLY BUILT this tree, resolved from
+#      CMAKE_CXX_COMPILER. This is the strongest available binding: the
+#      formatter and the compiler cannot drift apart, which a second
+#      independent lookup (even a correct one) does not guarantee.
+#   3. Failing that (no build dir yet), `brew --prefix llvm`.
+#
+# There is deliberately NO fallback to a PATH-resolved clang-format: the
+# recipe below fails loudly with the override to set, because silently
+# linting with another release's formatter is exactly the outcome the pin
+# exists to prevent. See docs/toolchain-parity.md § clang-format.
 CPP_BUILD_DIR    ?= build/debug
+LLVM_PREFIX      ?= $(shell \
+	cxx=$$(sed -n 's|^CMAKE_CXX_COMPILER:[^=]*=||p' $(CPP_BUILD_DIR)/CMakeCache.txt 2>/dev/null); \
+	if [ -n "$$cxx" ]; then dirname "$$(dirname "$$cxx")"; \
+	else brew --prefix llvm 2>/dev/null; fi)
+CLANG_FORMAT_BIN ?= $(LLVM_PREFIX)/bin/clang-format
+CLANG_TIDY_BIN   ?= $(LLVM_PREFIX)/bin/clang-tidy
+
+# Fail with the fix rather than with "No such file or directory" from deep
+# inside a pipeline.
+define require_pinned_llvm
+	@test -x "$(1)" || { \
+	  echo "make cpp-lint: pinned LLVM tool not found at '$(1)'."; \
+	  echo "  Resolved LLVM_PREFIX='$(LLVM_PREFIX)' (from $(CPP_BUILD_DIR)/CMakeCache.txt, else 'brew --prefix llvm')."; \
+	  echo "  Install the pinned LLVM (docs/toolchain-parity.md), configure $(CPP_BUILD_DIR) first,"; \
+	  echo "  or override explicitly:  make cpp-lint LLVM_PREFIX=/path/to/llvm"; \
+	  exit 1; }
+endef
 
 # First-party C++ file list: everything under src/ and
 # scripts/toolchain-probes/, excluding vendor/, zig/, and any build output —
@@ -164,6 +200,8 @@ CPP_FILES := $(shell find src scripts/toolchain-probes -type f \( -name '*.cppm'
 	-not -path '*/vendor/*' -not -path '*/zig/*' -not -path '*/build/*' 2>/dev/null)
 
 cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C++ (docs/toolchain-parity.md)
+	$(call require_pinned_llvm,$(CLANG_FORMAT_BIN))
+	$(call require_pinned_llvm,$(CLANG_TIDY_BIN))
 	@echo "== cpp-lint: clang-format --dry-run --Werror (pinned $(CLANG_FORMAT_BIN)) =="
 	$(CLANG_FORMAT_BIN) --dry-run --Werror $(CPP_FILES)
 	@echo "== cpp-lint: clang-tidy (pinned $(CLANG_TIDY_BIN); src/ tree only, see note below) =="
@@ -226,18 +264,21 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 # the standing guard, and the `parity_*` suites still assert the user-facing
 # contracts the audit originally surfaced.
 # cpp-lint is deliberately NOT composed into test-all (M0 boundary review,
-# plan 996 task 6049 F14): it hardcodes a pinned LLVM path
-# ($(CLANG_FORMAT_BIN)/$(CLANG_TIDY_BIN) above, docs/toolchain-parity.md)
-# that only exists on a machine that has installed that exact toolchain,
-# and it requires $(CPP_BUILD_DIR) already configured+built (clang-tidy
-# needs materialized module BMIs, see the note in the cpp-lint target
-# itself) — an ordering precondition test-all's other members don't share.
-# Wiring it in would make test-all fail-by-default on any machine without
-# the pinned LLVM at that path, or silently skip real lint coverage on a
-# CI box that has a different clang-format on PATH. Run `make cpp-lint`
-# explicitly once the C++ tree is the sole implementation (post-M9,
-# D13) and toolchain provisioning is part of the standard dev/CI image;
-# revisit composing it into test-all at that point.
+# plan 996 task 6049 F14). Task 6054 removed ONE of the two original
+# reasons: the hardcoded `/opt/homebrew/opt/llvm` paths are now discovered
+# (see CLANG_FORMAT_BIN above), so the target is no longer
+# Homebrew-ARM-macOS-only. The reason that REMAINS is the ordering
+# precondition none of test-all's other members share: cpp-lint requires
+# $(CPP_BUILD_DIR) already configured, and clang-tidy needs the module
+# BMIs materialized (see the note in the cpp-lint target itself), so
+# composing it in would make `make test-all` configure and build the
+# entire C++ tree on a checkout where the Zig tree is still the shipped
+# implementation. That stays wrong until the C++ tree IS the
+# implementation (post-M9, D13) — at which point test-all's C++ members
+# have to build it anyway and the precondition costs nothing. Compose it
+# in then, and add the same gate to CI at the same time (this repo has no
+# .github/workflows at all today, so until then C++ format/tidy drift
+# rides on operator discipline).
 .PHONY: test-all
 test-all: test test-integration coverage cli-usage-check ## Run unit + integration suites, coverage, and composed authored-surface gates
 

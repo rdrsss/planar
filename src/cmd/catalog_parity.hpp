@@ -70,6 +70,47 @@
 // `planar-watch` emit catalogs BYTE-IDENTICAL to the oracle's, and
 // `planar`'s differs in exactly those four values.
 //
+// ## What a break-probe pass measured (plan 996, task 6127)
+//
+// Task 6065 shipped this comparison without ever mutating an
+// implementation against it, so it had never been shown to discriminate.
+// Task 6127 ran that pass through `scripts/break-probe.sh` (see that
+// script for the four silent-failure traps it closes). Every mutation
+// below was run in isolation, rebuilt, and checked against the SINGLE
+// named case `<bin> parity: every ported command declares what the oracle
+// declares` — not the byte-comparison beside it — so each verdict is a
+// statement about THIS header and nothing else:
+//
+//   * a flag dropped from a hand-declared node        -> caught
+//   * a node moved from the root under another parent -> caught
+//   * a positional that lost its required-ness        -> caught
+//   * two positionals swapped in declaration order    -> caught
+//   * a flag renamed in the generated surface data    -> caught
+//   * a whole node deleted from the generated surface -> caught
+//     (via `oracle_only_commands`, the direction task 6065 added)
+//   * a command `summary` drifted by one word         -> caught
+//   * `apply_surface`'s sibling-ORDER pass removed    -> caught
+//
+// ONE MUTATION SURVIVED, and it is a property of the two-layer
+// declaration design rather than a hole in this comparison. Deleting a
+// node from `tree.cpp` ENTIRELY — the `ps` verb, its long description and
+// all seven of its flags — changes nothing observable:
+// `planar.cliapp.surface::apply_surface` finds-or-creates, so the node is
+// re-declared from the generated `surface_nodes()` spec, and the resulting
+// binary emits a BYTE-IDENTICAL `schema` catalog and a byte-identical
+// `--help` (both diffed against the unmutated binary). No test in the
+// watch suite fails, correctly: nothing about the shipped surface moved.
+//
+// So the precise claim this header supports is narrower than "it catches a
+// transcription slip in `tree.cpp`": it catches a slip of COMMISSION — a
+// wrong name, a wrong parent, a wrong flag set, a wrong order, a wrong
+// required-ness — and a slip of OMISSION is REPAIRED rather than caught,
+// because the generated spec is derived from the same oracle this compares
+// against. An omission is therefore invisible here by construction, and no
+// assertion was added for it: `apply_surface` returns the list of nodes it
+// created, every call site discards it, and pinning that list would guard
+// a difference that is not observable in anything the binary emits.
+//
 // ## Why a HEADER
 //
 // Same reason as `parity_harness.hpp` beside it, and its header states the
