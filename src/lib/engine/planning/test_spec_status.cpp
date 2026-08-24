@@ -16,12 +16,6 @@ using json_text::append_json_string;
 
 namespace {
 
-/// @brief Guarantee a non-null `data()` pointer for an empty view (see
-/// engine/runs/lifecycle.cpp's `nn` for the underlying db defect, task 6097).
-auto nn(std::string_view s) -> std::string_view {
-  return s.data() == nullptr ? std::string_view{""} : s;
-}
-
 /// @brief Trim exactly the two bytes the Zig original trims (`" \t"`) — NOT
 /// newlines, and no locale involvement.
 auto trim_spaces_tabs(std::string_view s) -> std::string_view {
@@ -184,7 +178,7 @@ auto fetch_anchor(db::connection& conn, std::string_view argument) -> std::expec
   if (!stmt) {
     return std::unexpected(test_spec_error::query_failed);
   }
-  if (auto bound = stmt->bind_text(1, nn(argument)); !bound) {
+  if (auto bound = stmt->bind_text(1, argument); !bound) {
     return std::unexpected(test_spec_error::query_failed);
   }
   auto stepped = stmt->step();

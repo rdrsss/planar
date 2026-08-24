@@ -17,11 +17,6 @@ namespace planar::engine::workbench::gc {
 
 namespace {
 
-/// @brief See manifest.cpp's `nn`.
-auto nn(std::string_view s) -> std::string_view {
-  return s.data() == nullptr ? std::string_view{""} : s;
-}
-
 auto fetch_status(db::connection& conn, std::string_view kind, std::int64_t id) -> std::string {
   std::string_view sql;
   if (kind == "plan") {
@@ -54,7 +49,7 @@ auto fetch_manifest_hash(db::connection& conn, std::int64_t anchor_plan_id, std:
     -> std::string {
   auto stmt = conn.prepare("select coalesce(content_hash, '') from workbench_sync_state "
                            "where anchor_plan_id = ? and entity_kind = ? and entity_id = ? limit 1");
-  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_text(2, nn(kind)) || !stmt->bind_int64(3, id)) {
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_text(2, kind) || !stmt->bind_int64(3, id)) {
     return {};
   }
   auto stepped = stmt->step();

@@ -181,7 +181,10 @@ TEST_CASE("upsert then load round-trips a row", "[workbench][manifest][db]") {
   // original's `fileMtime` returns "" unconditionally. If `bind_text` bound
   // SQL NULL for an empty view (task 6097) the NOT NULL constraint would
   // have refused the insert above, so this assertion is what proves the
-  // local `nn()` guard is doing its job.
+  // normalisation in `db::statement::bind_text` is doing its job. It was
+  // written against a local `nn()` guard in manifest.cpp; task 6097 moved
+  // that fix to its root and deleted the guard, and this case still fails
+  // if `bind_text` is reverted.
   CHECK((*rows)[0].fs_mtime.empty());
 }
 

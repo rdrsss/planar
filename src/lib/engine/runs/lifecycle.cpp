@@ -24,21 +24,6 @@ auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique || err.code_ == k_sqlite_constraint_primary_key;
 }
 
-/// @brief Guarantee a non-null `data()` pointer for an empty view.
-///
-/// `sqlite3_bind_text(stmt, i, nullptr, 0, ...)` binds SQL **NULL**, not the
-/// empty string, so a default-constructed `std::string_view` silently
-/// violates the NOT NULL constraints on `runs.base_sha` / `.config_hash`.
-/// That is not hypothetical here: `run start` binds the EMPTY STRING to both
-/// of those columns by design (oracle-captured — `select base_sha from runs`
-/// on an op run yields `''`, not NULL), so this guard is load-bearing on the
-/// `run start` path specifically. Same defect and same local remedy as
-/// engine/planning/annotation.cpp's `nn`; task 6097 tracks the root fix in
-/// `db::statement::bind_text` itself.
-auto nn(std::string_view s) -> std::string_view {
-  return s.data() == nullptr ? std::string_view{""} : s;
-}
-
 auto opt_text(const db::statement& stmt, int index) -> std::optional<std::string> {
   if (stmt.is_null(index)) {
     return std::nullopt;
@@ -68,7 +53,7 @@ auto read_run(const db::statement& stmt) -> run {
 /// @brief Bind an optional text parameter as text-or-NULL.
 auto bind_opt_text(db::statement& stmt, int index, std::optional<std::string_view> value) -> bool {
   if (value.has_value()) {
-    return stmt.bind_text(index, nn(*value)).has_value();
+    return stmt.bind_text(index, *value).has_value();
   }
   return stmt.bind_null(index).has_value();
 }
@@ -119,9 +104,9 @@ auto start(db::connection& conn, const start_args& args) -> std::expected<start_
     if (!stmt) {
       return std::unexpected(runs_error::query_failed);
     }
-    const bool bound = stmt->bind_text(1, nn(args.run_uid)).has_value() && stmt->bind_int64(2, args.plan_id).has_value() &&
-                       stmt->bind_text(3, nn(args.arm)).has_value() && stmt->bind_text(4, nn(args.base_sha)).has_value() &&
-                       stmt->bind_text(5, nn(args.config_hash)).has_value() && bind_opt_text(*stmt, 6, args.config_json) &&
+    const bool bound = stmt->bind_text(1, args.run_uid).has_value() && stmt->bind_int64(2, args.plan_id).has_value() &&
+                       stmt->bind_text(3, args.arm).has_value() && stmt->bind_text(4, args.base_sha).has_value() &&
+                       stmt->bind_text(5, args.config_hash).has_value() && bind_opt_text(*stmt, 6, args.config_json) &&
                        bind_opt_text(*stmt, 7, args.corpus_repo) && bind_opt_text(*stmt, 8, args.status);
     if (!bound) {
       return std::unexpected(runs_error::query_failed);
@@ -221,7 +206,7 @@ auto event(db::connection& conn, std::int64_t run_id, std::int64_t seq, std::str
     return std::unexpected(runs_error::query_failed);
   }
   const bool bound = stmt->bind_int64(1, run_id).has_value() && stmt->bind_int64(2, seq).has_value() &&
-                     stmt->bind_text(3, nn(kind)).has_value() && bind_opt_text(*stmt, 4, payload);
+                     stmt->bind_text(3, kind).has_value() && bind_opt_text(*stmt, 4, payload);
   if (!bound) {
     return std::unexpected(runs_error::query_failed);
   }
@@ -263,7 +248,7 @@ auto touch(db::connection& conn, std::int64_t run_id, std::int64_t task_id, std:
     return std::unexpected(runs_error::query_failed);
   }
   const bool bound = stmt->bind_int64(1, run_id).has_value() && stmt->bind_int64(2, task_id).has_value() &&
-                     stmt->bind_text(3, nn(path)).has_value() && stmt->bind_text(4, touch_kind_to_text(kind)).has_value();
+                     stmt->bind_text(3, path).has_value() && stmt->bind_text(4, touch_kind_to_text(kind)).has_value();
   if (!bound) {
     return std::unexpected(runs_error::query_failed);
   }
@@ -288,7 +273,7 @@ auto touch_idempotent(db::connection& conn, std::int64_t run_id, std::int64_t ta
     return std::unexpected(runs_error::query_failed);
   }
   const bool bound = stmt->bind_int64(1, run_id).has_value() && stmt->bind_int64(2, task_id).has_value() &&
-                     stmt->bind_text(3, nn(path)).has_value() && stmt->bind_text(4, touch_kind_to_text(kind)).has_value();
+                     stmt->bind_text(3, path).has_value() && stmt->bind_text(4, touch_kind_to_text(kind)).has_value();
   if (!bound) {
     return std::unexpected(runs_error::query_failed);
   }
@@ -321,7 +306,7 @@ auto finish(db::connection& conn, std::int64_t run_id, std::string_view status) 
   if (!stmt) {
     return std::unexpected(runs_error::query_failed);
   }
-  const bool bound = stmt->bind_text(1, nn(status)).has_value() && stmt->bind_int64(2, run_id).has_value();
+  const bool bound = stmt->bind_text(1, status).has_value() && stmt->bind_int64(2, run_id).has_value();
   if (!bound) {
     return std::unexpected(runs_error::query_failed);
   }
@@ -351,7 +336,7 @@ auto show_by_uid(db::connection& conn, std::string_view run_uid) -> std::expecte
   if (!stmt) {
     return std::unexpected(runs_error::query_failed);
   }
-  if (auto bound = stmt->bind_text(1, nn(run_uid)); !bound) {
+  if (auto bound = stmt->bind_text(1, run_uid); !bound) {
     return std::unexpected(runs_error::query_failed);
   }
   auto stepped = stmt->step();

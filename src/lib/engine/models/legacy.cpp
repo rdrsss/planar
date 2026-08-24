@@ -50,17 +50,6 @@ auto pad(std::string_view value, std::size_t width) -> std::string {
   return out;
 }
 
-/// @brief `bind_text` guard.
-///
-/// `db::statement::bind_text` binds SQL NULL for a default-constructed
-/// `std::string_view` (src/lib/db/db.cpp:98). Task 6097 owns the root fix; this
-/// routes around it the same way `engine/models/registry.cpp` and
-/// `engine/runs/lifecycle.cpp` already do, so an empty candidate string binds
-/// as `''` rather than silently becoming a NULL that matches nothing.
-auto nn(std::string_view value) -> std::string_view {
-  return value.empty() ? std::string_view{""} : value;
-}
-
 enum class claim_outcome { approved, aborted, other, none };
 enum class test_coder_outcome { ok, other };
 
@@ -126,7 +115,7 @@ auto resolve_test_coder_outcome(db::connection& conn, std::int64_t task_id)
 auto vendor_for_candidate(db::connection& conn, std::string_view candidate) -> std::optional<std::string> {
   auto stmt = conn.prepare("select vendor from agent_work_claims "
                            "where model = ? order by claimed_at desc, id desc limit 1");
-  if (!stmt || !stmt->bind_text(1, nn(candidate))) {
+  if (!stmt || !stmt->bind_text(1, candidate)) {
     return std::nullopt;
   }
   const auto step = stmt->step();

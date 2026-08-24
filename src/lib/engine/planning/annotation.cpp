@@ -46,18 +46,6 @@ auto trim(std::string_view s) -> std::string_view {
   return s.substr(b, e - b + 1);
 }
 
-/// @brief Guarantee a non-null `data()` pointer for an empty view.
-///
-/// `sqlite3_bind_text(stmt, i, nullptr, 0, ...)` binds SQL **NULL**, not
-/// the empty string -- so a default-constructed `std::string_view` (whose
-/// `data()` is null) silently violates the NOT NULL constraints on
-/// `annotations.body` / `.vendor` / the three `anchor_*` text columns.
-/// Every text bind in this module routes through here. Caught by these
-/// tests failing outright, not reasoned about in advance.
-auto nn(std::string_view s) -> std::string_view {
-  return s.data() == nullptr ? std::string_view{""} : s;
-}
-
 auto opt_int(const db::statement& stmt, int index) -> std::optional<std::int64_t> {
   if (stmt.is_null(index)) {
     return std::nullopt;
@@ -436,20 +424,20 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<anno
   }
 
   const auto bind_opt_text = [&](int index, std::optional<std::string_view> v) {
-    return v.has_value() ? stmt->bind_text(index, nn(*v)).has_value() : stmt->bind_null(index).has_value();
+    return v.has_value() ? stmt->bind_text(index, *v).has_value() : stmt->bind_null(index).has_value();
   };
   const auto bind_opt_int = [&](int index, std::optional<std::int64_t> v) {
     return v.has_value() ? stmt->bind_int64(index, *v).has_value() : stmt->bind_null(index).has_value();
   };
 
-  const bool bound =
-      stmt->bind_text(1, scope_kind_to_text(scope->first)).has_value() && bind_opt_int(2, scope->second) &&
-      stmt->bind_text(3, nn(args.anchor.path)).has_value() && bind_opt_int(4, args.anchor.line_start) &&
-      bind_opt_int(5, args.anchor.line_end) && stmt->bind_text(6, nn(args.anchor.commit_sha)).has_value() &&
-      stmt->bind_text(7, nn(args.anchor.text_hash)).has_value() && stmt->bind_text(8, nn(args.anchor.text)).has_value() &&
-      bind_opt_text(9, args.title) && bind_opt_text(10, args.slug) && stmt->bind_text(11, nn(args.body)).has_value() &&
-      stmt->bind_text(12, status_to_text(args.status_)).has_value() && stmt->bind_text(13, nn(args.vendor)).has_value() &&
-      bind_opt_int(14, args.plan_id) && bind_opt_int(15, args.task_id);
+  const bool bound = stmt->bind_text(1, scope_kind_to_text(scope->first)).has_value() && bind_opt_int(2, scope->second) &&
+                     stmt->bind_text(3, args.anchor.path).has_value() && bind_opt_int(4, args.anchor.line_start) &&
+                     bind_opt_int(5, args.anchor.line_end) && stmt->bind_text(6, args.anchor.commit_sha).has_value() &&
+                     stmt->bind_text(7, args.anchor.text_hash).has_value() && stmt->bind_text(8, args.anchor.text).has_value() &&
+                     bind_opt_text(9, args.title) && bind_opt_text(10, args.slug) && stmt->bind_text(11, args.body).has_value() &&
+                     stmt->bind_text(12, status_to_text(args.status_)).has_value() &&
+                     stmt->bind_text(13, args.vendor).has_value() && bind_opt_int(14, args.plan_id) &&
+                     bind_opt_int(15, args.task_id);
   if (!bound) {
     return std::unexpected(annotation_error::query_failed);
   }
@@ -700,13 +688,13 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
                                                 : stmt->bind_null(idx++).has_value());
   }
   if (patch.title.has_value()) {
-    bound = bound && stmt->bind_text(idx++, nn(*patch.title)).has_value();
+    bound = bound && stmt->bind_text(idx++, *patch.title).has_value();
   }
   if (patch.slug.has_value()) {
-    bound = bound && stmt->bind_text(idx++, nn(*patch.slug)).has_value();
+    bound = bound && stmt->bind_text(idx++, *patch.slug).has_value();
   }
   if (patch.body.has_value()) {
-    bound = bound && stmt->bind_text(idx++, nn(*patch.body)).has_value();
+    bound = bound && stmt->bind_text(idx++, *patch.body).has_value();
   }
   if (patch.status_.has_value()) {
     bound = bound && stmt->bind_text(idx++, status_to_text(*patch.status_)).has_value();
@@ -719,14 +707,14 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
   }
   if (patch.anchor.has_value()) {
     const auto& a = *patch.anchor;
-    bound         = bound && stmt->bind_text(idx++, nn(a.path)).has_value();
+    bound         = bound && stmt->bind_text(idx++, a.path).has_value();
     bound = bound &&
             (a.line_start.has_value() ? stmt->bind_int64(idx++, *a.line_start).has_value() : stmt->bind_null(idx++).has_value());
     bound =
         bound && (a.line_end.has_value() ? stmt->bind_int64(idx++, *a.line_end).has_value() : stmt->bind_null(idx++).has_value());
-    bound = bound && stmt->bind_text(idx++, nn(a.commit_sha)).has_value();
-    bound = bound && stmt->bind_text(idx++, nn(a.text_hash)).has_value();
-    bound = bound && stmt->bind_text(idx++, nn(a.text)).has_value();
+    bound = bound && stmt->bind_text(idx++, a.commit_sha).has_value();
+    bound = bound && stmt->bind_text(idx++, a.text_hash).has_value();
+    bound = bound && stmt->bind_text(idx++, a.text).has_value();
   }
   bound = bound && stmt->bind_int64(idx, id).has_value();
   if (!bound) {

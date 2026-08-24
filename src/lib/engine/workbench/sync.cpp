@@ -17,12 +17,6 @@ namespace planar::engine::workbench::sync {
 
 namespace {
 
-/// @brief See manifest.cpp's `nn` — `bind_text` on a default-constructed
-/// view binds SQL NULL. Task 6097 owns the root fix.
-auto nn(std::string_view s) -> std::string_view {
-  return s.data() == nullptr ? std::string_view{""} : s;
-}
-
 /// @brief One enumerated entity: what to render and how to classify it.
 struct entity {
   std::string  kind;
@@ -540,7 +534,7 @@ auto render_scenario(db::connection& conn, std::int64_t anchor_plan_id, std::int
 
 auto resolve_project_id_by_slug(db::connection& conn, std::string_view slug) -> std::optional<std::int64_t> {
   auto stmt = conn.prepare("select id from projects where slug = ?");
-  if (!stmt || !stmt->bind_text(1, nn(slug))) {
+  if (!stmt || !stmt->bind_text(1, slug)) {
     return std::nullopt;
   }
   auto stepped = stmt->step();
@@ -632,11 +626,11 @@ auto pull_to_db(db::connection& conn, std::string_view kind, std::int64_t id, st
 
   auto const bind_body_only = [&](std::string_view sql) {
     return exec_step(conn, sql,
-                     [&](db::statement& s) { return s.bind_text(1, nn(body)).has_value() && s.bind_int64(2, id).has_value(); });
+                     [&](db::statement& s) { return s.bind_text(1, body).has_value() && s.bind_int64(2, id).has_value(); });
   };
   auto const bind_body_and_status = [&](std::string_view sql) {
     return exec_step(conn, sql, [&](db::statement& s) {
-      return s.bind_text(1, nn(body)).has_value() && s.bind_text(2, nn(status)).has_value() && s.bind_int64(3, id).has_value();
+      return s.bind_text(1, body).has_value() && s.bind_text(2, status).has_value() && s.bind_int64(3, id).has_value();
     });
   };
 
@@ -724,7 +718,7 @@ auto insert_task_from_frontmatter(db::connection& conn, const parse::front_matte
   if (assoc_id.has_value() && !stmt->bind_int64(index++, *assoc_id)) {
     return std::nullopt;
   }
-  if (!stmt->bind_text(index++, nn(title)) || !stmt->bind_text(index++, nn(body_text)) || !stmt->bind_text(index++, nn(status)) ||
+  if (!stmt->bind_text(index++, title) || !stmt->bind_text(index++, body_text) || !stmt->bind_text(index++, status) ||
       !stmt->bind_int64(index, priority)) {
     return std::nullopt;
   }
@@ -1018,7 +1012,7 @@ auto resolve_plan_argument(db::connection& conn, std::string_view argument) -> s
   }
   auto stmt = conn.prepare("select p.id from plans p where p.parent_plan_id is null and p.slug = ? "
                            "order by p.id limit 1");
-  if (!stmt || !stmt->bind_text(1, nn(argument))) {
+  if (!stmt || !stmt->bind_text(1, argument)) {
     return std::unexpected(sync_error::query_failed);
   }
   auto stepped = stmt->step();

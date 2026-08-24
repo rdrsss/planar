@@ -93,9 +93,19 @@ auto statement::bind_double(int index, double value) -> std::expected<void, db_e
 }
 
 auto statement::bind_text(int index, std::string_view value) -> std::expected<void, db_error> {
+  // A default-constructed std::string_view has a NULL `data()`, and
+  // `sqlite3_bind_text(stmt, i, nullptr, 0, ...)` binds SQL **NULL** rather
+  // than the empty string -- silently violating NOT NULL constraints on
+  // whatever column the caller was writing. Both null-data and
+  // non-null-data empty views are indistinguishable to every caller in this
+  // tree (`sv.empty()` is true for both), so the two MUST bind identically.
+  // Normalising to a non-null pointer here is the root fix; callers that
+  // genuinely want SQL NULL call `bind_null` explicitly.
+  char const* bytes = value.data() == nullptr ? "" : value.data();
+
   // SQLITE_TRANSIENT: SQLite copies the bytes immediately, so `value` does
   // not need to outlive this call.
-  const int rc = sqlite3_bind_text(_handle, index, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT);
+  const int rc = sqlite3_bind_text(_handle, index, bytes, static_cast<int>(value.size()), SQLITE_TRANSIENT);
   if (rc != SQLITE_OK) {
     return std::unexpected(make_error(sqlite3_db_handle(_handle)));
   }

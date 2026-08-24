@@ -25,11 +25,6 @@ auto trim(std::string_view text) -> std::string_view {
   return text.substr(first, text.find_last_not_of(chars) - first + 1);
 }
 
-/// @brief `bind_text` guard — see engine/models/legacy.cpp's copy for why.
-auto nn(std::string_view value) -> std::string_view {
-  return value.empty() ? std::string_view{""} : value;
-}
-
 auto path_exists(const std::filesystem::path& path) -> bool {
   std::error_code ec;
   if (std::filesystem::exists(path, ec)) {
@@ -75,7 +70,7 @@ auto resolve_by_id(db::connection& conn, std::int64_t org_id) -> std::expected<w
 auto resolve_by_slug(db::connection& conn, std::string_view slug) -> std::expected<workspace, resolve_error> {
   auto stmt = conn.prepare("select id, slug, name, coalesce(config_json, '') from associations "
                            "where kind = 'org' and slug = ?");
-  if (!stmt || !stmt->bind_text(1, nn(slug))) {
+  if (!stmt || !stmt->bind_text(1, slug)) {
     return std::unexpected(resolve_error::query_failed);
   }
   const auto step = stmt->step();

@@ -92,6 +92,13 @@ public:
   auto bind_double(int index, double value) -> std::expected<void, db_error>;
   /// @brief Binds UTF-8 text at `index` (1-indexed). SQLite copies the
   /// bytes (`SQLITE_TRANSIENT`), so `value` need not outlive the call.
+  ///
+  /// **Empty binds as `''`, never as SQL NULL.** A default-constructed
+  /// `std::string_view` has a null `data()`, which raw
+  /// `sqlite3_bind_text` would turn into SQL NULL; this overload
+  /// normalises it so a null-data view and an empty-literal view --
+  /// which no caller can tell apart, both being `.empty()` -- bind
+  /// identically. Callers that want SQL NULL call `bind_null`.
   /// @param index The 1-indexed bind parameter position.
   /// @param value The UTF-8 text to bind.
   /// @return Success, or the SQLite failure as a `db_error`.

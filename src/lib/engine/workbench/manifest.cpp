@@ -13,21 +13,6 @@ namespace planar::engine::workbench::manifest {
 
 namespace {
 
-/// @brief Guarantee a non-null `data()` for an empty view.
-///
-/// `sqlite3_bind_text(stmt, i, nullptr, 0, ...)` binds SQL **NULL**, not the
-/// empty string, so a default-constructed `std::string_view` would violate
-/// the NOT NULL constraints on `workbench_sync_state.content_hash` and
-/// friends. Load-bearing here specifically because `fs_mtime` is written as
-/// the EMPTY STRING on every single upsert (the Zig original passes `""`;
-/// its `fileMtime` helper returns `""` unconditionally). Same defect and
-/// same local remedy as engine/planning/annotation.cpp's `nn` and
-/// engine/runs/lifecycle.cpp's; task 6097 tracks the root fix in
-/// `db::statement::bind_text` itself.
-auto nn(std::string_view s) -> std::string_view {
-  return s.data() == nullptr ? std::string_view{""} : s;
-}
-
 // ---------------------------------------------------------------------------
 // SHA-256 (FIPS 180-4). Verified against the oracle's own `.sync` digests
 // and against `shasum -a 256` in manifest.t.cpp.
@@ -171,10 +156,10 @@ auto upsert(db::connection& conn, const sync_state& row) -> std::expected<void, 
   if (!stmt) {
     return std::unexpected(manifest_error::query_failed);
   }
-  bool const bound = stmt->bind_int64(1, row.anchor_plan_id).has_value() && stmt->bind_text(2, nn(row.entity_kind)).has_value() &&
-                     stmt->bind_int64(3, row.entity_id).has_value() && stmt->bind_text(4, nn(row.file_path)).has_value() &&
-                     stmt->bind_text(5, nn(row.content_hash)).has_value() && stmt->bind_text(6, nn(row.fs_mtime)).has_value() &&
-                     stmt->bind_text(7, nn(row.db_updated_at)).has_value();
+  bool const bound = stmt->bind_int64(1, row.anchor_plan_id).has_value() && stmt->bind_text(2, row.entity_kind).has_value() &&
+                     stmt->bind_int64(3, row.entity_id).has_value() && stmt->bind_text(4, row.file_path).has_value() &&
+                     stmt->bind_text(5, row.content_hash).has_value() && stmt->bind_text(6, row.fs_mtime).has_value() &&
+                     stmt->bind_text(7, row.db_updated_at).has_value();
   if (!bound) {
     return std::unexpected(manifest_error::query_failed);
   }
@@ -186,7 +171,7 @@ auto upsert(db::connection& conn, const sync_state& row) -> std::expected<void, 
 
 auto delete_by_file_path(db::connection& conn, std::string_view file_path) -> std::expected<void, manifest_error> {
   auto stmt = conn.prepare("delete from workbench_sync_state where file_path = ?");
-  if (!stmt || !stmt->bind_text(1, nn(file_path)) || !stmt->step()) {
+  if (!stmt || !stmt->bind_text(1, file_path) || !stmt->step()) {
     return std::unexpected(manifest_error::query_failed);
   }
   return {};
@@ -195,7 +180,7 @@ auto delete_by_file_path(db::connection& conn, std::string_view file_path) -> st
 auto delete_by_entity(db::connection& conn, std::int64_t anchor_plan_id, std::string_view entity_kind, std::int64_t entity_id)
     -> std::expected<void, manifest_error> {
   auto stmt = conn.prepare("delete from workbench_sync_state where anchor_plan_id = ? and entity_kind = ? and entity_id = ?");
-  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_text(2, nn(entity_kind)) || !stmt->bind_int64(3, entity_id) ||
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_text(2, entity_kind) || !stmt->bind_int64(3, entity_id) ||
       !stmt->step()) {
     return std::unexpected(manifest_error::query_failed);
   }

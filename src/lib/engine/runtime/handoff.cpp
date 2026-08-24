@@ -13,17 +13,6 @@ namespace planar::engine::runtime::handoff {
 
 namespace {
 
-/// @brief Guard against `db::statement::bind_text` binding SQL NULL for a
-/// default-constructed `std::string_view` (src/lib/db/db.cpp:98). Planar
-/// task 6097 owns the root fix; until then every text bind that must
-/// produce an empty STRING rather than NULL goes through here.
-/// @param value The text to bind.
-/// @return `value`, or a view over an empty literal when it has no data
-/// pointer.
-auto nn(std::string_view value) -> std::string_view {
-  return value.data() == nullptr ? std::string_view{""} : value;
-}
-
 /// @brief Bind an optional text parameter the way the Zig insert does:
 /// unset OR EMPTY binds SQL NULL, anything else binds the text.
 auto bind_text_or_null(db::statement& stmt, int index, std::optional<std::string_view> value) -> bool {
@@ -170,7 +159,7 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<hand
   if (auto bound = stmt->bind_int64(1, args.from_snapshot_id); !bound) {
     return std::unexpected(handoff_error::query_failed);
   }
-  if (auto bound = stmt->bind_text(2, nn(args.from_vendor)); !bound) {
+  if (auto bound = stmt->bind_text(2, args.from_vendor); !bound) {
     return std::unexpected(handoff_error::query_failed);
   }
   if (!bind_text_or_null(*stmt, 3, args.to_vendor)) {

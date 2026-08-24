@@ -12,23 +12,6 @@ namespace planar::engine::models::registry {
 
 namespace {
 
-/// @brief Guarantee a non-null `data()` pointer for an empty view.
-///
-/// `sqlite3_bind_text(stmt, i, nullptr, 0, ...)` binds SQL **NULL**, not the
-/// empty string, so a default-constructed `std::string_view` silently
-/// violates the NOT NULL constraints all over `routing_candidates` and
-/// `routing_host_observations`. Same defect and same local remedy as
-/// engine/planning/annotation.cpp's and engine/runs/lifecycle.cpp's `nn`;
-/// task 6097 tracks the root fix in `db::statement::bind_text` itself.
-///
-/// This guard is not merely defensive here: `valid_opaque_value` already
-/// refuses the empty string for every OPAQUE column, but `create`'s
-/// `compatibility_source` and every read-back path can still see a
-/// default-constructed view from a caller.
-auto nn(std::string_view s) -> std::string_view {
-  return s.data() == nullptr ? std::string_view{""} : s;
-}
-
 /// @brief Bytewise ordering, matching Zig's `std::mem.order(u8, ...)`.
 ///
 /// Deliberately NOT a date comparison — see registry.cppm's header for the
@@ -144,7 +127,7 @@ auto read_latest_observation_for_host(db::connection& conn, std::int64_t id, std
   if (!stmt) {
     return std::unexpected(registry_error::query_failed);
   }
-  if (!stmt->bind_int64(1, id) || !stmt->bind_text(2, nn(host_id))) {
+  if (!stmt->bind_int64(1, id) || !stmt->bind_text(2, host_id)) {
     return std::unexpected(registry_error::query_failed);
   }
   auto stepped = stmt->step();
@@ -267,9 +250,8 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<std:
   if (!stmt) {
     return std::unexpected(registry_error::query_failed);
   }
-  if (!stmt->bind_text(1, nn(args.vendor)) || !stmt->bind_text(2, nn(args.candidate_id)) ||
-      !stmt->bind_int64(3, args.enabled ? 1 : 0) || !stmt->bind_int64(4, args.fallback_order) ||
-      !stmt->bind_text(5, nn(args.compatibility_source))) {
+  if (!stmt->bind_text(1, args.vendor) || !stmt->bind_text(2, args.candidate_id) || !stmt->bind_int64(3, args.enabled ? 1 : 0) ||
+      !stmt->bind_int64(4, args.fallback_order) || !stmt->bind_text(5, args.compatibility_source)) {
     return std::unexpected(registry_error::query_failed);
   }
   auto stepped = stmt->step();
@@ -290,7 +272,7 @@ auto find_id(db::connection& conn, std::string_view vendor, std::string_view can
   if (!stmt) {
     return std::unexpected(registry_error::query_failed);
   }
-  if (!stmt->bind_text(1, nn(vendor)) || !stmt->bind_text(2, nn(candidate_id))) {
+  if (!stmt->bind_text(1, vendor) || !stmt->bind_text(2, candidate_id)) {
     return std::unexpected(registry_error::query_failed);
   }
   auto stepped = stmt->step();
@@ -360,7 +342,7 @@ auto bind(db::connection& conn, std::int64_t candidate_id, std::string_view role
   if (!stmt) {
     return std::unexpected(registry_error::query_failed);
   }
-  if (!stmt->bind_int64(1, candidate_id) || !stmt->bind_text(2, nn(role)) || !stmt->bind_text(3, tier_to_text(tier_))) {
+  if (!stmt->bind_int64(1, candidate_id) || !stmt->bind_text(2, role) || !stmt->bind_text(3, tier_to_text(tier_))) {
     return std::unexpected(registry_error::query_failed);
   }
   // A missing candidate trips the FK here and surfaces as `query_failed`,
@@ -379,7 +361,7 @@ auto unbind(db::connection& conn, std::int64_t candidate_id, std::string_view ro
   if (!stmt) {
     return std::unexpected(registry_error::query_failed);
   }
-  if (!stmt->bind_int64(1, candidate_id) || !stmt->bind_text(2, nn(role)) || !stmt->bind_text(3, tier_to_text(tier_))) {
+  if (!stmt->bind_int64(1, candidate_id) || !stmt->bind_text(2, role) || !stmt->bind_text(3, tier_to_text(tier_))) {
     return std::unexpected(registry_error::query_failed);
   }
   if (!stmt->step()) {
@@ -400,10 +382,10 @@ auto observe(db::connection& conn, const observe_args& args) -> std::expected<st
   if (!stmt) {
     return std::unexpected(registry_error::query_failed);
   }
-  if (!stmt->bind_int64(1, args.candidate_id) || !stmt->bind_text(2, nn(args.host_id)) ||
+  if (!stmt->bind_int64(1, args.candidate_id) || !stmt->bind_text(2, args.host_id) ||
       !stmt->bind_int64(3, args.observation_version) || !stmt->bind_text(4, availability_to_text(args.availability_)) ||
-      !stmt->bind_text(5, spawn_verification_to_text(args.spawn_verification_)) || !stmt->bind_text(6, nn(args.evidence_ref)) ||
-      !stmt->bind_text(7, nn(args.captured_at)) || !stmt->bind_text(8, nn(args.expires_at))) {
+      !stmt->bind_text(5, spawn_verification_to_text(args.spawn_verification_)) || !stmt->bind_text(6, args.evidence_ref) ||
+      !stmt->bind_text(7, args.captured_at) || !stmt->bind_text(8, args.expires_at)) {
     return std::unexpected(registry_error::query_failed);
   }
   auto stepped = stmt->step();

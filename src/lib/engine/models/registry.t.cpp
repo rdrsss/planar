@@ -271,11 +271,13 @@ TEST_CASE("models.registry: the widened enum values round-trip through SQLite", 
 }
 
 TEST_CASE("models.registry: an empty timestamp binds as text, not as SQL NULL", "[models]") {
-  // A BREAK-PROBE SURVIVOR fixed. Deleting the local `nn()` guard -- which
-  // exists because `db::statement::bind_text` binds SQL NULL for a
-  // default-constructed string_view (src/lib/db/db.cpp:98; task 6097 tracks
-  // the root fix) -- failed no test, because every other test passes real
-  // non-empty strings.
+  // A BREAK-PROBE SURVIVOR fixed. This case was written when the guard was a
+  // local `nn()` in registry.cpp; task 6097 has since moved the fix to its
+  // root in `db::statement::bind_text` and deleted all thirteen local
+  // guards, so this test now pins the ROOT behaviour through this module's
+  // reachable path. It still discriminates: reverting `bind_text` to the raw
+  // `value.data()` bind fails it. Every other test in this file passes real
+  // non-empty strings, which is why it survived before.
   //
   // `captured_at` is the reachable case: `routing_host_observations` declares
   // it `text not null` with NO length CHECK, and the only validation this

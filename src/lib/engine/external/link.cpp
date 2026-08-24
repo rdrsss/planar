@@ -498,12 +498,7 @@ auto store_baseline(db::connection& conn, std::int64_t link_id, std::string_view
   if (!stmt) {
     return std::unexpected(link_error::query_failed);
   }
-  // `nn()` is not needed here because both views come from live std::strings
-  // in the sync engine, but bind_text's null-data trap (task 6097) means an
-  // EMPTY status would still bind SQL NULL if the caller ever passed a
-  // default-constructed view. Guarded explicitly rather than assumed.
-  auto const nn = [](std::string_view value) { return value.data() == nullptr ? std::string_view{""} : value; };
-  if (!stmt->bind_text(1, nn(title)) || !stmt->bind_text(2, nn(status_value)) || !stmt->bind_int64(3, link_id)) {
+  if (!stmt->bind_text(1, title) || !stmt->bind_text(2, status_value) || !stmt->bind_int64(3, link_id)) {
     return std::unexpected(link_error::query_failed);
   }
   if (!stmt->step()) {

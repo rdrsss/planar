@@ -16,33 +16,6 @@ auto less_than(const row& lhs, const row& rhs) -> bool;
 
 namespace {
 
-/// @brief Guarantee a non-null `data()` pointer for an empty view.
-///
-/// `db::statement::bind_text` binds SQL **NULL** for a default-constructed
-/// `std::string_view` (src/lib/db/db.cpp:98; task 6097 tracks the root fix).
-/// Same guard as engine/runs/lifecycle.cpp's and registry.cpp's `nn`.
-///
-/// UNLIKE those two, this one is currently NOT observable, and saying so is
-/// more useful than implying otherwise. A break-probe replacing it with the
-/// identity function passed every test, and that is correct rather than a
-/// gap in the suite: every free-text cohort column on
-/// `routing_terminal_samples` carries a `check (length(...) > 0)` constraint
-/// (`role`, `vendor`, `validation_policy_version`, `routing_policy_version`),
-/// and `tier` / `work_type` / `complexity` are rendered from closed enums. So
-/// no stored row can hold an empty string in a cohort column, which means
-/// binding `''` and binding `NULL` BOTH match zero rows — the two spellings
-/// are indistinguishable through this query.
-///
-/// It is kept as defence in depth rather than deleted because the failure it
-/// guards against is the silent kind: were a length CHECK ever relaxed, the
-/// NULL bind would report "no cohort-eligible declared-experiment samples"
-/// for a cohort that has plenty — a confident, well-formatted, wrong answer
-/// rather than an error. The cost of the guard is one comparison; the cost of
-/// its absence is unbounded.
-auto nn(std::string_view s) -> std::string_view {
-  return s.data() == nullptr ? std::string_view{""} : s;
-}
-
 /// @brief Compare an optional metric, lower-is-better, only when BOTH sides
 /// carry one.
 ///
@@ -296,9 +269,9 @@ auto rank(db::connection& conn, const cohort& target, const gates& gate_config) 
   if (!stmt) {
     return std::unexpected(ranking_error::query_failed);
   }
-  if (!stmt->bind_int64(1, target.project_id) || !stmt->bind_text(2, nn(target.validation_policy_version)) ||
-      !stmt->bind_text(3, nn(target.routing_policy_version)) || !stmt->bind_text(4, nn(target.vendor)) ||
-      !stmt->bind_text(5, nn(target.role)) || !stmt->bind_text(6, registry::tier_to_text(target.tier_)) ||
+  if (!stmt->bind_int64(1, target.project_id) || !stmt->bind_text(2, target.validation_policy_version) ||
+      !stmt->bind_text(3, target.routing_policy_version) || !stmt->bind_text(4, target.vendor) ||
+      !stmt->bind_text(5, target.role) || !stmt->bind_text(6, registry::tier_to_text(target.tier_)) ||
       !stmt->bind_text(7, work_type_to_text(target.work_type_)) || !stmt->bind_text(8, complexity_to_text(target.complexity_))) {
     return std::unexpected(ranking_error::query_failed);
   }

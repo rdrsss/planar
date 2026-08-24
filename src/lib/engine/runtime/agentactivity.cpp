@@ -26,17 +26,6 @@ namespace {
 /// Spelled once so a typo cannot make two columns disagree about "now".
 constexpr std::string_view k_now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
-/// @brief Work around `db::statement::bind_text` binding SQL NULL for a
-/// default-constructed `std::string_view` (src/lib/db/db.cpp:98). Planar
-/// task 6097 owns the root fix; until then every text bind that must
-/// produce an empty STRING rather than NULL goes through here.
-/// @param value The text to bind.
-/// @return `value`, or a view over an empty literal when it has no data
-/// pointer.
-auto nn(std::string_view value) -> std::string_view {
-  return value.data() == nullptr ? std::string_view{""} : value;
-}
-
 /// @brief Bind an optional text parameter: the value, or SQL NULL.
 /// @param stmt The statement.
 /// @param index The 1-indexed parameter position.
@@ -44,7 +33,7 @@ auto nn(std::string_view value) -> std::string_view {
 /// @return `true` on success.
 auto bind_opt_text(db::statement& stmt, int index, std::optional<std::string_view> value) -> bool {
   if (value.has_value()) {
-    return stmt.bind_text(index, nn(*value)).has_value();
+    return stmt.bind_text(index, *value).has_value();
   }
   return stmt.bind_null(index).has_value();
 }
@@ -761,7 +750,7 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
   ok      = ok && stmt->bind_text(2, to_text(args.kind)).has_value();
   ok      = ok && stmt->bind_int64(3, args.entity_id).has_value();
   ok      = ok && stmt->bind_text(4, to_text(args.scope)).has_value();
-  ok      = ok && stmt->bind_text(5, nn(args.vendor)).has_value();
+  ok      = ok && stmt->bind_text(5, args.vendor).has_value();
   ok      = ok && bind_opt_text(*stmt, 6, args.vendor_session_id);
   ok      = ok && bind_opt_text(*stmt, 7, args.role);
   ok      = ok && bind_opt_text(*stmt, 8, args.model);
@@ -801,7 +790,7 @@ auto heartbeat_claim(db::connection& conn, std::string_view claim_token, std::in
                                        "where claim_token = ? and status = 'active'\n"
                                        "  and lease_expires_at >= {0}",
                                        k_now, seconds_modifier(ttl_secs)));
-  if (!stmt || !stmt->bind_text(1, nn(claim_token)) || !stmt->step()) {
+  if (!stmt || !stmt->bind_text(1, claim_token) || !stmt->step()) {
     return std::unexpected(agent_error::query_failed);
   }
   if (changes(conn) == 0) {
@@ -842,7 +831,7 @@ auto release_claim(db::connection& conn, std::string_view claim_token, claim_sta
   bool ok = stmt->bind_text(1, to_text(new_status)).has_value();
   ok      = ok && bind_opt_text(*stmt, 2, reason);
   ok      = ok && bind_opt_text(*stmt, 3, category_text);
-  ok      = ok && stmt->bind_text(4, nn(claim_token)).has_value();
+  ok      = ok && stmt->bind_text(4, claim_token).has_value();
   if (!ok || !stmt->step()) {
     return std::unexpected(agent_error::query_failed);
   }
@@ -874,7 +863,7 @@ auto abort_claim(db::connection& conn, std::string_view claim_token, std::option
   }
   bool ok = bind_opt_text(*stmt, 1, reason);
   ok      = ok && bind_opt_text(*stmt, 2, category_text);
-  ok      = ok && stmt->bind_text(3, nn(claim_token)).has_value();
+  ok      = ok && stmt->bind_text(3, claim_token).has_value();
   if (!ok || !stmt->step()) {
     return std::unexpected(agent_error::query_failed);
   }
@@ -922,7 +911,7 @@ auto is_claim_active_unexpired(db::connection& conn, std::string_view claim_toke
                                        "where claim_token = ? and status = 'active'\n"
                                        "  and lease_expires_at >= {}",
                                        k_now));
-  if (!stmt || !stmt->bind_text(1, nn(claim_token))) {
+  if (!stmt || !stmt->bind_text(1, claim_token)) {
     return std::unexpected(agent_error::query_failed);
   }
   auto stepped = stmt->step();
@@ -942,7 +931,7 @@ auto get_claim_by_id(db::connection& conn, std::int64_t id) -> std::expected<cla
 
 auto get_claim_by_token(db::connection& conn, std::string_view token) -> std::expected<claim, agent_error> {
   return fetch_claim(conn, "where claim_token = ?",
-                     [token](db::statement& stmt) { return stmt.bind_text(1, nn(token)).has_value(); });
+                     [token](db::statement& stmt) { return stmt.bind_text(1, token).has_value(); });
 }
 
 auto get_task(db::connection& conn, std::int64_t id) -> std::expected<task_row, agent_error> {
@@ -1019,7 +1008,7 @@ auto associate_claim_run(db::connection& conn, std::string_view claim_token, std
   }
   bool ok = stmt->bind_int64(1, run_id).has_value();
   ok      = ok && bind_opt_text(*stmt, 2, stage);
-  ok      = ok && stmt->bind_text(3, nn(claim_token)).has_value();
+  ok      = ok && stmt->bind_text(3, claim_token).has_value();
   if (!ok || !stmt->step()) {
     return std::unexpected(agent_error::query_failed);
   }
@@ -1063,7 +1052,7 @@ auto start_action(db::connection& conn, const start_action_args& args) -> std::e
   ok      = ok && stmt->bind_text(5, to_text(args.kind)).has_value();
   ok      = ok && bind_opt_text(*stmt, 6, entity_text);
   ok      = ok && bind_opt_int(*stmt, 7, args.entity_id);
-  ok      = ok && stmt->bind_text(8, nn(args.vendor)).has_value();
+  ok      = ok && stmt->bind_text(8, args.vendor).has_value();
   ok      = ok && bind_opt_text(*stmt, 9, args.vendor_role);
   ok      = ok && bind_opt_text(*stmt, 10, args.model);
   ok      = ok && bind_opt_text(*stmt, 11, view(args.loc.head_sha));
@@ -1712,7 +1701,7 @@ auto list_actions_by_entity(db::connection& conn, std::string_view entity_kind, 
       std::string{k_action_columns} +
           std::format("where entity_kind = ? and entity_id = ?\norder by started_at asc, id asc\nlimit {}", limit),
       [entity_kind, entity_id](db::statement& stmt) {
-        return stmt.bind_text(1, nn(entity_kind)).has_value() && stmt.bind_int64(2, entity_id).has_value();
+        return stmt.bind_text(1, entity_kind).has_value() && stmt.bind_int64(2, entity_id).has_value();
       });
 }
 
@@ -1730,14 +1719,14 @@ auto list_actions_by_claim_token(db::connection& conn, std::string_view token, s
                              std::format("where claim_id = (select id from agent_work_claims where claim_token = ?)\n"
                                          "order by started_at asc, id asc\nlimit {}",
                                          limit),
-                         [token](db::statement& stmt) { return stmt.bind_text(1, nn(token)).has_value(); });
+                         [token](db::statement& stmt) { return stmt.bind_text(1, token).has_value(); });
 }
 
 auto list_claims_by_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id)
     -> std::expected<std::vector<claim>, agent_error> {
   return collect_claims(conn, std::string{k_claim_columns} + "where entity_kind = ? and entity_id = ?\norder by claimed_at asc",
                         [entity_kind, entity_id](db::statement& stmt) {
-                          return stmt.bind_text(1, nn(entity_kind)).has_value() && stmt.bind_int64(2, entity_id).has_value();
+                          return stmt.bind_text(1, entity_kind).has_value() && stmt.bind_int64(2, entity_id).has_value();
                         });
 }
 
@@ -1748,7 +1737,7 @@ auto list_claims_by_session(db::connection& conn, std::int64_t session_id) -> st
 
 auto list_claims_by_token(db::connection& conn, std::string_view token) -> std::expected<std::vector<claim>, agent_error> {
   return collect_claims(conn, std::string{k_claim_columns} + "where claim_token = ?",
-                        [token](db::statement& stmt) { return stmt.bind_text(1, nn(token)).has_value(); });
+                        [token](db::statement& stmt) { return stmt.bind_text(1, token).has_value(); });
 }
 
 auto claim_belongs_to_plan(db::connection& conn, entity_kind kind, std::int64_t entity_id, std::int64_t plan_id) -> bool {

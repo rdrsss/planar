@@ -294,3 +294,142 @@ TEST_CASE("a read-only connection refuses a write", "[db][connection][error-path
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == 1);
 }
+
+// --- bind_text null-data normalisation (plan 996, task 6097) ---------------
+//
+// `sqlite3_bind_text(stmt, i, nullptr, 0, ...)` binds SQL NULL, and a
+// default-constructed `std::string_view` has a null `data()`. Callers cannot
+// tell the two empty views apart (`.empty()` is true for both), so binding
+// them differently is a silent-corruption trap: it drove 41 annotation tests
+// red at task 6094 and was papered over with a per-module `nn()` guard in six
+// engine buckets. These tests pin the root contract instead.
+//
+// Every assertion below reads `typeof(...)` out of SQLite rather than the
+// value, because that is the ONLY way to distinguish stored NULL from a
+// stored empty string -- comparing `column_text(...)` against `""` passes for
+// both and is exactly the assertion that let the original bug through.
+
+TEST_CASE("bind_text binds '' -- not SQL NULL -- for a default-constructed string_view", "[db][statement][bind_text][6097]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (id integer primary key, v text);"));
+
+  // The trap input: `.data()` really is null, so this is not a vacuous test.
+  std::string_view const defaulted{};
+  REQUIRE(defaulted.data() == nullptr);
+  REQUIRE(defaulted.empty());
+
+  auto stmt = conn->prepare("insert into t (id, v) values (1, ?);");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, defaulted));
+  REQUIRE(stmt->step().value() == planar::db::step_result::done);
+
+  auto read = conn->prepare("select typeof(v), v, v is null from t where id = 1;");
+  REQUIRE(read.has_value());
+  REQUIRE(read->step().value() == planar::db::step_result::row);
+  REQUIRE(read->column_text(0) == "text"); // would be "null" before the fix
+  REQUIRE(read->column_text(1).empty());
+  REQUIRE(read->column_int64(2) == 0);
+}
+
+TEST_CASE("bind_text is indistinguishable for null-data and non-null-data empty views", "[db][statement][bind_text][6097]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (id integer primary key, v text);"));
+
+  std::string_view const defaulted{};
+  std::string_view const from_literal{""};
+  // The two inputs differ in exactly one respect that no caller can observe.
+  REQUIRE(defaulted.data() == nullptr);
+  REQUIRE(from_literal.data() != nullptr);
+  REQUIRE(defaulted.empty());
+  REQUIRE(from_literal.empty());
+
+  auto ins = conn->prepare("insert into t (id, v) values (?, ?);");
+  REQUIRE(ins.has_value());
+  REQUIRE(ins->bind_int64(1, 1));
+  REQUIRE(ins->bind_text(2, defaulted));
+  REQUIRE(ins->step().value() == planar::db::step_result::done);
+  REQUIRE(ins->reset());
+  REQUIRE(ins->bind_int64(1, 2));
+  REQUIRE(ins->bind_text(2, from_literal));
+  REQUIRE(ins->step().value() == planar::db::step_result::done);
+
+  // Same storage class, same value, for both rows.
+  auto read = conn->prepare("select typeof(v) from t order by id;");
+  REQUIRE(read.has_value());
+  REQUIRE(read->step().value() == planar::db::step_result::row);
+  REQUIRE(read->column_text(0) == "text");
+  REQUIRE(read->step().value() == planar::db::step_result::row);
+  REQUIRE(read->column_text(0) == "text");
+
+  auto distinct = conn->prepare("select count(distinct typeof(v)) from t;");
+  REQUIRE(distinct.has_value());
+  REQUIRE(distinct->step().value() == planar::db::step_result::row);
+  REQUIRE(distinct->column_int64(0) == 1);
+}
+
+TEST_CASE("bind_text satisfies a NOT NULL column for a default-constructed string_view", "[db][statement][bind_text][6097]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (id integer primary key, v text not null);"));
+
+  std::string_view const defaulted{};
+  REQUIRE(defaulted.data() == nullptr);
+
+  // This is the exact shape that failed 41 annotation tests before `nn()`.
+  auto stmt = conn->prepare("insert into t (id, v) values (1, ?);");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, defaulted));
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+  REQUIRE(*stepped == planar::db::step_result::done);
+}
+
+TEST_CASE("bind_null still binds SQL NULL, so callers keep an explicit way to ask for it", "[db][statement][bind_text][6097]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (id integer primary key, v text);"));
+
+  auto stmt = conn->prepare("insert into t (id, v) values (1, ?);");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_null(1));
+  REQUIRE(stmt->step().value() == planar::db::step_result::done);
+
+  auto read = conn->prepare("select typeof(v), v is null from t where id = 1;");
+  REQUIRE(read.has_value());
+  REQUIRE(read->step().value() == planar::db::step_result::row);
+  REQUIRE(read->column_text(0) == "null");
+  REQUIRE(read->column_int64(1) == 1);
+}
+
+TEST_CASE("bind_text preserves embedded NUL bytes and does not stop at one", "[db][statement][bind_text][6097]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (id integer primary key, v text);"));
+
+  // The fix substitutes a pointer, never a length, so the explicit size
+  // still governs. A regression to a NUL-terminated bind would truncate to 1.
+  std::string const      embedded("a\0b", 3);
+  std::string_view const value{embedded};
+  REQUIRE(value.size() == 3);
+
+  auto stmt = conn->prepare("insert into t (id, v) values (1, ?);");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, value));
+  REQUIRE(stmt->step().value() == planar::db::step_result::done);
+
+  // `length(v)` on a TEXT value counts characters BEFORE the first NUL (it
+  // would answer 1 here regardless of what was stored), so the byte count
+  // has to be taken through a blob cast for this assertion to discriminate.
+  auto read = conn->prepare("select length(cast(v as blob)), typeof(v) from t where id = 1;");
+  REQUIRE(read.has_value());
+  REQUIRE(read->step().value() == planar::db::step_result::row);
+  REQUIRE(read->column_int64(0) == 3);
+  REQUIRE(read->column_text(1) == "text");
+}
