@@ -155,22 +155,52 @@ auto render_flag(const CLI::Option& opt, std::string_view source) -> std::string
   return out;
 }
 
+/// @brief Render one command's flag array: inherited first, then local,
+/// with a flag that appears in BOTH emitted ONCE.
+///
+/// The dedupe is load-bearing (plan 996, task 6040). etcli inherits a
+/// parent's flags into every child at parse time; CLI11 does not, so a
+/// child that must accept a parent flag has to REDECLARE it — which put
+/// the flag in `inherited_flags` and in `local_flags` both, and the
+/// catalog listed it twice. No group in this tree had a flag-carrying
+/// PARENT before `handoff`, so nothing had exercised the overlap and the
+/// duplicate went unnoticed until `src/cmd/catalog_parity.hpp` compared
+/// `planar handoff show` against the oracle.
+///
+/// INHERITED WINS the `source` label, because that is what the oracle
+/// emits for a flag the child gets from its parent: the whole point of the
+/// redeclaration is to reproduce inheritance CLI11 lacks, so labelling it
+/// `local` would describe the workaround rather than the surface.
+///
+/// Deduping cannot mask a genuine double-declaration: CLI11 throws
+/// `OptionAlreadyAdded` at tree-build time for two options with the same
+/// long name on ONE node, so an overlap can only ever be parent-vs-child.
+/// @param root The root app, for the parent-chain walk.
+/// @param node The command being rendered.
+/// @param path The command's root-relative path.
+/// @return The JSON array of flag objects.
 auto render_flags(const CLI::App& root, const CLI::App& node, std::span<std::string const> path) -> std::string {
-  std::string out   = "[";
-  bool        first = true;
-  for (const CLI::Option* opt : inherited_flags(root, path)) {
+  std::set<std::string, std::less<>> seen;
+  std::string                        out   = "[";
+  bool                               first = true;
+
+  auto emit = [&](const CLI::Option& opt, std::string_view source) {
+    auto name = canonical_name(opt);
+    if (!seen.insert(std::move(name)).second) {
+      return;
+    }
     if (!first) {
       out += ",";
     }
     first = false;
-    out += render_flag(*opt, "inherited");
+    out += render_flag(opt, source);
+  };
+
+  for (const CLI::Option* opt : inherited_flags(root, path)) {
+    emit(*opt, "inherited");
   }
   for (const CLI::Option* opt : local_flags(node)) {
-    if (!first) {
-      out += ",";
-    }
-    first = false;
-    out += render_flag(*opt, "local");
+    emit(*opt, "local");
   }
   out += "]";
   return out;

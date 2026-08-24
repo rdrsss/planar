@@ -251,6 +251,172 @@ auto add_workbench(CLI::App& root) -> void {
   add_json(*list);
 }
 
+/// @brief The `capture` group — transcribed from
+/// zig/src/cmd/planar/handlers/capture/cmd.zig. `commits` is absent: it is
+/// deferred with its git-subprocess dependency (task 6099), so this
+/// group's own help page lists six commands where the oracle lists seven.
+///
+/// `end`'s `<session-id>` positional is declared as a STRING even though
+/// it names an integer. That is deliberate and load-bearing: the oracle
+/// parses it in the handler and answers `session id must be an integer,
+/// got 'x'` with exit 2, and a `zig_int_validator()` here would answer
+/// CLI11's `ValidationError` wording instead.
+/// @param root The root app to attach the group to.
+auto add_capture(CLI::App& root) -> void {
+  CLI::App* capture = root.add_subcommand("capture", "Capture commands manage explicit session management and context\n"
+                                                     "  capture.\n\n"
+                                                     "  Automatic capture happens on every write command; use these\n"
+                                                     "  subcommands for explicit session management, narrative notes,\n"
+                                                     "  command history, and snapshots.");
+  capture->require_subcommand(0);
+
+  CLI::App* session = capture->add_subcommand("session", "Open or reuse a session for the current (vendor, "
+                                                         "vendor-session-id) tuple.");
+  add_string(*session, "--vendor");
+  add_string(*session, "--vendor-session-id");
+  add_string(*session, "--model");
+  add_int(*session, "--task");
+  add_json(*session);
+
+  CLI::App* end = capture->add_subcommand("end", "End the active or specified session.");
+  add_int(*end, "--session");
+  add_string(*end, "--summary");
+  end->add_option("session-id");
+  add_json(*end);
+
+  CLI::App* note = capture->add_subcommand("note", "Append a narrative note to the active session.");
+  add_int(*note, "--session");
+  note->add_option("body")->required();
+  add_json(*note);
+
+  CLI::App* command = capture->add_subcommand("command", "Append a command to the active session.");
+  add_int(*command, "--session");
+  add_string(*command, "--outcome");
+  command->add_option("command")->required();
+  add_json(*command);
+
+  CLI::App* file = capture->add_subcommand("file", "Attach a file to the active session.");
+  add_int(*file, "--session");
+  add_string(*file, "--role");
+  file->add_option("path")->required();
+  add_json(*file);
+
+  CLI::App* snapshot = capture->add_subcommand("snapshot", "Create a context snapshot.");
+  add_int(*snapshot, "--session");
+  add_int(*snapshot, "--task");
+  add_string(*snapshot, "--note");
+  add_string(*snapshot, "--next-action");
+  snapshot->add_option("body");
+  add_json(*snapshot);
+}
+
+/// @brief The `handoff` group — transcribed from
+/// zig/src/cmd/planar/handlers/handoff/cmd.zig.
+///
+/// A DUAL node: it has six subcommands AND its own `<task-id>` positional
+/// and handler. `require_subcommand(0)` allows the bare form, and
+/// `planar.cmd.planar.dispatch` routes it to the parent's handler because
+/// the table has an entry for `"handoff"` — see that module's header.
+///
+/// ## Inherited flags: redeclared on every child
+///
+/// `handoff` is the FIRST group in this tree whose PARENT carries flags,
+/// so it is the first to meet a CLI11/etcli difference that `workflow`,
+/// `annotate`, `workspace` and `workbench` never could. etcli inherits a
+/// parent's flags into every child both in the `schema` catalog AND at
+/// parse time; CLI11 does neither.
+///
+/// Two mechanisms were tried and only one survives:
+///
+///   `fallthrough()`   Lets an unknown option on the child fall back to the
+///                     parent, which fixes PARSING — but CLI11 then also
+///                     exposes the parent's options ON the child, so the
+///                     catalog gained duplicate flags AND the parent's
+///                     `task-id` POSITIONAL appeared on every child. Worse,
+///                     on `resume validate` — whose own positional is also
+///                     named `task-id` — CLI11 threw `OptionAlreadyAdded`
+///                     while the tree was still being BUILT, aborting every
+///                     invocation of the binary, `planar version` included.
+///   redeclaration     Declaring the parent's flags on each child fixes
+///                     parsing with no positional bleed. It DOES make the
+///                     flag appear twice in the catalog — once inherited,
+///                     once local — and that duplication is a
+///                     `planar.cliapp.schema` bug, now fixed there (see its
+///                     `render_flags`) rather than worked around here.
+///
+/// So: declared on the parent AND on every child. Any future group with
+/// parent-level flags needs the same.
+/// @param root The root app to attach the group to.
+auto add_handoff(CLI::App& root) -> void {
+  CLI::App* handoff =
+      root.add_subcommand("handoff", "Capture a context snapshot for the current session and atomically:\n"
+                                     "    1. Insert a context_snapshots row.\n"
+                                     "    2. Insert a handoffs row with status='pending'.\n"
+                                     "    3. Validate the handoff (pending \xe2\x86\x92 validated, validated_at set).\n\n"
+                                     "  Subcommands manage the handoff lifecycle: create / validate /\n"
+                                     "  consume / abandon / list / show.");
+  handoff->require_subcommand(0);
+  add_string(*handoff, "--vendor");
+  add_string(*handoff, "--note");
+  add_json(*handoff);
+  handoff->add_option("task-id");
+
+  // The two parent flags every child redeclares, plus --json. See above.
+  auto inherited = [](CLI::App& app) {
+    add_string(app, "--vendor");
+    add_string(app, "--note");
+    add_json(app);
+  };
+
+  CLI::App* create = handoff->add_subcommand("create", "Create a handoff from an existing snapshot.");
+  inherited(*create);
+  create->add_option("snapshot-id")->required();
+
+  CLI::App* validate = handoff->add_subcommand("validate", "Validate a pending handoff.");
+  inherited(*validate);
+  validate->add_option("handoff-id")->required();
+
+  CLI::App* consume = handoff->add_subcommand("consume", "Mark a handoff as consumed.");
+  inherited(*consume);
+  add_int(*consume, "--session");
+  consume->add_option("handoff-id")->required();
+
+  CLI::App* abandon = handoff->add_subcommand("abandon", "Abandon a non-terminal handoff.");
+  inherited(*abandon);
+  add_string(*abandon, "--reason");
+  abandon->add_option("handoff-id")->required();
+
+  CLI::App* list = handoff->add_subcommand("list", "List handoffs.");
+  inherited(*list);
+  add_string(*list, "--status");
+
+  CLI::App* show = handoff->add_subcommand("show", "Show a handoff's details.");
+  inherited(*show);
+  show->add_option("handoff-id")->required();
+}
+
+/// @brief The `resume` group — transcribed from
+/// zig/src/cmd/planar/handlers/resume/cmd.zig. Also a DUAL node.
+///
+/// The parent's handler is a `not_implemented` placeholder: the 8-section
+/// packet is deferred with its four unported layer-2 dependencies. It is
+/// still DECLARED here, positional included, so the catalog comparison sees
+/// the same surface the oracle declares and so the bare verb fails at exit
+/// 64 rather than silently rendering a help page. See
+/// `planar.cmd.planar.handlers.resume`.
+/// @param root The root app to attach the group to.
+auto add_resume(CLI::App& root) -> void {
+  CLI::App* resume = root.add_subcommand("resume", "Produce a structured resume packet for the specified task.");
+  resume->require_subcommand(0);
+  add_json(*resume);
+
+  resume->add_option("task-id");
+
+  CLI::App* validate = resume->add_subcommand("validate", "Check if a task is resumable.");
+  add_json(*validate);
+  validate->add_option("task-id")->required();
+}
+
 } // namespace
 
 auto root_app() -> std::unique_ptr<CLI::App> {
@@ -265,6 +431,9 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_skills(*app);
   add_workspace(*app);
   add_workbench(*app);
+  add_capture(*app);
+  add_handoff(*app);
+  add_resume(*app);
   return app;
 }
 

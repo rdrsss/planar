@@ -38,6 +38,37 @@
 /// (`ExtrasError`, `RequiredError`, `ValidationError`), so the stderr line
 /// needed no translation table at all.
 ///
+/// ## A node can be a GROUP and a LEAF at once (plan 996, task 6040)
+///
+/// `handoff` and `resume` are both. Each carries subcommands AND its own
+/// `run` with its own positional, and the oracle DISPATCHES the parent
+/// when no child is named:
+///
+///     $ planar handoff        -> exit 2, "no active session (run
+///                                `planar capture session` first)"
+///     $ planar resume         -> exit 1, "no active task in cwd-derived
+///                                scope; pass <task-id> explicitly"
+///     $ planar capture        -> exit 0, help page
+///     $ planar feedback       -> exit 0, help page
+///
+/// The last two are pure groups, so the previous rule — "a matched node
+/// with children renders help" — was right for every verb this binary had
+/// before this task and wrong for these two. The rule is therefore
+/// narrowed rather than replaced: a matched node with children renders
+/// help ONLY WHEN THE TABLE HAS NO ENTRY FOR IT. A registered handler on a
+/// group node means the group is dual and the handler wins.
+///
+/// That keeps `capture`, `feedback`, `workbench`, `workflow`, `annotate`,
+/// `workspace` and bare `planar` on the help path (none is registered) and
+/// routes `handoff` / `resume` to their handlers, with no per-verb special
+/// case anywhere.
+///
+/// `unreachable_handlers` widened to match: it walks EVERY node rather
+/// than only childless ones, because a handler on a dual group node is now
+/// genuinely reachable. `unregistered_leaves` did NOT widen — every
+/// childless leaf must still have a handler; a group having one stays
+/// optional.
+///
 /// ## The bare-invocation TTY cockpit gate is NOT reproduced
 ///
 /// zig/src/cmd/planar/main.zig routes a bare `planar` on a TTY to the
@@ -71,11 +102,15 @@ export auto handlers() -> handler_table;
 /// @return The unwired leaf keys, in tree-walk order.
 export auto unregistered_leaves(const CLI::App& root, const handler_table& table) -> std::vector<std::string>;
 
-/// @brief Every table key that does not correspond to a leaf in `root`.
+/// @brief Every table key that does not correspond to ANY node in `root`.
 ///
 /// The other direction of the same gate: a handler registered under a
 /// misspelled or removed path is dead code that no argv can reach, and
 /// looks exactly like working coverage until someone tries the verb.
+///
+/// Walks every node, not only childless ones, because a dual group-and-leaf
+/// node (`handoff`, `resume`) legitimately carries a handler — see this
+/// module's header. A key naming no node at all is still dead.
 /// @param root The command tree.
 /// @param table The handler table.
 /// @return The unreachable table keys, sorted.

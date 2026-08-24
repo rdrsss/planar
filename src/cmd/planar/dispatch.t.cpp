@@ -266,3 +266,66 @@ TEST_CASE("report composes a message body but writes a rendered payload verbatim
       rendered_out);
   CHECK(rendered_out.str() == "error: workflow 'nope' not found\n");
 }
+
+// --- dual group-and-leaf nodes (plan 996, task 6040) -------------------
+//
+// `handoff` and `resume` each carry subcommands AND their own handler.
+// Before this task, dispatch rendered a help page for ANY matched node
+// with children, which would have made `planar handoff 2` exit 0 with a
+// help page where the oracle runs the ritual. Oracle-captured:
+//
+//   $Z handoff   -> exit 2, error: no active session (run `planar capture
+//                   session` first)
+//   $Z resume    -> exit 1, error: no active task in cwd-derived scope;
+//                   pass <task-id> explicitly
+//   $Z capture   -> exit 0, help page      (a PURE group)
+//
+// The narrowed rule is "help only when the table has no entry for the
+// node". These cases pin both sides of it.
+
+TEST_CASE("a dual group-and-leaf node dispatches to its own handler", "[cmd][dispatch][registration]") {
+  auto const tree  = planar::cmd::root_app();
+  auto const table = planar::cmd::handlers();
+
+  // Both parents are registered even though `cliapp::leaf_keys` — which
+  // only counts CHILDLESS nodes — does not list them.
+  CHECK(table.contains("handoff"));
+  CHECK(table.contains("resume"));
+
+  auto const leaves = planar::cliapp::leaf_keys(*tree);
+  CHECK(std::ranges::find(leaves, "handoff") == leaves.end());
+  CHECK(std::ranges::find(leaves, "resume") == leaves.end());
+
+  // ...and `unreachable_handlers` must NOT call them dead. It walks every
+  // node, not just leaves, precisely so this holds.
+  auto const dead = planar::cmd::unreachable_handlers(*tree, table);
+  CHECK(std::ranges::find(dead, "handoff") == dead.end());
+  CHECK(std::ranges::find(dead, "resume") == dead.end());
+}
+
+TEST_CASE("a PURE group with no handler still renders help", "[cmd][dispatch]") {
+  // The other side of the narrowed rule. `capture` has six children and no
+  // handler of its own, so it must keep the help-page behaviour.
+  auto const table = planar::cmd::handlers();
+  REQUIRE_FALSE(table.contains("capture"));
+
+  auto const got = dispatch({"capture"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.out.contains("session"));
+  CHECK(got.out.contains("snapshot"));
+}
+
+TEST_CASE("unreachable_handlers still reports a key naming no node at all", "[cmd][dispatch][registration]") {
+  // Widening the walk from leaves to every node must NOT have blunted the
+  // gate: a key that names nothing is still dead. Without this case the
+  // widening could have been "return {} always" and every gate above would
+  // pass.
+  auto const tree  = planar::cmd::root_app();
+  auto       table = planar::cmd::handlers();
+  table.emplace("handoff nosuchchild",
+                [](context&, const planar::cliapp::parsed_args&) -> planar::cmd::handler_result { return {}; });
+  auto const dead = planar::cmd::unreachable_handlers(*tree, table);
+  REQUIRE(dead.size() == 1);
+  CHECK(dead.front() == "handoff nosuchchild");
+}

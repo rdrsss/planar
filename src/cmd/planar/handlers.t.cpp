@@ -1141,3 +1141,566 @@ TEST_CASE("workbench archive then restore round-trips the tree", "[cmd][handlers
   CHECK(restored.out == std::format("restored: {} (plan {})\n", dir.string(), plan));
   CHECK(std::filesystem::exists(dir / "README.md"));
 }
+
+// =========================================================================
+// Agent-lifecycle operator verbs (plan 996, task 6040)
+// =========================================================================
+//
+// ORACLE PROVENANCE. Captured by running the Zig binary in a pinned scratch
+// arena (`cd` FIRST, then `env` — `VAR=x cd dir && bin` does NOT export
+// past the `&&` on this platform's /bin/sh) and, for the seeded cases, by
+// seeding with the ORACLE because this tree has no planning verbs to seed
+// with:
+//
+//   $Z capture session --json      -> {"ok":true,"id":1,"vendor":"cli"}
+//   $Z capture session             -> session 1 opened (vendor: cli)
+//   $Z capture note "hello" --json -> {"ok":true,"session_id":1}
+//   $Z capture note "second"       -> captured note in session 1
+//   $Z capture command "ls -la" --outcome ok --json -> {"ok":true,"session_id":1}
+//   $Z capture file /tmp/x.txt --role input --json  -> {"ok":true,"session_id":1}
+//   $Z capture snapshot --note "b" --json
+//       -> {"ok":true,"id":1,"session_id":1,"vendor":"cli"}
+//   $Z capture end --json          -> {"ok":true,"id":1}
+//   $Z capture end 1 --json        -> exit 1, error: session 1 is already ended
+//   $Z capture end abc --json      -> exit 2,
+//                                     error: session id must be an integer, got 'abc'
+//   $Z capture end 999 --json      -> exit 1, error: session 999 not found
+//   $Z capture end                 -> exit 1, error: no active session
+//   $Z handoff                     -> exit 2, error: no active session
+//                                     (run `planar capture session` first)
+//   $Z handoff list --json         -> ZERO BYTES
+//   $Z handoff list                -> no handoffs
+//   $Z handoff show 1 --json       -> exit 1, error: handoff 1 not found
+//   $Z handoff show abc            -> exit 2,
+//                                     error: handoff id must be an integer, got 'abc'
+//   $Z handoff list --status bogus -> exit 2, error: unknown handoff status 'bogus'
+//   $Z handoff create 99           -> exit 1, error: snapshot 99 not found
+//   $Z resume validate 999 --json  -> exit 1, ZERO stdout,
+//                                     error: task 999 not found
+//   $Z resume validate abc         -> exit 2,
+//                                     error: task id must be an integer, got 'abc'
+//
+// The C++ binary was diffed against the oracle over all of the above plus
+// the full handoff lifecycle in two identically-seeded arenas; every case
+// matched byte-for-byte once wall-clock timestamps were normalized.
+
+/// @brief Seed a task with an explicit `next_action` directly, since no
+/// planning verb is ported into this binary.
+namespace {
+
+auto seed_task(const fixture& fx, std::string_view title, std::optional<std::string_view> next_action) -> std::int64_t {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn).has_value());
+  if (next_action.has_value()) {
+    REQUIRE(conn->execute(std::format("insert into tasks (scope_kind, title, status, priority, next_action) "
+                                      "values ('global', '{}', 'todo', 100, '{}')",
+                                      title, *next_action))
+                .has_value());
+  } else {
+    REQUIRE(conn->execute(std::format("insert into tasks (scope_kind, title, status, priority) "
+                                      "values ('global', '{}', 'todo', 100)",
+                                      title))
+                .has_value());
+  }
+  auto stmt = conn->prepare("select max(id) from tasks");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  return stmt->column_int64(0);
+}
+
+} // namespace
+
+TEST_CASE("capture session opens a session and reuses it on a second call", "[cmd][handlers][capture]") {
+  auto const fx = make_fixture("capsession");
+
+  auto const first = dispatch(fx, {"capture", "session", "--json"});
+  CHECK(first.code == 0);
+  CHECK(first.out == "{\"ok\":true,\"id\":1,\"vendor\":\"cli\"}\n");
+  CHECK(first.err.empty());
+  CHECK(first.db_open);
+
+  // Same vendor tuple -> the SAME row id. `capture session` is open-or-reuse.
+  auto const second = dispatch(fx, {"capture", "session"});
+  CHECK(second.code == 0);
+  CHECK(second.out == "session 1 opened (vendor: cli)\n");
+}
+
+TEST_CASE("capture session honours --vendor over the environment", "[cmd][handlers][capture]") {
+  auto fx                  = make_fixture("capvendor");
+  fx.vars["PLANAR_VENDOR"] = "claude";
+
+  // The environment supplies the vendor when no flag does...
+  auto const from_env = dispatch(fx, {"capture", "session", "--json"});
+  CHECK(from_env.code == 0);
+  CHECK(from_env.out == "{\"ok\":true,\"id\":1,\"vendor\":\"claude\"}\n");
+
+  // ...and the flag wins over it, opening a DIFFERENT session because the
+  // vendor tuple differs.
+  auto const from_flag = dispatch(fx, {"capture", "session", "--vendor", "codex", "--json"});
+  CHECK(from_flag.code == 0);
+  CHECK(from_flag.out == "{\"ok\":true,\"id\":2,\"vendor\":\"codex\"}\n");
+}
+
+TEST_CASE("an EMPTY PLANAR_VENDOR reads as absent, not as an empty vendor", "[cmd][handlers][capture]") {
+  auto fx                             = make_fixture("capemptyvendor");
+  fx.vars["PLANAR_VENDOR"]            = "";
+  fx.vars["PLANAR_VENDOR_SESSION_ID"] = "";
+
+  // The Zig original's `if (v.len > 0)` guard. Without it the vendor would
+  // be "" and the JSON would read `"vendor":""`.
+  auto const got = dispatch(fx, {"capture", "session", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out == "{\"ok\":true,\"id\":1,\"vendor\":\"cli\"}\n");
+  CHECK_FALSE(got.out.contains("vendor_session_id"));
+}
+
+TEST_CASE("capture session surfaces the vendor session id and task binding", "[cmd][handlers][capture]") {
+  auto const fx   = make_fixture("capvsid");
+  auto const task = seed_task(fx, "Bound task", "do it");
+
+  auto const got = dispatch(
+      fx, {"capture", "session", "--vendor-session-id", "abc", "--model", "m1", "--task", std::to_string(task), "--json"});
+  CHECK(got.code == 0);
+  // `--model` is accepted and stored but does NOT appear in the envelope.
+  CHECK(got.out ==
+        std::format("{{\"ok\":true,\"id\":1,\"vendor\":\"cli\",\"vendor_session_id\":\"abc\",\"task_id\":{}}}\n", task));
+}
+
+TEST_CASE("capture note/command/file create a session when none exists", "[cmd][handlers][capture]") {
+  auto const fx = make_fixture("capappend");
+
+  // No prior `capture session`: the append leaves resolve through
+  // `ensure_active`, which CREATES. This is why `planar capture note "x"`
+  // works on a fresh database.
+  auto const noted = dispatch(fx, {"capture", "note", "hello", "--json"});
+  CHECK(noted.code == 0);
+  CHECK(noted.out == "{\"ok\":true,\"session_id\":1}\n");
+
+  auto const text = dispatch(fx, {"capture", "note", "second"});
+  CHECK(text.out == "captured note in session 1\n");
+
+  auto const commanded = dispatch(fx, {"capture", "command", "ls -la", "--outcome", "ok", "--json"});
+  CHECK(commanded.code == 0);
+  CHECK(commanded.out == "{\"ok\":true,\"session_id\":1}\n");
+
+  auto const filed = dispatch(fx, {"capture", "file", "/tmp/x.txt", "--role", "input", "--json"});
+  CHECK(filed.code == 0);
+
+  // The composed bodies are the observable part: `--outcome` puts the
+  // outcome on a SECOND LINE, `--role` puts the role in brackets.
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select prefix, body from session_entries order by ordinal");
+  REQUIRE(stmt.has_value());
+  std::vector<std::pair<std::string, std::string>> entries;
+  while (true) {
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    if (*stepped != planar::db::step_result::row) {
+      break;
+    }
+    entries.emplace_back(stmt->column_text(0), stmt->column_text(1));
+  }
+  REQUIRE(entries.size() == 4);
+  CHECK(entries[0] == std::pair<std::string, std::string>{"note", "hello"});
+  CHECK(entries[1] == std::pair<std::string, std::string>{"note", "second"});
+  CHECK(entries[2] == std::pair<std::string, std::string>{"command", "ls -la\noutcome: ok"});
+  CHECK(entries[3] == std::pair<std::string, std::string>{"file", "/tmp/x.txt [input]"});
+}
+
+TEST_CASE("capture end refuses when there is no active session", "[cmd][handlers][capture]") {
+  auto const fx = make_fixture("capendnone");
+  // `end` resolves through `active_for_vendor`, which does NOT create.
+  // Collapsing it onto the append leaves' `ensure_active` would make this
+  // silently open a session and end it.
+  auto const got = dispatch(fx, {"capture", "end"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: no active session\n");
+}
+
+TEST_CASE("capture end: the three id paths and their refusals", "[cmd][handlers][capture]") {
+  auto const fx = make_fixture("capend");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+
+  auto const bad = dispatch(fx, {"capture", "end", "abc", "--json"});
+  CHECK(bad.code == 2);
+  CHECK(bad.out.empty());
+  CHECK(bad.err == "error: session id must be an integer, got 'abc'\n");
+
+  auto const absent = dispatch(fx, {"capture", "end", "999", "--json"});
+  CHECK(absent.code == 1);
+  CHECK(absent.err == "error: session 999 not found\n");
+
+  auto const ended = dispatch(fx, {"capture", "end", "--summary", "wrapped", "--json"});
+  CHECK(ended.code == 0);
+  CHECK(ended.out == "{\"ok\":true,\"id\":1}\n");
+
+  auto const again = dispatch(fx, {"capture", "end", "1", "--json"});
+  CHECK(again.code == 1);
+  CHECK(again.err == "error: session 1 is already ended\n");
+}
+
+TEST_CASE("capture snapshot inherits next_action from the bound task", "[cmd][handlers][capture]") {
+  auto const fx   = make_fixture("capsnap");
+  auto const task = seed_task(fx, "Has action", "continue the port");
+
+  auto const got = dispatch(fx, {"capture", "snapshot", "--task", std::to_string(task), "--note", "body", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out == std::format("{{\"ok\":true,\"id\":1,\"session_id\":1,\"vendor\":\"cli\",\"task_id\":{}}}\n", task));
+
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select body, next_action from context_snapshots where id = 1");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  CHECK(stmt->column_text(0) == "body");
+  // No `--next-action` was passed; the task's own column supplied it.
+  CHECK(stmt->column_text(1) == "continue the port");
+}
+
+TEST_CASE("capture snapshot: --note beats the positional body", "[cmd][handlers][capture]") {
+  auto const fx = make_fixture("capsnapnote");
+
+  auto const got = dispatch(fx, {"capture", "snapshot", "positional", "--note", "flagwins", "--json"});
+  CHECK(got.code == 0);
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select body from context_snapshots where id = 1");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  CHECK(stmt->column_text(0) == "flagwins");
+}
+
+TEST_CASE("resume validate: absent task writes NOTHING to stdout", "[cmd][handlers][resume]") {
+  auto const fx  = make_fixture("rvabsent");
+  auto const got = dispatch(fx, {"resume", "validate", "999", "--json"});
+  CHECK(got.code == 1);
+  // The distinguishing property: "absent" emits no payload at all, where
+  // "present but not resumable" emits a full one. A caller can tell them
+  // apart without parsing stderr.
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: task 999 not found\n");
+}
+
+TEST_CASE("resume validate: a bad id is exit 2 from the HANDLER", "[cmd][handlers][resume]") {
+  auto const fx  = make_fixture("rvbad");
+  auto const got = dispatch(fx, {"resume", "validate", "abc", "--json"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  // The positional is declared as a STRING in the tree precisely so this
+  // wording survives; an int validator would answer CLI11's instead.
+  CHECK(got.err == "error: task id must be an integer, got 'abc'\n");
+}
+
+TEST_CASE("resume validate: a NON-resumable task still writes its payload, then exits 1", "[cmd][handlers][resume]") {
+  auto const fx   = make_fixture("rvfail");
+  auto const task = seed_task(fx, "No action", std::nullopt);
+
+  auto const got = dispatch(fx, {"resume", "validate", std::to_string(task), "--json"});
+  CHECK(got.code == 1);
+  CHECK(got.err == std::format("error: task {} is not resumable\n", task));
+  // THE POINT: stdout carries the diagnosis even though the exit is
+  // non-zero. A caller reading stdout only on exit 0 loses exactly the
+  // failure list it needs.
+  CHECK(got.out == std::format("{{\"task_id\":{},\"resumable\":false,\"failures\":["
+                               "{{\"check\":\"next_action\",\"message\":\"next_action is null\","
+                               "\"remediation\":\"planar task update {} --next-action \\\"<text>\\\"\"}},"
+                               "{{\"check\":\"snapshot\",\"message\":\"no context snapshot found\","
+                               "\"remediation\":\"planar capture snapshot --task {}\"}}]}}\n",
+                               task, task, task));
+}
+
+TEST_CASE("resume validate: text form lists each failure with its remediation", "[cmd][handlers][resume]") {
+  auto const fx   = make_fixture("rvfailtext");
+  auto const task = seed_task(fx, "No action", std::nullopt);
+
+  auto const got = dispatch(fx, {"resume", "validate", std::to_string(task)});
+  CHECK(got.code == 1);
+  CHECK(got.out == std::format("FAIL task:{} is not resumable:\n"
+                               "  - next_action is null \xe2\x86\x92 run: planar task update {} "
+                               "--next-action \"<text>\"\n"
+                               "  - no context snapshot found \xe2\x86\x92 run: planar capture snapshot --task {}\n",
+                               task, task, task));
+}
+
+TEST_CASE("resume validate: the full gate goes green once BOTH rules are met", "[cmd][handlers][resume]") {
+  auto const fx   = make_fixture("rvpass");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+
+  // next_action alone is not enough.
+  auto const halfway = dispatch(fx, {"resume", "validate", std::to_string(task), "--json"});
+  CHECK(halfway.code == 1);
+  CHECK(halfway.out.contains("\"check\":\"snapshot\""));
+  CHECK_FALSE(halfway.out.contains("\"check\":\"next_action\""));
+
+  // A SESSION-level snapshot still is not enough — it has no task binding.
+  REQUIRE(dispatch(fx, {"capture", "snapshot", "--note", "sessionwide"}).code == 0);
+  auto const still = dispatch(fx, {"resume", "validate", std::to_string(task), "--json"});
+  CHECK(still.code == 1);
+  CHECK(still.out.contains("\"check\":\"snapshot\""));
+
+  // A TASK-SCOPED snapshot flips it.
+  REQUIRE(dispatch(fx, {"capture", "snapshot", "--task", std::to_string(task), "--note", "checkpoint"}).code == 0);
+  auto const green = dispatch(fx, {"resume", "validate", std::to_string(task), "--json"});
+  CHECK(green.code == 0);
+  CHECK(green.err.empty());
+  // `null`, NOT `[]`. The handoff composite emits `[]` for this same state.
+  CHECK(green.out == std::format("{{\"task_id\":{},\"resumable\":true,\"failures\":null}}\n", task));
+
+  auto const green_text = dispatch(fx, {"resume", "validate", std::to_string(task)});
+  CHECK(green_text.code == 0);
+  CHECK(green_text.out == std::format("OK task:{} is resume-ready\n", task));
+}
+
+TEST_CASE("resume validate: a DONE task is still resumable", "[cmd][handlers][resume]") {
+  auto const fx   = make_fixture("rvdone");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  REQUIRE(dispatch(fx, {"capture", "snapshot", "--task", std::to_string(task), "--note", "cp"}).code == 0);
+
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(std::format("update tasks set status = 'done' where id = {}", task)).has_value());
+
+  // Status is NOT a resumability rule. Oracle-probed by driving a task to
+  // `done` and re-validating.
+  auto const got = dispatch(fx, {"resume", "validate", std::to_string(task), "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out == std::format("{{\"task_id\":{},\"resumable\":true,\"failures\":null}}\n", task));
+}
+
+TEST_CASE("the resume PACKET is not ported and says so with exit 64", "[cmd][handlers][resume]") {
+  auto const fx = make_fixture("rvpacket");
+  // Registered on purpose: an UNregistered dual node would fall to
+  // dispatch's help path and exit 0, a silent success where the oracle
+  // produces a packet. See `planar.cmd.planar.handlers.resume`.
+  auto const bare = dispatch(fx, {"resume"});
+  CHECK(bare.code == 64);
+  CHECK(bare.err == "error: not implemented yet\n");
+
+  auto const with_id = dispatch(fx, {"resume", "2", "--json"});
+  CHECK(with_id.code == 64);
+}
+
+TEST_CASE("handoff refuses without an active session and does NOT create one", "[cmd][handlers][handoff]") {
+  auto const fx  = make_fixture("honosession");
+  auto const got = dispatch(fx, {"handoff"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: no active session (run `planar capture session` first)\n");
+
+  // The refusal is the contract (plan 314 task 2296). Auto-starting a
+  // session here would mask it — so assert no session row was written.
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select count(*) from sessions");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  CHECK(stmt->column_int64(0) == 0);
+}
+
+TEST_CASE("handoff runs the four-step ritual and reports resumability", "[cmd][handlers][handoff]") {
+  auto const fx   = make_fixture("horitual");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+  REQUIRE(dispatch(fx, {"capture", "snapshot", "--task", std::to_string(task), "--note", "cp"}).code == 0);
+
+  auto const got = dispatch(fx, {"handoff", std::to_string(task), "--json"});
+  CHECK(got.code == 0);
+  // `"failures":[]` — NOT `null`, which is what `resume validate` emits for
+  // the same state. Two renderers, deliberately different.
+  CHECK(got.out == "{\"ok\":true,\"snapshot_id\":2,\"handoff_id\":1,\"status\":\"validated\","
+                   "\"resumable\":true,\"failures\":[]}\n");
+
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  // Step 4's session note landed.
+  auto stmt = conn->prepare("select count(*) from session_entries where body = 'handoff captured: snapshot=2 handoff=1'");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  CHECK(stmt->column_int64(0) == 1);
+}
+
+TEST_CASE("handoff on a NON-resumable task still succeeds and still exits 0", "[cmd][handlers][handoff]") {
+  auto const fx   = make_fixture("honotresumable");
+  auto const task = seed_task(fx, "No action", std::nullopt);
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+
+  // The resumability check here is ADVISORY. Only `resume validate` turns
+  // it into a non-zero exit.
+  auto const got = dispatch(fx, {"handoff", std::to_string(task), "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("\"resumable\":false"));
+  CHECK(got.out.contains("\"check\":\"next_action\""));
+  CHECK(got.out.contains("\"status\":\"validated\""));
+
+  auto const text = dispatch(fx, {"handoff", std::to_string(task)});
+  CHECK(text.code == 0);
+  CHECK(text.out.contains("  validate: FAIL \xe2\x80\x94 task is not resume-ready\n"));
+}
+
+TEST_CASE("handoff copies worktree context off the ACTIVE claim", "[cmd][handlers][handoff]") {
+  auto const fx   = make_fixture("howorktree");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  // A RELEASED claim must be ignored and an ACTIVE one used, which is the
+  // whole point of the status filter in `resolve_worktree_for_task`.
+  REQUIRE(conn->execute(std::format("insert into agent_work_claims "
+                                    "(claim_token, session_id, entity_kind, entity_id, claim_scope, status, vendor, "
+                                    " worktree_path, repo_root, branch, lease_expires_at) "
+                                    "values ('a0', 1, 'task', {}, 'exclusive', 'released', 'cli', "
+                                    "        '/tmp/old', '/tmp/oldrepo', 'old', '2030-01-01T00:00:00.000Z')",
+                                    task))
+              .has_value());
+  REQUIRE(conn->execute(std::format("insert into agent_work_claims "
+                                    "(claim_token, session_id, entity_kind, entity_id, claim_scope, status, vendor, "
+                                    " worktree_path, repo_root, branch, lease_expires_at) "
+                                    "values ('a1', 1, 'task', {}, 'exclusive', 'active', 'cli', "
+                                    "        '/tmp/wt', '/tmp/repo', 'feature/x', '2030-01-01T00:00:00.000Z')",
+                                    task))
+              .has_value());
+
+  REQUIRE(dispatch(fx, {"handoff", std::to_string(task), "--json"}).code == 0);
+
+  auto const shown = dispatch(fx, {"handoff", "show", "1", "--json"});
+  CHECK(shown.code == 0);
+  CHECK(shown.out.contains("\"worktree_path\":\"/tmp/wt\""));
+  CHECK(shown.out.contains("\"repo_root\":\"/tmp/repo\""));
+  CHECK(shown.out.contains("\"branch\":\"feature/x\""));
+  CHECK_FALSE(shown.out.contains("/tmp/old"));
+}
+
+TEST_CASE("handoff list defaults to PENDING, which can be zero bytes", "[cmd][handlers][handoff][terminator]") {
+  auto const fx   = make_fixture("holist");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+
+  auto const empty_json = dispatch(fx, {"handoff", "list", "--json"});
+  CHECK(empty_json.code == 0);
+  CHECK(empty_json.out.empty());
+  auto const empty_text = dispatch(fx, {"handoff", "list"});
+  CHECK(empty_text.out == "no handoffs\n");
+
+  // The composite leaves the handoff VALIDATED, so the default filter still
+  // finds nothing even though a handoff now exists. This is the trap.
+  REQUIRE(dispatch(fx, {"handoff", std::to_string(task), "--json"}).code == 0);
+  auto const still_empty = dispatch(fx, {"handoff", "list", "--json"});
+  CHECK(still_empty.code == 0);
+  CHECK(still_empty.out.empty());
+
+  auto const validated = dispatch(fx, {"handoff", "list", "--status", "validated"});
+  CHECK(validated.code == 0);
+  CHECK(validated.out == "id    snapshot  from-vendor  to-vendor    status\n"
+                         "1     1         cli          -            validated\n");
+}
+
+TEST_CASE("handoff list --status parses a comma list and refuses an unknown token", "[cmd][handlers][handoff]") {
+  auto const fx   = make_fixture("holiststatus");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+  REQUIRE(dispatch(fx, {"handoff", std::to_string(task), "--json"}).code == 0);
+
+  // Spaces around tokens are trimmed; empty tokens are skipped.
+  auto const multi = dispatch(fx, {"handoff", "list", "--status", "pending, validated,", "--json"});
+  CHECK(multi.code == 0);
+  CHECK(std::ranges::count(multi.out, '\n') == 1);
+
+  auto const bad = dispatch(fx, {"handoff", "list", "--status", "bogus", "--json"});
+  CHECK(bad.code == 2);
+  CHECK(bad.err == "error: unknown handoff status 'bogus'\n");
+}
+
+TEST_CASE("handoff lifecycle verbs and their terminal refusals", "[cmd][handlers][handoff]") {
+  auto const fx   = make_fixture("holifecycle");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+  REQUIRE(dispatch(fx, {"handoff", std::to_string(task), "--json"}).code == 0);
+
+  auto const consumed = dispatch(fx, {"handoff", "consume", "1", "--session", "1", "--json"});
+  CHECK(consumed.code == 0);
+  CHECK(consumed.out.contains("\"status\":\"consumed\""));
+  CHECK(consumed.out.contains("\"to_session_id\":1"));
+
+  // Each terminal refusal has its OWN wording, and they are not
+  // interchangeable.
+  auto const revalidate = dispatch(fx, {"handoff", "validate", "1", "--json"});
+  CHECK(revalidate.code == 1);
+  CHECK(revalidate.err == "error: handoff 1 cannot transition to validated\n");
+
+  auto const abandoning = dispatch(fx, {"handoff", "abandon", "1", "--json"});
+  CHECK(abandoning.code == 1);
+  CHECK(abandoning.err == "error: handoff 1 is terminal; cannot abandon\n");
+
+  // BUT re-consuming a CONSUMED handoff SUCCEEDS, and that is not a bug in
+  // this port — it is the matrix's identity shortcut (`from == to` returns
+  // success before the per-kind switch runs), and the UPDATE then re-stamps
+  // `consumed_at`. Verified against the oracle directly: `handoff consume 1`
+  // on an already-consumed handoff exits 0 there too. `terminal` therefore
+  // means "no edges to a DIFFERENT status", not "frozen".
+  auto const reconsume = dispatch(fx, {"handoff", "consume", "1", "--json"});
+  CHECK(reconsume.code == 0);
+  CHECK(reconsume.err.empty());
+  CHECK(reconsume.out.contains("\"status\":\"consumed\""));
+
+  // And the same shortcut on the other terminal: re-abandoning succeeds.
+  REQUIRE(dispatch(fx, {"handoff", "create", "1", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"handoff", "abandon", "2", "--json"}).code == 0);
+  auto const reabandon = dispatch(fx, {"handoff", "abandon", "2", "--json"});
+  CHECK(reabandon.code == 0);
+  CHECK(reabandon.out.contains("\"status\":\"abandoned\""));
+}
+
+TEST_CASE("handoff create anchors on an existing snapshot", "[cmd][handlers][handoff]") {
+  auto const fx   = make_fixture("hocreate");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  REQUIRE(dispatch(fx, {"capture", "snapshot", "--task", std::to_string(task), "--note", "cp"}).code == 0);
+
+  auto const absent = dispatch(fx, {"handoff", "create", "99", "--json"});
+  CHECK(absent.code == 1);
+  CHECK(absent.err == "error: snapshot 99 not found\n");
+
+  auto const created = dispatch(fx, {"handoff", "create", "1", "--vendor", "codex", "--json"});
+  CHECK(created.code == 0);
+  // `create` leaves the handoff PENDING — it is the escape hatch, not the
+  // ritual, so it does not validate.
+  CHECK(created.out.contains("\"status\":\"pending\""));
+  CHECK(created.out.contains("\"to_vendor\":\"codex\""));
+}
+
+TEST_CASE("handoff show and the id-parse refusals", "[cmd][handlers][handoff]") {
+  auto const fx = make_fixture("hoshow");
+
+  auto const absent = dispatch(fx, {"handoff", "show", "1", "--json"});
+  CHECK(absent.code == 1);
+  CHECK(absent.err == "error: handoff 1 not found\n");
+
+  auto const bad = dispatch(fx, {"handoff", "show", "abc"});
+  CHECK(bad.code == 2);
+  CHECK(bad.err == "error: handoff id must be an integer, got 'abc'\n");
+
+  // Zig `parseInt` accepts underscore separators, so `1_0` is 10 — the
+  // single `parse_int64_zig` in `planar.cliapp.args` is what preserves it.
+  auto const separators = dispatch(fx, {"handoff", "show", "1_0"});
+  CHECK(separators.code == 1);
+  CHECK(separators.err == "error: handoff 10 not found\n");
+}
+
+TEST_CASE("handoff abandon accepts --reason and stores nothing for it", "[cmd][handlers][handoff]") {
+  auto const fx   = make_fixture("hoabandon");
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+  REQUIRE(dispatch(fx, {"handoff", std::to_string(task), "--json"}).code == 0);
+
+  auto const abandoned = dispatch(fx, {"handoff", "abandon", "1", "--reason", "superseded", "--json"});
+  CHECK(abandoned.code == 0);
+  CHECK(abandoned.out.contains("\"status\":\"abandoned\""));
+  // The reason reaches the audit summary in the oracle and NO column here;
+  // `validated_at` survives the transition either way.
+  CHECK(abandoned.out.contains("\"validated_at\""));
+  CHECK_FALSE(abandoned.out.contains("superseded"));
+  CHECK_FALSE(abandoned.out.contains("consumed_at"));
+}

@@ -102,6 +102,76 @@
 # run`), so `planar workspace --help` lists one command where the oracle
 # lists four and remains not oracle-comparable; the LEAF pages still are.
 #
+# --- task 6040: the agent-lifecycle operator verbs -------------------------
+#
+# Fifteen more leaves plus one placeholder: the six ported `capture` leaves,
+# all seven `handoff` leaves, `resume validate`, and a deliberately loud
+# `resume` stub.
+#
+# THREE MECHANISMS THIS CYCLE ADDED, each forced by a shape the tree had not
+# met before:
+#
+#   dual group-and-leaf nodes   `handoff` and `resume` carry subcommands AND
+#                               their own handler; the oracle dispatches the
+#                               parent when no child is named. `dispatch`'s
+#                               rule narrowed from "a matched node with
+#                               children renders help" to "...and the table
+#                               has no entry for it". `unreachable_handlers`
+#                               widened to walk every node, not only leaves.
+#   parent-level flags          `handoff` is the first group whose PARENT
+#                               carries flags. CLI11 does not inherit them
+#                               at parse time, so each child redeclares them
+#                               — and `planar.cliapp.schema` had to learn to
+#                               emit an inherited/local overlap ONCE.
+#                               `fallthrough()` was tried first and is
+#                               unusable: it bleeds the parent's POSITIONAL
+#                               onto every child and, where parent and child
+#                               share a positional name (`resume` /
+#                               `resume validate`, both `task-id`), throws
+#                               `OptionAlreadyAdded` while the tree is being
+#                               BUILT, aborting every invocation of the
+#                               binary.
+#   injected status matrix      `handoff`'s transitions are guarded by
+#                               `engine_planning`'s matrix, injected as a
+#                               callable because D15/D18 forbid the
+#                               layer-2 edge. Same seam
+#                               `agentatomic::task_policy` uses.
+#
+# NOT landed, with the oracle behavior captured so the port that lands them
+# has bytes to hit:
+#
+#   resume (the packet)  Blocked at LAYER 2 on four unported surfaces; the
+#                        inventory and the captured payload are in
+#                        src/cmd/planar/handlers/resume.cppm and
+#                        src/lib/engine/runtime/CMakeLists.txt. Registered
+#                        as a `not_implemented` placeholder (exit 64) rather
+#                        than left unwired, because an unwired DUAL node
+#                        would fall to the help path and exit 0 — a silent
+#                        success where the oracle produces a packet.
+#   capture commits      Task 6099. 1205 lines of git shelling, no
+#                        process-spawn seam. Deferred WITH its dependency.
+#   feedback triage      Three leaves, blocked at layer 2 on
+#                        `engine.planning.feedback_triage` (302 lines), which
+#                        has no counterpart in `src/lib/engine/planning/`.
+#                        Oracle-captured against a pinned scratch arena:
+#                          feedback triage list --json  -> exit 0, `[]\n`
+#                                                          (TERMINATED, unlike
+#                                                          `handoff list --json`)
+#                          feedback triage list         -> exit 0,
+#                                                          `(no feedback triage)\n`
+#                          feedback triage show 1 --json -> exit 2,
+#                            `error: finding must be task:<id> or question:<id>`
+#                        Note the `<finding>` positional is an ENTITY REF,
+#                        not an integer — a port that declares it as an int
+#                        will get the exit code and the message wrong.
+#   report               Task 6121. Needs the two introspect buckets. Its
+#                        full `--json` envelope was re-captured this cycle
+#                        and is unchanged from task 6106's finding: every
+#                        vendor reports `{"state":"unavailable","scanned":0}`
+#                        and `cli_log` reports `disabled` under a pinned
+#                        arena, so the leaf IS hermetically testable here;
+#                        the unported buckets are the whole of what blocks it.
+#
 # --- terminator contract ---------------------------------------------------
 #
 # Inherited from commit 5728133 (the M4 boundary review's F1) and NOT
@@ -159,6 +229,9 @@ planar_binary(planar
     handlers/skills.cppm
     handlers/workspace.cppm
     handlers/workbench.cppm
+    handlers/capture.cppm
+    handlers/handoff.cppm
+    handlers/resume.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -171,6 +244,9 @@ planar_binary(planar
     handlers/skills.cpp
     handlers/workspace.cpp
     handlers/workbench.cpp
+    handlers/capture.cpp
+    handlers/handoff.cpp
+    handlers/resume.cpp
     dispatch.cpp
   DEPENDS
     cliapp

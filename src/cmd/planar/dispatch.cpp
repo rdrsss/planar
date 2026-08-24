@@ -11,6 +11,9 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.annotate;
+import planar.cmd.planar.handlers.capture;
+import planar.cmd.planar.handlers.handoff;
+import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
@@ -71,6 +74,24 @@ auto handlers() -> handler_table {
   table.emplace("workbench restore", handlers::workbench_restore);
   table.emplace("workbench gc", handlers::workbench_gc);
   table.emplace("workbench list", handlers::workbench_list);
+  table.emplace("capture session", handlers::capture_session);
+  table.emplace("capture end", handlers::capture_end);
+  table.emplace("capture note", handlers::capture_note);
+  table.emplace("capture command", handlers::capture_command);
+  table.emplace("capture file", handlers::capture_file);
+  table.emplace("capture snapshot", handlers::capture_snapshot);
+  // `handoff` and `resume` are DUAL group-and-leaf nodes: each has
+  // subcommands AND its own handler. Registering the parent is what makes
+  // dispatch route the bare form to the handler instead of a help page.
+  table.emplace("handoff", handlers::handoff);
+  table.emplace("handoff create", handlers::handoff_create);
+  table.emplace("handoff validate", handlers::handoff_validate);
+  table.emplace("handoff consume", handlers::handoff_consume);
+  table.emplace("handoff abandon", handlers::handoff_abandon);
+  table.emplace("handoff list", handlers::handoff_list);
+  table.emplace("handoff show", handlers::handoff_show);
+  table.emplace("resume", handlers::resume_packet);
+  table.emplace("resume validate", handlers::resume_validate);
   return table;
 }
 
@@ -85,11 +106,15 @@ auto unregistered_leaves(const CLI::App& root, const handler_table& table) -> st
 }
 
 auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> std::vector<std::string> {
-  auto const                         keys = cliapp::leaf_keys(root);
-  std::set<std::string, std::less<>> leaf_keys(keys.begin(), keys.end());
-  std::vector<std::string>           dead;
+  // EVERY node, not only childless ones: a dual group-and-leaf node
+  // (`handoff`, `resume`) carries a handler and is reachable through it.
+  std::set<std::string, std::less<>> reachable;
+  for (auto const& node : cliapp::all_nodes(root)) {
+    reachable.insert(cliapp::path_key(node.path));
+  }
+  std::vector<std::string> dead;
   for (auto const& [key, unused] : table) {
-    if (!leaf_keys.contains(key)) {
+    if (!reachable.contains(key)) {
       dead.push_back(key);
     }
   }
@@ -121,9 +146,11 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   }
 
   auto const [node, path] = matched_node(root);
-  if (!cliapp::children(*node).empty()) {
-    // A group named without a leaf beneath it — including a bare
-    // `planar`, since this tree has no cockpit to route to.
+  if (!cliapp::children(*node).empty() && !table.contains(cliapp::path_key(path))) {
+    // A group named without a leaf beneath it AND with no handler of its
+    // own — including a bare `planar`, since this tree has no cockpit to
+    // route to. A group that DOES have a handler is dual (`handoff`,
+    // `resume`) and falls through to it; see this module's header.
     ctx.out() << node->help();
     return exit_success;
   }

@@ -70,6 +70,32 @@ auto check_annotation(std::string_view from, std::string_view to) -> std::expect
   return {};
 }
 
+/// @brief The `handoff` arm. Status set: pending, validated, consumed,
+/// abandoned.
+///
+/// `force` never reaches here: every handoff call site passes false, as
+/// the Zig original's `handoff.validateTransition` does. The `--reason`
+/// gate on `abandon` is a HANDLER-layer concern, not a matrix one — the
+/// matrix permits `pending -> abandoned` and `validated -> abandoned`
+/// unconditionally.
+auto check_handoff(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
+  bool legal = false;
+  if (from == "pending") {
+    legal = to == "validated" || to == "consumed" || to == "abandoned";
+  } else if (from == "validated") {
+    // No edge back to `pending`: validation is not reversible.
+    legal = to == "consumed" || to == "abandoned";
+  } else if (from == "consumed" || from == "abandoned") {
+    legal = false; // both terminal; no outgoing edges at all.
+  } else {
+    return std::unexpected(transition_error::unknown_status);
+  }
+  if (!legal) {
+    return std::unexpected(transition_error::illegal_transition);
+  }
+  return {};
+}
+
 } // namespace
 
 auto check_transition(transition_kind kind, std::string_view from, std::string_view to, bool force)
@@ -87,6 +113,8 @@ auto check_transition(transition_kind kind, std::string_view from, std::string_v
     return check_task(from, to);
   case transition_kind::annotation:
     return check_annotation(from, to);
+  case transition_kind::handoff:
+    return check_handoff(from, to);
   }
   return std::unexpected(transition_error::unknown_status);
 }

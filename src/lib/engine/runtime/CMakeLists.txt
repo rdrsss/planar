@@ -95,13 +95,59 @@
 #     handlers call AFTER their transaction. Same git-subprocess dependency,
 #     and it is outside the transaction in the original, so nothing atomic
 #     rests on it.
-#   - `resolveClaimScope`, `listActive`, `listStale`, `listByEntity`,
-#     `listBySession`, `latestActiveClaimForSession`, `nextWork`,
+#   - `latestActiveClaimForSession`, `nextWork`,
 #     `recordEntityCreateAction`. Read paths for `planar-watch`'s display
 #     surfaces and for `planar` verbs, not for any `planar-agent` verb.
 #     Deferred with the binaries that consume them.
+#
+#     CORRECTION (task 6040): this list previously also named
+#     `resolveClaimScope`, `listActive`, `listStale`, `listByEntity` and
+#     `listBySession` as unported. They LANDED in commit bedc18b, with the
+#     `planar-watch` read paths, as `resolve_claim_scope`,
+#     `list_active_claims_sorted`, `list_stale_claims`,
+#     `list_claims_by_entity` and `list_claims_by_session`. The comment was
+#     not updated with the code. `list_claims_by_entity` in particular is
+#     what the `handoff` composite uses to copy worktree context off the
+#     active claim, and a reader trusting this list would have re-ported it.
+#     Check the module interface, not this note.
 #   - `policy.audit.record`, still absent tree-wide (task 6100, an open
 #     operator decision). No claim verb reads or emits audit rows.
+
+# --- the agent-lifecycle operator surface (plan 996, task 6040) ------------
+#
+# `handoff` and `resumecheck` port zig/src/engine/runtime/handoff.zig and
+# the `validate` third of zig/src/engine/runtime/resume.zig, together with
+# the rendering halves of the `planar handoff *` and `planar resume
+# validate` handlers.
+#
+# `handoff` needs the handoff STATUS MATRIX, which lives in
+# `planar.engine.planning.transitions` -- a sibling layer-2 bucket. It is
+# INJECTED as a `transition_check` callable rather than imported, for the
+# reason agentatomic.cppm already gives at length: D15/D18 forbid the edge,
+# duplicating the matrix here would create a second copy free to drift, and
+# a layer-1 extraction under D19 would put planning policy in a base
+# library. `cmd_planar` supplies the real one. The `.handoff` arm was added
+# to that matrix in this task; its header had reserved it.
+#
+# NOT ported, named rather than dropped silently:
+#
+#   - The 8-section RESUME PACKET (`resume.zig`'s `buildPacket`, ~500 of
+#     its 994 lines). Blocked at LAYER 2 on FOUR surfaces, none of them in
+#     this bucket: the plan_step completed/current/remaining fold
+#     (`engine.planning.plan` has no step read path), external_links listed
+#     BY ENTITY with their remote state (`engine.external.link` is
+#     create/show/remove only), `session::recentEntriesForTask` (this
+#     bucket has `list_entries_for_session` only), and
+#     `engine.planning.{decision,question,artifact}` -- three modules that
+#     do not exist in `src/lib/engine/planning/` at all. The `resume`
+#     leaf's oracle behavior is captured in
+#     src/cmd/planar/handlers/resume.cppm so the port that lands it has the
+#     bytes to hit.
+#   - `resolveWorktreeForTask`'s git side. The worktree fields it copies
+#     come from the claim row, which IS readable here; nothing shells git.
+#   - `policy.audit.record` in create/validate/consume/abandon. Still no
+#     `policy.audit` module tree-wide (task 6100). No handoff leaf reads or
+#     emits audit rows.
 
 planar_module(engine_runtime
   INTERFACE
@@ -111,6 +157,8 @@ planar_module(engine_runtime
     agentactivity.cppm
     agentatomic.cppm
     agentrender.cppm
+    handoff.cppm
+    resumecheck.cppm
     runtime.cppm
   SOURCES
     session.cpp
@@ -119,6 +167,19 @@ planar_module(engine_runtime
     agentactivity.cpp
     agentatomic.cpp
     agentrender.cpp
+    handoff.cpp
+    resumecheck.cpp
   DEPENDS
     db
-    json_text)
+    json_text
+  # TEST_DEPENDS, not DEPENDS: `handoff.t.cpp` imports
+  # `planar.engine.planning.transitions` to exercise `handoff`'s injected
+  # guard with the REAL matrix rather than a hand-written double, which is
+  # the only way a test here can catch the two arms disagreeing. Putting it
+  # in DEPENDS would link engine_planning into the PRODUCTION target and
+  # create exactly the `engine_* -> engine_*` edge D15 forbids and
+  # cmake/architecture.cmake FATALs on. The seam is the whole point: the
+  # production module still reaches the matrix only through the callable
+  # `cmd_planar` supplies.
+  TEST_DEPENDS
+    engine_planning)

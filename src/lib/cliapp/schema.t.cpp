@@ -90,11 +90,115 @@ auto fixture_catalog() -> std::string {
   return planar::cliapp::schema_json(app);
 }
 
+/// @brief A tree whose PARENT carries flags and whose child REDECLARES
+/// one of them — the shape `planar handoff` introduced (plan 996, task
+/// 6040) and the only shape that exercises the inherited/local overlap.
+/// @param app The root app to populate.
+auto build_overlap_root(CLI::App& app) -> void {
+  app.require_subcommand(0);
+
+  CLI::App* handoff = app.add_subcommand("handoff", "Capture a handoff.");
+  handoff->require_subcommand(0);
+  handoff->add_option("--vendor");
+  handoff->add_flag("--json");
+
+  // `show` redeclares BOTH parent flags — which is how the binary makes
+  // CLI11 accept `handoff show 1 --json`, since CLI11 does not inherit at
+  // parse time — and adds none of its own.
+  CLI::App* show = handoff->add_subcommand("show", "Show a handoff.");
+  show->add_option("--vendor");
+  show->add_flag("--json");
+  show->add_option("handoff-id")->required();
+
+  // `list` redeclares one and adds a genuinely local one.
+  CLI::App* list = handoff->add_subcommand("list", "List handoffs.");
+  list->add_flag("--json");
+  list->add_option("--status");
+}
+
+/// @brief Emit the overlap fixture's catalog.
+/// @return The catalog JSON.
+auto overlap_catalog() -> std::string {
+  CLI::App app{"", "planar"};
+  build_overlap_root(app);
+  return planar::cliapp::schema_json(app);
+}
+
+/// @brief Count non-overlapping occurrences of `needle` in `haystack`.
+/// @param haystack The text to scan.
+/// @param needle The substring to count.
+/// @return The number of occurrences.
+auto count_occurrences(std::string_view haystack, std::string_view needle) -> std::size_t {
+  std::size_t total = 0;
+  for (std::size_t at = haystack.find(needle); at != std::string_view::npos; at = haystack.find(needle, at + needle.size())) {
+    ++total;
+  }
+  return total;
+}
+
+/// @brief Extract one command's entry from a catalog, by its `"command"`
+/// value, up to the next entry boundary.
+/// @param catalog The catalog JSON.
+/// @param command The full command path, e.g. `"planar handoff show"`.
+/// @return That entry's text.
+auto entry_for(std::string_view catalog, std::string_view command) -> std::string {
+  auto const key   = std::format("\"command\":\"{}\"", command);
+  auto const start = catalog.find(key);
+  REQUIRE(start != std::string_view::npos);
+  auto const end = catalog.find("\"name\":", start);
+  return std::string{catalog.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start)};
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
 // [unit] structure.
 // ---------------------------------------------------------------------------
+
+TEST_CASE("a flag a child redeclares from its parent is emitted ONCE", "[cliapp][schema][unit]") {
+  // Regression guard for plan 996 task 6040. etcli inherits a parent's
+  // flags into every child at parse time; CLI11 does not, so a child that
+  // must accept a parent flag REDECLARES it. That put the flag in both
+  // `inherited_flags` and `local_flags`, and the catalog listed it twice —
+  // which `src/cmd/catalog_parity.hpp` reported as a declaration mismatch
+  // against the oracle. No group in this tree had a flag-carrying PARENT
+  // before `handoff`, so nothing had exercised the overlap.
+  auto const entry = entry_for(overlap_catalog(), "planar handoff show");
+  CHECK(count_occurrences(entry, "\"long\":\"--json\"") == 1);
+  CHECK(count_occurrences(entry, "\"long\":\"--vendor\"") == 1);
+}
+
+TEST_CASE("a redeclared flag keeps the INHERITED source label", "[cliapp][schema][unit]") {
+  // The redeclaration exists only to reproduce inheritance CLI11 lacks, so
+  // the surviving entry must describe the SURFACE (inherited) and not the
+  // workaround (local) — which is what the oracle emits for it.
+  auto const entry = entry_for(overlap_catalog(), "planar handoff show");
+  auto const at    = entry.find("\"long\":\"--json\"");
+  REQUIRE(at != std::string::npos);
+  auto const source_at = entry.find("\"source\":", at);
+  REQUIRE(source_at != std::string::npos);
+  CHECK(entry.compare(source_at, std::string_view{"\"source\":\"inherited\""}.size(), "\"source\":\"inherited\"") == 0);
+}
+
+TEST_CASE("dedupe does not drop a genuinely LOCAL flag", "[cliapp][schema][unit]") {
+  // The other direction: the fix must not have become "emit inherited
+  // only". `--status` exists nowhere but on `list`.
+  auto const entry = entry_for(overlap_catalog(), "planar handoff list");
+  CHECK(count_occurrences(entry, "\"long\":\"--status\"") == 1);
+  CHECK(entry.contains("\"source\":\"local\""));
+  CHECK(count_occurrences(entry, "\"long\":\"--json\"") == 1);
+  CHECK(count_occurrences(entry, "\"long\":\"--vendor\"") == 1);
+}
+
+TEST_CASE("dedupe is per-command, not global across the catalog", "[cliapp][schema][unit]") {
+  // `--json` must still appear on the parent AND on each child; the dedupe
+  // is scoped to one command's flag array. A `seen` set hoisted out of
+  // `render_flags` would emit it once for the whole document.
+  auto const catalog = overlap_catalog();
+  CHECK(entry_for(catalog, "planar handoff").contains("\"long\":\"--json\""));
+  CHECK(entry_for(catalog, "planar handoff show").contains("\"long\":\"--json\""));
+  CHECK(entry_for(catalog, "planar handoff list").contains("\"long\":\"--json\""));
+}
 
 TEST_CASE("schema_json emits the envelope keys the lint tool reads", "[cliapp][schema][unit]") {
   auto const catalog = fixture_catalog();

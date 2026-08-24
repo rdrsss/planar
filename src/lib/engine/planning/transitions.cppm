@@ -6,10 +6,22 @@
 /// Behavior-preserving port (D2) of the `.plan`, `.task` and `.annotation`
 /// arms of zig/src/engine/policy/status.zig's `check`. The Zig module also
 /// enforces `.question`, `.scenario`, `.decision`, `.artifact` and
-/// `.handoff` arms; those entity kinds are not ported yet, so porting
-/// their transition arms here would be dead code with no caller. Only the
-/// arms whose entities exist in this tree are ported; the rest is
-/// intentionally left for the task(s) that port those entities.
+/// arms; those entity kinds are not ported yet, so porting their
+/// transition arms here would be dead code with no caller. Only the arms
+/// whose entities exist in this tree are ported; the rest is intentionally
+/// left for the task(s) that port those entities.
+///
+/// The `.handoff` arm landed with task 6040, which ported
+/// `planar.engine.runtime.handoff` — the caller that needed it. It is
+/// reached by INJECTION rather than by import, because that caller lives
+/// in a sibling layer-2 bucket and cmake/architecture.cmake FATALs on an
+/// `engine_* -> engine_*` edge: `handoff::create`/`validate`/`consume`/
+/// `abandon` take a `transition_check` callable and `cmd_planar` — which is
+/// layer 3 and may depend on both buckets — supplies this function bound to
+/// `transition_kind::handoff`. That is the same seam
+/// `agentatomic::task_policy` already uses, and for the same reason: the
+/// status matrix stays in ONE file instead of being copied into a second
+/// bucket where the two could drift.
 ///
 /// The `.annotation` arm landed with task 6094 alongside
 /// `planar.engine.planning.annotation`, which is the caller that needed
@@ -32,6 +44,7 @@ export enum class transition_kind : std::uint8_t {
   plan,
   task,
   annotation,
+  handoff,
 };
 
 /// @brief Error surface for `check_transition`.
@@ -73,6 +86,14 @@ export enum class transition_error : std::uint8_t {
 /// `resolved -> dismissed` and `dismissed -> resolved` are refused: outcome
 /// states never move laterally. `force` has no effect on this arm — the
 /// annotate verbs expose no `--force`.
+///
+/// Handoff matrix (status set: pending, validated, consumed, abandoned):
+///   pending           -> {validated, consumed, abandoned}
+///   validated         -> {consumed, abandoned}
+///   consumed          -> terminal
+///   abandoned         -> terminal
+/// Validation is not reversible: there is no `validated -> pending` edge.
+/// `force` has no effect — every handoff call site passes false.
 ///
 /// @param kind Which entity's matrix to apply.
 /// @param from The current status text.

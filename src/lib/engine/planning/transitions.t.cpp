@@ -120,3 +120,68 @@ TEST_CASE("empty-to-empty identity is still a no-op even though the status is un
   CHECK(check_transition(transition_kind::plan, "", "", false).has_value());
   CHECK(check_transition(transition_kind::task, "", "", false).has_value());
 }
+
+// --- handoff arm (plan 996, task 6040) ---------------------------------
+//
+// Oracle-derived. `handoff.validateTransition` delegates to this matrix,
+// and the observable consequences were captured by running the Zig binary:
+//
+//   $Z handoff validate <consumed-id> -> exit 1,
+//       error: handoff N cannot transition to validated
+//   $Z handoff consume  <consumed-id> -> exit 1,
+//       error: handoff N is terminal; cannot consume
+//   $Z handoff abandon  <abandoned-id> -> exit 1,
+//       error: handoff N is terminal; cannot abandon
+//   $Z handoff validate <validated-id> -> exit 0, validated_at RE-STAMPED
+//       (the identity shortcut, not a matrix edge)
+
+TEST_CASE("handoff arm: pending reaches all three successors", "[transitions][handoff]") {
+  CHECK(check_transition(transition_kind::handoff, "pending", "validated", false).has_value());
+  CHECK(check_transition(transition_kind::handoff, "pending", "consumed", false).has_value());
+  CHECK(check_transition(transition_kind::handoff, "pending", "abandoned", false).has_value());
+}
+
+TEST_CASE("handoff arm: validated reaches the two terminals but never returns to pending", "[transitions][handoff]") {
+  CHECK(check_transition(transition_kind::handoff, "validated", "consumed", false).has_value());
+  CHECK(check_transition(transition_kind::handoff, "validated", "abandoned", false).has_value());
+
+  // Validation is not reversible. This edge is the one a "symmetric"
+  // matrix would wrongly admit.
+  auto back = check_transition(transition_kind::handoff, "validated", "pending", false);
+  REQUIRE_FALSE(back.has_value());
+  CHECK(back.error() == transition_error::illegal_transition);
+}
+
+TEST_CASE("handoff arm: consumed and abandoned are terminal in every direction", "[transitions][handoff]") {
+  for (auto const from : {"consumed", "abandoned"}) {
+    for (auto const to : {"pending", "validated", "consumed", "abandoned"}) {
+      if (std::string_view{from} == std::string_view{to}) {
+        continue; // the identity shortcut, covered separately.
+      }
+      auto r = check_transition(transition_kind::handoff, from, to, false);
+      REQUIRE_FALSE(r.has_value());
+      CHECK(r.error() == transition_error::illegal_transition);
+    }
+  }
+}
+
+TEST_CASE("handoff arm: identity is a no-op even on a terminal status", "[transitions][handoff]") {
+  // This is what makes re-validating an already-validated handoff succeed
+  // and re-stamp validated_at, which the oracle does.
+  CHECK(check_transition(transition_kind::handoff, "validated", "validated", false).has_value());
+  CHECK(check_transition(transition_kind::handoff, "consumed", "consumed", false).has_value());
+}
+
+TEST_CASE("handoff arm: unknown status returns unknown_status", "[transitions][handoff]") {
+  auto r = check_transition(transition_kind::handoff, "draft", "validated", false);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::unknown_status);
+}
+
+TEST_CASE("handoff arm: force does not bypass the matrix", "[transitions][handoff]") {
+  // Only the TASK arm honors force. Every handoff call site passes false,
+  // but if one ever passed true it must NOT punch through a terminal.
+  auto r = check_transition(transition_kind::handoff, "consumed", "validated", true);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::illegal_transition);
+}
