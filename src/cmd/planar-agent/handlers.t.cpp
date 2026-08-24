@@ -162,12 +162,34 @@ TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd
   CHECK(got.out.contains("\"planar-agent pull\""));
   CHECK(got.out.contains("\"planar-agent complete\""));
   CHECK(got.out.contains("\"planar-agent action start\""));
-  // ...and the four still-deferred verbs are NOT. A catalog naming a verb
-  // the binary cannot run would be worse than no catalog.
-  CHECK_FALSE(got.out.contains("\"planar-agent ingest\""));
-  CHECK_FALSE(got.out.contains("\"planar-agent run start\""));
-  CHECK_FALSE(got.out.contains("\"planar-agent dispatch preview\""));
-  CHECK_FALSE(got.out.contains("\"planar-agent context add\""));
+  // ...and TASK 6065 INVERTED the rest of this assertion. It used to read
+  // "the four still-deferred verbs are NOT in the catalog — a catalog
+  // naming a verb the binary cannot run would be worse than no catalog".
+  //
+  // That premise was measured and found backwards. `zig/tools/cli_usage_
+  // lint` SKIPS a command path it cannot resolve (proved in
+  // `src/lib/cliapp/schema.t.cpp`'s `[lint-parity]` scope section), so a
+  // catalog that omits a verb does not make the gate stricter about that
+  // verb — it removes the verb's flags from the gate entirely. An omitted
+  // verb is a HOLE in `make cli-usage-check`, not a safeguard.
+  //
+  // What actually keeps a catalog from lying is the REFUSAL, not the
+  // omission: every one of these is declared, and every one exits 64 with
+  // `<verb>: not implemented in this build`. That is asserted directly
+  // below, so this pair is a contract and not a relaxation.
+  CHECK(got.out.contains("\"planar-agent ingest\""));
+  CHECK(got.out.contains("\"planar-agent run start\""));
+  CHECK(got.out.contains("\"planar-agent dispatch preview\""));
+  CHECK(got.out.contains("\"planar-agent context add\""));
+
+  auto const unported = dispatch(fx, {"context", "list", "--run", "1"});
+  CHECK(unported.code == 64);
+  CHECK(unported.out.empty());
+  CHECK(unported.err == "error: context list: not implemented in this build\n");
+  // Discrimination: a PORTED verb on the same binary does not exit 64, so
+  // the refusal above is about this verb rather than about this build.
+  auto const ported = dispatch(fx, {"peek", "1", "--json"});
+  CHECK(ported.code != 64);
 }
 
 TEST_CASE("planar-agent maps a parse failure to exit 1, not the operator binary's 2", "[cmd][agent][handlers][exitcode]") {
@@ -205,10 +227,10 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   CHECK_FALSE(explicit_help.db_open);
   // Task 6123: the root page is CLI11's now. It leads with the
   // description (wrapped to the formatter's width) and then lists the
-  // fourteen ported verbs. The ROOT page is still not oracle-comparable —
-  // the oracle lists eighteen — so this checks the content that is this
-  // binary's own contract rather than pinning a page that is expected to
-  // grow as verbs land.
+  // verbs. Task 6065 brought the list to the oracle's full eighteen; the
+  // page is still not pinned byte-for-byte against the oracle (CLI11's
+  // LAYOUT is not etcli's), so this checks the content that is this
+  // binary's own contract.
   CHECK(explicit_help.out.starts_with("Agent-callable coordination binary (pull / claim / complete / heartbeat /\n"
                                       "reconcile).\n"));
   CHECK(explicit_help.out.contains("SUBCOMMANDS:"));
@@ -225,12 +247,18 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
     INFO("ported verb missing from the root page: " << verb);
     CHECK(listed(verb));
   }
-  // And the four deferred verbs are absent from the page as well as the
-  // tree — a page that advertised them would be a lie to an operator.
-  for (auto const& deferred : {"ingest", "dispatch", "context", "run"}) {
-    INFO("deferred verb advertised on the root page: " << deferred);
-    CHECK_FALSE(listed(deferred));
+  // TASK 6065: the four formerly-deferred verbs are on the page too,
+  // because they are in the tree. The page is not a lie — each one
+  // refuses at exit 64 naming itself (see the `schema` case above and
+  // `dispatch.cpp`'s `not_implemented_for`), which is a better operator
+  // experience than an unknown-verb error and is what makes
+  // `make cli-usage-check` able to resolve their flags at all.
+  for (auto const& declared : {"ingest", "dispatch", "context", "run"}) {
+    INFO("declared verb missing from the root page: " << declared);
+    CHECK(listed(declared));
   }
+  // The page now lists exactly the oracle's eighteen top-level verbs.
+  CHECK_FALSE(listed("nosuchverb"));
 
   // A bare invocation is the same page, exit 0 — matching the oracle.
   auto const bare = dispatch(fx, {});

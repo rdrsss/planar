@@ -646,15 +646,20 @@ TEST_CASE("every ported command declares what the oracle declares", "[cmd][parit
   // and this compares it directly and across the WHOLE tree rather than
   // ten leaves. See ../catalog_parity.hpp for the full argument.
   //
-  // This binary has no `schema` verb ported yet, so its catalog is built
-  // in-process from the same `root_app()` the binary itself dispatches
-  // against. The ORACLE's side is its real `planar schema` output.
-  auto const space = make_arena("catalog");
-  auto const ref   = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "catalog");
+  // TASK 6065 changed two things here. The C++ side is now the BUILT
+  // BINARY's own `planar schema` output rather than an in-process
+  // `schema_json(root_app())` — `planar schema` did not exist as a verb
+  // before this task, which is why the binary carrying 223 of the 260
+  // leaves was the one the parity harness could not read. And the
+  // comparison is now two-directional, because the tree is no longer a
+  // deliberate subset.
+  auto const space  = make_arena("catalog");
+  auto const ref    = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "zig");
+  auto const actual = run_pinned(cpp_bin(), std::array<std::string, 1>{"schema"}, space.cpp_root, "cpp");
   REQUIRE(ref.code == 0);
+  REQUIRE(actual.code == 0);
 
-  auto const root = planar::cmd::root_app();
-  auto const mine = planar::cmd::parity::parse_catalog(planar::cliapp::schema_json(*root));
+  auto const mine = planar::cmd::parity::parse_catalog(actual.out);
   REQUIRE(mine.has_value());
   auto const theirs = planar::cmd::parity::parse_catalog(ref.out);
   REQUIRE(theirs.has_value());
@@ -662,16 +667,80 @@ TEST_CASE("every ported command declares what the oracle declares", "[cmd][parit
   // Non-vacuous: an empty left-hand side would pass trivially, and the
   // named entries below are the ones whose declarations this task most
   // easily could have got wrong.
-  CHECK(mine->size() >= 18);
-  CHECK(theirs->size() > 200);
+  CHECK(mine->size() == 261);
+  CHECK(theirs->size() == 261);
   CHECK(mine->contains("planar workbench gc"));
   CHECK(mine->contains("planar workbench archive"));
   CHECK(mine->contains("planar annotate add"));
   CHECK(mine->contains("planar unlink"));
+  // Four the tree did not carry at all before task 6065: a deep leaf, a
+  // dual node, and the two tree-describing verbs this task implemented.
+  CHECK(mine->contains("planar plan next"));
+  CHECK(mine->contains("planar health"));
+  CHECK(mine->contains("planar schema"));
+  CHECK(mine->contains("planar completion"));
 
   auto const problems = planar::cmd::parity::diff_against_oracle(*mine, *theirs);
   INFO("declaration mismatches:\n" << std::format("{}", problems));
   CHECK(problems.empty());
+
+  auto const missing = planar::cmd::parity::oracle_only_commands(*mine, *theirs);
+  INFO("declared by the oracle and NOT by this binary:\n" << std::format("{}", missing));
+  CHECK(missing.empty());
+}
+
+TEST_CASE("the catalog differs from the oracle's in FOUR values, all `default`", "[cmd][parity][oracle][catalog]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+  // `planar-agent` and `planar-watch` emit catalogs BYTE-IDENTICAL to the
+  // oracle's. `planar` does not, and this case pins EXACTLY how far off it
+  // is rather than leaving "close enough" undefined.
+  //
+  // The whole residue is four flags that declare an EMPTY-STRING default.
+  // `CLI::Option` has one accessor, `get_default_str()`, returning `""`
+  // for both "no default" and "a default that is the empty string", so the
+  // two are indistinguishable from a built tree; mapping empty to `""`
+  // would make all ~500 flags with no default report one. See
+  // `planar.cliapp.schema`'s `default_literal`.
+  //
+  // Pinned as a COUNT of differing substrings plus the enumerated sites, so
+  // that a fifth divergence of any kind — a dropped flag, a renamed verb,
+  // a changed description — fails this case even though it says nothing
+  // about what that divergence would be.
+  auto const space  = make_arena("catalogbytes");
+  auto const ref    = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "zig");
+  auto const actual = run_pinned(cpp_bin(), std::array<std::string, 1>{"schema"}, space.cpp_root, "cpp");
+  REQUIRE(ref.code == 0);
+  REQUIRE(actual.code == 0);
+  REQUIRE(ref.out.size() > 300000); // Not two empty strings.
+
+  // The oracle text with the four `"default":""` occurrences rewritten to
+  // `"default":null` must be the C++ text, byte for byte.
+  std::string       patched;
+  std::size_t       from  = 0;
+  std::size_t       count = 0;
+  std::string const needle{R"("default":"",)"};
+  while (true) {
+    auto const at = ref.out.find(needle, from);
+    if (at == std::string::npos) {
+      patched += ref.out.substr(from);
+      break;
+    }
+    patched += ref.out.substr(from, at - from);
+    patched += R"("default":null,)";
+    from = at + needle.size();
+    ++count;
+  }
+  CHECK(count == 4);
+  CHECK(patched == actual.out);
+
+  // ...and the four sites are the ones named above, not four others.
+  for (auto const& flag :
+       {R"("long":"--editor")", R"("long":"--args")", R"("long":"--worktree")", R"("long":"--sandbox-root")"}) {
+    INFO(flag);
+    CHECK(actual.out.contains(flag));
+  }
 }
 
 TEST_CASE("the CLI surface is CLI11's now, and pinned", "[cmd][parity][cli-surface]") {

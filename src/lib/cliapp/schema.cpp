@@ -112,6 +112,50 @@ auto value_name_of(const CLI::Option& opt, std::string_view kind) -> std::string
   return "VALUE";
 }
 
+/// @brief The JSON literal for an option's declared default.
+///
+/// TYPED, not blanket-quoted (plan 996, task 6065). Measured against the
+/// oracle's three catalogs: a `bool` flag reports `false` (never `null` —
+/// a bool flag's default IS false, and CLI11 simply has no default STRING
+/// to read for one), an `int` flag reports a bare NUMBER, and everything
+/// else reports a quoted string. The predecessor emitted `null` for every
+/// bool and a quoted string for every int, which disagreed with the oracle
+/// on 341 and 11 flags respectively across the three binaries.
+///
+/// Still divergent, and left so deliberately: four oracle flags declare an
+/// EMPTY-STRING default (`planar workbench edit --editor`, `planar workflow
+/// run --args`, and two others) and report `""` where this reports `null`.
+/// CLI11 exposes one accessor, `get_default_str()`, returning `""` for both
+/// "no default" and "a default that is the empty string"; the two are not
+/// distinguishable from the tree, and mapping empty to `""` would make
+/// every one of the ~500 flags with NO default report a default instead.
+/// @param opt The option.
+/// @param kind The already-derived kind tag.
+/// @return The JSON literal.
+auto default_literal(const CLI::Option& opt, std::string_view kind) -> std::string {
+  auto const default_str = opt.get_default_str();
+  if (kind == "bool") {
+    // `false` unless the tree declared otherwise. Two oracle flags do —
+    // `planar task add --editor` and `planar artifact add --editor` both
+    // default to `true` (the verb opens $EDITOR unless told not to) — and
+    // a blanket `false` would misreport them.
+    return default_str == "true" ? "true" : "false";
+  }
+  if (default_str.empty()) {
+    return "null";
+  }
+  if (kind == "int") {
+    long long   value  = 0;
+    auto const* first  = default_str.data();
+    auto const* last   = first + default_str.size();
+    auto const  parsed = std::from_chars(first, last, value);
+    if (parsed.ec == std::errc{} && parsed.ptr == last) {
+      return std::to_string(value);
+    }
+  }
+  return quote(default_str);
+}
+
 auto aliases_of(const CLI::Option& opt) -> std::vector<std::string> {
   std::vector<std::string> out;
   auto const&              longs = opt.get_lnames();
@@ -144,10 +188,7 @@ auto render_flag(const CLI::Option& opt, std::string_view source) -> std::string
   out += "\"required\":" + bool_text(opt.get_required()) + ",";
   out += "\"source\":" + quote(source) + ",";
   out += "\"valueName\":" + quote(value_name_of(opt, kind)) + ",";
-  out += "\"default\":";
-  auto const default_str = opt.get_default_str();
-  out += default_str.empty() ? "null" : quote(default_str);
-  out += ",";
+  out += "\"default\":" + default_literal(opt, kind) + ",";
   out += "\"description\":" + quote(opt.get_description()) + ",";
   out += "\"completion\":" + std::string(k_completion_none) + ",";
   out += "\"env\":null";
@@ -247,9 +288,27 @@ auto command_path(const CLI::App& root, std::span<std::string const> path) -> st
   return out;
 }
 
-auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::string const> path) -> std::string {
+/// @brief The supplied one-line summary for `command`, or the node's own
+/// description when the table does not carry one.
+/// @param summaries The `(command path, summary)` table.
+/// @param command The full command path.
+/// @param description The node's description, used as the fallback.
+/// @return The summary text.
+auto summary_for(std::span<std::pair<std::string_view, std::string_view> const> summaries, std::string_view command,
+                 std::string const& description) -> std::string_view {
+  for (auto const& [key, text] : summaries) {
+    if (key == command) {
+      return text;
+    }
+  }
+  return description;
+}
+
+auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::string const> path,
+                    std::span<std::pair<std::string_view, std::string_view> const> summaries) -> std::string {
   std::vector<std::string> const path_vec(path.begin(), path.end());
   auto const                     description = node.get_description();
+  auto const                     command     = command_path(root, path);
 
   std::string out = "{";
   out += "\"name\":" + quote(node.get_name()) + ",";
@@ -257,10 +316,11 @@ auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::s
   out += "\"hidden\":false,";
   out += "\"deprecated\":null,";
   out += "\"path\":" + string_array(path_vec) + ",";
-  out += "\"command\":" + quote(command_path(root, path)) + ",";
-  // One description string on `CLI::App` where `cli::cmd` carried two.
+  out += "\"command\":" + quote(command) + ",";
+  // One description string on `CLI::App` where `cli::cmd` carried two, so
+  // the summary is supplied out of band and falls back to the description.
   // See this module's interface header, divergence 1.
-  out += "\"summary\":" + quote(description) + ",";
+  out += "\"summary\":" + quote(summary_for(summaries, command, description)) + ",";
   out += "\"description\":" + quote(description) + ",";
   out += "\"subcommands\":" + render_subcommands(node) + ",";
   out += "\"flags\":" + render_flags(root, node, path) + ",";
@@ -274,14 +334,18 @@ auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::s
 } // namespace
 
 auto schema_json(const CLI::App& root) -> std::string {
+  return schema_json(root, {});
+}
+
+auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries) -> std::string {
   std::string out = "{";
   out += "\"schemaVersion\":1,";
   out += "\"layout\":\"flat\",";
   out += "\"root\":" + quote(root.get_name()) + ",";
   out += "\"commands\":[";
-  out += render_command(root, root, {});
+  out += render_command(root, root, {}, summaries);
   for (auto const& node : all_nodes(root)) {
-    out += "," + render_command(root, *node.node, node.path);
+    out += "," + render_command(root, *node.node, node.path, summaries);
   }
   out += "]";
   out += "}";

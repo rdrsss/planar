@@ -46,6 +46,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.cliapp.walk;
 import planar.cmd.planar_agent.dispatch;
+import planar.cmd.planar_agent.surface;
 import planar.cmd.planar_agent.tree;
 
 namespace {
@@ -83,28 +84,71 @@ TEST_CASE("planar-agent refuses every planning-entity verb, at any depth", "[cmd
   }
 }
 
-TEST_CASE("planar-agent's registered verb set is exactly the ported subset", "[cmd][agent][capability]") {
+TEST_CASE("planar-agent's declared verb set is exactly the oracle's", "[cmd][agent][capability]") {
   auto const root  = planar::cmd::agent::root_app();
   auto const names = all_node_names(*root);
 
-  // The oracle registers eighteen: pull, peek, claim, heartbeat,
-  // claim-associate, complete, fail, release, block, action, ingest,
-  // reconcile, abort, version, schema, run, dispatch, context. FOURTEEN
-  // are ported (task 6038 landed the claim ritual); the remaining four are
-  // blocked one layer down on buckets this tree has never ported — see
-  // tree.cppm's per-verb inventory. This asserts exactly the ported set
-  // and nothing else: a completeness check against REALITY, not against
-  // the target, so an accidentally-registered stub fails it too.
-  CHECK(names == std::set<std::string, std::less<>>{"abort", "action", "block", "claim", "claim-associate", "complete", "end",
-                                                    "fail", "heartbeat", "peek", "pull", "reconcile", "release", "schema",
-                                                    "start", "version"});
+  // TASK 6065 REPLACED THIS ASSERTION, and inverted its rationale.
+  //
+  // It used to pin the FOURTEEN ported verbs and then assert the other
+  // four were absent, on the grounds that "an absent verb is a clean
+  // `unknown subcommand`; a registered stub that exits 64 looks like a
+  // working verb to a script."
+  //
+  // Both halves of that turned out to be wrong, and both were measured
+  // rather than argued:
+  //
+  //   * Exit 64 is NOT what a working verb looks like to a script. It is
+  //     non-zero, it writes nothing to stdout, and it writes
+  //     `error: <verb>: not implemented in this build` to stderr. A script
+  //     under `set -e` stops on it exactly as it would on the
+  //     unknown-subcommand path, with a message that says more.
+  //   * Omitting a verb does NOT make `make cli-usage-check` stricter
+  //     about it. `zig/tools/cli_usage_lint` SKIPS a command path it
+  //     cannot resolve — its own header says it reports "any `--flag`
+  //     referenced on a command that the binary does not actually expose",
+  //     and `src/lib/cliapp/schema.t.cpp`'s `[lint-parity]` scope section
+  //     proves the unknown-path case exits 0. So every omitted verb was a
+  //     HOLE in the live gate, not a safeguard.
+  //
+  // So the set is now the oracle's whole eighteen top-level verbs, still
+  // asserted EXACTLY — a completeness check against reality, so an
+  // invented verb fails it just as it did before.
+  CHECK(names == std::set<std::string, std::less<>>{
+                     // The fourteen with real handlers.
+                     "abort", "action", "block", "claim", "claim-associate", "complete", "end", "fail", "heartbeat", "peek",
+                     "pull", "reconcile", "release", "schema", "start", "version",
+                     // The nine declared by task 6065, which refuse at 64.
+                     "add", "capsule", "confirm", "context", "dispatch", "ingest", "list", "preview", "resolve", "run"});
+}
 
-  // And the four that are NOT here, named explicitly. An absent verb is a
-  // clean `unknown subcommand`; a registered stub that exits 64 looks like
-  // a working verb to a script.
-  for (auto const& deferred : {"ingest", "run", "dispatch", "context"}) {
-    INFO("deferred verb: " << deferred);
-    CHECK_FALSE(names.contains(deferred));
+TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cmd][agent][capability]") {
+  // The property that makes declaring the full surface safe, asserted
+  // structurally rather than by invoking 24 verbs: every leaf is in the
+  // handler table (`unregistered_leaves`, below), and every leaf is in
+  // EXACTLY ONE of the two populations — the hand-registered handlers or
+  // the generated unported inventory.
+  auto const root  = planar::cmd::agent::root_app();
+  auto const table = planar::cmd::agent::handlers(*root);
+
+  std::set<std::string, std::less<>> unported;
+  for (auto const& verb : planar::cmd::agent::unported_paths()) {
+    unported.emplace(verb);
+  }
+  CHECK(unported == std::set<std::string, std::less<>>{"context add", "context capsule", "context list", "context resolve",
+                                                       "dispatch confirm", "dispatch preview", "ingest", "run end", "run start"});
+
+  auto const leaves = planar::cliapp::leaf_keys(*root);
+  CHECK(leaves.size() == 24);
+  for (auto const& leaf : leaves) {
+    INFO("leaf: " << leaf);
+    CHECK(table.contains(leaf));
+  }
+  // Non-vacuous: the inventory must not have swallowed a verb that has a
+  // real handler, which is the failure mode a bulk registration invites.
+  for (auto const& implemented : {"pull", "complete", "action start", "schema", "version"}) {
+    INFO("implemented verb wrongly listed as unported: " << implemented);
+    CHECK_FALSE(unported.contains(implemented));
   }
 }
 

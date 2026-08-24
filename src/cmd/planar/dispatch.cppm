@@ -91,10 +91,20 @@ namespace planar::cmd {
 /// @brief The leaf-path -> handler table.
 export using handler_table = std::map<std::string, handler_fn, std::less<>>;
 
-/// @brief Build the table binding every ported leaf to its handler.
+/// @brief Build the table binding every leaf to a handler.
 ///
+/// Two populations, and the difference is the point. The verbs that are
+/// IMPLEMENTED are registered one line each, by hand. The verbs that are
+/// merely DECLARED — the ~190 the full-surface catalog carries so
+/// `cli_usage_lint` can resolve them — are registered in bulk from
+/// `planar.cmd.planar.surface`'s generated inventory, each bound to a
+/// handler that refuses at exit 64 naming the verb. Neither population
+/// exits 0 without doing the work.
+/// @param root The command tree. Borrowed and captured by the `schema` and
+/// `completion` entries, which describe the tree rather than the database,
+/// so it must outlive the returned table.
 /// @return The populated table.
-export auto handlers() -> handler_table;
+export auto handlers(const CLI::App& root) -> handler_table;
 
 /// @brief Every leaf in `root` that `table` has no handler for.
 /// @param root The command tree.

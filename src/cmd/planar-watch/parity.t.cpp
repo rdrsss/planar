@@ -15,10 +15,17 @@
 // invariant observed from OUTSIDE the process, complementing
 // `context.t.cpp`'s inside-the-process write-refusal proof.
 //
+// TASK 6065 added the `schema` CATALOG to the compared set, and it is now
+// the strongest case in the file: this binary's catalog is BYTE-IDENTICAL
+// to the oracle's. It could not be before — the tree declared three of the
+// oracle's twelve verbs.
+//
 // NOT compared: `version` (inherited `cxx` vs `zig` tag), the ROOT help
-// page and `schema` (both describe a tree with three of the oracle's twelve
-// verbs), and `completion <shell>`'s generated script (planar.cliapp.completion
-// defers flag-VALUE completion — its own module header says so).
+// page (`planar-watch --help` lists twelve verbs in both trees now, but a
+// bare `planar-watch` still renders it here and routes to `feed` in the
+// oracle — see `planar.cmd.planar_watch.surface`), and `completion
+// <shell>`'s generated script (planar.cliapp.completion defers flag-VALUE
+// completion — its own module header says so).
 //
 // SKIP, not fail, when the oracle is absent (D6).
 
@@ -26,6 +33,7 @@
 
 import std;
 
+#include "catalog_parity.hpp"
 #include "parity_harness.hpp"
 
 namespace {
@@ -510,4 +518,102 @@ TEST_CASE("planar-watch: a read verb still creates no database file", "[cmd][wat
     CHECK(got.err == "error: OpenFailed\n");
     CHECK_FALSE(std::filesystem::exists(arena.cpp_root / "planar.db"));
   }
+}
+
+TEST_CASE("planar-watch parity: every command declares what the oracle declares", "[cmd][watch][parity][catalog]") {
+  if (!oracle_available()) {
+    SKIP("Zig oracle not built (zig/zig-out/bin/planar-watch)");
+  }
+  // TASK 6065. Before this task the tree carried nine of the oracle's
+  // thirteen leaves, so `schema` was explicitly excluded from the compared
+  // set (see this file's header). All thirteen are declared now, and this
+  // is the case that says so.
+  auto const [cpp, zig] = both("catalog", {"schema"});
+  REQUIRE(cpp.code == 0);
+  REQUIRE(zig.code == 0);
+
+  auto const mine = planar::cmd::parity::parse_catalog(cpp.out);
+  REQUIRE(mine.has_value());
+  auto const theirs = planar::cmd::parity::parse_catalog(zig.out);
+  REQUIRE(theirs.has_value());
+
+  // Non-vacuous: an empty left-hand side, or a document that failed to
+  // parse, would otherwise look exactly like a clean comparison.
+  CHECK(mine->size() == 15);
+  CHECK(theirs->size() == 15);
+  CHECK(mine->contains("planar-watch ps"));
+  // The four this task declared and the previous one did not have at all.
+  CHECK(mine->contains("planar-watch feed"));
+  CHECK(mine->contains("planar-watch sync-events"));
+  CHECK(mine->contains("planar-watch run list"));
+  CHECK(mine->contains("planar-watch run show"));
+
+  auto const problems = planar::cmd::parity::diff_against_oracle(*mine, *theirs);
+  INFO("declaration mismatches:\n" << std::format("{}", problems));
+  CHECK(problems.empty());
+
+  auto const missing = planar::cmd::parity::oracle_only_commands(*mine, *theirs);
+  INFO("declared by the oracle and NOT by this binary:\n" << std::format("{}", missing));
+  CHECK(missing.empty());
+}
+
+TEST_CASE("planar-watch parity: the catalog is BYTE-identical to the oracle's", "[cmd][watch][parity][catalog]") {
+  if (!oracle_available()) {
+    SKIP("Zig oracle not built (zig/zig-out/bin/planar-watch)");
+  }
+  // Everything `diff_against_oracle` leaves out — key order, `docs`,
+  // `flagGroups`, `hidden`, `deprecated`, `path`, `name`, and the `default`
+  // literal it deliberately skips — is covered here, for this binary, by
+  // comparing the whole document.
+  auto const [cpp, zig] = both("catalog-bytes", {"schema"});
+  REQUIRE(cpp.code == 0);
+  REQUIRE(zig.code == 0);
+  REQUIRE(cpp.out.size() > 20000); // Not two empty strings.
+  CHECK(cpp.out == zig.out);
+}
+
+TEST_CASE("planar-watch: a declared-but-unported verb refuses at exit 64", "[cmd][watch][parity][not-implemented]") {
+  // The headline property of the full-surface declaration: DECLARING a
+  // verb is not IMPLEMENTING it, and the difference must be loud. A
+  // declared node that exits 0 is worse than an absent one.
+  auto const arena = make_arena("unported");
+  auto const run   = [&](std::vector<std::string> args, std::string_view tag) {
+    return run_pinned(cpp_bin(), args, arena.cpp_root, tag);
+  };
+
+  auto const feed = run({"feed"}, "feed");
+  CHECK(feed.code == 64);
+  CHECK(feed.out.empty());
+  CHECK(feed.err == "error: feed: not implemented in this build\n");
+
+  auto const events = run({"sync-events"}, "syncevents");
+  CHECK(events.code == 64);
+  CHECK(events.err == "error: sync-events: not implemented in this build\n");
+
+  // A nested one, to prove the key is the full path and not the leaf name.
+  auto const run_list = run({"run", "list"}, "runlist");
+  CHECK(run_list.code == 64);
+  CHECK(run_list.err == "error: run list: not implemented in this build\n");
+
+  // And the discrimination that makes the three above mean something: a
+  // PORTED verb on the same binary does NOT answer 64, so "exit 64" is not
+  // simply what this binary now does. Two of them, because they fail
+  // differently: `version` needs nothing and exits 0, while `ps` reaches
+  // the read-only database handle and exits 1 (`OpenFailed`) against an
+  // empty arena — neither is the not-implemented code.
+  auto const ported = run({"version"}, "ported");
+  CHECK(ported.code == 0);
+  CHECK(ported.err.empty());
+  CHECK(ported.out.starts_with("planar-watch "));
+
+  auto const ported_db = run({"ps", "--json"}, "porteddb");
+  CHECK(ported_db.code == 1);
+  CHECK(ported_db.err == "error: OpenFailed\n");
+
+  // A pure GROUP still renders help at exit 0 — matching the oracle, which
+  // has no dual node on this binary.
+  auto const group = run({"run"}, "group");
+  CHECK(group.code == 0);
+  CHECK(group.out.contains("list"));
+  CHECK(group.out.contains("show"));
 }

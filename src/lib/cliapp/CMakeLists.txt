@@ -32,6 +32,13 @@
 #               them, and the emitter this replaces sourced both from
 #               hardcoded constants anyway).
 #
+#   surface     Declaring a whole command surface onto a built CLI::App
+#               from data (plan 996, task 6065). The same argument as
+#               `schema` one step earlier: three binaries need the SAME
+#               find-or-create walk over a generated node table, and the
+#               table itself is per-binary and lives under src/cmd/. This
+#               holds no tree either -- it takes one and extends it.
+#
 #   completion  The shell-completion generator. CLI11 2.7.2 ships no
 #               completion facility at all, so the choice was keep-or-drop,
 #               not adopt-or-keep. See completion.cppm's header.
@@ -56,10 +63,12 @@ planar_module(cliapp
     walk.cppm
     args.cppm
     schema.cppm
+    surface.cppm
     completion.cppm
     version.cppm
   SOURCES
     schema.cpp
+    surface.cpp
     completion.cpp
     version.cpp
   DEPENDS

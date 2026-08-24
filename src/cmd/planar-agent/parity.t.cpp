@@ -163,64 +163,141 @@ TEST_CASE("planar-agent parity: every ported command declares what the oracle de
   // Non-vacuous: a comparison over an empty left-hand side would pass
   // trivially, and a catalog that failed to parse would look identical to
   // a clean one.
-  CHECK(mine->size() >= 14);
-  CHECK(theirs->size() > mine->size());
+  CHECK(mine->size() == 29);
+  CHECK(theirs->size() == 29);
   CHECK(mine->contains("planar-agent fail"));
   CHECK(mine->contains("planar-agent action start"));
+  // The unported half, declared by task 6065 and absent before it.
+  CHECK(mine->contains("planar-agent ingest"));
+  CHECK(mine->contains("planar-agent context capsule"));
 
   auto const problems = planar::cmd::parity::diff_against_oracle(*mine, *theirs);
   INFO("declaration mismatches:\n" << std::format("{}", problems));
   CHECK(problems.empty());
+
+  // TASK 6065: the direction that only became meaningful once the surface
+  // stopped being a subset. Before it this was ~9 entries by design.
+  auto const missing = planar::cmd::parity::oracle_only_commands(*mine, *theirs);
+  INFO("declared by the oracle and NOT by this binary:\n" << std::format("{}", missing));
+  CHECK(missing.empty());
+}
+
+TEST_CASE("planar-agent parity: the catalog is BYTE-identical to the oracle's", "[cmd][agent][parity][catalog]") {
+  if (!oracle_available()) {
+    SKIP("Zig oracle not built (zig/zig-out/bin/planar-agent)");
+  }
+  // The strongest statement available, and it is true for this binary
+  // (task 6065). `diff_against_oracle` above excludes `default` and reads
+  // per-command; this reads every byte of the document, so it also covers
+  // key ORDER, `docs`, `flagGroups`, `hidden`, `deprecated`, `path` and
+  // `name` — everything the structured comparison leaves out.
+  //
+  // `planar` cannot make this claim: four of its flags declare an
+  // empty-string default that CLI11 cannot distinguish from no default at
+  // all. That is measured and enumerated in ../catalog_parity.hpp.
+  auto const [cpp, zig] = both("catalog-bytes", {"schema"});
+  REQUIRE(cpp.code == 0);
+  REQUIRE(zig.code == 0);
+  REQUIRE(cpp.out.size() > 30000); // Not two empty strings.
+  CHECK(cpp.out == zig.out);
 }
 
 TEST_CASE("planar-agent parity: the catalog comparison actually discriminates", "[cmd][agent][parity][catalog][break-probe]") {
   // Break-probe in permanent form. `diff_against_oracle` returning an empty
   // vector is the pass condition above, and a function that always returned
-  // one would pass just as happily. These four mutations are the exact
-  // transcription slips the deleted help-page diff used to catch; each must
-  // produce at least one problem.
+  // one would pass just as happily. Each mutation below is a transcription
+  // slip the deleted help-page diff used to catch, or a field task 6065
+  // added to the comparison; each must produce at least one problem.
   using planar::cmd::parity::catalog_map;
   using planar::cmd::parity::command_surface;
   using planar::cmd::parity::diff_against_oracle;
+  using planar::cmd::parity::flag_surface;
+  using planar::cmd::parity::oracle_only_commands;
+  using planar::cmd::parity::positional_surface;
 
-  catalog_map const oracle{
-      {"planar-agent fail", command_surface{.flags          = {"--category", "--claim", "--json", "--reason"},
-                                            .required_flags = {"--claim", "--reason"},
-                                            .positionals    = {},
-                                            .subcommands    = {}}},
-      {"planar-agent", command_surface{.subcommands = {"fail", "pull"}}},
+  auto const flag = [](std::string name, bool required) {
+    return flag_surface{.name = name, .rendered = std::format("kind=\"string\" long=\"{}\" required={}", name, required)};
   };
 
+  catalog_map const oracle{
+      {"planar-agent fail",
+       command_surface{.summary     = "Fail a claim.",
+                       .description = "Fail a claim.",
+                       .flags = {flag("--category", false), flag("--claim", true), flag("--json", false), flag("--reason", true)},
+                       .positionals = {},
+                       .subcommands = {}}},
+      {"planar-agent", command_surface{.subcommands = {"fail", "pull"}}},
+  };
+  auto faithful = oracle;
+
+  SECTION("the unmutated fixture produces no problems") {
+    // The control. Without it every CHECK_FALSE below could pass because
+    // the comparison reports a problem for EVERYTHING.
+    CHECK(diff_against_oracle(faithful, oracle).empty());
+    CHECK(oracle_only_commands(faithful, oracle).empty());
+  }
   SECTION("a dropped flag is caught") {
-    catalog_map const mutated{
-        {"planar-agent fail", command_surface{.flags = {"--category", "--claim", "--json"}, .required_flags = {"--claim"}}}};
+    auto mutated = faithful;
+    mutated.at("planar-agent fail").flags.pop_back();
     CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
   }
   SECTION("a flag that lost its required-ness is caught") {
-    catalog_map const mutated{{"planar-agent fail", command_surface{.flags = {"--category", "--claim", "--json", "--reason"},
-                                                                    .required_flags = {"--claim"}}}};
+    auto mutated                             = faithful;
+    mutated.at("planar-agent fail").flags[1] = flag("--claim", false);
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("flags in a DIFFERENT ORDER are caught") {
+    // New at task 6065: the comparison used to sort both sides, so a
+    // reordered flag list was invisible. CLI11 renders help in insertion
+    // order, so it is not.
+    auto mutated = faithful;
+    std::ranges::reverse(mutated.at("planar-agent fail").flags);
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("a flag field OTHER than long/required is caught") {
+    // Also new at task 6065: `kind`, `choices`, `short`, `aliases`,
+    // `description`, `valueName`, `list`, `count`, `hidden`, `deprecated`,
+    // `env` and `completion` are all compared now.
+    auto mutated                                      = faithful;
+    mutated.at("planar-agent fail").flags[0].rendered = "kind=\"int\" long=\"--category\" required=false";
     CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
   }
   SECTION("an invented positional is caught") {
-    catalog_map const mutated{{"planar-agent fail", command_surface{.flags = {"--category", "--claim", "--json", "--reason"},
-                                                                    .required_flags = {"--claim", "--reason"},
-                                                                    .positionals    = {{"task-id", true}}}}};
+    auto mutated = faithful;
+    mutated.at("planar-agent fail").positionals.push_back({.name = "task-id", .rendered = "required=true"});
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("a summary that drifted from the oracle's is caught") {
+    auto mutated                            = faithful;
+    mutated.at("planar-agent fail").summary = "Something else entirely.";
     CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
   }
   SECTION("a subcommand the oracle does not have is caught") {
-    catalog_map const mutated{{"planar-agent", command_surface{.subcommands = {"fail", "invented"}}}};
+    auto mutated                                  = faithful;
+    mutated.at("planar-agent").subcommands.back() = "invented";
+    CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
+  }
+  SECTION("subcommands in a DIFFERENT ORDER are caught") {
+    auto mutated = faithful;
+    std::ranges::reverse(mutated.at("planar-agent").subcommands);
     CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
   }
   SECTION("a command the oracle does not have at all is caught") {
-    catalog_map const mutated{{"planar-agent nosuchverb", command_surface{}}};
+    auto mutated = faithful;
+    mutated.emplace("planar-agent nosuchverb", command_surface{});
     CHECK_FALSE(diff_against_oracle(mutated, oracle).empty());
   }
-  SECTION("a faithful subset produces no problems") {
-    // The other half of the probe: it must not report a problem for the
-    // legitimate case, or "empty" above would mean nothing.
-    catalog_map const faithful{{"planar-agent fail", command_surface{.flags = {"--category", "--claim", "--json", "--reason"},
-                                                                     .required_flags = {"--claim", "--reason"}}}};
-    CHECK(diff_against_oracle(faithful, oracle).empty());
+  SECTION("a command the oracle HAS and the tree does not is caught") {
+    // The 6065 direction. `diff_against_oracle` is blind to it by
+    // construction — it only walks the C++ side — so a subset would pass
+    // it forever. This is the half that makes full-surface parity an
+    // assertion.
+    auto mutated = faithful;
+    mutated.erase("planar-agent fail");
+    CHECK(diff_against_oracle(mutated, oracle).empty());
+    auto const missing = oracle_only_commands(mutated, oracle);
+    REQUIRE(missing.size() == 1);
+    CHECK(missing.front() == "planar-agent fail");
   }
 }
 

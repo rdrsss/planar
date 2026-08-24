@@ -277,9 +277,9 @@ TEST_CASE("planar-watch schema appends the terminator its renderer omits", "[cmd
   CHECK(got.out.find('\n') == got.out.size() - 1);
   CHECK(got.out.contains("\"root\":\"planar-watch\""));
   CHECK(got.out.contains("\"planar-watch completion\""));
-  // A catalog that named an unported verb would be worse than no catalog:
-  // tools/cli_usage_lint.zig validates authored surfaces against it.
-  CHECK_FALSE(got.out.contains("\"planar-watch feed\""));
+  // TASK 6065 inverted the assertion that used to sit here. See the
+  // twelve-verb case at the bottom of this file for the measurement.
+  CHECK(got.out.contains("\"planar-watch feed\""));
 }
 
 TEST_CASE("planar-watch parse failures exit 1 and write both streams", "[cmd][watch][handlers][exitcode]") {
@@ -676,19 +676,38 @@ TEST_CASE("planar-watch: every read verb's JSON arm is exactly one line", "[cmd]
   }
 }
 
-TEST_CASE("planar-watch schema now catalogs the nine ported verbs and no others", "[cmd][watch][handlers]") {
-  auto const fx  = make_fixture("schema9");
+TEST_CASE("planar-watch schema catalogs all TWELVE oracle verbs", "[cmd][watch][handlers]") {
+  auto const fx  = make_fixture("schema12");
   auto const got = dispatch(fx, {"schema"});
   REQUIRE(got.code == 0);
   CHECK_FALSE(got.db_open);
   for (auto const* verb : {"ps", "claims", "actions", "plans", "log", "tree", "version", "completion", "schema"}) {
-    INFO("verb: " << verb);
+    INFO("ported verb: " << verb);
     CHECK(got.out.contains(std::format("\"planar-watch {}\"", verb)));
   }
-  // A catalog that named an unported verb would be worse than no catalog:
-  // tools/cli_usage_lint.zig validates authored surfaces against it.
+  // TASK 6065. This loop used to be a CHECK_FALSE, on the grounds that "a
+  // catalog that named an unported verb would be worse than no catalog:
+  // tools/cli_usage_lint.zig validates authored surfaces against it."
+  //
+  // That reads the lint backwards, and the measurement is in
+  // `src/lib/cliapp/schema.t.cpp`'s `[lint-parity]` scope section: the
+  // tool reports a `--flag` referenced on a command the binary DOES
+  // expose, and SKIPS a command path it cannot resolve at all. So omitting
+  // a verb never made the gate stricter about that verb — it removed the
+  // verb from the gate. Declaring it is what brings its flags under
+  // `make cli-usage-check`.
+  //
+  // What keeps the catalog honest is the refusal, not the omission. Each
+  // of these exits 64 naming itself; parity.t.cpp asserts that directly on
+  // the built binary.
   for (auto const* verb : {"feed", "run", "sync-events"}) {
-    INFO("unported verb: " << verb);
-    CHECK_FALSE(got.out.contains(std::format("\"planar-watch {}\"", verb)));
+    INFO("declared-but-unported verb: " << verb);
+    CHECK(got.out.contains(std::format("\"planar-watch {}\"", verb)));
   }
+  // And the two nested `run` leaves, which no top-level loop would catch.
+  CHECK(got.out.contains("\"planar-watch run list\""));
+  CHECK(got.out.contains("\"planar-watch run show\""));
+  // Non-vacuous: the catalog does not simply contain every string it is
+  // asked about.
+  CHECK_FALSE(got.out.contains("\"planar-watch nosuchverb\""));
 }

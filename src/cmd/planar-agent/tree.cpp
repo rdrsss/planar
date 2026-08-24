@@ -6,6 +6,8 @@ module planar.cmd.planar_agent.tree;
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.cliapp.surface;
+import planar.cmd.planar_agent.surface;
 
 namespace planar::cmd::agent {
 
@@ -260,6 +262,13 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_json(*abort_cmd);
 
   app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
+
+  // Everything above is hand-transcribed and lands WITH its handler.
+  // This fills in the nine leaves that land no behaviour — `ingest`, both
+  // `run` verbs, both `dispatch` verbs and all four `context` verbs — from
+  // generated data, skipping every node declared above. See
+  // `planar.cmd.planar_agent.surface`.
+  (void)cliapp::apply_surface(*app, surface_nodes());
 
   return app;
 }

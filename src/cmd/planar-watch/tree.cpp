@@ -6,6 +6,8 @@ module planar.cmd.planar_watch.tree;
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.cliapp.surface;
+import planar.cmd.planar_watch.surface;
 
 namespace planar::cmd::watch {
 
@@ -214,6 +216,13 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   completion->add_option("shell")->description("Shell: bash, zsh, or fish")->required();
 
   app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
+
+  // Everything above is hand-transcribed and lands WITH its handler.
+  // This fills in the four leaves that land no behaviour — `feed`,
+  // `sync-events` and both `run` verbs — from generated data, skipping
+  // every node declared above. See `planar.cmd.planar_watch.surface`,
+  // including the bare-invocation divergence it does NOT close.
+  (void)cliapp::apply_surface(*app, surface_nodes());
 
   return app;
 }

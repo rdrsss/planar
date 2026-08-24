@@ -132,6 +132,7 @@ planar_binary(planar_agent
     locality.cppm
     policy.cppm
     tree.cppm
+    surface.cppm
     handlers/support.cppm
     handlers/version.cppm
     handlers/schema.cppm
@@ -145,6 +146,7 @@ planar_binary(planar_agent
     locality.cpp
     policy.cpp
     tree.cpp
+    surface.cpp
     handlers/version.cpp
     handlers/schema.cpp
     handlers/claims.cpp

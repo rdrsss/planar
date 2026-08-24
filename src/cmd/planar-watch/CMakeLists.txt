@@ -96,6 +96,7 @@ planar_binary(planar_watch
     context.cppm
     handler.cppm
     tree.cppm
+    surface.cppm
     handlers/format.cppm
     handlers/version.cppm
     handlers/schema.cppm
@@ -106,6 +107,7 @@ planar_binary(planar_watch
   SOURCES
     context.cpp
     tree.cpp
+    surface.cpp
     handlers/format.cpp
     handlers/version.cpp
     handlers/schema.cpp
@@ -133,5 +135,10 @@ if(TARGET planar_cmd_planar_watch_tests)
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_watch>\""
     "PLANAR_ZIG_BIN=\"${CMAKE_SOURCE_DIR}/zig/zig-out/bin/planar-watch\"")
   target_include_directories(planar_cmd_planar_watch_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  # `../catalog_parity.hpp` parses the two catalogs with Glaze (plan 996,
+  # task 6065 brought this binary into the catalog comparison; before it
+  # the tree declared three of the oracle's twelve verbs and `schema` was
+  # explicitly excluded from the compared set).
+  target_link_libraries(planar_cmd_planar_watch_tests PRIVATE glaze::glaze)
   add_dependencies(planar_cmd_planar_watch_tests planar_cmd_planar_watch)
 endif()

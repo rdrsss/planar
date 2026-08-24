@@ -10,8 +10,10 @@ import planar.cliapp.walk;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.surface;
 import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.capture;
+import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.skills;
@@ -52,9 +54,36 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
 
 } // namespace
 
-auto handlers() -> handler_table {
+/// @brief A handler that always refuses with `not_implemented` (exit 64),
+/// naming the verb.
+///
+/// The loud refusal the full-surface declaration rests on. Registered
+/// explicitly, per verb, rather than left to `run`'s table-miss arm,
+/// because of two distinct hazards the arm does not cover: a DUAL node
+/// (subcommands AND its own handler in the oracle) never reaches the arm at
+/// all — it falls to the help page and exits 0, a silent success — and an
+/// unregistered leaf trips the `unregistered_leaves` gate, which is what
+/// keeps the generated inventory honest as verbs get ported.
+/// @param verb The root-relative path key, used verbatim in the message.
+/// @return The handler.
+auto not_implemented_for(std::string_view verb) -> handler_fn {
+  return [body = std::format("{}: not implemented in this build", verb)](context&, const cliapp::parsed_args&) -> handler_result {
+    return std::unexpected(error_from_body(domain_error_kind::not_implemented, body));
+  };
+}
+
+auto handlers(const CLI::App& root) -> handler_table {
   handler_table table;
   table.emplace("version", handlers::version);
+  // `schema` and `completion` describe the TREE, so they take it; every
+  // other handler describes DATA and does not. Same shape as the
+  // `planar-agent` and `planar-watch` tables.
+  table.emplace("schema", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
+    return handlers::schema(ctx, args, root);
+  });
+  table.emplace("completion", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
+    return handlers::completion(ctx, args, root);
+  });
   table.emplace("workflow list", handlers::workflow_list);
   table.emplace("workflow show", handlers::workflow_show);
   table.emplace("annotate add", handlers::annotate_add);
@@ -96,6 +125,17 @@ auto handlers() -> handler_table {
   table.emplace("handoff show", handlers::handoff_show);
   table.emplace("resume", handlers::resume_packet);
   table.emplace("resume validate", handlers::resume_validate);
+
+  // Everything above is IMPLEMENTED. Everything below is DECLARED and
+  // refuses at exit 64. The inventory is generated alongside the surface
+  // itself (`planar.cmd.planar.surface`), so a verb that gains a real
+  // handler above must be dropped from it in the same regeneration — the
+  // `emplace` here is a no-op on a key already present, so a stale entry
+  // cannot silently shadow a real handler, and `unported_paths` staying
+  // stale in the other direction fails `unregistered_leaves`.
+  for (auto const& verb : unported_paths()) {
+    table.emplace(std::string{verb}, not_implemented_for(verb));
+  }
   return table;
 }
 

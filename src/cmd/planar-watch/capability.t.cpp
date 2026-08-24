@@ -37,6 +37,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.cliapp.walk;
 import planar.cmd.planar_watch.dispatch;
+import planar.cmd.planar_watch.surface;
 import planar.cmd.planar_watch.tree;
 
 namespace {
@@ -70,22 +71,26 @@ TEST_CASE("planar-watch refuses every write verb from both other binaries, at an
   }
 }
 
-TEST_CASE("planar-watch's registered verb set is exactly the ported subset", "[cmd][watch][capability]") {
+TEST_CASE("planar-watch's declared verb set is exactly the oracle's", "[cmd][watch][capability]") {
   auto const root  = planar::cmd::watch::root_app();
   auto const names = all_node_names(*root);
 
-  // The oracle registers twelve: feed, ps, claims, actions, plans, log,
-  // tree, run, sync-events, version, completion, schema. Task 6120 landed
-  // the six read verbs that rest on `engine.runtime.agentactivity`; `feed`,
-  // `run` and `sync-events` remain unported — see CMakeLists.txt for what
-  // each still needs. So this asserts the nine that ARE ported, and nothing
-  // else.
+  // The oracle registers twelve top-level verbs: feed, ps, claims,
+  // actions, plans, log, tree, run, sync-events, version, completion,
+  // schema. Task 6120 landed the six read verbs that rest on
+  // `engine.runtime.agentactivity`; task 6065 DECLARED the remaining four
+  // (`feed`, `sync-events`, `run list`, `run show`) so that
+  // `zig/tools/cli_usage_lint` can resolve them, each refusing at exit 64
+  // — proved by name in parity.t.cpp. Declaring is not implementing, and
+  // this binary keeps the difference loud.
   //
   // THE EXACT-SET FORM IS LOAD-BEARING, not a stylistic choice. A
   // `contains` check would let a write verb in; equality means adding ANY
   // node to this binary's tree — including an innocent-looking one — has to
   // come through this line, which is a deliberate stop for a binary whose
-  // whole contract is what it cannot do.
+  // whole contract is what it cannot do. That is why widening it to the
+  // oracle's full surface is written out verb by verb rather than derived
+  // from the generated table it is checking.
   //
   // Note `plans` and `tree` sit one character from `plan` and one word from
   // planar's own `tree` verb, and NEITHER is forbidden: `forbidden_verbs`
@@ -93,8 +98,41 @@ TEST_CASE("planar-watch's registered verb set is exactly the ported subset", "[c
   // whole-name equality, not by prefix. `planar-watch plans` LISTS plans;
   // `planar plan` mutates them. The test above would fail on `plan` and
   // passes on `plans`, which is the distinction actually intended.
-  CHECK(names ==
-        std::set<std::string, std::less<>>{"actions", "claims", "completion", "log", "plans", "ps", "schema", "tree", "version"});
+  //
+  // `run` is now in the tree and is NOT in `forbidden_verbs` — the
+  // forbidden list names `planar-agent`'s write verbs and `planar`'s
+  // planning-entity verbs, and neither has a `run`. `planar-watch run`
+  // OBSERVES workflow runs; the case above would still fail if `ingest`,
+  // `pull` or `capture` appeared here.
+  CHECK(names == std::set<std::string, std::less<>>{"actions", "claims", "completion", "feed", "list", "log", "plans", "ps",
+                                                    "run", "schema", "show", "sync-events", "tree", "version"});
+}
+
+TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cmd][watch][capability]") {
+  // Structural companion to parity.t.cpp's behavioural case: every leaf is
+  // in the handler table, and every leaf is in EXACTLY ONE of the two
+  // populations — the hand-registered handlers or the generated unported
+  // inventory. A bulk registration's failure mode is swallowing a verb
+  // that already had a real handler, so that direction is asserted too.
+  auto const root  = planar::cmd::watch::root_app();
+  auto const table = planar::cmd::watch::handlers(*root);
+
+  std::set<std::string, std::less<>> unported;
+  for (auto const& verb : planar::cmd::watch::unported_paths()) {
+    unported.emplace(verb);
+  }
+  CHECK(unported == std::set<std::string, std::less<>>{"feed", "run list", "run show", "sync-events"});
+
+  auto const leaves = planar::cliapp::leaf_keys(*root);
+  CHECK(leaves.size() == 13);
+  for (auto const& leaf : leaves) {
+    INFO("leaf: " << leaf);
+    CHECK(table.contains(leaf));
+  }
+  for (auto const& implemented : {"ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion"}) {
+    INFO("implemented verb wrongly listed as unported: " << implemented);
+    CHECK_FALSE(unported.contains(implemented));
+  }
 }
 
 TEST_CASE("planar-watch's root advertises the read-only invariant to operators", "[cmd][watch][capability]") {

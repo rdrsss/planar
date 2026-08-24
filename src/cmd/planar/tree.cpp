@@ -6,6 +6,8 @@ module planar.cmd.planar.tree;
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.cliapp.surface;
+import planar.cmd.planar.surface;
 
 namespace planar::cmd {
 
@@ -463,7 +465,23 @@ auto add_handoff(CLI::App& root) -> void {
 /// `planar.cmd.planar.handlers.resume`.
 /// @param root The root app to attach the group to.
 auto add_resume(CLI::App& root) -> void {
-  CLI::App* resume = root.add_subcommand("resume", "Produce a structured resume packet for the specified task.");
+  // The oracle's LONG description, not its one-line summary. Task 6065
+  // made the catalog carry both — the summary out of band, the description
+  // off the tree — and `resume` was the one hand-written node still
+  // declaring the short form where the oracle declares the long one.
+  CLI::App* resume = root.add_subcommand("resume", "Produce a structured 8-section resume packet for the specified\n"
+                                                   "  task.\n\n"
+                                                   "  The packet contains:\n"
+                                                   "    1. Identity       — task id, plan id, title, scope\n"
+                                                   "    2. State          — status, next_action, last action\n"
+                                                   "    3. Plan position  — parent plan, completed/current/remaining steps\n"
+                                                   "    4. Operational    — external_links for the task; refreshed if stale\n"
+                                                   "    5. Recent activity — session entries from recent sessions\n"
+                                                   "    6. Decisions and questions\n"
+                                                   "    7. Linked artifacts\n"
+                                                   "    8. Audit footer   — previous session vendor and timestamp, plus\n"
+                                                   "                        the active claim's worktree path (when held)\n"
+                                                   "                        so the resumer can prepend `cd <path>`");
   resume->require_subcommand(0);
   add_json(*resume);
 
@@ -492,6 +510,13 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_capture(*app);
   add_handoff(*app);
   add_resume(*app);
+  // Everything above is hand-transcribed and lands WITH its handler. This
+  // fills in the rest of the oracle's surface — ~190 leaves that land no
+  // behaviour — from generated data, skipping every node declared above.
+  // See `planar.cmd.planar.surface`'s header for why the two halves are
+  // written differently, and `planar.cliapp.surface`'s for what a declared
+  // node without a handler does (exit 64, never a silent 0).
+  (void)cliapp::apply_surface(*app, surface_nodes());
   return app;
 }
 

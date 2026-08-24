@@ -50,7 +50,7 @@ auto main(int argc, char** argv) -> int {
 
   planar::cmd::context ctx{std::move(args), env, planar::cmd::operator_cwd(env), *db_path, std::cout, std::cerr};
   auto const           root  = planar::cmd::root_app();
-  auto const           table = planar::cmd::handlers();
+  auto const           table = planar::cmd::handlers(*root);
   int const            code  = planar::cmd::run(ctx, *root, table);
   std::cout.flush();
   std::cerr.flush();

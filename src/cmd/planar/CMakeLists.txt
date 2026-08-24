@@ -252,7 +252,9 @@ planar_binary(planar
     handler.cppm
     scope.cppm
     tree.cppm
+    surface.cppm
     handlers/version.cppm
+    handlers/catalog.cppm
     handlers/workflow.cppm
     handlers/annotate.cppm
     handlers/ext.cppm
@@ -268,7 +270,9 @@ planar_binary(planar
     context.cpp
     scope.cpp
     tree.cpp
+    surface.cpp
     handlers/version.cpp
+    handlers/catalog.cpp
     handlers/workflow.cpp
     handlers/annotate.cpp
     handlers/ext.cpp

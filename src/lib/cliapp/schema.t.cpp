@@ -232,9 +232,21 @@ TEST_CASE("schema_json carries a declared default and derives the int kind", "[c
   // load-bearing at the handler too (`cliapp::harvest` materializes it), so
   // the catalog must report it.
   CHECK(catalog.contains(R"("long":"--priority")"));
-  CHECK(catalog.contains(R"("default":"100")"));
-  // `--json` is a flag: kind bool, no value name, null default.
+  // A NUMBER, not a quoted string — the oracle types the literal by kind
+  // and this emitter now does too (task 6065; see `default_literal`).
+  CHECK(catalog.contains(R"("default":100)"));
+  CHECK_FALSE(catalog.contains(R"("default":"100")"));
+  // `--json` is a flag: kind bool, no value name, and its default is FALSE
+  // rather than null. CLI11 has no default STRING for a flag, but a bool
+  // flag's default is not "absent" — it is `false`, which is what the
+  // oracle reports for all 341 of them.
   CHECK(catalog.contains(R"("long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool")"));
+  CHECK(catalog.contains(R"("kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local",)"
+                         R"("valueName":"","default":false)"));
+  // A value flag with NO declared default still reports null, so the two
+  // cases above cannot both be "emit something non-null unconditionally".
+  CHECK(catalog.contains(R"("long":"--slug")"));
+  CHECK(catalog.contains(R"("valueName":"VALUE","default":null)"));
 }
 
 TEST_CASE("schema_json emits the constant deprecated/docs/completion shapes", "[cliapp][schema][unit]") {

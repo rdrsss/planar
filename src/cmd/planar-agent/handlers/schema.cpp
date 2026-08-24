@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.cliapp.schema;
+import planar.cmd.planar_agent.surface;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
 
@@ -18,7 +19,10 @@ auto schema(context& ctx, const cliapp::parsed_args& args, const CLI::App& root)
   // trailing newline, so the newline is appended here — matching
   // handlers/schema.zig's `writeAll(catalog)` + `writeAll("\n")`. See this
   // handler's module header for why that is not a blanket rule.
-  ctx.out() << cliapp::schema_json(root) << '\n';
+  // The summaries table is what makes `"summary"` differ from
+  // `"description"` where the oracle's does. See
+  // `planar.cliapp.schema`'s header, divergence 1.
+  ctx.out() << cliapp::schema_json(root, surface_summaries()) << '\n';
   return {};
 }
 

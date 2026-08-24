@@ -63,10 +63,12 @@
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.cliapp.walk;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.surface;
 import planar.cmd.planar.tree;
 
 namespace {
@@ -97,7 +99,7 @@ auto dispatch(std::vector<std::string> args, std::map<std::string, std::string, 
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::map_env(std::move(vars)), root, root / "planar.db", out, err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers();
+  auto const         table = planar::cmd::handlers(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
@@ -119,7 +121,7 @@ TEST_CASE("every leaf in the tree has a handler", "[cmd][dispatch][registration]
   // it is invisible until someone runs the verb and gets exit 64. This
   // turns it into a failing test at the moment the tree changes.
   auto const tree    = planar::cmd::root_app();
-  auto const table   = planar::cmd::handlers();
+  auto const table   = planar::cmd::handlers(*tree);
   auto const missing = planar::cmd::unregistered_leaves(*tree, table);
   INFO("unwired leaves: " << std::format("{}", missing));
   CHECK(missing.empty());
@@ -129,7 +131,7 @@ TEST_CASE("every handler is reachable from the tree", "[cmd][dispatch][registrat
   // The other direction: a handler registered under a misspelled or removed
   // path is dead code that reads as coverage.
   auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers();
+  auto const table = planar::cmd::handlers(*tree);
   auto const dead  = planar::cmd::unreachable_handlers(*tree, table);
   INFO("unreachable handlers: " << std::format("{}", dead));
   CHECK(dead.empty());
@@ -140,7 +142,7 @@ TEST_CASE("unregistered_leaves actually reports an unwired leaf", "[cmd][dispatc
   // happily if `unregistered_leaves` always returned an empty vector. This
   // case proves it discriminates by handing it a table with a hole.
   auto const tree  = planar::cmd::root_app();
-  auto       table = planar::cmd::handlers();
+  auto       table = planar::cmd::handlers(*tree);
   table.erase("workflow show");
   auto const missing = planar::cmd::unregistered_leaves(*tree, table);
   REQUIRE(missing.size() == 1);
@@ -149,7 +151,7 @@ TEST_CASE("unregistered_leaves actually reports an unwired leaf", "[cmd][dispatc
 
 TEST_CASE("unreachable_handlers actually reports a dead entry", "[cmd][dispatch][registration]") {
   auto const tree  = planar::cmd::root_app();
-  auto       table = planar::cmd::handlers();
+  auto       table = planar::cmd::handlers(*tree);
   table.emplace("workflow shwo", [](context&, const planar::cliapp::parsed_args&) -> planar::cmd::handler_result { return {}; });
   auto const dead = planar::cmd::unreachable_handlers(*tree, table);
   REQUIRE(dead.size() == 1);
@@ -225,6 +227,115 @@ TEST_CASE("an unwired leaf falls through to exit 64, not a crash", "[cmd][dispat
   CHECK(out.str().empty());
 }
 
+TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cmd][dispatch][not-implemented]") {
+  // THE HEADLINE PROPERTY of the full-surface declaration (plan 996, task
+  // 6065). `planar` declares all 223 of the oracle's leaves so that
+  // `zig/tools/cli_usage_lint` can resolve every authored command path;
+  // 188 of them land no behaviour. A declared node that dispatches to
+  // nothing is WORSE than an absent one if it exits 0, so each refuses
+  // loudly and names itself.
+  auto const leaf = dispatch({"plan", "list"});
+  CHECK(leaf.code == 64);
+  CHECK(leaf.out.empty());
+  CHECK(leaf.err == "error: plan list: not implemented in this build\n");
+
+  // Deeper, to prove the key is the full path and not the leaf name.
+  auto const deep = dispatch({"feedback", "triage", "list"});
+  CHECK(deep.code == 64);
+  CHECK(deep.err == "error: feedback triage list: not implemented in this build\n");
+
+  // Discrimination: a PORTED verb on the same binary does not answer 64,
+  // so exit 64 is not simply what this binary now does.
+  auto const ported = dispatch({"version"});
+  CHECK(ported.code == 0);
+  CHECK(ported.err.empty());
+}
+
+TEST_CASE("a declared-but-unported DUAL node refuses too, instead of exiting 0", "[cmd][dispatch][not-implemented]") {
+  // The hazard that makes the explicit registration load-bearing rather
+  // than decorative. `run` renders a matched node's HELP PAGE and returns
+  // exit_success whenever the node has children and the table has no entry
+  // for it. So a node that is a group AND a verb in the oracle — measured
+  // by invoking all 38 of the oracle's group nodes against a scratch
+  // arena, and there are exactly three: `resume`, `handoff`, `health` —
+  // would have exited 0 with a help page where the oracle does real work.
+  // A SILENT SUCCESS, which is the one outcome a declared-but-unported
+  // verb must never produce.
+  //
+  // `health` is the one this task declared. Oracle-captured against a
+  // pinned scratch arena: `planar health` exits 0 having printed a
+  // contributor report — it is a verb, not a group heading.
+  auto const dual = dispatch({"health"});
+  CHECK(dual.code == 64);
+  CHECK(dual.out.empty());
+  CHECK(dual.err == "error: health: not implemented in this build\n");
+
+  // ...and the group half of the same node still resolves its children.
+  auto const child = dispatch({"health", "hygiene"});
+  CHECK(child.code == 64);
+  CHECK(child.err == "error: health hygiene: not implemented in this build\n");
+
+  // The discrimination: a PURE group with no handler must still render
+  // help at exit 0, because that is what the oracle does for the other 35.
+  auto const pure = dispatch({"plan"});
+  CHECK(pure.code == 0);
+  CHECK(pure.err.empty());
+  CHECK(pure.out.contains("next"));
+
+  // And the break-probe for THIS case: if `health` were merely declared
+  // and left out of the table, it would take the `pure` path above. The
+  // table entry is what separates them, so removing it must flip the
+  // behaviour.
+  auto const tree  = planar::cmd::root_app();
+  auto       table = planar::cmd::handlers(*tree);
+  REQUIRE(table.erase("health") == 1);
+  std::ostringstream out;
+  std::ostringstream err;
+  auto const         root = std::filesystem::temp_directory_path() / "planar_dispatch_health_probe";
+  std::error_code    ec;
+  std::filesystem::create_directories(root, ec);
+  context   ctx{{"planar", "health"}, planar::cmd::map_env({}), root, root / "planar.db", out, err};
+  int const code = planar::cmd::run(ctx, *tree, table);
+  CHECK(code == 0);
+  CHECK(out.str().contains("hygiene"));
+  CHECK(err.str().empty());
+}
+
+TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][dispatch][registration]") {
+  // The gate that keeps the generated `unported_paths()` inventory honest
+  // as verbs get ported. Two failure modes, both silent without this:
+  // an inventory entry that shadows a verb someone just implemented (the
+  // bulk `emplace` is a no-op on an existing key, so the real handler
+  // wins, but the stale entry would then be invisible), and a leaf in
+  // neither population (caught by `unregistered_leaves`, above).
+  auto const tree  = planar::cmd::root_app();
+  auto const table = planar::cmd::handlers(*tree);
+
+  std::set<std::string, std::less<>> unported;
+  for (auto const& verb : planar::cmd::unported_paths()) {
+    unported.emplace(verb);
+  }
+  CHECK(unported.size() == 188);
+  // The three duals are the entries that are NOT leaves; `resume` and
+  // `handoff` have real handlers, so `health` is the only one here.
+  CHECK(unported.contains("health"));
+  CHECK_FALSE(unported.contains("resume"));
+  CHECK_FALSE(unported.contains("handoff"));
+  // No implemented verb may appear in the inventory.
+  for (auto const& implemented : {"version", "schema", "completion", "unlink", "workbench gc", "annotate add", "capture snapshot",
+                                  "handoff show", "resume validate", "ext list"}) {
+    INFO("implemented verb wrongly listed as unported: " << implemented);
+    CHECK_FALSE(unported.contains(implemented));
+  }
+
+  auto const leaves = planar::cliapp::leaf_keys(*tree);
+  CHECK(leaves.size() == 223);
+  for (auto const& leaf : leaves) {
+    INFO("leaf: " << leaf);
+    CHECK(table.contains(leaf));
+  }
+}
+
 TEST_CASE("the exit-code envelope maps each bucket distinctly", "[cmd][exit]") {
   // Exit-code mapping is the easiest thing in this task to test vacuously:
   // a table collapsed to a single value passes any test that only checks
@@ -285,7 +396,7 @@ TEST_CASE("report composes a message body but writes a rendered payload verbatim
 
 TEST_CASE("a dual group-and-leaf node dispatches to its own handler", "[cmd][dispatch][registration]") {
   auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers();
+  auto const table = planar::cmd::handlers(*tree);
 
   // Both parents are registered even though `cliapp::leaf_keys` — which
   // only counts CHILDLESS nodes — does not list them.
@@ -306,7 +417,8 @@ TEST_CASE("a dual group-and-leaf node dispatches to its own handler", "[cmd][dis
 TEST_CASE("a PURE group with no handler still renders help", "[cmd][dispatch]") {
   // The other side of the narrowed rule. `capture` has six children and no
   // handler of its own, so it must keep the help-page behaviour.
-  auto const table = planar::cmd::handlers();
+  auto const tree  = planar::cmd::root_app();
+  auto const table = planar::cmd::handlers(*tree);
   REQUIRE_FALSE(table.contains("capture"));
 
   auto const got = dispatch({"capture"});
@@ -322,7 +434,7 @@ TEST_CASE("unreachable_handlers still reports a key naming no node at all", "[cm
   // widening could have been "return {} always" and every gate above would
   // pass.
   auto const tree  = planar::cmd::root_app();
-  auto       table = planar::cmd::handlers();
+  auto       table = planar::cmd::handlers(*tree);
   table.emplace("handoff nosuchchild",
                 [](context&, const planar::cliapp::parsed_args&) -> planar::cmd::handler_result { return {}; });
   auto const dead = planar::cmd::unreachable_handlers(*tree, table);

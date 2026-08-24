@@ -46,12 +46,24 @@
 ///
 ///   1. `"summary"` vs `"description"`. `cli::cmd` carried `desc` (the
 ///      one-line summary) and `long_desc` (the multi-line prose lead-in)
-///      as separate fields; `CLI::App` carries ONE description string. The
-///      catalog therefore emits the same string for both keys. Note the
-///      Zig oracle's catalog cannot distinguish the two either — its
-///      emitter falls back to `desc` when `long_desc` is empty, which is
-///      why `planar-agent`'s tree comment had to read the DIFFERENCE off
-///      the rendered help page rather than off the catalog.
+///      as separate fields; `CLI::App` carries ONE description string, so
+///      the single-argument overload below emits the same string for both
+///      keys.
+///
+///      NARROWED by task 6065, with a measurement. The claim above that
+///      "the Zig oracle's catalog cannot distinguish the two either" is
+///      WRONG, and the fix is not free: across the three oracle catalogs
+///      69 nodes emit a `summary` that differs from their `description`
+///      (57 on `planar`, 12 on `planar-watch`, 0 on `planar-agent`), and
+///      it is NOT a parent-only effect — 40 of the 69 are leaves. So the
+///      two-argument overload takes the summaries as DATA, keyed by full
+///      command path, and each binary passes its generated table. A node
+///      absent from the table still falls back to its description, which
+///      is what keeps a hand-declared node that predates the table honest
+///      rather than blank.
+///
+///      Still lost: `CLI::App` remains a one-string type, so the summary
+///      cannot be read back OFF the tree — only supplied alongside it.
 ///   2. `"kind"` and `"choices"` are DERIVED from `CLI::Option::
 ///      get_type_name()` rather than declared. CLI11 populates that string
 ///      from the option's validators (`:{a,b,c}` for `CLI::IsMember`), so
@@ -81,5 +93,22 @@ namespace planar::cliapp {
 /// @return The catalog as a single-line JSON document (no trailing
 /// newline — the `schema` verb appends one at the write site).
 export auto schema_json(const CLI::App& root) -> std::string;
+
+/// @brief Emit the catalog with a per-command one-line `"summary"` supplied
+/// out of band.
+///
+/// `CLI::App` holds one description string, so a node's short summary has
+/// nowhere to live ON the tree. This overload takes it as data instead. See
+/// this module's header, divergence 1, for the measurement that made it
+/// worth having.
+/// @param root The command tree root.
+/// @param summaries `(full command path, summary)` pairs — e.g.
+/// `{"planar plan next", "Bucketed claim-aware view..."}`. Order is
+/// irrelevant; a path that appears more than once resolves to the first
+/// match. A command absent from the span falls back to its description.
+/// @return The catalog as a single-line JSON document (no trailing
+/// newline).
+export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries)
+    -> std::string;
 
 } // namespace planar::cliapp

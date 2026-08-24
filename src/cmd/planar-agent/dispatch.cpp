@@ -6,6 +6,7 @@ module planar.cmd.planar_agent.dispatch;
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.cmd.planar_agent.surface;
 import planar.cliapp.walk;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
@@ -47,6 +48,22 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
 
 } // namespace
 
+/// @brief A handler that always refuses with `not_implemented` (exit 64),
+/// naming the verb.
+///
+/// The loud refusal the full-surface declaration rests on (plan 996, task
+/// 6065). Registered explicitly, per verb, rather than left to `run`'s
+/// table-miss arm, so that a declared-but-unported leaf still satisfies the
+/// `unregistered_leaves` gate — which is what keeps the generated inventory
+/// honest as verbs get ported.
+/// @param verb The root-relative path key, used verbatim in the message.
+/// @return The handler.
+auto not_implemented_for(std::string_view verb) -> handler_fn {
+  return [body = std::format("{}: not implemented in this build", verb)](context&, const cliapp::parsed_args&) -> handler_result {
+    return std::unexpected(error_from_body(domain_error_kind::not_implemented, body));
+  };
+}
+
 auto handlers(const CLI::App& root) -> handler_table {
   handler_table table;
   table.emplace("version", handlers::version);
@@ -70,6 +87,13 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("action end", handlers::action_end);
   table.emplace("reconcile", handlers::reconcile);
   table.emplace("abort", handlers::abort);
+  // Everything above is IMPLEMENTED. Everything below is DECLARED and
+  // refuses at exit 64; the inventory is generated alongside the surface
+  // itself. `emplace` is a no-op on a key already present, so a stale
+  // inventory entry cannot shadow a real handler.
+  for (auto const& verb : unported_paths()) {
+    table.emplace(std::string{verb}, not_implemented_for(verb));
+  }
   return table;
 }
 
