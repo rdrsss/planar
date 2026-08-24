@@ -20,6 +20,7 @@ import planar.cmd.planar.handlers.init;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.skills;
+import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.ext;
 import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
@@ -80,6 +81,8 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("init", handlers::init);
   table.emplace("plan create", handlers::plan_create);
   table.emplace("assoc create", handlers::assoc_create);
+  table.emplace("assoc add", handlers::assoc_add);
+  table.emplace("task add", handlers::task_add);
   table.emplace("version", handlers::version);
   // `schema` and `completion` describe the TREE, so they take it; every
   // other handler describes DATA and does not. Same shape as the

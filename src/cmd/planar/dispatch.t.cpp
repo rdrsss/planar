@@ -316,10 +316,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
     unported.emplace(verb);
   }
   // 188 before task 6132 ported `init` out of the inventory; 187 before
-  // task 6133 ported `plan create` and `assoc create` out of it. This
+  // task 6133 ported `plan create` and `assoc create` out of it; 185
+  // before task 6135 ported `task add` and `assoc add` out of it. This
   // number is load-bearing: it is what fails when a verb gains a handler
   // and its generated inventory entry is not dropped in the same change.
-  CHECK(unported.size() == 185);
+  CHECK(unported.size() == 183);
   // The three duals are the entries that are NOT leaves; `resume` and
   // `handoff` have real handlers, so `health` is the only one here.
   CHECK(unported.contains("health"));
@@ -328,7 +329,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // No implemented verb may appear in the inventory.
   for (auto const& implemented :
        {"init", "version", "schema", "completion", "unlink", "workbench gc", "annotate add", "capture snapshot", "handoff show",
-        "resume validate", "ext list", "plan create", "assoc create"}) {
+        "resume validate", "ext list", "plan create", "assoc create", "task add", "assoc add"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }

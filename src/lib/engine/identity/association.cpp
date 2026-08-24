@@ -27,6 +27,59 @@ auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique || err.code_ == k_sqlite_constraint_primarykey;
 }
 
+/// @brief The last path component of `path`, mirroring zig's
+/// `std.fs.path.basename` (POSIX form) rather than
+/// `std::filesystem::path::filename`.
+///
+/// The two disagree on exactly one input shape and it is an input an
+/// operator can type: a path ending in a separator. `std::filesystem`
+/// treats `"/a/b/repo/"` as naming the directory `repo` with an EMPTY
+/// filename, so `.filename()` returns `""`; zig strips trailing separators
+/// first and returns `"repo"`.
+///
+/// That single character used to decide what an auto-registered `projects`
+/// row is CALLED. Captured by running both binaries over the same argv:
+/// `assoc add acme "$PWD/"` wrote `slug='repo-2', name='repo'` on the
+/// oracle and `slug='_', name=''` on this port — exit 0 on both sides,
+/// indistinguishable stdout, and a row the operator can never find again
+/// by name. `slug='_'` is `slugify_path_segment`'s empty-input fallback
+/// firing, which is the tell.
+///
+/// The POSIX algorithm is transcribed, not approximated: strip every
+/// trailing `/` (returning empty if that consumes the whole string), then
+/// take everything after the last remaining `/`. Windows-native `\`
+/// separators are NOT handled, matching `std.fs.path.basenamePosix` — the
+/// oracle dispatches on `native_os` and this port is measured against its
+/// POSIX build.
+/// @param path The path to take the basename of.
+/// @return The basename, possibly empty.
+///
+/// Returns an owning `std::string` rather than a view, and that is not
+/// style. `assoc add acme /` legitimately yields an EMPTY basename, which
+/// is then bound as `projects.name`. A default-constructed `string_view`
+/// has a NULL data pointer, `sqlite3_bind_text(nullptr, 0)` binds SQL
+/// NULL rather than `''`, and `projects.name` is NOT NULL — so the verb
+/// died with `QueryFailed` where the oracle exits 0 and writes a row with
+/// an empty name. Caught by the differential probe; the fix is to never
+/// hand a possibly-null view to the binder.
+auto path_basename(std::string_view path) -> std::string {
+  if (path.empty()) {
+    return {};
+  }
+  std::size_t end = path.size();
+  while (end > 0 && path[end - 1] == '/') {
+    end -= 1;
+  }
+  if (end == 0) {
+    return {};
+  }
+  auto const slash = path.substr(0, end).find_last_of('/');
+  if (slash == std::string_view::npos) {
+    return std::string{path.substr(0, end)};
+  }
+  return std::string{path.substr(slash + 1, end - slash - 1)};
+}
+
 /// @brief lowercase-and-collapse-to-single-dash slugify, mirroring zig's
 /// `slugifyPathSegment`.
 auto slugify_path_segment(std::string_view s) -> std::string {
@@ -164,7 +217,9 @@ auto find_or_create_project_by_path(db::connection& conn, std::string_view root_
     return existing;
   }
 
-  const auto basename = std::filesystem::path(root_path).filename().string();
+  // `path_basename`, NOT `std::filesystem::path::filename` — see that
+  // helper for the trailing-separator divergence it exists to close.
+  const auto basename = path_basename(root_path);
 
   auto stmt = conn.prepare("insert into projects (slug, name, root_path) values (?, ?, ?) returning id");
   if (!stmt) {

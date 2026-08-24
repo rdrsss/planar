@@ -25,11 +25,13 @@
 ///     branch. `force` is still accepted on the transition verbs (it
 ///     still bypasses the transition MATRIX, which is this task's actual
 ///     concern) — only the claim-existence check itself is cut.
-///   - `due_at` format validation (`parseDueAt`/`isDateOnly`/
-///     `isRfc3339Like`). `due_at` is stored as an opaque optional string;
-///     format enforcement is a `cmd/`-layer input-validation concern
-///     (there is no `--due` flag surface without a `cmd/` binary, which
-///     this task explicitly excludes).
+///   - ~~`due_at` format validation~~ — PORTED at task 6135, when `task
+///     add` was wired and brought a `--due` flag with it. The original cut
+///     reasoned that format enforcement was a `cmd/`-layer concern; the
+///     oracle disagrees — `parseDueAt` is called from inside
+///     `task.zig`'s `create` (:323) and `update` (:731), after scope
+///     resolution, so both the error AND its ordering are engine
+///     behaviour. See `task_error::invalid_due_at`.
 ///   - The `task_touch_paths` / `entity_links … relationship='touches'`
 ///     surface (`touchedRepoIDs`, `TouchPath`, `addTouchPath`,
 ///     `removeTouchPath`, `touchedPaths`, `listTouching`) — a separate
@@ -160,6 +162,18 @@ export enum class task_error : std::uint8_t {
   slug_conflict,
   illegal_transition,
   unknown_status,
+  /// A `due_at` that is neither `YYYY-MM-DD` nor a basic RFC3339
+  /// timestamp. Landed in task 6135 when `task add` was wired: this file's
+  /// header used to record `due_at` validation as NOT ported, on the
+  /// grounds that "format enforcement is a `cmd/`-layer input-validation
+  /// concern (there is no `--due` flag surface without a `cmd/` binary)".
+  /// The `cmd/` binary now exists and declares `--due`, and the oracle
+  /// validates in the ENGINE (zig/src/engine/planning/task.zig:323, AFTER
+  /// scope resolution at :309) — so the check has to live here to get both
+  /// the error and its ORDERING right. Doing it in the handler instead
+  /// would report `InvalidDueAt` where the oracle reports `SlugNotFound`
+  /// for `--scope nosuchscope --due garbage`.
+  invalid_due_at,
   query_failed,
 };
 
@@ -168,7 +182,13 @@ export enum class task_error : std::uint8_t {
 /// @param args The task's title (required) plus optional fields.
 /// @return The created row, or `task_error::slug_conflict` on a slug
 /// collision, `task_error::slug_not_found` if `scope` does not resolve
-/// (unknown association/repo slug), or `task_error::query_failed`.
+/// (unknown association/repo slug), `task_error::invalid_due_at` if
+/// `due_at` is set and is neither `YYYY-MM-DD` nor a basic RFC3339
+/// timestamp, or `task_error::query_failed`.
+///
+/// Note the ORDER: `scope` is resolved BEFORE `due_at` is validated, so
+/// an invocation carrying both an unknown scope and a malformed due date
+/// reports `slug_not_found`. Mirrors the oracle (:309 then :323).
 ///
 /// When `args.plan_id` is set and `args.no_auto_promote` is false, calls
 /// `plan::recompute_status` on that plan after the insert (plan-304).
@@ -257,5 +277,50 @@ export auto mark_blocked(db::connection& conn, std::int64_t id, std::int64_t blo
 /// @return The updated row, or `task_error::not_found` / `task_error::query_failed`.
 export auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::string_view reason)
     -> std::expected<task, task_error>;
+
+/// @brief Render one task as the operator-facing key/value block.
+///
+/// Ports zig/src/engine/planning/task.zig's `renderText` byte for byte.
+/// Three details are load-bearing and none of them are cosmetic:
+///
+///   - Label padding is THIRTEEN columns (`"next action: "`), wider than
+///     the plan renderer's nine and the association renderer's ten. Each
+///     entity picked its own width in the oracle; there is no shared
+///     constant to reach for.
+///   - `priority` prints `@max(priority, 0)` — a NEGATIVE priority renders
+///     as `0` while the `tasks.priority` column still stores the negative
+///     value. Oracle-captured: `task add "neg pri" --priority -5` prints
+///     `priority:    0` and the row holds `-5`. Do not "fix" the renderer
+///     to print the stored value; a caller that needs the real number
+///     reads the row or the JSON, which is NOT clamped.
+///   - `scope` is `<kind>` with `:<id>` appended only when `scope_id` is
+///     set, so a global task prints a bare `scope:       global`.
+///
+/// Five lines are conditional (`plan`, `parent`, `next action`, `due`,
+/// `body`) and print in exactly that order between `scope` and `created`.
+/// `slug` has NO line at all in the oracle's text renderer even though the
+/// column exists — it surfaces only in JSON.
+/// @param t The task to render.
+/// @return The complete block, INCLUDING its trailing newline. The caller
+/// writes it verbatim and appends nothing.
+export auto render_text(const task& t) -> std::string;
+
+/// @brief Render one task as the single-line JSON object.
+///
+/// Field order is the `task` struct's declaration order, because the
+/// oracle's JSON path is `std.json.Stringify.value` over the Zig `Task`
+/// struct and Zig serializes fields in declaration order. Every optional
+/// (`scope_id`, `plan_id`, `parent_task_id`, `body`, `slug`,
+/// `next_action`, `due_at`) renders as a JSON `null` when unset — NOT as
+/// `""`, which is what makes an absent `--body` distinguishable from
+/// `--body ""` on the wire as well as in the column.
+///
+/// `priority` is the STORED value here, unclamped, unlike `render_text`'s
+/// `@max(priority, 0)`. Oracle-captured on the same `--priority -5` run.
+/// @param t The task to render.
+/// @return The JSON object with NO trailing newline — a fragment the
+/// caller terminates (the oracle's `output.emit` prints `"\n"` after
+/// stringifying).
+export auto render_json(const task& t) -> std::string;
 
 } // namespace planar::engine::planning

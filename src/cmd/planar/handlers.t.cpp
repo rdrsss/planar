@@ -2423,3 +2423,563 @@ TEST_CASE("plan create --json emits the struct's field order with a terminator",
                             R"("slug":"json-plan","summary":"s","status":"draft","parent_plan_id":null,)"));
   CHECK(got.out.ends_with("}\n"));
 }
+
+// ===========================================================================
+// task 6135 — `task add` and `assoc add`
+// ===========================================================================
+//
+// ORACLE PROVENANCE. Every expected byte below was captured by running the
+// zig binary and this port over the SAME argv script, each pinned to its own
+// scratch root (`cd <dir> && env PLANAR_DB=… HOME=… <binary>` — the
+// assignment must follow the `cd`, not precede an `&&`), and diffing
+// stdout / stderr / exit code / every `tasks`, `projects` and
+// `project_associations` column including `typeof()`. Twenty-six `task add`
+// invocations and twenty `assoc add` invocations agree byte for byte and
+// column for column. The one surviving log difference is an ORACLE artifact:
+// a mangled `d: StepFailed` line on the two `QueryFailed` paths, which is
+// `std.log.err("task.create exec failed: {s}")` half-overwritten by zig's
+// buffered stderr writer. It is not reproduced here.
+//
+//   $Z task add "cwd-derived task"            (cwd joined to association 1)
+//     exit 0, b'id:          1\ntitle:       cwd-derived task\n
+//              status:      todo\npriority:    100\nscope:       association:1\n
+//              created:     <ts>\nupdated:     <ts>\n'
+//   $Z task add "full task" --body B --next-action NA --due 2026-09-01 \
+//               --plan 1 --slug full-task --priority 3 --json
+//     exit 0, b'{"id":2,"scope_kind":"association","scope_id":1,"plan_id":1,
+//              "parent_task_id":null,"title":"full task","body":"B",
+//              "slug":"full-task","status":"todo","priority":3,
+//              "next_action":"NA","due_at":"2026-09-01",…}\n'
+//   $Z task add "dup slug" --slug full-task   -> exit 6, b'error: task add: SlugConflict\n'
+//   $Z task add "bad scope" --scope nosuchscope
+//                                             -> exit 1, b'error: task add: SlugNotFound\n'
+//   $Z task add "bad plan" --plan 999         -> exit 1, b'error: task add: QueryFailed\n'
+//   $Z task add "neg pri" --priority -5       -> exit 0, TEXT prints 'priority:    0'
+//   $Z task add "neg pri json" --priority -5 --json -> JSON prints '"priority":-5'
+//   $Z task add "due garbage" --due not-a-date-> exit 1, b'error: task add: InvalidDueAt\n'
+//   $Z task add "due feb30"  --due 2026-02-30 -> exit 1, same
+//   $Z task add "due trailing" --due '2026-09-01T10:00:00Z ' -> exit 1, same
+//   $Z task add "due empty" --due ''          -> exit 0, row stores '' (NOT NULL)
+//   $Z task add "x" --scope nosuchscope --due garbage -> SlugNotFound, not InvalidDueAt
+//   $Z task add "underscore pri" --priority 1_0 -> exit 0, priority 10
+//   (in a registered but UNASSOCIATED project) $Z task add "t"
+//     -> exit 0, scope_kind='global'.  NO refusal, unlike `plan create`.
+//   $Z assoc add acme <path>                  -> exit 0, b'added project at <path> to acme\n'
+//   $Z assoc add acme <path> --json
+//     -> exit 0, b'{"status":"added","association":"acme","repo_path":"<path>"}\n'
+//   $Z assoc add acme <same path again>
+//     -> exit 1, b"error: project at '<path>' is already a member of 'acme'\n"
+//   $Z assoc add nosuch <path>                -> exit 1, b"error: no association named 'nosuch'\n"
+//   $Z assoc add acme /nonexistent/path/xyz   -> exit 0; projects row slug='xyz'
+//   $Z assoc add acme '<repo>/'  (TRAILING SLASH)
+//     -> exit 0; projects row slug='repo-2', name='repo'
+//   $Z assoc add acme /                       -> exit 0; projects row slug='_', name=''
+//   $Z assoc add acme '/tmp/pa"th' --json     -> emits INVALID JSON, unescaped
+
+namespace {
+
+/// @brief One `tasks` row, read straight out of SQLite.
+///
+/// Every optional column comes back as the sentinel `"~"` when NULL, so a
+/// case can tell "never written" from "written empty". That distinction is
+/// the whole point of these assertions: a handler that drops `--body` on
+/// the floor and one that passes `""` both exit 0 and both print output an
+/// eyeball accepts.
+struct task_row {
+  std::int64_t id = 0;         ///< The row id.
+  std::string  scope_kind;     ///< The scope_kind column.
+  std::string  scope_id;       ///< scope_id, or "~" when NULL.
+  std::string  plan_id;        ///< plan_id, or "~" when NULL.
+  std::string  parent_task_id; ///< parent_task_id, or "~" when NULL.
+  std::string  title;          ///< The title column.
+  std::string  body;           ///< body, or "~" when NULL.
+  std::string  slug;           ///< slug, or "~" when NULL.
+  std::string  status;         ///< The status column.
+  std::int64_t priority = 0;   ///< The priority column, UNCLAMPED.
+  std::string  next_action;    ///< next_action, or "~" when NULL.
+  std::string  due_at;         ///< due_at, or "~" when NULL.
+};
+
+/// @brief Read every `tasks` row, ordered by id.
+/// @param fx The fixture.
+/// @return The rows.
+auto read_tasks(const fixture& fx) -> std::vector<task_row> {
+  std::vector<task_row> rows;
+  auto                  conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return rows;
+  }
+  auto stmt = conn->prepare("select id, scope_kind, scope_id, plan_id, parent_task_id, title, body, slug, "
+                            "status, priority, next_action, due_at from tasks order by id");
+  if (!stmt) {
+    return rows;
+  }
+  auto const col = [&stmt](int i) -> std::string { return stmt->is_null(i) ? std::string{"~"} : stmt->column_text(i); };
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped || *stepped != planar::db::step_result::row) {
+      return rows;
+    }
+    rows.push_back(task_row{
+        .id             = stmt->column_int64(0),
+        .scope_kind     = stmt->column_text(1),
+        .scope_id       = col(2),
+        .plan_id        = col(3),
+        .parent_task_id = col(4),
+        .title          = stmt->column_text(5),
+        .body           = col(6),
+        .slug           = col(7),
+        .status         = stmt->column_text(8),
+        .priority       = stmt->column_int64(9),
+        .next_action    = col(10),
+        .due_at         = col(11),
+    });
+  }
+}
+
+/// @brief Read every `projects` row, ordered by id.
+///
+/// Reuses `project_row` from the task-6132 block above rather than
+/// declaring a second shape for the same table. `name_is_null` is not a
+/// member there, so the one case that needs the NULL-vs-`''` distinction
+/// on `name` asks `project_name_is_null` directly.
+/// @param fx The fixture.
+/// @return The rows.
+auto read_projects(const fixture& fx) -> std::vector<project_row> {
+  std::vector<project_row> rows;
+  auto                     conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return rows;
+  }
+  auto stmt = conn->prepare("select id, slug, name, root_path, git_remote from projects order by id");
+  if (!stmt) {
+    return rows;
+  }
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped || *stepped != planar::db::step_result::row) {
+      return rows;
+    }
+    rows.push_back(project_row{
+        .id             = stmt->column_int64(0),
+        .slug           = stmt->column_text(1),
+        .name           = stmt->column_text(2),
+        .root_path      = stmt->is_null(3) ? std::string{} : stmt->column_text(3),
+        .git_remote     = stmt->is_null(4) ? std::string{} : stmt->column_text(4),
+        .remote_is_null = stmt->is_null(4),
+    });
+  }
+}
+
+/// @brief Whether the first `projects` row's `name` column is SQL NULL, as
+/// distinct from the empty string.
+/// @param fx The fixture.
+/// @return `true` when the column is NULL (or unreadable).
+auto project_name_is_null(const fixture& fx) -> bool {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return true;
+  }
+  auto stmt = conn->prepare("select name from projects order by id");
+  if (!stmt) {
+    return true;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != planar::db::step_result::row) {
+    return true;
+  }
+  return stmt->is_null(0);
+}
+
+/// @brief Read every `project_associations` row as `<project>|<assoc>|<source>`.
+/// @param fx The fixture.
+/// @return The rows, ordered by project id.
+auto read_memberships(const fixture& fx) -> std::vector<std::string> {
+  std::vector<std::string> rows;
+  auto                     conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return rows;
+  }
+  auto stmt = conn->prepare("select project_id, association_id, source from project_associations order by project_id");
+  if (!stmt) {
+    return rows;
+  }
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped || *stepped != planar::db::step_result::row) {
+      return rows;
+    }
+    rows.push_back(std::format("{}|{}|{}", stmt->column_int64(0), stmt->column_int64(1), stmt->column_text(2)));
+  }
+}
+
+/// @brief `init` the fixture's project and join it to a fresh association,
+/// entirely through the CLI.
+///
+/// Unlike the task-6133 cases just above, which had to reach into the
+/// engine directly because `assoc add` did not exist yet, this goes through
+/// the real verb — so the setup itself is coverage.
+/// @param fx The fixture.
+/// @param assoc_slug The association to create and join.
+auto associate_cwd(const fixture& fx, std::string_view assoc_slug) -> void {
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", std::string{assoc_slug}, "--kind", "project"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", std::string{assoc_slug}, (fx.root / "proj").string()}).code == 0);
+}
+
+} // namespace
+
+TEST_CASE("task add threads EVERY optional flag into the row", "[cmd][handlers][task][parity][6135]") {
+  // THE anti-defaulting case, and the reason this verb is not plumbing.
+  // `task_create_args` default-constructs all eight optional members, so a
+  // handler that drops any single one still compiles, still exits 0, and
+  // still prints a row that reads correctly at a glance. Each assertion
+  // below fails on exactly one dropped argument, and each reads the COLUMN
+  // rather than the rendered line.
+  auto const fx = make_fixture("taflags");
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"plan", "create", "P one"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "anchor"}).code == 0);
+
+  auto const got = dispatch(fx, {"task", "add", "full task", "--body", "B", "--next-action", "NA", "--due", "2026-09-01",
+                                 "--plan", "1", "--parent", "1", "--slug", "full-task", "--priority", "3"});
+  REQUIRE(got.code == 0);
+  CHECK(got.err.empty());
+  // Thirteen-column label padding, wider than `plan create`'s nine and
+  // `assoc create`'s ten. `plan`, `parent`, `next action`, `due` and
+  // `body` are the five conditional lines, in exactly this order.
+  CHECK(got.out.starts_with("id:          2\n"
+                            "title:       full task\n"
+                            "status:      todo\n"
+                            "priority:    3\n"
+                            "scope:       association:1\n"
+                            "plan:        1\n"
+                            "parent:      1\n"
+                            "next action: NA\n"
+                            "due:         2026-09-01\n"
+                            "body:        B\n"
+                            "created:     "));
+  CHECK(got.out.contains("\nupdated:     "));
+  CHECK(got.out.ends_with("\n"));
+
+  auto const rows = read_tasks(fx);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[1].title == "full task");
+  CHECK(rows[1].body == "B");            // --body
+  CHECK(rows[1].slug == "full-task");    // --slug
+  CHECK(rows[1].plan_id == "1");         // --plan
+  CHECK(rows[1].parent_task_id == "1");  // --parent
+  CHECK(rows[1].next_action == "NA");    // --next-action
+  CHECK(rows[1].due_at == "2026-09-01"); // --due
+  CHECK(rows[1].priority == 3);          // --priority
+  CHECK(rows[1].status == "todo");
+  // And the scope the CWD derived, which no flag supplied.
+  CHECK(rows[1].scope_kind == "association");
+  CHECK(rows[1].scope_id == "1");
+}
+
+TEST_CASE("task add writes NULL, not empty string, for every unsupplied optional", "[cmd][handlers][task][parity][6135]") {
+  // The other half of the same invariant, and the half an exit-code test
+  // can never see. A handler that passed `std::string{}` instead of
+  // `std::nullopt` produces rows that render IDENTICALLY — the text
+  // renderer's conditional lines are keyed on has_value(), so an empty
+  // string would print `body:        ` where NULL prints nothing, but the
+  // JSON `""` vs `null` and the column `''` vs NULL are the real tells.
+  auto const fx = make_fixture("tanull");
+  associate_cwd(fx, "acme");
+
+  auto const got = dispatch(fx, {"task", "add", "minimal json", "--json"});
+  REQUIRE(got.code == 0);
+  CHECK(got.out.starts_with(R"({"id":1,"scope_kind":"association","scope_id":1,"plan_id":null,)"
+                            R"("parent_task_id":null,"title":"minimal json","body":null,"slug":null,)"
+                            R"("status":"todo","priority":100,"next_action":null,"due_at":null,)"));
+  CHECK(got.out.ends_with("}\n"));
+
+  auto const rows = read_tasks(fx);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].body == "~");
+  CHECK(rows[0].slug == "~");
+  CHECK(rows[0].plan_id == "~");
+  CHECK(rows[0].parent_task_id == "~");
+  CHECK(rows[0].next_action == "~");
+  CHECK(rows[0].due_at == "~");
+  CHECK(rows[0].priority == 100); // the DECLARED default, not 0
+}
+
+TEST_CASE("task add --due '' stores an empty string, distinct from NULL", "[cmd][handlers][task][parity][6135]") {
+  // The case that proves the NULL sentinel above is not vacuous. zig's
+  // `parseDueAt` returns the empty string unchanged rather than rejecting
+  // it, so `--due ''` is accepted and lands as `''` — a value the previous
+  // case's `"~"` would have flagged.
+  auto const fx = make_fixture("taempty");
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"task", "add", "due empty", "--due", ""}).code == 0);
+
+  auto const rows = read_tasks(fx);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].due_at.empty()); // '' — NOT the "~" NULL sentinel
+  CHECK(rows[0].due_at != "~");
+}
+
+TEST_CASE("task add does NOT refuse an unassociated project", "[cmd][handlers][task][parity][6135]") {
+  // The asymmetry with `plan create`, which refuses at exit 5 in exactly
+  // this fixture. Copying that refusal across because the two verbs look
+  // alike would break every `task add` run from an unassociated repo.
+  // Oracle-verified: exit 0, `scope: global`, a real row.
+  auto const fx = make_fixture("taunassoc");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+
+  auto const got = dispatch(fx, {"task", "add", "outside any association"});
+  REQUIRE(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.out.contains("scope:       global\n"));
+
+  auto const rows = read_tasks(fx);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].scope_kind == "global");
+  CHECK(rows[0].scope_id == "~");
+}
+
+TEST_CASE("task add --scope wins over the cwd and reaches the row", "[cmd][handlers][task][parity][6135]") {
+  auto const fx = make_fixture("tascope");
+  associate_cwd(fx, "acme");
+
+  REQUIRE(dispatch(fx, {"task", "add", "Repo Scoped", "--scope", "repo:proj"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Global Explicit", "--scope", "global"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Cwd Derived"}).code == 0);
+
+  auto const rows = read_tasks(fx);
+  REQUIRE(rows.size() == 3);
+  CHECK(rows[0].scope_kind == "repo");
+  CHECK(rows[0].scope_id == "1");
+  CHECK(rows[1].scope_kind == "global");
+  CHECK(rows[1].scope_id == "~");
+  CHECK(rows[2].scope_kind == "association");
+  CHECK(rows[2].scope_id == "1");
+}
+
+TEST_CASE("task add renders a negative priority as 0 in text and unclamped in JSON", "[cmd][handlers][task][parity][6135]") {
+  // Oracle-captured on both wires from the same `--priority -5` run:
+  // `renderText` prints `@max(priority, 0)` while `std.json.Stringify`
+  // serializes the field. The COLUMN keeps -5 either way, so "the renderer
+  // clamps" is not "the value is clamped".
+  auto const fx = make_fixture("taneg");
+  associate_cwd(fx, "acme");
+
+  auto const text = dispatch(fx, {"task", "add", "neg pri", "--priority", "-5"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.contains("priority:    0\n"));
+  CHECK_FALSE(text.out.contains("-5"));
+
+  auto const json = dispatch(fx, {"task", "add", "neg pri json", "--priority", "-5", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.contains(R"("priority":-5,)"));
+
+  auto const rows = read_tasks(fx);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].priority == -5);
+  CHECK(rows[1].priority == -5);
+}
+
+TEST_CASE("task add refuses a malformed --due at exit 1 without writing", "[cmd][handlers][task][parity][6135]") {
+  // `due_at` validation was recorded as NOT ported when the engine landed,
+  // on the grounds that it was a cmd-layer concern. The oracle validates
+  // inside `task.zig`'s `create`, so the check lives in the engine here
+  // too — see `task_error::invalid_due_at`. Without it these three all
+  // exit 0 and store garbage.
+  auto const fx = make_fixture("tadue");
+  associate_cwd(fx, "acme");
+
+  for (auto const& bad : {"not-a-date", "2026-02-30", "2026-09-01T10:00:00Z ", "2026-13-01", "2026-09-01T25:00:00Z"}) {
+    INFO("--due " << bad);
+    auto const got = dispatch(fx, {"task", "add", "bad due", "--due", bad});
+    CHECK(got.code == 1);
+    CHECK(got.err == "error: task add: InvalidDueAt\n");
+    CHECK(got.out.empty());
+  }
+  CHECK(read_tasks(fx).empty());
+
+  // The accepted shapes, for contrast: bare date, `Z`, fractional +offset.
+  for (auto const& good : {"2026-09-01", "2026-09-01T10:00:00Z", "2026-09-01T10:00:00.123+05:30", "2024-02-29"}) {
+    INFO("--due " << good);
+    CHECK(dispatch(fx, {"task", "add", "good due", "--due", good}).code == 0);
+  }
+  CHECK(read_tasks(fx).size() == 4);
+}
+
+TEST_CASE("task add resolves --scope BEFORE validating --due", "[cmd][handlers][task][parity][6135]") {
+  // Both failures exit 1, so only the MESSAGE separates them — and the
+  // order is the oracle's (`resolveSlug` at task.zig:309, `parseDueAt` at
+  // :323). Validating the due date in the handler instead of the engine
+  // would silently invert this.
+  auto const fx = make_fixture("taorder");
+  associate_cwd(fx, "acme");
+
+  auto const got = dispatch(fx, {"task", "add", "both bad", "--scope", "nosuchscope", "--due", "garbage"});
+  CHECK(got.code == 1);
+  CHECK(got.err == "error: task add: SlugNotFound\n");
+  CHECK(read_tasks(fx).empty());
+}
+
+TEST_CASE("task add maps a slug collision to exit 6 and a dangling --plan to exit 1", "[cmd][handlers][task][parity][6135]") {
+  auto const fx = make_fixture("tafail");
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"task", "add", "first", "--slug", "taken"}).code == 0);
+
+  // `tasks.slug` is GLOBALLY unique — the collision does not have to be
+  // within a plan, which is a documented Planar behaviour and a real
+  // operator failure mode.
+  auto const dup = dispatch(fx, {"task", "add", "second", "--slug", "taken"});
+  CHECK(dup.code == 6);
+  CHECK(dup.err == "error: task add: SlugConflict\n");
+
+  auto const bad_plan = dispatch(fx, {"task", "add", "orphan", "--plan", "999"});
+  CHECK(bad_plan.code == 1);
+  CHECK(bad_plan.err == "error: task add: QueryFailed\n");
+
+  auto const bad_parent = dispatch(fx, {"task", "add", "orphan", "--parent", "999"});
+  CHECK(bad_parent.code == 1);
+  CHECK(bad_parent.err == "error: task add: QueryFailed\n");
+
+  auto const bad_scope = dispatch(fx, {"task", "add", "unscoped", "--scope", "nosuchscope"});
+  CHECK(bad_scope.code == 1);
+  CHECK(bad_scope.err == "error: task add: SlugNotFound\n");
+
+  // Exactly one row survives all four refusals.
+  CHECK(read_tasks(fx).size() == 1);
+}
+
+TEST_CASE("task add parses --priority with Zig's integer separators", "[cmd][handlers][task][parity][6135]") {
+  // `1_0` is TEN. The `zig_int_validator` on the declared flag is what
+  // keeps this from degrading into a silent "absent" and the 100 default.
+  auto const fx = make_fixture("tapri");
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"task", "add", "underscore", "--priority", "1_0"}).code == 0);
+
+  auto const rows = read_tasks(fx);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].priority == 10);
+}
+
+TEST_CASE("assoc add registers the project, joins it, and reports both argv values", "[cmd][handlers][assoc][parity][6135]") {
+  auto const fx = make_fixture("aaok");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme", "--kind", "project"}).code == 0);
+
+  auto const path = (fx.root / "proj").string();
+  auto const got  = dispatch(fx, {"assoc", "add", "acme", path});
+  REQUIRE(got.code == 0);
+  CHECK(got.err.empty());
+  // Built from the ARGUMENTS, not read back from the row — `add_member`
+  // returns void, there is nothing to render.
+  CHECK(got.out == std::format("added project at {} to acme\n", path));
+
+  auto const memberships = read_memberships(fx);
+  REQUIRE(memberships.size() == 1);
+  CHECK(memberships[0] == "1|1|user"); // source='user', not an auto-detect value
+}
+
+TEST_CASE("assoc add auto-registers an unregistered path, verbatim", "[cmd][handlers][assoc][parity][6135]") {
+  // The path is the `projects.root_path` KEY cwd-derive later matches
+  // against, so it is stored exactly as typed: not canonicalised, not made
+  // absolute, and not required to exist. Each of those would look like a
+  // hardening and would break the match.
+  auto const fx = make_fixture("aapath");
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", "/nonexistent/path/xyz"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", "relative/path"}).code == 0);
+
+  auto const rows = read_projects(fx);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].slug == "xyz");
+  CHECK(rows[0].name == "xyz");
+  CHECK(rows[0].root_path == "/nonexistent/path/xyz"); // verbatim
+  CHECK(rows[1].slug == "path");
+  CHECK(rows[1].root_path == "relative/path"); // still verbatim, still relative
+}
+
+TEST_CASE("assoc add derives the basename the way zig does, trailing slash included", "[cmd][handlers][assoc][parity][6135]") {
+  // A REAL divergence this cycle found and closed. The engine used
+  // `std::filesystem::path::filename`, which returns EMPTY for a path
+  // ending in a separator, where zig's `std.fs.path.basename` strips the
+  // separator first. Both binaries exited 0 with identical stdout; only
+  // the row differed — `slug='_', name=''` here against `slug='repo-2',
+  // name='repo'` on the oracle. The `_` is `slugify_path_segment`'s
+  // empty-input fallback, which is the tell.
+  auto const fx = make_fixture("aaslash");
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  auto const path = (fx.root / "proj").string();
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", path}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", path + "/"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", path + "//"}).code == 0);
+
+  auto const rows = read_projects(fx);
+  REQUIRE(rows.size() == 3);
+  CHECK(rows[0].slug == "proj");
+  // Distinct root_path values, so these are distinct projects — each one
+  // takes the next free numeric suffix on the colliding derived slug.
+  CHECK(rows[1].slug == "proj-2");
+  CHECK(rows[1].name == "proj"); // NOT ""
+  CHECK(rows[2].slug == "proj-3");
+  CHECK(rows[2].name == "proj");
+}
+
+TEST_CASE("assoc add accepts the root path, whose basename is empty", "[cmd][handlers][assoc][parity][6135]") {
+  // The empty basename is bound to a NOT NULL column. A `string_view`
+  // returned by value from the basename helper would be NULL-data here,
+  // `sqlite3_bind_text(nullptr, 0)` binds SQL NULL, and the verb would die
+  // `QueryFailed` where the oracle exits 0. Regression pin.
+  auto const fx = make_fixture("aaroot");
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  auto const got = dispatch(fx, {"assoc", "add", "acme", "/"});
+  REQUIRE(got.code == 0);
+  CHECK(got.err.empty());
+
+  auto const rows = read_projects(fx);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].slug == "_"); // the slugify empty-input fallback
+  CHECK(rows[0].name.empty());
+  CHECK_FALSE(project_name_is_null(fx)); // '' in the column, NOT NULL
+  CHECK(rows[0].root_path == "/");
+}
+
+TEST_CASE("assoc add refuses an unknown association and a duplicate membership at exit 1",
+          "[cmd][handlers][assoc][parity][6135]") {
+  auto const fx = make_fixture("aafail");
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  auto const path = (fx.root / "proj").string();
+
+  auto const unknown = dispatch(fx, {"assoc", "add", "nosuch", path});
+  CHECK(unknown.code == 1);
+  CHECK(unknown.err == "error: no association named 'nosuch'\n");
+  CHECK(unknown.out.empty());
+  CHECK(read_projects(fx).empty()); // the association lookup precedes the project write
+
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", path}).code == 0);
+  auto const again = dispatch(fx, {"assoc", "add", "acme", path});
+  // ONE, not six. `AlreadyMember` is a duplicate collision but is NOT in
+  // `codeFor`'s slug-conflict arm, which matches only `error.SlugConflict`
+  // and `error.AlreadyExists`.
+  CHECK(again.code == 1);
+  CHECK(again.err == std::format("error: project at '{}' is already a member of 'acme'\n", path));
+  CHECK(read_memberships(fx).size() == 1);
+}
+
+TEST_CASE("assoc add --json emits the four-field literal, unescaped", "[cmd][handlers][assoc][parity][6135]") {
+  auto const fx = make_fixture("aajson");
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  auto const path = (fx.root / "proj").string();
+
+  auto const got = dispatch(fx, {"assoc", "add", "acme", path, "--json"});
+  REQUIRE(got.code == 0);
+  // `"status":"added"` is a field that exists nowhere in the schema.
+  CHECK(got.out == std::format("{{\"status\":\"added\",\"association\":\"acme\",\"repo_path\":\"{}\"}}\n", path));
+
+  // And the oracle's unescaped interpolation, pinned rather than fixed: a
+  // quote in either value produces INVALID JSON on both binaries. Captured
+  // from `assoc add 'q"uote' '/tmp/pa"th' --json`.
+  REQUIRE(dispatch(fx, {"assoc", "create", "q\"uote"}).code == 0);
+  auto const raw = dispatch(fx, {"assoc", "add", "q\"uote", "/tmp/pa\"th", "--json"});
+  REQUIRE(raw.code == 0);
+  CHECK(raw.out == "{\"status\":\"added\",\"association\":\"q\"uote\",\"repo_path\":\"/tmp/pa\"th\"}\n");
+}

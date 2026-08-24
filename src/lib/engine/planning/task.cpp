@@ -7,11 +7,14 @@ module planar.engine.planning.task;
 
 import std;
 import planar.db;
+import planar.json_text;
 import planar.scope_ref;
 import planar.engine.planning.plan;
 import planar.engine.planning.transitions;
 
 namespace planar::engine::planning {
+
+using json_text::json_string;
 
 namespace {
 
@@ -19,6 +22,131 @@ constexpr int k_sqlite_constraint_unique = 2067; // SQLITE_CONSTRAINT_UNIQUE
 
 auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique;
+}
+
+/// @brief Whether every character of `s` is an ASCII decimal digit.
+///
+/// Ports zig's `allDigits`. `std::isdigit` is deliberately not used: it is
+/// locale-sensitive and UB on a negative `char`, and the oracle's
+/// `std.ascii.isDigit` is neither.
+/// @param s The span to test.
+/// @return `true` when `s` is all digits (vacuously true when empty, as in
+/// the oracle — every caller passes a fixed-width slice).
+auto all_digits(std::string_view s) -> bool {
+  return std::ranges::all_of(s, [](char c) { return c >= '0' && c <= '9'; });
+}
+
+/// @brief Days in `month` of `year`, proleptic Gregorian. Ports zig's
+/// `daysInMonth`.
+/// @param year The year.
+/// @param month The 1-based month.
+/// @return The day count, or 0 for a month outside 1..12.
+auto days_in_month(std::uint32_t year, std::uint32_t month) -> std::uint32_t {
+  switch (month) {
+  case 1:
+  case 3:
+  case 5:
+  case 7:
+  case 8:
+  case 10:
+  case 12:
+    return 31;
+  case 4:
+  case 6:
+  case 9:
+  case 11:
+    return 30;
+  case 2:
+    return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 29 : 28;
+  default:
+    return 0;
+  }
+}
+
+/// @brief Whether `s` is exactly a `YYYY-MM-DD` calendar date. Ports zig's
+/// `isDateOnly`, including the real calendar check — `2026-02-30` is
+/// rejected, not merely range-checked.
+/// @param s The candidate.
+/// @return `true` when valid.
+auto is_date_only(std::string_view s) -> bool {
+  if (s.size() != 10 || s[4] != '-' || s[7] != '-') {
+    return false;
+  }
+  if (!all_digits(s.substr(0, 4)) || !all_digits(s.substr(5, 2)) || !all_digits(s.substr(8, 2))) {
+    return false;
+  }
+  auto const to_u32 = [](std::string_view d) {
+    std::uint32_t v = 0;
+    for (char c : d) {
+      v = (v * 10) + static_cast<std::uint32_t>(c - '0');
+    }
+    return v;
+  };
+  auto const year  = to_u32(s.substr(0, 4));
+  auto const month = to_u32(s.substr(5, 2));
+  auto const day   = to_u32(s.substr(8, 2));
+  return month >= 1 && month <= 12 && day >= 1 && day <= days_in_month(year, month);
+}
+
+/// @brief Whether `s` is a basic RFC3339 timestamp. Ports zig's
+/// `isRfc3339Like` arm for arm: `YYYY-MM-DDTHH:MM:SS`, an OPTIONAL
+/// fractional part of one or more digits, then either a literal `Z` that
+/// must END the string or a `±HH:MM` offset that must be the final six
+/// characters. A trailing space, a lone `+`, or `Z` followed by anything
+/// all fail.
+/// @param s The candidate.
+/// @return `true` when valid.
+auto is_rfc3339_like(std::string_view s) -> bool {
+  if (s.size() < 20 || !is_date_only(s.substr(0, 10)) || s[10] != 'T') {
+    return false;
+  }
+  if (!all_digits(s.substr(11, 2)) || s[13] != ':' || !all_digits(s.substr(14, 2)) || s[16] != ':') {
+    return false;
+  }
+  if (!all_digits(s.substr(17, 2))) {
+    return false;
+  }
+  auto const two = [&](std::size_t at) { return static_cast<std::uint32_t>((s[at] - '0') * 10 + (s[at + 1] - '0')); };
+  if (two(11) > 23 || two(14) > 59 || two(17) > 59) {
+    return false;
+  }
+
+  std::size_t idx = 19;
+  if (idx < s.size() && s[idx] == '.') {
+    idx += 1;
+    auto const start = idx;
+    while (idx < s.size() && s[idx] >= '0' && s[idx] <= '9') {
+      idx += 1;
+    }
+    if (idx == start) {
+      return false;
+    }
+  }
+  if (idx >= s.size()) {
+    return false;
+  }
+  if (s[idx] == 'Z') {
+    return idx + 1 == s.size();
+  }
+  if (s[idx] != '+' && s[idx] != '-') {
+    return false;
+  }
+  if (idx + 6 != s.size()) {
+    return false;
+  }
+  if (!all_digits(s.substr(idx + 1, 2)) || s[idx + 3] != ':' || !all_digits(s.substr(idx + 4, 2))) {
+    return false;
+  }
+  return two(idx + 1) <= 23 && two(idx + 4) <= 59;
+}
+
+/// @brief Whether `s` is an acceptable `due_at`. Ports zig's `parseDueAt`,
+/// which accepts the EMPTY string unconditionally — an explicit `--due ""`
+/// stores `''`, which is distinct from the NULL an absent `--due` stores.
+/// @param s The candidate.
+/// @return `true` when valid.
+auto due_at_is_valid(std::string_view s) -> bool {
+  return s.empty() || is_date_only(s) || is_rfc3339_like(s);
 }
 
 auto scope_kind_to_text(task_scope_kind k) -> std::string_view {
@@ -244,6 +372,15 @@ auto create_task(db::connection& conn, const task_create_args& args) -> std::exp
     return std::unexpected(scope_ref.error());
   }
 
+  // AFTER the scope resolution, not before. zig/src/engine/planning/task.zig
+  // resolves the scope slug at :309 and only validates `due_at` at :323, so
+  // `--scope nosuchscope --due garbage` reports `SlugNotFound`, not
+  // `InvalidDueAt`. Both exit 1, so an exit-code test cannot see the
+  // difference — only the message can, and the message is the contract.
+  if (args.due_at.has_value() && !due_at_is_valid(*args.due_at)) {
+    return std::unexpected(task_error::invalid_due_at);
+  }
+
   auto stmt = conn.prepare("insert into tasks (scope_kind, scope_id, plan_id, parent_task_id, title, body, slug, "
                            "status, priority, next_action, due_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                            "returning id");
@@ -417,6 +554,13 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
       return std::unexpected(resolved.error());
     }
     scope_ref = *resolved;
+  }
+
+  // Same check, same position relative to scope resolution, as
+  // `create_task` — zig/src/engine/planning/task.zig validates `patch.due_at`
+  // at :731, just after `resolveSlug` at :723.
+  if (patch.due_at.has_value() && !due_at_is_valid(*patch.due_at)) {
+    return std::unexpected(task_error::invalid_due_at);
   }
 
   auto tx = conn.begin_transaction();
@@ -756,6 +900,55 @@ auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::
     return std::unexpected(task_error::query_failed);
   }
   return updated;
+}
+
+auto render_text(const task& t) -> std::string {
+  std::string out;
+  out += std::format("id:          {}\n", t.id);
+  out += std::format("title:       {}\n", t.title);
+  out += std::format("status:      {}\n", task_status_to_text(t.status));
+  // CLAMPED, unlike the JSON renderer. See the `@return` block on this
+  // function's declaration: the oracle prints `@max(priority, 0)` while
+  // the column keeps the signed value.
+  out += std::format("priority:    {}\n", std::max<std::int64_t>(t.priority, 0));
+  out += std::format("scope:       {}", scope_kind_to_text(t.scope_kind));
+  if (t.scope_id.has_value()) {
+    out += std::format(":{}", *t.scope_id);
+  }
+  out += "\n";
+  if (t.plan_id.has_value()) {
+    out += std::format("plan:        {}\n", *t.plan_id);
+  }
+  if (t.parent_task_id.has_value()) {
+    out += std::format("parent:      {}\n", *t.parent_task_id);
+  }
+  if (t.next_action.has_value()) {
+    out += std::format("next action: {}\n", *t.next_action);
+  }
+  if (t.due_at.has_value()) {
+    out += std::format("due:         {}\n", *t.due_at);
+  }
+  if (t.body.has_value()) {
+    out += std::format("body:        {}\n", *t.body);
+  }
+  out += std::format("created:     {}\n", t.created_at);
+  out += std::format("updated:     {}\n", t.updated_at);
+  return out;
+}
+
+auto render_json(const task& t) -> std::string {
+  auto const opt_int = [](std::optional<std::int64_t> v) -> std::string {
+    return v.has_value() ? std::format("{}", *v) : std::string{"null"};
+  };
+  auto const opt_str = [](const std::optional<std::string>& v) -> std::string {
+    return v.has_value() ? json_string(*v) : std::string{"null"};
+  };
+  return std::format(R"({{"id":{},"scope_kind":"{}","scope_id":{},"plan_id":{},"parent_task_id":{},"title":{},)"
+                     R"("body":{},"slug":{},"status":"{}","priority":{},"next_action":{},"due_at":{},)"
+                     R"("created_at":{},"updated_at":{}}})",
+                     t.id, scope_kind_to_text(t.scope_kind), opt_int(t.scope_id), opt_int(t.plan_id), opt_int(t.parent_task_id),
+                     json_string(t.title), opt_str(t.body), opt_str(t.slug), task_status_to_text(t.status), t.priority,
+                     opt_str(t.next_action), opt_str(t.due_at), json_string(t.created_at), json_string(t.updated_at));
 }
 
 } // namespace planar::engine::planning

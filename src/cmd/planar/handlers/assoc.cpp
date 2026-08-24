@@ -50,12 +50,21 @@ auto zig_error_name(id::association_error err) -> std::string_view {
 ///
 /// `SlugConflict` maps to 6 (oracle-confirmed: a duplicate slug exits 6);
 /// every other member has no arm in `codeFor` and falls to `else => 1`.
+///
+/// `engine_verb` is a PARAMETER because the two leaves that share this
+/// mapping do not share the message. `assoc create` dies with `"association
+/// create: {s}"` and `assoc add` with `"association add: {s}"` — and this
+/// function was hard-coded to `create` when `assoc_add` first called it,
+/// which surfaced as `error: association create: QueryFailed` from `assoc
+/// add /`. Both spell the ENGINE module's verb, never the `assoc` the
+/// operator typed.
 /// @param err The engine error.
+/// @param engine_verb The engine-side verb name, `"create"` or `"add"`.
 /// @return The mapped failure.
-auto map_association_error(id::association_error err) -> domain_error {
+auto map_association_error(id::association_error err, std::string_view engine_verb) -> domain_error {
   auto const kind =
       err == id::association_error::slug_conflict ? domain_error_kind::slug_conflict : domain_error_kind::generic_failure;
-  return error_from_body(kind, std::format("association create: {}", zig_error_name(err)));
+  return error_from_body(kind, std::format("association {}: {}", engine_verb, zig_error_name(err)));
 }
 
 } // namespace
@@ -94,7 +103,7 @@ auto assoc_create(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 
   auto created = id::create(**conn, create);
   if (!created) {
-    return std::unexpected(map_association_error(created.error()));
+    return std::unexpected(map_association_error(created.error(), "create"));
   }
 
   // Per-renderer terminator contract — see the two `@return` blocks on
@@ -103,6 +112,60 @@ auto assoc_create(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     ctx.out() << id::render_json(*created) << '\n';
   } else {
     ctx.out() << id::render_text(*created);
+  }
+  return {};
+}
+
+auto assoc_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto slug = cliapp::positional_string(args, "slug");
+  auto path = cliapp::positional_string(args, "repo-path");
+  // BOTH positionals are declared required, so neither is reachable as
+  // unset through the CLI11 tree. Refusing anyway rather than defaulting:
+  // an empty `repo_path` would register a `projects` row keyed on "" that
+  // cwd-derive can never match again, which is the task-6128 shape (a row
+  // written, exit 0, permanently wrong). `slug` is the positional NAME
+  // from surface.cpp's `k_pos_54`, and `repo-path` is HYPHENATED there —
+  // reading it as "repo_path" here would return unset on every call and
+  // turn the whole verb into this refusal.
+  if (!slug || !path) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "assoc add: slug and repo-path are required"));
+  }
+
+  // `*path` VERBATIM. No canonicalise, no absolute, no existence check —
+  // see this function's declaration for why each of those would be a
+  // silent regression rather than a hardening.
+  auto added = id::add_member(**conn, *slug, *path, id::add_member_source::user);
+  if (!added) {
+    switch (added.error()) {
+    case id::association_error::not_found:
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, std::format("no association named '{}'", *slug)));
+    case id::association_error::already_member:
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                             std::format("project at '{}' is already a member of '{}'", *path, *slug)));
+    default:
+      return std::unexpected(map_association_error(added.error(), "add"));
+    }
+  }
+
+  if (cliapp::flag_bool(args, "--json")) {
+    // Interpolated RAW, deliberately. The oracle builds this line with
+    // `ctx.stdout.print("{{\"status\":\"added\",\"association\":\"{s}\"…")`
+    // — a plain `{s}` substitution with no `output.writeJsonString` call —
+    // so a slug or path containing a double quote produces INVALID JSON.
+    // Captured, not inferred: `assoc add 'q"uote' '/tmp/pa"th' --json`
+    // prints `{"status":"added","association":"q"uote","repo_path":"/tmp/pa"th"}`
+    // on the oracle. Escaping here would be strictly better JSON and a
+    // byte-level divergence from the binary this port is measured against;
+    // if it is ever fixed it must be fixed on both sides at once.
+    ctx.out() << std::format(R"({{"status":"added","association":"{}","repo_path":"{}"}})", *slug, *path) << '\n';
+  } else {
+    ctx.out() << std::format("added project at {} to {}\n", *path, *slug);
   }
   return {};
 }

@@ -421,3 +421,152 @@ TEST_CASE("no_auto_promote=true suppresses the plan-304 recompute on create", "[
   REQUIRE(p_reshown.has_value());
   CHECK(p_reshown->status == plan_status::draft); // NOT promoted — suppressed.
 }
+
+// ===========================================================================
+// task 6135 — `due_at` validation and the two renderers
+// ===========================================================================
+
+TEST_CASE("due_at accepts date-only and RFC3339, rejects everything else", "[task][due][6135]") {
+  // Ported from zig/src/engine/planning/task.zig's `parseDueAt` when `task
+  // add` was wired and brought a `--due` flag with it. The original C++
+  // port recorded this as a `cmd/`-layer concern and skipped it; the oracle
+  // validates in the ENGINE, and the difference is observable — without
+  // this check `task add --due not-a-date` exits 0 and stores garbage.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  for (auto const& good : {
+           "",                                 // accepted UNCHANGED, not rejected
+           "2026-09-01",                       // date only
+           "2024-02-29",                       // real leap day
+           "2026-09-01T10:00:00Z",             // Z-terminated
+           "2026-09-01T10:00:00.123Z",         // fractional + Z
+           "2026-09-01T10:00:00+05:30",        // offset
+           "2026-09-01T10:00:00.000001-08:00", // long fraction + negative offset
+       }) {
+    INFO("due_at " << good);
+    auto t = create_task(conn, task_create_args{.title = "T", .due_at = std::string{good}});
+    REQUIRE(t.has_value());
+    REQUIRE(t->due_at.has_value());
+    CHECK(*t->due_at == good); // stored verbatim, never reformatted
+  }
+
+  for (auto const& bad : {
+           "not-a-date",
+           "2026-9-1",                   // unpadded
+           "2026-02-30",                 // calendar-invalid, not merely range-checked
+           "2023-02-29",                 // not a leap year
+           "2026-13-01",                 // month out of range
+           "2026-00-01",                 // month zero
+           "2026-09-00",                 // day zero
+           "2026-09-01T25:00:00Z",       // hour out of range
+           "2026-09-01T10:60:00Z",       // minute out of range
+           "2026-09-01T10:00:60Z",       // second out of range
+           "2026-09-01T10:00:00",        // no zone at all
+           "2026-09-01T10:00:00Z ",      // trailing space AFTER the Z
+           "2026-09-01T10:00:00.Z",      // empty fraction
+           "2026-09-01T10:00:00+5:30",   // unpadded offset
+           "2026-09-01T10:00:00+05:30x", // trailing junk
+           "2026-09-01T10:00:00+24:00",  // offset hour out of range
+           " 2026-09-01",                // leading space
+       }) {
+    INFO("due_at " << bad);
+    auto t = create_task(conn, task_create_args{.title = "T", .due_at = std::string{bad}});
+    REQUIRE_FALSE(t.has_value());
+    CHECK(t.error() == task_error::invalid_due_at);
+  }
+}
+
+TEST_CASE("due_at validation runs AFTER scope resolution", "[task][due][6135]") {
+  // Both failures surface at exit 1 through the handler, so only the
+  // ERROR distinguishes them — and the oracle resolves the scope slug
+  // first (task.zig:309) and validates the due date second (:323).
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            both = create_task(conn, task_create_args{.title = "T", .due_at = "garbage", .scope = "nosuchscope"});
+  REQUIRE_FALSE(both.has_value());
+  CHECK(both.error() == task_error::slug_not_found);
+}
+
+TEST_CASE("update also rejects a malformed due_at", "[task][due][6135]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            t    = create_task(conn, task_create_args{.title = "T"});
+  REQUIRE(t.has_value());
+
+  auto bad = update_task(conn, t->id, task_update_args{.due_at = "nope"});
+  REQUIRE_FALSE(bad.has_value());
+  CHECK(bad.error() == task_error::invalid_due_at);
+
+  auto good = update_task(conn, t->id, task_update_args{.due_at = "2026-12-31"});
+  REQUIRE(good.has_value());
+  CHECK(good->due_at == "2026-12-31");
+}
+
+TEST_CASE("render_text omits every unset optional and clamps a negative priority", "[task][render][6135]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            t    = create_task(conn, task_create_args{.title = "Bare", .priority = -5});
+  REQUIRE(t.has_value());
+
+  auto const text = planar::engine::planning::render_text(*t);
+  // Thirteen-column labels. Five conditional lines, all absent here.
+  CHECK(text == std::format("id:          {}\n"
+                            "title:       Bare\n"
+                            "status:      todo\n"
+                            "priority:    0\n" // CLAMPED; the row holds -5
+                            "scope:       global\n"
+                            "created:     {}\n"
+                            "updated:     {}\n",
+                            t->id, t->created_at, t->updated_at));
+  CHECK(t->priority == -5); // the clamp is presentation only
+  // `slug` has no text line at all even when set — it surfaces only in JSON.
+  auto slugged = create_task(conn, task_create_args{.title = "Slugged", .slug = "s-1"});
+  REQUIRE(slugged.has_value());
+  CHECK_FALSE(planar::engine::planning::render_text(*slugged).contains("s-1"));
+}
+
+TEST_CASE("render_text prints the five conditional lines in the oracle's order", "[task][render][6135]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            p    = planar::engine::planning::create_plan(conn, plan_create_args{.title = "P"});
+  REQUIRE(p.has_value());
+  auto parent = create_task(conn, task_create_args{.title = "Parent"});
+  REQUIRE(parent.has_value());
+  auto t = create_task(conn, task_create_args{.title          = "Full",
+                                              .body           = "B",
+                                              .priority       = 3,
+                                              .plan_id        = p->id,
+                                              .parent_task_id = parent->id,
+                                              .next_action    = "NA",
+                                              .due_at         = "2026-09-01"});
+  REQUIRE(t.has_value());
+
+  auto const text = planar::engine::planning::render_text(*t);
+  // plan, parent, next action, due, body — between `scope` and `created`.
+  CHECK(text.contains("scope:       global\n"
+                      "plan:        " +
+                      std::format("{}\n", p->id) + "parent:      " + std::format("{}\n", parent->id) +
+                      "next action: NA\n"
+                      "due:         2026-09-01\n"
+                      "body:        B\n"
+                      "created:     "));
+  CHECK(text.ends_with("\n"));
+}
+
+TEST_CASE("render_json emits declaration order, nulls, and an UNCLAMPED priority", "[task][render][6135]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            t    = create_task(conn, task_create_args{.title = R"(quote " and \ back)", .priority = -5});
+  REQUIRE(t.has_value());
+
+  auto const json = planar::engine::planning::render_json(*t);
+  CHECK(json == std::format(R"({{"id":{},"scope_kind":"global","scope_id":null,"plan_id":null,)"
+                            R"("parent_task_id":null,"title":"quote \" and \\ back","body":null,"slug":null,)"
+                            R"("status":"todo","priority":-5,"next_action":null,"due_at":null,)"
+                            R"("created_at":"{}","updated_at":"{}"}})",
+                            t->id, t->created_at, t->updated_at));
+  // A fragment: the CALLER terminates it. `render_text` does not.
+  CHECK_FALSE(json.ends_with("\n"));
+  CHECK(planar::engine::planning::render_text(*t).ends_with("\n"));
+}

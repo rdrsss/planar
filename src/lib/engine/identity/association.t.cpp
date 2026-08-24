@@ -288,3 +288,70 @@ TEST_CASE("render_json escapes operator-supplied text and keeps config_json a ST
   CHECK(json.ends_with("}"));
   CHECK_FALSE(json.ends_with("}\n"));
 }
+
+// ===========================================================================
+// task 6135 — auto-registered project naming, through `add_member`
+// ===========================================================================
+
+TEST_CASE("add_member derives the project basename the way zig does", "[association][member][6135]") {
+  // The divergence this test exists for: the implementation used
+  // `std::filesystem::path::filename`, which returns EMPTY for a path
+  // ending in a separator, where zig's `std.fs.path.basename` strips
+  // trailing separators first. Both binaries exited 0 with byte-identical
+  // stdout; only the ROW differed — `slug='_', name=''` here against
+  // `slug='repo-2', name='repo'` on the oracle. `_` is
+  // `slugify_path_segment`'s empty-input fallback, which is the tell that
+  // the basename came back empty.
+  //
+  // `path_basename` is a file-local helper with no exported surface, so
+  // it is exercised the only way a caller can reach it: through the row
+  // `add_member` writes.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  REQUIRE(create(conn, {.slug = "acme"}).has_value());
+
+  struct expectation {
+    std::string_view path;
+    std::string_view slug;
+    std::string_view name;
+  };
+  // Each path is DISTINCT as a string, so each registers its own project;
+  // the derived slugs collide, and the numeric-suffix retry resolves them
+  // in insertion order.
+  for (auto const& want : std::vector<expectation>{
+           {"/a/b/repo", "repo", "repo"},
+           {"/a/b/repo/", "repo-2", "repo"},   // ONE trailing separator
+           {"/a/b/repo//", "repo-3", "repo"},  // several
+           {"/a/b/repo///", "repo-4", "repo"}, //
+           {"relative/path", "path", "path"},  // not absolute, still accepted
+           {"bare", "bare", "bare"},           // no separator at all
+           {"/", "_", ""},                     // the root: EMPTY basename
+       }) {
+    INFO("repo_path " << want.path);
+    REQUIRE(add_member(conn, "acme", want.path).has_value());
+  }
+
+  auto listed = members(conn, "acme");
+  REQUIRE(listed.has_value());
+  REQUIRE(listed->size() == 7);
+
+  // `members` orders by project slug, so index by root_path instead.
+  auto const find = [&listed](std::string_view path) -> std::optional<std::string> {
+    for (auto const& p : *listed) {
+      if (p.root_path.has_value() && *p.root_path == path) {
+        return p.slug + "|" + p.name;
+      }
+    }
+    return std::nullopt;
+  };
+  CHECK(find("/a/b/repo") == "repo|repo");
+  CHECK(find("/a/b/repo/") == "repo-2|repo"); // NOT "_|"
+  CHECK(find("/a/b/repo//") == "repo-3|repo");
+  CHECK(find("/a/b/repo///") == "repo-4|repo");
+  CHECK(find("relative/path") == "path|path");
+  CHECK(find("bare") == "bare|bare");
+  // The root path's basename really is empty; `name` is '' and the slug
+  // falls back to `_`. Reaching the binder as a NULL-data `string_view`
+  // here bound SQL NULL into a NOT NULL column and failed the whole verb.
+  CHECK(find("/") == "_|");
+}
