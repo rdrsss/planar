@@ -176,4 +176,30 @@ export auto remove_member(db::connection& conn, std::string_view assoc_slug, std
 export auto members(db::connection& conn, std::string_view assoc_slug)
     -> std::expected<std::vector<project_ref>, association_error>;
 
+/// @brief Render one association as the operator-facing key/value block.
+///
+/// Ports zig/src/engine/identity/association.zig's `renderText` byte for
+/// byte, including the ten-column label padding (wider than the plan
+/// renderer's nine) and the one conditional line: `config:` appears only
+/// when `config_json` is set. `auto:` prints `yes`/`no`, not a boolean
+/// literal.
+/// @param a The association to render.
+/// @return The complete block, INCLUDING its trailing newline. The caller
+/// writes it verbatim and appends nothing.
+export auto render_text(const association& a) -> std::string;
+
+/// @brief Render one association as the single-line JSON object.
+///
+/// Field order is the `association` struct's declaration order, because
+/// the oracle's JSON path is `std.json.Stringify.value` over the Zig
+/// `Association` struct and Zig serializes fields in declaration order.
+/// `auto_detected` is a JSON boolean; `config_json` renders as `null`
+/// when unset and as a JSON STRING (not an inlined object) when set,
+/// matching the Zig field's `?[]const u8` type.
+/// @param a The association to render.
+/// @return The JSON object with NO trailing newline — a fragment the
+/// caller terminates (the oracle's `output.emit` prints `"\n"` after
+/// stringifying).
+export auto render_json(const association& a) -> std::string;
+
 } // namespace planar::engine::identity

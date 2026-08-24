@@ -94,6 +94,20 @@ export struct write_scope_resolution {
   std::optional<std::string> scope;                      ///< The resolved write-scope slug label, or unset (global).
   bool                       from_explicit_flag = false; ///< True when `scope` came from an explicit `--scope` value.
   derive_reason              reason = derive_reason::no_project_match; ///< Only meaningful when `from_explicit_flag` is false.
+  /// @brief The matching project's slug, when cwd derivation matched a
+  /// project at all; unset for an explicit `--scope` (no lookup happens)
+  /// and for `derive_reason::no_project_match`.
+  ///
+  /// Carried because a caller that refuses on
+  /// `derive_reason::project_unassociated` has to NAME the project in its
+  /// remedy text — zig's `plan create` interpolates
+  /// `resolution.project_slug` twice into the `planar assoc create
+  /// project:<slug>` / `planar assoc add project:<slug>` instructions
+  /// (zig/src/cmd/planar/handlers/plan/create.zig:28-36). Without it the
+  /// caller would have to re-run `derive_from_cwd` purely to recover a
+  /// value this resolution already computed. Mirrors zig's `Resolution`,
+  /// which carries the same field for the same reason.
+  std::optional<std::string> project_slug;
 };
 
 /// @brief Error surface for every fallible operation in this module.

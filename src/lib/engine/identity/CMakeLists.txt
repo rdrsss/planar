@@ -39,8 +39,16 @@ planar_module(engine_identity
     association.cpp
   DEPENDS
     db
+    json_text
     scope_ref
   )
+
+# `json_text` (task 6133): `association.cpp`'s `render_json` needs the one
+# shared RFC 8259 string-escape table rather than a second local copy —
+# an association's `name` and `config_json` are operator-supplied and can
+# carry quotes, backslashes and control characters. `json_text` is layer 1,
+# so this is an ordinary D15 downward edge, the same one `engine_planning`
+# already declares for the identical reason.
 
 # TEST_DEPENDS is empty as of task 6123. It used to name `cli`, because
 # scope.t.cpp imported `planar.cli.exit` to pin `check_scope_guard`'s

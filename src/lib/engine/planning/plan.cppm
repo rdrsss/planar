@@ -210,4 +210,29 @@ export struct recompute_result {
 /// `plan_error::query_failed`.
 export auto recompute_status(db::connection& conn, std::int64_t plan_id) -> std::expected<recompute_result, plan_error>;
 
+/// @brief Render one plan as the operator-facing key/value block.
+///
+/// Ports zig/src/engine/planning/plan.zig's `renderText` byte for byte,
+/// including the two conditional lines: `parent:` appears only when
+/// `parent_plan_id` is set and `summary:` only when `summary` is set, and
+/// in THAT order (parent before summary), which is not the struct's field
+/// order. The `scope:` value is the scope kind, with `:<id>` appended when
+/// `scope_id` is set — so `global`, `association:1`, `repo:1`.
+/// @param p The plan to render.
+/// @return The complete block, INCLUDING its trailing newline. The caller
+/// writes it verbatim and appends nothing.
+export auto render_text(const plan& p) -> std::string;
+
+/// @brief Render one plan as the single-line JSON object.
+///
+/// Field order is the `plan` struct's declaration order, because the
+/// oracle's JSON path is `std.json.Stringify.value` over the Zig `Plan`
+/// struct and Zig serializes fields in declaration order. `scope_id`,
+/// `summary` and `parent_plan_id` render as `null` when unset.
+/// @param p The plan to render.
+/// @return The JSON object with NO trailing newline — a fragment the
+/// caller terminates (the oracle's `output.emit` prints `"\n"` after
+/// stringifying).
+export auto render_json(const plan& p) -> std::string;
+
 } // namespace planar::engine::planning

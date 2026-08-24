@@ -237,3 +237,54 @@ TEST_CASE("add_member_source renders the exact project_associations.source wire 
   CHECK(add_member_source_to_text(add_member_source::auto_path) == "auto:path");
   CHECK(add_member_source_to_text(add_member_source::auto_lang) == "auto:lang");
 }
+
+TEST_CASE("render_text emits the config line only when config_json is set", "[association][render][6133]") {
+  // `planar assoc create` declares no `--config` flag, so the ONE
+  // conditional line in this renderer is unreachable from the verb and a
+  // handler-level test cannot cover it. Reached directly here instead of
+  // being left untested — the same arm the oracle carries
+  // (zig/src/engine/identity/association.zig:353).
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto plain = create(conn, {.slug = "plain"});
+  REQUIRE(plain.has_value());
+  auto const plain_text = planar::engine::identity::render_text(*plain);
+  CHECK(plain_text.starts_with("id:        1\n"
+                               "slug:      plain\n"
+                               "name:      plain\n"
+                               "kind:      ad-hoc\n"
+                               "auto:      no\n"
+                               "created:   "));
+  CHECK_FALSE(plain_text.contains("config:"));
+  CHECK(plain_text.ends_with("\n"));
+
+  auto configured = create(conn, {.slug = "configured", .config_json = R"({"k":"v"})"});
+  REQUIRE(configured.has_value());
+  auto const configured_text = planar::engine::identity::render_text(*configured);
+  // Between `auto:` and `created:`, not appended at the end.
+  CHECK(configured_text.contains("auto:      no\n"
+                                 "config:    {\"k\":\"v\"}\n"
+                                 "created:   "));
+}
+
+TEST_CASE("render_json escapes operator-supplied text and keeps config_json a STRING", "[association][render][6133]") {
+  // `name` and `config_json` are operator-supplied and can carry quotes and
+  // backslashes; a `std::format` that interpolated them raw would emit
+  // invalid JSON. `config_json` is a `?[]const u8` on the Zig side, so it
+  // serialises as a JSON string, NOT as an inlined object — an
+  // implementation that spliced the blob in unquoted would look more
+  // useful and would not match the oracle.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto tricky =
+      create(conn, {.slug = "tricky", .name = R"(a "b" c\d)", .kind = association_kind::org, .config_json = R"({"k":"v"})"});
+  REQUIRE(tricky.has_value());
+  auto const json = planar::engine::identity::render_json(*tricky);
+  CHECK(json.starts_with(R"({"id":1,"slug":"tricky","name":"a \"b\" c\\d","kind":"org",)"
+                         R"("auto_detected":false,"config_json":"{\"k\":\"v\"}",)"));
+  // A FRAGMENT: the caller appends the terminator (see the @return).
+  CHECK(json.ends_with("}"));
+  CHECK_FALSE(json.ends_with("}\n"));
+}

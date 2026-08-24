@@ -245,7 +245,8 @@ auto resolve_for_write(db::connection& conn, std::optional<std::string_view> sco
   if (!derived) {
     return std::unexpected(derived.error());
   }
-  return write_scope_resolution{.scope = derived->scope, .from_explicit_flag = false, .reason = derived->reason};
+  return write_scope_resolution{
+      .scope = derived->scope, .from_explicit_flag = false, .reason = derived->reason, .project_slug = derived->project_slug};
 }
 
 } // namespace planar::engine::identity

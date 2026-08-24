@@ -2084,3 +2084,342 @@ TEST_CASE("init --allow-no-repo is accepted and changes nothing", "[cmd][handler
   REQUIRE(row.has_value());
   CHECK(row->slug == "proj");
 }
+
+// =========================================================================
+// `plan create` and `assoc create` (task 6133).
+//
+// EVERY case below asserts the resulting DATABASE ROW, not just the exit
+// code and stdout. That is not belt-and-braces: it is the specific gap
+// that let task 6128 ship `capture session` writing NULL columns behind
+// byte-identical stdout, and task 6132 ship `init` registering the wrong
+// `projects.root_path` behind an exit 0. Both engines here take OPTIONAL
+// arguments that default silently when a handler omits them, so a
+// stdout-only assertion cannot tell a threaded value from a defaulted one.
+//
+// Oracle fixture and capture (scratch PLANAR_DB/PLANAR_HOME/HOME, cwd =
+// <root>/proj, `zig/zig-out/bin/planar`):
+//   $Z assoc create my-assoc
+//     b'id:        1\nslug:      my-assoc\nname:      my-assoc\n
+//       kind:      ad-hoc\nauto:      no\ncreated:   <ts>\nupdated:   <ts>\n'
+//   $Z assoc create other --name "Other Name" --kind org --json
+//     b'{"id":2,"slug":"other","name":"Other Name","kind":"org",
+//       "auto_detected":false,"config_json":null,...}\n'
+//   $Z assoc create dup-x ; $Z assoc create dup-x
+//     -> exit 6, b'error: association create: SlugConflict\n'
+//   $Z assoc create badkind --kind nope
+//     -> exit 2, b"error: unknown kind 'nope'\n"
+//   $Z init ; $Z plan create "Unassoc Plan"
+//     -> exit 5, b'error: plan create: project has no association; run
+//        `planar assoc create project:proj --kind project` then `planar
+//        assoc add project:proj <repo-path>`, or pass `--scope global`
+//        explicitly\n'
+//   (after `assoc add my-assoc <cwd>`) $Z plan create "Now Associated"
+//     b'id:       1\ntitle:    Now Associated\nslug:     now-associated\n
+//       status:   draft\nscope:    association:1\ncreated: ...\nupdated: ...\n'
+//   $Z plan create "With Summary" --summary "some text" --status active
+//        --slug custom-slug
+//     -> the `summary:` line appears AFTER `scope:`, and `parent:` before it
+//   $Z plan create "Bad Status" --status bogus
+//     -> exit 1 (NOT 2), b"error: unknown status 'bogus'\n"
+// =========================================================================
+
+namespace {
+
+/// @brief One `associations` row, read straight out of SQLite.
+struct assoc_row {
+  std::int64_t id = 0;         ///< The row id.
+  std::string  slug;           ///< The slug column.
+  std::string  name;           ///< The name column.
+  std::string  kind;           ///< The kind column.
+  std::int64_t auto_detected;  ///< The auto_detected column.
+  bool         config_is_null; ///< Whether config_json is NULL.
+};
+
+/// @brief Read every `associations` row, ordered by id.
+/// @param fx The fixture.
+/// @return The rows.
+auto read_assocs(const fixture& fx) -> std::vector<assoc_row> {
+  std::vector<assoc_row> rows;
+  auto                   conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return rows;
+  }
+  auto stmt = conn->prepare("select id, slug, name, kind, auto_detected, config_json from associations order by id");
+  if (!stmt) {
+    return rows;
+  }
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped || *stepped != planar::db::step_result::row) {
+      return rows;
+    }
+    rows.push_back(assoc_row{
+        .id             = stmt->column_int64(0),
+        .slug           = stmt->column_text(1),
+        .name           = stmt->column_text(2),
+        .kind           = stmt->column_text(3),
+        .auto_detected  = stmt->column_int64(4),
+        .config_is_null = stmt->is_null(5),
+    });
+  }
+}
+
+/// @brief One `plans` row, read straight out of SQLite.
+struct plan_row {
+  std::int64_t id = 0;         ///< The row id.
+  std::string  scope_kind;     ///< The scope_kind column.
+  std::string  scope_id;       ///< The scope_id column, or "~" when NULL.
+  std::string  title;          ///< The title column.
+  std::string  slug;           ///< The slug column.
+  std::string  summary;        ///< The summary column, or "~" when NULL.
+  std::string  status;         ///< The status column.
+  std::string  parent_plan_id; ///< The parent_plan_id column, or "~" when NULL.
+};
+
+/// @brief Read every `plans` row, ordered by id.
+///
+/// NULLs come back as the sentinel `"~"` rather than an empty string so a
+/// case can tell "the column was never written" from "the column was
+/// written empty" — the exact distinction task 6128's NULL columns turned
+/// on.
+/// @param fx The fixture.
+/// @return The rows.
+auto read_plans(const fixture& fx) -> std::vector<plan_row> {
+  std::vector<plan_row> rows;
+  auto                  conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return rows;
+  }
+  auto stmt = conn->prepare("select id, scope_kind, scope_id, title, slug, summary, status, parent_plan_id "
+                            "from plans order by id");
+  if (!stmt) {
+    return rows;
+  }
+  auto const col = [&stmt](int i) -> std::string { return stmt->is_null(i) ? std::string{"~"} : stmt->column_text(i); };
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped || *stepped != planar::db::step_result::row) {
+      return rows;
+    }
+    rows.push_back(plan_row{
+        .id             = stmt->column_int64(0),
+        .scope_kind     = stmt->column_text(1),
+        .scope_id       = col(2),
+        .title          = stmt->column_text(3),
+        .slug           = stmt->column_text(4),
+        .summary        = col(5),
+        .status         = stmt->column_text(6),
+        .parent_plan_id = col(7),
+    });
+  }
+}
+
+} // namespace
+
+TEST_CASE("assoc create defaults name to the slug and kind to ad-hoc, in the ROW", "[cmd][handlers][assoc][parity][6133]") {
+  auto const fx  = make_fixture("acdefault");
+  auto const got = dispatch(fx, {"assoc", "create", "my-assoc"});
+  REQUIRE(got.code == 0);
+  CHECK(got.err.empty());
+  // Ten-column label padding, wider than `plan create`'s nine. `config:`
+  // is absent because `config_json` is NULL — the conditional line.
+  CHECK(got.out.starts_with("id:        1\n"
+                            "slug:      my-assoc\n"
+                            "name:      my-assoc\n"
+                            "kind:      ad-hoc\n"
+                            "auto:      no\n"
+                            "created:   "));
+  CHECK(got.out.contains("\nupdated:   "));
+  CHECK_FALSE(got.out.contains("config:"));
+  CHECK(got.out.ends_with("\n"));
+
+  auto const rows = read_assocs(fx);
+  REQUIRE(rows.size() == 1);
+  // The defaults land in the ROW, not merely in the rendered line. An
+  // absent `--kind` must never reach the unknown-kind refusal, and the
+  // name must default to the slug rather than to the empty string.
+  CHECK(rows[0].slug == "my-assoc");
+  CHECK(rows[0].name == "my-assoc");
+  CHECK(rows[0].kind == "ad-hoc");
+  CHECK(rows[0].auto_detected == 0); // operator-created, never auto-detected
+  CHECK(rows[0].config_is_null);
+}
+
+TEST_CASE("assoc create threads --name and --kind into the row and the JSON", "[cmd][handlers][assoc][parity][6133]") {
+  auto const fx  = make_fixture("acflags");
+  auto const got = dispatch(fx, {"assoc", "create", "other", "--name", "Other Name", "--kind", "org", "--json"});
+  REQUIRE(got.code == 0);
+  CHECK(got.out.starts_with(R"({"id":1,"slug":"other","name":"Other Name","kind":"org",)"
+                            R"("auto_detected":false,"config_json":null,)"));
+  // JSON is a fragment the handler terminates; text carries its own.
+  CHECK(got.out.ends_with("}\n"));
+
+  auto const rows = read_assocs(fx);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].name == "Other Name");
+  CHECK(rows[0].kind == "org");
+}
+
+TEST_CASE("assoc create refuses a duplicate slug at exit 6 without writing", "[cmd][handlers][assoc][parity][6133]") {
+  auto const fx = make_fixture("acdup");
+  REQUIRE(dispatch(fx, {"assoc", "create", "dup-x"}).code == 0);
+
+  auto const again = dispatch(fx, {"assoc", "create", "dup-x"});
+  CHECK(again.code == 6);
+  // "association create", not the "assoc create" the operator typed — the
+  // oracle's message spells the engine module's name.
+  CHECK(again.err == "error: association create: SlugConflict\n");
+  CHECK(again.out.empty());
+  CHECK(read_assocs(fx).size() == 1);
+}
+
+TEST_CASE("assoc create refuses an unknown --kind at exit 2 BEFORE writing", "[cmd][handlers][assoc][parity][6133]") {
+  auto const fx  = make_fixture("ackind");
+  auto const got = dispatch(fx, {"assoc", "create", "badkind", "--kind", "nope"});
+  CHECK(got.code == 2); // 2 here; `plan create`'s bad --status is 1. Not a typo.
+  CHECK(got.err == "error: unknown kind 'nope'\n");
+  CHECK(got.out.empty());
+  // The refusal precedes the write: no half-created row survives it.
+  CHECK(read_assocs(fx).empty());
+}
+
+TEST_CASE("plan create REFUSES an unassociated project instead of filing under global", "[cmd][handlers][plan][parity][6133]") {
+  // THE case this verb exists to get right. `create_plan`'s `scope` is
+  // optional and writes `global` when unset, so a handler that threaded
+  // `--scope` straight through would exit 0 here, print a plausible row,
+  // and silently file the plan under `global` — the task-6128/6132 shape.
+  // The oracle refuses at exit 5 and names both remedy commands.
+  auto const fx = make_fixture("pcunassoc");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+
+  auto const got = dispatch(fx, {"plan", "create", "Unassoc Plan"});
+  CHECK(got.code == 5);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: plan create: project has no association; run `planar assoc create project:proj --kind project` "
+                   "then `planar assoc add project:proj <repo-path>`, or pass `--scope global` explicitly\n");
+  // A refusal, NOT a fallback: nothing was written.
+  CHECK(read_plans(fx).empty());
+}
+
+TEST_CASE("plan create stores the cwd-derived association scope in the ROW", "[cmd][handlers][plan][parity][6133]") {
+  // The positive half of the same invariant. With the cwd joined to an
+  // association, `association:1` is something ONLY the cwd derivation can
+  // produce — deleting `resolve_write_scope` flips this to `global`.
+  auto const fx = make_fixture("pcassoc");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::engine::identity::create(**conn, {.slug = "alpha"}).has_value());
+    REQUIRE(planar::engine::identity::add_member(**conn, "alpha", (fx.root / "proj").string()).has_value());
+  }
+
+  auto const got = dispatch(fx, {"plan", "create", "Now Associated"});
+  REQUIRE(got.code == 0);
+  CHECK(got.out.starts_with("id:       1\n"
+                            "title:    Now Associated\n"
+                            "slug:     now-associated\n"
+                            "status:   draft\n"
+                            "scope:    association:1\n"));
+
+  auto const rows = read_plans(fx);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].scope_kind == "association");
+  CHECK(rows[0].scope_id == "1");
+  CHECK(rows[0].slug == "now-associated"); // slug derived from the title
+  CHECK(rows[0].status == "draft");
+  CHECK(rows[0].summary == "~");
+  CHECK(rows[0].parent_plan_id == "~");
+}
+
+TEST_CASE("plan create threads EVERY optional flag into the row", "[cmd][handlers][plan][parity][6133]") {
+  // The anti-defaulting case. `plan_create_args` has five optional
+  // members; a handler that dropped any one of them still compiles, still
+  // exits 0, and still prints a row that looks right at a glance. Each
+  // assertion below fails on exactly one dropped argument.
+  auto const fx = make_fixture("pcflags");
+  REQUIRE(dispatch(fx, {"plan", "create", "Parent Plan", "--scope", "global"}).code == 0);
+
+  auto const got = dispatch(fx, {"plan", "create", "With Everything", "--scope", "global", "--summary", "some text", "--slug",
+                                 "custom-slug", "--status", "active", "--parent", "1"});
+  REQUIRE(got.code == 0);
+  // `parent:` BEFORE `summary:`, which is not the struct's field order.
+  CHECK(got.out.starts_with("id:       2\n"
+                            "title:    With Everything\n"
+                            "slug:     custom-slug\n"
+                            "status:   active\n"
+                            "scope:    global\n"
+                            "parent:   1\n"
+                            "summary:  some text\n"
+                            "created:  "));
+
+  auto const rows = read_plans(fx);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[1].title == "With Everything");
+  CHECK(rows[1].slug == "custom-slug"); // --slug, not the title-derived slug
+  CHECK(rows[1].summary == "some text");
+  CHECK(rows[1].status == "active");
+  CHECK(rows[1].parent_plan_id == "1");
+  CHECK(rows[1].scope_kind == "global");
+  CHECK(rows[1].scope_id == "~");
+}
+
+TEST_CASE("plan create --scope wins over the cwd and reaches the row", "[cmd][handlers][plan][parity][6133]") {
+  auto const fx = make_fixture("pcscope");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::engine::identity::create(**conn, {.slug = "alpha"}).has_value());
+    REQUIRE(planar::engine::identity::add_member(**conn, "alpha", (fx.root / "proj").string()).has_value());
+  }
+
+  // The cwd would derive `association:1`; each explicit flag overrides it.
+  REQUIRE(dispatch(fx, {"plan", "create", "Repo Scoped", "--scope", "repo:proj"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Global Explicit", "--scope", "global"}).code == 0);
+
+  auto const rows = read_plans(fx);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].scope_kind == "repo");
+  CHECK(rows[0].scope_id == "1");
+  CHECK(rows[1].scope_kind == "global");
+  CHECK(rows[1].scope_id == "~");
+}
+
+TEST_CASE("plan create refuses a bad --status at exit 1, and a bad --scope at exit 1", "[cmd][handlers][plan][parity][6133]") {
+  auto const fx = make_fixture("pcbad");
+
+  auto const status = dispatch(fx, {"plan", "create", "Bad Status", "--status", "bogus"});
+  // ONE, not two. zig dies with `error.InvalidStatus`, which has no arm in
+  // `codeFor` — unlike `assoc create`'s `--kind`, which dies with
+  // `error.InvalidInput` and maps to 2. Oracle-captured on both sides.
+  CHECK(status.code == 1);
+  CHECK(status.err == "error: unknown status 'bogus'\n");
+  // The database IS opened and migrated before the refusal — zig's handler
+  // calls `ensureDb` first and only then parses `--status`. Oracle-
+  // confirmed against an empty scratch root, which came away with a
+  // migrated `planar.db`. Asserted positively so a future "validate
+  // arguments first" tidy-up cannot silently change when migration runs.
+  CHECK(status.db_open);
+
+  auto const scope = dispatch(fx, {"plan", "create", "Bad Scope", "--scope", "nonexistent-scope"});
+  CHECK(scope.code == 1);
+  CHECK(scope.err == "error: plan create: SlugNotFound\n");
+
+  CHECK(read_plans(fx).empty());
+}
+
+TEST_CASE("plan create --json emits the struct's field order with a terminator", "[cmd][handlers][plan][parity][6133]") {
+  auto const fx  = make_fixture("pcjson");
+  auto const got = dispatch(fx, {"plan", "create", "JSON Plan", "--scope", "global", "--summary", "s", "--json"});
+  REQUIRE(got.code == 0);
+  CHECK(got.out.starts_with(R"({"id":1,"scope_kind":"global","scope_id":null,"title":"JSON Plan",)"
+                            R"("slug":"json-plan","summary":"s","status":"draft","parent_plan_id":null,)"));
+  CHECK(got.out.ends_with("}\n"));
+}

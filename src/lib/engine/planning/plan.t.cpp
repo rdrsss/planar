@@ -307,3 +307,66 @@ TEST_CASE("recompute_status: absent plan id returns not_found", "[plan][promotio
   REQUIRE_FALSE(r.has_value());
   CHECK(r.error() == plan_error::not_found);
 }
+
+TEST_CASE("render_text emits parent and summary independently, parent first", "[plan][render][6133]") {
+  // Two conditional lines with a NON-obvious relative order: `parent:`
+  // prints BEFORE `summary:` even though `summary` comes first in the
+  // struct. The three-way split below (neither / summary only / both) is
+  // what distinguishes the oracle's order from the struct's — a renderer
+  // written from the field list passes the "both absent" case and fails
+  // here.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto bare = create_plan(conn, plan_create_args{.title = "Bare"});
+  REQUIRE(bare.has_value());
+  auto const bare_text = planar::engine::planning::render_text(*bare);
+  CHECK(bare_text.starts_with("id:       1\n"
+                              "title:    Bare\n"
+                              "slug:     bare\n"
+                              "status:   draft\n"
+                              "scope:    global\n"
+                              "created:  "));
+  CHECK_FALSE(bare_text.contains("parent:"));
+  CHECK_FALSE(bare_text.contains("summary:"));
+
+  auto summarised = create_plan(conn, plan_create_args{.title = "Summarised", .summary = "some text"});
+  REQUIRE(summarised.has_value());
+  CHECK(planar::engine::planning::render_text(*summarised)
+            .contains("scope:    global\n"
+                      "summary:  some text\n"
+                      "created:  "));
+
+  auto both = create_plan(conn, plan_create_args{.title = "Both", .summary = "s", .parent_plan_id = bare->id});
+  REQUIRE(both.has_value());
+  CHECK(planar::engine::planning::render_text(*both).contains("scope:    global\n"
+                                                              "parent:   1\n"
+                                                              "summary:  s\n"
+                                                              "created:  "));
+}
+
+TEST_CASE("render_json nulls the unset optionals and escapes the set ones", "[plan][render][6133]") {
+  // `scope_id`, `summary` and `parent_plan_id` must render as the JSON
+  // literal `null`, not as `""` or as an omitted key — a consumer indexing
+  // by key would break on omission and a `""` would be indistinguishable
+  // from a genuinely empty summary.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto bare = create_plan(conn, plan_create_args{.title = "Bare"});
+  REQUIRE(bare.has_value());
+  auto const bare_json = planar::engine::planning::render_json(*bare);
+  CHECK(bare_json.starts_with(R"({"id":1,"scope_kind":"global","scope_id":null,"title":"Bare","slug":"bare",)"
+                              R"("summary":null,"status":"draft","parent_plan_id":null,)"));
+  // A FRAGMENT: the caller appends the terminator (see the @return).
+  CHECK(bare_json.ends_with("}"));
+  CHECK_FALSE(bare_json.ends_with("}\n"));
+
+  auto tricky = create_plan(
+      conn, plan_create_args{
+                .title = R"(Quote"Title)", .summary = R"(a "b" c\d)", .status = plan_status::active, .parent_plan_id = bare->id});
+  REQUIRE(tricky.has_value());
+  CHECK(planar::engine::planning::render_json(*tricky).contains(
+      R"("title":"Quote\"Title","slug":"quote-title","summary":"a \"b\" c\\d","status":"active",)"
+      R"("parent_plan_id":1,)"));
+}

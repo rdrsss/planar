@@ -8,8 +8,11 @@ module planar.engine.identity.association;
 
 import std;
 import planar.db;
+import planar.json_text;
 
 namespace planar::engine::identity {
+
+using json_text::json_string;
 
 namespace {
 
@@ -444,6 +447,30 @@ auto members(db::connection& conn, std::string_view assoc_slug) -> std::expected
     });
   }
   return out;
+}
+
+auto render_text(const association& a) -> std::string {
+  std::string out;
+  out += std::format("id:        {}\n", a.id);
+  out += std::format("slug:      {}\n", a.slug);
+  out += std::format("name:      {}\n", a.name);
+  out += std::format("kind:      {}\n", association_kind_to_text(a.kind));
+  out += std::format("auto:      {}\n", a.auto_detected ? "yes" : "no");
+  if (a.config_json.has_value()) {
+    out += std::format("config:    {}\n", *a.config_json);
+  }
+  out += std::format("created:   {}\n", a.created_at);
+  out += std::format("updated:   {}\n", a.updated_at);
+  return out;
+}
+
+auto render_json(const association& a) -> std::string {
+  return std::format(R"({{"id":{},"slug":{},"name":{},"kind":"{}","auto_detected":{},)"
+                     R"("config_json":{},"created_at":{},"updated_at":{}}})",
+                     a.id, json_string(a.slug), json_string(a.name), association_kind_to_text(a.kind),
+                     a.auto_detected ? "true" : "false",
+                     a.config_json.has_value() ? json_string(*a.config_json) : std::string{"null"}, json_string(a.created_at),
+                     json_string(a.updated_at));
 }
 
 } // namespace planar::engine::identity

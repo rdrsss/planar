@@ -7,10 +7,13 @@ module planar.engine.planning.plan;
 
 import std;
 import planar.db;
+import planar.json_text;
 import planar.scope_ref;
 import planar.engine.planning.transitions;
 
 namespace planar::engine::planning {
+
+using json_text::json_string;
 
 namespace {
 
@@ -656,6 +659,45 @@ auto recompute_status(db::connection& conn, std::int64_t plan_id) -> std::expect
       .status_after  = *target,
       .flipped       = true,
   };
+}
+
+auto render_text(const plan& p) -> std::string {
+  std::string out;
+  out += std::format("id:       {}\n", p.id);
+  out += std::format("title:    {}\n", p.title);
+  out += std::format("slug:     {}\n", p.slug);
+  out += std::format("status:   {}\n", plan_status_to_text(p.status));
+  out += std::format("scope:    {}", scope_kind_to_text(p.scope_kind));
+  if (p.scope_id.has_value()) {
+    out += std::format(":{}", *p.scope_id);
+  }
+  out += "\n";
+  // `parent` BEFORE `summary`, which is not the struct's field order —
+  // it is the oracle's print order (plan.zig:573-580) and was captured
+  // from a run carrying both.
+  if (p.parent_plan_id.has_value()) {
+    out += std::format("parent:   {}\n", *p.parent_plan_id);
+  }
+  if (p.summary.has_value()) {
+    out += std::format("summary:  {}\n", *p.summary);
+  }
+  out += std::format("created:  {}\n", p.created_at);
+  out += std::format("updated:  {}\n", p.updated_at);
+  return out;
+}
+
+auto render_json(const plan& p) -> std::string {
+  auto const opt_int = [](std::optional<std::int64_t> v) -> std::string {
+    return v.has_value() ? std::format("{}", *v) : std::string{"null"};
+  };
+  auto const opt_str = [](const std::optional<std::string>& v) -> std::string {
+    return v.has_value() ? json_string(*v) : std::string{"null"};
+  };
+  return std::format(R"({{"id":{},"scope_kind":"{}","scope_id":{},"title":{},"slug":{},"summary":{},)"
+                     R"("status":"{}","parent_plan_id":{},"created_at":{},"updated_at":{}}})",
+                     p.id, scope_kind_to_text(p.scope_kind), opt_int(p.scope_id), json_string(p.title), json_string(p.slug),
+                     opt_str(p.summary), plan_status_to_text(p.status), opt_int(p.parent_plan_id), json_string(p.created_at),
+                     json_string(p.updated_at));
 }
 
 } // namespace planar::engine::planning
