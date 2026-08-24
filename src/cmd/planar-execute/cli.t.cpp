@@ -214,10 +214,26 @@ TEST_CASE("planar-execute reads a workflow file, and refuses one it cannot", "[c
 }
 
 TEST_CASE("planar-execute's run path reports load failure with the oracle's message", "[cmd][execute][engine]") {
-  std::ostringstream err;
-  auto const         outcome = planar::cmd::execute::run_workflow("x.lua", err);
+  std::ostringstream                   out;
+  std::ostringstream                   err;
+  planar::cmd::execute::run_args const args{.workflow = "x.lua", .phase = "setup"};
+  auto const                           outcome = planar::cmd::execute::run_workflow(args, out, err);
   CHECK(outcome == planar::cmd::execute::run_outcome::load_failed);
   // Oracle bytes, verbatim. This is the ONE planar-execute failure that is
   // exit 1 rather than 2, which is why its message is pinned literally.
   CHECK(err.str() == "planar-execute: cannot read workflow: x.lua\n");
+  // And stdout stays EMPTY. The JSON result channel emits nothing at all on
+  // this path — not `{}`, which is what a workflow that ran and declared no
+  // result produces, and which a caller must be able to tell apart.
+  CHECK(out.str().empty());
+}
+
+TEST_CASE("planar-execute resolves its trusted sibling directory", "[cmd][execute][engine]") {
+  // `cli.planar(...)` shells a SIBLING of this binary rather than searching
+  // PATH, which is what makes allowlisting the NAME `planar` mean anything.
+  // The test binary is itself an executable in the build tree, so the
+  // directory it reports must exist and must contain this very file.
+  auto const dir = planar::cmd::execute::executable_dir();
+  REQUIRE_FALSE(dir.empty());
+  CHECK(std::filesystem::is_directory(dir));
 }

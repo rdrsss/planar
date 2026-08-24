@@ -3,7 +3,9 @@
 #
 # --- THE DEPENDS LIST IS THE POINT OF THIS FILE ----------------------------
 #
-# It is EMPTY, and that is load-bearing rather than incidental. CLAUDE.md:
+# It names exactly ONE module, and that is load-bearing rather than
+# incidental. (It was EMPTY through task 6107, when the Lua half was still
+# deferred; task 6042 added `engine_execute` and nothing else.) CLAUDE.md:
 # planar-execute "holds NO SQLite handle — it reaches Planar state only by
 # shelling `planar`/`planar-agent`" and "exposes NO model-spawning host
 # function". An earlier planar-execute grew re-entrant headless LLM spawning
@@ -58,23 +60,33 @@
 # because `LoadFailed` is not `BadUsage`; 0, 1 and 2 are all produced by
 # this binary so a collapsed mapping cannot pass.
 #
-# --- what is deferred, with its dependency ---------------------------------
+# --- the Lua engine is no longer deferred ----------------------------------
 #
-# Everything from `luaL_newstate()` onward: the sandboxed stdlib
-# (`openSandboxedLibs`), the frozen host-fn manifest (`installHostSurface`,
-# ALLOWED_HOST_FNS / DENIED_HOST_FNS), phase resolution, and the
-# `flow.result` marshalling. There is no Lua in this tree —
-# cmake/dependencies.cmake names "Lua 5.5 — planar-execute sandbox" in its
-# inventory comment but declares no CPMAddPackage for it — and no
-# `engine_execute` bucket under src/lib/engine/. A `run` whose file DOES
-# read therefore exits 64 naming the gap, rather than printing `{}` and
-# exiting 0: that is a real oracle outcome (a workflow declaring no result)
-# and a caller could not tell it from a missing engine.
+# Task 6107 landed this binary with everything from `luaL_newstate()` onward
+# missing, and said so: no Lua in the tree, no `engine_execute` bucket, so a
+# `run` whose file DID read exited 64 naming the gap rather than printing
+# `{}` and exiting 0 (a real oracle outcome, and therefore a silent wrong
+# answer if faked).
 #
-# When engine_execute lands it goes in DEPENDS here, and the edge-derived
-# arm of the architecture guard starts protecting this target too — at which
-# point the literal-name arm becomes belt-and-braces rather than the only
-# guard.
+# Task 6042 closed it. `cmake/dependencies.cmake` pins Lua 5.5.0 and
+# `src/lib/engine/execute/` holds the sandbox, the frozen twenty-five-entry
+# host surface and the run loop. Exit code 64 is gone from this binary.
+#
+# The DEPENDS below is what that closure looks like, and it is also the
+# moment this file predicted: with `engine_execute` linked, the architecture
+# guard's EDGE-DERIVED execute-carrier arm now fires on this target, so the
+# no-SQLite-handle rule reaches it by both routes and the literal-name arm is
+# finally belt-and-braces rather than the only guard. Adding `db` here still
+# FATALs at configure — now for two independent reasons. (The DEPENDS list is
+# still not empty-and-load-bearing the way the header above describes; what
+# is load-bearing now is that it names exactly ONE thing, and that thing is
+# the module the guard watches.)
+#
+# One host function's BODY is still unported and reports so at the point of
+# call: `ctx.brief` (3,600 lines of brief/schema/state rendering in the Zig
+# original). It is REGISTERED, not omitted — see
+# src/lib/engine/execute/CMakeLists.txt for why an absent registration would
+# have been the worse choice.
 
 planar_binary(planar_execute
   MAIN
@@ -84,7 +96,9 @@ planar_binary(planar_execute
     engine.cppm
   SOURCES
     cli.cpp
-    engine.cpp)
+    engine.cpp
+  DEPENDS
+    engine_execute)
 
 if(TARGET planar_cmd_planar_execute_tests)
   target_compile_definitions(planar_cmd_planar_execute_tests PRIVATE

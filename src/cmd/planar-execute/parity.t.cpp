@@ -131,34 +131,207 @@ TEST_CASE("planar-execute parity: --help and a bare invocation differ ONLY in ex
   CHECK(zig_bare.code == 2);
 }
 
-TEST_CASE("planar-execute: a readable workflow reports the unported engine rather than faking a result",
-          "[cmd][execute][parity]") {
-  // The declared divergence, asserted so it cannot rot into a silent wrong
-  // answer. The oracle would LOAD and RUN the workflow; this binary exits
-  // 64 naming the gap. Printing `{}` and exiting 0 — which is what the
-  // oracle does for a workflow declaring no result — would be
-  // indistinguishable from success to a caller.
-  auto const arena = make_arena("unported");
-  auto const wf    = arena.cpp_root / "proj" / "wf.lua";
-  {
-    std::ofstream file(wf, std::ios::binary);
-    file << "function setup() end\n";
+namespace {
+
+/// @brief Seed both arenas with the same workflow file and run both
+/// binaries over it, comparing stdout, stderr and exit code.
+/// @param tag A short discriminator naming the case.
+/// @param workflow The Lua source.
+/// @param extra Arguments after `run wf.lua --phase p`.
+/// @return The two captures, C++ first.
+auto both_over_workflow(std::string_view tag, std::string_view workflow, std::vector<std::string> const& extra = {})
+    -> std::pair<capture, capture> {
+  auto const arena = make_arena(tag);
+  for (auto const& root : {arena.cpp_root, arena.zig_root}) {
+    std::ofstream file(root / "proj" / "wf.lua", std::ios::binary);
+    file << workflow;
   }
+  std::vector<std::string> args{"run", "wf.lua", "--phase", "p"};
+  args.insert(args.end(), extra.begin(), extra.end());
+  return {run_pinned(cpp_bin(), args, arena.cpp_root, "cpp"), run_pinned(zig_bin(), args, arena.zig_root, "zig")};
+}
 
-  std::vector<std::string> const args{"run", "wf.lua", "--phase", "setup"};
-  auto const                     got = run_pinned(cpp_bin(), args, arena.cpp_root, "unported");
-  CHECK(got.code == 64);
-  CHECK(got.out.empty());
-  CHECK(got.err.contains("the Lua workflow engine is not ported yet"));
+} // namespace
 
+TEST_CASE("planar-execute parity: a workflow runs identically in both engines", "[cmd][execute][parity][workflow]") {
+  // Task 6107 could not write this case: the Lua half was deferred and this
+  // binary exited 64 over any readable workflow. Task 6042 landed the engine,
+  // so the deferral test it replaced is gone and the real comparison is here.
+  //
+  // The cases are chosen for the places two independent implementations
+  // diverge WITHOUT either looking wrong on its own — number formatting,
+  // object key order, integer width, the stdout/stderr split, and which
+  // failures land on which exit code.
   if (!oracle_available()) {
-    return;
+    SKIP("Zig oracle not built (zig/zig-out/bin/planar-execute)");
   }
-  // And the oracle really does succeed on the same input, which is what
-  // makes this a divergence rather than a shared limitation.
-  auto const oracle = run_pinned(zig_bin(), args, arena.zig_root, "unported");
-  (void)std::filesystem::copy_file(wf, arena.zig_root / "proj" / "wf.lua", std::filesystem::copy_options::overwrite_existing);
-  auto const oracle_retry = run_pinned(zig_bin(), args, arena.zig_root, "unported2");
-  INFO("oracle first attempt exit " << oracle.code);
-  CHECK(oracle_retry.code != 64);
+
+  struct shape {
+    std::string_view         tag;
+    std::string_view         workflow;
+    std::vector<std::string> extra;
+    int                      expected;
+  };
+  std::vector<shape> const shapes{
+      // A payload exercising every marshalled type at once. Object key order
+      // is the interesting part: Lua's traversal order depends on the
+      // per-state hash seed, so an implementation that emitted raw order
+      // would differ from the oracle AND from itself run to run.
+      {"payload",
+       "function p() flow.result({ zebra = 1, apple = 'a\"b\\nc', list = {1, 2, 3}, nested = { deep = true }, empty = {}, "
+       "no = false }) end",
+       {},
+       0},
+      // Float spellings. Zig's `{d}` is shortest-round-trip digits with NO
+      // exponent, so 1e300 is three hundred and one characters and 3e-7 is
+      // `0.0000003`. Both of the obvious C++ formatters get this wrong in a
+      // different direction.
+      {"floats", "function p() flow.result({ a = 1/3, b = 1e300, c = -0.0, d = 1.0, e = 1e21, f = 3.0e-7, g = 1/0 }) end", {}, 0},
+      // Integer width through --args and back out again.
+      {"integers",
+       "function p() flow.result({ n = ctx.args.n, big = ctx.args.big, t = math.type(ctx.args.n) }) end",
+       {"--args", R"({"n":5,"big":9007199254740993})"},
+       0},
+      // The sandbox, enumerated live. This is the case that would catch a
+      // library opened here that the oracle leaves closed.
+      {"sandbox",
+       "function p() local r = {} for _, n in ipairs({'os','io','debug','coroutine','package','require','load','loadfile',"
+       "'dofile','print','pcall'}) do r[n] = (rawget(_G, n) == nil) and 'NIL' or type(rawget(_G, n)) end "
+       "r.random = tostring(math.random) flow.result(r) end",
+       {},
+       0},
+      // The five host tables and their exact contents, from a live state.
+      {"surface",
+       "local function keys(t) local r = {} for k, v in pairs(t) do r[#r+1] = k .. ':' .. type(v) end table.sort(r) "
+       "return table.concat(r, ',') end "
+       "function p() flow.result({ cli = keys(cli), git = keys(git), fs = keys(fs), flow = keys(flow), ctx = keys(ctx) }) end",
+       {},
+       0},
+      // stdout stays clean while a diagnostic is being written to stderr.
+      {"log", "function p() flow.log('hello') flow.result({ok = true}) end", {}, 0},
+      // No result at all is still a JSON document.
+      {"empty", "function p() end", {}, 0},
+      // The four failure stages, each on its own exit code path (all 1 —
+      // which is itself the thing being pinned, since only BadUsage is 2).
+      {"syntax", "this is not lua", {}, 1},
+      {"init", "error('boom')", {}, 1},
+      {"raise", "function p() error('kaboom') end", {}, 1},
+      {"fail", "function p() flow.fail('nope') end", {}, 1},
+      {"sparse", "function p() local t = {} t[1] = 'a' t[3] = 'c' flow.result({v = t}) end", {}, 1},
+      // git and fs with no configuration: the refusal message and the exit
+      // code, not a fallback to cwd.
+      {"unconfigured_git", "function p() git.head_sha() end", {}, 1},
+      {"unconfigured_fs", "function p() fs.read('a.txt') end", {}, 1},
+  };
+
+  for (auto const& s : shapes) {
+    auto const [cpp, zig] = both_over_workflow(s.tag, s.workflow, s.extra);
+    INFO("workflow: " << s.tag);
+    CHECK(cpp.code == zig.code);
+    CHECK(cpp.code == s.expected);
+    CHECK(cpp.out == zig.out);
+    CHECK(cpp.err == zig.err);
+  }
+}
+
+TEST_CASE("planar-execute parity: fs confinement behaves identically in both engines", "[cmd][execute][parity][workflow]") {
+  if (!oracle_available()) {
+    SKIP("Zig oracle not built (zig/zig-out/bin/planar-execute)");
+  }
+
+  static constexpr std::string_view k_workflow = R"(
+local function try(f, ...)
+  local ok, v = pcall(f, ...)
+  if not ok then return "ERR" end
+  if v == nil then return "OK" end
+  return v
+end
+function p()
+  flow.result({
+    inside = try(fs.read, "inside.txt"),
+    deep = try(fs.read, "sub/deep.txt"),
+    parent = try(fs.read, "../outside.txt"),
+    absolute = try(fs.read, "/etc/hosts"),
+    dot = try(fs.read, "./inside.txt"),
+    symlink = try(fs.read, "escape.txt"),
+    through_dirlink = try(fs.read, "dirlink/deep.txt"),
+    exists_symlink = try(fs.exists, "escape.txt"),
+    mkdir_over_symlink = try(fs.mkdir, "dirlink"),
+    write_symlink = try(fs.write, "escape.txt", "nope"),
+    mkdir_nested = try(fs.mkdir, "made/deeper"),
+    write_new = try(fs.write, "made/deeper/out.txt", "written"),
+    write_back = try(fs.read, "made/deeper/out.txt"),
+  })
+end
+)";
+
+  // The sandbox root is each arena's own `proj` directory, seeded
+  // identically. The symlinked DIRECTORY is the case a text-only `..` check
+  // misses: `dirlink/deep.txt` is neither absolute nor dotted.
+  auto const      arena = make_arena("confine");
+  std::error_code ec;
+  for (auto const& root : {arena.cpp_root, arena.zig_root}) {
+    auto const proj = root / "proj";
+    std::filesystem::create_directories(proj / "sub", ec);
+    {
+      std::ofstream file(proj / "wf.lua", std::ios::binary);
+      file << k_workflow;
+    }
+    {
+      std::ofstream file(proj / "inside.txt", std::ios::binary);
+      file << "visible";
+    }
+    {
+      std::ofstream file(proj / "sub" / "deep.txt", std::ios::binary);
+      file << "deep";
+    }
+    // A REAL file one level above the sandbox root, so `../outside.txt`
+    // would succeed if the `..` component were ever accepted. Pointing the
+    // case at a path that does not exist either way would make it pass for
+    // the wrong reason.
+    {
+      std::ofstream file(root / "outside.txt", std::ios::binary);
+      file << "forbidden";
+    }
+    std::filesystem::create_symlink("/etc/hosts", proj / "escape.txt", ec);
+    std::filesystem::create_directory_symlink("sub", proj / "dirlink", ec);
+  }
+
+  auto const args = [](std::filesystem::path const& root) {
+    return std::vector<std::string>{"run", "wf.lua", "--phase", "p", "--sandbox-root", (root / "proj").string()};
+  };
+  auto const cpp = run_pinned(cpp_bin(), args(arena.cpp_root), arena.cpp_root, "cpp");
+  auto const zig = run_pinned(zig_bin(), args(arena.zig_root), arena.zig_root, "zig");
+
+  CHECK(cpp.code == zig.code);
+  CHECK(cpp.code == 0);
+  CHECK(cpp.out == zig.out);
+  CHECK(cpp.err == zig.err);
+  // Not vacuous: the run really did read the file it was allowed to read and
+  // refuse the ones it was not, rather than erroring out early and matching
+  // on two identical failures.
+  CHECK(cpp.out.contains("\"inside\":\"visible\""));
+  CHECK(cpp.out.contains("\"symlink\":\"ERR\""));
+  CHECK(cpp.out.contains("\"absolute\":\"ERR\""));
+  CHECK(cpp.out.contains("\"parent\":\"ERR\""));
+  // And neither binary followed the link out of the sandbox.
+  CHECK(std::filesystem::read_symlink(arena.cpp_root / "proj" / "escape.txt") == std::filesystem::path{"/etc/hosts"});
+  CHECK(std::filesystem::read_symlink(arena.zig_root / "proj" / "escape.txt") == std::filesystem::path{"/etc/hosts"});
+}
+
+TEST_CASE("planar-execute: ctx.brief is the one declared divergence from the oracle", "[cmd][execute][parity][workflow]") {
+  // Declared in src/lib/engine/execute/CMakeLists.txt and asserted here so it
+  // cannot rot into a silent wrong answer: the oracle compiles a brief, this
+  // binary reports that the compiler is unported. Everything else on the host
+  // surface is ported.
+  auto const arena = make_arena("brief");
+  {
+    std::ofstream file(arena.cpp_root / "proj" / "wf.lua", std::ios::binary);
+    file << "function p() ctx.brief({plan_id = 1, task_id = 1, claim_token = 'x', problem_statement = 'y'}) end";
+  }
+  std::vector<std::string> const args{"run", "wf.lua", "--phase", "p"};
+  auto const                     got = run_pinned(cpp_bin(), args, arena.cpp_root, "brief");
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err.contains("the brief compiler is not ported yet"));
 }

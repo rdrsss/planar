@@ -74,12 +74,16 @@ auto main(int argc, char** argv) -> int {
       code = 2;
       break;
     }
-    switch (planar::cmd::execute::run_workflow(parsed->workflow, std::cerr)) {
-    case planar::cmd::execute::run_outcome::load_failed:
-      code = 1;
+    // Every engine failure is exit 1. The oracle maps every `EngineError`
+    // except `BadUsage` to 1, and `BadUsage` cannot come out of this path —
+    // it is produced by `parse_run_args` above, which has already succeeded.
+    switch (planar::cmd::execute::run_workflow(*parsed, std::cout, std::cerr)) {
+    case planar::cmd::execute::run_outcome::ok:
+      code = 0;
       break;
-    case planar::cmd::execute::run_outcome::engine_unported:
-      code = 64;
+    case planar::cmd::execute::run_outcome::load_failed:
+    case planar::cmd::execute::run_outcome::engine_failed:
+      code = 1;
       break;
     }
     break;

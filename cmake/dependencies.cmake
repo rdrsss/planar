@@ -257,3 +257,71 @@ CPMAddPackage(
     "SPDLOG_BUILD_TESTS OFF"
     "SPDLOG_INSTALL OFF"
 )
+
+# --- Lua 5.5.0 (plan 996, task 6042 — M8's planar-execute workflow host) ------
+#
+# The sandboxed script engine `planar-execute` runs deterministic workflows
+# in. Taken as a pinned release archive by URL + SHA256 through CPM, like
+# every other application dependency here — and, like SQLite, DOWNLOAD_ONLY,
+# because Lua ships a hand-written Makefile and no CMake build of its own.
+#
+# ## The version is derived, not chosen
+#
+# Pinned to 5.5.0 to match `zig/vendor/manifest.zon`'s Lua entry EXACTLY
+# (same URL, same SHA256 — re-verified independently here with
+# `shasum -a 256` against the downloaded archive). zig/ is the parity oracle
+# through M9 (D13), and the sandbox's observable surface is version-sensitive
+# in ways that are easy to miss: the oracle's live `_VERSION` reads
+# "Lua 5.5", its `math` table carries `acos`/`asin`/`atan`/`frexp`/`ldexp`
+# (absent from a default 5.4 build) and its `table` carries `create` (new in
+# 5.5). A different Lua would change what `surface.t.cpp`'s sandbox
+# enumeration sees while every host function still "worked", which is exactly
+# the class of drift that milestone's frozen-manifest test exists to catch.
+#
+# ## The source list mirrors the Zig build's, and excludes two files
+#
+# `lua.c` (the standalone interpreter's main) and `luac.c` (the compiler's
+# main) are NOT compiled in: each defines its own `main`, and linking either
+# into a static library that a Planar binary consumes would collide with that
+# binary's entry point. The remaining set is CORE_O + LIB_O from Lua's own
+# Makefile. `linit.c` IS included — it defines `luaL_openlibs`, which
+# planar-execute deliberately never calls (it opens a curated subset itself;
+# see engine/execute/execute.cppm § sandbox), but the object is harmless and
+# excluding it would be a divergence from the oracle's link for no gain.
+#
+# LUA_USE_MACOSX / LUA_USE_LINUX / LUA_USE_POSIX mirror `zig/build.zig`'s
+# platform switch verbatim. Note what those defines turn ON: `dlopen`-backed
+# dynamic loading for `package.loadlib`. That is NOT a hole here, because the
+# `package` library is never opened — the oracle's live global table has no
+# `package`, no `require`, no `loadlib`, and `surface.t.cpp` asserts that
+# against a real state rather than trusting this comment.
+CPMAddPackage(
+  NAME lua
+  VERSION 5.5.0
+  URL https://www.lua.org/ftp/lua-5.5.0.tar.gz
+  URL_HASH SHA256=57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d
+  DOWNLOAD_ONLY YES
+  EXCLUDE_FROM_ALL YES
+  SYSTEM YES
+)
+if(lua_ADDED)
+  set(PLANAR_LUA_SOURCES "")
+  foreach(_lua_unit IN ITEMS
+      lapi lauxlib lbaselib lcode lcorolib lctype ldblib ldebug ldo ldump
+      lfunc lgc linit liolib llex lmathlib lmem loadlib lobject lopcodes
+      loslib lparser lstate lstring lstrlib ltable ltablib ltm lundump
+      lutf8lib lvm lzio)
+    list(APPEND PLANAR_LUA_SOURCES "${lua_SOURCE_DIR}/src/${_lua_unit}.c")
+  endforeach()
+  add_library(lua_static STATIC ${PLANAR_LUA_SOURCES})
+  add_library(lua::lua ALIAS lua_static)
+  target_include_directories(lua_static SYSTEM PUBLIC "${lua_SOURCE_DIR}/src")
+  if(APPLE)
+    target_compile_definitions(lua_static PRIVATE LUA_USE_MACOSX)
+  elseif(UNIX)
+    target_compile_definitions(lua_static PRIVATE LUA_USE_LINUX)
+    target_link_libraries(lua_static PUBLIC ${CMAKE_DL_LIBS} m)
+  else()
+    target_compile_definitions(lua_static PRIVATE LUA_USE_POSIX)
+  endif()
+endif()
