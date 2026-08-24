@@ -36,14 +36,18 @@
 # `entity_links` CRUD primitive plus the `task_touch_paths` path-level
 # "touches" surface; it depends only on `db` (same D15/D18 same-layer
 # prohibition — see engine/entitylink/CMakeLists.txt for why it needed no
-# extraction to layer 1 under D19). `engine/external` (plan 996, task 6106)
-# is the `external_links` create/show/delete surface — the local-entity ↔
-# external-ticket binding — stood up because `planar unlink` needed it:
-# task 6105 recorded that leaf as "blocked on layer 3", and it was the only
-# one of those six whose LAYER-2 dependency was ALSO missing. It depends
-# only on `db`; the `list` / sync-state / external-system / adapter
-# surfaces are deferred with the verb families that need them (see
-# engine/external/CMakeLists.txt). `engine/ingest` (plan 996, task 6035) is
+# extraction to layer 1 under D19). `engine/external` (plan 996, tasks 6106
+# and 6041) is the operational-plane state surface: the `external_links`
+# local-entity ↔ external-ticket binding (6106, stood up because `planar
+# unlink` needed it — task 6105 recorded that leaf as "blocked on layer 3"
+# and it was the only one of those six whose LAYER-2 dependency was ALSO
+# missing), plus, from 6041, the `external_systems` registry and the
+# FIELD-LEVEL sync/conflict engine behind `sync pull` / `sync push` /
+# `sync resolve`. It depends on `db`, `adapter` and `json_text`, and NOT on
+# `engine/extsync`: the sync engine takes the layer-1 `external_adapter&`
+# interface rather than a concrete Jira/GitHub adapter, which is what keeps
+# a layer-2 peer edge out of the graph. `agentingest/` stays deferred with
+# `ext propagate` (see engine/external/CMakeLists.txt). `engine/ingest` (plan 996, task 6035) is
 # the READ side of the spec-ingest pipeline — workbench markdown parsing, the
 # proposed-entity diff, the `--strict` gate's coverage object, the text/JSON
 # preview renderers, and the provenance-bearing routing-fact materializer. It
@@ -117,17 +121,42 @@
 # engine/workbench/CMakeLists.txt for the full account, the filesystem-safety
 # argument, and the three deferred verbs.
 
+# `http` (plan 996, task 6041) is a layer-1 base library: the HTTP
+# request/response vocabulary, an abstract `transport`, and a libcurl-backed
+# `curl_transport` carrying the M7 30-second whole-request AND connect
+# timeouts. Layer 1 for the D19 reason `scope_ref` and `json_text` are — two
+# layer-2 buckets need it and D18 forbids the edge between them. It ships
+# `fixture_server.hpp`, a test-only in-process HTTP/1.1 server bound to
+# 127.0.0.1 on a kernel-assigned port, so `curl_transport` is exercised over a
+# REAL socket that has no route off the machine (see http/CMakeLists.txt).
+# `adapter` (plan 996, task 6041) is the other half of that extraction: the
+# external-plane adapter BOUNDARY — `remote_state`, `field_change_set`,
+# `local_entity`, credentials, and the four-operation `external_adapter`
+# interface. It depends on NOTHING, not even `http`, which is what lets
+# `engine/external`'s sync engine be unit-tested against a stub adapter with
+# no HTTP anywhere in the picture.
+# `engine/extsync` (plan 996, task 6041) is the two operational-plane
+# adapters — Jira and GitHub Issues — each ported to its complete
+# four-operation core (`validate`/`pull`/`push`/`render`). It depends on
+# `adapter`, `http` and `json_text` and holds NO SQLite handle. The
+# create/propagate half of both Zig files (GitHub's ProjectsV2 GraphQL arm,
+# sub-issues, comments, issue creation; Jira's comment POST) is deferred with
+# `ext create` / `ext propagate` (see engine/extsync/CMakeLists.txt).
+
 add_subdirectory(core)
 add_subdirectory(db)
 add_subdirectory(cliapp)
 add_subdirectory(log)
 add_subdirectory(scope_ref)
 add_subdirectory(json_text)
+add_subdirectory(http)
+add_subdirectory(adapter)
 add_subdirectory(engine/identity)
 add_subdirectory(engine/config)
 add_subdirectory(engine/planning)
 add_subdirectory(engine/entitylink)
 add_subdirectory(engine/external)
+add_subdirectory(engine/extsync)
 add_subdirectory(engine/ingest)
 add_subdirectory(engine/promotion)
 add_subdirectory(engine/runtime)

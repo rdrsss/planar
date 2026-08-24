@@ -44,6 +44,17 @@ unset(_planar_cpm_sha256)
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake")
 
+# Which TLS backend curl's vendored build resolves — see the libcurl block
+# below for why this one dependency's TLS provider comes from the platform
+# rather than from a second vendored archive.
+if(APPLE)
+  set(PLANAR_CURL_USE_SECTRANSP ON)
+  set(PLANAR_CURL_USE_OPENSSL OFF)
+else()
+  set(PLANAR_CURL_USE_SECTRANSP OFF)
+  set(PLANAR_CURL_USE_OPENSSL ON)
+endif()
+
 # --- Dependencies land here as the ports that need them arrive -------------
 #
 # Per the tech-spec's initial dependency set, in the order later tasks are
@@ -166,6 +177,67 @@ CPMAddPackage(
     "CLI11_BUILD_EXAMPLES OFF"
     "CLI11_BUILD_DOCS OFF"
     "CLI11_INSTALL OFF"
+)
+
+# --- libcurl (plan 996, task 6041 — M7's external plane) ----------------------
+#
+# The HTTP transport behind `planar.http`'s `curl_transport`, which the Jira
+# and GitHub Issues adapters send every request through. Taken the same way
+# every other application dependency here is taken — a pinned release archive
+# by URL + SHA256 through CPM, never `find_package(CURL)`. A system libcurl
+# IS present on this machine (8.7.1, SecureTransport/LibreSSL), and taking it
+# would have been one line; it is deliberately NOT taken, because the whole
+# point of the rule at the top of this file is that a configured build
+# reproduces from committed sources rather than from whatever the host
+# happens to ship. SHA256 computed by downloading the archive and running
+# `shasum -a 256` on it.
+#
+# 8.7.1 is chosen to match the version already installed on the development
+# machine, so a divergence between the vendored client and a hand-run `curl`
+# reproduction is never a version difference.
+#
+# ## The TLS backend is platform-conditional, and that is not a hedge
+#
+# curl needs a TLS backend and CANNOT vendor one from here: every candidate
+# (OpenSSL, mbedTLS, wolfSSL) is a second large C dependency with its own
+# build, and the OS already ships a usable one. On Apple platforms
+# SecureTransport is part of the SDK (Security.framework), so `CURL_USE_SECTRANSP`
+# needs nothing fetched or found. Elsewhere curl's own build resolves OpenSSL.
+# This is a TRANSITIVE dependency of a vendored package resolving a platform
+# TLS provider — categorically different from taking an APPLICATION dependency
+# by `find_package`, which is what the rule at the top of this file forbids.
+#
+# Everything curl can be built without is turned off: no `curl` executable, no
+# shared library, no tests, no install rules, no libpsl/libssh2/zlib/brotli/
+# zstd/libidn2/nghttp2. What is left is an HTTP/HTTPS client, which is all the
+# adapter boundary asks for. The build is ~170 objects and finishes in a few
+# seconds; configure costs ~30s once, then caches.
+#
+# The consumer target is `CURL::libcurl` (curl's own alias for whichever of
+# the static/shared libraries its build selected — here always the static
+# one, since BUILD_SHARED_LIBS is OFF).
+CPMAddPackage(
+  NAME curl
+  URL https://github.com/curl/curl/archive/refs/tags/curl-8_7_1.tar.gz
+  URL_HASH SHA256=0e46c856f517602c347bb5fe5b73174f8ee798bc87f1a97235c95761f75fcc28
+  SYSTEM YES
+  EXCLUDE_FROM_ALL YES
+  OPTIONS
+    "BUILD_CURL_EXE OFF"
+    "BUILD_SHARED_LIBS OFF"
+    "BUILD_STATIC_LIBS ON"
+    "BUILD_TESTING OFF"
+    "CURL_DISABLE_INSTALL ON"
+    "CURL_USE_LIBPSL OFF"
+    "CURL_USE_LIBSSH2 OFF"
+    "CURL_ZLIB OFF"
+    "CURL_BROTLI OFF"
+    "CURL_ZSTD OFF"
+    "USE_LIBIDN2 OFF"
+    "USE_NGHTTP2 OFF"
+    "CURL_ENABLE_SSL ON"
+    "CURL_USE_OPENSSL ${PLANAR_CURL_USE_OPENSSL}"
+    "CURL_USE_SECTRANSP ${PLANAR_CURL_USE_SECTRANSP}"
 )
 
 # --- spdlog (D11) -------------------------------------------------------------

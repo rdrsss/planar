@@ -58,6 +58,36 @@
 #                      edge between -- the second instance of the D20 shape
 #                      `annotate add` proves, and the one this milestone
 #                      was named for.
+#
+# --- task 6041: three of the six `ext` leaves -----------------------------
+#
+#   ext register jira      Both are thin over `engine_external`'s system
+#   ext register github    surface (task 6041), which is why they land
+#                          together: the difference between them is not
+#                          layering but DEFAULTS. `register github` treats
+#                          `--auth-env` as OPTIONAL and its absence selects
+#                          `gh-cli` auth with the literal ref `default`,
+#                          while `register jira` requires all three flags.
+#                          A tree that marked github's `--auth-env` required
+#                          would refuse a legitimate registration, so the
+#                          required-ness is pinned in catalog parity.
+#   ext list               Two renderers with three traps between them: the
+#                          JSON form is ONE OBJECT PER LINE (not an array),
+#                          it emits ZERO BYTES on an empty database where
+#                          the text form says "no external systems
+#                          registered", and it OMITS a null `base_url` /
+#                          `default_project` rather than emitting `null`.
+#                          All three are oracle-captured.
+#
+# The other three `ext` leaves are NOT here and each names what it waits on:
+# `ext test` on the adapter FACTORY (auth-env resolution plus the `gh auth
+# token` subprocess arm, whose five refusal messages are its whole observable
+# surface), and `ext create` / `ext propagate-one` / `ext propagate` on the
+# create/propagate half of `engine_extsync`. The `sync` family
+# (`pull`/`push`/`status`/`resolve`) is likewise absent at THIS layer even
+# though its whole engine landed in task 6041: those handlers resolve an
+# entity ref through verbs (`task`, `plan`, `link`) that this binary does not
+# expose yet, so a ported `sync pull` would have no way to reach a link.
 #   workspace doctor   Blocked ONLY on layer 3. engine_workspace (task
 #                      6110) already carried the diagnose-and-repair pass
 #                      and BOTH renderers, so the handler is nine lines of
@@ -225,6 +255,7 @@ planar_binary(planar
     handlers/version.cppm
     handlers/workflow.cppm
     handlers/annotate.cppm
+    handlers/ext.cppm
     handlers/unlink.cppm
     handlers/skills.cppm
     handlers/workspace.cppm
@@ -240,6 +271,7 @@ planar_binary(planar
     handlers/version.cpp
     handlers/workflow.cpp
     handlers/annotate.cpp
+    handlers/ext.cpp
     handlers/unlink.cpp
     handlers/skills.cpp
     handlers/workspace.cpp
@@ -251,6 +283,7 @@ planar_binary(planar
   DEPENDS
     cliapp
     db
+    json_text
     engine_external
     engine_identity
     engine_planning

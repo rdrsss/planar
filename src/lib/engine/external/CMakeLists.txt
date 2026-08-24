@@ -1,51 +1,83 @@
-# planar_engine_external — engine/external bucket (plan 996, task 6106).
+# planar_engine_external — engine/external bucket (plan 996, tasks 6106, 6041).
 # Layer-2 `engine_*` module (cmake/architecture.cmake): DEPENDS on layer-1
-# `db` only (D15), and on no other `engine_*` (D18's same-layer
-# prohibition).
+# `db`, `adapter` and `json_text` only (D15), and on no other `engine_*`
+# (D18's same-layer prohibition).
 #
-# This bucket exists because `planar unlink` needed it. Task 6105 recorded
-# `unlink` as one of six leaves "blocked on layer 3"; it was the only one of
-# the six whose LAYER-2 dependency was also missing — the C++ tree had no
-# `engine_external` of any kind, so `unlink` was blocked twice over and the
-# handler could not be written without standing this up first.
+# ## Task 6106 stood this bucket up; task 6041 finished it
 #
-# Behavior-preserving port (D2) of the create/show/delete third of
-# zig/src/engine/external/link.zig (612 lines), scoped to what one leaf
-# composes. `create` is included because `show`/`delete` cannot be
-# exercised against a real row without it, and a hand-rolled INSERT inside
-# a test file would be a second, undocumented statement of the table's
-# defaults.
+# 6106 ported only the `external_links` create/show/delete third of
+# `link.zig`, because that was all `planar unlink` composed, and recorded
+# every other surface as deferred WITH the verb family that needed it. Task
+# 6041 (M7, the external plane) is that verb family arriving, so those
+# deferrals are now closed:
 #
-# NOT ported this cycle, each deferred WITH the verb that needs it rather
-# than speculatively (link.cppm's header carries the same list):
-#   - `list` / `linksForEntity` / `pullable` / `pushable` — `links list`,
-#     `sync pull`, `sync push`.
-#   - `updateSyncState` / `updateSyncDirection` plus the `sync_events`
-#     audit row they write — the `sync` verb family.
-#   - `baseline_title` / `baseline_status`, columns a later migration added
-#     and the Zig `ExtLink` struct does not carry at all — the
-#     conflict-detection surface.
-#   - The rest of the bucket's Zig siblings entirely: `sync.zig`,
-#     `system.zig`, `agentingest/` (the `ext register` / `ext create` /
-#     `ext propagate` families and the adapter boundary behind them).
+#   - `list` / `linksForEntity` / `pullable` / `pushable` — LANDED.
+#   - `updateSyncState` / `updateSyncDirection` and the `sync_events` row
+#     the latter writes — LANDED.
+#   - `baseline_title` / `baseline_status` — LANDED as `load_baseline` /
+#     `store_baseline`. They stay OFF the `ext_link` struct, exactly as the
+#     Zig `ExtLink` leaves them off, because no SELECT in link.cpp reads them
+#     and the conflict engine wants them separately anyway.
+#   - `system.zig` — LANDED in full as `planar.engine.external.system`.
+#   - `sync.zig` — LANDED in full as `planar.engine.external.sync`.
+#
+# STILL DEFERRED, and still recorded against the verb that needs it:
+#
+#   - `agentingest/` (claude.zig, copilot.zig, dispatch.zig, interface.zig) —
+#     the `ext propagate` agent-dispatch surface.
+#
+# ## Why this bucket does NOT depend on engine_extsync
+#
+# The sync engine drives an adapter, and the adapters live in
+# `engine_extsync` — a LAYER-2 PEER, which D18 forbids reaching. It is not
+# reached: `pull_link` / `push_link` / `resolve_conflict` all take
+# `planar.adapter`'s `external_adapter&`, a layer-1 interface, so this bucket
+# never names Jira or GitHub at all. The Zig original solves the same problem
+# with `adapter: anytype`; the C++ equivalent that also erases the type at a
+# function boundary is an abstract base class. A useful side effect: every
+# test in sync.t.cpp drives a stub adapter with no HTTP anywhere.
+#
+# ## Why it does NOT depend on engine_planning either
+#
+# `pull_link` writes `tasks.title` / `plans.status` / etc. directly, through
+# a table name chosen by a four-arm switch. `engine_planning` owns the same
+# tables and is likewise a layer-2 peer. Going through it is not an option,
+# and the Zig original does not either — `localEntityFields` and
+# `applyRemoteToLocal` both issue their own SQL. NOTE the consequence
+# honestly: a sync-applied status change does NOT run the plan/task status
+# TRANSITION MATRIX. That is oracle behavior, not an oversight (verified: a
+# captured `sync pull` moved a task straight from `done` to `todo`, a
+# transition `task update --status` refuses).
 #
 # The cross-scope guard is NOT wired in, and that is the documented rule
 # rather than an omission: `external_links` carries no scope column at all,
 # and link verbs are UNGUARDED BY DESIGN (docs/concepts.md §
-# cross-scope-guard). `planar unlink` declares `--scope` and its Zig
-# handler discards it with a literal `_ = args.scope;`.
+# cross-scope-guard).
 #
 # No `policy.audit` rows are written, following the precedent every engine
-# bucket in this tree already documents (task 6100 is the open operator
-# decision). The `session_entries` audit row `unlink` appends is a
-# different table and is written from the HANDLER, by composing
-# `engine_runtime`'s session surface — that composition is the layer-3
-# work this bucket exists to make possible.
+# bucket in this tree documents (task 6100 is the open operator decision).
+#
+# ## STDOUT TERMINATOR CONTRACT
+#
+# Not applicable — this bucket renders no operator output. It DOES build one
+# JSON document, `sync_events.context_json`, and that one is a stored COLUMN
+# VALUE with no terminator: byte-compared against a captured oracle blob in
+# sync.t.cpp, key order and all.
 
 planar_module(engine_external
   INTERFACE
     link.cppm
+    system.cppm
+    sync.cppm
     external.cppm
   SOURCES
     link.cpp
-  DEPENDS db)
+    system.cpp
+    sync.cpp
+  DEPENDS db adapter json_text)
+
+target_link_libraries(planar_engine_external PRIVATE glaze::glaze)
+
+if(TARGET planar_engine_external_tests)
+  target_link_libraries(planar_engine_external_tests PRIVATE glaze::glaze)
+endif()

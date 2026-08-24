@@ -24,6 +24,17 @@ constexpr std::string_view k_select_one = "select id, entity_kind, entity_id, sy
                                           "link_role, sync_direction, last_synced_at, last_sync_status, config_json, "
                                           "created_at from external_links where id = ?";
 
+// The same column list `k_select_one` selects, but qualified with the `el`
+// alias the filtered `list` query needs for its optional
+// `join external_systems es` — the Zig original keeps two spellings for
+// exactly this reason (`select_columns` and `select_list_select`).
+constexpr std::string_view k_select_columns_aliased =
+    "select el.id, el.entity_kind, el.entity_id, el.system_id, el.external_id, el.external_url, el.link_role, "
+    "el.sync_direction, el.last_synced_at, el.last_sync_status, el.config_json, el.created_at from external_links el";
+constexpr std::string_view k_select_columns =
+    "select id, entity_kind, entity_id, system_id, external_id, external_url, link_role, sync_direction, "
+    "last_synced_at, last_sync_status, config_json, created_at from external_links";
+
 /// @brief Read a nullable TEXT column.
 /// @param stmt The stepped statement.
 /// @param index The zero-based column index.
@@ -285,6 +296,218 @@ auto remove(db::connection& conn, std::int64_t id) -> std::expected<void, link_e
   }
   if (*stepped == db::step_result::done) {
     return std::unexpected(link_error::not_found);
+  }
+  return {};
+}
+
+namespace {
+
+/// @brief Step a prepared statement to exhaustion, materializing every row.
+/// @param stmt The bound statement.
+/// @return The rows, or the failure.
+auto collect(db::statement& stmt) -> std::expected<std::vector<ext_link>, link_error> {
+  std::vector<ext_link> out;
+  while (true) {
+    auto stepped = stmt.step();
+    if (!stepped) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (*stepped == db::step_result::done) {
+      break;
+    }
+    auto row = read_row(stmt);
+    if (!row) {
+      return std::unexpected(row.error());
+    }
+    out.push_back(std::move(*row));
+  }
+  return out;
+}
+
+/// @brief Run one unparameterized SELECT over `external_links`.
+/// @param conn The connection.
+/// @param sql The statement.
+/// @return The rows, or the failure.
+auto read_many(db::connection& conn, std::string_view sql) -> std::expected<std::vector<ext_link>, link_error> {
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(link_error::query_failed);
+  }
+  return collect(*stmt);
+}
+
+} // namespace
+
+auto list(db::connection& conn, const list_filter& filter) -> std::expected<std::vector<ext_link>, link_error> {
+  // Built exactly the way the Zig original builds it: the join is added ONLY
+  // when a system slug is filtered on, then a `where 1 = 1` so every
+  // subsequent clause can unconditionally start with `and`.
+  std::string sql(k_select_columns_aliased);
+  if (filter.system_slug.has_value()) {
+    sql += " join external_systems es on es.id = el.system_id";
+  }
+  sql += " where 1 = 1";
+  if (filter.system_slug.has_value()) {
+    sql += " and es.slug = ?";
+  }
+  if (filter.entity_kind.has_value()) {
+    sql += " and el.entity_kind = ?";
+  }
+  if (filter.entity_id.has_value()) {
+    sql += " and el.entity_id = ?";
+  }
+  if (filter.system_id.has_value()) {
+    sql += " and el.system_id = ?";
+  }
+  sql += " order by el.id";
+
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(link_error::query_failed);
+  }
+  // Bind in the SAME order the clauses were appended — the parameter indexes
+  // are positional, so a reordering here silently binds the wrong values to
+  // the wrong columns rather than failing.
+  int index = 1;
+  if (filter.system_slug.has_value() && !stmt->bind_text(index++, *filter.system_slug)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (filter.entity_kind.has_value() && !stmt->bind_text(index++, external_entity_kind_to_text(*filter.entity_kind))) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (filter.entity_id.has_value() && !stmt->bind_int64(index++, *filter.entity_id)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (filter.system_id.has_value() && !stmt->bind_int64(index++, *filter.system_id)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  return collect(*stmt);
+}
+
+auto links_for_entity(db::connection& conn, external_entity_kind entity_kind, std::int64_t entity_id)
+    -> std::expected<std::vector<ext_link>, link_error> {
+  return list(conn, {.entity_kind = entity_kind, .entity_id = entity_id});
+}
+
+auto all_pullable(db::connection& conn) -> std::expected<std::vector<ext_link>, link_error> {
+  return read_many(conn, std::format("{} where sync_direction in ('read-only','two-way') order by id", k_select_columns));
+}
+
+auto all_pushable(db::connection& conn) -> std::expected<std::vector<ext_link>, link_error> {
+  return read_many(conn, std::format("{} where sync_direction in ('write-back','two-way') order by id", k_select_columns));
+}
+
+auto update_sync_state(db::connection& conn, std::int64_t link_id, sync_status status) -> std::expected<void, link_error> {
+  // `returning id` stands in for the Zig original's `changes() == 0` check,
+  // the same substitution `remove` documents at the top of this file.
+  auto stmt = conn.prepare("update external_links set last_synced_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+                           "last_sync_status = ? where id = ? returning id");
+  if (!stmt) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (!stmt->bind_text(1, sync_status_to_text(status)) || !stmt->bind_int64(2, link_id)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (*stepped == db::step_result::done) {
+    return std::unexpected(link_error::not_found);
+  }
+  return {};
+}
+
+auto update_sync_direction(db::connection& conn, std::int64_t link_id, sync_direction direction)
+    -> std::expected<sync_direction, link_error> {
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return std::unexpected(link_error::query_failed);
+  }
+
+  sync_direction prior = sync_direction::two_way;
+  {
+    auto read = conn.prepare("select sync_direction from external_links where id = ?");
+    if (!read || !read->bind_int64(1, link_id)) {
+      return std::unexpected(link_error::query_failed);
+    }
+    auto stepped = read->step();
+    if (!stepped) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (*stepped == db::step_result::done) {
+      return std::unexpected(link_error::not_found);
+    }
+    auto const parsed = sync_direction_from_text(read->column_text(0));
+    if (!parsed.has_value()) {
+      return std::unexpected(link_error::query_failed);
+    }
+    prior = *parsed;
+  }
+
+  {
+    auto write = conn.prepare("update external_links set sync_direction = ? where id = ?");
+    if (!write || !write->bind_text(1, sync_direction_to_text(direction)) || !write->bind_int64(2, link_id)) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (!write->step()) {
+      return std::unexpected(link_error::query_failed);
+    }
+  }
+
+  // Raw interpolation, matching the Zig original — both values come from a
+  // closed enum set, so there is nothing to escape. See link.cppm.
+  auto const detail = std::format(R"({{"old_direction":"{}","new_direction":"{}","operation":"sync_direction_update"}})",
+                                  sync_direction_to_text(prior), sync_direction_to_text(direction));
+  {
+    auto event = conn.prepare("insert into sync_events (link_id, direction, outcome, fields_changed, detail) "
+                              "values (?, 'push', 'ok', ?, ?)");
+    if (!event || !event->bind_int64(1, link_id) || !event->bind_text(2, R"(["sync_direction"])") ||
+        !event->bind_text(3, detail)) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (!event->step()) {
+      return std::unexpected(link_error::query_failed);
+    }
+  }
+
+  if (!tx->commit()) {
+    return std::unexpected(link_error::query_failed);
+  }
+  return prior;
+}
+
+auto load_baseline(db::connection& conn, std::int64_t link_id) -> std::expected<baseline, link_error> {
+  auto stmt = conn.prepare("select baseline_title, baseline_status from external_links where id = ?");
+  if (!stmt || !stmt->bind_int64(1, link_id)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (*stepped == db::step_result::done) {
+    return std::unexpected(link_error::not_found);
+  }
+  return baseline{.title = text_opt(*stmt, 0), .status = text_opt(*stmt, 1)};
+}
+
+auto store_baseline(db::connection& conn, std::int64_t link_id, std::string_view title, std::string_view status_value)
+    -> std::expected<void, link_error> {
+  auto stmt = conn.prepare("update external_links set baseline_title = ?, baseline_status = ? where id = ?");
+  if (!stmt) {
+    return std::unexpected(link_error::query_failed);
+  }
+  // `nn()` is not needed here because both views come from live std::strings
+  // in the sync engine, but bind_text's null-data trap (task 6097) means an
+  // EMPTY status would still bind SQL NULL if the caller ever passed a
+  // default-constructed view. Guarded explicitly rather than assumed.
+  auto const nn = [](std::string_view value) { return value.data() == nullptr ? std::string_view{""} : value; };
+  if (!stmt->bind_text(1, nn(title)) || !stmt->bind_text(2, nn(status_value)) || !stmt->bind_int64(3, link_id)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (!stmt->step()) {
+    return std::unexpected(link_error::query_failed);
   }
   return {};
 }

@@ -15,6 +15,7 @@ import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.skills;
+import planar.cmd.planar.handlers.ext;
 import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
@@ -59,6 +60,9 @@ auto handlers() -> handler_table {
   table.emplace("annotate add", handlers::annotate_add);
   table.emplace("annotate list", handlers::annotate_list);
   table.emplace("unlink", handlers::unlink);
+  table.emplace("ext register jira", handlers::ext_register_jira);
+  table.emplace("ext register github", handlers::ext_register_github);
+  table.emplace("ext list", handlers::ext_list);
   // `skills` has no subcommands, so it is a LEAF and needs an entry here
   // even though the verb is retired and does nothing but render its own
   // help page. See that handler's header.

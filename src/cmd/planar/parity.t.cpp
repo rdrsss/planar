@@ -388,6 +388,107 @@ TEST_CASE("C++ and Zig agree byte-for-byte on the task-6106 no-fixture leaves", 
   }
 }
 
+TEST_CASE("C++ and Zig agree byte-for-byte on the three ported ext leaves", "[cmd][parity][oracle]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+
+  // `created_at` is the only wall-clock field these renderers emit and it
+  // cannot agree across two processes, so it is elided from BOTH sides. The
+  // elision is deliberately narrow: it replaces the VALUE and keeps the key,
+  // the comma and the surrounding punctuation, so a renderer that dropped the
+  // field entirely, renamed it, or moved it in the key order still fails.
+  auto const mask_created_at = [](std::string_view text) {
+    std::string out;
+    std::size_t at = 0;
+    while (true) {
+      auto const key = text.find(R"("created_at":")", at);
+      if (key == std::string_view::npos) {
+        out += text.substr(at);
+        return out;
+      }
+      auto const value_start = key + std::string_view{R"("created_at":")"}.size();
+      auto const value_end   = text.find('"', value_start);
+      if (value_end == std::string_view::npos) {
+        out += text.substr(at);
+        return out;
+      }
+      out += text.substr(at, value_start - at);
+      out += "<ts>";
+      at = value_end;
+    }
+  };
+
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  // Ordered against ONE database per binary, because most of what is being
+  // pinned is state-dependent: `list` on an EMPTY database is a completely
+  // different renderer branch from `list` on a populated one (the text form
+  // says "no external systems registered" while the JSON form emits nothing
+  // at all), and the duplicate-slug refusal only exists because the
+  // registration two steps earlier succeeded.
+  std::vector<step> const steps{
+      {"xl0", {"ext", "list"}},
+      {"xl0j", {"ext", "list", "--json"}},
+      {"xrj",
+       {"ext", "register", "jira", "sync-jira", "--base-url", "http://127.0.0.1:18041", "--project", "SYNC", "--auth-env",
+        "PLANAR_SYNC_TOKEN", "--json"}},
+      // No --auth-env: the gh-cli arm, whose auth_ref the JSON list below is
+      // what actually reveals.
+      {"xrg", {"ext", "register", "github", "gh-demo", "--project", "acme/demo"}},
+      {"xrgj", {"ext", "register", "github", "gh2", "--project", "o/r", "--auth-env", "TOK", "--json"}},
+      // A base URL WITH a trailing slash, stored verbatim — neither side
+      // normalizes it at registration time (the adapter trims it at use).
+      {"xrj2",
+       {"ext", "register", "jira", "j2", "--base-url", "https://acme.atlassian.net/", "--project", "P", "--auth-env", "E"}},
+      {"xl1", {"ext", "list"}},
+      {"xl1j", {"ext", "list", "--json"}},
+      {"xdup", {"ext", "register", "github", "gh-demo", "--project", "x/y"}},
+  };
+  // A MISSING REQUIRED FLAG is deliberately NOT in that list. It is a PARSER
+  // refusal, and task 6123 re-baselined parser wording onto CLI11's when
+  // `src/lib/cli` was deleted: the oracle says
+  // `error: required flag missing: --base-url` / `error: MissingRequired`
+  // while CLI11 says `error: --base-url is required` / `error: RequiredError`
+  // (verified by running both). The SHAPE — formatted message to stdout,
+  // CamelCase tag to stderr, exit 2 — is the operator contract and is
+  // preserved; see `planar.cmd.planar.dispatch`'s header. It is asserted
+  // directly below, the same way `workflow show` and `unlink` already assert
+  // their own missing-positional refusals in this file, rather than diffed
+  // against an oracle it is known and sanctioned to differ from.
+
+  auto const space = make_arena("extleaves");
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(mask_created_at(mine.out) == mask_created_at(ref.out));
+    CHECK(mine.err == ref.err);
+  }
+
+  // The re-baselined parser refusals, and the EXIT CODE the oracle still
+  // agrees on. `--auth-env` is required on `register jira` and optional on
+  // `register github`, so both arms are checked: a tree that marked the
+  // github one required would refuse a legitimate gh-cli registration.
+  auto const missing_flag = run_pinned(cpp_bin(), std::array<std::string, 6>{"ext", "register", "jira", "j3", "--project", "P"},
+                                       space.cpp_root, "xmiss");
+  CHECK(missing_flag.code == 2);
+  CHECK(missing_flag.err == "error: RequiredError\n");
+
+  auto const oracle_missing_flag = run_pinned(
+      zig_bin(), std::array<std::string, 6>{"ext", "register", "jira", "j3", "--project", "P"}, space.zig_root, "xmissz");
+  // Same code, different wording — the sanctioned half of the divergence.
+  CHECK(missing_flag.code == oracle_missing_flag.code);
+
+  auto const github_without_auth_env = run_pinned(
+      cpp_bin(), std::array<std::string, 6>{"ext", "register", "github", "gh3", "--project", "o/r"}, space.cpp_root, "xnoauth");
+  CHECK(github_without_auth_env.code == 0);
+}
+
 TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][parity][oracle]") {
   if (!oracle_available()) {
     SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");

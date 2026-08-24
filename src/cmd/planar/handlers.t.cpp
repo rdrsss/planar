@@ -438,6 +438,61 @@ TEST_CASE("parse_int64_zig reproduces std.fmt.parseInt, separators included", "[
   CHECK_FALSE(parse_int64_zig("99999999999999999999").has_value());
 }
 
+TEST_CASE("ext list --json OMITS a null base_url and default_project entirely", "[cmd][handlers][parity][terminator]") {
+  // Not reachable through `ext register`: both register helpers always set
+  // both columns, so this branch never fires under the CLI and a break-probe
+  // that replaced it with `value_or("")` survived the whole parity suite. The
+  // branch is still real — `system::register_system` takes both as optionals,
+  // and a future `linear` / `gitlab-issues` registration need not set a base
+  // URL — and the Zig renderer branches on the optional rather than
+  // serializing it, so a `"base_url":null` would be a divergence the moment
+  // such a row exists. Seeded here with raw SQL, which is the only way in —
+  // and the SAME row was seeded into a scratch database and read back through
+  // the ORACLE, so both expectations below are CAPTURED bytes:
+  //
+  //   $Z ext list --json
+  //     b'{"id":1,"kind":"linear","slug":"lin","auth_method":"token-env",
+  //       "created_at":"..."}\n'
+  //   $Z ext list
+  //     b'slug                  kind              base-url
+  //       project\nlin                   linear
+  //                       \n'
+  //
+  // Note the TEXT form's TRAILING WHITESPACE. The empty project column is
+  // last and unpadded, but the empty base-url column before it is padded to
+  // 36, so the line ends in spaces. Trimming it would be a divergence.
+  auto const fx = make_fixture("extnull");
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    REQUIRE((*conn)
+                ->execute("insert into external_systems (kind, slug, base_url, default_project, auth_method, auth_ref) "
+                          "values ('linear', 'lin', null, null, 'token-env', 'TOK')")
+                .has_value());
+  }
+
+  auto const got = dispatch(fx, {"ext", "list", "--json"});
+  CHECK(got.code == 0);
+  // Neither key appears at all, and the key ORDER around the gap is
+  // unchanged: id, kind, slug, [base_url], [default_project], auth_method,
+  // created_at.
+  CHECK(got.out.find("base_url") == std::string::npos);
+  CHECK(got.out.find("default_project") == std::string::npos);
+  CHECK(got.out.find("null") == std::string::npos);
+  CHECK(got.out.starts_with(R"({"id":1,"kind":"linear","slug":"lin","auth_method":"token-env","created_at":")"));
+  CHECK(got.out.ends_with("\"}\n"));
+
+  // And the TEXT renderer prints an empty cell rather than the word `null`,
+  // padded to the same width.
+  auto const text = dispatch(fx, {"ext", "list"});
+  CHECK(text.code == 0);
+  CHECK(text.out == "slug                  kind              base-url                              project\n"
+                    "lin                   linear                                                  \n");
+}
+
 TEST_CASE("unlink on a missing id exits 1 naming the PARSED id", "[cmd][handlers][parity]") {
   auto const fx  = make_fixture("ulmiss");
   auto const got = dispatch(fx, {"unlink", "999"});

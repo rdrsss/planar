@@ -20,13 +20,18 @@
 /// else in the Zig original is DEFERRED WITH ITS VERB rather than ported
 /// speculatively:
 ///
-///   - `list` / `linksForEntity` / `pullable` / `pushable` — the `links
-///     list`, `sync pull`, `sync push` leaves.
+///   - `list` / `linksForEntity` / `pullable` / `pushable` — LANDED, task
+///     6041, with `planar.engine.external.sync`.
 ///   - `updateSyncState` / `updateSyncDirection` and the `sync_events`
-///     audit row they write — the `sync` verb family.
+///     audit row they write — LANDED, task 6041.
 ///   - `baseline_title` / `baseline_status` (columns 13-14, added by a
 ///     later migration and absent from the Zig `ExtLink` struct entirely)
-///     — the conflict-detection surface.
+///     — LANDED as `load_baseline` / `store_baseline` on this module, task
+///     6041. They stay OFF `ext_link` for the reason the Zig struct leaves
+///     them off: no SELECT in this file reads them, and the conflict engine
+///     wants them separately anyway.
+///
+/// Nothing from `link.zig` is deferred any more.
 ///
 /// ## Scope: this table has no scope column, and no guard runs on it
 ///
@@ -200,5 +205,107 @@ export auto show(db::connection& conn, std::int64_t id) -> std::expected<ext_lin
 /// @param id The link id.
 /// @return Success, or `link_error::not_found` when no row matched.
 export auto remove(db::connection& conn, std::int64_t id) -> std::expected<void, link_error>;
+
+/// @brief Which links `list` should return. Every field is a conjunctive
+/// filter; an unset field constrains nothing.
+export struct list_filter {
+  std::optional<external_entity_kind> entity_kind; ///< Restrict to one local table.
+  std::optional<std::int64_t>         entity_id;   ///< Restrict to one local row.
+  std::optional<std::int64_t>         system_id;   ///< Restrict to one `external_systems` row.
+  /// @brief Restrict by the system's SLUG rather than its id. Supplying this
+  /// makes the query JOIN `external_systems`; the Zig original adds the join
+  /// only when this field is set, and that is preserved because the join is
+  /// observable in the row set when a link points at a deleted system.
+  std::optional<std::string> system_slug;
+};
+
+/// @brief The `baseline_title` / `baseline_status` pair: what BOTH sides
+/// agreed on at the last successful sync.
+///
+/// This is the whole basis of field-level conflict detection. A field is
+/// "changed" on a side when that side differs from the baseline, and a field
+/// CONFLICTS only when both sides changed AND now differ from each other. No
+/// baseline means no conflict is possible — the first pull just applies.
+export struct baseline {
+  std::optional<std::string> title;  ///< The agreed title, unset before the first sync.
+  std::optional<std::string> status; ///< The agreed status, unset before the first sync.
+
+  /// @brief Whether a usable baseline exists.
+  ///
+  /// BOTH halves must be present, matching the Zig original's
+  /// `present()`. A half-written baseline is treated as none at all.
+  /// @return `true` when both fields are set.
+  [[nodiscard]] auto present() const -> bool {
+    return title.has_value() && status.has_value();
+  }
+};
+
+/// @brief Links matching `filter`, ordered by id.
+/// @param conn An open, migrated database connection.
+/// @param filter Which links to return.
+/// @return The rows, or the failure.
+export auto list(db::connection& conn, const list_filter& filter) -> std::expected<std::vector<ext_link>, link_error>;
+
+/// @brief Every link on one local entity, ordered by id.
+/// @param conn An open, migrated database connection.
+/// @param entity_kind Which local table.
+/// @param entity_id The local row id.
+/// @return The rows, or the failure.
+export auto links_for_entity(db::connection& conn, external_entity_kind entity_kind, std::int64_t entity_id)
+    -> std::expected<std::vector<ext_link>, link_error>;
+
+/// @brief Every link a pull may read: `read-only` or `two-way`.
+/// @param conn An open, migrated database connection.
+/// @return The rows, or the failure.
+export auto all_pullable(db::connection& conn) -> std::expected<std::vector<ext_link>, link_error>;
+
+/// @brief Every link a push may write: `write-back` or `two-way`.
+/// @param conn An open, migrated database connection.
+/// @return The rows, or the failure.
+export auto all_pushable(db::connection& conn) -> std::expected<std::vector<ext_link>, link_error>;
+
+/// @brief Stamp `last_synced_at` to now and set `last_sync_status`.
+///
+/// `last_synced_at` is written on EVERY outcome, including `error` — the
+/// column records when the last ATTEMPT happened, not when the last success
+/// did.
+/// @param conn An open, migrated database connection.
+/// @param link_id The link.
+/// @param status The outcome to record.
+/// @return Success, or `link_error::not_found` when no row matched.
+export auto update_sync_state(db::connection& conn, std::int64_t link_id, sync_status status) -> std::expected<void, link_error>;
+
+/// @brief Change a link's `sync_direction`, recording the change as a
+/// `sync_events` row, in one transaction.
+///
+/// The event row is `direction='push'`, `outcome='ok'`,
+/// `fields_changed='["sync_direction"]'` and a `detail` JSON object
+/// `{"old_direction":..,"new_direction":..,"operation":"sync_direction_update"}`.
+/// The Zig original builds that detail by RAW INTERPOLATION rather than
+/// through an escaper, which is safe there and here only because both
+/// interpolated values are enum texts from a closed set — this port keeps
+/// the same shape rather than "fixing" it into a byte divergence.
+/// @param conn An open, migrated database connection.
+/// @param link_id The link.
+/// @param direction The new direction.
+/// @return The PRIOR direction, or the failure.
+export auto update_sync_direction(db::connection& conn, std::int64_t link_id, sync_direction direction)
+    -> std::expected<sync_direction, link_error>;
+
+/// @brief Read a link's stored baseline.
+/// @param conn An open, migrated database connection.
+/// @param link_id The link.
+/// @return The baseline (either half may be unset), or
+/// `link_error::not_found` when the link does not exist.
+export auto load_baseline(db::connection& conn, std::int64_t link_id) -> std::expected<baseline, link_error>;
+
+/// @brief Overwrite a link's stored baseline.
+/// @param conn An open, migrated database connection.
+/// @param link_id The link.
+/// @param title The agreed title.
+/// @param status_value The agreed status.
+/// @return Success, or the failure.
+export auto store_baseline(db::connection& conn, std::int64_t link_id, std::string_view title, std::string_view status_value)
+    -> std::expected<void, link_error>;
 
 } // namespace planar::engine::external::link
