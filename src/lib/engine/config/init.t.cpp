@@ -16,8 +16,11 @@ import planar.engine.config.init;
 
 using planar::engine::config::derive_slug;
 using planar::engine::config::init_error;
+using planar::engine::config::init_result;
 using planar::engine::config::register_cwd;
 using planar::engine::config::register_cwd_args;
+using planar::engine::config::render_init_json;
+using planar::engine::config::render_init_text;
 
 namespace {
 
@@ -167,4 +170,118 @@ TEST_CASE("register_cwd: git_remote is nullable", "[init]") {
   auto result = register_cwd(conn, register_cwd_args{.cwd = "/work/noremote"});
   REQUIRE(result.has_value());
   CHECK_FALSE(result->git_remote.has_value());
+}
+
+// ---------------------------------------------------------------------------
+// The `planar init` renderers (plan 996, task 6132).
+//
+// Both return COMPLETE payloads — the oracle's exact bytes, trailing newline
+// included — so the handler writes them verbatim and appends nothing. Every
+// expectation below is bytes the Zig reference binary wrote under a pinned
+// scratch environment, read back through `cat -e`.
+//
+// The rules these cases exist to pin, in the order they are easiest to get
+// wrong:
+//
+//   1. The five project keys are OMITTED, never emitted as `null`.
+//   2. `git_remote` is omitted INDEPENDENTLY of the other four — a git
+//      repository with no `origin` yields four project keys and no fifth.
+//   3. The `next:` hint pair is nested inside the project-slug check AND
+//      guarded again on `root_path`, so a row with a NULL root path prints
+//      the `project:` line and no hints.
+//   4. Strings are JSON-escaped. The oracle hand-rolled this once and
+//      produced invalid JSON for a project name containing a quote; that is
+//      why it now routes every field through `std.json.Stringify.value`.
+
+TEST_CASE("render_init_text: the full payload, project and hints included", "[init][render]") {
+  init_result const result{
+      .db             = "/tmp/arena/planar.db",
+      .schema_version = 33,
+      .project_id     = 1,
+      .project_slug   = "proj",
+      .project_name   = "proj",
+      .root_path      = "/tmp/arena/proj",
+  };
+  CHECK(render_init_text(result) == "planar initialized\n"
+                                    "  db:      /tmp/arena/planar.db\n"
+                                    "  schema:  33\n"
+                                    "  project: proj (id: 1)\n"
+                                    "  next:    `planar assoc create project:proj --kind project`\n"
+                                    "           `planar assoc add project:proj /tmp/arena/proj`\n");
+}
+
+TEST_CASE("render_init_text: --skip-project stops after the schema line", "[init][render]") {
+  init_result const result{.db = "/tmp/arena/planar.db", .schema_version = 33};
+  CHECK(render_init_text(result) == "planar initialized\n"
+                                    "  db:      /tmp/arena/planar.db\n"
+                                    "  schema:  33\n");
+}
+
+TEST_CASE("render_init_text: a project with no root path prints no hints", "[init][render]") {
+  // The second guard, exercised on its own. Flattening the two checks into
+  // one would print an `assoc add` line ending in a space.
+  init_result const result{
+      .db = "/tmp/arena/planar.db", .schema_version = 33, .project_id = 4, .project_slug = "proj", .project_name = "proj"};
+  CHECK(render_init_text(result) == "planar initialized\n"
+                                    "  db:      /tmp/arena/planar.db\n"
+                                    "  schema:  33\n"
+                                    "  project: proj (id: 4)\n");
+}
+
+TEST_CASE("render_init_json: every key present, in the oracle's order", "[init][render]") {
+  init_result const result{
+      .db             = "/tmp/arena/planar.db",
+      .schema_version = 33,
+      .project_id     = 1,
+      .project_slug   = "proj",
+      .project_name   = "proj",
+      .root_path      = "/tmp/arena/proj",
+      .git_remote     = "git@github.com:example/repo.git",
+  };
+  CHECK(render_init_json(result) == R"({"ok":true,"db":"/tmp/arena/planar.db","schema_version":33,"project_id":1,)"
+                                    R"("project_slug":"proj","project_name":"proj","root_path":"/tmp/arena/proj",)"
+                                    R"("git_remote":"git@github.com:example/repo.git"})"
+                                    "\n");
+}
+
+TEST_CASE("render_init_json: an absent git_remote is OMITTED, not null", "[init][render]") {
+  init_result const result{
+      .db             = "/tmp/arena/planar.db",
+      .schema_version = 33,
+      .project_id     = 1,
+      .project_slug   = "proj",
+      .project_name   = "proj",
+      .root_path      = "/tmp/arena/proj",
+  };
+  auto const rendered = render_init_json(result);
+  CHECK(rendered == R"({"ok":true,"db":"/tmp/arena/planar.db","schema_version":33,"project_id":1,)"
+                    R"("project_slug":"proj","project_name":"proj","root_path":"/tmp/arena/proj"})"
+                    "\n");
+  CHECK_FALSE(rendered.contains("git_remote"));
+  CHECK_FALSE(rendered.contains("null"));
+}
+
+TEST_CASE("render_init_json: --skip-project emits ok, db and schema_version only", "[init][render]") {
+  init_result const result{.db = "/tmp/arena/planar.db", .schema_version = 33};
+  CHECK(render_init_json(result) == R"({"ok":true,"db":"/tmp/arena/planar.db","schema_version":33})"
+                                    "\n");
+}
+
+TEST_CASE("render_init_json: strings are escaped", "[init][render]") {
+  // The defect the oracle's own hand-rolled template had: a quote in a
+  // project name produced a document no parser would accept.
+  init_result const result{
+      .db             = R"(/tmp/a"b\c)",
+      .schema_version = 33,
+      .project_id     = 7,
+      .project_slug   = "proj",
+      .project_name   = R"(He said "hi")",
+      .root_path      = "/tmp/proj\n",
+  };
+  auto const rendered = render_init_json(result);
+  CHECK(rendered.contains(R"("db":"/tmp/a\"b\\c")"));
+  CHECK(rendered.contains(R"("project_name":"He said \"hi\"")"));
+  CHECK(rendered.contains(R"("root_path":"/tmp/proj\n")"));
+  // Exactly one real newline: the terminator.
+  CHECK(std::ranges::count(rendered, '\n') == 1);
 }

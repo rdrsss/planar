@@ -4113,7 +4113,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       "health",
       "health hygiene",
       "import",
-      "init",
       "link",
       "links add",
       "links list",

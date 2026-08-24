@@ -96,15 +96,48 @@ export auto map_env(std::map<std::string, std::string, std::less<>> vars) -> env
 /// nor `$HOME` is set (the Zig original's `error.HomeNotSet`).
 export auto resolve_db_path(const env_lookup& env) -> std::expected<std::filesystem::path, domain_error>;
 
-/// @brief The operator's working directory, PWD-first.
+/// @brief The operator's working directory: `$PWD` when it is VERIFIED to
+/// name this process's actual directory, otherwise the real one.
 ///
-/// `$PWD` wins over `std::filesystem::current_path()`, mirroring
-/// zig/src/cmd/planar/scope.zig's `operatorCwd` and, behind it, Go's
-/// `os.Getwd`. The reason is recorded at plan 351 task 2375 and is real on
-/// this platform: canonicalising resolves macOS's `/var` -> `/private/var`
-/// symlink, so a project registered under `/var/...` would stop matching
-/// the `projects.root_path` key `assoc add` wrote, and cwd-derived scope
-/// would silently resolve to nothing.
+/// ## Both halves are load-bearing, and this tree shipped only one of them
+///
+/// The `$PWD`-preferring half is recorded at plan 351 task 2375 and is real
+/// on this platform: canonicalising resolves macOS's `/var` ->
+/// `/private/var` symlink, so a project registered under `/var/...` would
+/// stop matching the `projects.root_path` key `assoc add` wrote, and
+/// cwd-derived scope would silently resolve to nothing.
+///
+/// The VERIFICATION half is what this function was missing until task 6132,
+/// and its absence was a silent-wrong-write of exactly the task-6128 class —
+/// exit 0, plausible output, wrong row. `$PWD` is inherited, not maintained
+/// by the kernel, so a process SPAWNED WITH AN EXPLICIT CWD keeps its
+/// parent's `$PWD`. Returning it unconditionally meant `planar init` in such
+/// a child registered `projects.root_path` as the PARENT's directory. Three
+/// integration suites name the case directly, and all three failed against
+/// this binary the moment `init` became reachable:
+///
+///   repo_scope_test "child process cwd wins over stale parent PWD for
+///                    worktree gate and init"  -> got the spawning shell's
+///                    directory instead of the spawned cwd
+///   repo_scope_test "init --force repoints an existing slug registration
+///                    to the new cwd"          -> got the repo root
+///   repo_scope_test "init --slug targets an explicit slug for registration
+///                    and repoint"             -> got the repo root
+///
+/// That is not a corner case in this project: every agent-dispatch worktree
+/// and every test harness spawns children exactly this way.
+///
+/// The unit test that stood here before task 6132 asserted the UNVALIDATED
+/// contract — `PWD=/var/somewhere/project` (a path that does not exist)
+/// returning itself — so the suite was green on the wrong behaviour. That is
+/// why the divergence survived until an integration suite that actually
+/// spawns a child reached it.
+///
+/// The algorithm is `zig/src/engine/operatorpath.zig`'s `cwdFromPwd`,
+/// reproduced arm for arm: take `realpath(".")` as the identity; return
+/// `$PWD` VERBATIM only when it is absolute and `realpath($PWD)` equals that
+/// identity; otherwise return the identity. Unset, empty, relative,
+/// non-existent and stale all take the same fallback.
 /// @param env The environment to read `$PWD` from.
 /// @return The working directory.
 export auto operator_cwd(const env_lookup& env) -> std::filesystem::path;

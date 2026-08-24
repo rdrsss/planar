@@ -15,6 +15,7 @@ import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
+import planar.cmd.planar.handlers.init;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.ext;
@@ -74,6 +75,7 @@ auto not_implemented_for(std::string_view verb) -> handler_fn {
 
 auto handlers(const CLI::App& root) -> handler_table {
   handler_table table;
+  table.emplace("init", handlers::init);
   table.emplace("version", handlers::version);
   // `schema` and `completion` describe the TREE, so they take it; every
   // other handler describes DATA and does not. Same shape as the

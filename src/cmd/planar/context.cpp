@@ -51,15 +51,36 @@ auto resolve_db_path(const env_lookup& env) -> std::expected<std::filesystem::pa
 }
 
 auto operator_cwd(const env_lookup& env) -> std::filesystem::path {
-  if (auto const pwd = env("PWD"); pwd.has_value() && !pwd->empty()) {
-    return std::filesystem::path{*pwd};
-  }
+  // PWD-first, but VALIDATED — see this function's declaration for why the
+  // unvalidated version was wrong and what it broke.
   std::error_code ec;
-  auto            here = std::filesystem::current_path(ec);
+  auto const      here = std::filesystem::current_path(ec);
   if (ec) {
     return std::filesystem::path{};
   }
-  return here;
+  // `realpath(".")`: the process's actual directory with symlinks resolved.
+  // This is the identity every candidate PWD is compared against.
+  std::error_code real_ec;
+  auto const      real_here = std::filesystem::canonical(here, real_ec);
+  auto const      identity  = real_ec ? here : real_here;
+
+  auto const pwd = env("PWD");
+  if (pwd.has_value() && !pwd->empty()) {
+    std::filesystem::path const candidate{*pwd};
+    if (candidate.is_absolute()) {
+      std::error_code pwd_ec;
+      auto const      real_pwd = std::filesystem::canonical(candidate, pwd_ec);
+      // Resolves to the SAME directory we are actually in: honour the
+      // caller's spelling. This is the `/var` case the flag exists for.
+      if (!pwd_ec && real_pwd == identity) {
+        return candidate;
+      }
+    }
+  }
+  // Unset, empty, relative, non-existent, or naming a DIFFERENT directory —
+  // all of which mean the variable is not describing this process. Fall back
+  // to where we actually are.
+  return identity;
 }
 
 auto context::ensure_db() -> std::expected<db::connection*, domain_error> {

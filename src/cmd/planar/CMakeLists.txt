@@ -263,6 +263,7 @@ planar_binary(planar
     handlers/workspace.cppm
     handlers/workbench.cppm
     handlers/capture.cppm
+    handlers/init.cppm
     handlers/handoff.cppm
     handlers/resume.cppm
     dispatch.cppm
@@ -281,6 +282,7 @@ planar_binary(planar
     handlers/workspace.cpp
     handlers/workbench.cpp
     handlers/capture.cpp
+    handlers/init.cpp
     handlers/handoff.cpp
     handlers/resume.cpp
     dispatch.cpp
@@ -288,6 +290,7 @@ planar_binary(planar
     cliapp
     db
     json_text
+    engine_config
     engine_external
     engine_identity
     engine_planning

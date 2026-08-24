@@ -53,6 +53,7 @@ planar_module(engine_config
     "${_planar_engine_config_templates_generated}"
   DEPENDS
     db
+    json_text
   EMBED)
 
 target_link_libraries(planar_engine_config PRIVATE glaze::glaze)

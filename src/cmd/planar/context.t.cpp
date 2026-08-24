@@ -90,21 +90,72 @@ TEST_CASE("resolve_db_path fails when neither PLANAR_DB nor HOME is set", "[cmd]
   CHECK(got.error().kind == planar::cmd::domain_error_kind::generic_failure);
 }
 
-TEST_CASE("operator_cwd is PWD-first", "[cmd][context]") {
+TEST_CASE("operator_cwd honours a PWD that really names this directory", "[cmd][context]") {
   // plan 351 task 2375: canonicalising resolves macOS's /var ->
   // /private/var symlink, which would stop a project registered under
   // /var/... from matching the projects.root_path key `assoc add` wrote.
-  // PWD must win.
-  auto const env = planar::cmd::map_env({{"PWD", "/var/somewhere/project"}});
-  CHECK(planar::cmd::operator_cwd(env).string() == "/var/somewhere/project");
+  // So a VERIFIED PWD wins, spelling and all.
+  //
+  // The fixture is that exact shape built by hand: a symlink whose target is
+  // the process's own directory. `realpath(link)` equals `realpath(".")`, so
+  // the link spelling must survive — that is the whole point of preferring
+  // PWD at all.
+  auto const      target = scratch_dir("cwdreal");
+  auto const      link   = target.parent_path() / (target.filename().string() + "-link");
+  std::error_code ec;
+  std::filesystem::create_directory_symlink(target, link, ec);
+  if (ec) {
+    SKIP("cannot create a directory symlink here");
+  }
+
+  auto const saved = std::filesystem::current_path();
+  std::filesystem::current_path(target);
+  auto const got = planar::cmd::operator_cwd(planar::cmd::map_env({{"PWD", link.string()}}));
+  std::filesystem::current_path(saved);
+
+  CHECK(got == link);
+  CHECK(got != target);
+}
+
+TEST_CASE("operator_cwd IGNORES a stale inherited PWD", "[cmd][context][6132]") {
+  // THE REGRESSION THIS FUNCTION SHIPPED WITH. `$PWD` is inherited, not
+  // maintained by the kernel: a process spawned with an explicit cwd keeps
+  // its PARENT's value. Returning it unconditionally made `planar init`
+  // register `projects.root_path` as the parent's directory — exit 0,
+  // plausible output, wrong row.
+  //
+  // The test that stood here before asserted the opposite, with a PWD
+  // (`/var/somewhere/project`) that does not exist on any machine, so the
+  // suite was green on the broken behaviour and three integration suites
+  // (`repo_scope_test`'s stale-PWD, `--force` repoint and `--slug` repoint
+  // cases) were the first thing to notice.
+  auto const      here     = scratch_dir("cwdstale");
+  auto const      elsewher = scratch_dir("cwdstale-parent");
+  auto const      saved    = std::filesystem::current_path();
+  std::error_code ec;
+  std::filesystem::current_path(here, ec);
+  REQUIRE_FALSE(ec);
+  auto const stale       = planar::cmd::operator_cwd(planar::cmd::map_env({{"PWD", elsewher.string()}}));
+  auto const nonexistent = planar::cmd::operator_cwd(planar::cmd::map_env({{"PWD", "/var/somewhere/project"}}));
+  auto const relative    = planar::cmd::operator_cwd(planar::cmd::map_env({{"PWD", "some/relative/path"}}));
+  std::filesystem::current_path(saved);
+
+  auto const identity = std::filesystem::canonical(here);
+  CHECK(stale == identity);
+  CHECK(stale != elsewher);
+  // A PWD naming nothing at all cannot be verified either, so it loses too.
+  CHECK(nonexistent == identity);
+  // And a relative PWD is not a working directory in the first place.
+  CHECK(relative == identity);
 }
 
 TEST_CASE("operator_cwd falls back to the real working directory when PWD is unset or empty", "[cmd][context]") {
   std::error_code ec;
   auto const      here = std::filesystem::current_path(ec);
   REQUIRE_FALSE(ec);
-  CHECK(planar::cmd::operator_cwd(planar::cmd::map_env({})) == here);
-  CHECK(planar::cmd::operator_cwd(planar::cmd::map_env({{"PWD", ""}})) == here);
+  auto const identity = std::filesystem::canonical(here);
+  CHECK(planar::cmd::operator_cwd(planar::cmd::map_env({})) == identity);
+  CHECK(planar::cmd::operator_cwd(planar::cmd::map_env({{"PWD", ""}})) == identity);
 }
 
 TEST_CASE("the database is not opened until ensure_db is called", "[cmd][context]") {

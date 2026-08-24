@@ -7,6 +7,7 @@ module planar.engine.config.init;
 
 import std;
 import planar.db;
+import planar.json_text;
 
 namespace planar::engine::config {
 
@@ -108,6 +109,49 @@ auto register_cwd(db::connection& conn, const register_cwd_args& args) -> std::e
       .created_at = read_stmt->column_text(5),
       .updated_at = read_stmt->column_text(6),
   };
+}
+
+auto render_init_text(const init_result& result) -> std::string {
+  std::string out = "planar initialized\n";
+  out += std::format("  db:      {}\n", result.db);
+  out += std::format("  schema:  {}\n", result.schema_version);
+  if (result.project_slug.has_value()) {
+    // `project_id` is read unconditionally here, exactly as the oracle
+    // reads `r.project_id.?`: the two are written together or not at all.
+    out += std::format("  project: {} (id: {})\n", *result.project_slug, result.project_id.value_or(0));
+    if (result.root_path.has_value()) {
+      out += std::format("  next:    `planar assoc create project:{} --kind project`\n", *result.project_slug);
+      out += std::format("           `planar assoc add project:{} {}`\n", *result.project_slug, *result.root_path);
+    }
+  }
+  return out;
+}
+
+auto render_init_json(const init_result& result) -> std::string {
+  std::string out = R"({"ok":true,"db":)";
+  json_text::append_json_string(out, result.db);
+  out += std::format(",\"schema_version\":{}", result.schema_version);
+  if (result.project_id.has_value()) {
+    out += std::format(",\"project_id\":{}", *result.project_id);
+  }
+  if (result.project_slug.has_value()) {
+    out += R"(,"project_slug":)";
+    json_text::append_json_string(out, *result.project_slug);
+  }
+  if (result.project_name.has_value()) {
+    out += R"(,"project_name":)";
+    json_text::append_json_string(out, *result.project_name);
+  }
+  if (result.root_path.has_value()) {
+    out += R"(,"root_path":)";
+    json_text::append_json_string(out, *result.root_path);
+  }
+  if (result.git_remote.has_value()) {
+    out += R"(,"git_remote":)";
+    json_text::append_json_string(out, *result.git_remote);
+  }
+  out += "}\n";
+  return out;
 }
 
 } // namespace planar::engine::config

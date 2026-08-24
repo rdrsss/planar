@@ -1171,3 +1171,144 @@ TEST_CASE("C++ and Zig agree over a seeded workbench feature tree", "[cmd][parit
     CHECK(content == it->second);
   }
 }
+
+TEST_CASE("C++ and Zig agree on init, including the git remote it captures", "[cmd][parity][oracle][init]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+
+  // `init` ECHOES ITS ARENA. The database path and the project root path
+  // appear verbatim in both render modes, and the two binaries necessarily
+  // run under different scratch roots, so a raw byte diff would fail on the
+  // one difference that is not a divergence. Each side's own root is
+  // replaced with a placeholder before comparing — which leaves the schema
+  // version, the row id, the derived slug, the derived name, the captured
+  // remote, the key order, the omission rules and the terminator all still
+  // under a byte-for-byte diff. Nothing is loosened to a `contains` check.
+  auto const scrub = [](std::string text, const std::filesystem::path& root) {
+    auto const needle = root.string();
+    for (auto at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 5)) {
+      text.replace(at, needle.size(), "$ROOT");
+    }
+    return text;
+  };
+
+  // Make `<root>/proj` a git repository with an `origin`. This is the ONE
+  // fixture shape in which a handler that never probes git still differs
+  // from one that does — see handlers.t.cpp's `[6128]` cases. `upstream` is
+  // added FIRST and alphabetically before `origin`, so a probe that took
+  // "the first remote" would capture the wrong URL on both sides and the
+  // diff would still pass; it is the ORACLE that decides which is right,
+  // and it answers `origin`.
+  auto const seed_repo = [](const std::filesystem::path& root) -> bool {
+    auto const proj = (root / "proj").string();
+    auto const line = std::format("git -C '{}' init -q . >/dev/null 2>&1 && "
+                                  "git -C '{}' remote add upstream https://example.com/up.git >/dev/null 2>&1 && "
+                                  "git -C '{}' remote add origin git@github.com:example/repo.git >/dev/null 2>&1",
+                                  proj, proj, proj);
+    return std::system(line.c_str()) == 0;
+  };
+
+  struct shape {
+    std::string_view         tag;      ///< Case discriminator.
+    std::vector<std::string> args;     ///< The argv tail.
+    bool                     git_repo; ///< Whether to seed a git repository with an `origin` first.
+  };
+  std::vector<shape> const shapes{
+      {"initplain", {"init"}, false},
+      {"initjson", {"init", "--json"}, false},
+      {"initskip", {"init", "--skip-project"}, false},
+      {"initskipj", {"init", "--skip-project", "--json"}, false},
+      // Declared, and never read by either binary. Probed rather than
+      // assumed: `init` in a non-git directory succeeds WITHOUT it.
+      {"initanr", {"init", "--allow-no-repo"}, false},
+      {"initnameslug", {"init", "--name", "My Proj", "--slug", "custom-slug", "--json"}, false},
+      // THE `git_remote` CASES. Without these the whole column is invisible
+      // to this file.
+      {"initremote", {"init", "--json"}, true},
+      {"initremotetext", {"init"}, true},
+  };
+
+  for (auto const& [tag, args, git_repo] : shapes) {
+    auto const space = make_arena(tag);
+    if (git_repo) {
+      if (!seed_repo(space.cpp_root) || !seed_repo(space.zig_root)) {
+        WARN("git unavailable — skipping the remote-capture shape " << tag);
+        continue;
+      }
+    }
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+
+    INFO("shape: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(scrub(mine.out, space.cpp_root) == scrub(ref.out, space.zig_root));
+    CHECK(mine.err == ref.err);
+
+    auto const json_mode = std::ranges::find(args, "--json") != args.end();
+    if (git_repo && json_mode) {
+      // The scrub cannot hide this one: the remote URL is not a path, so a
+      // side that failed to capture it differs from a side that did.
+      CHECK(mine.out.contains("git@github.com:example/repo.git"));
+      CHECK(ref.out.contains("git@github.com:example/repo.git"));
+      CHECK_FALSE(mine.out.contains("up.git"));
+    }
+    if (git_repo && !json_mode) {
+      // FINDING, pinned rather than assumed away. The TEXT renderer never
+      // mentions the remote at all — `planar init` in a repository with an
+      // `origin` prints exactly what it prints without one, even though the
+      // column IS written. `--json` is the only operator-visible signal for
+      // `projects.git_remote`, which is precisely why this cycle asserts on
+      // the ROW in handlers.t.cpp rather than trusting stdout: a text-only
+      // test suite cannot distinguish a captured remote from a dropped one.
+      CHECK_FALSE(mine.out.contains("git@github.com:example/repo.git"));
+      CHECK_FALSE(ref.out.contains("git@github.com:example/repo.git"));
+    }
+  }
+}
+
+TEST_CASE("C++ and Zig agree on repeated init and on --force", "[cmd][parity][oracle][init]") {
+  if (!oracle_available()) {
+    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+  }
+
+  auto const scrub = [](std::string text, const std::filesystem::path& root) {
+    auto const needle = root.string();
+    for (auto at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 5)) {
+      text.replace(at, needle.size(), "$ROOT");
+    }
+    return text;
+  };
+
+  // Ordered against ONE database per binary: the second `init` must see the
+  // row the first wrote, which is the whole point. A fresh arena per step
+  // would only ever compare first-insert behaviour and the INSERT OR IGNORE
+  // rule would go untested.
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  std::vector<step> const steps{
+      {"i1", {"init", "--json"}},
+      // Idempotent: `--name` is NOT applied on the second run, because the
+      // insert is OR IGNORE. Both binaries must decline it identically.
+      {"i2", {"init", "--name", "Ignored", "--json"}},
+      // `--force` repoints the SAME row id rather than inserting a second.
+      {"i3", {"init", "--force", "--name", "Renamed", "--json"}},
+      {"i4", {"init"}},
+  };
+
+  auto const space = make_arena("initidem");
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(scrub(mine.out, space.cpp_root) == scrub(ref.out, space.zig_root));
+    CHECK(mine.err == ref.err);
+  }
+  // The row id never moved: three registrations, one project.
+  CHECK(scrub(read_all(space.cpp_root / "i3.out"), space.cpp_root)
+            .contains(R"("project_id":1,"project_slug":"proj","project_name":"Renamed")"));
+}

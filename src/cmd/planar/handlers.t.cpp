@@ -1759,3 +1759,328 @@ TEST_CASE("handoff abandon accepts --reason and stores nothing for it", "[cmd][h
   CHECK_FALSE(abandoned.out.contains("superseded"));
   CHECK_FALSE(abandoned.out.contains("consumed_at"));
 }
+
+// ---------------------------------------------------------------------------
+// `init` (plan 996, task 6132)
+//
+// EVERY CASE BELOW ASSERTS ON THE DATABASE, NOT ONLY ON STDOUT. That is the
+// whole point of this block. Task 6128 is the standing counterexample in this
+// tree: `planar capture session` exits 0 with stdout byte-identical to the
+// oracle while writing NULL `repo_root` and NULL `head_sha_at_start`, because
+// the engine supports the fields and the handler never passes them. Every
+// other port gap in this tree announces itself with exit 64; that one looks
+// exactly like success, and a stdout-only test suite cannot see it.
+//
+// `projects.git_remote` has precisely that shape for `init`, and it is
+// invisible in the common fixture: a scratch directory has no `origin`, so a
+// handler that never probed git at all would still match the oracle
+// byte-for-byte everywhere except a fixture that runs `git init` and
+// `git remote add` first. `init writes the git remote` below is that fixture.
+//
+// ORACLE PROVENANCE. Every expected string is bytes the Zig reference binary
+// wrote under a pinned scratch PLANAR_DB/PLANAR_HOME/PLANAR_CONFIG_PATH/
+// PLANAR_LOCAL_HOME/HOME, read back through `cat -e`:
+//
+//   $Z init
+//     exit 0, stdout b'planar initialized\n  db:      <db>\n  schema:  33\n
+//                      project: proj (id: 1)\n
+//                      next:    `planar assoc create project:proj --kind project`\n
+//                              `planar assoc add project:proj <root>`\n'
+//   $Z init --json
+//     exit 0, b'{"ok":true,"db":"<db>","schema_version":33,"project_id":1,
+//                "project_slug":"proj","project_name":"proj","root_path":"<root>"}\n'
+//   $Z init --json          (cwd is a git repo with an `origin` remote)
+//     …same, plus b',"git_remote":"git@github.com:example/repo.git"' before the brace
+//   $Z init --json          (cwd is a git repo whose ONLY remote is `upstream`)
+//     …NO "git_remote" key at all
+//   $Z init --skip-project --json
+//     exit 0, b'{"ok":true,"db":"<db>","schema_version":33}\n'   <- five keys ABSENT
+//   $Z init --skip-project
+//     exit 0, b'planar initialized\n  db:      <db>\n  schema:  33\n'
+//   $Z init --allow-no-repo (in a NON-git directory)
+//     exit 0, byte-identical to plain `init` — the flag is declared and never read
+
+namespace {
+
+/// @brief Read one `projects` row back, or report that there is none.
+/// @param fx The fixture whose database to read.
+/// @return `(id, slug, name, root_path, git_remote, remote_is_null)` for the
+/// single row, or unset when the table is empty.
+struct project_row {
+  std::int64_t id = 0;                ///< The row id.
+  std::string  slug;                  ///< The slug column.
+  std::string  name;                  ///< The name column.
+  std::string  root_path;             ///< The root_path column (empty when NULL).
+  std::string  git_remote;            ///< The git_remote column (empty when NULL).
+  bool         remote_is_null = true; ///< Whether git_remote is SQL NULL, as distinct from the empty string.
+};
+
+/// @brief Read the sole `projects` row from `fx`'s database.
+/// @param fx The fixture.
+/// @return The row, or unset when `projects` is empty.
+auto read_project(const fixture& fx) -> std::optional<project_row> {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return std::nullopt;
+  }
+  auto stmt = conn->prepare("select id, slug, name, root_path, git_remote from projects order by id");
+  if (!stmt) {
+    return std::nullopt;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != planar::db::step_result::row) {
+    return std::nullopt;
+  }
+  return project_row{
+      .id             = stmt->column_int64(0),
+      .slug           = stmt->column_text(1),
+      .name           = stmt->column_text(2),
+      .root_path      = stmt->is_null(3) ? std::string{} : stmt->column_text(3),
+      .git_remote     = stmt->is_null(4) ? std::string{} : stmt->column_text(4),
+      .remote_is_null = stmt->is_null(4),
+  };
+}
+
+/// @brief The database's applied schema version.
+/// @param fx The fixture.
+/// @return `max(version)` from `schema_migrations`, or 0.
+auto read_schema_version(const fixture& fx) -> std::int64_t {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return 0;
+  }
+  auto stmt = conn->prepare("select coalesce(max(version), 0) from schema_migrations");
+  if (!stmt) {
+    return 0;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != planar::db::step_result::row) {
+    return 0;
+  }
+  return stmt->column_int64(0);
+}
+
+/// @brief How many tables the database carries — the coarse "migrations
+/// actually ran" signal, independent of what `schema_migrations` claims
+/// about itself.
+/// @param fx The fixture.
+/// @return The table count.
+auto read_table_count(const fixture& fx) -> std::int64_t {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  if (!conn) {
+    return 0;
+  }
+  auto stmt = conn->prepare("select count(*) from sqlite_master where type = 'table'");
+  if (!stmt) {
+    return 0;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != planar::db::step_result::row) {
+    return 0;
+  }
+  return stmt->column_int64(0);
+}
+
+/// @brief Make `fx`'s working directory a git repository with `remote_name`
+/// pointing at `url`.
+/// @param fx The fixture.
+/// @param remote_name The remote to add.
+/// @param url The URL to give it.
+/// @return `true` when git accepted every step.
+auto seed_git_remote(const fixture& fx, std::string_view remote_name, std::string_view url) -> bool {
+  auto const dir  = (fx.root / "proj").string();
+  auto const line = std::format("git -C '{}' init -q . >/dev/null 2>&1 && git -C '{}' remote add {} '{}' >/dev/null 2>&1", dir,
+                                dir, remote_name, url);
+  return std::system(line.c_str()) == 0;
+}
+
+} // namespace
+
+TEST_CASE("init creates the database, applies every migration, and registers cwd", "[cmd][handlers][init]") {
+  auto const fx = make_fixture("initplain");
+  REQUIRE_FALSE(std::filesystem::exists(fx.db_path));
+
+  auto const got = dispatch(fx, {"init"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.db_open);
+
+  // --- the DATABASE, which is the contract stdout only summarises ---
+  REQUIRE(std::filesystem::exists(fx.db_path));
+  auto const version = read_schema_version(fx);
+  CHECK(version == 33);
+  // Not just "some migrations ran": the real schema carries ~90 tables, so a
+  // partially-applied chain cannot pass this by having written a
+  // `schema_migrations` row.
+  CHECK(read_table_count(fx) > 80);
+
+  auto const row = read_project(fx);
+  REQUIRE(row.has_value());
+  CHECK(row->id == 1);
+  CHECK(row->slug == "proj");
+  CHECK(row->name == "proj");
+  CHECK(row->root_path == (fx.root / "proj").string());
+  // No repository in the fixture, so NULL — and NULL specifically, not "".
+  CHECK(row->remote_is_null);
+
+  // --- and the bytes ---
+  CHECK(got.out == std::format("planar initialized\n"
+                               "  db:      {}\n"
+                               "  schema:  {}\n"
+                               "  project: proj (id: 1)\n"
+                               "  next:    `planar assoc create project:proj --kind project`\n"
+                               "           `planar assoc add project:proj {}`\n",
+                               fx.db_path.string(), version, (fx.root / "proj").string()));
+}
+
+TEST_CASE("init --json omits git_remote rather than emitting null", "[cmd][handlers][init][parity]") {
+  auto const fx  = make_fixture("initjson");
+  auto const got = dispatch(fx, {"init", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.out == std::format(R"({{"ok":true,"db":"{}","schema_version":{},"project_id":1,)"
+                               R"("project_slug":"proj","project_name":"proj","root_path":"{}"}})"
+                               "\n",
+                               fx.db_path.string(), read_schema_version(fx), (fx.root / "proj").string()));
+  CHECK_FALSE(got.out.contains("git_remote"));
+  CHECK_FALSE(got.out.contains("null"));
+}
+
+TEST_CASE("init writes the git remote into the row and the JSON", "[cmd][handlers][init][6128]") {
+  // THE 6128 GUARD. Everything else about `init` is identical whether or not
+  // the handler probes git at all; this case is the only one that can tell
+  // the difference, and it asserts on the COLUMN first.
+  auto const fx = make_fixture("initremote");
+  if (!seed_git_remote(fx, "origin", "git@github.com:example/repo.git")) {
+    SKIP("git unavailable — the remote-capture arm cannot be exercised");
+  }
+
+  auto const got = dispatch(fx, {"init", "--json"});
+  CHECK(got.code == 0);
+
+  auto const row = read_project(fx);
+  REQUIRE(row.has_value());
+  CHECK_FALSE(row->remote_is_null);
+  CHECK(row->git_remote == "git@github.com:example/repo.git");
+
+  CHECK(got.out.ends_with(R"(,"git_remote":"git@github.com:example/repo.git"})"
+                          "\n"));
+}
+
+TEST_CASE("init captures origin and only origin", "[cmd][handlers][init][6128]") {
+  // `upstream` alone is NOT a remote as far as `init` is concerned: the
+  // oracle runs `git remote get-url origin` specifically, so a handler that
+  // took "the first remote" or "any remote" would store a URL the oracle
+  // leaves NULL.
+  auto const fx = make_fixture("initupstream");
+  if (!seed_git_remote(fx, "upstream", "https://example.com/up.git")) {
+    SKIP("git unavailable — the remote-capture arm cannot be exercised");
+  }
+
+  auto const got = dispatch(fx, {"init", "--json"});
+  CHECK(got.code == 0);
+  CHECK_FALSE(got.out.contains("git_remote"));
+  CHECK_FALSE(got.out.contains("up.git"));
+
+  auto const row = read_project(fx);
+  REQUIRE(row.has_value());
+  CHECK(row->remote_is_null);
+}
+
+TEST_CASE("init --skip-project migrates the database and registers nothing", "[cmd][handlers][init]") {
+  auto const fx  = make_fixture("initskip");
+  auto const got = dispatch(fx, {"init", "--skip-project"});
+  CHECK(got.code == 0);
+  CHECK(got.out == std::format("planar initialized\n"
+                               "  db:      {}\n"
+                               "  schema:  {}\n",
+                               fx.db_path.string(), read_schema_version(fx)));
+
+  // Migrated — but no row. Both halves matter: a handler that skipped the
+  // whole verb would also leave `projects` empty.
+  CHECK(read_schema_version(fx) == 33);
+  CHECK(read_table_count(fx) > 80);
+  CHECK_FALSE(read_project(fx).has_value());
+}
+
+TEST_CASE("init --skip-project --json emits exactly two keys beyond ok", "[cmd][handlers][init][parity]") {
+  auto const fx  = make_fixture("initskipj");
+  auto const got = dispatch(fx, {"init", "--skip-project", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out == std::format(R"({{"ok":true,"db":"{}","schema_version":{}}})"
+                               "\n",
+                               fx.db_path.string(), read_schema_version(fx)));
+  // All five project keys omitted, not nulled.
+  CHECK_FALSE(got.out.contains("project_id"));
+  CHECK_FALSE(got.out.contains("project_slug"));
+  CHECK_FALSE(got.out.contains("project_name"));
+  CHECK_FALSE(got.out.contains("root_path"));
+  CHECK_FALSE(got.out.contains("git_remote"));
+}
+
+TEST_CASE("init honours --name and --slug", "[cmd][handlers][init]") {
+  auto const fx  = make_fixture("initnameslug");
+  auto const got = dispatch(fx, {"init", "--name", "My Proj", "--slug", "custom-slug", "--json"});
+  CHECK(got.code == 0);
+
+  auto const row = read_project(fx);
+  REQUIRE(row.has_value());
+  CHECK(row->slug == "custom-slug");
+  CHECK(row->name == "My Proj");
+  CHECK(got.out.contains(R"("project_slug":"custom-slug")"));
+  CHECK(got.out.contains(R"("project_name":"My Proj")"));
+}
+
+TEST_CASE("init is idempotent and --force repoints the same row", "[cmd][handlers][init]") {
+  auto const fx = make_fixture("initidem");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  auto const first = read_project(fx);
+  REQUIRE(first.has_value());
+
+  // Second run: INSERT OR IGNORE, so `--name` is NOT applied and the row is
+  // untouched. A handler that used plain INSERT would fail here on the unique
+  // slug; one that used upsert unconditionally would rename the project.
+  auto const again = dispatch(fx, {"init", "--name", "Ignored"});
+  CHECK(again.code == 0);
+  auto const second = read_project(fx);
+  REQUIRE(second.has_value());
+  CHECK(second->id == first->id);
+  CHECK(second->name == first->name);
+  CHECK(second->name != "Ignored");
+
+  // With --force the SAME row id is repointed rather than a new one inserted.
+  auto const forced = dispatch(fx, {"init", "--force", "--name", "Renamed"});
+  CHECK(forced.code == 0);
+  auto const third = read_project(fx);
+  REQUIRE(third.has_value());
+  CHECK(third->id == first->id);
+  CHECK(third->name == "Renamed");
+}
+
+TEST_CASE("init --allow-no-repo is accepted and changes nothing", "[cmd][handlers][init]") {
+  // Probed against the oracle rather than inferred from the flag's help text:
+  // `init` in a non-git directory WITHOUT the flag already succeeds, and the
+  // oracle's handler never reads the flag. Reproducing the no-op is D2;
+  // enforcing what the help text implies would refuse what the oracle accepts.
+  auto const bare    = make_fixture("initbare");
+  auto const flagged = make_fixture("initanr");
+
+  auto const without = dispatch(bare, {"init", "--json"});
+  auto const with    = dispatch(flagged, {"init", "--allow-no-repo", "--json"});
+  CHECK(without.code == 0);
+  CHECK(with.code == 0);
+
+  // Identical apart from the two scratch paths each echoes.
+  auto const normalise = [](std::string text, const std::filesystem::path& root) {
+    auto const needle = root.string();
+    for (auto at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 4)) {
+      text.replace(at, needle.size(), "ROOT");
+    }
+    return text;
+  };
+  CHECK(normalise(without.out, bare.root) == normalise(with.out, flagged.root));
+
+  auto const row = read_project(flagged);
+  REQUIRE(row.has_value());
+  CHECK(row->slug == "proj");
+}

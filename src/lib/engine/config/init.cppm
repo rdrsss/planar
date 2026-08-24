@@ -74,4 +74,54 @@ export auto register_cwd(db::connection& conn, const register_cwd_args& args) ->
 /// @return The derived slug (never empty).
 export auto derive_slug(std::string_view name) -> std::string;
 
+/// @brief Everything `planar init` reports, in one shape shared by both
+/// renderers. Mirrors zig's `InitResult` in
+/// zig/src/cmd/planar/handlers/init.zig.
+///
+/// Every project field is optional TOGETHER: `--skip-project` leaves all
+/// five unset and both renderers then describe the database alone. They
+/// are not modelled as one nested optional because the oracle's JSON emits
+/// them as five INDEPENDENTLY-omitted top-level keys — `git_remote` is
+/// absent whenever no `origin` remote answered, even when the other four
+/// are present — and a nested struct would have to be flattened back out
+/// at the one place that must not get it wrong.
+export struct init_result {
+  std::string                 db;                 ///< The resolved database path, echoed verbatim.
+  std::uint32_t               schema_version = 0; ///< `max(version)` from `schema_migrations` after migration.
+  std::optional<std::int64_t> project_id;         ///< The registered project's row id.
+  std::optional<std::string>  project_slug;       ///< The registered project's slug.
+  std::optional<std::string>  project_name;       ///< The registered project's display name.
+  std::optional<std::string>  root_path;          ///< The registered project's root path.
+  std::optional<std::string>  git_remote;         ///< The captured `origin` remote URL, when one answered.
+};
+
+/// @brief Render `result` as the oracle's human-readable `planar init`
+/// payload.
+///
+/// A COMPLETE payload: the returned string is the exact bytes the oracle
+/// writes to stdout, trailing newline included. The caller writes it
+/// verbatim and appends nothing.
+///
+/// The `next:` hint pair is emitted only when BOTH a project slug and a
+/// root path are present — the oracle nests the second check inside the
+/// first, and a flattened version would print an `assoc add` line with an
+/// empty path for a project row whose `root_path` is NULL.
+/// @param result The data to render.
+/// @return The complete stdout payload.
+export auto render_init_text(const init_result& result) -> std::string;
+
+/// @brief Render `result` as the oracle's `--json` `planar init` payload.
+///
+/// A COMPLETE payload: exact bytes including the trailing newline.
+///
+/// Key order is fixed and each of the five project keys is OMITTED rather
+/// than emitted as `null` when unset — `{"ok":true,"db":…,"schema_version":N}`
+/// is the whole document under `--skip-project`. Every string value is
+/// escaped through `planar.json_text`, matching the oracle's own switch to
+/// `std.json.Stringify.value` (a project name containing a quote produced
+/// invalid JSON before that change).
+/// @param result The data to render.
+/// @return The complete stdout payload.
+export auto render_init_json(const init_result& result) -> std::string;
+
 } // namespace planar::engine::config
