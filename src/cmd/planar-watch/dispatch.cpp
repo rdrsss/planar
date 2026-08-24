@@ -6,6 +6,7 @@ module planar.cmd.planar_watch.dispatch;
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.cliapp.surface;
 import planar.cmd.planar_watch.surface;
 import planar.cliapp.walk;
 import planar.cmd.planar_watch.context;
@@ -113,8 +114,26 @@ auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> s
   return dead;
 }
 
+auto inject_default_verb(std::span<std::string const> argv) -> std::vector<std::string> {
+  std::vector<std::string> out(argv.begin(), argv.end());
+  if (out.size() <= 1) {
+    // Just the binary name.
+    out.emplace_back("feed");
+    return out;
+  }
+  auto const& first = out[1];
+  if (first == "--help" || first == "-h") {
+    // Help requests stay as-is; the root's own help page is the answer.
+    return out;
+  }
+  if (!first.empty() && first.front() == '-') {
+    out.insert(out.begin() + 1, "feed");
+  }
+  return out;
+}
+
 auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
-  auto const argv = ctx.argv();
+  auto const argv = cliapp::hoist_subcommands(root, inject_default_verb(ctx.argv()));
   // CLI11's vector overload consumes argv[1..] in REVERSE order and never
   // sees argv[0] (see CLI::App::parse_char_t, which builds exactly this).
   std::vector<std::string> reversed;

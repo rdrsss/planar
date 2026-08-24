@@ -122,19 +122,16 @@ TEST_CASE("planar-agent version names THIS binary and opens no database", "[cmd]
   CHECK_FALSE(got.out.starts_with("planar dev"));
   CHECK(got.out.ends_with("\n"));
 
-  // FIELD COUNT DOES NOT MATCH, and this assertion records that rather
-  // than asserting the claim. `planar.cliapp.version`'s module header says the
-  // `cxx` divergence "preserves the field COUNT — a script splitting on
-  // whitespace still finds five tokens". It does not:
-  // `compiler_version_string()` returns `Clang 22.1.8`, which itself
-  // contains a space, so the line splits into SIX tokens where the oracle's
-  // `planar-agent dev dev zig 0.16.0` splits into five. Task 6106 found
-  // this on the operator binary (src/cmd/planar/handlers.t.cpp) and filed
-  // it against layer 1; this case confirms it is not binary-specific.
-  // Pinned at the ACTUAL value so a later fix in `planar.cliapp.version` shows
-  // up here as a failing test rather than passing silently.
+  // FIELD COUNT MATCHES the oracle's five, which is what
+  // `planar.cliapp.version`'s module header promises the `cxx` divergence
+  // preserves. Task 6117 closed the gap: this used to require SIX and
+  // carry a comment explaining that `compiler_version_string()` returned
+  // `Clang 22.1.8` — a space — so the line split one token wider than
+  // `planar-agent dev dev zig 0.16.0`. Task 6106 found it on the operator
+  // binary and filed it against layer 1; the fix landed there, and this
+  // case confirms it was not binary-specific in either direction.
   auto const fields = std::ranges::count(got.out, ' ') + 1;
-  CHECK(fields == 6);
+  CHECK(fields == 5);
 }
 
 TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd][agent][handlers]") {

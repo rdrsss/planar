@@ -21,7 +21,7 @@ namespace {
 /// appears here.
 /// @param app The node to declare it on.
 auto add_json(CLI::App& app) -> void {
-  app.add_flag("--json");
+  cliapp::add_bool_flag(app, "--json");
 }
 
 /// @brief The `--follow` / `--interval` pair the streaming verbs declare.
@@ -36,7 +36,7 @@ auto add_json(CLI::App& app) -> void {
 /// @param follow_desc The verb's own wording for `--follow`.
 /// @param interval_desc The verb's own wording for `--interval`.
 auto add_follow(CLI::App& app, std::string follow_desc, std::string interval_desc) -> void {
-  app.add_flag("--follow")->description(std::move(follow_desc));
+  cliapp::add_bool_flag(app, "--follow", follow_desc);
   app.add_option("--interval")->description(std::move(interval_desc));
 }
 
@@ -117,7 +117,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
                                            "  --interval defaults to 1s). Exits 0 on SIGINT.");
   add_vendor(*ps, "Filter by vendor (claude, codex, copilot, ...)");
   add_int(*ps, "--plan", "Filter by plan id (matches plan-direct, task-on-plan, and plan_step-on-plan claims)");
-  ps->add_flag("--stale")->description("Include stale + lease-expired claims");
+  cliapp::add_bool_flag(*ps, "--stale", "Include stale + lease-expired claims");
   add_json(*ps);
   add_follow(*ps, "Stream snapshots until SIGINT", "Poll interval for --follow (default 1s; e.g. 100ms)");
   ps->add_option("--sort-by")->description("Sort order for active claims: heartbeat (default) or lease");
@@ -173,7 +173,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
                                                  "\n"
                                                  "  --in-flight-only drops plans where active_claims=0 AND\n"
                                                  "  active_actions=0.");
-  plans->add_flag("--in-flight-only")->description("Skip plans with no live work");
+  cliapp::add_bool_flag(*plans, "--in-flight-only", "Skip plans with no live work");
   add_json(*plans);
   add_follow(*plans, "Stream snapshots until SIGINT", "Poll interval for --follow (default 1s)");
 
@@ -224,6 +224,10 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // including the bare-invocation divergence it does NOT close.
   (void)cliapp::apply_surface(*app, surface_nodes());
 
+  // Help renders the same page it rendered before every bool flag gained
+  // its `--no-X` negation — see `planar.cliapp.surface::hide_negations_in_help`.
+  // Must come AFTER the whole tree exists.
+  cliapp::hide_negations_in_help(*app);
   return app;
 }
 

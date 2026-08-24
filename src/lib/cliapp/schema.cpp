@@ -122,8 +122,11 @@ auto value_name_of(const CLI::Option& opt, std::string_view kind) -> std::string
 /// bool and a quoted string for every int, which disagreed with the oracle
 /// on 341 and 11 flags respectively across the three binaries.
 ///
-/// Still divergent, and left so deliberately: four oracle flags declare an
-/// EMPTY-STRING default (`planar workbench edit --editor`, `planar workflow
+/// Four oracle flags declare an
+/// EMPTY-STRING default. Task 6130 closed this by supplying them as a
+/// side-table to `schema_json` — see its three-argument overload. The
+/// analysis below is retained because it is still why `default_literal`
+/// alone cannot answer: (`planar workbench edit --editor`, `planar workflow
 /// run --args`, and two others) and report `""` where this reports `null`.
 /// CLI11 exposes one accessor, `get_default_str()`, returning `""` for both
 /// "no default" and "a default that is the empty string"; the two are not
@@ -156,18 +159,51 @@ auto default_literal(const CLI::Option& opt, std::string_view kind) -> std::stri
   return quote(default_str);
 }
 
+/// @brief The option's declared aliases — its long names after the first,
+/// MINUS any that is a CLI11 negation name.
+///
+/// The subtraction is load-bearing (plan 996, task 6138). Every bool flag
+/// is declared through `planar.cliapp.surface::add_bool_flag`, which files
+/// `--no-X` as a `!`-prefixed name so the parser accepts the negation the
+/// oracle synthesizes. CLI11 stores such a name in BOTH `fnames_` and
+/// `lnames_`, so reading `lnames_` alone would report `--no-json` as an
+/// alias of `--json` on all 341 bool flags — a catalog the oracle's does
+/// not match, since the oracle declares no negations at all. `fnames_` is
+/// the exact set to drop: nothing but a negation ever lands in it.
+/// @param opt The option.
+/// @return The alias long names, `--` included.
 auto aliases_of(const CLI::Option& opt) -> std::vector<std::string> {
   std::vector<std::string> out;
-  auto const&              longs = opt.get_lnames();
+  auto const&              longs   = opt.get_lnames();
+  auto const&              negated = opt.get_fnames();
   for (std::size_t i = 1; i < longs.size(); ++i) {
+    if (std::ranges::find(negated, longs[i]) != negated.end()) {
+      continue;
+    }
     out.push_back("--" + longs[i]);
+  }
+  return out;
+}
+
+/// @brief The flag long names declared with an empty-string default on
+/// `command`.
+/// @param table The `(command path, flag long name)` side-table.
+/// @param command The full command path being rendered.
+/// @return The flag names, as a lookup set.
+auto empty_defaults_for(std::span<std::pair<std::string_view, std::string_view> const> table, std::string_view command)
+    -> std::set<std::string, std::less<>> {
+  std::set<std::string, std::less<>> out;
+  for (auto const& [path, flag] : table) {
+    if (path == command) {
+      out.emplace(flag);
+    }
   }
   return out;
 }
 
 /// @brief `source` is `"inherited"` for a flag collected from an
 /// ancestor, `"local"` for one declared directly on the node.
-auto render_flag(const CLI::Option& opt, std::string_view source) -> std::string {
+auto render_flag(const CLI::Option& opt, std::string_view source, bool empty_default) -> std::string {
   auto const  kind    = kind_of(opt);
   auto const  choices = choices_of(opt);
   auto const  aliases = aliases_of(opt);
@@ -188,7 +224,7 @@ auto render_flag(const CLI::Option& opt, std::string_view source) -> std::string
   out += "\"required\":" + bool_text(opt.get_required()) + ",";
   out += "\"source\":" + quote(source) + ",";
   out += "\"valueName\":" + quote(value_name_of(opt, kind)) + ",";
-  out += "\"default\":" + default_literal(opt, kind) + ",";
+  out += "\"default\":" + (empty_default ? std::string{"\"\""} : default_literal(opt, kind)) + ",";
   out += "\"description\":" + quote(opt.get_description()) + ",";
   out += "\"completion\":" + std::string(k_completion_none) + ",";
   out += "\"env\":null";
@@ -220,7 +256,8 @@ auto render_flag(const CLI::Option& opt, std::string_view source) -> std::string
 /// @param node The command being rendered.
 /// @param path The command's root-relative path.
 /// @return The JSON array of flag objects.
-auto render_flags(const CLI::App& root, const CLI::App& node, std::span<std::string const> path) -> std::string {
+auto render_flags(const CLI::App& root, const CLI::App& node, std::span<std::string const> path,
+                  std::set<std::string, std::less<>> const& empty_defaults) -> std::string {
   std::set<std::string, std::less<>> seen;
   std::string                        out   = "[";
   bool                               first = true;
@@ -234,7 +271,7 @@ auto render_flags(const CLI::App& root, const CLI::App& node, std::span<std::str
       out += ",";
     }
     first = false;
-    out += render_flag(opt, source);
+    out += render_flag(opt, source, empty_defaults.contains(canonical_name(opt)));
   };
 
   for (const CLI::Option* opt : inherited_flags(root, path)) {
@@ -305,7 +342,8 @@ auto summary_for(std::span<std::pair<std::string_view, std::string_view> const> 
 }
 
 auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::string const> path,
-                    std::span<std::pair<std::string_view, std::string_view> const> summaries) -> std::string {
+                    std::span<std::pair<std::string_view, std::string_view> const> summaries,
+                    std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string {
   std::vector<std::string> const path_vec(path.begin(), path.end());
   auto const                     description = node.get_description();
   auto const                     command     = command_path(root, path);
@@ -323,7 +361,7 @@ auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::s
   out += "\"summary\":" + quote(summary_for(summaries, command, description)) + ",";
   out += "\"description\":" + quote(description) + ",";
   out += "\"subcommands\":" + render_subcommands(node) + ",";
-  out += "\"flags\":" + render_flags(root, node, path) + ",";
+  out += "\"flags\":" + render_flags(root, node, path, empty_defaults_for(empty_string_defaults, command)) + ",";
   out += "\"flagGroups\":[],";
   out += "\"positionals\":" + render_positionals(node) + ",";
   out += "\"docs\":" + std::string(k_docs_empty);
@@ -334,18 +372,23 @@ auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::s
 } // namespace
 
 auto schema_json(const CLI::App& root) -> std::string {
-  return schema_json(root, {});
+  return schema_json(root, {}, {});
 }
 
 auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries) -> std::string {
+  return schema_json(root, summaries, {});
+}
+
+auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
+                 std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string {
   std::string out = "{";
   out += "\"schemaVersion\":1,";
   out += "\"layout\":\"flat\",";
   out += "\"root\":" + quote(root.get_name()) + ",";
   out += "\"commands\":[";
-  out += render_command(root, root, {}, summaries);
+  out += render_command(root, root, {}, summaries, empty_string_defaults);
   for (auto const& node : all_nodes(root)) {
-    out += "," + render_command(root, *node.node, node.path, summaries);
+    out += "," + render_command(root, *node.node, node.path, summaries, empty_string_defaults);
   }
   out += "]";
   out += "}";

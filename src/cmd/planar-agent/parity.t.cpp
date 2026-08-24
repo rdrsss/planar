@@ -334,16 +334,21 @@ TEST_CASE("planar-agent parity: version diverges only in the runtime tag", "[cmd
   CHECK(cpp_fields[3] == "cxx");
   CHECK(zig_fields[3] == "zig");
 
-  // AND the field COUNTS differ, which `planar.cliapp.version`'s header
-  // claims they do not — see this binary's handlers.t.cpp for the full
-  // finding. Asserted here against the LIVE oracle rather than a
-  // transcription, which is the strongest form the observation takes:
-  // `Clang 22.1.8` carries a space of its own, so the C++ line has six
-  // whitespace-separated tokens against the oracle's five. A script that
-  // splits on whitespace and indexes the last field gets a different
-  // answer from each binary.
-  CHECK(cpp_fields.size() == 6);
-  CHECK(cpp_fields.size() != zig_fields.size());
+  // AND the field COUNTS AGREE — the claim `planar.cliapp.version`'s
+  // header makes, asserted here against the LIVE oracle rather than a
+  // transcription, which is the strongest form it takes. Task 6117: this
+  // used to require SIX, because `compiler_version_string()` returned
+  // `Clang 22.1.8` with a space of its own, so a script splitting on
+  // whitespace and reading field 5 got `Clang` from this binary and
+  // `0.16.0` from the oracle. The separator is a hyphen now.
+  CHECK(cpp_fields.size() == 5);
+  CHECK_FALSE(cpp_fields[4].contains(' '));
+  // The two lines now differ in exactly ONE field — the runtime tag —
+  // which is the title's claim stated as an assertion rather than a
+  // comment. Before task 6117 this line read `!=` and was the residue the
+  // fix removed.
+  CHECK(cpp_fields.size() == zig_fields.size());
+  CHECK(cpp_fields[4] != zig_fields[4]);
 }
 
 TEST_CASE("planar-agent parity: no ported invocation creates a database", "[cmd][agent][parity][safety]") {

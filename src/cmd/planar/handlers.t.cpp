@@ -174,18 +174,18 @@ TEST_CASE("version writes the build line and exits 0 without opening the databas
   CHECK(got.out.starts_with("planar dev dev cxx "));
   CHECK(got.out.ends_with("\n"));
 
-  // FINDING, pinned rather than papered over. `planar.cliapp.version`'s module
-  // header claims the divergence preserves the field COUNT — "a script
-  // splitting on whitespace still finds five tokens". It does not:
-  // `compiler_version_string()` returns `Clang 22.1.8`, which contains a
-  // space, so the line splits into SIX tokens where the oracle's splits
-  // into five. The claim was written before the function was wired to a
-  // real compiler string. This assertion records the actual behaviour so
-  // the discrepancy is visible; fixing it means changing
-  // `planar.cliapp.version` (a layer-1 module owned by an earlier task), which
-  // is out of this task's scope and is filed separately.
+  // Task 6117, CLOSED. This used to assert SIX tokens and carry a comment
+  // recording that `planar.cliapp.version`'s header promised five while
+  // `compiler_version_string()` returned `Clang 22.1.8` — a space — and so
+  // handed a script reading field 5 the word `Clang` where the oracle hands
+  // it `0.16.0`. The separator is now a hyphen, so the promise holds:
+  // `planar dev dev cxx Clang-22.1.8` splits into five, exactly like the
+  // oracle's `planar dev dev zig 0.16.0`.
   auto const tokens = std::ranges::count(got.out, ' ') + 1;
-  CHECK(tokens == 6);
+  CHECK(tokens == 5);
+  // The guard that keeps it that way: whatever toolchain builds this, the
+  // identifier it reports must not reintroduce whitespace.
+  CHECK(got.out.find(' ', got.out.find("cxx ") + 4) == std::string::npos);
 }
 
 TEST_CASE("workflow list on an empty catalog names the sources it searched", "[cmd][handlers][parity]") {

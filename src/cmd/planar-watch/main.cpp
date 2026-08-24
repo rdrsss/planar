@@ -12,12 +12,13 @@
 /// file may open a database; a viewer that bootstrapped state on startup
 /// would break the invariant its own `--help` page advertises.
 ///
+/// The Zig entry point's ONE piece of pre-parse logic, `feed` as the
+/// default verb on a verb-less invocation, is reproduced — but in
+/// `planar.cmd.planar_watch.dispatch::inject_default_verb` rather than
+/// here, so a Catch2 case can reach it without a subprocess (task 6136).
+///
 /// NOT reproduced from the Zig entry point, named rather than dropped:
 ///
-///   - The `feed` default verb on a bare invocation. `feed` is unported
-///     (blocked on `engine.runtime.agentactivity`); a bare invocation
-///     renders the root help page instead. See
-///     `planar.cmd.planar_watch.dispatch`'s header.
 ///   - `--follow`'s SIGINT handler and poll loop, which belong to the
 ///     streaming verbs, none of which are ported.
 ///   - `cli_log.record` — no `cli_log` surface exists in this tree.

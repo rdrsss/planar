@@ -38,12 +38,24 @@
 /// (`ExtrasError`, `RequiredError`, `ValidationError`), so the stderr line
 /// needed no translation table at all.
 ///
-/// ## The default verb is NOT reproduced, and it is a real divergence
+/// ## The default verb, reproduced as an argv rewrite (task 6136)
 ///
-/// zig/src/cmd/planar-watch/main.zig routes a bare invocation to `feed`.
-/// `feed` is unported, so a bare `planar-watch` here renders the root help
-/// page — the same thing the parser already does for a bare parent verb.
-/// Named rather than silently inherited; it closes when `feed` lands.
+/// zig/src/cmd/planar-watch/main.zig routes a bare invocation to `feed`,
+/// and it does so by REWRITING ARGV before the parser ever runs — its root
+/// `cli.Cmd` declares no flags of its own, and the oracle's own `schema`
+/// catalog confirms it (root `flags` is empty in both trees). So the
+/// faithful port is `inject_default_verb` below, NOT declaring `feed`'s
+/// nine flags on the root node: doing that would put nine flags in this
+/// binary's catalog that the oracle's does not have, and
+/// `src/cmd/catalog_parity.hpp` compares the two byte for byte.
+///
+/// Until this task, `planar-watch --json` exited 1 with `ExtrasError`
+/// where the oracle streams NDJSON, and a bare `planar-watch` rendered the
+/// root help page and exited 0 — the SILENT SUCCESS shape
+/// `planar.cliapp.surface`'s header calls out as worse than an absent
+/// node. Both now route to `feed`, which is unported, so both answer exit
+/// 64 `not implemented`. That is the correct refusal: loud, and it becomes
+/// the real feed the moment `feed` lands with no further change here.
 module;
 
 export module planar.cmd.planar_watch.dispatch;
@@ -84,6 +96,22 @@ export auto unregistered_leaves(const CLI::App& root, const handler_table& table
 /// @param table The handler table.
 /// @return The unreachable table keys, sorted.
 export auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> std::vector<std::string>;
+
+/// @brief Rewrite `argv` to name the default verb `feed` when the operator
+/// supplied no verb at all.
+///
+/// The oracle's `maybeInjectDefaultVerb` carries a hardcoded list of ten
+/// known verb names it checks the first token against. That list is
+/// REDUNDANT and is deliberately not transcribed: every branch it guards
+/// (`return raw_args`) is also what the function's final fallthrough does,
+/// and no verb name can begin with `-`, so the observable rule reduces to
+/// the three cases below with no behavioural difference. Reproducing the
+/// list would additionally have frozen it at the oracle's ten while this
+/// tree declares thirteen verbs.
+/// @param argv The full process argv, `argv[0]` included.
+/// @return The rewritten argv: unchanged when a verb (or `--help`/`-h`)
+/// leads, otherwise with `feed` spliced in at position 1.
+export auto inject_default_verb(std::span<std::string const> argv) -> std::vector<std::string>;
 
 /// @brief Parse `argv` against `root`, then render help, run the matched
 /// handler, or report a failure — writing to `ctx`'s streams throughout.

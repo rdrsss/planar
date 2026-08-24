@@ -111,4 +111,45 @@ export auto schema_json(const CLI::App& root) -> std::string;
 export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries)
     -> std::string;
 
+/// @brief Emit the catalog with both the out-of-band summaries and the set
+/// of flags whose declared default is the EMPTY STRING (plan 996, task
+/// 6130).
+///
+/// ## Why this needs a side-table at all
+///
+/// `CLI::Option` exposes exactly one accessor for a default,
+/// `get_default_str()`, and it returns `""` for BOTH "this flag has no
+/// default" and "this flag's default is the empty string". The two are
+/// genuinely indistinguishable from a built tree, so `default_literal`
+/// mapped every empty one to `null` — correct for the ~500 flags with no
+/// default, wrong for the four the oracle declares with `""`:
+///
+///     planar workbench edit --editor
+///     planar workflow run   --args
+///     planar workflow run   --worktree
+///     planar workflow run   --sandbox-root
+///
+/// Eight bytes of a 353,934-byte catalog, and the ONLY eight in which
+/// `planar`'s catalog differed from the oracle's.
+///
+/// Three in-tree encodings were considered and rejected before this:
+/// a sentinel default string (`harvest` reads `get_default_str()` and
+/// would have seeded the sentinel into every handler's `parsed_args`), a
+/// marker `CLI::Validator` (`Option::get_validator` is non-const and
+/// THROWS when absent, so a const emitter cannot ask), and a marker
+/// `type_name` (visible in `--help`, and read back by `kind_of` and
+/// `choices_of`). Supplying it as data is what this module already does
+/// for the one-line summary, for the same underlying reason.
+/// @param root The command tree root.
+/// @param summaries `(full command path, summary)` pairs; see the
+/// two-argument overload.
+/// @param empty_string_defaults `(full command path, flag long name)`
+/// pairs — e.g. `{"planar workflow run", "--args"}`. A flag named here
+/// reports `"default":""`; one absent keeps `null`. Naming a flag that
+/// does not exist is inert.
+/// @return The catalog as a single-line JSON document (no trailing
+/// newline).
+export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
+                        std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string;
+
 } // namespace planar::cliapp

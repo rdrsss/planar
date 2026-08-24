@@ -322,11 +322,18 @@ TEST_CASE("planar-watch help leads with the read-only prose block", "[cmd][watch
   CHECK(got.out.contains("completion"));
   CHECK(got.out.contains("schema"));
 
-  // A bare invocation renders the same page. DIVERGENCE, declared: the
-  // oracle's default verb is `feed`, which is unported.
+  // A bare invocation used to render this same page and exit 0, pinned
+  // here as a declared divergence. Task 6136 removed the divergence: the
+  // oracle's bare form is the `feed` verb, not the help page, so a bare
+  // invocation is now REWRITTEN to `feed` and answers exit 64 because
+  // `feed` is unported. The `--help` page above is unaffected — that is
+  // the branch `inject_default_verb` deliberately leaves alone, and the
+  // pairing of the two here is what keeps a future over-broad rewrite
+  // from swallowing help. See the `[defaultverb]` cases at the end of this
+  // file.
   auto const bare = dispatch(fx, {});
-  CHECK(bare.code == 0);
-  CHECK(bare.out == got.out);
+  CHECK(bare.code == 64);
+  CHECK(bare.out.empty());
 }
 
 // ===========================================================================
@@ -710,4 +717,85 @@ TEST_CASE("planar-watch schema catalogs all TWELVE oracle verbs", "[cmd][watch][
   // Non-vacuous: the catalog does not simply contain every string it is
   // asked about.
   CHECK_FALSE(got.out.contains("\"planar-watch nosuchverb\""));
+}
+
+// ---------------------------------------------------------------------------
+// The default verb (plan 996, task 6136).
+// ---------------------------------------------------------------------------
+//
+// ORACLE PROVENANCE, captured under a scratch DB:
+//
+//   $Z                      exit 0, the activity feed in human form
+//   $Z --json               exit 0, the activity feed as NDJSON
+//   $Z --help               exit 0, the ROOT help page (no feed)
+//   $Z ps                   exit 0, the ps view (no rewrite)
+//   $Z bogusverb            exit 1, unknown subcommand
+//
+// The oracle's root declares NO flags of its own — its `schema` catalog
+// reports `"flags":[]` for `planar-watch` — so `--json` reaching `feed`
+// is an ARGV REWRITE, not a root-level declaration. Reproducing it as a
+// declaration would have added nine flags to this binary's catalog that
+// the oracle's does not have, and `src/cmd/catalog_parity.hpp` compares
+// the two byte for byte.
+//
+// `feed` is unported, so the two rewritten rows land on the table-miss arm
+// and exit 64. That is the CORRECT refusal and the point of the fix: what
+// they did before was render the root help page and exit 0 — a silent
+// success where the oracle streams data, which is the exact shape
+// `planar.cliapp.surface`'s header calls worse than an absent node.
+//
+// ## Break-probes run against these four cases
+//
+//   - Made `inject_default_verb` a pure identity function -> `a bare
+//     invocation routes to the feed verb` and `a leading flag routes to
+//     the feed verb` both FAIL (exit 0 + help page where 64 is required),
+//     while the `--help` and explicit-verb cases still pass. Restored,
+//     touched, rebuilt -> green.
+//   - Dropped the `--help` / `-h` guard so help requests were rewritten
+//     too -> `a help request is not rewritten` FAILS (exit 64 where 0 is
+//     required) and the other three still pass. Restored -> green.
+
+TEST_CASE("planar-watch a bare invocation routes to the feed verb", "[cmd][watch][handlers][defaultverb]") {
+  auto const fx  = make_fixture("bareverb");
+  auto const got = dispatch(fx, {});
+  CHECK(got.code == 64);
+  CHECK(got.err == "error: feed: not implemented in this build\n");
+  // The regression this pins: it used to be exit 0 with the root help page.
+  CHECK(got.out.empty());
+}
+
+TEST_CASE("planar-watch a leading flag routes to the feed verb", "[cmd][watch][handlers][defaultverb]") {
+  auto const fx  = make_fixture("flagverb");
+  auto const got = dispatch(fx, {"--json"});
+  // Was exit 1 `ExtrasError` — the symptom task 6136 was filed on.
+  CHECK(got.code == 64);
+  CHECK(got.err == "error: feed: not implemented in this build\n");
+}
+
+TEST_CASE("planar-watch a help request is not rewritten", "[cmd][watch][handlers][defaultverb]") {
+  auto const fx  = make_fixture("helpverb");
+  auto const got = dispatch(fx, {"--help"});
+  CHECK(got.code == 0);
+  CHECK(got.out.starts_with("planar-watch is the human-facing live cockpit"));
+}
+
+TEST_CASE("planar-watch an explicit verb is left alone", "[cmd][watch][handlers][defaultverb]") {
+  auto const fx  = make_fixture("explicitverb");
+  auto const got = dispatch(fx, {"version"});
+  // `version` IS ported and needs no DB, so a rewrite that swallowed the
+  // verb would show up unambiguously as the unported `feed`'s exit 64.
+  CHECK(got.code == 0);
+  CHECK(got.out.starts_with("planar-watch dev dev cxx "));
+  CHECK_FALSE(got.err.contains("feed"));
+}
+
+TEST_CASE("planar-watch inject_default_verb leaves an unknown verb for the parser", "[cmd][watch][handlers][defaultverb]") {
+  // The oracle leaves a non-flag first token alone whatever it is, and
+  // lets the parser report it. A rewrite keyed on a hardcoded verb LIST
+  // (which the oracle carries and this port deliberately does not) would
+  // behave identically here — that equivalence is why the list was not
+  // transcribed, and this case is what would catch getting it wrong.
+  std::vector<std::string> const argv{"planar-watch", "bogusverb", "--json"};
+  auto const                     out = planar::cmd::watch::inject_default_verb(argv);
+  CHECK(out == argv);
 }

@@ -689,25 +689,27 @@ TEST_CASE("every ported command declares what the oracle declares", "[cmd][parit
   CHECK(missing.empty());
 }
 
-TEST_CASE("the catalog differs from the oracle's in FOUR values, all `default`", "[cmd][parity][oracle][catalog]") {
+TEST_CASE("all three catalogs are byte-identical to the oracle's", "[cmd][parity][oracle][catalog]") {
   if (!oracle_available()) {
     SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
   }
-  // `planar-agent` and `planar-watch` emit catalogs BYTE-IDENTICAL to the
-  // oracle's. `planar` does not, and this case pins EXACTLY how far off it
-  // is rather than leaving "close enough" undefined.
+  // This case used to be titled "the catalog differs from the oracle's in
+  // FOUR values, all `default`", and it pinned that residue precisely: the
+  // four flags declaring an EMPTY-STRING default, which `CLI::Option`
+  // cannot distinguish from "no default" because `get_default_str()`
+  // answers `""` to both. Task 6130 closed it by supplying the four as
+  // data — see `planar.cliapp.schema`'s three-argument `schema_json` and
+  // `planar.cmd.planar.surface::surface_empty_string_defaults`.
   //
-  // The whole residue is four flags that declare an EMPTY-STRING default.
-  // `CLI::Option` has one accessor, `get_default_str()`, returning `""`
-  // for both "no default" and "a default that is the empty string", so the
-  // two are indistinguishable from a built tree; mapping empty to `""`
-  // would make all ~500 flags with no default report one. See
-  // `planar.cliapp.schema`'s `default_literal`.
+  // So the assertion is now the strongest form available: byte equality,
+  // no patching step. `planar-agent` and `planar-watch` already had it.
   //
-  // Pinned as a COUNT of differing substrings plus the enumerated sites, so
-  // that a fifth divergence of any kind — a dropped flag, a renamed verb,
-  // a changed description — fails this case even though it says nothing
-  // about what that divergence would be.
+  // This is also the standing guard for task 6138. Every bool flag in all
+  // three trees now declares a `--no-X` negation, and CLI11 files that
+  // name into `Option::lnames_` as well as `fnames_` — so the moment
+  // `planar.cliapp.schema::aliases_of` stops subtracting the negations,
+  // all 341 of them appear as `"aliases"` here and this case fails on the
+  // first one.
   auto const space  = make_arena("catalogbytes");
   auto const ref    = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "zig");
   auto const actual = run_pinned(cpp_bin(), std::array<std::string, 1>{"schema"}, space.cpp_root, "cpp");
@@ -715,32 +717,17 @@ TEST_CASE("the catalog differs from the oracle's in FOUR values, all `default`",
   REQUIRE(actual.code == 0);
   REQUIRE(ref.out.size() > 300000); // Not two empty strings.
 
-  // The oracle text with the four `"default":""` occurrences rewritten to
-  // `"default":null` must be the C++ text, byte for byte.
-  std::string       patched;
-  std::size_t       from  = 0;
-  std::size_t       count = 0;
-  std::string const needle{R"("default":"",)"};
-  while (true) {
-    auto const at = ref.out.find(needle, from);
-    if (at == std::string::npos) {
-      patched += ref.out.substr(from);
-      break;
-    }
-    patched += ref.out.substr(from, at - from);
-    patched += R"("default":null,)";
-    from = at + needle.size();
-    ++count;
-  }
-  CHECK(count == 4);
-  CHECK(patched == actual.out);
-
-  // ...and the four sites are the ones named above, not four others.
+  CHECK(ref.out == actual.out);
+  // Non-vacuity for the 6130 half specifically: the four empty-string
+  // defaults are PRESENT rather than absent from both sides.
+  CHECK(actual.out.contains(R"("default":"",)"));
   for (auto const& flag :
        {R"("long":"--editor")", R"("long":"--args")", R"("long":"--worktree")", R"("long":"--sandbox-root")"}) {
     INFO(flag);
     CHECK(actual.out.contains(flag));
   }
+  // Non-vacuity for the 6138 half: no negation leaked into the catalog.
+  CHECK_FALSE(actual.out.contains("--no-json"));
 }
 
 TEST_CASE("the CLI surface is CLI11's now, and pinned", "[cmd][parity][cli-surface]") {

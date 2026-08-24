@@ -189,18 +189,41 @@ export auto harvest(const CLI::App& root) -> parsed_args {
   return out;
 }
 
-/// @brief Read a boolean flag: present on argv is true, absent is
-/// `fallback`.
+/// @brief Read a boolean flag: absent is `fallback`, present is the VALUE
+/// harvested for it.
+///
+/// ## Why this is not "present means true"
+///
+/// It was, until task 6138, and that answered the wrong question in two
+/// operator-reachable ways — both of which only became reachable once
+/// negations were declared:
+///
+///   * `--no-X` lands in `results()` as the string `"false"` (CLI11's
+///     `Option::get_flag_value` resolves a `!`-prefixed name to its
+///     declared flag value). Presence alone would read `--no-editor` as
+///     "editor requested";
+///   * a bool flag with a declared default — `planar task add --editor`
+///     and `planar artifact add --editor` both default TRUE — is seeded by
+///     `harvest` from `get_default_str()`, so its key is present even when
+///     the flag never appeared on argv. Presence alone would then also
+///     read an explicit `--no-editor` as true, because both cases look
+///     identical from the key set.
+///
+/// The two share one fix: read the value, not the key. Only the exact
+/// strings `"false"` and `"0"` are false — a plain `--X` stores `"true"`,
+/// and an option CLI11 records with an empty result string is still a
+/// PRESENT flag and stays true.
 /// @param args The parsed result.
 /// @param name The canonical long name, e.g. `"--json"`.
 /// @param fallback Returned when the flag is absent.
 /// @return The flag's value.
 export auto flag_bool(const parsed_args& args, std::string_view name, bool fallback = false) -> bool {
   auto const it = args.flags.find(name);
-  if (it == args.flags.end()) {
+  if (it == args.flags.end() || it->second.empty()) {
     return fallback;
   }
-  return true;
+  auto const& value = it->second.back();
+  return !(value == "false" || value == "0");
 }
 
 /// @brief Read a string flag.

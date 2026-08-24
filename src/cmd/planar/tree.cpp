@@ -16,7 +16,7 @@ namespace {
 /// @brief The `--json` flag every ported leaf declares.
 /// @param app The node to declare it on.
 auto add_json(CLI::App& app) -> void {
-  app.add_flag("--json");
+  cliapp::add_bool_flag(app, "--json");
 }
 
 /// @brief A plain string flag with no default.
@@ -44,7 +44,7 @@ auto add_int(CLI::App& app, std::string name) -> void {
 /// @param name The canonical long name.
 /// @param desc The help line, or empty.
 auto add_bool(CLI::App& app, std::string name, std::string desc = {}) -> void {
-  app.add_flag(std::move(name))->description(std::move(desc));
+  cliapp::add_bool_flag(app, name, desc);
 }
 
 /// @brief The `--filter-mode` flag, declared identically on `push`,
@@ -70,7 +70,7 @@ auto add_workflow(CLI::App& root) -> void {
   workflow->require_subcommand(0);
 
   CLI::App* list = workflow->add_subcommand("list", "List shipped and sandbox workflows.");
-  list->add_flag("--local");
+  cliapp::add_bool_flag(*list, "--local");
   add_json(*list);
 
   CLI::App* show = workflow->add_subcommand("show", "Show @meta and source path for a named workflow.");
@@ -517,6 +517,10 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // written differently, and `planar.cliapp.surface`'s for what a declared
   // node without a handler does (exit 64, never a silent 0).
   (void)cliapp::apply_surface(*app, surface_nodes());
+  // Help renders the same page it rendered before every bool flag gained
+  // its `--no-X` negation — see `planar.cliapp.surface::hide_negations_in_help`.
+  // Must come AFTER the whole tree exists.
+  cliapp::hide_negations_in_help(*app);
   return app;
 }
 

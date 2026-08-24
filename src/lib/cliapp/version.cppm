@@ -13,7 +13,12 @@
 /// `zig <zig-version>`; this port has no Zig runtime to report, so it ends
 /// `cxx <compiler-version>` instead — the field *position* and *count*
 /// match (a script splitting on whitespace still finds five tokens), only
-/// the literal word for "which toolchain built this" differs. See
+/// the literal word for "which toolchain built this" differs. That count
+/// claim was FALSE as implemented until task 6117:
+/// `compiler_version_string()` returned `"Clang 22.1.8"`, whose embedded
+/// space made the line six tokens and handed a field-5 reader `Clang`
+/// instead of a version. The separator is a hyphen now, and both
+/// `version.t.cpp` and `cmd/planar/handlers.t.cpp` assert five. See
 /// version.cpp's header comment for the oracle capture this was checked
 /// against (`./zig/zig-out/bin/planar version` → `planar dev dev zig
 /// 0.16.0`).

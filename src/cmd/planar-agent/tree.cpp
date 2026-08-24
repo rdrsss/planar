@@ -19,7 +19,7 @@ namespace {
 /// none, so its help line renders bare.
 /// @param app The node to declare it on.
 auto add_json(CLI::App& app) -> void {
-  app.add_flag("--json");
+  cliapp::add_bool_flag(app, "--json");
 }
 
 /// @brief The `--claim <token>` flag the eight token-addressed verbs carry.
@@ -46,7 +46,7 @@ auto failure_categories() -> std::vector<std::string> {
 /// @param desc The verb's own wording (the terminal verbs mention commit
 /// collection; the acquisition verbs do not).
 auto add_no_locality_probe(CLI::App& app, std::string desc) -> void {
-  app.add_flag("--no-locality-probe")->description(std::move(desc));
+  cliapp::add_bool_flag(app, "--no-locality-probe", desc);
 }
 
 /// @brief The `--ttl` flag, whose wording differs by one word between the
@@ -175,8 +175,9 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   claim->add_option("--worktree")->description("Worktree id or path for isolation context");
   claim->add_option("--repo-root")->description("Absolute path of checkout to probe locality against");
   add_no_locality_probe(*claim, "Skip the git locality probe");
-  claim->add_flag("--no-transition")->description("Claim without changing task status (plan and plan_step are always unchanged)");
-  claim->add_flag("--force")->description("Take over an existing live claim (operator recovery)");
+  cliapp::add_bool_flag(*claim, "--no-transition",
+                        "Claim without changing task status (plan and plan_step are always unchanged)");
+  cliapp::add_bool_flag(*claim, "--force", "Take over an existing live claim (operator recovery)");
   add_run_stage(*claim);
   add_json(*claim);
 
@@ -230,7 +231,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   CLI::App* reconcile =
       app->add_subcommand("reconcile", "Operator recovery: mark expired claims stale, close orphaned actions, abandon dead "
                                        "runs.");
-  reconcile->add_flag("--dry-run")->description("Report candidates without writing");
+  cliapp::add_bool_flag(*reconcile, "--dry-run", "Report candidates without writing");
   reconcile->add_option("--stale-after")
       ->description("Additional grace beyond lease expiry (default 0s; accepts bare int seconds or suffixed "
                     "duration: 10m, 1h, 500ms)")
@@ -270,6 +271,10 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // `planar.cmd.planar_agent.surface`.
   (void)cliapp::apply_surface(*app, surface_nodes());
 
+  // Help renders the same page it rendered before every bool flag gained
+  // its `--no-X` negation — see `planar.cliapp.surface::hide_negations_in_help`.
+  // Must come AFTER the whole tree exists.
+  cliapp::hide_negations_in_help(*app);
   return app;
 }
 

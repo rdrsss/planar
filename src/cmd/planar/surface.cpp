@@ -3769,6 +3769,21 @@ auto surface_nodes() -> std::vector<node_spec> {
   };
 }
 
+auto surface_empty_string_defaults() -> std::span<std::pair<std::string_view, std::string_view> const> {
+  // Measured, not guessed: these are the ONLY flags across all three
+  // oracle catalogs whose `"default"` is `""` rather than `null` or a
+  // typed literal. Verified by diffing this binary's `schema` output
+  // against `zig/zig-out/bin/planar schema` byte for byte — before task
+  // 6130 those four values were the entire 8-byte difference.
+  static constexpr std::pair<std::string_view, std::string_view> k_empty_defaults[] = {
+      {"planar workbench edit", "--editor"},
+      {"planar workflow run", "--args"},
+      {"planar workflow run", "--worktree"},
+      {"planar workflow run", "--sandbox-root"},
+  };
+  return k_empty_defaults;
+}
+
 auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_view> const> {
   static constexpr std::pair<std::string_view, std::string_view> k_summaries[] = {
       {"planar", "Planning + agent operations CLI."},

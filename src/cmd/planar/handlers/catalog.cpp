@@ -24,7 +24,7 @@ auto schema(context& ctx, const cliapp::parsed_args& args, const CLI::App& root)
   // The summaries table is what makes `"summary"` differ from
   // `"description"` on the 57 nodes where the oracle's does. See
   // `planar.cliapp.schema`'s header, divergence 1.
-  ctx.out() << cliapp::schema_json(root, surface_summaries()) << '\n';
+  ctx.out() << cliapp::schema_json(root, surface_summaries(), surface_empty_string_defaults()) << '\n';
   return {};
 }
 

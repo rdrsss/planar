@@ -34,12 +34,32 @@ auto current_build_info() -> build_info {
   return info;
 }
 
+/// @brief The toolchain identifier that fills the oracle's `<zig-version>`
+/// slot on the build line.
+///
+/// ## The separator is a HYPHEN, and that is the whole point (task 6117)
+///
+/// This returned `"Clang 22.1.8"` — with a SPACE — which silently broke
+/// the one property this module's header promises the divergence
+/// preserves: the oracle's `planar dev dev zig 0.16.0` splits into five
+/// whitespace-separated tokens, and a six-token line hands a script
+/// reading field 5 the word `Clang` where the oracle hands it `0.16.0`.
+///
+/// The alternatives were emitting the bare version (which drops WHICH
+/// compiler, information the oracle's own field carries) or amending the
+/// header to admit six tokens (which keeps the break and merely documents
+/// it). Joining with a hyphen keeps both halves AND the field count, so
+/// the header's claim becomes true rather than being downgraded — and the
+/// header itself names code/doc agreement as the thing that distinguishes
+/// this module from the Zig side's `exit.zig`.
+/// @return `"Clang-<M>.<m>.<p>"`, `"GCC-<M>.<m>.<p>"`, or `"unknown"` —
+/// never containing whitespace.
 auto compiler_version_string() -> std::string {
 #if defined(__clang__)
-  return "Clang " + std::to_string(__clang_major__) + "." + std::to_string(__clang_minor__) + "." +
+  return "Clang-" + std::to_string(__clang_major__) + "." + std::to_string(__clang_minor__) + "." +
          std::to_string(__clang_patchlevel__);
 #elif defined(__GNUC__)
-  return "GCC " + std::to_string(__GNUC__) + "." + std::to_string(__GNUC_MINOR__) + "." + std::to_string(__GNUC_PATCHLEVEL__);
+  return "GCC-" + std::to_string(__GNUC__) + "." + std::to_string(__GNUC_MINOR__) + "." + std::to_string(__GNUC_PATCHLEVEL__);
 #else
   return "unknown";
 #endif

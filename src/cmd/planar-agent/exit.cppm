@@ -29,6 +29,16 @@
 /// task:abc` exits 2 (InvalidEntityRef) while `--entity bogus:1` exits 1
 /// (UnsupportedEntityKind falls through to the generic bucket) — that pair
 /// is what makes a collapsed mapping impossible to pass.
+///
+/// The `parse_error` row was the subject of task 6063: the Zig file's own
+/// header USED to document `2 — user-input failure (cli.Parse.*)` while
+/// its `codeFor` had no Parse arm and fell through to 1, so the port had a
+/// documented intent and an actual behaviour to choose between. Resolved
+/// in favour of the behaviour — 1, which is what this table already had —
+/// and the Zig header was corrected rather than its code, because adding
+/// the arm would change an observable contract every agent-facing caller
+/// depends on. Nothing here changed; the disagreement it referenced is
+/// simply gone.
 /// `zig/src/cmd/planar-agent/exit.zig` folds `SchemaVersionBehind` into
 /// the same 7 as `SchemaVersionAhead`, where `zig/src/cmd/planar/exit.zig`
 /// has no `SchemaVersionBehind` arm at all and falls through to its

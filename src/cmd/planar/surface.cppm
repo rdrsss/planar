@@ -65,6 +65,16 @@ export auto surface_nodes() -> std::vector<cliapp::node_spec>;
 /// @return `(full command path, summary)` pairs.
 export auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_view> const>;
 
+/// @brief The flags whose declared default is the EMPTY STRING.
+///
+/// CLI11 cannot tell "no default" from "a default that is the empty
+/// string" — `Option::get_default_str()` answers `""` to both — so the
+/// four flags the oracle declares that way are supplied as data, exactly
+/// like the summaries above. See `planar.cliapp.schema`'s three-argument
+/// `schema_json` for the encodings that were rejected first (task 6130).
+/// @return `(full command path, flag long name)` pairs.
+export auto surface_empty_string_defaults() -> std::span<std::pair<std::string_view, std::string_view> const>;
+
 /// @brief The root-relative path keys that are DECLARED but not
 /// IMPLEMENTED — every unported leaf, plus the unported dual nodes.
 /// @return The inventory, sorted.
