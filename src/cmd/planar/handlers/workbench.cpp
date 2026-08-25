@@ -381,31 +381,35 @@ auto workbench_gc(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return std::unexpected(error_from_body(kind_t::generic_failure, "workbench gc failed: QueryFailed"));
   }
 
-  // THE DRIFT REFUSAL PRINTS NOTHING. Exit 1, zero bytes on both streams.
+  // THE DRIFT REFUSAL IS THE ONE SANCTIONED DIVERGENCE FROM THE ORACLE IN
+  // THIS BUCKET: it prints, and the oracle does not (task 6122).
   //
-  // That is not a shortcut — it is what the oracle does, and it is an
-  // ORACLE DEFECT reproduced deliberately under D2. Verified by running
-  // `workbench gc <plan>` against a scratch tree holding one drifted
-  // terminal file, with stderr attached to a terminal rather than
-  // redirected: exit 1, nothing printed.
+  // The oracle loses the message. zig/src/cmd/planar/handlers/workbench/
+  // gc.zig:42-49 writes the refusal to the BUFFERED `ctx.stderr` and then
+  // calls `std.process.exit(1)` DIRECTLY. Every other failure path in that
+  // binary goes through `exit.die`, which calls `runtime.shutdown()` — the
+  // flush — before exiting (zig/src/cmd/planar/exit.zig:73-79). Skipping
+  // shutdown discards the buffer, so the operator gets a bare exit 1 with no
+  // reason. Verified against the oracle with stderr on a terminal rather than
+  // redirected, so it is not a capture artifact.
   //
-  // The mechanism, confirmed in the Zig source after the probe rather than
-  // guessed from it: zig/src/cmd/planar/handlers/workbench/gc.zig:42-49
-  // writes the refusal to the BUFFERED `ctx.stderr` and then calls
-  // `std.process.exit(1)` DIRECTLY. Every other failure path in that binary
-  // goes through `exit.die`, which calls `runtime.shutdown()` — the flush —
-  // before exiting (zig/src/cmd/planar/exit.zig:73-79). Skipping shutdown
-  // discards the buffer, so the operator gets a bare exit 1 with no reason.
+  // This was previously reproduced under D2, on the reasoning that emitting
+  // would break the differential harness. It would not: NEITHER harness ever
+  // reaches this path. The Zig integration suite's `workbench_gc_test.zig`
+  // has two cases and drifts no file, and the differential sweep in
+  // src/cmd/planar/parity.t.cpp runs `workbench gc` only as `--dry-run`,
+  // `--all-scopes --json`, and with no plan. So the whole cost of the D2
+  // reproduction was an operator-facing refusal that says nothing, for the
+  // remaining life of zig/, bought for no parity signal at all.
   //
-  // `render_cli::render_gc_drift_refusal` holds the exact message the Zig
-  // source intends and is pinned in render_cli.t.cpp, so wiring it is a
-  // one-line change the moment the divergence is sanctioned. It is NOT
-  // wired here, because emitting it would make this the only `workbench`
-  // leaf whose bytes do not match the oracle, and the differential harness
-  // that guards this bucket would report it as a regression rather than as
-  // the fix it is. Filed as a task on plan 996 for an operator decision.
+  // If a drift step is ever ADDED to either harness, it must expect this
+  // divergence rather than treat it as a regression.
+  //
+  // The text comes from `render_cli::render_gc_drift_refusal`, which renders
+  // exactly what the Zig source intends to print and is pinned in
+  // render_cli.t.cpp.
   if (value->drifted_skipped > 0 && !opts.yes) {
-    return std::unexpected(error_from_rendered(kind_t::generic_failure, ""));
+    return std::unexpected(error_from_rendered(kind_t::generic_failure, wb::render_cli::render_gc_drift_refusal(*value)));
   }
 
   ctx.out() << (wants_json(args) ? wb::render_cli::render_gc_json(*value, dry_run, *filter_mode)

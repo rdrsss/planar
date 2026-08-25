@@ -31,6 +31,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "parity_strict.hpp"
+
 import std;
 
 #include "catalog_parity.hpp"
@@ -130,9 +132,7 @@ TEST_CASE("planar-watch: leaf help pages are exact, and still cost nothing to re
 
 TEST_CASE("planar-watch parity: completion's two failure paths keep their distinct exit codes",
           "[cmd][watch][parity][exitcode]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-watch)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-watch)");
 
   // Handler-level refusal: exit 2, stderr only. STILL A TRUE ORACLE DIFF
   // after task 6123 — this message comes from the HANDLER, not the parser,
@@ -161,9 +161,7 @@ TEST_CASE("planar-watch parity: completion's two failure paths keep their distin
 }
 
 TEST_CASE("planar-watch parity: an unknown verb still exits 1, matching the oracle", "[cmd][watch][parity]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-watch)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-watch)");
 
   // As above: the exit CODE is still diffed against the oracle (exit 1
   // here, where the operator binary exits 2 — the divergence task 6123 was
@@ -295,9 +293,8 @@ auto normalize(std::string_view text) -> std::string {
 
 TEST_CASE("planar-watch parity: the six read verbs agree with the oracle over a seeded database",
           "[cmd][watch][parity][oracle]") {
-  if (!seed_oracle_available()) {
-    SKIP("Zig oracle binaries not built (zig/zig-out/bin/{planar,planar-agent,planar-watch})");
-  }
+  PLANAR_REQUIRE_ORACLE(seed_oracle_available(),
+                        "Zig oracle binaries not built (zig/zig-out/bin/{planar,planar-agent,planar-watch})");
 
   // ONE ARENA, BOTH BINARIES — the deliberate departure from every other
   // case in this file, and it is a property of THIS binary specifically.
@@ -521,9 +518,7 @@ TEST_CASE("planar-watch: a read verb still creates no database file", "[cmd][wat
 }
 
 TEST_CASE("planar-watch parity: every command declares what the oracle declares", "[cmd][watch][parity][catalog]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-watch)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-watch)");
   // TASK 6065. Before this task the tree carried nine of the oracle's
   // thirteen leaves, so `schema` was explicitly excluded from the compared
   // set (see this file's header). All thirteen are declared now, and this
@@ -558,9 +553,7 @@ TEST_CASE("planar-watch parity: every command declares what the oracle declares"
 }
 
 TEST_CASE("planar-watch parity: the catalog is BYTE-identical to the oracle's", "[cmd][watch][parity][catalog]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-watch)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-watch)");
   // Everything `diff_against_oracle` leaves out — key order, `docs`,
   // `flagGroups`, `hidden`, `deprecated`, `path`, `name`, and the `default`
   // literal it deliberately skips — is covered here, for this binary, by

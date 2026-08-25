@@ -255,6 +255,23 @@ auto hoist_subcommands(const CLI::App& root, std::span<std::string const> argv) 
 }
 
 auto apply_surface(CLI::App& root, std::span<node_spec const> nodes) -> std::vector<std::string> {
+  // Each node's LOCAL flags, keyed by its space-joined path, so a generated
+  // child can pick up its ancestors' flags below. Built up front because
+  // `nodes` is pre-order and a child could otherwise only see ancestors
+  // already visited -- which is true today and is not a property worth
+  // depending on.
+  std::map<std::string, std::span<flag_spec const>, std::less<>> flags_by_key;
+  for (auto const& spec : nodes) {
+    std::string key;
+    for (auto const& segment : spec.path) {
+      if (!key.empty()) {
+        key += ' ';
+      }
+      key += segment;
+    }
+    flags_by_key.emplace(std::move(key), spec.flags);
+  }
+
   std::vector<std::string> created;
   for (auto const& spec : nodes) {
     CLI::App* parent = &root;
@@ -295,12 +312,66 @@ auto apply_surface(CLI::App& root, std::span<node_spec const> nodes) -> std::vec
       // the oracle does for every group node except the three duals.
       node->require_subcommand(0);
     }
+    std::set<std::string_view, std::less<>> declared;
     for (auto const& flag : spec.flags) {
       declare_flag(*node, flag);
+      declared.insert(flag.name);
     }
     for (auto const& positional : spec.positionals) {
       declare_positional(*node, positional);
     }
+
+    // ANCESTOR FLAGS, REDECLARED (task 6139).
+    //
+    // etcli inherits a parent's flags into every child AT PARSE TIME; CLI11
+    // does not, so a flag declared on a group was simply unavailable on its
+    // generated children. Both oracle catalogs already report those flags on
+    // the child with `"source":"inherited"`, so the surface CLAIMED them
+    // while the parser refused them:
+    //
+    //     $ planar health hygiene --json
+    //     error: hygiene: The following argument was not expected: --json
+    //
+    // A sweep over every `"source":"inherited"` flag in all three oracle
+    // catalogs found exactly ONE reachable site -- `health` is the only
+    // generated parent that both carries a flag and has children -- but the
+    // hole is structural, so this closes it for any parent, not for `health`.
+    //
+    // Two constraints, and both are load-bearing:
+    //
+    //   FLAGS ONLY, never positionals. `tree.cpp`'s `add_handoff` header
+    //   records what the other choice costs: a shared POSITIONAL name
+    //   (`resume validate`) aborted every invocation of the binary at
+    //   tree-build time, not just the affected verb.
+    //
+    //   SKIP A NAME THE CHILD ALREADY DECLARES. The child's own declaration
+    //   is authoritative -- it may differ in kind, default or description --
+    //   and redeclaring it would throw `OptionAlreadyAdded` from CLI11.
+    //
+    // The emitted catalog is unaffected: `render_flags` dedupes a redeclared
+    // parent flag and labels it `inherited`, which is what it already
+    // emitted. `catalog_parity.hpp` holds that byte-for-byte.
+    {
+      std::string ancestor_key;
+      for (std::size_t i = 0; i + 1 < spec.path.size(); ++i) {
+        if (!ancestor_key.empty()) {
+          ancestor_key += ' ';
+        }
+        ancestor_key += spec.path[i];
+        auto const found = flags_by_key.find(ancestor_key);
+        if (found == flags_by_key.end()) {
+          continue;
+        }
+        for (auto const& flag : found->second) {
+          if (declared.contains(flag.name)) {
+            continue;
+          }
+          declare_flag(*node, flag);
+          declared.insert(flag.name);
+        }
+      }
+    }
+
     created.push_back(key);
   }
 

@@ -1,6 +1,9 @@
 //! handlers/heartbeat — `planar-agent heartbeat --claim <token> [--status <text>]`
 //!
-//! Refresh the lease (last_heartbeat_at = now, lease_expires_at = now + ttl).
+//! Refresh the lease. With --ttl, sets lease_expires_at = now + ttl
+//! absolutely. Without --ttl, RENEWS the claim's current lease length from
+//! now, so heartbeating an 8h claim keeps 8h rather than truncating it to a
+//! fixed default.
 //! When --status is provided, also inserts a closed heartbeat action row with
 //! the supplied text in the `summary` column so `planar-watch ps` can surface
 //! current activity. When --status is omitted no action row is written
@@ -25,7 +28,7 @@ pub const verb: cli.Cmd = .{
     .desc = "Refresh the lease on an active claim.",
     .flags = &.{
         .{ .long = "--claim", .kind = .string, .required = true, .desc = "Claim token to refresh" },
-        .{ .long = "--ttl", .kind = .string, .default = .{ .string = "600" }, .desc = "New TTL (default 600s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)" },
+        .{ .long = "--ttl", .kind = .string, .desc = "Set a new TTL absolutely (accepts bare int seconds or suffixed duration: 10m, 1h, 500ms). When omitted, the claim's CURRENT lease length is renewed from now — a heartbeat never shortens the lease it was sent to preserve." },
         .{ .long = "--status", .kind = .string, .desc = "Free-text status string recorded on the heartbeat action row's summary column" },
         .{ .long = "--json", .kind = .bool, .default = .{ .bool = false } },
     },
@@ -37,8 +40,15 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const ctx = runtime.current();
     const d = runtime.ensureDbConsumer() catch |e| exit.die(ctx, e, "{s}", .{@errorName(e)});
 
-    const ttl_secs = cli.duration.parseSeconds(args.ttl) catch |e|
-        exit.die(ctx, e, "invalid --ttl '{s}': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)", .{args.ttl});
+    // --ttl omitted (null) means "renew the claim's current lease length";
+    // see store.heartbeatClaim. It is deliberately NOT defaulted to a fixed
+    // 600s here: a default would make omission indistinguishable from an
+    // explicit `--ttl 600` and would silently truncate every long lease.
+    const ttl_secs: ?i64 = if (args.ttl) |raw|
+        cli.duration.parseSeconds(raw) catch |e|
+            exit.die(ctx, e, "invalid --ttl '{s}': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)", .{raw})
+    else
+        null;
 
     d.exec("BEGIN IMMEDIATE") catch |e| exit.die(ctx, e, "BEGIN IMMEDIATE: {s}", .{@errorName(e)});
 

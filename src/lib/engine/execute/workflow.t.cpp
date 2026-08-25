@@ -12,6 +12,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdlib>
+
 import std;
 import planar.engine_execute;
 
@@ -339,4 +341,76 @@ TEST_CASE("ctx.context returns an empty table, matching the oracle", "[engine][e
   // returns `{}` here too.
   auto const got = run("function p() flow.result({c = ctx.context()}) end");
   CHECK(got.out == "{\"c\":{}}\n");
+}
+
+namespace {
+
+/// @brief Write an executable `/bin/sh` script.
+/// @param at Where to write it.
+/// @param body The script body, following the shebang line.
+void write_executable(std::filesystem::path const& at, std::string_view body) {
+  {
+    std::ofstream script(at, std::ios::binary);
+    script << "#!/bin/sh\n" << body;
+  }
+  std::filesystem::permissions(at, std::filesystem::perms::owner_all, std::filesystem::perm_options::add);
+}
+
+} // namespace
+
+TEST_CASE("git.* resolves through PATH while cli.* stays beside the binary", "[engine][execute][workflow]") {
+  // The oracle spawns the BARE NAME `git` and lets Zig's std.process.Child
+  // search PATH (planar-execute/host.zig runGit, argv[0] = "git"). This port
+  // probed /usr/bin/git, then /usr/local/bin/git, then fell back to a
+  // bare-name execv -- which does NOT search PATH. On this machine the first
+  // probe hit, so every differential case agreed; a machine carrying git only
+  // in e.g. /opt/homebrew/bin failed outright (task 6126).
+  //
+  // The two halves below are deliberately one test. The fix has to move git
+  // onto a PATH search WITHOUT moving cli.* there: cli.* resolving beside
+  // this executable is what stops an unrelated `planar` earlier on PATH from
+  // answering for the one that shipped with this planar-execute, and that
+  // sibling resolution is part of planar-execute's contract.
+  //
+  // Mutating PATH is safe because catch_discover_tests runs each TEST_CASE as
+  // its own process.
+  scratch fake_bin;
+
+  // A `git` reachable ONLY through PATH -- it is at neither absolute path the
+  // old code probed. It answers `rev-parse HEAD` with a sentinel no real
+  // repository produces, so a real git answering instead is visible.
+  write_executable(fake_bin.path() / "git", "echo 0000000000000000000000000000000000000000\n");
+
+  // A `planar` on that same directory. If cli.* ever starts searching PATH,
+  // this is what it finds.
+  write_executable(fake_bin.path() / "planar", "echo PATH_PLANAR_MUST_NOT_ANSWER\n");
+
+  char const* const original = std::getenv("PATH");
+  std::string const saved    = original == nullptr ? std::string{} : std::string{original};
+  REQUIRE(::setenv("PATH", fake_bin.path().string().c_str(), 1) == 0);
+
+  // git.* finds the PATH-only git.
+  auto const via_path = run("function p() flow.result({sha = git.head_sha()}) end", "p",
+                            [&](ex::run_config& config) { config.worktree = fake_bin.path().string(); });
+
+  // cli.* does not. Pointed at a binary directory holding no `planar`, it
+  // fails to spawn rather than reaching the `planar` sitting on PATH.
+  scratch    empty_bin_dir;
+  auto const via_sibling = run("function p() flow.result({o = cli.planar({'schema'})}) end", "p",
+                               [&](ex::run_config& config) { config.bin_dir = empty_bin_dir.path().string(); });
+
+  // Restore before asserting, so a failing CHECK does not leave Catch2's own
+  // teardown running under a doctored PATH.
+  if (saved.empty()) {
+    ::unsetenv("PATH");
+  } else {
+    ::setenv("PATH", saved.c_str(), 1);
+  }
+
+  CHECK(via_path.status == ex::run_status::ok);
+  CHECK(via_path.out == "{\"sha\":\"0000000000000000000000000000000000000000\"}\n");
+
+  CHECK(via_sibling.status == ex::run_status::phase_failed);
+  CHECK_FALSE(via_sibling.out.contains("PATH_PLANAR_MUST_NOT_ANSWER"));
+  CHECK_FALSE(via_sibling.err.contains("PATH_PLANAR_MUST_NOT_ANSWER"));
 }

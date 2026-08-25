@@ -264,10 +264,10 @@ TEST_CASE("gc --json carries dry_run as a bare boolean", "[workbench][render_cli
 }
 
 TEST_CASE("the gc drift refusal names every held-back file", "[workbench][render_cli]") {
-  // Pinned even though the handler does NOT currently emit it: the oracle
-  // loses this message to an unflushed buffer before exiting 1 (see task
-  // 6122 and the comment in src/cmd/planar/handlers/workbench.cpp). This is
-  // the text ready to ship the moment that divergence is sanctioned.
+  // The handler emits this on stderr and exits 1. The ORACLE does not: it
+  // loses the same message to an unflushed buffer before exiting (task 6122
+  // and the comment in src/cmd/planar/handlers/workbench.cpp), so this is a
+  // sanctioned divergence rather than a parity gap.
   wg::summary value{.drifted_skipped = 2, .drifted_paths = {"/wb/a.md", "/wb/b.md"}};
   CHECK(rc::render_gc_drift_refusal(value) ==
         "workbench gc: refused to remove 2 file(s) with FS-content drift from DB; re-run with --yes to discard, or "

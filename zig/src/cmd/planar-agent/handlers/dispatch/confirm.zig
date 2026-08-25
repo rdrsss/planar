@@ -72,11 +72,6 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     const candidate_id = std.fmt.parseInt(i64, args.candidate, 10) catch
         exit.die(ctx, error.InvalidInput, "invalid --candidate '{s}': expected integer", .{args.candidate});
 
-    const complexity_raw = if (std.mem.eql(u8, args.complexity, "high-risk"))
-        "high_risk"
-    else
-        args.complexity;
-
     const current: dispatch.CurrentState = .{
         .now = args.now,
         .packet_digest = args.packet_digest,
@@ -90,7 +85,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .role = args.role,
         .tier = parseEnum(store.Tier, ctx, "--tier", args.tier),
         .work_type = parseEnum(store.WorkType, ctx, "--work-type", args.work_type),
-        .complexity = parseEnum(store.Complexity, ctx, "--complexity", complexity_raw),
+        .complexity = parseEnum(store.Complexity, ctx, "--complexity", args.complexity),
         .validation_policy_version = args.validation_policy,
         .routing_policy_version = args.routing_policy,
     };

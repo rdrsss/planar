@@ -32,6 +32,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "parity_strict.hpp"
+
 import std;
 
 #include "parity_harness.hpp"
@@ -72,9 +74,7 @@ auto both(std::string_view tag, std::vector<std::string> args) -> std::pair<capt
 } // namespace
 
 TEST_CASE("planar-execute parity: every ported argv shape matches byte for byte", "[cmd][execute][parity]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-execute)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-execute)");
 
   struct shape {
     std::string_view         tag;
@@ -112,9 +112,7 @@ TEST_CASE("planar-execute parity: every ported argv shape matches byte for byte"
 }
 
 TEST_CASE("planar-execute parity: --help and a bare invocation differ ONLY in exit code", "[cmd][execute][parity][exitcode]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-execute)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-execute)");
 
   auto const [cpp_help, zig_help] = both("h", {"--help"});
   auto const [cpp_bare, zig_bare] = both("b", {});
@@ -162,9 +160,7 @@ TEST_CASE("planar-execute parity: a workflow runs identically in both engines", 
   // diverge WITHOUT either looking wrong on its own — number formatting,
   // object key order, integer width, the stdout/stderr split, and which
   // failures land on which exit code.
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-execute)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-execute)");
 
   struct shape {
     std::string_view         tag;
@@ -235,9 +231,7 @@ TEST_CASE("planar-execute parity: a workflow runs identically in both engines", 
 }
 
 TEST_CASE("planar-execute parity: fs confinement behaves identically in both engines", "[cmd][execute][parity][workflow]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-execute)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-execute)");
 
   static constexpr std::string_view k_workflow = R"(
 local function try(f, ...)

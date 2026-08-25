@@ -64,6 +64,24 @@ auto add_ttl(CLI::App& app, std::string desc) -> void {
   app.add_option("--ttl")->description(std::move(desc))->default_str("600");
 }
 
+/// @brief The `heartbeat` verb's `--ttl`, declared WITHOUT a default.
+///
+/// Deliberately not `add_ttl`. That helper's `default_str("600")` is
+/// load-bearing (see above): `harvest` materializes it, so an omitted
+/// `--ttl` would reach the handler as "600" and be indistinguishable from
+/// an explicit `--ttl 600`. For `heartbeat` that distinction IS the
+/// contract — omitting `--ttl` renews the lease length the claim already
+/// holds, rather than resetting it to a fixed default and truncating every
+/// long lease (Planar task 6093). Leaving the default off is what lets the
+/// handler see `std::nullopt`.
+/// @param app The node to declare it on.
+auto add_heartbeat_ttl(CLI::App& app) -> void {
+  app.add_option("--ttl")->description(
+      "Set a new TTL absolutely (accepts bare int seconds or suffixed duration: 10m, 1h, 500ms). "
+      "When omitted, the claim's CURRENT lease length is renewed from now — a heartbeat never "
+      "shortens the lease it was sent to preserve.");
+}
+
 /// @brief The `--vendor` / `--vendor-session` pair.
 /// @param app The node to declare them on.
 /// @param vendor_desc The verb's wording for `--vendor`.
@@ -184,7 +202,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // --- heartbeat ----------------------------------------------------------
   CLI::App* heartbeat = app->add_subcommand("heartbeat", "Refresh the lease on an active claim.");
   add_claim(*heartbeat, "Claim token to refresh");
-  add_ttl(*heartbeat, "New TTL (default 600s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)");
+  add_heartbeat_ttl(*heartbeat);
   heartbeat->add_option("--status")->description("Free-text status string recorded on the heartbeat action row's summary column");
   add_json(*heartbeat);
 

@@ -315,3 +315,92 @@ TEST_CASE("an already ordered argv is left exactly as it was", "[cliapp][surface
   CHECK(hoist({"outer", "inner", "--json"}) == std::vector<std::string>{"outer", "inner", "--json"});
   CHECK(hoist({}) == std::vector<std::string>{});
 }
+
+// --- inherited flags on generated nodes (task 6139) -----------------------
+
+namespace {
+
+/// @brief Build a two-level generated tree and parse `args` against it.
+///
+/// The shape is `planar health` / `planar health hygiene` reduced to its
+/// mechanism: a generated PARENT carrying a flag, a generated CHILD that
+/// does not, and a second child that declares the same flag name itself.
+/// @param args The operator tokens, argv[0] excluded.
+/// @return The harvested values, or unset when CLI11 refused the parse.
+auto parse_generated(std::vector<std::string> args) -> std::optional<planar::cliapp::parsed_args> {
+  using planar::cliapp::flag_spec;
+  using planar::cliapp::node_spec;
+
+  static constexpr std::string_view parent_path[]   = {"group"};
+  static constexpr std::string_view child_path[]    = {"group", "leaf"};
+  static constexpr std::string_view override_path[] = {"group", "own"};
+  static constexpr flag_spec        parent_flags[]  = {{.name = "--json", .kind = "bool", .description = "JSON output"}};
+  static constexpr flag_spec        own_flags[]     = {{.name = "--json", .kind = "bool", .description = "Its own --json"}};
+
+  node_spec const nodes[] = {
+      node_spec{.path = parent_path, .description = "A group", .flags = parent_flags, .group = true},
+      node_spec{.path = child_path, .description = "A generated leaf"},
+      node_spec{.path = override_path, .description = "A leaf with its own --json", .flags = own_flags},
+  };
+
+  CLI::App app{"", "tool"};
+  app.require_subcommand(0);
+  static_cast<void>(planar::cliapp::apply_surface(app, nodes));
+
+  std::vector<std::string> reversed(args.rbegin(), args.rend());
+  try {
+    app.parse(std::move(reversed));
+  } catch (const CLI::ParseError&) {
+    return std::nullopt;
+  }
+  return planar::cliapp::harvest(app);
+}
+
+} // namespace
+
+TEST_CASE("a generated child accepts a flag declared only on its parent", "[cliapp][surface][inherited]") {
+  // etcli inherits a parent's flags into every child at PARSE TIME; CLI11
+  // does not, and `apply_surface` declared only each node's LOCAL flags. So
+  // every generated child of a flag-carrying generated parent refused a flag
+  // that both oracle catalogs already reported on it as
+  // `"source":"inherited"` -- `planar health hygiene --json` answered
+  // `error: ExtrasError`, exit 2, where the oracle answers exit 0 (task
+  // 6139).
+  //
+  // Pinned on a GENERATED node on purpose. `tree.cpp`'s `add_handoff` solves
+  // the same problem BY HAND for the hand-written `handoff`, and a test that
+  // only covered that one would have stayed green through the entire defect.
+  auto const inherited = parse_generated({"group", "leaf", "--json"});
+  REQUIRE(inherited.has_value());
+  CHECK(planar::cliapp::flag_bool(*inherited, "--json"));
+
+  // The synthesized negation comes with it -- the flag is declared through
+  // `add_bool_flag` on the child exactly as it was on the parent, so this is
+  // not a second mechanism that could rot separately.
+  auto const negated = parse_generated({"group", "leaf", "--no-json"});
+  REQUIRE(negated.has_value());
+  CHECK_FALSE(planar::cliapp::flag_bool(*negated, "--json"));
+
+  // The parent still accepts it directly.
+  auto const on_parent = parse_generated({"group", "--json"});
+  REQUIRE(on_parent.has_value());
+  CHECK(planar::cliapp::flag_bool(*on_parent, "--json"));
+}
+
+TEST_CASE("a child's OWN flag wins over the inherited one", "[cliapp][surface][inherited]") {
+  // The guard against CLI11's `OptionAlreadyAdded`, checked through
+  // behaviour rather than by catching the throw: `own` declares `--json`
+  // locally, so the ancestor pass must skip it. If the skip were missing,
+  // building this tree would THROW during `apply_surface` and every case in
+  // this file that touches it would fail -- which is why the assertion below
+  // is deliberately mundane. Reaching it at all is the result.
+  auto const got = parse_generated({"group", "own", "--json"});
+  REQUIRE(got.has_value());
+  CHECK(planar::cliapp::flag_bool(*got, "--json"));
+}
+
+TEST_CASE("an inherited flag does not leak to an unrelated sibling branch", "[cliapp][surface][inherited]") {
+  // Only ANCESTORS contribute. A flag on `group` must not appear at the
+  // root, or `planar --json` would start parsing where the oracle refuses it.
+  CHECK_FALSE(parse_generated({"--json"}).has_value());
+}

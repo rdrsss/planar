@@ -779,17 +779,26 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
 // Lease and terminal primitives
 // =========================================================================
 
-auto heartbeat_claim(db::connection& conn, std::string_view claim_token, std::int64_t ttl_secs)
+auto heartbeat_claim(db::connection& conn, std::string_view claim_token, std::optional<std::int64_t> ttl_secs)
     -> std::expected<claim, agent_error> {
-  // `lease_expires_at` is assigned ABSOLUTELY from `now`, never derived
-  // from its own previous value. See the interface's doc comment: this is
-  // a reset, and a bare heartbeat therefore SHRINKS a long lease.
+  // With an explicit TTL the lease is assigned ABSOLUTELY from `now`.
+  // Without one the CURRENT lease length is carried forward, so a
+  // heartbeat never shrinks the lease it was sent to preserve. See the
+  // interface's doc comment (Planar task 6093).
+  auto const lease_expr = ttl_secs.has_value()
+                              ? std::format("strftime('%Y-%m-%dT%H:%M:%fZ','now', {})", seconds_modifier(*ttl_secs))
+                              : std::string{"strftime('%Y-%m-%dT%H:%M:%fZ','now', '+' || cast(round("
+                                            "(julianday(lease_expires_at) - julianday(last_heartbeat_at)) * 86400"
+                                            ") as int) || ' seconds')"};
+  // `lease_expires_at` must be assigned BEFORE `last_heartbeat_at` is read
+  // for the delta; SQLite evaluates every RHS against the OLD row, so the
+  // ordering of the SET clauses does not matter here.
   auto stmt = conn.prepare(std::format("update agent_work_claims\n"
                                        "set last_heartbeat_at = {0},\n"
-                                       "    lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', {1})\n"
+                                       "    lease_expires_at = {1}\n"
                                        "where claim_token = ? and status = 'active'\n"
                                        "  and lease_expires_at >= {0}",
-                                       k_now, seconds_modifier(ttl_secs)));
+                                       k_now, lease_expr));
   if (!stmt || !stmt->bind_text(1, claim_token) || !stmt->step()) {
     return std::unexpected(agent_error::query_failed);
   }

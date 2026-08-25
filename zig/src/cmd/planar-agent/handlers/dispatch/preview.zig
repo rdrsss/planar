@@ -53,9 +53,36 @@ pub const verb: cli.Cmd = .{
     .run = cli.handler(handle),
 };
 
+/// Comma-joined list of a routing enum's accepted wire spellings, built at
+/// comptime from the enum itself so the diagnostic cannot drift from what is
+/// actually accepted.
+fn acceptedValues(comptime T: type) []const u8 {
+    return comptime blk: {
+        var out: []const u8 = "";
+        for (@typeInfo(T).@"enum".fields, 0..) |f, i| {
+            const text = if (@hasDecl(T, "toText"))
+                @as(T, @enumFromInt(f.value)).toText()
+            else
+                f.name;
+            out = out ++ (if (i == 0) "" else ", ") ++ text;
+        }
+        break :blk out;
+    };
+}
+
 fn parseEnum(comptime T: type, ctx: anytype, flag: []const u8, raw: []const u8) T {
-    return std.meta.stringToEnum(T, raw) orelse
-        exit.die(ctx, error.InvalidInput, "invalid {s} '{s}'", .{ flag, raw });
+    // Prefer the type's own wire mapping when it has one; `@tagName` is not a
+    // valid wire spelling for every routing enum (store.Complexity, task 6092).
+    const parsed = if (@hasDecl(T, "fromText"))
+        T.fromText(raw)
+    else
+        std.meta.stringToEnum(T, raw);
+    return parsed orelse exit.die(
+        ctx,
+        error.InvalidInput,
+        "invalid {s} '{s}': expected one of {s}",
+        .{ flag, raw, acceptedValues(T) },
+    );
 }
 
 /// Optional string flags arrive as `?[]const u8`; an explicitly empty value is
@@ -86,14 +113,6 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
     else
         null;
 
-    // `complexity` is spelled with a hyphen on the wire (`high-risk`) and an
-    // underscore in the enum; translate rather than leaking the Zig spelling
-    // into the operator surface.
-    const complexity_raw = if (std.mem.eql(u8, args.complexity, "high-risk"))
-        "high_risk"
-    else
-        args.complexity;
-
     const binding: dispatch.Binding = .{
         .logical_work_item_id = args.work_item,
         .project_id = project_id,
@@ -104,7 +123,7 @@ fn handle(args_ptr: *const anyopaque) anyerror!void {
         .role = args.role,
         .tier = parseEnum(store.Tier, ctx, "--tier", args.tier),
         .work_type = parseEnum(store.WorkType, ctx, "--work-type", args.work_type),
-        .complexity = parseEnum(store.Complexity, ctx, "--complexity", complexity_raw),
+        .complexity = parseEnum(store.Complexity, ctx, "--complexity", args.complexity),
         .packet_digest = args.packet_digest,
         .profile_digest = args.profile_digest,
         .policy_digest = args.policy_digest,

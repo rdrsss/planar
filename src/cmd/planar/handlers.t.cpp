@@ -1082,14 +1082,20 @@ TEST_CASE("workbench gc requires a plan unless --all-scopes", "[cmd][handlers][w
   static_cast<void>(seed);
 }
 
-TEST_CASE("the gc drift refusal exits 1 with NOTHING printed", "[cmd][handlers][workbench][oracle-defect]") {
-  // Reproduces an ORACLE DEFECT deliberately (task 6122): the Zig handler
-  // writes its refusal to the buffered ctx.stderr and then calls
-  // std.process.exit(1) directly, skipping the runtime shutdown that would
-  // flush it. Verified against the oracle with stderr on a terminal.
-  // `render_cli::render_gc_drift_refusal` holds the intended text and is
-  // pinned in render_cli.t.cpp, ready to wire the moment the divergence is
-  // sanctioned.
+TEST_CASE("the gc drift refusal names the held-back files instead of exiting silently",
+          "[cmd][handlers][workbench][sanctioned-divergence]") {
+  // DIVERGES FROM THE ORACLE ON PURPOSE (task 6122). The Zig handler writes
+  // its refusal to the buffered ctx.stderr and then calls std.process.exit(1)
+  // directly, skipping the runtime shutdown that would flush it, so the
+  // operator gets exit 1 and no reason at all. Verified against the oracle
+  // with stderr on a terminal.
+  //
+  // This test previously pinned the reproduced SILENCE. Emitting was believed
+  // to cost a differential-harness regression; it does not, because neither
+  // harness drifts a file (see the comment on the handler). The message is
+  // `render_cli::render_gc_drift_refusal`, pinned bytewise in
+  // render_cli.t.cpp; this case pins that the handler actually emits it, on
+  // stderr, with the exit code unchanged.
   auto       fx   = make_fixture("wbdrift");
   auto const root = with_workbench_root(fx);
   auto const seed = seed_workbench(fx);
@@ -1109,8 +1115,12 @@ TEST_CASE("the gc drift refusal exits 1 with NOTHING printed", "[cmd][handlers][
 
   auto const refused = dispatch(fx, {"workbench", "gc", plan});
   CHECK(refused.code == 1);
-  CHECK(refused.out.empty());
-  CHECK(refused.err.empty());
+  CHECK(refused.out.empty()); // stderr, not stdout
+  CHECK(refused.err.starts_with("workbench gc: refused to remove 1 file(s) with FS-content drift from DB; re-run with --yes "
+                                "to discard, or 'workbench pull' first\n"));
+  // The refusal NAMES the file it held back -- a count alone would not tell
+  // an operator which path to `workbench pull`.
+  CHECK(refused.err.contains(std::format("  drift: {}\n", file.string())));
   CHECK(std::filesystem::exists(file)); // held back, not removed
 
   // `--yes` proceeds, and prints normally.

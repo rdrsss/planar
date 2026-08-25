@@ -229,6 +229,14 @@ cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C+
 	# this is the genuine boundary of what clang-tidy can evaluate for a
 	# file outside the build graph.
 
+.PHONY: test-cpp-report
+test-cpp-report: ## Run the C++ ctest suite and REPORT its skip tally (a skipped case asserted nothing)
+	scripts/ctest-report.sh --build-dir build/debug $(ARGS)
+
+.PHONY: test-cpp-strict
+test-cpp-strict: ## Same, but an absent Zig oracle FAILS the differential cases instead of skipping them
+	PLANAR_PARITY_STRICT=1 scripts/ctest-report.sh --build-dir build/debug --max-skips 0 $(ARGS)
+
 .PHONY: test-parity-cpp
 test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binaries (parity lane; fails until C++ binaries exist)
 	PLANAR_BIN=$(CPP_BIN_ABS)/$(BINARY) \

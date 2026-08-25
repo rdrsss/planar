@@ -122,6 +122,34 @@ auto basic_args(const fixture& fx, std::int64_t task) -> aa::acquire_args {
   return aa::acquire_args{.session_id = fx.session_id, .kind = aa::entity_kind::task, .entity_id = task, .vendor = "test"};
 }
 
+/// @brief Whole seconds between two stored ISO8601 timestamps.
+///
+/// Parsed field-by-field rather than via SQLite so the assertion does not
+/// reuse the same `julianday` arithmetic the implementation under test
+/// uses. The stored format is fixed-width `YYYY-MM-DDTHH:MM:SS.mmmZ`.
+/// @param from The earlier timestamp.
+/// @param to The later timestamp.
+/// @return `to - from`, in whole seconds.
+auto seconds_between(std::string_view from, std::string_view to) -> std::int64_t {
+  auto const to_epoch = [](std::string_view ts) -> std::int64_t {
+    REQUIRE(ts.size() >= 20);
+    auto const field = [ts](std::size_t off, std::size_t len) -> int {
+      int  v  = 0;
+      auto sv = ts.substr(off, len);
+      auto rc = std::from_chars(sv.data(), sv.data() + sv.size(), v);
+      REQUIRE(rc.ec == std::errc{});
+      return v;
+    };
+    auto const ymd =
+        std::chrono::year_month_day{std::chrono::year{field(0, 4)}, std::chrono::month{static_cast<unsigned>(field(5, 2))},
+                                    std::chrono::day{static_cast<unsigned>(field(8, 2))}};
+    REQUIRE(ymd.ok());
+    auto const days = std::chrono::sys_days{ymd}.time_since_epoch().count();
+    return (static_cast<std::int64_t>(days) * 86400) + (field(11, 2) * 3600) + (field(14, 2) * 60) + field(17, 2);
+  };
+  return to_epoch(to) - to_epoch(from);
+}
+
 } // namespace
 
 // ===========================================================================
@@ -300,18 +328,19 @@ TEST_CASE("acquire_claim records the locality snapshot, and NULLs an empty one",
 }
 
 // ===========================================================================
-// heartbeat — the reset-not-extend defect, pinned
+// heartbeat — an explicit TTL is absolute; an omitted one renews
 // ===========================================================================
 
-TEST_CASE("heartbeat RESETS the lease rather than extending it", "[agentactivity]") {
-  // THIS IS THE POINT OF THE TEST. A claim taken with a long TTL and then
-  // heartbeated with a short one ends up with the SHORT lease, measured
-  // from now — the remaining time is DISCARDED, not added to. That is why
-  // `planar-agent heartbeat` without `--ttl` has stranded long-lived
-  // claims repeatedly (Planar task 6093).
+TEST_CASE("heartbeat with an explicit TTL sets the lease absolutely", "[agentactivity]") {
+  // An explicit `--ttl` means what it says in BOTH directions: a claim
+  // taken with a long TTL and heartbeated with a short one ends up with
+  // the SHORT lease, measured from now. Deliberate re-TTL is preserved.
   //
-  // Oracle capture: claim at 16:34:47.223 -> expires 16:44:47.223;
-  // bare heartbeat at 16:34:56.236 -> expires 16:44:56.236.
+  // This test previously pinned this as the behavior of a BARE heartbeat
+  // too, which was the defect (Planar task 6093): the CLI defaulted an
+  // omitted `--ttl` to 600, so heartbeating an 8h claim cut it to ten
+  // minutes. The oracle has since been fixed and this port re-pinned; see
+  // the companion test below for the renew contract.
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   auto const      fx   = seed(conn, 1);
@@ -324,13 +353,54 @@ TEST_CASE("heartbeat RESETS the lease rather than extending it", "[agentactivity
   auto const refreshed = aa::heartbeat_claim(conn, held->claim_token, 600);
   REQUIRE(refreshed.has_value());
 
-  // The new expiry is EARLIER than the old one. An "extend" implementation
-  // could not produce this, and a no-op implementation could not either
-  // (it would be equal).
+  // Explicitly asking for a shorter lease still shortens it.
   REQUIRE(refreshed->lease_expires_at < held->lease_expires_at);
   // ...and it is measured from the heartbeat, not from the claim.
   REQUIRE(refreshed->lease_expires_at > refreshed->last_heartbeat_at);
   REQUIRE(refreshed->last_heartbeat_at >= held->last_heartbeat_at);
+}
+
+TEST_CASE("heartbeat without a TTL renews the current lease length", "[agentactivity]") {
+  // THIS IS THE POINT OF THE TEST, and it is the inverse of what this file
+  // asserted before the oracle was fixed. A heartbeat asserts liveness; it
+  // must never SHRINK the lease it was sent to preserve. Planar task 6093.
+  //
+  // The renewed length is derived from the stored pair
+  // (last_heartbeat_at, lease_expires_at), which encodes the current TTL
+  // exactly — no stored-TTL column and no migration required.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+
+  constexpr std::int64_t k_eight_hours = 28800;
+
+  auto long_lease     = basic_args(fx, task_id_at(conn, 0));
+  long_lease.ttl_secs = k_eight_hours;
+  auto const held     = aa::acquire_claim(conn, long_lease);
+  REQUIRE(held.has_value());
+
+  auto const ttl_of = [](auto const& c) { return seconds_between(c.last_heartbeat_at, c.lease_expires_at); };
+  // The invariant the renew path relies on, pinned at claim time.
+  REQUIRE(ttl_of(*held) == k_eight_hours);
+
+  auto const renewed = aa::heartbeat_claim(conn, held->claim_token, std::nullopt);
+  REQUIRE(renewed.has_value());
+
+  // The 8h lease is carried forward, NOT truncated to a 600s default.
+  REQUIRE(ttl_of(*renewed) == k_eight_hours);
+  // The expiry moved forward (or held), never backward.
+  REQUIRE(renewed->lease_expires_at >= held->lease_expires_at);
+  REQUIRE(renewed->last_heartbeat_at >= held->last_heartbeat_at);
+
+  // Renewal is idempotent, and it tracks the LIVE lease: after a
+  // deliberate re-TTL, a bare heartbeat inherits the new length.
+  auto const shortened = aa::heartbeat_claim(conn, held->claim_token, 3600);
+  REQUIRE(shortened.has_value());
+  REQUIRE(ttl_of(*shortened) == 3600);
+
+  auto const again = aa::heartbeat_claim(conn, held->claim_token, std::nullopt);
+  REQUIRE(again.has_value());
+  REQUIRE(ttl_of(*again) == 3600);
 }
 
 TEST_CASE("heartbeat refuses a terminal or expired claim", "[agentactivity]") {

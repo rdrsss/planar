@@ -17,11 +17,16 @@
 ///     root help page, which is exactly what the Zig binary does when the
 ///     gate refuses (non-TTY, `TERM=dumb`, `PLANAR_NO_TUI`) — i.e. what
 ///     every scripted invocation already sees.
-///   - `cli_log.record`, the fail-open invocation-capture row. No
-///     `cli_log` surface exists in this tree yet.
+///
+/// `cli_log.record` IS reproduced, as of task 6073: the fail-open
+/// invocation-capture row, written below after the verb returns so the exit
+/// code is final. It cannot change this function's output or return value —
+/// every failure arm inside it returns silently. See
+/// `planar.cmd.planar.cli_log` for the privacy boundary it holds.
 // Not a module unit: `main` must have external linkage in the global module,
 // so this translation unit only imports.
 import std;
+import planar.cmd.planar.cli_log;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.exit;
@@ -46,11 +51,22 @@ auto main(int argc, char** argv) -> int {
     return planar::cmd::exit_code(db_path.error());
   }
 
+  auto const started = std::chrono::steady_clock::now();
+
   planar::cmd::context ctx{std::move(args), env, planar::cmd::operator_cwd(env), *db_path, std::cout, std::cerr};
-  auto const           root  = planar::cmd::root_app();
-  auto const           table = planar::cmd::handlers(*root);
-  int const            code  = planar::cmd::run(ctx, *root, table);
+  auto const           root    = planar::cmd::root_app();
+  auto const           table   = planar::cmd::handlers(*root);
+  auto const           outcome = planar::cmd::run_detailed(ctx, *root, table);
+
+  // Invocation capture, after the verb so the exit code is final and before
+  // the flush so nothing it might print (it prints nothing) could interleave.
+  // Fail-open by construction: `record` has no failure path that reports.
+  if (outcome.loggable) {
+    planar::cmd::record(ctx, outcome.code, outcome.kind,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started));
+  }
+
   std::cout.flush();
   std::cerr.flush();
-  return code;
+  return outcome.code;
 }

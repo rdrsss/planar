@@ -177,12 +177,17 @@ auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> s
 }
 
 auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
+  return run_detailed(ctx, root, table).code;
+}
+
+auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> run_outcome {
   // The worktree gate fires BEFORE the parser, which is the oracle's
   // ordering and is deliberate: a planning verb run from a worktree must
   // exit 8 even when its arguments also fail to parse. See
   // `planar.cmd.planar.worktree_gate`'s header.
   if (auto const refused = worktree_gate::check(ctx, root)) {
-    return *refused;
+    // NOT loggable — see `run_outcome::loggable`.
+    return run_outcome{.code = *refused, .kind = std::nullopt, .loggable = false};
   }
 
   auto const argv = cliapp::hoist_subcommands(root, ctx.argv());
@@ -198,14 +203,14 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   } catch (const CLI::CallForHelp&) {
     auto const [node, unused] = matched_node(root);
     ctx.out() << node->help();
-    return exit_success;
+    return run_outcome{.code = exit_success};
   } catch (const CLI::ParseError& e) {
     // Both streams — see this module's header for the oracle capture and
     // for why task 6123 kept the shape while re-baselining the wording.
     ctx.out() << "error: " << e.what() << '\n';
     ctx.err() << "error: " << e.get_name() << '\n';
     // This binary's policy is exit 1, NOT the operator binary's 2.
-    return exit_code_for(domain_error_kind::parse_error);
+    return run_outcome{.code = exit_code_for(domain_error_kind::parse_error), .kind = domain_error_kind::parse_error};
   }
 
   auto const [node, path] = matched_node(root);
@@ -215,7 +220,7 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
     // route to. A group that DOES have a handler is dual (`handoff`,
     // `resume`) and falls through to it; see this module's header.
     ctx.out() << node->help();
-    return exit_success;
+    return run_outcome{.code = exit_success};
   }
 
   auto       args  = cliapp::harvest(root);
@@ -224,15 +229,15 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   if (found == table.end()) {
     auto const err = error_from_body(domain_error_kind::not_implemented, "not implemented yet");
     report(err, ctx.err());
-    return exit_code(err);
+    return run_outcome{.code = exit_code(err), .kind = err.kind};
   }
 
   auto const outcome = found->second(ctx, args);
   if (!outcome) {
     report(outcome.error(), ctx.err());
-    return exit_code(outcome.error());
+    return run_outcome{.code = exit_code(outcome.error()), .kind = outcome.error().kind};
   }
-  return exit_success;
+  return run_outcome{.code = exit_success};
 }
 
 } // namespace planar::cmd

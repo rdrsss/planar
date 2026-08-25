@@ -37,10 +37,44 @@ pub const WorkType = enum {
 };
 
 /// Versioned complexity classification used as an exact cohort dimension.
+///
+/// This is the ONE routing dimension whose canonical spelling is hyphenated
+/// (`high-risk`) and therefore cannot be a Zig enum tag. The hyphenated form
+/// is authoritative everywhere outside this enum: it is what the operator
+/// types, what `--help` documents, and — critically — what every SQL CHECK
+/// constraint lists (migrations 00030 and 00031). `@tagName` emits
+/// `high_risk`, which is the single string those CHECKs reject.
+///
+/// Always cross the storage/operator boundary through `toText`/`fromText`,
+/// never through `@tagName`/`stringToEnum`. Regression: planar task 6092,
+/// where `@tagName` was bound directly into the `routing_dispatch_previews`
+/// insert and made the documented `--complexity high-risk` unusable, failing
+/// as a bare `QueryFailed`.
 pub const Complexity = enum {
     bounded,
     standard,
     high_risk,
+
+    /// The canonical wire/storage spelling. Matches the SQL CHECK lists.
+    pub fn toText(c: Complexity) []const u8 {
+        return switch (c) {
+            .bounded => "bounded",
+            .standard => "standard",
+            .high_risk => "high-risk",
+        };
+    }
+
+    /// Parse the canonical wire/storage spelling. Returns null for anything
+    /// else, INCLUDING the raw `high_risk` enum-tag spelling — accepting that
+    /// would re-admit the very value the schema rejects and let it leak back
+    /// into the operator surface as a second, undocumented alias.
+    pub fn fromText(text: []const u8) ?Complexity {
+        inline for (@typeInfo(Complexity).@"enum".fields) |f| {
+            const c: Complexity = @enumFromInt(f.value);
+            if (std.mem.eql(u8, text, c.toText())) return c;
+        }
+        return null;
+    }
 };
 
 /// Exact host observation of candidate availability.
@@ -805,6 +839,62 @@ test "requested and actual identities never alias" {
         IdentityVerification.missing_actual_identity,
         verifyActualIdentity("vendor-x", "candidate-a", null, null),
     );
+}
+
+// Regression: planar task 6092. `dispatch preview --complexity high-risk`
+// failed with a bare `QueryFailed` because the insert bound
+// `@tagName(.high_risk)` -> "high_risk", the one spelling every complexity
+// CHECK constraint rejects. This pins the round trip for EVERY documented
+// value against the real migrated schema, so a documented-but-unusable enum
+// value cannot ship again.
+test "every Complexity value round-trips through the schema CHECK constraints" {
+    var conn = try db.sqlite.Db.openMemory();
+    defer conn.close();
+    try db.migrate.applyAll(&conn, std.testing.allocator);
+
+    // Every table that constrains `complexity`, so none can drift alone.
+    const tables = [_][]const u8{
+        "routing_experiments",
+        "routing_dispatch_snapshots",
+        "routing_terminal_samples",
+        "routing_dispatch_previews",
+    };
+    inline for (tables) |table| {
+        var stmt = try conn.prepare("select sql from sqlite_master where type='table' and name=?\x00");
+        defer stmt.finalize();
+        try stmt.bind(&.{.{ .text = table }});
+        try std.testing.expect((try stmt.step()) == .row);
+        const ddl = try stmt.columnTextAlloc(0, std.testing.allocator);
+        defer std.testing.allocator.free(ddl);
+        inline for (@typeInfo(Complexity).@"enum".fields) |f| {
+            const c: Complexity = @enumFromInt(f.value);
+            // The CHECK list must literally contain the wire spelling...
+            var quoted_buf: [64]u8 = undefined;
+            const quoted = try std.fmt.bufPrint(&quoted_buf, "'{s}'", .{c.toText()});
+            try std.testing.expect(std.mem.indexOf(u8, ddl, quoted) != null);
+            // ...and must NOT contain the raw enum-tag spelling when the two
+            // differ, which is exactly the `high_risk` trap.
+            if (!std.mem.eql(u8, c.toText(), @tagName(c))) {
+                var tag_buf: [64]u8 = undefined;
+                const tag_quoted = try std.fmt.bufPrint(&tag_buf, "'{s}'", .{@tagName(c)});
+                try std.testing.expect(std.mem.indexOf(u8, ddl, tag_quoted) == null);
+            }
+        }
+    }
+
+    // toText/fromText is a total round trip.
+    inline for (@typeInfo(Complexity).@"enum".fields) |f| {
+        const c: Complexity = @enumFromInt(f.value);
+        try std.testing.expectEqual(c, Complexity.fromText(c.toText()).?);
+    }
+
+    // The three documented values parse; the enum-tag spelling does NOT, so
+    // it cannot leak back in as an undocumented second alias.
+    try std.testing.expectEqual(Complexity.bounded, Complexity.fromText("bounded").?);
+    try std.testing.expectEqual(Complexity.standard, Complexity.fromText("standard").?);
+    try std.testing.expectEqual(Complexity.high_risk, Complexity.fromText("high-risk").?);
+    try std.testing.expect(Complexity.fromText("high_risk") == null);
+    try std.testing.expect(Complexity.fromText("") == null);
 }
 
 test "migration 00030 enforces opaque candidate and host observation identity" {

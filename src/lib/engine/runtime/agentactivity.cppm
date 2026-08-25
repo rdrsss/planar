@@ -466,28 +466,44 @@ export auto acquire_claim(db::connection& conn, const acquire_args& args) -> std
 
 /// @brief Refresh the lease on a live claim.
 ///
-/// **This RESETS the lease; it does not extend it.** `lease_expires_at`
-/// becomes `now + ttl_secs` outright — not `lease_expires_at + ttl_secs`.
-/// So a claim taken with `--ttl 8h` and then heartbeated with no `--ttl`
-/// (whose CLI default is 600) has its remaining lease CUT from eight hours
-/// to ten minutes, and the next sweep will call it stale. That is the
-/// oracle's behavior, verified against it directly rather than inferred:
-/// a claim pulled at 16:34:47 with `lease_expires_at` 16:44:47, bare-
-/// heartbeated at 16:34:56, came back with `lease_expires_at` 16:44:56 —
-/// ten minutes from the heartbeat, not from the claim. It is reproduced
-/// under D2 and is tracked as a live defect (Planar task 6093); this port
-/// pins it as OBSERVED behavior so that when it is fixed, the fix is a
-/// deliberate contract change with a failing test to point at, not a
-/// silent divergence.
+/// `ttl_secs` semantics:
+///   - engaged — set the lease to `now + *ttl_secs`, ABSOLUTELY. A
+///     deliberate re-TTL; may lengthen OR shorten the lease.
+///   - `std::nullopt` — RENEW THE CLAIM'S CURRENT LEASE LENGTH. The new
+///     expiry is `now + (lease_expires_at - last_heartbeat_at)`, so the
+///     claim keeps the lease length it already holds, measured from now.
+///
+/// The renew case needs no stored-TTL column: the pair
+/// (`last_heartbeat_at`, `lease_expires_at`) already encodes the current
+/// TTL exactly, and that invariant is maintained by construction at every
+/// write site — `acquire_claim` inserts `lease_expires_at = now + ttl`
+/// while `last_heartbeat_at` takes its `now` schema default in the same
+/// statement, and this function rewrites both columns in one UPDATE.
+/// SQLite evaluates an UPDATE's RHS expressions against the OLD row, so
+/// reading the delta while overwriting both columns is safe.
+///
+/// HISTORY: this used to reset the lease to `now + ttl_secs` with the CLI
+/// defaulting an omitted `--ttl` to 600, so a claim taken with `--ttl 8h`
+/// and then heartbeated bare had its lease CUT from eight hours to ten
+/// minutes — a faithfully-heartbeating long dispatch was MORE likely to
+/// lose its claim than one that never heartbeated. That was Planar task
+/// 6093, and this port pinned it as observed oracle behavior. The ORACLE
+/// HAS NOW BEEN FIXED (zig/src/engine/runtime/agentactivity/store.zig),
+/// and this implementation and its tests were re-pinned to match. The
+/// weaker "extend, never shrink" rule was rejected: it is inert on exactly
+/// the claims that need it, since for any lease longer than the default
+/// every bare heartbeat becomes a no-op and the lease still lapses at its
+/// original expiry.
 ///
 /// Refuses a claim that is terminal or whose lease has already passed
 /// (`claim_not_active`) — heartbeating a dead lease does not resurrect it.
 /// @param conn An open, migrated connection, inside an immediate transaction.
 /// @param claim_token The token to refresh.
-/// @param ttl_secs The NEW lease length in seconds, measured from now.
+/// @param ttl_secs The NEW lease length in seconds measured from now, or
+/// `std::nullopt` to renew the lease length the claim currently holds.
 /// @return The refreshed row, or `claim_not_active` / `claim_not_found` /
 /// `query_failed`.
-export auto heartbeat_claim(db::connection& conn, std::string_view claim_token, std::int64_t ttl_secs)
+export auto heartbeat_claim(db::connection& conn, std::string_view claim_token, std::optional<std::int64_t> ttl_secs)
     -> std::expected<claim, agent_error>;
 
 /// @brief Move a live claim to a terminal status.

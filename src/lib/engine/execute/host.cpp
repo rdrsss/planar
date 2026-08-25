@@ -702,9 +702,26 @@ auto drain_once(int fd, std::string& sink, std::size_t limit) -> bool {
 ///
 /// NOTHING outside this translation unit can call this. There is no exported
 /// declaration and no header; see this file's header comment.
+///
+/// `search_path` picks the exec flavour, and the choice is load-bearing:
+///
+///   - `false` (the default) execs `argv[0]` verbatim, so the caller's
+///     resolution is the only resolution. The `cli.*` group depends on this:
+///     it resolves an allowlisted Planar binary as a SIBLING of this
+///     executable, and a `PATH` search there would let an unrelated `planar`
+///     earlier on `PATH` answer for the one that shipped with this
+///     planar-execute. Never pass `true` for `cli.*`.
+///   - `true` searches `PATH` the way the shell would. Only `git.*` uses it,
+///     matching the oracle, which spawns the bare name `git` and lets Zig's
+///     `std.process.Child` resolve it (planar-execute/host.zig `runGit`).
+///     Probing a fixed list of absolute paths instead — as this did — fails
+///     outright on a machine whose git lives somewhere unlisted, e.g. only in
+///     `/opt/homebrew/bin`, because the bare-name `execv` fallback does NOT
+///     search `PATH`.
 /// @param argv The full argument vector, argv[0] being the executable path.
+/// @param search_path Whether to resolve argv[0] through `PATH`.
 /// @return The captured result, or unset when the child could not start.
-auto capture_process(std::vector<std::string> const& argv) -> std::optional<process_result> {
+auto capture_process(std::vector<std::string> const& argv, bool search_path = false) -> std::optional<process_result> {
   std::array<int, 2> out_pipe{-1, -1};
   std::array<int, 2> err_pipe{-1, -1};
   if (::pipe(out_pipe.data()) != 0) {
@@ -731,14 +748,19 @@ auto capture_process(std::vector<std::string> const& argv) -> std::optional<proc
     return std::nullopt;
   }
   if (pid == 0) {
-    // Child. Only async-signal-safe calls from here to execv.
+    // Child. Only async-signal-safe calls from here to exec. Both execv and
+    // execvp are async-signal-safe.
     ::dup2(out_pipe[1], STDOUT_FILENO);
     ::dup2(err_pipe[1], STDERR_FILENO);
     ::close(out_pipe[0]);
     ::close(out_pipe[1]);
     ::close(err_pipe[0]);
     ::close(err_pipe[1]);
-    ::execv(raw[0], raw.data());
+    if (search_path) {
+      ::execvp(raw[0], raw.data());
+    } else {
+      ::execv(raw[0], raw.data());
+    }
     ::_exit(127);
   }
 
@@ -820,6 +842,11 @@ auto run_allowlisted(host_state& hs, std::string_view bin, std::vector<std::stri
 ///
 /// The `-C` is injected by the host from the run config; a workflow never
 /// names the directory and has no way to point git somewhere else.
+///
+/// git is spawned by BARE NAME through `PATH`, matching the oracle
+/// (planar-execute/host.zig `runGit` sets `argv[0] = "git"` and lets Zig
+/// resolve it). This is deliberately unlike the `cli.*` group, which resolves
+/// beside this binary and must never search `PATH`; see `capture_process`.
 /// @param hs The host state.
 /// @param git_args The git arguments.
 /// @return The child's stdout.
@@ -827,15 +854,9 @@ auto run_git(host_state& hs, std::vector<std::string> const& git_args) -> std::s
   if (hs.config->worktree.empty()) {
     fail("git.* requires a configured worktree (--worktree)");
   }
-  std::vector<std::string> argv{"/usr/bin/git", "-C", hs.config->worktree};
+  std::vector<std::string> argv{"git", "-C", hs.config->worktree};
   argv.insert(argv.end(), git_args.begin(), git_args.end());
-  if (!std::filesystem::exists(argv[0])) {
-    argv[0] = "/usr/local/bin/git";
-    if (!std::filesystem::exists(argv[0])) {
-      argv[0] = "git";
-    }
-  }
-  auto const result = capture_process(argv);
+  auto const result = capture_process(argv, /*search_path=*/true);
   if (!result.has_value()) {
     fail("failed to spawn git");
   }

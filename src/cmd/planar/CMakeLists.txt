@@ -271,9 +271,11 @@ planar_binary(planar
     handlers/resume.cppm
     verb_classification.cppm
     worktree_gate.cppm
+    cli_log.cppm
     dispatch.cppm
   SOURCES
     context.cpp
+    cli_log.cpp
     scope.cpp
     verb_classification.cpp
     worktree_gate.cpp

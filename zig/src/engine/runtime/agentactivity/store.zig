@@ -192,23 +192,62 @@ pub fn acquireClaim(
 // =========================================================================
 
 /// Refresh the lease on an active claim. Updates `last_heartbeat_at` to
-/// now and `lease_expires_at` to now+ttl_secs. Caller MUST hold
-/// `BEGIN IMMEDIATE` (atomic.zig wraps this).
+/// now and `lease_expires_at` to now+ttl.
+///
+/// `ttl_secs` semantics:
+///   - non-null — set the lease to now+ttl_secs. A deliberate, absolute
+///     re-TTL; may lengthen OR shorten the lease. Negative values are
+///     supported (tests simulate already-expired claims for reconcile).
+///   - null — RENEW THE CLAIM'S CURRENT TTL. The new expiry is
+///     now + (lease_expires_at - last_heartbeat_at), i.e. the claim keeps
+///     the lease length it already holds, measured from now.
+///
+/// The null case carries no stored TTL column and needs none: the pair
+/// (last_heartbeat_at, lease_expires_at) already encodes the current TTL
+/// exactly, and that invariant is maintained by construction at every
+/// write site — `acquireClaim` inserts `lease_expires_at = now+ttl` while
+/// letting `last_heartbeat_at` take its `now` schema default in the same
+/// statement, and this function rewrites both columns in one UPDATE.
+/// SQLite evaluates every RHS expression of an UPDATE against the OLD row,
+/// so reading the delta while overwriting both columns is safe.
+///
+/// Rationale for null meaning "renew", not "reset to a 600s default":
+/// a heartbeat asserts liveness; it must never SHRINK the lease it was
+/// sent to preserve. The weaker "extend, never shrink" rule
+/// (max(now+default, existing)) was rejected because it is inert on
+/// exactly the claims that need it — for any lease longer than the
+/// default, every bare heartbeat becomes a no-op and a faithfully
+/// heartbeating long dispatch still lapses at its original expiry.
+///
+/// Caller MUST hold `BEGIN IMMEDIATE` (atomic.zig wraps this).
 pub fn heartbeatClaim(
     d: *db.sqlite.Db,
     allocator: std.mem.Allocator,
     claim_token: []const u8,
-    ttl_secs: i64,
+    ttl_secs: ?i64,
 ) Error!types.Claim {
     var sql_buf: [512]u8 = undefined;
-    const sql = if (ttl_secs >= 0)
+    const sql = if (ttl_secs == null)
+        std.fmt.bufPrintZ(&sql_buf,
+            \\update agent_work_claims
+            \\set lease_expires_at = strftime(
+            \\      '%Y-%m-%dT%H:%M:%fZ','now',
+            \\      '+' || cast(round(
+            \\        (julianday(lease_expires_at) - julianday(last_heartbeat_at)) * 86400
+            \\      ) as int) || ' seconds'
+            \\    ),
+            \\    last_heartbeat_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            \\where claim_token = ? and status = 'active'
+            \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        , .{}) catch return Error.QueryFailed
+    else if (ttl_secs.? >= 0)
         std.fmt.bufPrintZ(&sql_buf,
             \\update agent_work_claims
             \\set last_heartbeat_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
             \\    lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+{d} seconds')
             \\where claim_token = ? and status = 'active'
             \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        , .{ttl_secs}) catch return Error.QueryFailed
+        , .{ttl_secs.?}) catch return Error.QueryFailed
     else
         std.fmt.bufPrintZ(&sql_buf,
             \\update agent_work_claims
@@ -216,7 +255,7 @@ pub fn heartbeatClaim(
             \\    lease_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '{d} seconds')
             \\where claim_token = ? and status = 'active'
             \\  and lease_expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        , .{ttl_secs}) catch return Error.QueryFailed;
+        , .{ttl_secs.?}) catch return Error.QueryFailed;
 
     _ = d.execParams(sql, &.{.{ .text = claim_token }}) catch return Error.QueryFailed;
     if (d.changes() == 0) {
@@ -1703,6 +1742,92 @@ test "heartbeatClaim extends lease and updates last_heartbeat_at" {
     // by the TTL delta. Comparing as strings works because both are
     // strftime-formatted ISO8601 with millisecond precision.
     try std.testing.expect(!std.mem.eql(u8, c.lease_expires_at, refreshed.lease_expires_at));
+}
+
+/// Seconds between two stored ISO8601 timestamps, via SQLite's own
+/// julianday so the arithmetic matches what heartbeatClaim does in SQL.
+fn secondsBetween(d: *db.sqlite.Db, from_iso: []const u8, to_iso: []const u8) !i64 {
+    var stmt = try d.prepare("select cast(round((julianday(?) - julianday(?)) * 86400) as int)\x00");
+    defer stmt.finalize();
+    try stmt.bind(&.{ .{ .text = to_iso }, .{ .text = from_iso } });
+    if ((try stmt.step()) != .row) return error.NoRow;
+    return stmt.columnInt(0);
+}
+
+// Regression: planar task 6093. A heartbeat asserts liveness; it must never
+// SHRINK the lease it was sent to preserve. Before the fix, `--ttl` carried a
+// hardcoded 600s default, so a bare heartbeat on an 8h claim reset the lease
+// to 10 minutes -- making a faithfully-heartbeating long dispatch MORE likely
+// to lose its claim than one that never heartbeated at all.
+test "heartbeatClaim with null ttl renews the claim's current lease length" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    const eight_hours: i64 = 8 * 60 * 60;
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+        .ttl_secs = eight_hours,
+    });
+    defer c.deinit(a);
+
+    // Invariant the null path relies on: at claim time the stored pair
+    // (last_heartbeat_at, lease_expires_at) encodes the TTL exactly.
+    try std.testing.expectEqual(eight_hours, try secondsBetween(&d, c.last_heartbeat_at, c.lease_expires_at));
+
+    // A bare heartbeat must carry the 8h lease forward, not truncate it.
+    const hb = try heartbeatClaim(&d, a, c.claim_token, null);
+    defer hb.deinit(a);
+    try std.testing.expectEqual(eight_hours, try secondsBetween(&d, hb.last_heartbeat_at, hb.lease_expires_at));
+
+    // And it must not move the expiry BACKWARDS. String compare is a valid
+    // ordering here: both are strftime ISO8601 with millisecond precision.
+    try std.testing.expect(std.mem.order(u8, hb.lease_expires_at, c.lease_expires_at) != .lt);
+
+    // Renewal is idempotent: a second bare heartbeat still holds 8h.
+    const hb2 = try heartbeatClaim(&d, a, hb.claim_token, null);
+    defer hb2.deinit(a);
+    try std.testing.expectEqual(eight_hours, try secondsBetween(&d, hb2.last_heartbeat_at, hb2.lease_expires_at));
+}
+
+// The explicit --ttl path stays absolute in BOTH directions: an operator who
+// passes a value means it, including a deliberately shorter one.
+test "heartbeatClaim with explicit ttl sets the lease absolutely" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const sid = try insertTestSession(&d);
+    const tid = try insertTestTask(&d);
+
+    const c = try acquireClaim(&d, a, .{
+        .session_id = sid,
+        .entity_kind = .task,
+        .entity_id = tid,
+        .vendor = "test",
+        .ttl_secs = 8 * 60 * 60,
+    });
+    defer c.deinit(a);
+
+    // Deliberate shortening is still possible.
+    const shortened = try heartbeatClaim(&d, a, c.claim_token, 120);
+    defer shortened.deinit(a);
+    try std.testing.expectEqual(@as(i64, 120), try secondsBetween(&d, shortened.last_heartbeat_at, shortened.lease_expires_at));
+
+    // Deliberate lengthening too -- and the null path then inherits the NEW
+    // TTL, confirming the renewed length tracks the live lease, not the
+    // originally-claimed one.
+    const lengthened = try heartbeatClaim(&d, a, c.claim_token, 3600);
+    defer lengthened.deinit(a);
+    try std.testing.expectEqual(@as(i64, 3600), try secondsBetween(&d, lengthened.last_heartbeat_at, lengthened.lease_expires_at));
+
+    const renewed = try heartbeatClaim(&d, a, c.claim_token, null);
+    defer renewed.deinit(a);
+    try std.testing.expectEqual(@as(i64, 3600), try secondsBetween(&d, renewed.last_heartbeat_at, renewed.lease_expires_at));
 }
 
 test "heartbeatClaim refuses released claim with ClaimNotActive" {

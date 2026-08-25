@@ -115,14 +115,27 @@ auto load_units(db::connection& conn, std::int64_t task_id) -> std::expected<std
     if (const auto it = seen.find(symbol); it != seen.end()) {
       // Fold: modify dominates, and the larger weight wins defensively.
       //
-      // The modify-dominance arm is DEFENSIVE and currently unreachable, which
-      // a break-probe surfaced: `explain query plan` shows the IN-list driving
-      // two seeks through `ix_closures_task_role` in sorted order, so 'modify'
-      // rows always arrive before 'reference' rows for a task and the unit is
-      // always CREATED as modify. Kept anyway (as the Zig original does) so
-      // the fold stays correct if the planner ever picks a different path --
-      // its absence would be a silent write-conflict-detection failure, not a
-      // visible one. See load.t.cpp's "write-write non-merge" test.
+      // The modify-dominance arm is DEFENSIVE, and a break-probe found no
+      // mutant that reaches it: `explain query plan` shows the IN-list
+      // driving two seeks through `ix_closures_task_role` in sorted order,
+      // so for a given task the 'modify' rows arrive before the 'reference'
+      // ones and the unit is always CREATED as modify.
+      //
+      // KEEP IT -- and note the reason is stronger than "unreachable
+      // defensive code we tolerate" (task 6104). This arm is not unreachable
+      // BY CONSTRUCTION; it is unreachable under a plan nothing pins. The
+      // query above orders by SYMBOL, not by role, so the relative order of
+      // the two rows sharing a symbol is not specified by the SQL at all --
+      // it falls out of the index seeks and of SQLite's sorter, which is not
+      // documented as stable. A SQLite bump or a change in the statistics
+      // the planner consults can reorder them with no edit to this file.
+      //
+      // Deleting the arm would therefore convert an unspecified ordering
+      // into a correctness dependency, and the failure is SILENT: a
+      // dual-role symbol would settle as `reference`, the pair would read
+      // as read-write instead of write-write, and a merge that must be
+      // blocked would go through. See load.t.cpp's "write-write non-merge"
+      // test for the observable consequence this protects.
       if (r == greedy::role::modify) {
         out[it->second].role_ = greedy::role::modify;
       }

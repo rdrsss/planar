@@ -213,3 +213,52 @@ test "an unknown token is refused rather than treated as a fresh dispatch" {
     defer res.deinit(suite.allocator);
     try std.testing.expect(res.term.exited != 0);
 }
+
+// REGRESSION (planar task 6092). `--complexity high-risk` -- one of the three
+// values the verb's own --help documents -- failed with a bare
+// `QueryFailed`, because the insert bound the Zig enum tag `high_risk` and
+// every complexity CHECK constraint lists the hyphenated `high-risk`.
+//
+// The bug shipped because the fixture above exercises only `standard`, whose
+// enum tag and wire spelling happen to be identical. So this test walks ALL
+// THREE documented values through the real binary and the real INSERT. The
+// unit test in engine/routing/store.zig pins the enum/schema agreement; only
+// this one covers the actual bind site in engine/routing/dispatch.zig.
+test "every documented complexity value is accepted end to end" {
+    var suite = harness.Suite.init(std.testing.allocator);
+    defer suite.deinit();
+    seed(&suite, "candidate-complexity");
+
+    for ([_][]const u8{ "bounded", "standard", "high-risk" }) |complexity| {
+        var args = preview_args;
+        // Overwrite the --complexity value in place; assert we patched the
+        // slot we think we did, so a reordering of preview_args cannot make
+        // this test silently exercise `standard` three times.
+        const slot = for (args, 0..) |a, i| {
+            if (std.mem.eql(u8, a, "--complexity")) break i + 1;
+        } else @panic("preview_args no longer contains --complexity");
+        args[slot] = complexity;
+
+        const out = mustRunAgent(&suite, &args);
+        defer suite.allocator.free(out);
+        try contains(out, "\"ok\":true");
+        try contains(out, "\"preview_token\":\"");
+    }
+
+    // The enum-tag spelling must NOT be quietly accepted as a second alias,
+    // and the diagnostic must name the flag and the offending value rather
+    // than surfacing as a generic query failure.
+    var bad = preview_args;
+    const slot = for (bad, 0..) |a, i| {
+        if (std.mem.eql(u8, a, "--complexity")) break i + 1;
+    } else @panic("preview_args no longer contains --complexity");
+    bad[slot] = "high_risk";
+
+    const res = runAgent(&suite, &bad);
+    defer suite.allocator.free(res.stdout);
+    defer suite.allocator.free(res.stderr);
+    try std.testing.expect(res.term == .exited and res.term.exited != 0);
+    try contains(res.stderr, "--complexity");
+    try contains(res.stderr, "high_risk");
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "QueryFailed") == null);
+}

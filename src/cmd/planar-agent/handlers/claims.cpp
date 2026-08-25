@@ -305,11 +305,19 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     return std::unexpected(conn.error());
   }
 
-  auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::string{"600"});
-  auto const ttl     = parse_ttl_seconds(ttl_raw);
-  if (!ttl.has_value()) {
-    // BEFORE the transaction: a malformed duration should not open one.
-    return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
+  // An omitted `--ttl` is NOT defaulted to 600 here: it means "renew the
+  // lease length this claim already holds". Defaulting would make omission
+  // indistinguishable from an explicit `--ttl 600` and silently truncate
+  // every long lease (Planar task 6093).
+  auto const                  ttl_flag = cliapp::flag_string(args, "--ttl");
+  std::optional<std::int64_t> ttl;
+  if (ttl_flag.has_value()) {
+    auto const parsed = parse_ttl_seconds(*ttl_flag);
+    if (!parsed.has_value()) {
+      // BEFORE the transaction: a malformed duration should not open one.
+      return std::unexpected(duration_error("--ttl", *ttl_flag, "600"));
+    }
+    ttl = *parsed;
   }
   auto const token = cliapp::flag_string(args, "--claim").value_or(std::string{});
 
@@ -318,7 +326,7 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "BEGIN IMMEDIATE: QueryFailed"));
   }
 
-  auto refreshed = aa::heartbeat_claim(**conn, token, *ttl);
+  auto refreshed = aa::heartbeat_claim(**conn, token, ttl);
   if (!refreshed) {
     return std::unexpected(verb_error("heartbeat", refreshed.error()));
   }

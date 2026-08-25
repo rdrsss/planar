@@ -64,6 +64,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "parity_strict.hpp"
+
 #include <sys/wait.h>
 
 import std;
@@ -219,6 +221,12 @@ TEST_CASE("the pinned environment actually reaches the child process", "[cmd][pa
   // environment would have used.
   CHECK_FALSE(std::filesystem::exists(space.cpp_root / "fakehome" / ".planar" / "planar.db"));
 
+  // The half of this probe that needs the oracle is CONDITIONAL rather than
+  // gating the whole case: the C++ assertions above stand on their own. But
+  // silently dropping half a safety probe is exactly what task 6071 is
+  // about, so strict mode still refuses.
+  PLANAR_REQUIRE_ORACLE(oracle_available() || !::planar::parity::strict_mode(),
+                        "zig reference binary not built — the oracle half of the environment probe cannot run");
   if (oracle_available()) {
     auto const ref = run_pinned(zig_bin(), std::array<std::string, 2>{"annotate", "list"}, space.zig_root, "envpin");
     REQUIRE(ref.code == 0);
@@ -228,9 +236,9 @@ TEST_CASE("the pinned environment actually reaches the child process", "[cmd][pa
 }
 
 TEST_CASE("C++ and Zig agree byte-for-byte on the no-database leaves", "[cmd][parity][oracle]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   struct leaf {
     std::string_view         tag;  ///< Case discriminator.
@@ -266,9 +274,9 @@ TEST_CASE("C++ and Zig agree byte-for-byte on the no-database leaves", "[cmd][pa
 }
 
 TEST_CASE("C++ and Zig agree byte-for-byte on the database-backed leaves", "[cmd][parity][oracle]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   // Everything except the two wall-clock timestamp fields, which cannot
   // agree across two processes. The text renderer prints them on their own
@@ -344,9 +352,9 @@ TEST_CASE("neither binary touches a database on a no-database leaf", "[cmd][pari
 // =========================================================================
 
 TEST_CASE("C++ and Zig agree byte-for-byte on the task-6106 no-fixture leaves", "[cmd][parity][oracle]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   struct leaf {
     std::string_view         tag;  ///< Case discriminator.
@@ -389,9 +397,9 @@ TEST_CASE("C++ and Zig agree byte-for-byte on the task-6106 no-fixture leaves", 
 }
 
 TEST_CASE("C++ and Zig agree byte-for-byte on the three ported ext leaves", "[cmd][parity][oracle]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   // `created_at` is the only wall-clock field these renderers emit and it
   // cannot agree across two processes, so it is elided from BOTH sides. The
@@ -490,9 +498,9 @@ TEST_CASE("C++ and Zig agree byte-for-byte on the three ported ext leaves", "[cm
 }
 
 TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][parity][oracle]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   // `init`, `ext register` and `link` are NOT ported, so the fixture is
   // built by running the ORACLE in BOTH arenas. That is legitimate here
@@ -564,9 +572,9 @@ TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][pari
 }
 
 TEST_CASE("C++ and Zig agree on workspace doctor's diagnose-and-repair pass", "[cmd][parity][oracle]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   // `workspace init` refuses without child directories containing `.git`,
   // and building two of those per arena just to reach `doctor` would make
@@ -633,9 +641,9 @@ TEST_CASE("C++ and Zig agree on workspace doctor's diagnose-and-repair pass", "[
 }
 
 TEST_CASE("every ported command declares what the oracle declares", "[cmd][parity][oracle][catalog]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   // TASK 6123. This case replaces "C++ and Zig agree byte-for-byte on the
   // workbench leaves' help pages", which diffed ten rendered pages against
@@ -690,9 +698,9 @@ TEST_CASE("every ported command declares what the oracle declares", "[cmd][parit
 }
 
 TEST_CASE("all three catalogs are byte-identical to the oracle's", "[cmd][parity][oracle][catalog]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
   // This case used to be titled "the catalog differs from the oracle's in
   // FOUR values, all `default`", and it pinned that residue precisely: the
   // four flags declaring an EMPTY-STRING default, which `CLI::Option`
@@ -980,9 +988,9 @@ TEST_CASE("the CLI surface is CLI11's now, and pinned", "[cmd][parity][cli-surfa
 }
 
 TEST_CASE("C++ and Zig agree over a seeded workbench feature tree", "[cmd][parity][oracle][workbench]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   // SEED EACH ARENA INDEPENDENTLY, never by copying one. `projects.root_path`
   // is absolute, so a copied arena silently loses cwd-derived scope, and
@@ -1160,9 +1168,9 @@ TEST_CASE("C++ and Zig agree over a seeded workbench feature tree", "[cmd][parit
 }
 
 TEST_CASE("C++ and Zig agree on init, including the git remote it captures", "[cmd][parity][oracle][init]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   // `init` ECHOES ITS ARENA. The database path and the project root path
   // appear verbatim in both render modes, and the two binaries necessarily
@@ -1255,9 +1263,9 @@ TEST_CASE("C++ and Zig agree on init, including the git remote it captures", "[c
 }
 
 TEST_CASE("C++ and Zig agree on repeated init and on --force", "[cmd][parity][oracle][init]") {
-  if (!oracle_available()) {
-    SKIP("zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
-  }
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
 
   auto const scrub = [](std::string text, const std::filesystem::path& root) {
     auto const needle = root.string();
@@ -1298,4 +1306,56 @@ TEST_CASE("C++ and Zig agree on repeated init and on --force", "[cmd][parity][or
   // The row id never moved: three registrations, one project.
   CHECK(scrub(read_all(space.cpp_root / "i3.out"), space.cpp_root)
             .contains(R"("project_id":1,"project_slug":"proj","project_name":"Renamed")"));
+}
+
+// --- the parity strictness switch (task 6071) ----------------------------
+
+TEST_CASE("PLANAR_PARITY_STRICT turns an absent oracle from a skip into a failure", "[cmd][parity][strictness]") {
+  // The switch itself, tested rather than assumed. Its whole purpose is to
+  // stop a run of twenty-six oracle-gated cases from reporting as a clean
+  // pass when the oracle was never consulted -- and at the M10 cutover,
+  // when zig/ is deleted, that is the permanent state of every one of them.
+  //
+  // Only `strict_mode()` is exercised directly. The macro around it cannot
+  // be: it expands to Catch2's SKIP or FAIL, both of which act on the
+  // RUNNING case, so a test that called it would skip or fail ITSELF rather
+  // than report what it did. The macro is two lines of dispatch over this
+  // predicate; the predicate is where a mistake would hide.
+  //
+  // Mutating the environment is safe because catch_discover_tests runs each
+  // TEST_CASE as its own process, and it is restored regardless.
+  char const* const original = std::getenv("PLANAR_PARITY_STRICT");
+  std::string const saved    = original == nullptr ? std::string{} : std::string{original};
+  bool const        was_set  = original != nullptr;
+
+  ::unsetenv("PLANAR_PARITY_STRICT");
+  bool const when_unset = ::planar::parity::strict_mode();
+
+  REQUIRE(::setenv("PLANAR_PARITY_STRICT", "1", 1) == 0);
+  bool const when_one = ::planar::parity::strict_mode();
+
+  // `0` and the empty string are explicitly OFF, so a CI job that exports
+  // the variable unconditionally can turn it off BY VALUE rather than
+  // having to unset it.
+  REQUIRE(::setenv("PLANAR_PARITY_STRICT", "0", 1) == 0);
+  bool const when_zero = ::planar::parity::strict_mode();
+  REQUIRE(::setenv("PLANAR_PARITY_STRICT", "", 1) == 0);
+  bool const when_empty = ::planar::parity::strict_mode();
+
+  // Anything else truthy counts, so `PLANAR_PARITY_STRICT=yes` is not a
+  // silent no-op.
+  REQUIRE(::setenv("PLANAR_PARITY_STRICT", "yes", 1) == 0);
+  bool const when_word = ::planar::parity::strict_mode();
+
+  if (was_set) {
+    ::setenv("PLANAR_PARITY_STRICT", saved.c_str(), 1);
+  } else {
+    ::unsetenv("PLANAR_PARITY_STRICT");
+  }
+
+  CHECK_FALSE(when_unset);
+  CHECK(when_one);
+  CHECK_FALSE(when_zero);
+  CHECK_FALSE(when_empty);
+  CHECK(when_word);
 }

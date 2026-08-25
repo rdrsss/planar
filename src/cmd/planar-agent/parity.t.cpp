@@ -50,6 +50,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "parity_strict.hpp"
+
 // The claim-ritual cases below normalise volatile fields with a regex, and
 // read the two arenas' final row state back through `planar.db`.
 #include <regex>
@@ -110,9 +112,7 @@ TEST_CASE("the pinned environment actually reaches planar-agent", "[cmd][agent][
 }
 
 TEST_CASE("planar-agent parity: parse failures still exit 1, not the operator binary's 2", "[cmd][agent][parity][exitcode]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-agent)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-agent)");
 
   // The whole reason this binary needed its own exit module. If the port
   // had reused `planar`'s policy these would come back 2 and this case
@@ -135,9 +135,7 @@ TEST_CASE("planar-agent parity: parse failures still exit 1, not the operator bi
 }
 
 TEST_CASE("planar-agent parity: every ported command declares what the oracle declares", "[cmd][agent][parity][catalog]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-agent)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-agent)");
 
   // TASK 6123. This case replaces "leaf help pages match byte for byte",
   // which diffed each of the fourteen ported leaves' `--help` output
@@ -183,9 +181,7 @@ TEST_CASE("planar-agent parity: every ported command declares what the oracle de
 }
 
 TEST_CASE("planar-agent parity: the catalog is BYTE-identical to the oracle's", "[cmd][agent][parity][catalog]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-agent)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-agent)");
   // The strongest statement available, and it is true for this binary
   // (task 6065). `diff_against_oracle` above excludes `default` and reads
   // per-command; this reads every byte of the document, so it also covers
@@ -302,9 +298,7 @@ TEST_CASE("planar-agent parity: the catalog comparison actually discriminates", 
 }
 
 TEST_CASE("planar-agent parity: version diverges only in the runtime tag", "[cmd][agent][parity]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-agent)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-agent)");
 
   auto const [cpp, zig] = both("version", {"version"});
   CHECK(cpp.code == zig.code);
@@ -352,9 +346,7 @@ TEST_CASE("planar-agent parity: version diverges only in the runtime tag", "[cmd
 }
 
 TEST_CASE("planar-agent parity: no ported invocation creates a database", "[cmd][agent][parity][safety]") {
-  if (!oracle_available()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-agent)");
-  }
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-agent)");
 
   // The consumer policy's most operator-visible consequence, checked
   // end-to-end rather than at the context level: none of the ported verbs

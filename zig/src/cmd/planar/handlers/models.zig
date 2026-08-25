@@ -420,9 +420,13 @@ fn requireFlag(ctx: anytype, name: []const u8, v: ?[]const u8) []const u8 {
 }
 
 fn parseCohortEnum(comptime T: type, ctx: anytype, flag: []const u8, raw: []const u8) T {
-    // `high-risk` on the wire, `high_risk` in the enum.
-    const normalized = if (std.mem.eql(u8, raw, "high-risk")) "high_risk" else raw;
-    return std.meta.stringToEnum(T, normalized) orelse
+    // Route through the type's own wire mapping where it has one; `@tagName`
+    // is not a valid wire spelling for store.Complexity (task 6092).
+    const parsed = if (@hasDecl(T, "fromText"))
+        T.fromText(raw)
+    else
+        std.meta.stringToEnum(T, raw);
+    return parsed orelse
         exit.die(ctx, error.InvalidInput, "invalid {s} '{s}'", .{ flag, raw });
 }
 

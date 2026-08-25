@@ -199,7 +199,7 @@ pub fn preview(
         .{ .text = b.role },
         .{ .text = @tagName(b.tier) },
         .{ .text = @tagName(b.work_type) },
-        .{ .text = @tagName(b.complexity) },
+        .{ .text = b.complexity.toText() },
         .{ .text = b.packet_digest },
         .{ .text = b.profile_digest },
         .{ .text = b.policy_digest },
@@ -358,7 +358,10 @@ pub fn loadPreview(
                 return Error.QueryFailed,
             .work_type = std.meta.stringToEnum(store.WorkType, try textCol(&stmt, 9, arena)) orelse
                 return Error.QueryFailed,
-            .complexity = std.meta.stringToEnum(store.Complexity, try textCol(&stmt, 10, arena)) orelse
+            // Read back through fromText, not stringToEnum: the stored
+            // spelling is the hyphenated `high-risk`, which is not an enum
+            // tag. See store.Complexity's doc comment (task 6092).
+            .complexity = store.Complexity.fromText(try textCol(&stmt, 10, arena)) orelse
                 return Error.QueryFailed,
             .packet_digest = try textCol(&stmt, 11, arena),
             .profile_digest = try textCol(&stmt, 12, arena),
@@ -459,7 +462,7 @@ pub fn confirm(
         .{ .text = b.role },
         .{ .text = @tagName(b.tier) },
         .{ .text = @tagName(b.work_type) },
-        .{ .text = @tagName(b.complexity) },
+        .{ .text = b.complexity.toText() },
         .{ .text = b.packet_digest },
         .{ .text = b.policy_digest },
         .{ .text = b.capability_digest },

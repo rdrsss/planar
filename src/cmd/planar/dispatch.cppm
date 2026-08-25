@@ -84,6 +84,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
+import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 
 namespace planar::cmd {
@@ -126,6 +127,28 @@ export auto unregistered_leaves(const CLI::App& root, const handler_table& table
 /// @return The unreachable table keys, sorted.
 export auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> std::vector<std::string>;
 
+/// @brief How an invocation ended: the exit code, plus enough to classify
+/// it for `cli_invocations.error_category`.
+export struct run_outcome {
+  /// @brief The process exit code, under the operator binary's policy.
+  int code = 0;
+  /// @brief The domain-error kind behind a non-zero `code`, when there is
+  /// one to name. Unset on success AND on a failure with no domain error
+  /// to classify.
+  std::optional<domain_error_kind> kind;
+  /// @brief Whether this invocation is ELIGIBLE for invocation capture.
+  ///
+  /// False only for a worktree-gate refusal, and that is the oracle's
+  /// behaviour rather than a policy choice here:
+  /// `zig/src/cmd/planar/worktree_gate.zig:157` calls `std.process.exit`
+  /// DIRECTLY, bypassing `exit.die` — the one place the Zig binary calls
+  /// `cli_log.record` on a failure path. So a gated invocation writes no
+  /// row, which running the oracle confirms: three `exit 8` invocations
+  /// against a logging-enabled scratch database produced no
+  /// `cli_invocations` rows at all.
+  bool loggable = true;
+};
+
 /// @brief Parse `argv` against `root`, then render help, run the matched
 /// handler, or report a failure — writing to `ctx`'s streams throughout.
 /// @param ctx The invocation context.
@@ -133,5 +156,15 @@ export auto unreachable_handlers(const CLI::App& root, const handler_table& tabl
 /// @param table The handler table.
 /// @return The process exit code, under the operator binary's policy.
 export auto run(context& ctx, CLI::App& root, const handler_table& table) -> int;
+
+/// @brief `run`, reporting how the invocation ended rather than only its
+/// code. `main` uses this so `cli_log` can record the same error CATEGORY
+/// the oracle does — classifying by exit code alone would file every
+/// `not_found` as `internal`.
+/// @param ctx The invocation context.
+/// @param root The command tree (mutated by CLI11's parse; the caller owns it).
+/// @param table The handler table.
+/// @return The outcome.
+export auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> run_outcome;
 
 } // namespace planar::cmd

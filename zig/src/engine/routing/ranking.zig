@@ -296,12 +296,10 @@ pub fn rank(
 }
 
 /// The wire spelling is hyphenated (`high-risk`); the enum is not.
+/// Delegates to the single authority on store.Complexity so this cannot
+/// drift from the spelling the SQL CHECK constraints accept (task 6092).
 fn complexityText(c: store.Complexity) []const u8 {
-    return switch (c) {
-        .bounded => "bounded",
-        .standard => "standard",
-        .high_risk => "high-risk",
-    };
+    return c.toText();
 }
 
 fn finalize(r: *Row, gates: Gates) void {

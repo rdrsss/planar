@@ -1,8 +1,21 @@
 //! Stable, provenance-bearing task facts derived during spec ingest.
 //!
 //! The caller owns the transaction. Facts are staged as a complete set for
-//! every task below an anchor plan, compared with the authoritative set, and
-//! replaced only when their semantic contents differ.
+//! every task in an anchor plan's subtree, compared with the authoritative
+//! set, and replaced only when their semantic contents differ.
+//!
+//! "Subtree" means tasks on a child plan of the anchor AND tasks attached
+//! directly to the anchor plan itself. Every scoping predicate here spells
+//! that as `? in (p.parent_plan_id, p.id)` — NOT `p.parent_plan_id = ?`.
+//! The latter silently excluded anchor-direct tasks from BOTH the staging
+//! queries and the prune delete, so those tasks got no facts at all (never
+//! packet-ready) while any fact they somehow acquired could never be pruned
+//! or refreshed (permanently `stale_fact`). Both halves of that had to be
+//! fixed by the same predicate, because staging scope and delete scope must
+//! agree or reconcile would delete facts it then fails to restage.
+//! The `? in (...)` form is also correct when the anchor itself has a parent,
+//! which a `coalesce(p.parent_plan_id, p.id) = ?` spelling would get wrong.
+//! Regression: planar tasks 6116 and 6048.
 
 const std = @import("std");
 const db = @import("db");
@@ -55,7 +68,7 @@ pub fn reconcile(
         \\where task_id in (
         \\  select t.id from tasks t
         \\  join plans p on p.id = t.plan_id
-        \\  where p.parent_plan_id = ?
+        \\  where ? in (p.parent_plan_id, p.id)
         \\)
     , &.{.{ .int = anchor_plan_id }}) catch return Error.QueryFailed;
 
@@ -123,7 +136,7 @@ fn factSetsEqual(d: *db.sqlite.Db, anchor_plan_id: i64) Error!bool {
         \\  where task_id in (
         \\    select t.id from tasks t
         \\    join plans p on p.id = t.plan_id
-        \\    where p.parent_plan_id = ?
+        \\    where ? in (p.parent_plan_id, p.id)
         \\  )
         \\),
         \\delta as (
@@ -151,7 +164,7 @@ fn stageTaskFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
     var stmt = d.prepare(
         \\select t.id, coalesce(t.body, ''), coalesce(t.next_action, '')
         \\from tasks t join plans p on p.id = t.plan_id
-        \\where p.parent_plan_id = ?
+        \\where ? in (p.parent_plan_id, p.id)
         \\order by t.id
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
@@ -268,7 +281,7 @@ fn stageArtifactFacts(
         \\join entity_links el on el.from_kind = 'task' and el.from_id = t.id
         \\  and el.to_kind = 'artifact' and el.relationship = 'cites'
         \\join artifacts a on a.id = el.to_id
-        \\where p.parent_plan_id = ?
+        \\where ? in (p.parent_plan_id, p.id)
         \\order by t.id, a.id
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
@@ -348,7 +361,7 @@ fn stageDecisionFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_pla
         \\  and el.to_kind = 'plan' and el.to_id = ?
         \\  and el.relationship = 'derives-from'
         \\join decisions de on de.id = el.from_id and de.status = 'accepted'
-        \\where p.parent_plan_id = ?
+        \\where ? in (p.parent_plan_id, p.id)
         \\order by t.id, de.id
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
@@ -375,7 +388,7 @@ fn stageQuestionFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_pla
         \\  and el.to_kind = 'plan' and el.to_id = ?
         \\  and el.relationship = 'derives-from'
         \\join questions q on q.id = el.from_id and q.status = 'open'
-        \\where p.parent_plan_id = ?
+        \\where ? in (p.parent_plan_id, p.id)
         \\order by t.id, q.id
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
@@ -400,7 +413,7 @@ fn stageScenarioFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_pla
         \\join entity_links el on el.to_kind = 'task' and el.to_id = t.id
         \\  and el.from_kind = 'test_scenario' and el.relationship = 'verifies'
         \\join test_scenarios s on s.id = el.from_id
-        \\where p.parent_plan_id = ?
+        \\where ? in (p.parent_plan_id, p.id)
         \\order by t.id, s.id
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
@@ -433,7 +446,7 @@ fn stageLinkFacts(d: *db.sqlite.Db, allocator: std.mem.Allocator, anchor_plan_id
         \\  (el.from_kind = 'task' and el.from_id = t.id)
         \\  or (el.to_kind = 'task' and el.to_id = t.id)
         \\)
-        \\where p.parent_plan_id = ?
+        \\where ? in (p.parent_plan_id, p.id)
         \\  and el.relationship in ('touches', 'depends-on')
         \\order by t.id, el.from_kind, el.from_id, el.to_kind, el.to_id
     ) catch return Error.QueryFailed;
@@ -508,7 +521,7 @@ fn stageCount(
         \\from tasks t join plans p on p.id = t.plan_id
         \\left join temp.routing_task_facts_stage s
         \\  on s.task_id = t.id and s.fact_kind = ?
-        \\where p.parent_plan_id = ?
+        \\where ? in (p.parent_plan_id, p.id)
         \\group by t.id order by t.id
     ) catch return Error.QueryFailed;
     defer stmt.finalize();
@@ -1239,4 +1252,141 @@ test "every bad citation is collected, not just the first" {
     try std.testing.expectEqual(@as(usize, 3), sink.items.items.len);
     try std.testing.expectEqual(@as(i64, 11), sink.items.items[1].artifact_id);
     try std.testing.expectEqualStrings("Real", sink.items.items[2].available);
+}
+
+/// Single-integer query helper for the scoping regression tests below.
+fn scalarQuery(conn: *db.sqlite.Db, sql: [:0]const u8, arg: i64) !i64 {
+    var stmt = try conn.prepare(sql);
+    defer stmt.finalize();
+    try stmt.bind(&.{.{ .int = arg }});
+    if ((try stmt.step()) != .row) return error.NoRow;
+    return stmt.columnInt(0);
+}
+
+// REGRESSION (planar tasks 6116 and 6048). Every scoping predicate in this
+// module read `where p.parent_plan_id = ?`, which matches tasks on a CHILD
+// plan of the anchor but NOT tasks attached directly to the anchor plan
+// itself. That single omission produced two symptoms that looked unrelated:
+//
+//   6048: anchor-direct tasks are never staged, so they carry no
+//         acceptance_complete / next_action_exact facts and can never reach
+//         packet-ready. (Measured on the live DB while fixing this: all 17
+//         anchor-direct tasks under plan 996 had ZERO facts, against 2097
+//         facts across the 106 tasks under its child plans.)
+//   6116: the prune delete was scoped the same way, so any fact an
+//         anchor-direct task did acquire could never be deleted when its
+//         source link went away, nor refreshed when a digest drifted --
+//         permanently `stale_fact` with no CLI remedy.
+//
+// Both halves must move together: if staging saw anchor-direct tasks but the
+// delete did not, reconcile would leave duplicate/stale rows behind; if the
+// delete saw them but staging did not, reconcile would erase their facts.
+test "reconcile covers anchor-direct tasks and prunes their orphaned facts" {
+    const allocator = std.testing.allocator;
+    var conn = try db.sqlite.Db.openMemory();
+    defer conn.close();
+    try db.migrate.applyAll(&conn, allocator);
+    try conn.exec("insert into projects (slug, name) values ('scope', 'Scope')");
+    try conn.exec(
+        \\insert into plans (scope_kind, scope_id, title, slug, status)
+        \\values ('repo', 1, 'Anchor', 'anchor', 'active');
+        \\insert into plans (
+        \\  scope_kind, scope_id, title, slug, parent_plan_id, status
+        \\) values ('repo', 1, 'Milestone', 'milestone', 1, 'active');
+        \\insert into plans (scope_kind, scope_id, title, slug, status)
+        \\values ('repo', 1, 'Unrelated', 'unrelated', 'active');
+        \\insert into tasks (
+        \\  scope_kind, scope_id, plan_id, title, body, next_action, slug, status
+        \\) values
+        \\  ('repo', 1, 1, 'Anchor direct',
+        \\   '## Acceptance Criteria' || char(10) || char(10) ||
+        \\   '- Emits policy_version and named readiness reasons.',
+        \\   'Emit the readiness reasons.', 'anchor-direct', 'todo'),
+        \\  ('repo', 1, 2, 'Under child',
+        \\   '## Acceptance Criteria' || char(10) || char(10) ||
+        \\   '- Emits policy_version and named readiness reasons.',
+        \\   'Emit the readiness reasons.', 'under-child', 'todo'),
+        \\  ('repo', 1, 1, 'Anchor direct dep', 'Done.', 'Done.', 'anchor-dep', 'done'),
+        \\  ('repo', 1, 3, 'Unrelated task',
+        \\   '## Acceptance Criteria' || char(10) || char(10) ||
+        \\   '- Emits policy_version and named readiness reasons.',
+        \\   'Emit the readiness reasons.', 'unrelated-task', 'todo');
+        \\insert into entity_links (from_kind, from_id, to_kind, to_id, relationship)
+        \\values ('task', 1, 'task', 3, 'depends-on');
+    );
+
+    const citations = [_]RoadmapCitation{};
+    try reconcile(&conn, allocator, 1, &citations, null);
+
+    const mandatory =
+        "select count(*) from routing_task_facts where task_id=? and fact_kind in ('acceptance_complete','next_action_exact')\x00";
+
+    // The anchor-direct task is staged, exactly like the under-child task.
+    // Before the fix this was 0 and the task could never be packet-ready.
+    try std.testing.expectEqual(@as(i64, 2), try scalarQuery(&conn, mandatory, 1));
+    try std.testing.expectEqual(@as(i64, 2), try scalarQuery(&conn, mandatory, 2));
+
+    // Scope is still bounded: an unrelated root plan's task is untouched.
+    try std.testing.expectEqual(@as(i64, 0), try scalarQuery(&conn, mandatory, 4));
+
+    // The anchor-direct task's dependency produced a blocks fact.
+    const blocks = "select count(*) from routing_task_facts where task_id=? and fact_kind='blocks'\x00";
+    try std.testing.expectEqual(@as(i64, 1), try scalarQuery(&conn, blocks, 1));
+    try std.testing.expectEqual(
+        @as(i64, 1),
+        try scalarQuery(&conn, "select count(*) from routing_task_facts where task_id=? and fact_kind='dependency_fanout'\x00", 1),
+    );
+
+    // Now remove the depends-on edge and re-reconcile: the orphaned `blocks`
+    // fact and the drifted `dependency_fanout` fact must both be pruned,
+    // WITHOUT any direct DB surgery. This is the exact remedy task 6116
+    // reported as having no supported CLI path.
+    try conn.exec("delete from entity_links where from_kind='task' and from_id=1 and relationship='depends-on'");
+    try reconcile(&conn, allocator, 1, &citations, null);
+
+    try std.testing.expectEqual(@as(i64, 0), try scalarQuery(&conn, blocks, 1));
+    try std.testing.expectEqual(
+        @as(i64, 0),
+        try scalarQuery(&conn, "select count(*) from routing_task_facts where task_id=? and fact_kind='dependency_fanout'\x00", 1),
+    );
+    // ...and pruning the orphan must not have collaterally erased the task's
+    // mandatory facts, which is what a delete-scope/stage-scope mismatch does.
+    try std.testing.expectEqual(@as(i64, 2), try scalarQuery(&conn, mandatory, 1));
+    try std.testing.expectEqual(@as(i64, 2), try scalarQuery(&conn, mandatory, 2));
+}
+
+// The `? in (p.parent_plan_id, p.id)` spelling must also be correct when the
+// anchor ITSELF has a parent -- plan 1001 under plan 996 in the live DB is
+// exactly this shape. A `coalesce(p.parent_plan_id, p.id) = ?` spelling looks
+// equivalent and silently fails this case.
+test "reconcile scopes correctly when the anchor plan itself has a parent" {
+    const allocator = std.testing.allocator;
+    var conn = try db.sqlite.Db.openMemory();
+    defer conn.close();
+    try db.migrate.applyAll(&conn, allocator);
+    try conn.exec("insert into projects (slug, name) values ('nested', 'Nested')");
+    try conn.exec(
+        \\insert into plans (scope_kind, scope_id, title, slug, status)
+        \\values ('repo', 1, 'Grandparent', 'grandparent', 'active');
+        \\insert into plans (
+        \\  scope_kind, scope_id, title, slug, parent_plan_id, status
+        \\) values ('repo', 1, 'Anchor', 'anchor', 1, 'active');
+        \\insert into tasks (
+        \\  scope_kind, scope_id, plan_id, title, body, next_action, slug, status
+        \\) values
+        \\  ('repo', 1, 2, 'Direct on nested anchor',
+        \\   '## Acceptance Criteria' || char(10) || char(10) ||
+        \\   '- Emits policy_version and named readiness reasons.',
+        \\   'Emit the readiness reasons.', 'nested-direct', 'todo');
+    );
+
+    const citations = [_]RoadmapCitation{};
+    // Anchor on plan 2, which has parent 1.
+    try reconcile(&conn, allocator, 2, &citations, null);
+
+    try std.testing.expectEqual(@as(i64, 2), try scalarQuery(
+        &conn,
+        "select count(*) from routing_task_facts where task_id=? and fact_kind in ('acceptance_complete','next_action_exact')\x00",
+        1,
+    ));
 }
