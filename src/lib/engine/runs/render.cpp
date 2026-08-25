@@ -112,6 +112,10 @@ auto render_invalid_touch_kind(std::string_view kind) -> std::string {
   return std::format("bench touch: invalid --kind '{}'; expected declared or actual", kind);
 }
 
+auto render_invalid_task_id(std::string_view raw) -> std::string {
+  return std::format("bench start: --task value must be an integer, got '{}'", raw);
+}
+
 auto render_invalid_json(std::string_view leaf, std::string_view flag, std::string_view blob) -> std::string {
   return std::format("{}: {} is not valid JSON: {}", leaf, flag, blob);
 }

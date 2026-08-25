@@ -14,6 +14,22 @@
 #   models registry {list,add,update,remove,bind,unbind,observe,eligibility,
 #                    verify-identity,export}
 #
+# All thirteen are WIRED as of plan 996 task 6149 (src/cmd/planar/handlers/
+# models.cpp). Wiring them surfaced TWO defects in this bucket that no
+# engine test could reach, because until then no caller could produce the
+# inputs:
+#
+#   - `render.cpp`'s `json_number` emitted a BARE `nan` where the oracle
+#     emits the QUOTED string `"nan"` (while both emit `inf` bare -- an
+#     asymmetry nobody would guess). Reachable through
+#     `models evals --quality-floor nan`, which Zig's `parseFloat` accepts
+#     and the renderer echoes back in the `gates` object.
+#   - `verify-identity` needs the registration ALONE and declares no
+#     `--host`, but the only reader was `get_for_host`, whose
+#     `valid_opaque_value` check REFUSES an empty host. `get_registration`
+#     was added for it; without that, every verify-identity against a real
+#     candidate reported `candidate <id> not found` at exit 1.
+#
 # NOT ported, named explicitly rather than silently dropped:
 #
 #   - `models resolve`, the fourteenth leaf. It rests on

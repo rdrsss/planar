@@ -11,6 +11,12 @@
 # schema leaves (bench start|event|touch|finish|show, run start|event|
 # finish|show).
 #
+# All nine are WIRED as of plan 996 task 6149 (src/cmd/planar/handlers/
+# runs.cpp). That cycle added one renderer here, `render_invalid_task_id`:
+# `bench start --task` is declared `(string)` + repeatable on the tree, so
+# the integer conversion belongs to the leaf and its refusal wording is the
+# oracle's rather than the parser's. See render.cppm's note on it.
+#
 # NOT ported, named explicitly rather than silently dropped:
 #
 #   - `bench harvest`, the tenth leaf. It rests on

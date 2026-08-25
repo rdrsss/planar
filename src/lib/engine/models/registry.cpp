@@ -434,6 +434,24 @@ auto list(db::connection& conn) -> std::expected<std::vector<candidate>, registr
   return out;
 }
 
+auto get_registration(db::connection& conn, std::int64_t id) -> std::expected<registration, registry_error> {
+  auto stmt = conn.prepare(std::string(k_registration_columns) + " where id = ?");
+  if (!stmt) {
+    return std::unexpected(registry_error::query_failed);
+  }
+  if (!stmt->bind_int64(1, id)) {
+    return std::unexpected(registry_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(registry_error::query_failed);
+  }
+  if (*stepped == db::step_result::done) {
+    return std::unexpected(registry_error::not_found);
+  }
+  return read_registration(*stmt);
+}
+
 auto get_for_host(db::connection& conn, std::int64_t id, std::string_view host_id) -> std::expected<candidate, registry_error> {
   if (!valid_opaque_value(host_id)) {
     return std::unexpected(registry_error::invalid_value);

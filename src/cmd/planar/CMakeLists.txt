@@ -264,11 +264,13 @@ planar_binary(planar
     handlers/workbench.cppm
     handlers/capture.cppm
     handlers/init.cppm
+    handlers/models.cppm
     handlers/plan.cppm
     handlers/assoc.cppm
     handlers/task.cppm
     handlers/handoff.cppm
     handlers/resume.cppm
+    handlers/runs.cppm
     verb_classification.cppm
     worktree_gate.cppm
     cli_log.cppm
@@ -292,11 +294,13 @@ planar_binary(planar
     handlers/workbench.cpp
     handlers/capture.cpp
     handlers/init.cpp
+    handlers/models.cpp
     handlers/plan.cpp
     handlers/assoc.cpp
     handlers/task.cpp
     handlers/handoff.cpp
     handlers/resume.cpp
+    handlers/runs.cpp
     dispatch.cpp
   DEPENDS
     cliapp
@@ -306,7 +310,9 @@ planar_binary(planar
     engine_config
     engine_external
     engine_identity
+    engine_models
     engine_planning
+    engine_runs
     engine_runtime
     engine_workbench
     engine_workflows

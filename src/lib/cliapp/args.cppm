@@ -127,6 +127,133 @@ export auto parse_int64_zig(std::string_view raw) -> std::optional<std::int64_t>
   return value;
 }
 
+/// @brief Parse a floating-point value exactly as Zig's
+/// `std.fmt.parseFloat(f64, s)` does.
+///
+/// Added for `models evals --quality-floor` (plan 996, task 6149), which is
+/// declared `(string)` on the tree precisely so the leaf can apply Zig's
+/// contract rather than CLI11's. The value is a RANKING GATE — it decides
+/// which candidates are excluded before any ordering — so a parser that
+/// merely "looks close enough" changes which candidate the verb
+/// recommends, and does so at exit 0 with a plausible-looking payload.
+///
+/// Captured against the oracle rather than read off Zig's source:
+///
+///     0.5      -> 0.5      1e-1     -> 0.1      .5    -> 0.5
+///     5.       -> 5        0_5.0    -> 5        +0.5  -> 0.5
+///     -0.5     -> -0.5     0x1p-1   -> 0.5      0X1P-1-> 0.5
+///     inf/INF/Infinity     -> +infinity        nan/NaN -> NaN
+///     1,5      -> error    0.5abc   -> error    " 0.5" -> error
+///     _5 / 5_ / 0.5_ / 0._5 / 1_e2  -> error
+///
+/// The underscore rule is the subtle one and is NOT "strip every
+/// underscore": `0_5.0` parses while `0._5` and `1_e2` do not, because a
+/// separator must sit BETWEEN two digits. Hex float literals are accepted
+/// with a `p` exponent, which `std::from_chars`' general format does not
+/// recognise — hence the explicit prefix split below.
+/// @param raw The raw argument text.
+/// @return The parsed value, or unset when Zig's parser would have raised.
+export auto parse_float_zig(std::string_view raw) -> std::optional<double> {
+  auto const is_dec = [](char c) { return c >= '0' && c <= '9'; };
+  auto const is_hex = [&](char c) { return is_dec(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); };
+  // Which digit class a separator must sit between depends on the LITERAL'S
+  // BASE, and getting that wrong is not academic: with the hex class applied
+  // to a decimal literal, `1_e2` passes (because `e` is a hex digit) and
+  // parses as 100 where the oracle refuses at exit 2 — a gate value accepted
+  // out of thin air. Detected by the differential harness.
+  auto const unsigned_start = !raw.empty() && (raw.front() == '+' || raw.front() == '-') ? 1U : 0U;
+  bool const hex_literal    = raw.size() > unsigned_start + 2 && raw[unsigned_start] == '0' &&
+                              (raw[unsigned_start + 1] == 'x' || raw[unsigned_start + 1] == 'X');
+  auto const is_digit_here  = [&](char c) { return hex_literal ? is_hex(c) : is_dec(c); };
+  // Separators first, on the ORIGINAL text: each '_' needs a digit on both
+  // sides. Checking after the strip would accept `0._5`.
+  for (std::size_t i = 0; i < raw.size(); ++i) {
+    if (raw[i] != '_') {
+      continue;
+    }
+    if (i == 0 || i + 1 == raw.size() || !is_digit_here(raw[i - 1]) || !is_digit_here(raw[i + 1])) {
+      return std::nullopt;
+    }
+  }
+  std::string body;
+  body.reserve(raw.size());
+  for (char const c : raw) {
+    if (c != '_') {
+      body.push_back(c);
+    }
+  }
+
+  std::string_view rest{body};
+  double           sign = 1.0;
+  if (!rest.empty() && (rest.front() == '+' || rest.front() == '-')) {
+    sign = rest.front() == '-' ? -1.0 : 1.0;
+    rest.remove_prefix(1);
+  }
+  if (rest.empty()) {
+    return std::nullopt;
+  }
+
+  auto const iequals = [](std::string_view lhs, std::string_view rhs) {
+    if (lhs.size() != rhs.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+      auto const a = static_cast<char>(lhs[i] | (lhs[i] >= 'A' && lhs[i] <= 'Z' ? 0x20 : 0));
+      if (a != rhs[i]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (iequals(rest, "inf") || iequals(rest, "infinity")) {
+    return sign * std::numeric_limits<double>::infinity();
+  }
+  if (iequals(rest, "nan")) {
+    // Sign is deliberately not applied: `-nan` and `nan` are the same
+    // value, and the renderer emits the literal `"nan"` either way.
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  auto format = std::chars_format::general;
+  if (rest.size() > 2 && rest[0] == '0' && (rest[1] == 'x' || rest[1] == 'X')) {
+    // `from_chars`' hex format wants the digits WITHOUT the `0x` prefix.
+    rest.remove_prefix(2);
+    format = std::chars_format::hex;
+  } else if (!is_dec(rest.front()) && rest.front() != '.') {
+    // Reject the spellings `from_chars`' general format would otherwise
+    // accept on its own — a bare `inf`/`nan` reaching here means the text
+    // had trailing bytes, which Zig refuses.
+    return std::nullopt;
+  }
+
+  double value         = 0;
+  auto const [ptr, ec] = std::from_chars(rest.data(), rest.data() + rest.size(), value, format);
+  if (ec != std::errc{} || ptr != rest.data() + rest.size()) {
+    return std::nullopt;
+  }
+  return sign * value;
+}
+
+/// @brief Parse an UNSIGNED integer exactly as Zig's
+/// `std.fmt.parseInt(u64, s, 10)` does.
+///
+/// `parse_int64_zig`'s rules plus a refusal of any negative value. Added
+/// for `models evals --min-samples` (plan 996, task 6149), where the oracle
+/// really does refuse `-1` — `error: invalid --min-samples '-1'` — while
+/// accepting `+5`, `0`, and the separator form `1_0`. Reusing the signed
+/// parser there would silently accept `-1` and then convert it to a huge
+/// unsigned minimum, gating every candidate as `insufficient_data` at exit
+/// 0.
+/// @param raw The raw argument text.
+/// @return The parsed value, or unset when Zig's parser would have raised.
+export auto parse_uint64_zig(std::string_view raw) -> std::optional<std::uint64_t> {
+  auto const signed_value = parse_int64_zig(raw);
+  if (!signed_value || *signed_value < 0) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint64_t>(*signed_value);
+}
+
 /// @brief The CLI11 validator every integer-valued flag and positional
 /// attaches, so the Zig `parseInt` contract above is enforced at PARSE
 /// time rather than silently degrading to "absent" at the handler.
@@ -240,6 +367,29 @@ export auto flag_string(const parsed_args& args, std::string_view name) -> std::
     return std::nullopt;
   }
   return it->second.back();
+}
+
+/// @brief Read EVERY value supplied for a repeatable flag, in argv order.
+///
+/// The whole-vector accessor `parsed_args::flags`' own comment defers until
+/// "a repeatable flag is actually declared". `bench start --task` is that
+/// flag (plan 996, task 6149): the generated surface marks it
+/// `.list = true`, `cliapp::surface`'s `declare_flag` turns that into
+/// CLI11's unbounded `expected(1, -1)`, and the oracle really does accept
+/// `--task 1 --task 2` and intersect the declared-touch snapshot with BOTH
+/// ids. `flag_string` reads only the LAST element, so a `bench start`
+/// written against it would silently snapshot one task where the operator
+/// named three — a wrong-rows defect with identical stdout (the leaf prints
+/// only the uid).
+/// @param args The parsed result.
+/// @param name The canonical long name, e.g. `"--task"`.
+/// @return Every supplied value in argv order; empty when the flag is absent.
+export auto flag_strings(const parsed_args& args, std::string_view name) -> std::vector<std::string> {
+  auto const it = args.flags.find(name);
+  if (it == args.flags.end()) {
+    return {};
+  }
+  return it->second;
 }
 
 /// @brief Read an integer flag, through `parse_int64_zig`.

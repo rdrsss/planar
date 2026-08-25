@@ -349,6 +349,22 @@ export auto observe(db::connection& conn, const observe_args& args) -> std::expe
 /// @return Every candidate, in fallback order.
 export auto list(db::connection& conn) -> std::expected<std::vector<candidate>, registry_error>;
 
+/// @brief Read one candidate's REGISTRATION alone, with no host scope.
+///
+/// `models registry verify-identity` needs the registered (vendor,
+/// candidate_id) pair and nothing else — the leaf declares no `--host`
+/// flag at all. Routing it through `get_for_host` with an empty host was
+/// tried first and is wrong: `get_for_host` runs `valid_opaque_value` over
+/// its `host_id`, which REFUSES the empty string, so every
+/// `verify-identity` against a real candidate came back `invalid_value`
+/// and the leaf reported `candidate <id> not found` at exit 1 where the
+/// oracle prints a verdict at exit 0 (plan 996, task 6149 — caught by the
+/// differential harness, not by a unit test).
+/// @param conn An open, migrated database connection.
+/// @param id The candidate to read.
+/// @return The registration, or `not_found`.
+export auto get_registration(db::connection& conn, std::int64_t id) -> std::expected<registration, registry_error>;
+
 /// @brief Read one candidate, resolving its observation against ONE host.
 ///
 /// Observations made by other hosts are never substituted, even when they

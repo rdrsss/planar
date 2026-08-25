@@ -123,6 +123,29 @@ export auto render_invalid_status(std::string_view leaf, std::string_view status
 /// @return The message body (no `error: ` prefix, no trailing newline).
 export auto render_invalid_touch_kind(std::string_view kind) -> std::string;
 
+/// @brief The invalid-`--task` refusal for `bench start`'s REPEATABLE
+/// task filter (plan 996, task 6149).
+///
+/// Distinct from every other integer flag in this family and deliberately
+/// so. `bench touch --task` is declared `(int)` on the tree, so CLI11's
+/// own validator rejects a non-integer at parse time with the parser's
+/// wording; `bench start --task` is declared `(string)` + `list` because
+/// it is repeatable, so the tree accepts ANY text and the leaf must do the
+/// conversion — and report it in the oracle's words rather than the
+/// parser's. Oracle-captured:
+///
+///   $Z bench start bt2 --plan 1 --arm strict --base-sha s --config-hash c \
+///                      --task notanint
+///     exit 2, stderr b"error: bench start: --task value must be an
+///                      integer, got 'notanint'\n"
+///
+/// A port that let the value fall through as 0 would snapshot NOTHING and
+/// still exit 0 — no stdout difference at all, since the leaf prints only
+/// the uid.
+/// @param raw The rejected value, echoed verbatim.
+/// @return The message body (no `error: ` prefix, no trailing newline).
+export auto render_invalid_task_id(std::string_view raw) -> std::string;
+
 /// @brief The invalid-JSON refusal for `--payload` / `--config-json`.
 ///
 /// Note the flag name is part of the message and the offending blob is echoed

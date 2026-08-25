@@ -1,0 +1,148 @@
+/// @file runs.cppm
+/// @brief `planar.cmd.planar.handlers.runs` — the nine wired `bench` and
+/// `run` leaves (plan 996, task 6149).
+///
+/// One module for two families because they are one table and one engine
+/// bucket: `bench start|event|touch|finish|show` and `run start|event|
+/// finish|show` all read and write `runs` / `run_events` / `run_touches`
+/// through `planar.engine.runs.lifecycle`, and every byte they print comes
+/// from `planar.engine.runs.render`. Splitting them would duplicate the
+/// uid-resolution helper that is the only shared code either family has.
+///
+/// The tenth leaf, `bench harvest`, is NOT wired and stays a declared
+/// exit-64 refusal. Its engine half was deferred WITH its dependency in
+/// task 6095 (`zig/src/engine/runs/harvest.zig` shells `git diff
+/// --name-only` through `std.process.run`, and `planar.git` exposes no
+/// diff surface); wiring a handler over an absent engine would mean
+/// inventing the behaviour, which is the one thing a behaviour-preserving
+/// port must not do. See `src/lib/engine/runs/CMakeLists.txt` for the full
+/// account.
+///
+/// ## What this layer adds over the engine
+///
+/// Almost nothing, and that thinness is the design rather than a shortcut.
+/// The engine already owns validation (`is_valid_terminal_status`,
+/// `is_valid_json_payload`, `touch_kind_from_text`) AND every rendered
+/// byte. What is left here is: read flags, resolve a `run_uid` to a row id,
+/// map `runs_error` to this binary's exit-code buckets, and write the
+/// renderer's output verbatim.
+///
+/// ## The exit-code buckets are NOT uniform across the family
+///
+/// Oracle-captured, and the differences are the reason each leaf is pinned
+/// separately rather than through one shared mapper:
+///
+///     bench start <dup uid>          exit 6  (precondition_conflict)
+///     bench event <dup seq>          exit 6
+///     bench touch <dup tuple>        exit 1  (query_failed — a UNIQUE
+///                                    violation the engine does NOT
+///                                    special-case; see below)
+///     bench|run show <missing uid>   exit 1  (not_found)
+///     bench|run finish --status X    exit 2  (invalid_input)
+///     bench start --plan <missing>   exit 1  (an FK failure surfacing as
+///                                    query_failed, NOT a named refusal)
+///
+/// ## Three lifecycle transitions are UNGUARDED, and that is reproduced
+///
+/// Probed against the oracle rather than assumed:
+///
+///     $Z bench finish b1 --status completed   -> exit 0
+///     $Z bench finish b1 --status aborted     -> exit 0   (SECOND finish)
+///     $Z bench event  b1 --kind post --seq 2  -> exit 0   (after finish)
+///     $Z bench touch  b1 ... --kind actual    -> exit 0   (after finish)
+///
+/// A double finish overwrites `status` and re-stamps `ended_at`; an event
+/// or touch after finish appends normally. There is no state machine in the
+/// oracle and none is added here (D2). A port that "fixed" this would
+/// refuse operations the reference binary accepts.
+///
+/// ## An oracle stderr artifact that is NOT reproduced
+///
+/// Every `query_failed` path on the reference binary prints TWO lines:
+///
+///     error: runs.touch exec failed: StepFailed
+///     error: bench touch: QueryFailed
+///
+/// The first is a `std.log.err` from zig's db layer, and when stderr is a
+/// FILE rather than a pipe it interleaves with the buffered `exit.die`
+/// writer at a different offset and comes out mangled. Task 6135 already
+/// settled this class as an oracle artifact and did not reproduce it (see
+/// `handlers.t.cpp`'s task-6135 header); the same call is made here. Only
+/// the `error: <leaf>: QueryFailed` line is emitted.
+module;
+
+export module planar.cmd.planar.handlers.runs;
+
+import std;
+import planar.cliapp.args;
+import planar.cmd.planar.context;
+import planar.cmd.planar.handler;
+
+namespace planar::cmd::handlers {
+
+/// @brief `planar bench start` — mint a run and snapshot declared touches.
+///
+/// Prints the uid alone (no `--json` flag exists on this leaf). Warns on an
+/// unrecognized `--arm` and still exits 0; the arm set is recognized, not
+/// closed.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto bench_start(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar bench event` — append a journal row at a CALLER-supplied
+/// `--seq`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto bench_event(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar bench touch` — record one declared or actual file touch.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto bench_touch(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar bench finish` — set the run's terminal status.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto bench_finish(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar bench show` — the measurement view: header, events, AND
+/// touches.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto bench_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar run start` — mint an operational run.
+///
+/// The arm is `--workflow`'s value, or the literal `"op"`. Output is JSON
+/// unconditionally — the leaf declares `--json` but it changes nothing.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto run_start(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar run event` — append a journal row at an AUTO-INCREMENTED
+/// seq (the difference from `bench event`).
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto run_event(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar run finish` — set the run's terminal status.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto run_finish(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar run show` — the operational view: header and events, with
+/// NO touches (they are measurement-only).
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto run_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+} // namespace planar::cmd::handlers

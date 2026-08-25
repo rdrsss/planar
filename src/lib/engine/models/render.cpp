@@ -19,7 +19,27 @@ namespace {
 
 /// @brief Render a double the way `std.json.Stringify` does: shortest
 /// round-trippable, with no forced fractional part.
+///
+/// NaN is the one case `std::format` alone gets wrong, and it is
+/// OPERATOR-REACHABLE: `models evals --quality-floor nan` is accepted by
+/// Zig's `parseFloat` and the value is echoed back in the `gates` object.
+/// The oracle writes it as the QUOTED string `"nan"` while writing the
+/// infinities BARE — `inf` and `-inf`, neither of which is valid JSON
+/// either. Captured:
+///
+///   --quality-floor nan   -> "gates":{...,"quality_floor":"nan"}
+///   --quality-floor -nan  -> "gates":{...,"quality_floor":"nan"}   (sign dropped)
+///   --quality-floor inf   -> "gates":{...,"quality_floor":inf}
+///   --quality-floor -inf  -> "gates":{...,"quality_floor":-inf}
+///
+/// This asymmetry is not a rule anyone would guess, and it was invisible
+/// until `models evals` was wired at layer 3 (plan 996, task 6149) — no
+/// engine test reached this function with a non-finite value, because no
+/// caller could yet supply one. Reproduced, not "fixed" (D2).
 auto json_number(double value) -> std::string {
+  if (std::isnan(value)) {
+    return "\"nan\"";
+  }
   return std::format("{}", value);
 }
 

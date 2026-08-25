@@ -331,11 +331,30 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `block`, `reopen`); 172 before task 6148 ported the remaining TWELVE
   // `annotate` leaves out of it (`show`, `update`, `remove`, `tag`,
   // `resolve`, `dismiss`, `archive`, the three `bulk-*`, `verify` and
-  // `sweep`), completing the family that `add` and `list` opened. This
-  // number is load-bearing: it is what fails when a verb gains a handler
-  // and its generated inventory entry is not dropped in the same change.
-  // Update it WITH the port; never widen the check to make it stop firing.
-  CHECK(unported.size() == 160);
+  // `sweep`), completing the family that `add` and `list` opened; 160
+  // before task 6149 ported TWENTY-TWO more out of it — the thirteen
+  // `models` leaves with engine support (`evals`, `experiments`,
+  // `outcomes` and all ten under `registry`), the five ported `bench`
+  // leaves (`start`, `event`, `touch`, `finish`, `show`) and all four
+  // `run` leaves (`start`, `event`, `finish`, `show`).
+  //
+  // Two leaves from those families STAYED in the inventory on purpose, and
+  // the distinction is the reason this count is 138 rather than 136:
+  // `bench harvest` and `models resolve` are each blocked at LAYER 2, with
+  // their engine halves deferred alongside their dependencies (a
+  // git-subprocess seam and the 2,725-line roles/profile/packet subsystem
+  // respectively). Wiring a handler over an absent engine would mean
+  // inventing behaviour; refusing at exit 64 by name does not.
+  //
+  // This number is load-bearing: it is what fails when a verb gains a
+  // handler and its generated inventory entry is not dropped in the same
+  // change. Update it WITH the port; never widen the check to make it stop
+  // firing.
+  CHECK(unported.size() == 138);
+  // The two deliberately-deferred leaves from otherwise-ported families.
+  // They must remain DECLARED (exit 64), never silently absent.
+  CHECK(unported.contains("bench harvest"));
+  CHECK(unported.contains("models resolve"));
   // The three duals are the entries that are NOT leaves; `resume` and
   // `handoff` have real handlers, so `health` is the only one here.
   CHECK(unported.contains("health"));

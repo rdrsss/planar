@@ -19,8 +19,10 @@ import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.init;
+import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
+import planar.cmd.planar.handlers.runs;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.ext;
@@ -159,6 +161,35 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("handoff show", handlers::handoff_show);
   table.emplace("resume", handlers::resume_packet);
   table.emplace("resume validate", handlers::resume_validate);
+  // `bench` and `run` — one engine bucket, two surfaces over the same
+  // table. `bench harvest` is deliberately absent and stays a declared
+  // exit-64 refusal; its engine half was deferred WITH its git-subprocess
+  // dependency in task 6095. See `handlers/runs.cppm`.
+  // `models` — thirteen of fourteen. `models resolve` stays a declared
+  // exit-64 refusal: its engine half (roles + profile + packet, 2,725
+  // lines) is unported, so there is nothing at layer 2 to call.
+  table.emplace("models registry list", handlers::models_registry_list);
+  table.emplace("models registry export", handlers::models_registry_export);
+  table.emplace("models registry add", handlers::models_registry_add);
+  table.emplace("models registry update", handlers::models_registry_update);
+  table.emplace("models registry remove", handlers::models_registry_remove);
+  table.emplace("models registry bind", handlers::models_registry_bind);
+  table.emplace("models registry unbind", handlers::models_registry_unbind);
+  table.emplace("models registry observe", handlers::models_registry_observe);
+  table.emplace("models registry eligibility", handlers::models_registry_eligibility);
+  table.emplace("models registry verify-identity", handlers::models_registry_verify_identity);
+  table.emplace("models evals", handlers::models_evals);
+  table.emplace("models experiments", handlers::models_experiments);
+  table.emplace("models outcomes", handlers::models_outcomes);
+  table.emplace("bench start", handlers::bench_start);
+  table.emplace("bench event", handlers::bench_event);
+  table.emplace("bench touch", handlers::bench_touch);
+  table.emplace("bench finish", handlers::bench_finish);
+  table.emplace("bench show", handlers::bench_show);
+  table.emplace("run start", handlers::run_start);
+  table.emplace("run event", handlers::run_event);
+  table.emplace("run finish", handlers::run_finish);
+  table.emplace("run show", handlers::run_show);
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64. The inventory is generated alongside the surface
