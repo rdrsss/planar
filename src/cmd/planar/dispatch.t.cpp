@@ -231,13 +231,20 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // THE HEADLINE PROPERTY of the full-surface declaration (plan 996, task
   // 6065). `planar` declares all 223 of the oracle's leaves so that
   // `zig/tools/cli_usage_lint` can resolve every authored command path;
-  // 188 of them land no behaviour. A declared node that dispatches to
+  // 172 of them land no behaviour. A declared node that dispatches to
   // nothing is WORSE than an absent one if it exits 0, so each refuses
   // loudly and names itself.
-  auto const leaf = dispatch({"plan", "list"});
+  //
+  // The exemplar was `plan list` until task 6141 ported it. It has to be a
+  // leaf with no REQUIRED positional, or the parser refuses at exit 2
+  // before dispatch is reached at all and the case would assert the
+  // parser's behaviour rather than the table's — which is what `plan diff`
+  // did on the first attempt at this replacement. `question list` is the
+  // nearest arg-free sibling.
+  auto const leaf = dispatch({"question", "list"});
   CHECK(leaf.code == 64);
   CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: plan list: not implemented in this build\n");
+  CHECK(leaf.err == "error: question list: not implemented in this build\n");
 
   // Deeper, to prove the key is the full path and not the leaf name.
   auto const deep = dispatch({"feedback", "triage", "list"});
@@ -317,19 +324,47 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   }
   // 188 before task 6132 ported `init` out of the inventory; 187 before
   // task 6133 ported `plan create` and `assoc create` out of it; 185
-  // before task 6135 ported `task add` and `assoc add` out of it. This
-  // number is load-bearing: it is what fails when a verb gains a handler
-  // and its generated inventory entry is not dropped in the same change.
-  CHECK(unported.size() == 183);
+  // before task 6135 ported `task add` and `assoc add` out of it; 183
+  // before task 6141 ported ELEVEN more out of it — the four `plan` leaves
+  // with engine support (`show`, `list`, `update`, `recompute-status`) and
+  // the seven `task` ones (`show`, `list`, `update`, `done`, `cancel`,
+  // `block`, `reopen`). This number is load-bearing: it is what fails when
+  // a verb gains a handler and its generated inventory entry is not
+  // dropped in the same change. Update it WITH the port; never widen the
+  // check to make it stop firing.
+  CHECK(unported.size() == 172);
   // The three duals are the entries that are NOT leaves; `resume` and
   // `handoff` have real handlers, so `health` is the only one here.
   CHECK(unported.contains("health"));
   CHECK_FALSE(unported.contains("resume"));
   CHECK_FALSE(unported.contains("handoff"));
   // No implemented verb may appear in the inventory.
-  for (auto const& implemented :
-       {"init", "version", "schema", "completion", "unlink", "workbench gc", "annotate add", "capture snapshot", "handoff show",
-        "resume validate", "ext list", "plan create", "assoc create", "task add", "assoc add"}) {
+  for (auto const& implemented : {"init",
+                                  "version",
+                                  "schema",
+                                  "completion",
+                                  "unlink",
+                                  "workbench gc",
+                                  "annotate add",
+                                  "capture snapshot",
+                                  "handoff show",
+                                  "resume validate",
+                                  "ext list",
+                                  "plan create",
+                                  "assoc create",
+                                  "task add",
+                                  "assoc add",
+                                  "plan show",
+                                  "plan list",
+                                  "plan update",
+                                  "plan recompute-status",
+                                  "task show",
+                                  "task list",
+                                  "task update",
+                                  "task done",
+                                  "task cancel",
+                                  "task block",
+                                  "task reopen"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }

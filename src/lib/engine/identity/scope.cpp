@@ -342,4 +342,335 @@ auto resolve_for_write(db::connection& conn, std::optional<std::string_view> sco
       .scope = derived->scope, .from_explicit_flag = false, .reason = derived->reason, .project_slug = derived->project_slug};
 }
 
+// =========================================================================
+// The READ set (task 6141) — port of zig/src/cmd/planar/scope.zig's
+// `resolveForReadSet` / `readScopeFilterSlugs` and their private helpers.
+// =========================================================================
+
+namespace {
+
+/// @brief One cwd-prefix match, before the specificity contest picks a
+/// winner. Mirrors zig's `Candidate`.
+struct candidate {
+  std::int64_t id;       ///< The project's or association's row id.
+  std::string  kind;     ///< `"repo"` for a project, else the association's `kind` column.
+  std::size_t  root_len; ///< Length of the root path that matched, the tie-breaker.
+};
+
+/// @brief How specific a candidate kind is; LOWER wins. Mirrors zig's
+/// `specificityRank` exactly, including the unknown-kind bucket.
+/// @param kind The candidate's kind token.
+/// @return The rank, 1 (most specific) through 6 (unrecognized).
+auto specificity_rank(std::string_view kind) -> std::uint8_t {
+  if (kind == "project") {
+    return 1;
+  }
+  if (kind == "ad-hoc" || kind == "personal") {
+    return 2;
+  }
+  if (kind == "client") {
+    return 3;
+  }
+  if (kind == "repo") {
+    return 4;
+  }
+  if (kind == "org") {
+    return 5;
+  }
+  return 6;
+}
+
+/// @brief Whether `items` already holds an identical candidate. Mirrors
+/// zig's `candidateExists` — identity is (id, root_len, kind), all three.
+/// @param items The candidates collected so far.
+/// @param c The candidate to test.
+/// @return True when an identical entry is already present.
+auto candidate_exists(const std::vector<candidate>& items, const candidate& c) -> bool {
+  return std::ranges::any_of(
+      items, [&c](const candidate& item) { return item.id == c.id && item.root_len == c.root_len && item.kind == c.kind; });
+}
+
+/// @brief Expand an `org` association into the full workspace read set.
+///
+/// Order is load-bearing and mirrors zig's `expandWorkspaceReadSet`: the
+/// org association first, then every OTHER `project`-kind association
+/// sharing a member project with it (by id), then every member project as a
+/// repo scope (by id). Callers turn this into an OR-ed SQL disjunction, so
+/// the order is not semantically required — but it is what the oracle's
+/// `--json` scope lists render, and reproducing it costs nothing.
+/// @param conn An open, migrated database connection.
+/// @param org_assoc_id The org association's row id.
+/// @return The expanded set, or `scope_error::query_failed`.
+auto expand_workspace_read_set(db::connection& conn, std::int64_t org_assoc_id)
+    -> std::expected<std::vector<read_scope>, scope_error> {
+  std::vector<read_scope> out;
+  out.push_back(read_scope{.kind = scope_kind::association, .id = org_assoc_id});
+
+  std::vector<std::int64_t> project_ids;
+  {
+    auto stmt = conn.prepare("select project_id from project_associations where association_id = ? order by project_id");
+    if (!stmt) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(1, org_assoc_id); !b) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    for (;;) {
+      auto step = stmt->step();
+      if (!step) {
+        return std::unexpected(scope_error::query_failed);
+      }
+      if (*step != db::step_result::row) {
+        break;
+      }
+      project_ids.push_back(stmt->column_int64(0));
+    }
+  }
+
+  {
+    auto stmt = conn.prepare("select distinct a.id from associations a "
+                             "join project_associations pa on pa.association_id = a.id "
+                             "where a.kind = 'project' and a.id != ? "
+                             "  and pa.project_id in (select project_id from project_associations where association_id = ?) "
+                             "order by a.id");
+    if (!stmt) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(1, org_assoc_id); !b) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(2, org_assoc_id); !b) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    for (;;) {
+      auto step = stmt->step();
+      if (!step) {
+        return std::unexpected(scope_error::query_failed);
+      }
+      if (*step != db::step_result::row) {
+        break;
+      }
+      out.push_back(read_scope{.kind = scope_kind::association, .id = stmt->column_int64(0)});
+    }
+  }
+
+  for (auto const pid : project_ids) {
+    out.push_back(read_scope{.kind = scope_kind::repo, .id = pid});
+  }
+  return out;
+}
+
+/// @brief The meta-workspace arm of the read set, run before the generic
+/// candidate contest. Mirrors zig's `resolveMetaWorkspaceReadSet`.
+///
+/// Standing exactly AT an org root expands to the whole workspace (a read
+/// wants everything visible from there); standing deeper inside a member
+/// project narrows to that repo. This is where read and write diverge most
+/// sharply — the same cwd that makes `resolve_for_write` REFUSE as ambiguous
+/// makes a read expansive.
+/// @param conn An open, migrated database connection.
+/// @param cwd The absolute working-directory path.
+/// @return The resolved set, or `std::nullopt` when `cwd` is not inside any
+/// registered meta workspace, or `scope_error::query_failed`.
+auto resolve_meta_workspace_read_set(db::connection& conn, std::string_view cwd)
+    -> std::expected<std::optional<std::vector<read_scope>>, scope_error> {
+  auto stmt = conn.prepare("select p.id, p.root_path, json_extract(a.config_json, '$.root_path'), a.id "
+                           "from projects p "
+                           "join project_associations pa on pa.project_id = p.id "
+                           "join associations a on a.id = pa.association_id "
+                           "where a.kind = 'org' "
+                           "  and p.root_path is not null "
+                           "  and json_extract(a.config_json, '$.workspace_shape') = 'meta-repo' "
+                           "  and json_extract(a.config_json, '$.root_path') is not null "
+                           "order by length(p.root_path) desc, p.id");
+  if (!stmt) {
+    return std::unexpected(scope_error::query_failed);
+  }
+  for (;;) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      return std::optional<std::vector<read_scope>>{};
+    }
+    auto const project_id   = stmt->column_int64(0);
+    auto const project_root = stmt->column_text(1);
+    auto const org_root     = stmt->column_text(2);
+    auto const org_assoc_id = stmt->column_int64(3);
+    if (!path_has_prefix(cwd, org_root) || !path_has_prefix(cwd, project_root)) {
+      continue;
+    }
+    if (cwd == org_root) {
+      auto expanded = expand_workspace_read_set(conn, org_assoc_id);
+      if (!expanded) {
+        return std::unexpected(expanded.error());
+      }
+      return std::optional<std::vector<read_scope>>{std::move(*expanded)};
+    }
+    return std::optional<std::vector<read_scope>>{
+        std::vector<read_scope>{read_scope{.kind = scope_kind::repo, .id = project_id}}};
+  }
+}
+
+/// @brief Collect every project / association / org whose registered root is
+/// a path prefix of `cwd`. Mirrors zig's `deriveCandidates`, all three
+/// queries and their order.
+///
+/// The third query reads the org root out of `config_json` with SQL
+/// `json_extract` rather than parsing JSON in C++ — the same way
+/// `resolve_meta_workspace_write_scope` two functions up reads the same
+/// field. The Zig original hand-parses because its SQL layer surfaces the
+/// column as text; the extracted value is identical.
+/// @param conn An open, migrated database connection.
+/// @param cwd The absolute working-directory path.
+/// @return The candidates, in query order, or `scope_error::query_failed`.
+auto derive_candidates(db::connection& conn, std::string_view cwd) -> std::expected<std::vector<candidate>, scope_error> {
+  std::vector<candidate> out;
+
+  auto const collect = [&](std::string_view sql, bool kind_is_literal_repo) -> std::expected<void, scope_error> {
+    auto stmt = conn.prepare(sql);
+    if (!stmt) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    for (;;) {
+      auto step = stmt->step();
+      if (!step) {
+        return std::unexpected(scope_error::query_failed);
+      }
+      if (*step != db::step_result::row) {
+        return {};
+      }
+      auto const id   = stmt->column_int64(0);
+      auto const kind = kind_is_literal_repo ? std::string{"repo"} : stmt->column_text(1);
+      auto const root = kind_is_literal_repo ? stmt->column_text(1) : stmt->column_text(2);
+      if (!path_has_prefix(cwd, root)) {
+        continue;
+      }
+      candidate c{.id = id, .kind = kind, .root_len = root.size()};
+      if (!candidate_exists(out, c)) {
+        out.push_back(std::move(c));
+      }
+    }
+  };
+
+  if (auto r = collect("select id, root_path from projects where root_path is not null order by root_path", true); !r) {
+    return std::unexpected(r.error());
+  }
+  if (auto r = collect("select a.id, a.kind, p.root_path from associations a "
+                       "join project_associations pa on pa.association_id = a.id "
+                       "join projects p on p.id = pa.project_id "
+                       "where p.root_path is not null order by a.id, p.root_path",
+                       false);
+      !r) {
+    return std::unexpected(r.error());
+  }
+  if (auto r = collect("select id, kind, json_extract(config_json, '$.root_path') from associations "
+                       "where kind = 'org' and config_json is not null and config_json != '' "
+                       "  and json_extract(config_json, '$.root_path') is not null "
+                       "order by id",
+                       false);
+      !r) {
+    return std::unexpected(r.error());
+  }
+  return out;
+}
+
+} // namespace
+
+auto resolve_read_scope_set(db::connection& conn, std::string_view cwd, std::optional<std::string_view> override)
+    -> std::expected<std::vector<read_scope>, scope_error> {
+  if (override.has_value()) {
+    // VALIDATED, unlike the write path's verbatim pass-through. See this
+    // function's doc comment for why the asymmetry is the oracle's.
+    auto ref = resolve_slug(conn, *override);
+    if (!ref) {
+      return std::unexpected(ref.error());
+    }
+    return std::vector<read_scope>{read_scope{.kind = ref->kind, .id = ref->id.value_or(0)}};
+  }
+
+  auto meta = resolve_meta_workspace_read_set(conn, cwd);
+  if (!meta) {
+    return std::unexpected(meta.error());
+  }
+  if (meta->has_value()) {
+    return std::move(**meta);
+  }
+
+  auto candidates = derive_candidates(conn, cwd);
+  if (!candidates) {
+    return std::unexpected(candidates.error());
+  }
+  if (candidates->empty()) {
+    return std::vector<read_scope>{};
+  }
+
+  // Two passes, exactly as zig does it. The first finds the best (rank,
+  // root_len) pair; the second counts how many candidates hit it. A TIE is
+  // not resolved by picking one — it returns the empty set, which the caller
+  // turns into a refusal. Collapsing a tie to `candidates[0]` would produce
+  // a listing scoped to an arbitrary one of two equally-good scopes.
+  auto best_rank     = specificity_rank((*candidates)[0].kind);
+  auto best_root_len = (*candidates)[0].root_len;
+  for (auto const& c : std::span{*candidates}.subspan(1)) {
+    auto const r = specificity_rank(c.kind);
+    if (r < best_rank) {
+      best_rank     = r;
+      best_root_len = c.root_len;
+    } else if (r == best_rank && c.root_len > best_root_len) {
+      best_root_len = c.root_len;
+    }
+  }
+  std::size_t top_count = 0;
+  candidate   winner    = (*candidates)[0];
+  for (auto const& c : *candidates) {
+    if (specificity_rank(c.kind) == best_rank && c.root_len == best_root_len) {
+      ++top_count;
+      winner = c;
+    }
+  }
+  if (top_count != 1) {
+    return std::vector<read_scope>{};
+  }
+
+  if (winner.kind == "repo") {
+    return std::vector<read_scope>{read_scope{.kind = scope_kind::repo, .id = winner.id}};
+  }
+  if (winner.kind == "org") {
+    return expand_workspace_read_set(conn, winner.id);
+  }
+  return std::vector<read_scope>{read_scope{.kind = scope_kind::association, .id = winner.id}};
+}
+
+auto read_scope_filter_slugs(db::connection& conn, std::span<const read_scope> scopes)
+    -> std::expected<std::vector<std::string>, scope_error> {
+  std::vector<std::string> out;
+  out.reserve(scopes.size());
+  for (auto const& row : scopes) {
+    if (row.kind == scope_kind::global) {
+      out.emplace_back("global");
+      continue;
+    }
+    auto const table  = row.kind == scope_kind::association ? "associations" : "projects";
+    auto const prefix = row.kind == scope_kind::association ? "assoc:" : "repo:";
+    auto       stmt   = conn.prepare(std::format("select coalesce(slug,'') from {} where id = ?", table));
+    if (!stmt) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(1, row.id); !b) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      return std::unexpected(scope_error::slug_not_found);
+    }
+    out.push_back(std::format("{}{}", prefix, stmt->column_text(0)));
+  }
+  return out;
+}
+
 } // namespace planar::engine::identity

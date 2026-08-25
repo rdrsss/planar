@@ -6,12 +6,17 @@
 /// Behavior-preserving port (D2) of a SUBSET of zig/src/engine/planning/plan.zig:
 ///   - `create`, `show`, `list`, `update` CRUD against the `plans` table.
 ///   - `recompute_status` — the plan-304 auto-promotion aggregate roll-up.
+///   - `render_text` / `render_json` (task 6133) and `render_list_text` /
+///     `render_list_json` (task 6141). The file header used to record the
+///     renderers as NOT ported, on the grounds that output is a
+///     `cmd/`-layer concern and the task had no `cmd/` binary. The binary
+///     exists now, and D-renderers-in-layer-2 puts them here so the
+///     oracle-exact bytes — terminator included — have one home.
 ///
 /// NOT ported (see this task's coder report for the full scoping
 /// rationale): `listTouching` and the `task touches` path-level surface
-/// (a separate feature, not required by this task's acceptance
-/// criteria); `renderText`/`renderListText` (a `cmd/`-layer output
-/// concern — this task explicitly excludes a `cmd/` binary);
+/// (a separate feature; `plan list --touches` therefore REFUSES at exit 64
+/// rather than silently returning an unfiltered list — task 6141);
 /// `policy.audit.record` calls and the `session_entries` forensic-note
 /// side effect (`emitStatusSessionEntry`) — there is no
 /// `planar.engine.policy.audit` module in the C++ tree yet (same
@@ -110,14 +115,34 @@ export struct plan_update_args {
   std::optional<std::string>  scope;                ///< Scope slug accepted by `identity::resolve_slug`.
 };
 
-/// @brief Filter for `list`. Mirrors zig's plan.zig `ListFilter` (minus
-/// the multi-scope `scopes` array — this task ports the single-`scope`
-/// filter form only; the handler-facing multi-scope walk is a `cmd/`-layer
-/// concern out of scope for this task).
+/// @brief Filter for `list`. Mirrors zig's plan.zig `ListFilter`, INCLUDING
+/// the multi-scope `scopes` array (landed at task 6141, when `plan list` was
+/// wired).
+///
+/// The original port cut `scopes` as "a `cmd/`-layer concern". Wiring the
+/// verb showed that reading is wrong in a way a single-scope filter cannot
+/// express: the oracle's `plan list` handler derives a cwd READ SET, and that
+/// set has more than one member whenever the cwd sits inside a meta-workspace
+/// (`expandWorkspaceReadSet` returns the org association, every sibling
+/// project association, and every member repo). Collapsing that to one scope
+/// would have returned a plausible, silently-short list — the read-verb form
+/// of a filter that does not filter.
+///
+/// `scope` and `scopes` are OR-ed together into one disjunction, exactly as
+/// zig's `list` builds it: an empty combination applies NO scope predicate at
+/// all (every row matches), which is what `plan recompute-status --all` relies
+/// on.
 export struct plan_list_filter {
-  std::vector<plan_status>    statuses;       ///< Match any of these statuses; empty matches every status.
+  /// @brief Match any of these statuses. EMPTY IS NOT "EVERY STATUS": it
+  /// defaults to the three OPEN statuses (draft/active/paused), so a
+  /// caller that wants terminal plans too must name them explicitly. This
+  /// doc used to say "empty matches every status" and the implementation
+  /// agreed with the doc rather than with the oracle — see `list_plans`.
+  std::vector<plan_status>    statuses;
   std::optional<std::int64_t> parent_plan_id; ///< Match only plans with this parent, when set.
   std::optional<std::string>  scope;          ///< Scope slug accepted by `identity::resolve_slug`.
+  /// @brief Additional scope slugs, OR-ed with `scope`. Empty by default.
+  std::vector<std::string> scopes;
 };
 
 /// @brief Error surface for every fallible operation in this module.
@@ -234,5 +259,34 @@ export auto render_text(const plan& p) -> std::string;
 /// caller terminates (the oracle's `output.emit` prints `"\n"` after
 /// stringifying).
 export auto render_json(const plan& p) -> std::string;
+
+/// @brief Render a list of plans as the one-line-per-plan table.
+///
+/// Ports zig's `renderListText` byte for byte, including the empty case:
+/// an empty list renders the literal `"(no plans)\n"`, NOT an empty string.
+/// Columns are `{d:>5}  {s:<10}  {s:<24}  {s}` — id right-aligned in five,
+/// then status and slug LEFT-aligned and space-padded to ten and
+/// twenty-four, then the title unpadded. A value wider than its column is
+/// not truncated; it simply pushes the rest of the line right.
+///
+/// The oracle casts the id to unsigned before formatting, because Zig
+/// 0.16's `{d:>5}` emits a leading `+` on a positive signed integer. That
+/// is a Zig-formatter workaround with no C++ counterpart (`std::format`
+/// never signs a positive), so it is deliberately NOT reproduced as a cast
+/// here — the emitted bytes are the same either way.
+/// @param plans The plans to render, in the order given.
+/// @return The complete block, INCLUDING the trailing newline on its last
+/// line. The caller writes it verbatim and appends nothing.
+export auto render_list_text(std::span<const plan> plans) -> std::string;
+
+/// @brief Render a list of plans as the single-line JSON array.
+///
+/// Each element is exactly `render_json`'s object; the empty list renders
+/// `[]`. Mirrors the oracle's `output.emitList`, which stringifies the
+/// slice with `std.json.Stringify.value`.
+/// @param plans The plans to render, in the order given.
+/// @return The JSON array with NO trailing newline — a fragment the caller
+/// terminates, same contract as `render_json`.
+export auto render_list_json(std::span<const plan> plans) -> std::string;
 
 } // namespace planar::engine::planning

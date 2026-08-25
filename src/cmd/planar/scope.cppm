@@ -78,4 +78,24 @@ export auto map_scope_error(engine::identity::scope_error err, std::string_view 
 export auto map_scope_failure(const engine::identity::write_scope_failure& failure, std::string_view cwd, std::string_view verb)
     -> domain_error;
 
+/// @brief Resolve the cwd-derived READ scope set for a listing verb, as the
+/// slug labels an engine list filter takes (task 6141).
+///
+/// Call this ONLY on the no-`--scope` path. When the operator passed
+/// `--scope`, the oracle's listing handlers bypass the read set entirely and
+/// hand the raw flag value to the engine, which resolves it and reports its
+/// own `SlugNotFound` — a different message and a different code path from
+/// this one. Routing an explicit flag through here would change the error
+/// text on every unknown `--scope`.
+///
+/// An EMPTY read set is turned into the oracle's refusal here rather than
+/// being returned to the caller, because every caller must refuse and a
+/// caller that forgot would list every scope in the database. That is the
+/// "optional argument silently taking its default" shape in read-verb form:
+/// exit 0, plausible rows, wrong rows.
+/// @param ctx The invocation context.
+/// @return The filter slugs (never empty on success), or the refusal as a
+/// `domain_error` (exit 1 for both the empty set and a SQL failure).
+export auto resolve_read_scope_slugs(context& ctx) -> std::expected<std::vector<std::string>, domain_error>;
+
 } // namespace planar::cmd

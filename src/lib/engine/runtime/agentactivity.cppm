@@ -566,6 +566,38 @@ export auto reset_direct_claim_task_after_abort(db::connection& conn, std::int64
 /// @return `true` when live, or `query_failed`.
 export auto is_claim_active_unexpired(db::connection& conn, std::string_view claim_token) -> std::expected<bool, agent_error>;
 
+/// @brief Does ANY live claim currently hold this task (task 6141)?
+///
+/// Port of zig/src/engine/planning/task.zig's private
+/// `hasActiveClaimOnTask`, which gates every operator status flip
+/// (`task done` / `cancel` / `block` / `reopen`, and `task update` when the
+/// patch carries a `--status`) behind `error.TaskClaimed`.
+///
+/// It lives HERE, in the bucket that owns `agent_work_claims`, and not in
+/// `engine_planning` where the oracle keeps it, for one reason:
+/// `engine_planning` and `engine_runtime` are both layer 2, and
+/// `cmake/architecture.cmake` FATALs on a same-layer edge (D15/D18). The
+/// guard is therefore composed at layer 3 by the `task` handlers — the
+/// same D20 shape `annotate add` and `unlink` already use.
+///
+/// ONE behavioural narrowing follows from that move, and it is stated
+/// rather than buried: the oracle runs this check INSIDE the verb's own
+/// write transaction, so it is TOCTOU-safe against a claim acquired
+/// mid-verb. Composed at layer 3 it runs just BEFORE the engine call, so a
+/// claim taken in that window is missed. Single-process behaviour — every
+/// test, and every interactive operator invocation — is identical; only a
+/// genuine race differs. That is strictly better than the alternative this
+/// replaces, which was no guard at all.
+///
+/// `claim_scope` is deliberately not consulted: a `shared` claim blocks
+/// exactly as an `exclusive` one does, mirroring the Zig original's WHERE
+/// clause. See `claim_scope`'s own note.
+/// @param conn An open, migrated connection.
+/// @param task_id The task's row id.
+/// @return `true` when a claim with `status='active'` and an unexpired
+/// lease exists on this task, or `query_failed`.
+export auto has_active_claim_on_task(db::connection& conn, std::int64_t task_id) -> std::expected<bool, agent_error>;
+
 // =========================================================================
 // Reads
 // =========================================================================

@@ -66,4 +66,69 @@ namespace planar::cmd::handlers {
 /// `slug_conflict` (exit 6) on a slug collision.
 export auto plan_create(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar plan show <plan-id> [--json]`.
+///
+/// The id positional is declared as a STRING, not an int, and that is
+/// load-bearing: the oracle parses it itself so it can refuse with its own
+/// message and its own exit code (`plan id must be an integer, got 'abc'`,
+/// exit 2) rather than letting the parser emit a generic type error at
+/// exit 1. Oracle-captured both ways.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `not_found` (exit 1) when no plan has that id.
+export auto plan_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar plan list [--scope] [--status] [--parent] [--json]`.
+///
+/// Two things here are not plumbing:
+///
+///   1. `--status` takes a COMMA-SEPARATED list (`--status draft,active`),
+///      splits on `,`, trims spaces, and skips empty tokens. A single
+///      unparseable token refuses the whole call at exit 1. `task list`'s
+///      `--status` is deliberately NOT a list — see `task_list`.
+///   2. With no `--scope`, the listing is filtered by the cwd-derived READ
+///      SET, which may hold more than one scope. An empty read set is a
+///      REFUSAL, not an unfiltered listing.
+///
+/// `--touches` is declared but not implementable here — see the
+/// implementation for the loud refusal and why it is not a silent
+/// no-filter.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `generic_failure` (exit 1) for an unknown status /
+/// an unresolvable scope / an empty read set, or `not_implemented`
+/// (exit 64) for `--touches`.
+export auto plan_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar plan update <plan-id> [--title] [--status] …`.
+///
+/// `--parent 0` is the documented CLEAR sentinel, not a parent whose id is
+/// zero: the oracle maps `0` onto `clear_parent` and any other value onto a
+/// reassignment. Passing it straight through as an id would write a
+/// dangling foreign key.
+///
+/// Closing a plan (`--status done` / `--status abandoned`) that still has
+/// open descendant plans emits a stderr ADVISORY and proceeds. It is not a
+/// refusal, and the difference is deliberate in the oracle — see the
+/// implementation.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id,
+/// `generic_failure` (exit 1) for an unknown status / an illegal transition
+/// / a parent cycle / no such plan, or `slug_conflict` (exit 6).
+export auto plan_update(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar plan recompute-status (--plan <id> | --all) [--json]`.
+///
+/// Exactly one of `--plan` and `--all` is required; neither and both are
+/// both refusals at exit 2. The engine is single-plan, so the `--all` walk
+/// is the handler's own loop — a per-plan failure is reported to stderr and
+/// SKIPPED rather than aborting the walk, matching the oracle.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) when the flag pair is wrong,
+/// or `generic_failure` (exit 1) when a single `--plan` target does not exist.
+export auto plan_recompute_status(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

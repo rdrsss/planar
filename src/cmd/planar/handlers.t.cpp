@@ -3151,3 +3151,534 @@ TEST_CASE("assoc add --json emits the four-field literal, unescaped", "[cmd][han
   REQUIRE(raw.code == 0);
   CHECK(raw.out == "{\"status\":\"added\",\"association\":\"q\"uote\",\"repo_path\":\"/tmp/pa\"th\"}\n");
 }
+
+// =========================================================================
+// task 6141 — the `plan` and `task` read/update leaves
+//
+// Every case below reads the resulting DATABASE ROWS, not only the rendered
+// line. That is not belt-and-braces: the four silent-degradation defects
+// this port has already closed (tasks 6128, 6132, 6133, 6135) each exited 0
+// with oracle-identical stdout and a wrong row, so a stdout assertion alone
+// would have passed on all four. The read verbs have their own version of
+// the same shape — a filter that is silently ignored still returns
+// plausible rows — so every filter flag here is asserted to actually
+// EXCLUDE something.
+// =========================================================================
+
+namespace {
+
+/// @brief Seed a fixture with an association, two plans and four tasks
+/// spread across scopes and priorities, so a filter has something to
+/// exclude.
+/// @param fx The fixture.
+auto seed_planning(const fixture& fx) -> void {
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"plan", "create", "First plan", "--summary", "S1"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Child plan", "--parent", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T low pri", "--plan", "1", "--priority", "10"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T high pri", "--plan", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T other plan", "--plan", "2"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T global", "--scope", "global"}).code == 0);
+}
+
+} // namespace
+
+TEST_CASE("plan show renders the key/value block and refuses a non-integer id at exit 2", "[cmd][handlers][plan][parity][6141]") {
+  auto const fx = make_fixture("plshow");
+  seed_planning(fx);
+
+  auto const got = dispatch(fx, {"plan", "show", "1"});
+  REQUIRE(got.code == 0);
+  CHECK(got.err.empty());
+  // Nine-column labels, and `summary` AFTER the (absent) `parent` line.
+  CHECK(got.out.starts_with("id:       1\n"
+                            "title:    First plan\n"
+                            "slug:     first-plan\n"
+                            "status:   draft\n"
+                            "scope:    association:1\n"
+                            "summary:  S1\n"
+                            "created:  "));
+  CHECK(got.out.ends_with("\n"));
+
+  // The id positional is a STRING the handler parses itself, so a bad value
+  // is exit 2 with the handler's own wording — NOT the parser's exit 1.
+  auto const bad = dispatch(fx, {"plan", "show", "abc"});
+  CHECK(bad.code == 2);
+  CHECK(bad.err == "error: plan id must be an integer, got 'abc'\n");
+
+  auto const missing = dispatch(fx, {"plan", "show", "99"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: no plan with id 99\n");
+}
+
+TEST_CASE("plan show --json emits null, not empty string, for every unset optional", "[cmd][handlers][plan][parity][6141]") {
+  auto const fx = make_fixture("plshowj");
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"plan", "create", "Bare"}).code == 0);
+
+  auto const got = dispatch(fx, {"plan", "show", "1", "--json"});
+  REQUIRE(got.code == 0);
+  CHECK(got.out == R"({"id":1,"scope_kind":"association","scope_id":1,"title":"Bare","slug":"bare",)"
+                   R"("summary":null,"status":"draft","parent_plan_id":null,)" +
+                       got.out.substr(got.out.find(R"("created_at")")));
+  CHECK(got.out.contains(R"("summary":null)"));
+  CHECK(!got.out.contains(R"("summary":"")"));
+  CHECK(got.out.ends_with("}\n"));
+
+  auto const rows = read_plans(fx);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].summary == "~"); // NULL in the column, not ''
+  CHECK(rows[0].parent_plan_id == "~");
+}
+
+TEST_CASE("plan list filters actually filter, and an empty list is '(no plans)'", "[cmd][handlers][plan][parity][6141]") {
+  auto const fx = make_fixture("pllist");
+  seed_planning(fx);
+
+  // Unfiltered: both plans, id-ordered, four columns.
+  auto const all = dispatch(fx, {"plan", "list"});
+  REQUIRE(all.code == 0);
+  CHECK(all.out == "    1  draft       first-plan                First plan\n"
+                   "    2  draft       child-plan                Child plan\n");
+
+  // --parent EXCLUDES. A filter that was accepted and ignored would return
+  // both rows here and read as success.
+  auto const child = dispatch(fx, {"plan", "list", "--parent", "1"});
+  REQUIRE(child.code == 0);
+  CHECK(child.out == "    2  draft       child-plan                Child plan\n");
+
+  // A filter matching nothing renders the literal sentinel, not "".
+  auto const none = dispatch(fx, {"plan", "list", "--parent", "99"});
+  REQUIRE(none.code == 0);
+  CHECK(none.out == "(no plans)\n");
+
+  // --status is COMMA-SEPARATED on this verb, and tolerates spaces.
+  CHECK(dispatch(fx, {"plan", "list", "--status", "draft"}).out == all.out);
+  CHECK(dispatch(fx, {"plan", "list", "--status", " draft , active "}).out == all.out);
+  CHECK(dispatch(fx, {"plan", "list", "--status", "active"}).out == "(no plans)\n");
+
+  auto const bogus = dispatch(fx, {"plan", "list", "--status", "bogus"});
+  CHECK(bogus.code == 1); // exit 1, NOT the parser's 2
+  CHECK(bogus.err == "error: unknown status 'bogus'\n");
+
+  // --scope EXCLUDES too: no plan lives in global.
+  CHECK(dispatch(fx, {"plan", "list", "--scope", "global"}).out == "(no plans)\n");
+  auto const nosuch = dispatch(fx, {"plan", "list", "--scope", "nosuch"});
+  CHECK(nosuch.code == 1);
+  CHECK(nosuch.err == "error: plan list: SlugNotFound\n");
+
+  // --json is an ARRAY on one line, and empty renders `[]`.
+  auto const json = dispatch(fx, {"plan", "list", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.starts_with(R"([{"id":1,)"));
+  CHECK(json.out.ends_with("}]\n"));
+  CHECK(dispatch(fx, {"plan", "list", "--parent", "99", "--json"}).out == "[]\n");
+}
+
+TEST_CASE("plan list hides terminal plans unless a status names them", "[cmd][handlers][plan][parity][6141]") {
+  // The engine defect this cycle exposed. `plan_list_filter{}` with no
+  // statuses is NOT "every status" — it is the three OPEN ones. The C++
+  // engine applied no predicate at all, which was invisible while no verb
+  // called it, and would have listed closed plans the oracle hides.
+  auto const fx = make_fixture("plterm");
+  seed_planning(fx);
+  REQUIRE(dispatch(fx, {"plan", "update", "2", "--status", "active"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "update", "2", "--status", "done"}).code == 0);
+
+  auto const rows = read_plans(fx);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[1].status == "done"); // the row IS terminal…
+
+  auto const open = dispatch(fx, {"plan", "list"});
+  REQUIRE(open.code == 0);
+  CHECK(!open.out.contains("child-plan")); // …and the default listing hides it
+  CHECK(open.out.contains("first-plan"));
+
+  // Naming it explicitly brings it back, which is what proves the default
+  // is a real predicate rather than an accident of ordering.
+  auto const closed = dispatch(fx, {"plan", "list", "--status", "done"});
+  REQUIRE(closed.code == 0);
+  CHECK(closed.out == "    2  done        child-plan                Child plan\n");
+}
+
+TEST_CASE("plan list refuses when the cwd pins no scope", "[cmd][handlers][plan][parity][6141]") {
+  // An empty read set must REFUSE. Falling back to an unfiltered listing
+  // would be the read-verb form of `plan create`'s silent-`global` defect:
+  // exit 0, plausible rows, every scope in the database.
+  auto const fx = make_fixture("plnoscope");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  // `init` registers the cwd as a PROJECT but joins it to no association,
+  // so cwd derives a repo scope... which is a scope. Point the fixture at a
+  // directory that is registered nowhere instead.
+  auto outside        = fx;
+  outside.vars["PWD"] = (fx.root / "elsewhere").string();
+  std::error_code ec;
+  std::filesystem::create_directories(fx.root / "elsewhere", ec);
+
+  std::ostringstream out;
+  std::ostringstream err;
+  context    ctx{{"planar", "plan", "list"}, planar::cmd::map_env(outside.vars), fx.root / "elsewhere", fx.db_path, out, err};
+  auto const tree  = planar::cmd::root_app();
+  auto const table = planar::cmd::handlers(*tree);
+  CHECK(planar::cmd::run(ctx, *tree, table) == 1);
+  CHECK(err.str() == "error: cwd is not inside any registered Planar scope; cd into a registered scope or pass "
+                     "--scope global\n");
+  CHECK(out.str().empty());
+}
+
+TEST_CASE("plan list --touches refuses loudly rather than ignoring the filter", "[cmd][handlers][plan][parity][6141]") {
+  // `listTouching` is unported. Accepting the flag and returning an
+  // unfiltered list would be indistinguishable from success.
+  auto const fx = make_fixture("pltouch");
+  seed_planning(fx);
+  auto const got = dispatch(fx, {"plan", "list", "--touches", "acme"});
+  CHECK(got.code == 64);
+  CHECK(got.err.contains("--touches: not implemented in this build"));
+  CHECK(got.out.empty());
+
+  auto const tgot = dispatch(fx, {"task", "list", "--touches", "acme"});
+  CHECK(tgot.code == 64);
+  CHECK(tgot.out.empty());
+}
+
+TEST_CASE("plan update writes every supplied field and treats --parent 0 as CLEAR", "[cmd][handlers][plan][parity][6141]") {
+  auto const fx = make_fixture("plupd");
+  seed_planning(fx);
+
+  auto const got = dispatch(fx, {"plan", "update", "2", "--title", "Renamed", "--slug", "renamed", "--summary", "S2"});
+  REQUIRE(got.code == 0);
+  auto rows = read_plans(fx);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[1].title == "Renamed");
+  CHECK(rows[1].slug == "renamed");
+  CHECK(rows[1].summary == "S2");
+  CHECK(rows[1].parent_plan_id == "1"); // untouched by this patch
+
+  // `--parent 0` CLEARS. Threaded through as an id it would write a
+  // dangling key (or fail) instead.
+  REQUIRE(dispatch(fx, {"plan", "update", "2", "--parent", "0"}).code == 0);
+  rows = read_plans(fx);
+  CHECK(rows[1].parent_plan_id == "~"); // NULL, not 0
+  CHECK(rows[1].title == "Renamed");    // and nothing else moved
+
+  // A non-zero value reassigns.
+  REQUIRE(dispatch(fx, {"plan", "update", "2", "--parent", "1"}).code == 0);
+  CHECK(read_plans(fx)[1].parent_plan_id == "1");
+
+  auto const bogus = dispatch(fx, {"plan", "update", "1", "--status", "bogus"});
+  CHECK(bogus.code == 1);
+  CHECK(bogus.err == "error: unknown status 'bogus'\n");
+  CHECK(read_plans(fx)[0].status == "draft"); // refused means UNCHANGED
+
+  auto const missing = dispatch(fx, {"plan", "update", "99", "--title", "X"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: no plan with id 99\n");
+}
+
+TEST_CASE("plan update warns on open descendants when closing, and still writes", "[cmd][handlers][plan][parity][6141]") {
+  // An ADVISORY, not a refusal — and suppressed under --json.
+  auto const fx = make_fixture("plwarn");
+  seed_planning(fx);
+  REQUIRE(dispatch(fx, {"plan", "update", "1", "--status", "active"}).code == 0);
+
+  auto const got = dispatch(fx, {"plan", "update", "1", "--status", "done"});
+  CHECK(got.code == 0); // NOT refused
+  CHECK(got.err.contains("warning: plan 1 still has 1 open descendant plan(s)"));
+  CHECK(got.err.contains("planar plan closeout 1"));
+  CHECK(read_plans(fx)[0].status == "done"); // and the write landed
+
+  // With no open descendants, no advisory at all.
+  REQUIRE(dispatch(fx, {"plan", "update", "2", "--status", "active"}).code == 0);
+  auto const quiet = dispatch(fx, {"plan", "update", "2", "--status", "done"});
+  CHECK(quiet.code == 0);
+  CHECK(quiet.err.empty());
+}
+
+TEST_CASE("plan recompute-status requires exactly one of --plan / --all", "[cmd][handlers][plan][parity][6141]") {
+  auto const fx = make_fixture("plrecomp");
+  seed_planning(fx);
+
+  auto const neither = dispatch(fx, {"plan", "recompute-status"});
+  CHECK(neither.code == 2);
+  CHECK(neither.err == "error: either --plan <id> or --all is required\n");
+
+  auto const both = dispatch(fx, {"plan", "recompute-status", "--plan", "1", "--all"});
+  CHECK(both.code == 2);
+  CHECK(both.err == "error: --plan and --all are mutually exclusive\n");
+
+  auto const missing = dispatch(fx, {"plan", "recompute-status", "--plan", "99"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: no plan with id 99\n");
+}
+
+TEST_CASE("plan recompute-status flips a plan and reports the transition", "[cmd][handlers][plan][parity][6141]") {
+  auto const fx = make_fixture("plrecomp2");
+  seed_planning(fx);
+  // Move a task to `doing` WITHOUT auto-promotion, so the plan is stale and
+  // the recompute has something to do. Without --no-auto-promote the update
+  // would already have promoted it and this case would assert nothing.
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--status", "doing", "--no-auto-promote"}).code == 0);
+  REQUIRE(read_plans(fx)[0].status == "draft");
+
+  auto const one = dispatch(fx, {"plan", "recompute-status", "--plan", "1"});
+  REQUIRE(one.code == 0);
+  CHECK(one.out == "plan 1: draft \xe2\x86\x92 active\n"); // U+2192, not "->"
+  CHECK(read_plans(fx)[0].status == "active");
+
+  // Idempotent: a second run reports no change and writes nothing.
+  auto const again = dispatch(fx, {"plan", "recompute-status", "--plan", "1"});
+  CHECK(again.out == "plan 1: active (no change)\n");
+
+  auto const json = dispatch(fx, {"plan", "recompute-status", "--plan", "1", "--json"});
+  CHECK(json.out == R"({"plan_id":1,"status_before":"active","status_after":"active","flipped":false})"
+                    "\n");
+
+  // `--all` prints only TRANSITIONS, then a tally led by a blank line.
+  auto const all = dispatch(fx, {"plan", "recompute-status", "--all"});
+  REQUIRE(all.code == 0);
+  CHECK(all.out == "\nrecomputed 2 plans; 0 transitioned\n");
+}
+
+TEST_CASE("task show renders the block and refuses a non-integer id at exit 2", "[cmd][handlers][task][parity][6141]") {
+  auto const fx = make_fixture("tkshow");
+  seed_planning(fx);
+
+  auto const got = dispatch(fx, {"task", "show", "1"});
+  REQUIRE(got.code == 0);
+  CHECK(got.out.starts_with("id:          1\n"
+                            "title:       T low pri\n"
+                            "status:      todo\n"
+                            "priority:    10\n"
+                            "scope:       association:1\n"
+                            "plan:        1\n"
+                            "created:     "));
+
+  auto const bad = dispatch(fx, {"task", "show", "abc"});
+  CHECK(bad.code == 2);
+  CHECK(bad.err == "error: task id must be an integer, got 'abc'\n");
+
+  auto const missing = dispatch(fx, {"task", "show", "99"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: no task with id 99\n");
+}
+
+TEST_CASE("task show clamps a negative priority in text but not in JSON or the column", "[cmd][handlers][task][parity][6141]") {
+  auto const fx = make_fixture("tkneg");
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"task", "add", "neg", "--priority", "-5"}).code == 0);
+
+  CHECK(dispatch(fx, {"task", "show", "1"}).out.contains("priority:    0\n"));
+  CHECK(dispatch(fx, {"task", "show", "1", "--json"}).out.contains(R"("priority":-5,)"));
+  CHECK(read_tasks(fx)[0].priority == -5);
+  // And the list renderer clamps too, in its own three-wide column.
+  CHECK(dispatch(fx, {"task", "list"}).out == "    1  pri   0  todo        neg\n");
+}
+
+TEST_CASE("task list filters actually filter, and default hides terminal tasks", "[cmd][handlers][task][parity][6141]") {
+  auto const fx = make_fixture("tklist");
+  seed_planning(fx);
+
+  // Default: the association's three OPEN tasks, priority-ordered. The
+  // global task is excluded by the cwd read set, not by luck.
+  auto const all = dispatch(fx, {"task", "list"});
+  REQUIRE(all.code == 0);
+  CHECK(all.out == "    1  pri  10  todo        T low pri\n"
+                   "    3  pri 100  todo        T other plan\n"
+                   "    2  pri 100  todo        T high pri\n");
+  CHECK(!all.out.contains("T global"));
+
+  // Each filter must EXCLUDE something.
+  CHECK(dispatch(fx, {"task", "list", "--plan", "2"}).out == "    3  pri 100  todo        T other plan\n");
+  CHECK(dispatch(fx, {"task", "list", "--priority-max", "10"}).out == "    1  pri  10  todo        T low pri\n");
+  CHECK(dispatch(fx, {"task", "list", "--scope", "global"}).out == "    4  pri 100  todo        T global\n");
+  CHECK(dispatch(fx, {"task", "list", "--status", "done"}).out == "(no tasks)\n");
+
+  // `--status` here is ONE value, unlike `plan list`'s comma list. The
+  // asymmetry is the oracle's; a helpful "fix" would diverge.
+  auto const list_status = dispatch(fx, {"task", "list", "--status", "todo,doing"});
+  CHECK(list_status.code == 1);
+  CHECK(list_status.err == "error: unknown status 'todo,doing'\n");
+
+  // …and `--scope` here is NOT comma-split either.
+  auto const list_scope = dispatch(fx, {"task", "list", "--scope", "global,acme"});
+  CHECK(list_scope.code == 1);
+  CHECK(list_scope.err == "error: task list: SlugNotFound\n");
+
+  // A done task disappears from the default listing but is still a row.
+  // `todo -> done` is an ILLEGAL transition (the matrix routes through
+  // `doing`), so the intermediate step is required rather than tidy-up.
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--status", "doing"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "done", "1"}).code == 0);
+  CHECK(!dispatch(fx, {"task", "list"}).out.contains("T low pri"));
+  CHECK(dispatch(fx, {"task", "list", "--status", "done"}).out.contains("T low pri"));
+  CHECK(read_tasks(fx)[0].status == "done");
+
+  CHECK(dispatch(fx, {"task", "list", "--status", "done", "--json"}).out.starts_with(R"([{"id":1,)"));
+  CHECK(dispatch(fx, {"task", "list", "--status", "cancelled", "--json"}).out == "[]\n");
+}
+
+TEST_CASE("task update writes every supplied field and treats --plan 0 as CLEAR", "[cmd][handlers][task][parity][6141]") {
+  auto const fx = make_fixture("tkupd");
+  seed_planning(fx);
+
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--title", "Renamed", "--body", "B2", "--next-action", "NA2", "--due",
+                        "2026-12-31", "--slug", "renamed", "--priority", "4"})
+              .code == 0);
+  auto rows = read_tasks(fx);
+  CHECK(rows[0].title == "Renamed");
+  CHECK(rows[0].body == "B2");
+  CHECK(rows[0].next_action == "NA2");
+  CHECK(rows[0].due_at == "2026-12-31");
+  CHECK(rows[0].slug == "renamed");
+  CHECK(rows[0].priority == 4);
+  CHECK(rows[0].plan_id == "1"); // untouched
+
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--plan", "0"}).code == 0);
+  rows = read_tasks(fx);
+  CHECK(rows[0].plan_id == "~"); // NULL, not 0
+  CHECK(rows[0].title == "Renamed");
+
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--plan", "2"}).code == 0);
+  CHECK(read_tasks(fx)[0].plan_id == "2");
+
+  auto const bogus = dispatch(fx, {"task", "update", "1", "--status", "bogus"});
+  CHECK(bogus.code == 1);
+  CHECK(read_tasks(fx)[0].status == "todo");
+
+  auto const missing = dispatch(fx, {"task", "update", "99", "--title", "X"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: no task with id 99\n");
+}
+
+TEST_CASE("task update refuses a cross-scope write at exit 5", "[cmd][handlers][task][parity][6141]") {
+  auto const fx = make_fixture("tkscope");
+  seed_planning(fx);
+
+  // Task 1 lives on the association; `--scope global` is a different scope.
+  auto const got = dispatch(fx, {"task", "update", "1", "--scope", "global", "--title", "X"});
+  CHECK(got.code == 5);
+  CHECK(got.err == "error: scope mismatch: task 1 is in scope 'acme' but operator write scope is 'global'; pass "
+                   "--scope acme to write to that scope from here\n");
+  CHECK(read_tasks(fx)[0].title == "T low pri"); // refused means UNCHANGED
+
+  // A GLOBAL task has no scope label, so the guard allows any write —
+  // asserted so the refusal above is not mistaken for "any --scope fails".
+  CHECK(dispatch(fx, {"task", "update", "4", "--title", "GlobalRenamed"}).code == 0);
+  CHECK(read_tasks(fx)[3].title == "GlobalRenamed");
+}
+
+TEST_CASE("task done / cancel / block / reopen write the row and the audit rows", "[cmd][handlers][task][parity][6141]") {
+  auto const fx = make_fixture("tkflip");
+  seed_planning(fx);
+
+  // `todo -> done` is illegal; the matrix routes through `doing`.
+  auto const straight_to_done = dispatch(fx, {"task", "done", "1"});
+  CHECK(straight_to_done.code == 1);
+  CHECK(straight_to_done.err == "error: task done: IllegalTransition\n");
+  CHECK(read_tasks(fx)[0].status == "todo");
+
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--status", "doing"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "done", "1"}).code == 0);
+  CHECK(read_tasks(fx)[0].status == "done");
+
+  REQUIRE(dispatch(fx, {"task", "cancel", "2"}).code == 0);
+  CHECK(read_tasks(fx)[1].status == "cancelled");
+
+  // `block` writes a status AND a `depends-on` edge; asserting only the
+  // status would miss half the verb.
+  REQUIRE(dispatch(fx, {"task", "block", "3", "--on", "4", "--reason", "waiting"}).code == 0);
+  CHECK(read_tasks(fx)[2].status == "blocked");
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare("select from_kind, from_id, to_kind, to_id, relationship from entity_links");
+    REQUIRE(stmt.has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    CHECK(stmt->column_text(0) == "task");
+    CHECK(stmt->column_int64(1) == 3);
+    CHECK(stmt->column_text(2) == "task");
+    CHECK(stmt->column_int64(3) == 4);
+    CHECK(stmt->column_text(4) == "depends-on");
+  }
+
+  // `reopen` REQUIRES --reason, and the reason lands in `task_reopens`.
+  auto const noreason = dispatch(fx, {"task", "reopen", "1"});
+  CHECK(noreason.code == 2);
+  CHECK(noreason.err == "error: --reason is required for reopen\n");
+  CHECK(read_tasks(fx)[0].status == "done"); // refused means UNCHANGED
+
+  REQUIRE(dispatch(fx, {"task", "reopen", "1", "--reason", "needs redo", "--status", "doing"}).code == 0);
+  CHECK(read_tasks(fx)[0].status == "doing");
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare("select task_id, from_status, to_status, reason, source from task_reopens");
+    REQUIRE(stmt.has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    CHECK(stmt->column_int64(0) == 1);
+    CHECK(stmt->column_text(1) == "done");
+    CHECK(stmt->column_text(2) == "doing");
+    CHECK(stmt->column_text(3) == "needs redo"); // NOT an empty audit row
+    CHECK(stmt->column_text(4) == "task-reopen");
+  }
+}
+
+TEST_CASE("an active work claim refuses every operator status flip until --force", "[cmd][handlers][task][parity][6141]") {
+  // The guard the oracle runs inside its write transaction and this port
+  // composes at layer 3, because engine_planning and engine_runtime are
+  // both layer 2 and may not depend on each other. It became
+  // operator-reachable for the first time when these verbs were wired: an
+  // unguarded `task done` on a claimed task exits 0 and completes work
+  // another agent is holding.
+  auto const fx = make_fixture("tkclaim");
+  seed_planning(fx);
+  {
+    // The claim row is inserted directly rather than through
+    // `acquire_claim`, because that entry point needs a live `sessions` row
+    // and a vendor tag this case does not otherwise care about. What the
+    // guard actually reads is exactly these four columns plus an unexpired
+    // lease, so this is the state under test, not a stand-in for it. The
+    // `lease_expires_at` is an hour out so the case cannot pass by expiry.
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute("insert into sessions (id, vendor) values (1, 'test')").has_value());
+    REQUIRE(conn->execute("insert into agent_work_claims "
+                          "  (claim_token, session_id, entity_kind, entity_id, status, vendor, lease_expires_at) "
+                          "values ('tok6141', 1, 'task', 1, 'active', 'test', "
+                          "        strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 hour'))")
+                .has_value());
+  }
+
+  auto const two_line = std::string{"error: task 1 has an active work claim — operator status flip refused.\n"
+                                    "Release or complete the claim via the agent path, or re-run with --force to "
+                                    "override.\n"};
+
+  auto const done = dispatch(fx, {"task", "done", "1"});
+  CHECK(done.code == 1);
+  CHECK(done.err == two_line);
+  CHECK(read_tasks(fx)[0].status != "done"); // and NOTHING was written
+
+  CHECK(dispatch(fx, {"task", "block", "1", "--on", "2"}).err == two_line);
+  CHECK(dispatch(fx, {"task", "reopen", "1", "--reason", "r"}).err == two_line);
+  CHECK(dispatch(fx, {"task", "update", "1", "--status", "blocked"}).err == two_line);
+
+  // `task cancel` has no --force and renders the GENERIC shape instead.
+  auto const cancelled = dispatch(fx, {"task", "cancel", "1"});
+  CHECK(cancelled.code == 1);
+  CHECK(cancelled.err == "error: task cancel: TaskClaimed\n");
+
+  // A NON-status patch is allowed on a claimed task — the guard is gated on
+  // a status change. Gating it unconditionally would refuse a write the
+  // oracle permits.
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--title", "StillAllowed"}).code == 0);
+  CHECK(read_tasks(fx)[0].title == "StillAllowed");
+
+  // …and --force overrides, which is what proves the refusals above are the
+  // guard rather than some unrelated failure.
+  REQUIRE(dispatch(fx, {"task", "done", "1", "--force"}).code == 0);
+  CHECK(read_tasks(fx)[0].status == "done");
+}

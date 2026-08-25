@@ -95,4 +95,31 @@ auto resolve_write_scope(context& ctx, std::optional<std::string_view> scope_fla
   return *resolved;
 }
 
+auto resolve_read_scope_slugs(context& ctx) -> std::expected<std::vector<std::string>, domain_error> {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const cwd = ctx.cwd().string();
+  auto       set = engine::identity::resolve_read_scope_set(**conn, cwd, std::nullopt);
+  if (!set) {
+    return std::unexpected(map_scope_error(set.error(), "resolving read scope"));
+  }
+  if (set->empty()) {
+    // Verbatim from the oracle (zig/src/cmd/planar/scope.zig's callers in
+    // plan/list.zig and task/list.zig, which share this exact string).
+    // `error.NoReadScope` has no arm in `codeFor`, so it lands in the
+    // generic bucket at exit 1 — oracle-confirmed by running `plan list`
+    // and `task list` from a directory outside every registered scope.
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure,
+                        "cwd is not inside any registered Planar scope; cd into a registered scope or pass --scope global"));
+  }
+  auto slugs = engine::identity::read_scope_filter_slugs(**conn, *set);
+  if (!slugs) {
+    return std::unexpected(map_scope_error(slugs.error(), "resolving read scope"));
+  }
+  return *slugs;
+}
+
 } // namespace planar::cmd

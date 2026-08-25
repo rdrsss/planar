@@ -465,13 +465,22 @@ auto show_task(db::connection& conn, std::int64_t id) -> std::expected<task, tas
 }
 
 auto list_tasks(db::connection& conn, const task_list_filter& filter) -> std::expected<std::vector<task>, task_error> {
-  std::optional<std::pair<task_scope_kind, std::optional<std::int64_t>>> scope_ref;
+  // See `list_plans` for why the set is OR-ed rather than collapsed, and
+  // why an unresolvable member fails the call instead of being skipped.
+  std::vector<std::pair<task_scope_kind, std::optional<std::int64_t>>> scope_refs;
   if (filter.scope.has_value()) {
     auto resolved = resolve_scope_or_global(conn, filter.scope);
     if (!resolved) {
       return std::unexpected(resolved.error());
     }
-    scope_ref = *resolved;
+    scope_refs.push_back(*resolved);
+  }
+  for (const auto& s : filter.scopes) {
+    auto resolved = resolve_scope_or_global(conn, std::optional<std::string>{s});
+    if (!resolved) {
+      return std::unexpected(resolved.error());
+    }
+    scope_refs.push_back(*resolved);
   }
 
   std::string sql(k_select_columns);
@@ -487,13 +496,19 @@ auto list_tasks(db::connection& conn, const task_list_filter& filter) -> std::ex
   if (filter.priority_max.has_value()) {
     sql += " and priority <= ?";
   }
-  if (scope_ref.has_value()) {
-    sql += " and scope_kind = ?";
-    if (scope_ref->second.has_value()) {
-      sql += " and scope_id = ?";
-    } else {
-      sql += " and scope_id is null";
+  if (!scope_refs.empty()) {
+    sql += " and (";
+    for (std::size_t i = 0; i < scope_refs.size(); ++i) {
+      if (i > 0) {
+        sql += " or ";
+      }
+      if (scope_refs[i].first == task_scope_kind::global) {
+        sql += "scope_kind = 'global'";
+      } else {
+        sql += "(scope_kind = ? and scope_id = ?)";
+      }
     }
+    sql += ")";
   }
   sql += " order by priority, updated_at desc, id";
 
@@ -517,14 +532,18 @@ auto list_tasks(db::connection& conn, const task_list_filter& filter) -> std::ex
       return std::unexpected(task_error::query_failed);
     }
   }
-  if (scope_ref.has_value()) {
-    if (auto b = stmt->bind_text(idx++, scope_kind_to_text(scope_ref->first)); !b) {
+  for (const auto& ref : scope_refs) {
+    if (ref.first == task_scope_kind::global) {
+      continue; // literal in the SQL; no placeholder to fill.
+    }
+    if (!ref.second.has_value()) {
       return std::unexpected(task_error::query_failed);
     }
-    if (scope_ref->second.has_value()) {
-      if (auto b = stmt->bind_int64(idx++, *scope_ref->second); !b) {
-        return std::unexpected(task_error::query_failed);
-      }
+    if (auto b = stmt->bind_text(idx++, scope_kind_to_text(ref.first)); !b) {
+      return std::unexpected(task_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(idx++, *ref.second); !b) {
+      return std::unexpected(task_error::query_failed);
     }
   }
 
@@ -949,6 +968,30 @@ auto render_json(const task& t) -> std::string {
                      t.id, scope_kind_to_text(t.scope_kind), opt_int(t.scope_id), opt_int(t.plan_id), opt_int(t.parent_task_id),
                      json_string(t.title), opt_str(t.body), opt_str(t.slug), task_status_to_text(t.status), t.priority,
                      opt_str(t.next_action), opt_str(t.due_at), json_string(t.created_at), json_string(t.updated_at));
+}
+
+auto render_list_text(std::span<const task> tasks) -> std::string {
+  if (tasks.empty()) {
+    return "(no tasks)\n";
+  }
+  std::string out;
+  for (const auto& t : tasks) {
+    out += std::format("{:>5}  pri {:>3}  {:<10}  {}\n", t.id, std::max<std::int64_t>(t.priority, 0),
+                       task_status_to_text(t.status), t.title);
+  }
+  return out;
+}
+
+auto render_list_json(std::span<const task> tasks) -> std::string {
+  std::string out = "[";
+  for (std::size_t i = 0; i < tasks.size(); ++i) {
+    if (i > 0) {
+      out += ",";
+    }
+    out += render_json(tasks[i]);
+  }
+  out += "]";
+  return out;
 }
 
 } // namespace planar::engine::planning

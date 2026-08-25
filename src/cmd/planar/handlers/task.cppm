@@ -77,4 +77,90 @@ namespace planar::cmd::handlers {
 /// `--plan` / `--parent`, or the deferred editor path.
 export auto task_add(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar task show <task-id> [--json]`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `not_found` (exit 1) when no task has that id.
+export auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar task list [--scope] [--status] [--plan]
+/// [--priority-max] [--json]`.
+///
+/// Two divergences from the sibling `plan list` are the oracle's, not
+/// oversights, and both were confirmed by running it:
+///
+///   - `--status` here takes ONE value, not a comma-separated list.
+///     `--status todo,doing` fails as an unknown status.
+///   - `--scope` here is NOT comma-split either; the whole raw string is
+///     handed to the engine as one slug, so `--scope a,b` reports
+///     `SlugNotFound`.
+///
+/// With no `--scope`, the listing is filtered by the cwd-derived READ SET,
+/// which may hold several scopes. With no `--status`, the engine defaults to
+/// the three OPEN statuses (todo/doing/blocked) — a done task is invisible
+/// to a bare `task list`, by design.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `generic_failure` (exit 1) for an unknown status /
+/// an unresolvable scope / an empty read set, or `not_implemented`
+/// (exit 64) for `--touches`.
+export auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar task update <task-id> [--title] [--status] …`.
+///
+/// Carries TWO guards the other task verbs do not, in this order:
+///
+///   1. The cross-scope write guard — the task's stored scope must agree
+///      with the operator's resolved write scope, else exit 5 naming both
+///      and the `--scope` that would allow it.
+///   2. The active-work-claim guard, but only when `--status` is present
+///      and `--force` is not. A non-status patch on a claimed task is
+///      allowed; oracle-confirmed (`task update <claimed> --title X` exits
+///      0).
+///
+/// `--plan 0` is the CLEAR sentinel, mirroring `plan update`'s `--parent 0`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2), `scope_mismatch` (exit 5),
+/// `slug_conflict` (exit 6), or `generic_failure` (exit 1).
+export auto task_update(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar task done <task-id> [--force] [--json]`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `generic_failure` (exit 1) for an active claim without `--force`, an
+/// illegal transition, or no such task.
+export auto task_done(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar task cancel <task-id> [--json]`.
+///
+/// Note the missing `--force`: this verb has no override at all, and its
+/// claim refusal therefore renders as the GENERIC `task cancel: TaskClaimed`
+/// rather than the two-line advisory its siblings print. That is the
+/// oracle's own asymmetry — `cancel.zig` has no `error.TaskClaimed` arm, so
+/// the error falls to the catch-all `else`. Captured, not inferred.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2), or `generic_failure` (exit 1).
+export auto task_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar task block <task-id> --on <id> [--reason] [--force]`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id or a
+/// missing `--on`, or `generic_failure` (exit 1).
+export auto task_block(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar task reopen <task-id> --reason <…> [--status]`.
+///
+/// `--reason` is REQUIRED here even though it is declared optional, and the
+/// refusal is the handler's (exit 2, `--reason is required for reopen`).
+/// `--status` defaults to `todo`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2), or `generic_failure` (exit 1).
+export auto task_reopen(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

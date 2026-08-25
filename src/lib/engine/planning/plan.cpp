@@ -351,18 +351,45 @@ auto show_plan(db::connection& conn, std::int64_t id) -> std::expected<plan, pla
 }
 
 auto list_plans(db::connection& conn, const plan_list_filter& filter) -> std::expected<std::vector<plan>, plan_error> {
-  std::optional<std::pair<plan_scope_kind, std::optional<std::int64_t>>> scope_ref;
+  // `scope` and every entry of `scopes` resolve into ONE disjunction, in
+  // that order — mirrors zig's `list`, which appends `filter.scope` first
+  // and then walks `filter.scopes`. An unresolvable slug anywhere in the
+  // set fails the whole call rather than being skipped: a read verb that
+  // quietly drops one member of its scope set returns a short list that
+  // looks complete.
+  std::vector<std::pair<plan_scope_kind, std::optional<std::int64_t>>> scope_refs;
   if (filter.scope.has_value()) {
     auto resolved = resolve_scope_or_global(conn, filter.scope);
     if (!resolved) {
       return std::unexpected(resolved.error());
     }
-    scope_ref = *resolved;
+    scope_refs.push_back(*resolved);
+  }
+  for (const auto& s : filter.scopes) {
+    auto resolved = resolve_scope_or_global(conn, std::optional<std::string>{s});
+    if (!resolved) {
+      return std::unexpected(resolved.error());
+    }
+    scope_refs.push_back(*resolved);
   }
 
   std::string sql = "select id, scope_kind, scope_id, title, slug, summary, status, parent_plan_id, created_at, "
                     "updated_at from plans where 1 = 1";
-  if (!filter.statuses.empty()) {
+  if (filter.statuses.empty()) {
+    // An EMPTY status filter is not "no filter" — it defaults to the three
+    // OPEN statuses, exactly as `list_tasks` below defaults to
+    // ('todo','doing','blocked'). This arm was missing until task 6141 and
+    // the omission was invisible until `plan list` and `plan
+    // recompute-status --all` were wired: no unit test distinguished
+    // "matches everything" from "matches the open set" because no caller
+    // existed. Two operator-visible consequences, both caught by the
+    // oracle-differential run rather than by any exit code:
+    //   - `plan list` listed done/abandoned plans the oracle hides.
+    //   - `plan recompute-status --all` walked terminal plans and
+    //     RESURRECTED them (`plan 1: done -> active`) — a wrong WRITE, not
+    //     merely a wrong listing.
+    sql += " and status in ('draft','active','paused')";
+  } else {
     sql += " and status in (";
     for (std::size_t i = 0; i < filter.statuses.size(); ++i) {
       if (i > 0) {
@@ -375,13 +402,24 @@ auto list_plans(db::connection& conn, const plan_list_filter& filter) -> std::ex
   if (filter.parent_plan_id.has_value()) {
     sql += " and parent_plan_id = ?";
   }
-  if (scope_ref.has_value()) {
-    sql += " and scope_kind = ?";
-    if (scope_ref->second.has_value()) {
-      sql += " and scope_id = ?";
-    } else {
-      sql += " and scope_id is null";
+  if (!scope_refs.empty()) {
+    // `global` matches on scope_kind ALONE — the oracle emits a bare
+    // `scope_kind = 'global'` with no `scope_id is null` conjunct
+    // (plan.zig / task.zig's `list`). Reproduced rather than tightened:
+    // adding the null check would change which rows a corrupt
+    // global-with-a-scope_id row matches, and D2 says reproduce.
+    sql += " and (";
+    for (std::size_t i = 0; i < scope_refs.size(); ++i) {
+      if (i > 0) {
+        sql += " or ";
+      }
+      if (scope_refs[i].first == plan_scope_kind::global) {
+        sql += "scope_kind = 'global'";
+      } else {
+        sql += "(scope_kind = ? and scope_id = ?)";
+      }
     }
+    sql += ")";
   }
   sql += " order by id";
 
@@ -400,14 +438,22 @@ auto list_plans(db::connection& conn, const plan_list_filter& filter) -> std::ex
       return std::unexpected(plan_error::query_failed);
     }
   }
-  if (scope_ref.has_value()) {
-    if (auto b = stmt->bind_text(idx++, scope_kind_to_text(scope_ref->first)); !b) {
+  for (const auto& ref : scope_refs) {
+    if (ref.first == plan_scope_kind::global) {
+      continue; // literal in the SQL; no placeholder to fill.
+    }
+    if (!ref.second.has_value()) {
+      // A non-global ref with no row id cannot be turned into a predicate.
+      // The oracle unwraps the optional unconditionally here and would
+      // panic; refuse instead of binding a placeholder id, which would
+      // silently match scope_id 0 (i.e. nothing) and return a short list.
       return std::unexpected(plan_error::query_failed);
     }
-    if (scope_ref->second.has_value()) {
-      if (auto b = stmt->bind_int64(idx++, *scope_ref->second); !b) {
-        return std::unexpected(plan_error::query_failed);
-      }
+    if (auto b = stmt->bind_text(idx++, scope_kind_to_text(ref.first)); !b) {
+      return std::unexpected(plan_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(idx++, *ref.second); !b) {
+      return std::unexpected(plan_error::query_failed);
     }
   }
 
@@ -698,6 +744,29 @@ auto render_json(const plan& p) -> std::string {
                      p.id, scope_kind_to_text(p.scope_kind), opt_int(p.scope_id), json_string(p.title), json_string(p.slug),
                      opt_str(p.summary), plan_status_to_text(p.status), opt_int(p.parent_plan_id), json_string(p.created_at),
                      json_string(p.updated_at));
+}
+
+auto render_list_text(std::span<const plan> plans) -> std::string {
+  if (plans.empty()) {
+    return "(no plans)\n";
+  }
+  std::string out;
+  for (const auto& p : plans) {
+    out += std::format("{:>5}  {:<10}  {:<24}  {}\n", p.id, plan_status_to_text(p.status), p.slug, p.title);
+  }
+  return out;
+}
+
+auto render_list_json(std::span<const plan> plans) -> std::string {
+  std::string out = "[";
+  for (std::size_t i = 0; i < plans.size(); ++i) {
+    if (i > 0) {
+      out += ",";
+    }
+    out += render_json(plans[i]);
+  }
+  out += "]";
+  return out;
 }
 
 } // namespace planar::engine::planning

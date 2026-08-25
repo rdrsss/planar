@@ -82,9 +82,20 @@ auto handlers(const CLI::App& root) -> handler_table {
   handler_table table;
   table.emplace("init", handlers::init);
   table.emplace("plan create", handlers::plan_create);
+  table.emplace("plan show", handlers::plan_show);
+  table.emplace("plan list", handlers::plan_list);
+  table.emplace("plan update", handlers::plan_update);
+  table.emplace("plan recompute-status", handlers::plan_recompute_status);
   table.emplace("assoc create", handlers::assoc_create);
   table.emplace("assoc add", handlers::assoc_add);
   table.emplace("task add", handlers::task_add);
+  table.emplace("task show", handlers::task_show);
+  table.emplace("task list", handlers::task_list);
+  table.emplace("task update", handlers::task_update);
+  table.emplace("task done", handlers::task_done);
+  table.emplace("task cancel", handlers::task_cancel);
+  table.emplace("task block", handlers::task_block);
+  table.emplace("task reopen", handlers::task_reopen);
   table.emplace("version", handlers::version);
   // `schema` and `completion` describe the TREE, so they take it; every
   // other handler describes DATA and does not. Same shape as the

@@ -301,4 +301,78 @@ export auto resolve_meta_workspace_write_scope(db::connection& conn, std::string
 export auto resolve_for_write(db::connection& conn, std::optional<std::string_view> scope_flag, std::string_view cwd)
     -> std::expected<write_scope_resolution, write_scope_failure>;
 
+// =========================================================================
+// The READ set (task 6141)
+//
+// Writes resolve to exactly one scope; reads resolve to a SET. The two are
+// deliberately different rules, and `resolve_for_write` is not a special
+// case of `resolve_read_scope_set` — a meta-workspace root is AMBIGUOUS for
+// a write (refuse, name the two choices) and EXPANSIVE for a read (return
+// the org association, its sibling project associations, and every member
+// repo). Port of zig/src/cmd/planar/scope.zig's `resolveForReadSet` /
+// `readScopeFilterSlugs`; it lives here rather than in `cmd/` because
+// `resolve_for_write`'s precedence already moved into this module and
+// splitting the pair across layers would put half the rule out of reach of
+// this module's own tests.
+// =========================================================================
+
+/// @brief One member of a cwd-derived read set. Mirrors zig's `ReadScope`.
+///
+/// `id` is meaningless for `scope_kind::global` and is zero there —
+/// matching the Zig original's defaulted field rather than an optional,
+/// because `read_scope_filter_slugs` never reads it on that arm.
+export struct read_scope {
+  scope_kind   kind;   ///< Which kind of scope this member names.
+  std::int64_t id = 0; ///< The row id; unused (and zero) for `global`.
+};
+
+/// @brief Resolve the read set for a listing verb.
+///
+/// An explicit `override` (the `--scope` value) returns exactly that one
+/// parsed scope — and UNLIKE the write path, it IS validated against the
+/// database here (`resolve_slug`), so `--scope nosuchthing` fails rather
+/// than silently matching nothing. That asymmetry is the oracle's
+/// (`resolveForWrite` threads the flag verbatim; `resolveForReadSet` calls
+/// `resolveSlug`), and it is why an unknown `--scope` on `plan list`
+/// reports a scope error while the same value on `plan create` does not.
+///
+/// Without an override, cwd drives the result, in this order:
+///
+///   1. A registered meta workspace containing `cwd`: exactly AT the org
+///      root expands to the whole workspace; deeper inside a member project
+///      narrows to that repo.
+///   2. Otherwise every project/association/org whose root is a path
+///      prefix of `cwd` becomes a candidate, and the MOST SPECIFIC wins —
+///      by kind rank (project 1, ad-hoc/personal 2, client 3, repo 4, org
+///      5, anything else 6; lower is more specific), then by longest root
+///      path. An `org` winner expands to the whole workspace.
+///
+/// An EMPTY result is a meaningful answer, not an error: it means the cwd
+/// pinned no scope (nothing matched, or two candidates tied at the top).
+/// Callers MUST refuse rather than treating it as "no filter", because an
+/// unfiltered listing of every scope in the database is exactly the
+/// plausible-but-wrong output this set exists to prevent.
+/// @param conn An open, migrated database connection.
+/// @param cwd The absolute working-directory path.
+/// @param override The `--scope` flag's raw value, when passed.
+/// @return The read set (possibly empty), or `scope_error::slug_not_found`
+/// when `override` names no row, or `scope_error::query_failed`.
+export auto resolve_read_scope_set(db::connection& conn, std::string_view cwd, std::optional<std::string_view> override)
+    -> std::expected<std::vector<read_scope>, scope_error>;
+
+/// @brief Turn a read set into the slug labels a list filter takes.
+///
+/// `global` becomes the literal `"global"`; an association becomes
+/// `assoc:<slug>`; a repo becomes `repo:<slug>`. Mirrors zig's
+/// `readScopeFilterSlugs`, including its `coalesce(slug,'')` — a row with a
+/// NULL slug yields `assoc:` / `repo:` rather than being dropped, so a
+/// malformed row surfaces downstream as an unresolvable scope instead of
+/// silently shortening the filter.
+/// @param conn An open, migrated database connection.
+/// @param scopes The read set to label.
+/// @return One slug per input, in order, or `scope_error::slug_not_found`
+/// when a member's row has vanished, or `scope_error::query_failed`.
+export auto read_scope_filter_slugs(db::connection& conn, std::span<const read_scope> scopes)
+    -> std::expected<std::vector<std::string>, scope_error>;
+
 } // namespace planar::engine::identity

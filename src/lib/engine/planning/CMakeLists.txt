@@ -45,14 +45,31 @@
 #     promotion subset in one cycle beats a rushed six-entity sweep with
 #     thin test coverage on all of them — this task's own brief invites
 #     exactly this cut ("A well-tested subset beats a rushed whole").
-#   - The active-work-claim TOCTOU guard (decision 533 / task 4165) — the
-#     `agent_work_claims` table belongs to a different, not-yet-ported
-#     engine bucket (`engine.runtime.agentactivity`).
-#   - `due_at` format validation, the `task_touch_paths`/`touches` surface,
-#     `renderText`/`renderListText` (no `cmd/` binary in this task's
-#     scope), and `policy.audit.record` calls (no `policy.audit` module in
-#     the C++ tree yet — same omission `engine_identity`'s `association.cppm`
-#     already documents).
+#   - The active-work-claim TOCTOU guard (decision 533 / task 4165).
+#     CORRECTED at task 6141: this note used to say the guard was cut
+#     because `engine.runtime.agentactivity` was "a different,
+#     not-yet-ported engine bucket". That bucket IS ported (tasks 6120 and
+#     earlier), so the stated reason had gone stale — exactly the failure
+#     mode this project's briefs warn about, where a deferral note outlives
+#     its cause and the next cycle either re-ports work or leaves a real
+#     gap open. The guard still cannot live in THIS module, but for a
+#     different and permanent reason: `engine_planning` and
+#     `engine_runtime` are both LAYER 2, and `cmake/architecture.cmake`
+#     FATALs on a same-layer edge (D15/D18). It is composed at layer 3 by
+#     the `task` handlers instead — the D20 shape `annotate add` and
+#     `unlink` already use — via
+#     `agentactivity::has_active_claim_on_task`. See that function for the
+#     one behavioural narrowing that move costs (TOCTOU width).
+#   - `due_at` format validation (PORTED at task 6135),
+#     `renderText`/`renderListText` (PORTED: the single-entity renderers at
+#     task 6133/6135, the list renderers at task 6141, when `plan list` and
+#     `task list` were wired).
+#   - Still open: the `task_touch_paths`/`touches` surface — `listTouching`
+#     has no port, so `plan list --touches` / `task list --touches` refuse
+#     at exit 64 rather than silently ignoring the filter — and
+#     `policy.audit.record` calls (no `policy.audit` module in the C++ tree
+#     yet, the same omission `engine_identity`'s `association.cppm` already
+#     documents).
 #
 # The cross-scope guard (`planar.engine.identity.scope`'s
 # `check_scope_guard`/`guard_write`) is DELIBERATELY NOT wired into this

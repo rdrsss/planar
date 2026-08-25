@@ -129,6 +129,8 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 
    Without `--parent-action`, the coder's action is a root (no parent); `planar-watch tree` renders it as a separate, disjoint chain with no connection to the orchestrator. Omitting the flag preserves today's behavior bit-for-bit and is the correct choice when the caller does not want tree hierarchy (e.g. bare `pull` for non-orchestrated work). The flag is validated as a positive integer; an unknown action id causes `--parent-action` to fail with `NotFound`.
 3. **Heartbeat.** `planar-agent heartbeat --claim <token> [--ttl <secs>]` at least once per TTL/2 while work continues. A long-running tool call may delay the heartbeat, but the agent should heartbeat immediately before and after such calls.
+
+   Omitting `--ttl` RENEWS the lease length the claim currently holds — heartbeating an 8h claim keeps 8h. Pass `--ttl` only to change the lease deliberately; it then sets the new length absolutely, in either direction. (Before task 6093 an omitted `--ttl` reset the lease to a fixed 600s default, so heartbeating a long claim *truncated* it to ten minutes and a faithfully-heartbeating dispatch was more likely to lose its claim than one that never heartbeated. Briefs written against that behavior repeat `--ttl` on every heartbeat; that is still correct, just no longer necessary.)
 4. **Report sub-actions (optional).** For granular telemetry, wrap tool calls in `planar-agent action start --claim <token> --kind tool_call` / `planar-agent action end --action <id> --outcome ok`. Most agents skip this and let the top-level action started by `pull` cover the whole work session.
 5. **Terminate** with exactly one of:
    - `planar-agent complete --claim <token> [--summary <text>]` — work succeeded; task → `done`, claim → `completed`.
@@ -939,7 +941,7 @@ Heartbeat with a new `--status` string at every meaningful phase boundary:
 
 Heartbeats between phase transitions (lease-renewal-only) may omit `--status`. The cadence goal is: any operator watching `planar-watch ps` can tell what phase the agent is in without waiting for the next phase transition.
 
-For long operations (> 30 s), heartbeat at least once per TTL/2 even if the status string does not change. Pass `--ttl <secs>` to extend the lease if needed.
+For long operations (> 30 s), heartbeat at least once per TTL/2 even if the status string does not change. A bare heartbeat renews the lease length already held, so no `--ttl` is needed to keep a long lease alive; pass `--ttl <secs>` only to change the lease length deliberately.
 
 ### Do not manually duplicate entity-create events
 

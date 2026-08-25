@@ -370,3 +370,109 @@ TEST_CASE("render_json nulls the unset optionals and escapes the set ones", "[pl
       R"("title":"Quote\"Title","slug":"quote-title","summary":"a \"b\" c\\d","status":"active",)"
       R"("parent_plan_id":1,)"));
 }
+
+TEST_CASE("list_plans with no statuses means the OPEN set, not every status", "[engine][planning][plan][6141]") {
+  // The defect task 6141 exposed by wiring `plan list` and `plan
+  // recompute-status --all`. The oracle's `list` emits
+  // `status in ('draft','active','paused')` when the filter names none;
+  // this port emitted no status predicate at all. Nothing caught it because
+  // nothing called `list_plans` with an empty filter until a verb did.
+  //
+  // The consequence was not cosmetic: `recompute-status --all` walks
+  // `list_plans({})`, so a terminal plan entered the aggregate matrix and
+  // was flipped back to `active` — a resurrection, written to the row.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto open_plan = create_plan(conn, plan_create_args{.title = "Open one"});
+  REQUIRE(open_plan.has_value());
+  auto closed = create_plan(conn, plan_create_args{.title = "Closed one", .status = plan_status::done});
+  REQUIRE(closed.has_value());
+  auto abandoned = create_plan(conn, plan_create_args{.title = "Abandoned one", .status = plan_status::abandoned});
+  REQUIRE(abandoned.has_value());
+  auto paused = create_plan(conn, plan_create_args{.title = "Paused one", .status = plan_status::paused});
+  REQUIRE(paused.has_value());
+
+  auto defaulted = list_plans(conn, plan_list_filter{});
+  REQUIRE(defaulted.has_value());
+  REQUIRE(defaulted->size() == 2); // draft + paused, NOT done or abandoned
+  CHECK((*defaulted)[0].title == "Open one");
+  CHECK((*defaulted)[1].title == "Paused one");
+
+  // Naming the terminal statuses brings them back, which is what proves the
+  // default above is a real predicate and not an accident of row order.
+  auto named = list_plans(conn, plan_list_filter{.statuses = {plan_status::done, plan_status::abandoned}});
+  REQUIRE(named.has_value());
+  REQUIRE(named->size() == 2);
+  CHECK((*named)[0].title == "Closed one");
+  CHECK((*named)[1].title == "Abandoned one");
+}
+
+TEST_CASE("list_plans ORs a multi-scope filter instead of collapsing it", "[engine][planning][plan][6141]") {
+  // A cwd-derived READ SET has more than one member inside a meta
+  // workspace. Collapsing it to one scope returns a plausible, silently
+  // SHORT list — the read-verb form of a filter that does not filter.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  REQUIRE(conn.execute("insert into associations (id, kind, slug, name) values (1,'project','one','One'),"
+                       " (2,'org','two','Two')")
+              .has_value());
+  REQUIRE(
+      conn.execute("insert into projects (id, slug, name, root_path) values (1,'repo-one','Repo One','/tmp/one')").has_value());
+
+  REQUIRE(create_plan(conn, plan_create_args{.title = "In one", .scope = "assoc:one"}).has_value());
+  REQUIRE(create_plan(conn, plan_create_args{.title = "In two", .scope = "assoc:two"}).has_value());
+  REQUIRE(create_plan(conn, plan_create_args{.title = "In repo", .scope = "repo:repo-one"}).has_value());
+  REQUIRE(create_plan(conn, plan_create_args{.title = "In global"}).has_value());
+
+  // One member: everything else is excluded.
+  auto one = list_plans(conn, plan_list_filter{.scopes = {"assoc:one"}});
+  REQUIRE(one.has_value());
+  REQUIRE(one->size() == 1);
+  CHECK((*one)[0].title == "In one");
+
+  // Three members, including `global` (which matches on scope_kind alone,
+  // with no bound parameter — the arm most likely to mis-index the binds).
+  auto many = list_plans(conn, plan_list_filter{.scopes = {"assoc:one", "global", "repo:repo-one"}});
+  REQUIRE(many.has_value());
+  REQUIRE(many->size() == 3);
+  CHECK((*many)[0].title == "In one");
+  CHECK((*many)[1].title == "In repo");
+  CHECK((*many)[2].title == "In global");
+
+  // `scope` and `scopes` combine rather than one overriding the other.
+  auto combined = list_plans(conn, plan_list_filter{.scope = "assoc:two", .scopes = {"assoc:one"}});
+  REQUIRE(combined.has_value());
+  REQUIRE(combined->size() == 2);
+
+  // An unresolvable member fails the WHOLE call. Skipping it would return a
+  // short list that reads as success.
+  auto broken = list_plans(conn, plan_list_filter{.scopes = {"assoc:one", "nosuchscope"}});
+  REQUIRE_FALSE(broken.has_value());
+  CHECK(broken.error() == plan_error::slug_not_found);
+}
+
+TEST_CASE("render_list_text/json carry the oracle's empty sentinels and terminators", "[engine][planning][plan][6141]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  // Empty is a LITERAL, not "".
+  CHECK(render_list_text(std::span<const plan>{}) == "(no plans)\n");
+  CHECK(render_list_json(std::span<const plan>{}) == "[]");
+
+  REQUIRE(create_plan(conn, plan_create_args{.title = "Short"}).has_value());
+  REQUIRE(create_plan(conn, plan_create_args{.title = "A very much longer plan title indeed"}).has_value());
+  auto rows = list_plans(conn, plan_list_filter{});
+  REQUIRE(rows.has_value());
+
+  // Fixed columns: id right in 5, status left in 10, slug left in 24, then
+  // the title. A slug WIDER than its column pushes the title right rather
+  // than being truncated.
+  CHECK(render_list_text(*rows) == "    1  draft       short                     Short\n"
+                                   "    2  draft       a-very-much-longer-plan-title-indeed  A very much longer plan "
+                                   "title indeed\n");
+  // The text form carries its own terminator; the JSON form does not.
+  CHECK(render_list_text(*rows).ends_with("\n"));
+  CHECK(render_list_json(*rows).ends_with("}]"));
+  CHECK_FALSE(render_list_json(*rows).ends_with("\n"));
+}

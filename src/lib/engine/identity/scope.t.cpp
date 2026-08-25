@@ -23,8 +23,11 @@ using planar::engine::identity::derive_from_cwd;
 using planar::engine::identity::derive_reason;
 using planar::engine::identity::guard_write;
 using planar::engine::identity::meta_write_resolution;
+using planar::engine::identity::read_scope;
+using planar::engine::identity::read_scope_filter_slugs;
 using planar::engine::identity::resolve_for_write;
 using planar::engine::identity::resolve_meta_workspace_write_scope;
+using planar::engine::identity::resolve_read_scope_set;
 using planar::engine::identity::resolve_slug;
 using planar::engine::identity::scope_error;
 using planar::engine::identity::scope_kind;
@@ -560,4 +563,142 @@ TEST_CASE("guard_write: --no-scope-check bypasses a genuine mismatch (the docume
 TEST_CASE("guard_write: with no-scope-check disabled, behaves exactly like check_scope_guard", "[scope][guard][no-scope-check]") {
   CHECK(guard_write("acme", "acme", false).has_value());
   CHECK_FALSE(guard_write("acme", "beta", false).has_value());
+}
+
+// =========================================================================
+// The READ set (task 6141)
+// =========================================================================
+
+namespace {
+
+/// @brief Seed a project + association pair rooted at `root`.
+/// @param conn An open, migrated connection.
+/// @param root The project's registered root path.
+void seed_project(planar::db::connection& conn, std::string_view root) {
+  REQUIRE(conn.execute(std::format("insert into projects (id, slug, name, root_path) values "
+                                   "(1,'proj','Proj','{}')",
+                                   root))
+              .has_value());
+  REQUIRE(conn.execute("insert into associations (id, kind, slug, name) values (1,'project','proj','Proj')").has_value());
+  REQUIRE(conn.execute("insert into project_associations (project_id, association_id, source) values (1,1,'user')").has_value());
+}
+
+} // namespace
+
+TEST_CASE("resolve_read_scope_set returns EMPTY for a cwd outside every registered root", "[engine][identity][scope][6141]") {
+  // An empty set is a meaningful answer the caller must REFUSE on, not an
+  // error and not "no filter". A caller that treated it as no-filter would
+  // list every scope in the database.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_project(conn, "/tmp/registered");
+
+  auto set = resolve_read_scope_set(conn, "/tmp/elsewhere", std::nullopt);
+  REQUIRE(set.has_value());
+  CHECK(set->empty());
+
+  // Non-vacuity: the SAME database answers non-empty for a cwd inside.
+  auto inside = resolve_read_scope_set(conn, "/tmp/registered/sub", std::nullopt);
+  REQUIRE(inside.has_value());
+  CHECK(inside->size() == 1);
+}
+
+TEST_CASE("resolve_read_scope_set picks the most specific candidate and refuses a tie", "[engine][identity][scope][6141]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_project(conn, "/tmp/registered");
+
+  // `project` (rank 1) beats `repo` (rank 4) at the same root length.
+  auto set = resolve_read_scope_set(conn, "/tmp/registered", std::nullopt);
+  REQUIRE(set.has_value());
+  REQUIRE(set->size() == 1);
+  CHECK((*set)[0].kind == scope_kind::association);
+  CHECK((*set)[0].id == 1);
+
+  // A SECOND association of the same kind and the same root is a tie, and a
+  // tie returns empty rather than picking one arbitrarily.
+  REQUIRE(conn.execute("insert into associations (id, kind, slug, name) values (2,'project','other','Other')").has_value());
+  REQUIRE(conn.execute("insert into project_associations (project_id, association_id, source) values (1,2,'user')").has_value());
+  auto tied = resolve_read_scope_set(conn, "/tmp/registered", std::nullopt);
+  REQUIRE(tied.has_value());
+  CHECK(tied->empty());
+}
+
+TEST_CASE("resolve_read_scope_set expands a meta-workspace root and narrows inside a member", "[engine][identity][scope][6141]") {
+  // The case a single-scope read filter cannot express, and the reason
+  // `plan_list_filter` grew a `scopes` vector. Standing AT the org root a
+  // read sees the whole workspace; one directory deeper it sees one repo.
+  // Note this is where READ and WRITE diverge hardest: the same cwd makes
+  // `resolve_for_write` refuse as ambiguous.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_project(conn, "/tmp/ws");
+  REQUIRE(conn.execute("insert into associations (id, kind, slug, name, config_json) values "
+                       "(9,'org','ws','WS', json_object('workspace_shape','meta-repo','root_path','/tmp/ws'))")
+              .has_value());
+  REQUIRE(conn.execute("insert into project_associations (project_id, association_id, source) values (1,9,'user')").has_value());
+
+  auto at_root = resolve_read_scope_set(conn, "/tmp/ws", std::nullopt);
+  REQUIRE(at_root.has_value());
+  // org association, then the sibling project association, then the repo.
+  REQUIRE(at_root->size() == 3);
+  CHECK((*at_root)[0].kind == scope_kind::association);
+  CHECK((*at_root)[0].id == 9);
+  CHECK((*at_root)[1].kind == scope_kind::association);
+  CHECK((*at_root)[1].id == 1);
+  CHECK((*at_root)[2].kind == scope_kind::repo);
+  CHECK((*at_root)[2].id == 1);
+
+  auto inside = resolve_read_scope_set(conn, "/tmp/ws/sub", std::nullopt);
+  REQUIRE(inside.has_value());
+  REQUIRE(inside->size() == 1);
+  CHECK(inside->front().kind == scope_kind::repo);
+  CHECK(inside->front().id == 1);
+}
+
+TEST_CASE("resolve_read_scope_set VALIDATES an explicit override, unlike the write path", "[engine][identity][scope][6141]") {
+  // The asymmetry that decides which error an unknown `--scope` produces.
+  // `resolve_for_write` threads the flag verbatim with no lookup; the read
+  // path calls `resolve_slug` and fails.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_project(conn, "/tmp/registered");
+
+  auto good = resolve_read_scope_set(conn, "/tmp/elsewhere", std::string_view{"global"});
+  REQUIRE(good.has_value());
+  REQUIRE(good->size() == 1);
+  CHECK(good->front().kind == scope_kind::global);
+
+  auto bad = resolve_read_scope_set(conn, "/tmp/registered", std::string_view{"nosuchscope"});
+  REQUIRE_FALSE(bad.has_value());
+  CHECK(bad.error() == scope_error::slug_not_found);
+
+  // …while the WRITE path accepts the same value without looking.
+  auto write_ok = resolve_for_write(conn, std::string_view{"nosuchscope"}, "/tmp/registered");
+  REQUIRE(write_ok.has_value());
+  CHECK(write_ok->scope == "nosuchscope");
+}
+
+TEST_CASE("read_scope_filter_slugs labels each member by kind", "[engine][identity][scope][6141]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_project(conn, "/tmp/registered");
+
+  std::vector<read_scope> set{
+      read_scope{.kind = scope_kind::global},
+      read_scope{.kind = scope_kind::association, .id = 1},
+      read_scope{.kind = scope_kind::repo, .id = 1},
+  };
+  auto slugs = read_scope_filter_slugs(conn, set);
+  REQUIRE(slugs.has_value());
+  REQUIRE(slugs->size() == 3);
+  CHECK((*slugs)[0] == "global");
+  CHECK((*slugs)[1] == "assoc:proj");
+  CHECK((*slugs)[2] == "repo:proj");
+
+  // A member whose row has vanished fails the call rather than being
+  // dropped, which would silently shorten the filter.
+  auto missing = read_scope_filter_slugs(conn, std::vector<read_scope>{read_scope{.kind = scope_kind::repo, .id = 404}});
+  REQUIRE_FALSE(missing.has_value());
+  CHECK(missing.error() == scope_error::slug_not_found);
 }

@@ -6013,6 +6013,10 @@ planar-agent context resolve --status consumed|superseded (--id <record-id> | --
 
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
 
+**`planar-agent heartbeat --ttl` semantics (task 6093):** Omitting `--ttl` **renews the lease length the claim currently holds** — a heartbeat on a claim taken with `--ttl 8h` sets the new expiry to eight hours from now. It never shortens the lease it was sent to preserve. Passing `--ttl` sets the lease absolutely from now, in either direction, so a deliberate re-TTL (longer or shorter) is still available; a subsequent bare heartbeat then renews *that* new length. The renewed length is derived from the stored `(last_heartbeat_at, lease_expires_at)` pair, which already encodes the current TTL — there is no stored-TTL column and no migration involved.
+
+Previously `--ttl` carried a hardcoded `600` default, so an omitted flag was indistinguishable from `--ttl 600` and silently cut a long lease to ten minutes. That made a faithfully-heartbeating long dispatch *more* likely to lose its claim than one that never heartbeated at all.
+
 **`planar-agent heartbeat --status <text>` (plan 467 M1):** When `--status` is provided, `heartbeat` inserts a closed `heartbeat`-kind `agent_actions` row with the text in the `summary` column alongside the lease refresh. This makes current activity visible in `planar-watch ps` (`activity:"<summary>"` text column) and `planar-watch feed`. When `--status` is omitted no action row is written (pre-M1 behavior preserved). The payload is capped at **256 bytes**; oversize values exit with `InvalidInput`. An explicit `--status ""` (empty string) writes an action row with an empty summary — distinct from omission.
 
 ### Atomic operation transaction shapes

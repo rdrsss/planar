@@ -17,14 +17,25 @@
 /// NOT ported (see this task's coder report for the full scoping
 /// rationale):
 ///   - The active-work-claim TOCTOU guard (`hasActiveClaimOnTask`,
-///     `error.TaskClaimed`, decision 533 / task 4165). `agent_work_claims`
-///     is a runtime/agent-activity concern from a different bucket
-///     (`engine.runtime.agentactivity`) that has not landed in the C++
-///     tree yet; wiring a guard against a table no C++ module writes to
-///     would be dead defensive code with no way to exercise the guarded
-///     branch. `force` is still accepted on the transition verbs (it
-///     still bypasses the transition MATRIX, which is this task's actual
-///     concern) — only the claim-existence check itself is cut.
+///     `error.TaskClaimed`, decision 533 / task 4165). CORRECTED at task
+///     6141: this note used to justify the cut with "a different bucket
+///     (`engine.runtime.agentactivity`) that has not landed in the C++ tree
+///     yet". It HAS landed, and the guard is live and operator-reachable —
+///     `planar-agent claim` writes `agent_work_claims` today, and the
+///     oracle refuses `task done` on a claimed task. The check still cannot
+///     live in THIS module, for a permanent reason rather than a temporary
+///     one: `engine_planning` and `engine_runtime` are both layer 2, and a
+///     same-layer edge is a configure-time FATAL (D15/D18). It is composed
+///     at LAYER 3 by the `task` handlers instead, through
+///     `agentactivity::has_active_claim_on_task`, which documents the one
+///     behavioural narrowing that costs (the check runs just before the
+///     engine call rather than inside its transaction, so it is not
+///     TOCTOU-safe against a claim taken in that window).
+///
+///     `force` is still accepted on the transition verbs and still bypasses
+///     the transition MATRIX here; at layer 3 the same flag additionally
+///     bypasses the claim check, which is what the oracle's `force`
+///     parameter did.
 ///   - ~~`due_at` format validation~~ — PORTED at task 6135, when `task
 ///     add` was wired and brought a `--due` flag with it. The original cut
 ///     reasoned that format enforcement was a `cmd/`-layer concern; the
@@ -145,14 +156,18 @@ export struct task_update_args {
   std::optional<std::string> reason; ///< Optional reason stored in `task_reopens` when `force` triggers a reopen.
 };
 
-/// @brief Filter for `list`. Mirrors zig's task.zig `ListFilter` (minus
-/// the multi-scope `scopes` array — same single-`scope` subset as
-/// `plan.cppm`'s `plan_list_filter`).
+/// @brief Filter for `list`. Mirrors zig's task.zig `ListFilter`, INCLUDING
+/// the multi-scope `scopes` array (landed at task 6141 alongside
+/// `plan_list_filter`'s — see that struct's comment for why a single-scope
+/// filter is not merely a subset but a wrong answer for a cwd-derived read
+/// set).
 export struct task_list_filter {
   std::optional<task_status>  status;       ///< Match only this status, when set (else the three open statuses).
   std::optional<std::int64_t> plan_id;      ///< Match only tasks with this plan, when set.
   std::optional<std::int64_t> priority_max; ///< Inclusive upper bound on priority, when set.
   std::optional<std::string>  scope;        ///< Scope slug accepted by `identity::resolve_slug`.
+  /// @brief Additional scope slugs, OR-ed with `scope`. Empty by default.
+  std::vector<std::string> scopes;
 };
 
 /// @brief Error surface for every fallible operation in this module.
@@ -322,5 +337,30 @@ export auto render_text(const task& t) -> std::string;
 /// caller terminates (the oracle's `output.emit` prints `"\n"` after
 /// stringifying).
 export auto render_json(const task& t) -> std::string;
+
+/// @brief Render a list of tasks as the one-line-per-task table.
+///
+/// Ports zig's `renderListText` byte for byte. The empty list renders the
+/// literal `"(no tasks)\n"`, not an empty string. The row format is
+/// `{d:>5}  pri {d:>3}  {s:<10}  {s}` — note the literal `pri ` between the
+/// id and the priority, the status LEFT-aligned in ten, and the title
+/// unpadded.
+///
+/// Priority is `max(priority, 0)` here, the same clamp `render_text`
+/// applies and the same one `render_json` does NOT. A task stored at
+/// `-5` lists as `pri   0`.
+/// @param tasks The tasks to render, in the order given.
+/// @return The complete block, INCLUDING the trailing newline on its last
+/// line. The caller writes it verbatim and appends nothing.
+export auto render_list_text(std::span<const task> tasks) -> std::string;
+
+/// @brief Render a list of tasks as the single-line JSON array.
+///
+/// Each element is exactly `render_json`'s object; the empty list renders
+/// `[]`.
+/// @param tasks The tasks to render, in the order given.
+/// @return The JSON array with NO trailing newline — a fragment the caller
+/// terminates, same contract as `render_json`.
+export auto render_list_json(std::span<const task> tasks) -> std::string;
 
 } // namespace planar::engine::planning
