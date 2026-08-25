@@ -92,6 +92,18 @@
 # account and the oracle evidence). Same shape as `scope_ref`: a shared engine
 # primitive moved DOWN a layer so the same-layer prohibition can stay strict
 # without duplication.
+# `policy` (plan 1001, task 6100) is the layer-1 `audit_log` write path —
+# `policy.audit.record`, the append-only "what happened, when, by whom"
+# trail behind `planar audit trail`, session-capture correlation and
+# ext-sync reconciliation. It closes an omission thirteen ported engine
+# buckets had each recorded independently: the oracle's live database holds
+# tens of thousands of these rows and the C++ binaries wrote none, which no
+# exit code or stdout byte reveals. Layer 1 for the same forced D19 reason
+# as `scope_ref` and `json_text` — every `engine_*` bucket needs it and a
+# layer-2 -> layer-2 edge FATALs at configure time. DEPENDS db. Wired into
+# `engine_planning` and `engine_identity` so far; the other buckets each
+# still name it in their own CMakeLists as not-yet-wired (see
+# policy/CMakeLists.txt).
 # `git` (plan 996, tasks 6128 and 6137) is the layer-1 git-subprocess seam —
 # `git -C <dir> <args>`, trimmed, with every non-zero exit collapsing to "no
 # answer". Its absence is what deferred FOUR separate ports (`capture
@@ -159,6 +171,7 @@ add_subdirectory(cliapp)
 add_subdirectory(log)
 add_subdirectory(scope_ref)
 add_subdirectory(json_text)
+add_subdirectory(policy)
 add_subdirectory(git)
 add_subdirectory(http)
 add_subdirectory(adapter)

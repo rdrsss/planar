@@ -14,16 +14,22 @@
 #      so this module depends downward on `scope_ref` exactly the way
 #      `engine_identity` and `engine_planning` already do. No new
 #      extraction was needed and none was invented.
-#   2. `policy.audit.record` -- best-effort `audit_log` writes after each
-#      successful scope UPDATE. There is still no `policy.audit` module in
-#      the C++ tree; `engine_planning/CMakeLists.txt` and
-#      `engine_identity/association.cppm` already document the same
-#      omission, and this module follows that precedent rather than
-#      unilaterally standing up a layer-1 audit module inside a port task.
-#      Neither `promote` nor `demote` reads or emits audit rows, so no
-#      observable CLI contract for the two leaves this module covers is
-#      affected. Called out in promotion.cppm's header and in the task's
-#      coder report as a residual gap.
+#   2. `policy.audit.record` -- STILL UNWIRED, and now for a real reason
+#      rather than a missing module. Task 6100 stood up the layer-1
+#      `planar.policy` module and wired `engine_planning` and
+#      `engine_identity`. This bucket's two call sites were left because
+#      they are the tree's ONLY BEST-EFFORT ones: zig/src/engine/
+#      promotion.zig `catch {}`s the write, deliberately, so that a failed
+#      audit row does not roll back an already-committed scope change --
+#      the opposite of the `try`-propagate shape every wired site uses.
+#      Porting it correctly means porting that asymmetry and testing it,
+#      which is its own cycle, and doing it by reflex alongside the others
+#      would have quietly made a failed audit write fail `promote`. This is
+#      one of only THREE buckets left carrying an actual audit gap (the
+#      others are `engine_entitylink` and `engine_runtime`); the other
+#      eight CMakeLists that used to carry a paragraph like this were
+#      audited and have no Zig call sites at all. The DEPENDS line below
+#      does not name `policy`, which is the mechanical tell.
 #
 # The `kind:id` positional parsing the two handlers do (`entitylink.parseRef`)
 # is NOT duplicated here: `engine_entitylink` already exports `parse_ref`,

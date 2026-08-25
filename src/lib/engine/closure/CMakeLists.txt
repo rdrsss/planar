@@ -31,11 +31,14 @@
 #          1 --scope global` exits 5 with a scope-mismatch message.
 #     Its full oracle behavior is captured in store.t.cpp's header as a
 #     handoff record, so the next attempt starts from evidence.
-#   - `policy.audit.record` calls. There is still no `policy.audit` module in
-#     the C++ tree; `engine_planning/CMakeLists.txt`,
-#     `engine_identity/association.cppm`, `engine_promotion`, `engine_runtime`
-#     and `engine_runs` all document the same omission. `closure show` is
-#     read-only and emits no audit rows.
+#   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
+#     (task 6100). The layer-1 `planar.policy` module now exists, and this
+#     bucket was audited against it: the Zig originals behind `closure show` (a read-only leaf) contain
+#     ZERO `policy.audit.record` call sites, so there is nothing here to
+#     wire. The paragraph this replaces claimed a gap it inherited by
+#     copy-paste from a bucket that has one. Verified with
+#     `grep -rln policy.audit.record zig/src/engine`, whose whole output is
+#     five buckets: planning, identity, entitylink, promotion, runtime.
 #
 # `closure.cppm` is the umbrella re-export, matching
 # `lib/engine/runtime/runtime.cppm`.

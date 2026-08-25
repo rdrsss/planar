@@ -31,11 +31,14 @@
 #     one leaf. The arm is additionally host-dependent (present on the
 #     derivation machine, absent elsewhere, with materially different output
 #     each way), which makes it a poor parity subject regardless.
-#   - `policy.audit.record` calls. There is still no `policy.audit` module in
-#     the C++ tree; `engine_planning/CMakeLists.txt`,
-#     `engine_identity/association.cppm`, `engine_promotion`,
-#     `engine_runtime`, `engine_runs` and `engine_closure` all document the
-#     same omission. `groups recommend` is read-only.
+#   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
+#     (task 6100). The layer-1 `planar.policy` module now exists, and this
+#     bucket was audited against it: the Zig originals behind `groups recommend` (a read-only leaf) contain
+#     ZERO `policy.audit.record` call sites, so there is nothing here to
+#     wire. The paragraph this replaces claimed a gap it inherited by
+#     copy-paste from a bucket that has one. Verified with
+#     `grep -rln policy.audit.record zig/src/engine`, whose whole output is
+#     five buckets: planning, identity, entitylink, promotion, runtime.
 #
 # `grouping.cppm` is the umbrella re-export, matching
 # `lib/engine/runtime/runtime.cppm`.

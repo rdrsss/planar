@@ -32,10 +32,17 @@
 #
 # NOT ported this cycle (see entitylink.cppm's file header for the full
 # per-cut rationale — this is the summary):
-#   - `policy.audit.record` calls on `add`/`remove` — no `planar.engine.policy.audit`
-#     module exists in the C++ tree yet (same omission `plan.cppm`/`task.cppm`
-#     already document; `trail()`, which reads audit_log for a link id, is
-#     cut for the same reason).
+#   - `policy.audit.record` calls: STILL UNWIRED, and now for a real
+#     reason rather than a missing module. Task 6100 stood up the layer-1
+#     `planar.policy` module and wired `engine_planning` and
+#     `engine_identity`; this bucket's two call sites (`link|entity_link` on `add`, `unlink` on `remove`, in zig/src/engine/entitylink.zig) was left for a follow-up because
+#     `trail()` — the READ side that consumes those rows — is cut this cycle too, so wiring the write half alone would ship a half-surface with no reader to prove it against. This is one of only THREE buckets left carrying an
+#     actual audit gap (the others are `engine_promotion` and `engine_runtime`) — the other
+#     eight CMakeLists that used to carry this paragraph were audited and
+#     have no Zig call sites at all. Row shapes and the oracle-capture
+#     method are in src/lib/policy/CMakeLists.txt; the DEPENDS line below
+#     does not name `policy` yet, which is the mechanical tell that this
+#     bucket is not wired.
 #   - The composite `task touches add`/`remove` CLI-handler behavior
 #     (repo-slug -> repo-id resolution, the orphan-repo advisory, the
 #     savepoint-wrapped dual write) — that is `cmd/`-layer glue

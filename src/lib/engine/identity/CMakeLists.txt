@@ -41,6 +41,7 @@ planar_module(engine_identity
     db
     json_text
     scope_ref
+    policy
   )
 
 # `json_text` (task 6133): `association.cpp`'s `render_json` needs the one

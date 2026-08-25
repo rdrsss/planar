@@ -30,10 +30,14 @@
 #     is why `render::not_found_error` is one shared function pinned against
 #     both leaves' captures.
 #
-#   - `policy.audit.record` calls. There is still no `policy.audit` module in
-#     the C++ tree; engine_planning, engine_identity, engine_promotion,
-#     engine_runtime, engine_runs and engine_models all document the same
-#     omission. No `workflow` leaf reads or emits audit rows.
+#   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
+#     (task 6100). The layer-1 `planar.policy` module now exists, and this
+#     bucket was audited against it: the Zig originals behind `workflow list` / `workflow show` (this bucket holds no SQLite handle at all) contain
+#     ZERO `policy.audit.record` call sites, so there is nothing here to
+#     wire. The paragraph this replaces claimed a gap it inherited by
+#     copy-paste from a bucket that has one. Verified with
+#     `grep -rln policy.audit.record zig/src/engine`, whose whole output is
+#     five buckets: planning, identity, entitylink, promotion, runtime.
 #
 # HOME SAFETY. `catalog::resolve_dirs` takes an explicit env-lookup callable
 # instead of reading `std::getenv`, so this module has no way to find the

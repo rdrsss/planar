@@ -56,10 +56,13 @@
 ///
 /// ## Deliberate omissions, named rather than dropped silently
 ///
-/// - **`policy.audit.record`.** There is still no `policy.audit` module
-///   in the C++ tree; `engine_planning`, `engine_identity`,
-///   `engine_promotion`, `engine_runs` and `engine_runtime` all record the
-///   same omission. No claim verb reads or emits audit rows.
+/// - ~~**`policy.audit.record`.**~~ NOT AN OMISSION on this surface. The
+///   layer-1 `planar.policy` module exists as of task 6100, and the claim
+///   verbs were audited against it: the Zig originals write
+///   `agent_actions`, not `audit_log`, and carry zero
+///   `policy.audit.record` call sites. The paragraph this replaces
+///   inherited a gap from a sibling that has one. The real gap in this
+///   bucket is session/handoff/snapshot — see CMakeLists.txt.
 /// - **`latest_active_claim_for_session`, `next_work`,
 ///   `record_entity_create_action`.** The remaining read paths, which
 ///   serve `planar` verbs (`resume`, `status`, entity-create auditing)

@@ -44,10 +44,9 @@
 ///
 /// ## Cut list
 ///
-/// - `policy.audit.record` — no `policy.audit` module exists in the C++ tree
-///   (the same omission engine/planning's CMakeLists.txt, engine/promotion,
-///   engine/runtime and engine/runs all document). This leaf is read-only and
-///   emits no audit rows regardless.
+/// - `policy.audit.record` — nothing to cut. The module exists as of task
+///   6100 and the rest of this bucket writes through it, but this leaf is
+///   read-only and the Zig original has no call site.
 
 module;
 

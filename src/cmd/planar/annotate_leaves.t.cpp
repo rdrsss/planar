@@ -1033,22 +1033,18 @@ TEST_CASE("annotate sweep archives resolved rows past the cutoff and no others",
   CHECK(again.out == "{\"ok\":true,\"action\":\"sweep\",\"since_days\":0,\"swept\":0}\n");
 }
 
-TEST_CASE("annotate sweep IGNORES --scope, matching the oracle's own defect", "[cmd][annotate][sweep][divergence]") {
-  // **This pins a defect, not a feature.** `--scope` is declared on the
-  // leaf and neither the oracle nor `annotation::sweep` applies it: the
-  // engine entry point takes no scope parameter at all, and the reference
-  // binary run as
+TEST_CASE("annotate sweep --scope restricts the blast radius to the named scope", "[cmd][annotate][sweep][scope]") {
+  // This case was `[divergence]` through task 6148: `--scope` was declared
+  // on the leaf and applied by neither the oracle nor `annotation::sweep`,
+  // and the port reproduced that faithfully. Task 6150 fixed it in BOTH
+  // trees at once, so the assertions are inverted here and the tag is no
+  // longer `[divergence]` — the trees agree again.
   //
-  //   cd proj2 && planar annotate sweep --since-days 0 --scope project:proj2
-  //
-  // reported `swept: 2` and archived a row belonging to association 1 —
-  // a destructive bulk mutation crossing a scope boundary through a filter
-  // that parses and does nothing. Every sibling leaf exits 1 with
-  // `SlugNotFound` on `--scope nosuch`; `sweep` exits 0 and sweeps.
-  //
-  // Reproduced deliberately, because the oracle is the spec and a port that
-  // "fixed" it would diverge on the one verb where divergence is silent and
-  // irreversible. Filed as a follow-up task rather than corrected here.
+  // The arm that matters is the SURVIVAL check, not the count. The broken
+  // build reported `swept: 2` for the scoped sweep below, which is an
+  // accurate count of what it archived; only asserting that the row the
+  // scope does NOT name is still `resolved` separates a scoped sweep from
+  // a whole-table one.
   auto const fx = make_fixture("sweepscope");
   join_association(fx, "alpha", fx.root / "proj");
   seed(fx, {"--anchor-path", "f.txt", "--title", "INSCOPE"});
@@ -1065,15 +1061,114 @@ TEST_CASE("annotate sweep IGNORES --scope, matching the oracle's own defect", "[
   REQUIRE(row_snapshot(conn, 1).starts_with("association|1|"));
   REQUIRE(row_snapshot(conn, 2).starts_with("global|<NULL>|"));
 
-  // An unresolvable slug does not even refuse.
+  // An unresolvable slug refuses, like every sibling leaf. Exit 1 with the
+  // `<leaf>: SlugNotFound` body `annotate list` uses.
   auto const unknown = dispatch(fx, {"annotate", "sweep", "--scope", "nosuch", "--json"});
-  CHECK(unknown.code == 0);
-  CHECK(unknown.out == "{\"ok\":true,\"action\":\"sweep\",\"since_days\":30,\"swept\":0}\n");
+  CHECK(unknown.code == 1);
+  CHECK(unknown.out.empty());
+  CHECK(unknown.err == "error: annotate sweep: SlugNotFound\n");
+  CHECK(status_map(conn) == "1=resolved,2=resolved");
 
-  // And a resolvable one does not restrict: BOTH rows go, including the
-  // global one the scope does not name.
+  // A resolvable one restricts. Row 2 is global — the scope does not name
+  // it — and MUST survive.
   auto const scoped = dispatch(fx, {"annotate", "sweep", "--since-days", "0", "--scope", "alpha", "--json"});
   REQUIRE(scoped.code == 0);
-  CHECK(scoped.out == "{\"ok\":true,\"action\":\"sweep\",\"since_days\":0,\"swept\":2}\n");
+  CHECK(scoped.out == "{\"ok\":true,\"action\":\"sweep\",\"since_days\":0,\"swept\":1}\n");
+  CHECK(status_map(conn) == "1=archived,2=resolved");
+
+  // ...and naming the other scope reaches the survivor, proving the first
+  // sweep skipped it for scope reasons and not because it was ineligible.
+  auto const global_sweep = dispatch(fx, {"annotate", "sweep", "--since-days", "0", "--scope", "global", "--json"});
+  REQUIRE(global_sweep.code == 0);
+  CHECK(global_sweep.out == "{\"ok\":true,\"action\":\"sweep\",\"since_days\":0,\"swept\":1}\n");
   CHECK(status_map(conn) == "1=archived,2=archived");
+}
+
+TEST_CASE("annotate sweep without --scope still spans every scope", "[cmd][annotate][sweep][scope]") {
+  // The unscoped sweep is unchanged by 6150 and stays whole-database. This
+  // is the arm that would catch a fix that turned the absent flag into an
+  // implicit cwd-derived scope.
+  auto const fx = make_fixture("sweepnoscope");
+  join_association(fx, "alpha", fx.root / "proj");
+  seed(fx, {"--anchor-path", "f.txt", "--title", "INSCOPE"});
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(fx.root / "outside", ec);
+    auto const added = dispatch_in(fx, fx.root / "outside", {"annotate", "add", "--anchor-path", "g.txt", "--title", "OUTSIDE"});
+    REQUIRE(added.code == 0);
+  }
+  REQUIRE(dispatch(fx, {"annotate", "resolve", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "resolve", "2"}).code == 0);
+
+  auto       conn  = open_db(fx);
+  auto const swept = dispatch(fx, {"annotate", "sweep", "--since-days", "0", "--json"});
+  REQUIRE(swept.code == 0);
+  CHECK(swept.out == "{\"ok\":true,\"action\":\"sweep\",\"since_days\":0,\"swept\":2}\n");
+  CHECK(status_map(conn) == "1=archived,2=archived");
+}
+
+// =========================================================================
+// audit_log rows (plan 1001, task 6100)
+// =========================================================================
+
+namespace {
+
+/// @brief Every `audit_log` row, pipe-joined, one per line, SQL NULL as
+/// the literal `<NULL>`. Dumps the WHOLE table on purpose -- a missing
+/// audit row moves no exit code, no stdout byte and no rendered field, so
+/// only a full transcript discriminates. See handlers.t.cpp's twin.
+/// @param fx The fixture.
+/// @return The transcript, newline-terminated per row.
+auto audit_transcript(const fixture& fx) -> std::string {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select verb, entity_kind, entity_id, coalesce(summary, '<NULL>') "
+                            "from audit_log order by id");
+  REQUIRE(stmt.has_value());
+  std::string out;
+  while (true) {
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    if (*stepped == planar::db::step_result::done) {
+      break;
+    }
+    out += std::format("{}|{}|{}|{}\n", stmt->column_text(0), stmt->column_text(1), stmt->column_int64(2), stmt->column_text(3));
+  }
+  return out;
+}
+
+} // namespace
+
+// ORACLE PROVENANCE: this exact argv sequence was run against the Zig
+// binary on an isolated scratch database and `audit_log` dumped with the
+// same projection. The transcript below is that dump, transcribed.
+TEST_CASE("the annotate leaves write the oracle's audit_log rows", "[cmd][annotate][audit][6100]") {
+  auto const fx = make_fixture("annaudit");
+  seed(fx, {"--anchor-path", "f.txt", "--title", "A1"});
+  seed(fx, {"--anchor-path", "g.txt"}); // no title
+  REQUIRE(dispatch(fx, {"annotate", "update", "1", "--body", "b"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "update", "1", "--status", "resolved"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "dismiss", "2"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "archive", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "tag", "1", "t1"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "tag", "1", "t1", "--remove"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "remove", "2"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "update", "1"}).code == 0); // no-op patch
+
+  CHECK(audit_transcript(fx) == "create|annotation|1|create annotation 'A1'\n"
+                                // An UNTITLED row falls back to the anchor path, not to `<NULL>`
+                                // and not to the id.
+                                "create|annotation|2|create annotation 'g.txt'\n"
+                                "update|annotation|1|<NULL>\n"
+                                // `update --status` is a status_change with a NULL summary; the
+                                // verb-labelled summaries below come only from the dedicated
+                                // transition verbs, and they are the VERB (`dismiss`, `archive`),
+                                // one letter off the resulting status (`dismissed`, `archived`).
+                                "status_change|annotation|1|<NULL>\n"
+                                "status_change|annotation|2|dismiss\n"
+                                "status_change|annotation|1|archive\n"
+                                "delete|annotation|2|<NULL>\n");
+  // Nothing above came from `annotate tag`, `annotate tag --remove`, or
+  // the no-op `annotate update 1`. All three exit 0 and all three write
+  // NO row -- which is why they are in the sequence at all.
 }

@@ -37,11 +37,14 @@
 #   handler performs on that path is NOT reproduced here -- see legacy.cppm's
 #   "A config read that feeds nothing" note and engine/models/legacy.cpp.)
 #
-#   - `policy.audit.record` calls. There is still no `policy.audit` module in
-#     the C++ tree; `engine_planning/CMakeLists.txt`,
-#     `engine_identity/association.cppm`, `engine_promotion`, `engine_runtime`
-#     and `engine_runs` all document the same omission. No `models` leaf reads
-#     or emits audit rows, so no observable CLI contract is affected.
+#   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
+#     (task 6100). The layer-1 `planar.policy` module now exists, and this
+#     bucket was audited against it: the Zig originals behind the `models` leaves contain
+#     ZERO `policy.audit.record` call sites, so there is nothing here to
+#     wire. The paragraph this replaces claimed a gap it inherited by
+#     copy-paste from a bucket that has one. Verified with
+#     `grep -rln policy.audit.record zig/src/engine`, whose whole output is
+#     five buckets: planning, identity, entitylink, promotion, runtime.
 #
 # `models.cppm` is the umbrella re-export, matching
 # `lib/engine/runs/runs.cppm`.

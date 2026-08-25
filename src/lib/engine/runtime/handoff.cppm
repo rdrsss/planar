@@ -8,11 +8,13 @@
 ///
 /// A handoff is operator vendor-session state: per plan 144 M4 the table
 /// carries NO scope columns, so its mutations skip the cross-scope guard.
-/// The Zig original still emits a `policy.audit` row per mutation; this
-/// tree has no `policy.audit` module (task 6100, an open operator
-/// decision), and no `handoff` leaf reads or emits audit rows, so no
-/// observable CLI contract is affected. Same omission every other bucket
-/// here already documents.
+/// The Zig original emits a `policy.audit` row per mutation (four call
+/// sites: create/validate/consume/abandon) and this tree still does not.
+/// The layer-1 `planar.policy` module DOES now exist — task 6100 landed
+/// it and wired `engine_planning`/`engine_identity` — so this is a real
+/// remaining gap rather than a missing dependency. It is one of three
+/// left in the tree; see engine/runtime/CMakeLists.txt for why this
+/// bucket wants its own cycle.
 ///
 /// ## The transition check is INJECTED, not imported
 ///

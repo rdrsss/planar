@@ -45,11 +45,14 @@
 #
 # NOT ported, named rather than silently dropped:
 #
-#   - `policy.audit.record` calls. There is still no `policy.audit` module in
-#     the C++ tree; engine_planning, engine_identity, engine_promotion,
-#     engine_runtime, engine_runs, engine_models and engine_workflows all
-#     document the same omission (task 6100, pending an operator decision). No
-#     `local` leaf reads or emits audit rows.
+#   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
+#     (task 6100). The layer-1 `planar.policy` module now exists, and this
+#     bucket was audited against it: the Zig originals behind the five `planar local` leaves (this bucket holds no SQLite handle at all) contain
+#     ZERO `policy.audit.record` call sites, so there is nothing here to
+#     wire. The paragraph this replaces claimed a gap it inherited by
+#     copy-paste from a bucket that has one. Verified with
+#     `grep -rln policy.audit.record zig/src/engine`, whose whole output is
+#     five buckets: planning, identity, entitylink, promotion, runtime.
 #
 #   - The handlers' `exit.die` paths themselves. This bucket returns typed
 #     failures; mapping a failure onto an exit code and a stderr line is the

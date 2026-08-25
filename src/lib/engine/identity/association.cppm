@@ -11,12 +11,17 @@
 ///     path, creating a `projects` row on the fly when the path hasn't
 ///     been registered yet (mirrors zig's `findOrCreateProjectByPath`).
 ///
+/// `policy.audit.record` IS ported, as of task 6100: `create`,
+/// `add_member` and `remove_member` each append an `audit_log` row through
+/// the layer-1 `planar.policy` module. The fourth Zig call site — the
+/// `auto-link project_id=N → association '<slug>'` row inside
+/// `applyProposals` — is not, because `applyProposals` itself is not (see
+/// below); it lands with that surface.
+///
 /// NOT ported (out of this task's scope — see the CMakeLists.txt file
 /// header comment): the auto-detection surface (`detectProposals`,
-/// `proposalsFromSignals`, `applyProposals`, `enrichProposals`) and audit-
-/// trail recording (`policy.audit.record` calls in the Zig original —
-/// there is no `planar.engine.policy.audit` module in the C++ tree yet).
-/// Both are independent of the cross-scope guard's needs: the guard only
+/// `proposalsFromSignals`, `applyProposals`, `enrichProposals`).
+/// It is independent of the cross-scope guard's needs: the guard only
 /// ever reads association/membership rows (via `scope.cppm`'s
 /// `derive_from_cwd`/`resolve_slug`/`slug_from_ref`) and this module's
 /// `create`/`add_member`/`remove_member`/`members` exist so a test (or a
@@ -83,12 +88,13 @@ export struct project_ref {
 
 /// @brief Error surface for every fallible operation in this module.
 export enum class association_error : std::uint8_t {
-  not_found,      ///< No row matched the given slug/id.
-  slug_conflict,  ///< `create` was given a slug that already exists.
-  unknown_kind,   ///< A stored `kind` column value did not parse.
-  already_member, ///< `add_member` was given a project already linked to the association.
-  not_a_member,   ///< `remove_member` was given a project not linked to the association.
-  query_failed,   ///< An underlying SQL statement failed.
+  not_found,          ///< No row matched the given slug/id.
+  slug_conflict,      ///< `create` was given a slug that already exists.
+  unknown_kind,       ///< A stored `kind` column value did not parse.
+  already_member,     ///< `add_member` was given a project already linked to the association.
+  not_a_member,       ///< `remove_member` was given a project not linked to the association.
+  query_failed,       ///< An underlying SQL statement failed.
+  audit_write_failed, ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
 };
 
 /// @brief Arguments to `create`. Mirrors zig's `CreateArgs`.

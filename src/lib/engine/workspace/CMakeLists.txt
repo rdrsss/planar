@@ -71,11 +71,14 @@
 #     symlink install, which decision 947 places at layer 3, and no `cmd_*`
 #     layer exists yet.
 #
-#   - `policy.audit.record` calls. There is still no `policy.audit` module in
-#     the C++ tree; engine_planning, engine_identity, engine_promotion,
-#     engine_runtime, engine_runs, engine_models, engine_workflows and
-#     engine_local all document the same omission (task 6100, pending an
-#     operator decision). No `workspace` leaf reads or emits audit rows.
+#   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
+#     (task 6100). The layer-1 `planar.policy` module now exists, and this
+#     bucket was audited against it: the Zig originals behind the `workspace` leaves contain
+#     ZERO `policy.audit.record` call sites, so there is nothing here to
+#     wire. The paragraph this replaces claimed a gap it inherited by
+#     copy-paste from a bucket that has one. Verified with
+#     `grep -rln policy.audit.record zig/src/engine`, whose whole output is
+#     five buckets: planning, identity, entitylink, promotion, runtime.
 #
 # `workspace.cppm` is the umbrella re-export.
 

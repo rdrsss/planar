@@ -3682,3 +3682,139 @@ TEST_CASE("an active work claim refuses every operator status flip until --force
   REQUIRE(dispatch(fx, {"task", "done", "1", "--force"}).code == 0);
   CHECK(read_tasks(fx)[0].status == "done");
 }
+
+// ===========================================================================
+// audit_log rows (plan 1001, task 6100)
+// ===========================================================================
+
+namespace {
+
+/// @brief Every `audit_log` row, pipe-joined, one per line, with SQL NULL
+/// rendered as the literal `<NULL>`.
+///
+/// Deliberately dumps the WHOLE table rather than counting or filtering.
+/// A missing audit row is invisible in every other way -- no exit code, no
+/// stdout byte, no rendered field moves -- so the assertion has to be the
+/// full expected transcript. A count would pass against rows with the
+/// wrong verb; a per-row lookup would pass against a table that also
+/// contains rows the oracle does not write.
+/// @param fx The fixture.
+/// @return The transcript, newline-terminated per row.
+auto audit_transcript(const fixture& fx) -> std::string {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select verb, entity_kind, entity_id, coalesce(actor, '<NULL>'), "
+                            "coalesce(scope, '<NULL>'), coalesce(summary, '<NULL>') "
+                            "from audit_log order by id");
+  REQUIRE(stmt.has_value());
+  std::string out;
+  while (true) {
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    if (*stepped == planar::db::step_result::done) {
+      break;
+    }
+    out += std::format("{}|{}|{}|{}|{}|{}\n", stmt->column_text(0), stmt->column_text(1), stmt->column_int64(2),
+                       stmt->column_text(3), stmt->column_text(4), stmt->column_text(5));
+  }
+  return out;
+}
+
+} // namespace
+
+// ORACLE PROVENANCE for both cases below: the exact same argv sequence was
+// run against the Zig binary on an isolated scratch database
+// (`PLANAR_DB` + `PLANAR_CONFIG_PATH`), `audit_log` was dumped with the
+// same projection, and the two transcripts were diffed. They matched
+// row-for-row and byte-for-byte. The only row the Zig run produced that
+// this one cannot is `unlink|association|...` from `assoc remove`, a leaf
+// that is not wired in this build at all (it exits 64) -- the engine's
+// `remove_member` writes it and `association.t.cpp` pins that directly.
+TEST_CASE("the wired planning leaves write the oracle's audit_log rows", "[cmd][handlers][audit][6100]") {
+  auto const fx = make_fixture("auditrows");
+  associate_cwd(fx, "acme");
+
+  // `init` registers a project and writes NOTHING; the two rows below are
+  // the association `create` and the `link` from `assoc add`. That
+  // asymmetry is oracle-derived, not an omission.
+  CHECK(audit_transcript(fx) == "create|association|1|<NULL>|<NULL>|create association 'acme'\n"
+                                "link|association|1|<NULL>|<NULL>|add project 'proj' to association 'acme'\n");
+
+  REQUIRE(dispatch(fx, {"plan", "create", "Plan One"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "update", "1", "--summary", "s"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Task One", "--plan", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Task Two", "--plan", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--status", "doing"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "done", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "block", "2", "--on", "1", "--reason", "waiting"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "cancel", "2"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "reopen", "2", "--status", "todo", "--reason", "regressed"}).code == 0);
+
+  CHECK(audit_transcript(fx) ==
+        "create|association|1|<NULL>|<NULL>|create association 'acme'\n"
+        "link|association|1|<NULL>|<NULL>|add project 'proj' to association 'acme'\n"
+        "create|plan|1|<NULL>|<NULL>|create plan 'Plan One'\n"
+        // A pure field patch is `update` with a NULL summary...
+        "update|plan|1|<NULL>|<NULL>|<NULL>\n"
+        "create|task|1|<NULL>|<NULL>|create task 'Task One'\n"
+        "create|task|2|<NULL>|<NULL>|create task 'Task Two'\n"
+        // ...and a generic `task update --status` is the ONE task
+        // status_change with no summary text.
+        "status_change|task|1|<NULL>|<NULL>|<NULL>\n"
+        // The plan roll-up follows the task row, never precedes it, and
+        // carries all five counters even at zero. The arrow is U+2192.
+        "status_change|plan|1|<NULL>|<NULL>|recompute plan 1: draft → active; tasks todo=1 doing=1 blocked=0 done=0 "
+        "cancelled=0\n"
+        // The dedicated verbs each carry a summary: the STATUS word for
+        // done/cancel, a sentence for block/reopen.
+        "status_change|task|1|<NULL>|<NULL>|done\n"
+        "status_change|task|2|<NULL>|<NULL>|blocked on task 1: waiting\n"
+        "status_change|task|2|<NULL>|<NULL>|cancelled\n"
+        "status_change|task|2|<NULL>|<NULL>|reopen to todo: regressed\n");
+  // NOTE the four trailing task rows carry NO further plan row. Every one
+  // of those four verbs DOES call `recompute_plan`; the plan is already
+  // `active` and `compute_target` returns no change, so nothing is written.
+  // The first draft of this case asserted two more `recompute plan` rows
+  // here on the assumption that a recompute call implies a recompute row.
+  // Running the identical argv against the Zig binary and diffing the two
+  // transcripts is what corrected it -- the oracle emits exactly the
+  // fourteen rows above.
+}
+
+// The arm that catches the whole class: a refused mutation must leave the
+// table exactly as it found it. A `record` call placed BEFORE the mutation
+// -- or outside the transaction that rolls the mutation back -- passes
+// every "the row exists" assertion and fails only this one.
+TEST_CASE("a refused mutation writes no audit_log row", "[cmd][handlers][audit][6100]") {
+  auto const fx = make_fixture("auditrefuse");
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"plan", "create", "Plan One"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Task One", "--plan", "1"}).code == 0);
+
+  // Land the task in a terminal status so an illegal transition is
+  // reachable. (`task reopen` on a live task is NOT a refusal -- it is
+  // force-gated by construction and exits 0. Discovered by running it.)
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--status", "doing"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "done", "1"}).code == 0);
+
+  auto const before = audit_transcript(fx);
+  REQUIRE_FALSE(before.empty());
+
+  // Illegal transition, unknown scope, unknown status, missing row --
+  // four different refusal paths through three different verbs.
+  CHECK(dispatch(fx, {"task", "update", "1", "--status", "doing"}).code != 0);
+  CHECK(dispatch(fx, {"plan", "create", "Nope", "--scope", "nosuchscope"}).code != 0);
+  CHECK(dispatch(fx, {"task", "update", "1", "--status", "bogus"}).code != 0);
+  CHECK(dispatch(fx, {"task", "update", "999", "--title", "ghost"}).code != 0);
+  CHECK(dispatch(fx, {"plan", "update", "999", "--summary", "ghost"}).code != 0);
+
+  CHECK(audit_transcript(fx) == before);
+
+  // A patch that changes NOTHING is not a refusal -- it exits 0 -- and it
+  // writes no row either. That is a separate arm from the four above and
+  // the early-return that produces it is easy to move to the wrong side of
+  // the audit call.
+  REQUIRE(dispatch(fx, {"task", "update", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "update", "1"}).code == 0);
+  CHECK(audit_transcript(fx) == before);
+}

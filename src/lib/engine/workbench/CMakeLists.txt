@@ -110,11 +110,14 @@
 #   lists thirteen — the same accounted-for divergence `workflow` and
 #   `workspace` already carry. No PORTED leaf drops a flag.
 #
-#   - `policy.audit.record` calls. There is still no `policy.audit` module
-#     in the C++ tree; engine_planning, engine_identity, engine_promotion,
-#     engine_runtime, engine_runs, engine_models, engine_workflows and
-#     engine_local all document the same omission (task 6100, pending an
-#     operator decision). No `workbench` leaf reads or emits audit rows.
+#   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
+#     (task 6100). The layer-1 `planar.policy` module now exists, and this
+#     bucket was audited against it: the Zig originals behind the `workbench` leaves contain
+#     ZERO `policy.audit.record` call sites, so there is nothing here to
+#     wire. The paragraph this replaces claimed a gap it inherited by
+#     copy-paste from a bucket that has one. Verified with
+#     `grep -rln policy.audit.record zig/src/engine`, whose whole output is
+#     five buckets: planning, identity, entitylink, promotion, runtime.
 
 planar_module(engine_workbench
   INTERFACE

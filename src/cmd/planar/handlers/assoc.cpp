@@ -41,6 +41,11 @@ auto zig_error_name(id::association_error err) -> std::string_view {
     return "NotAMember";
   case id::association_error::query_failed:
     return "QueryFailed";
+  case id::association_error::audit_write_failed:
+    // zig `policy.audit.Error` has the single member `WriteFailed`, and
+    // the Zig call sites `try` it straight out of association.zig, so the
+    // operator sees `association <verb>: WriteFailed`.
+    return "WriteFailed";
   }
   return "Unknown";
 }

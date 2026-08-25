@@ -67,9 +67,10 @@
 #   - Still open: the `task_touch_paths`/`touches` surface — `listTouching`
 #     has no port, so `plan list --touches` / `task list --touches` refuse
 #     at exit 64 rather than silently ignoring the filter — and
-#     `policy.audit.record` calls (no `policy.audit` module in the C++ tree
-#     yet, the same omission `engine_identity`'s `association.cppm` already
-#     documents).
+#     the `policy.audit.record` calls, which are now PORTED (task 6100):
+#     `planar.policy` exists at layer 1 and plan/task/annotation all write
+#     through it. See src/lib/policy/CMakeLists.txt for the oracle-derived
+#     row shapes and for which buckets are still unwired.
 #
 # The cross-scope guard (`planar.engine.identity.scope`'s
 # `check_scope_guard`/`guard_write`) is DELIBERATELY NOT wired into this
@@ -113,6 +114,7 @@ planar_module(engine_planning
     db
     json_text
     scope_ref
+    policy
   TEST_DEPENDS
     engine_identity)
 

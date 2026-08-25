@@ -17,12 +17,12 @@
 /// rationale): `listTouching` and the `task touches` path-level surface
 /// (a separate feature; `plan list --touches` therefore REFUSES at exit 64
 /// rather than silently returning an unfiltered list — task 6141);
-/// `policy.audit.record` calls and the `session_entries` forensic-note
-/// side effect (`emitStatusSessionEntry`) — there is no
-/// `planar.engine.policy.audit` module in the C++ tree yet (same
-/// omission `association.cppm` already documented), and the session note
-/// is itself best-effort/error-swallowed in the Zig original, so cutting
-/// it changes no observable return value. `wouldCreateParentCycle`'s
+/// and the `session_entries` forensic-note side effect
+/// (`emitStatusSessionEntry`), which is best-effort/error-swallowed in
+/// the Zig original, so cutting it changes no observable return value.
+/// `policy.audit.record` is NO LONGER cut — task 6100 landed layer-1
+/// `planar.policy` and `create_plan`, `update_plan` and
+/// `recompute_status` each write through it now. `wouldCreateParentCycle`'s
 /// `InvalidParentCycle` guard on `parent_plan_id` reassignment IS ported
 /// — it is cheap and load-bearing for hierarchy integrity.
 ///
@@ -154,6 +154,7 @@ export enum class plan_error : std::uint8_t {
   illegal_transition,
   unknown_status,
   query_failed,
+  audit_write_failed, ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
 };
 
 /// @brief Create a new plan.

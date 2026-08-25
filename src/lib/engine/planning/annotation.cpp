@@ -9,6 +9,7 @@ import std;
 import planar.json_text;
 import planar.db;
 import planar.scope_ref;
+import planar.policy;
 import planar.engine.planning.transitions;
 
 namespace planar::engine::planning::annotation {
@@ -16,6 +17,29 @@ namespace planar::engine::planning::annotation {
 // The one shared escape table, layer 1. See json_text.cppm -- the local
 // copy this replaced was missing the \b and \f short forms.
 using json_text::json_string;
+
+namespace audit = planar::policy::audit;
+
+namespace {
+
+/// @brief Append one `audit_log` row, mapping a write failure into this
+/// module's error surface.
+///
+/// Called AFTER the mutation's own write, never before: a refused
+/// annotate mutation writes no audit row in the oracle (verified by
+/// running `annotate update <id> --status dismissed` against an already
+/// `archived` row -- exit 1, `audit_log` untouched).
+/// @param conn An open, migrated connection.
+/// @param args The row to write.
+/// @return Nothing, or `audit_write_failed`.
+auto record_audit(db::connection& conn, const audit::record_args& args) -> std::expected<void, annotation_error> {
+  if (auto ok = audit::record(conn, args); !ok) {
+    return std::unexpected(annotation_error::audit_write_failed);
+  }
+  return {};
+}
+
+} // namespace
 
 namespace {
 
@@ -168,7 +192,8 @@ auto write_status(db::connection& conn, std::int64_t id, status new_status) -> s
   return {};
 }
 
-auto transition(db::connection& conn, std::int64_t id, status new_status) -> std::expected<annotation, annotation_error> {
+auto transition(db::connection& conn, std::int64_t id, status new_status, std::string_view verb_label)
+    -> std::expected<annotation, annotation_error> {
   auto current = show(conn, id);
   if (!current) {
     return std::unexpected(current.error());
@@ -183,6 +208,16 @@ auto transition(db::connection& conn, std::int64_t id, status new_status) -> std
   }
   if (auto w = write_status(conn, id, new_status); !w) {
     return std::unexpected(w.error());
+  }
+  // ORACLE: the summary is the VERB LABEL (`resolve` / `dismiss` /
+  // `archive`), NOT the resulting status name -- captured as
+  // `status_change|annotation|1|resolve`, not `...|resolved`. The two are
+  // one letter apart and nothing rendered surfaces either.
+  if (auto a = record_audit(conn, audit::record_args{.verb    = audit::verb::status_change,
+                                                     .entity  = {.kind = "annotation", .id = id},
+                                                     .summary = verb_label});
+      !a) {
+    return std::unexpected(a.error());
   }
   return show(conn, id);
 }
@@ -481,6 +516,16 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<anno
     }
   }
 
+  // ORACLE: `create annotation 'A1'` -- the TITLE in single quotes, and
+  // the anchor path when there is no title. Captured against a titled row
+  // (`create annotation 'A-alpha'`) and an untitled one.
+  const auto summary = std::format("create annotation '{}'", args.title.value_or(std::string_view{args.anchor.path}));
+  if (auto a = record_audit(
+          conn, audit::record_args{.verb = audit::verb::create, .entity = {.kind = "annotation", .id = id}, .summary = summary});
+      !a) {
+    return std::unexpected(a.error());
+  }
+
   return show(conn, id);
 }
 
@@ -669,6 +714,10 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
 
   // An all-unset patch is a no-op that returns a FRESH SNAPSHOT and does
   // NOT bump updated_at -- matching zig's `if (first) return try show(...)`.
+  // This return is BEFORE the audit write below on purpose: a bare
+  // `annotate update <id>` writes no `audit_log` row in the oracle either
+  // (verified by running it and reading the table back -- the row's
+  // `create` entry was the only one present afterwards).
   if (first) {
     return show(conn, id);
   }
@@ -728,6 +777,18 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
     }
     return std::unexpected(annotation_error::query_failed);
   }
+  // ORACLE: a patch that carries a status writes `status_change`; any
+  // other patch writes `update`. BOTH carry a NULL summary -- verified by
+  // running `annotate update 1 --status resolved` and `annotate update 2
+  // --title T2 --status dismissed`, each of which produced
+  // `status_change|annotation|<id>|<NULL>`. The verb-labelled summaries
+  // come only from the dedicated `resolve`/`dismiss`/`archive` verbs.
+  if (auto a = record_audit(
+          conn, audit::record_args{.verb   = patch.status_.has_value() ? audit::verb::status_change : audit::verb::update,
+                                   .entity = {.kind = "annotation", .id = id}});
+      !a) {
+    return std::unexpected(a.error());
+  }
   return show(conn, id);
 }
 
@@ -748,19 +809,21 @@ auto remove(db::connection& conn, std::int64_t id) -> std::expected<void, annota
   if (auto s = stmt->step(); !s) {
     return std::unexpected(annotation_error::query_failed);
   }
-  return {};
+  // ORACLE: `delete` with a NULL summary -- the deleted row's title is NOT
+  // interpolated, unlike `create`.
+  return record_audit(conn, audit::record_args{.verb = audit::verb::delete_, .entity = {.kind = "annotation", .id = id}});
 }
 
 auto resolve(db::connection& conn, std::int64_t id) -> std::expected<annotation, annotation_error> {
-  return transition(conn, id, status::resolved);
+  return transition(conn, id, status::resolved, "resolve");
 }
 
 auto dismiss(db::connection& conn, std::int64_t id) -> std::expected<annotation, annotation_error> {
-  return transition(conn, id, status::dismissed);
+  return transition(conn, id, status::dismissed, "dismiss");
 }
 
 auto archive(db::connection& conn, std::int64_t id) -> std::expected<annotation, annotation_error> {
-  return transition(conn, id, status::archived);
+  return transition(conn, id, status::archived, "archive");
 }
 
 // ---------------------------------------------------------------------------
@@ -873,18 +936,55 @@ auto render_bulk_text(std::string_view verb_name, std::size_t count) -> std::str
 // sweep
 // ---------------------------------------------------------------------------
 
-auto sweep_candidates(db::connection& conn, std::int64_t since_days)
+auto sweep_candidates(db::connection& conn, std::int64_t since_days, std::optional<std::string_view> scope_slug)
     -> std::expected<std::vector<std::int64_t>, annotation_error> {
+  // Resolve BEFORE building the statement so an unresolvable slug refuses
+  // without archiving anything. `resolve_scope(conn, nullopt)` means
+  // "global", which is a filter; "no filter" is the absent optional, so the
+  // two are kept apart exactly as `list` keeps them apart.
+  std::optional<std::pair<scope_kind, std::optional<std::int64_t>>> scope;
+  if (scope_slug.has_value()) {
+    auto resolved = resolve_scope(conn, scope_slug);
+    if (!resolved) {
+      return std::unexpected(resolved.error());
+    }
+    scope = *resolved;
+  }
+
   // The cutoff is interpolated rather than bound, matching the Zig
   // original's `bufPrintZ`; `since_days` is an integer, so no injection
-  // surface exists.
-  auto stmt = conn.prepare(std::format("select id from annotations"
-                                       " where status in ('resolved','dismissed')"
-                                       "   and (julianday('now') - julianday(updated_at)) > {}",
-                                       since_days));
+  // surface exists. The scope id is bound.
+  std::string sql = std::format("select id from annotations"
+                                " where status in ('resolved','dismissed')"
+                                "   and (julianday('now') - julianday(updated_at)) > {}",
+                                since_days);
+  if (scope.has_value()) {
+    switch (scope->first) {
+    case scope_kind::global:
+      sql += " and scope_kind = 'global'";
+      break;
+    case scope_kind::association:
+      sql += " and scope_kind = 'association' and scope_id = ?";
+      break;
+    case scope_kind::repo:
+      sql += " and scope_kind = 'repo' and scope_id = ?";
+      break;
+    }
+  }
+
+  auto stmt = conn.prepare(sql);
   if (!stmt) {
     return std::unexpected(annotation_error::query_failed);
   }
+  if (scope.has_value() && scope->first != scope_kind::global) {
+    if (!scope->second.has_value()) {
+      return std::unexpected(annotation_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(1, *scope->second); !b) {
+      return std::unexpected(annotation_error::query_failed);
+    }
+  }
+
   std::vector<std::int64_t> ids;
   while (true) {
     auto step = stmt->step();
@@ -899,8 +999,9 @@ auto sweep_candidates(db::connection& conn, std::int64_t since_days)
   return ids;
 }
 
-auto sweep(db::connection& conn, std::int64_t since_days) -> std::expected<std::size_t, annotation_error> {
-  auto ids = sweep_candidates(conn, since_days);
+auto sweep(db::connection& conn, std::int64_t since_days, std::optional<std::string_view> scope_slug)
+    -> std::expected<std::size_t, annotation_error> {
+  auto ids = sweep_candidates(conn, since_days, scope_slug);
   if (!ids) {
     return std::unexpected(ids.error());
   }

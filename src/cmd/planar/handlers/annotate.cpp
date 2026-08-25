@@ -45,6 +45,10 @@ auto zig_error_name(ann::annotation_error err) -> std::string_view {
     return "EmptyTag";
   case ann::annotation_error::query_failed:
     return "QueryFailed";
+  case ann::annotation_error::audit_write_failed:
+    // zig `policy.audit.Error` has the single member `WriteFailed`, which
+    // the Zig call sites `try` straight out of the engine module.
+    return "WriteFailed";
   }
   return "Unknown";
 }
@@ -613,7 +617,15 @@ auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_re
   // full-table archive that exits 0 and reports a plausible count.
   auto const since_days = flag_int(args, "--since-days").value_or(30);
 
-  auto const swept = ann::sweep(**conn, since_days);
+  // `--scope` restricts the sweep and refuses an unresolvable slug with
+  // exit 1, the same way `annotate list` and the three `bulk-*` leaves do.
+  // Both trees changed together at plan 1001 / task 6150; before that the
+  // flag parsed and was dropped on the floor, so a scoped sweep archived
+  // every eligible row in the database and still exited 0 with a correct
+  // count. `annotate sweep --scope nosuch` exiting 0 was the tell.
+  auto const scope_flag = flag_string(args, "--scope");
+
+  auto const swept = ann::sweep(**conn, since_days, as_view(scope_flag));
   if (!swept) {
     return std::unexpected(map_annotation_error(swept.error(), "annotate sweep"));
   }

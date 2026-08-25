@@ -21,16 +21,16 @@
 ///
 /// ## Deliberate omissions, with rationale
 ///
-/// - **`policy.audit.record`.** The Zig original writes a best-effort
+/// - **`policy.audit.record`.** The Zig original writes a BEST-EFFORT
 ///   `audit_log` row (verb `status_change`) after each successful scope
-///   UPDATE. No `policy.audit` module exists in the C++ tree;
-///   `engine_planning` and `engine_identity` already document the same
-///   omission in their own CMakeLists/module headers, and this module
-///   follows that established precedent rather than unilaterally inventing
-///   a layer-1 `audit` module. This does NOT affect any of the two leaves'
-///   observable CLI contract: neither `promote` nor `demote` reads or
-///   emits audit rows. Recorded as a residual gap in this task's coder
-///   report.
+///   UPDATE — `catch {}`, deliberately, so a failed audit row cannot roll
+///   back an already-committed scope change. The layer-1 `planar.policy`
+///   module exists as of task 6100 and `engine_planning`/
+///   `engine_identity` write through it, but those sites all use the
+///   `try`-propagate shape. This bucket's two sites are the tree's only
+///   best-effort ones, and wiring them by reflex alongside the rest would
+///   have quietly made a failed audit write fail `promote`. Left for its
+///   own cycle; see CMakeLists.txt.
 /// - **The cross-scope guard.** VERIFIED EMPIRICALLY against the oracle,
 ///   not assumed: with the cwd project joined to association `alpha` and
 ///   a plan living in association `beta`,

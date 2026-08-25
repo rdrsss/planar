@@ -981,6 +981,110 @@ TEST_CASE("sweep archives its candidates and reports the count", "[annotation]")
   CHECK(scalar_int(conn, "select count(*) from annotations where status = 'archived'") == 2);
 }
 
+namespace {
+
+/// @brief Seed three eligible sweep candidates -- one in association
+/// `acme`, one in association `other`, one global -- backdated past every
+/// cutoff the scoped-sweep cases use.
+/// @param conn An open, migrated connection.
+/// @return The ids, in that order.
+auto seed_sweep_scopes(planar::db::connection& conn) -> std::array<std::int64_t, 3> {
+  insert_assoc(conn, "acme");
+  insert_assoc(conn, "other");
+
+  auto scoped = [&](std::string_view path, std::string_view slug) {
+    auto created = ann::create(conn, ann::create_args{.anchor = ann::anchor_fields{.path = std::string{path}}, .scope = slug});
+    REQUIRE(created.has_value());
+    return created->id;
+  };
+  const auto in_acme   = scoped("acme.txt", "acme");
+  const auto in_other  = scoped("other.txt", "other");
+  const auto in_global = add_simple(conn, "global.txt", "global");
+
+  for (const auto id : {in_acme, in_other, in_global}) {
+    REQUIRE(ann::resolve(conn, id).has_value());
+  }
+  // `resolve` stamps updated_at with `now` and the cutoff is a STRICT `>`,
+  // so a same-millisecond row would be ineligible even at cutoff 0.
+  exec(conn, "update annotations set updated_at = '2000-01-01T00:00:00.000Z'");
+  return {in_acme, in_other, in_global};
+}
+
+/// @brief Read one annotation's status straight from the table.
+/// @param conn An open connection.
+/// @param id The annotation id.
+/// @return The stored status text.
+auto status_text_of(planar::db::connection& conn, std::int64_t id) -> std::string {
+  return scalar_text(conn, std::format("select status from annotations where id = {}", id));
+}
+
+} // namespace
+
+// This is the arm that pins task 6150. Asserting the swept COUNT would not
+// have caught the defect: the broken build reported an accurate count of
+// what it archived, and what it archived was every scope's rows. Only the
+// survival of the out-of-scope rows separates the two behaviours.
+TEST_CASE("a scoped sweep leaves out-of-scope annotations untouched", "[annotation][scope]") {
+  scratch_db_path scratch;
+  auto            conn                      = open_migrated(scratch);
+  auto const [in_acme, in_other, in_global] = seed_sweep_scopes(conn);
+
+  auto swept = ann::sweep(conn, 0, "acme");
+  REQUIRE(swept.has_value());
+
+  // Survival FIRST, deliberately: these are the assertions that fail under
+  // the pre-6150 behaviour, and they are checked before the count so a
+  // regression reports the blast radius rather than an arithmetic mismatch.
+  CHECK(status_text_of(conn, in_other) == "resolved");
+  CHECK(status_text_of(conn, in_global) == "resolved");
+  CHECK(status_text_of(conn, in_acme) == "archived");
+  CHECK(*swept == 1);
+}
+
+TEST_CASE("a sweep scoped to global reaches only global rows", "[annotation][scope]") {
+  scratch_db_path scratch;
+  auto            conn                      = open_migrated(scratch);
+  auto const [in_acme, in_other, in_global] = seed_sweep_scopes(conn);
+
+  auto swept = ann::sweep(conn, 0, "global");
+  REQUIRE(swept.has_value());
+  CHECK(*swept == 1);
+  CHECK(status_text_of(conn, in_global) == "archived");
+  CHECK(status_text_of(conn, in_acme) == "resolved");
+  CHECK(status_text_of(conn, in_other) == "resolved");
+}
+
+TEST_CASE("an unscoped sweep still spans every scope", "[annotation][scope]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      ids  = seed_sweep_scopes(conn);
+
+  auto swept = ann::sweep(conn, 0);
+  REQUIRE(swept.has_value());
+  CHECK(*swept == 3);
+  for (const auto id : ids) {
+    CHECK(status_text_of(conn, id) == "archived");
+  }
+}
+
+TEST_CASE("a sweep named at an unresolvable scope refuses before archiving anything", "[annotation][scope]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      ids  = seed_sweep_scopes(conn);
+
+  auto swept = ann::sweep(conn, 0, "nosuch");
+  REQUIRE_FALSE(swept.has_value());
+  CHECK(swept.error() == ann::annotation_error::slug_not_found);
+  // The refusal has to land BEFORE the loop, not part-way through it.
+  for (const auto id : ids) {
+    CHECK(status_text_of(conn, id) == "resolved");
+  }
+
+  auto candidates = ann::sweep_candidates(conn, 0, "nosuch");
+  REQUIRE_FALSE(candidates.has_value());
+  CHECK(candidates.error() == ann::annotation_error::slug_not_found);
+}
+
 TEST_CASE("the sweep cutoff selects strictly by age, at the exact day boundary", "[annotation][parity]") {
   // BREAK-PROBE HISTORY, recorded because it changed this test. The first
   // version of this case was named "the sweep cutoff is STRICTLY

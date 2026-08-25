@@ -583,6 +583,113 @@ fn transition(
 }
 
 // =========================================================================
+// Sweep
+// =========================================================================
+
+/// Filter for `sweep` / `sweepCandidates`.
+pub const SweepFilter = struct {
+    /// Staleness cutoff in days. A row is eligible only when
+    /// `julianday('now') - julianday(updated_at)` is STRICTLY greater
+    /// than this, so a row exactly `since_days` old is not swept.
+    since_days: i64 = 30,
+    /// Scope-ref slug. `null` means "every scope" — the historical
+    /// behaviour, retained for a bare `annotate sweep`. When set, the
+    /// sweep is restricted to that scope with the same predicate `list`
+    /// uses, so a scoped sweep can never reach a sibling scope's rows.
+    scope: ?[]const u8 = null,
+};
+
+/// Ids `sweep` would archive: status in {resolved, dismissed} AND
+/// `updated_at` older than the cutoff, optionally restricted to one
+/// scope. Caller owns the returned slice.
+pub fn sweepCandidates(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    filter: SweepFilter,
+) Error![]i64 {
+    const scope_ref: ?identity.scope.ScopeRef = if (filter.scope) |s|
+        identity.scope.resolveSlug(d, allocator, s) catch |e| switch (e) {
+            error.UnsupportedScope => return Error.UnsupportedScope,
+            error.SlugNotFound => return Error.SlugNotFound,
+            else => return Error.QueryFailed,
+        }
+    else
+        null;
+
+    var sql_buf: std.ArrayList(u8) = .empty;
+    defer sql_buf.deinit(allocator);
+    var params: std.ArrayList(db.sqlite.Param) = .empty;
+    defer params.deinit(allocator);
+
+    // `since_days` is an integer, so interpolating it carries no
+    // injection surface; the scope id is bound like everywhere else.
+    var head_buf: [256]u8 = undefined;
+    const head = std.fmt.bufPrint(
+        &head_buf,
+        "select id from annotations" ++
+            " where status in ('resolved','dismissed')" ++
+            "   and (julianday('now') - julianday(updated_at)) > {d}",
+        .{filter.since_days},
+    ) catch return Error.QueryFailed;
+    try sql_buf.appendSlice(allocator, head);
+
+    if (scope_ref) |ref| {
+        switch (ref.kind) {
+            .global => try sql_buf.appendSlice(allocator, " and scope_kind = 'global'"),
+            .association => {
+                try sql_buf.appendSlice(allocator, " and scope_kind = 'association' and scope_id = ?");
+                try params.append(allocator, .{ .int = ref.id.? });
+            },
+            .repo => {
+                try sql_buf.appendSlice(allocator, " and scope_kind = 'repo' and scope_id = ?");
+                try params.append(allocator, .{ .int = ref.id.? });
+            },
+        }
+    }
+
+    const sql_z = try allocator.dupeZ(u8, sql_buf.items);
+    defer allocator.free(sql_z);
+
+    var stmt = d.prepare(sql_z) catch return Error.QueryFailed;
+    defer stmt.finalize();
+    stmt.bind(params.items) catch return Error.QueryFailed;
+
+    var ids: std.ArrayList(i64) = .empty;
+    errdefer ids.deinit(allocator);
+    while (true) {
+        switch (stmt.step() catch return Error.QueryFailed) {
+            .done => break,
+            .row => try ids.append(allocator, stmt.columnInt(0)),
+        }
+    }
+    return try ids.toOwnedSlice(allocator);
+}
+
+/// Archive every `sweepCandidates` row, returning the transitioned count.
+/// Like the bulk leaves this is NOT transactional and swallows per-row
+/// `TerminalStatus` — the defensive guard for a row archived concurrently
+/// between the SELECT and the UPDATE.
+pub fn sweep(
+    d: *db.sqlite.Db,
+    allocator: std.mem.Allocator,
+    filter: SweepFilter,
+) Error!usize {
+    const ids = try sweepCandidates(d, allocator, filter);
+    defer allocator.free(ids);
+
+    var count: usize = 0;
+    for (ids) |id| {
+        const arc = archive(d, allocator, id) catch |e| switch (e) {
+            error.TerminalStatus => continue,
+            else => return e,
+        };
+        deinit(arc, allocator);
+        count += 1;
+    }
+    return count;
+}
+
+// =========================================================================
 // Tag ops
 // =========================================================================
 
@@ -848,6 +955,116 @@ test "list with scope filter returns only matching rows" {
     try std.testing.expectEqual(@as(usize, 1), filtered.len);
     try std.testing.expectEqual(ann_assoc.id, filtered[0].id);
     try std.testing.expectEqual(ScopeKind.association, filtered[0].scope_kind);
+}
+
+/// Seed three eligible sweep candidates — one in association `acme`, one
+/// in association `other`, one global — all backdated far past any cutoff
+/// the callers use. Returns their ids in that order.
+fn seedSweepFixture(d: *db.sqlite.Db, a: std.mem.Allocator) ![3]i64 {
+    _ = try d.execParams("insert into associations (slug, name, kind) values ('acme', 'Acme', 'org')", &.{});
+    _ = try d.execParams("insert into associations (slug, name, kind) values ('other', 'Other', 'org')", &.{});
+
+    const in_acme = try create(d, a, .{ .anchor = .{ .path = "acme.zig" }, .scope = "acme" });
+    defer deinit(in_acme, a);
+    const in_other = try create(d, a, .{ .anchor = .{ .path = "other.zig" }, .scope = "other" });
+    defer deinit(in_other, a);
+    const in_global = try create(d, a, .{ .anchor = .{ .path = "global.zig" } });
+    defer deinit(in_global, a);
+
+    for ([_]i64{ in_acme.id, in_other.id, in_global.id }) |id| {
+        const r = try resolve(d, a, id);
+        deinit(r, a);
+    }
+    // Backdate past every cutoff the sweep tests use. `resolve` stamps
+    // updated_at with `now`, and the sweep predicate is a STRICT `>`, so
+    // a same-millisecond row would otherwise be ineligible at cutoff 0.
+    _ = try d.execParams("update annotations set updated_at = '2000-01-01T00:00:00.000Z'", &.{});
+
+    return .{ in_acme.id, in_other.id, in_global.id };
+}
+
+fn statusOf(d: *db.sqlite.Db, a: std.mem.Allocator, id: i64) !Status {
+    const row = try show(d, a, id);
+    defer deinit(row, a);
+    return row.status;
+}
+
+// This is the arm that pins task 6150. `--scope` was declared on the leaf
+// and ignored outright: a sweep named at one scope archived every eligible
+// row in the database. It exited 0 and reported an ACCURATE count, so a
+// count assertion passes just as happily against the broken behaviour —
+// only asserting that the out-of-scope rows SURVIVE separates the two.
+test "sweep with a scope filter leaves out-of-scope annotations untouched" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const ids = try seedSweepFixture(&d, a);
+    const in_acme, const in_other, const in_global = ids;
+
+    const swept = try sweep(&d, a, .{ .since_days = 0, .scope = "acme" });
+
+    // Survival FIRST, deliberately. The count assertion below passes just
+    // as happily against the broken behaviour if it is checked first and
+    // aborts the test — the arm that discriminates has to be the one that
+    // runs.
+    try std.testing.expectEqual(Status.resolved, try statusOf(&d, a, in_other));
+    try std.testing.expectEqual(Status.resolved, try statusOf(&d, a, in_global));
+    try std.testing.expectEqual(Status.archived, try statusOf(&d, a, in_acme));
+    try std.testing.expectEqual(@as(usize, 1), swept);
+}
+
+test "sweep with scope='global' sweeps only global rows" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const ids = try seedSweepFixture(&d, a);
+    const in_acme, const in_other, const in_global = ids;
+
+    const swept = try sweep(&d, a, .{ .since_days = 0, .scope = "global" });
+    try std.testing.expectEqual(@as(usize, 1), swept);
+    try std.testing.expectEqual(Status.archived, try statusOf(&d, a, in_global));
+    try std.testing.expectEqual(Status.resolved, try statusOf(&d, a, in_acme));
+    try std.testing.expectEqual(Status.resolved, try statusOf(&d, a, in_other));
+}
+
+test "sweep without a scope filter still spans every scope" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const ids = try seedSweepFixture(&d, a);
+
+    const swept = try sweep(&d, a, .{ .since_days = 0 });
+    try std.testing.expectEqual(@as(usize, 3), swept);
+    for (ids) |id| try std.testing.expectEqual(Status.archived, try statusOf(&d, a, id));
+}
+
+test "sweep with an unknown scope slug returns SlugNotFound and archives nothing" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    const ids = try seedSweepFixture(&d, a);
+
+    try std.testing.expectError(Error.SlugNotFound, sweep(&d, a, .{ .since_days = 0, .scope = "nosuch" }));
+    for (ids) |id| try std.testing.expectEqual(Status.resolved, try statusOf(&d, a, id));
+}
+
+test "sweep honours the staleness cutoff and skips active rows" {
+    const a = std.testing.allocator;
+    var d = try setupTestDb(a);
+    defer d.close();
+    _ = try seedSweepFixture(&d, a);
+    // An active row is never eligible, whatever the cutoff.
+    const still_active = try create(&d, a, .{ .anchor = .{ .path = "active.zig" } });
+    defer deinit(still_active, a);
+    _ = try d.execParams(
+        "update annotations set updated_at = '2000-01-01T00:00:00.000Z' where id = ?",
+        &.{.{ .int = still_active.id }},
+    );
+
+    // A cutoff far past the backdated stamp matches nothing.
+    try std.testing.expectEqual(@as(usize, 0), try sweep(&d, a, .{ .since_days = 999_999 }));
+    try std.testing.expectEqual(@as(usize, 3), try sweep(&d, a, .{ .since_days = 0 }));
+    try std.testing.expectEqual(Status.active, try statusOf(&d, a, still_active.id));
 }
 
 test "update moves annotation to association scope" {

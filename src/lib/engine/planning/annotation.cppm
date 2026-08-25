@@ -29,10 +29,14 @@
 ///
 /// ## Deliberate omissions
 ///
-/// - **`policy.audit.record`.** Same omission as `engine_planning`'s
-///   plan/task surface already documents, and for the same reason: there
-///   is no `policy.audit` module in the C++ tree. No `annotate` leaf reads
-///   or emits audit rows.
+/// - ~~**`policy.audit.record`.**~~ CLOSED by task 6100: `planar.policy`
+///   (layer 1) now exists and this module writes through it. `create`,
+///   `update`, `remove` and the three transition verbs each append an
+///   `audit_log` row; `add_tag`/`remove_tag` deliberately append NOTHING,
+///   because the oracle writes no row for `annotate tag` either (verified
+///   by running it and reading the table back). A failed `audit_log`
+///   write surfaces as `audit_write_failed`, whose Zig spelling is
+///   `WriteFailed`.
 /// - **`policy.scope_guard.check(null, null)`.** The Zig original calls it
 ///   with two nulls on create/update/remove/transition, which is
 ///   unconditionally a no-op (a null entity scope means "global", which
@@ -137,13 +141,14 @@ export struct list_filter {
 /// @brief Error surface for this module. Mirrors zig's
 /// `annotation.Error`.
 export enum class annotation_error : std::uint8_t {
-  not_found,         ///< No annotation with that id or slug.
-  unsupported_scope, ///< The scope-ref form is not supported.
-  slug_not_found,    ///< The scope-ref slug did not resolve.
-  terminal_status,   ///< The requested lifecycle transition is refused.
-  slug_conflict,     ///< The slug is already taken (annotations.slug is UNIQUE).
-  empty_tag,         ///< A tag that is empty after trimming.
-  query_failed,      ///< An underlying SQL statement failed.
+  not_found,          ///< No annotation with that id or slug.
+  unsupported_scope,  ///< The scope-ref form is not supported.
+  slug_not_found,     ///< The scope-ref slug did not resolve.
+  terminal_status,    ///< The requested lifecycle transition is refused.
+  slug_conflict,      ///< The slug is already taken (annotations.slug is UNIQUE).
+  empty_tag,          ///< A tag that is empty after trimming.
+  query_failed,       ///< An underlying SQL statement failed.
+  audit_write_failed, ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
 };
 
 /// @brief Parse a status from its stored text.
@@ -349,12 +354,22 @@ export auto render_bulk_text(std::string_view verb_name, std::size_t count) -> s
 /// @brief Select the ids `annotate sweep` would archive: status in
 /// `{resolved, dismissed}` AND `updated_at` older than `since_days` days,
 /// compared through SQLite's own `julianday`. Mirrors
-/// handlers/annotate/sweep.zig's SELECT verbatim, including the STRICT
-/// `>` (a row exactly `since_days` old is NOT swept).
+/// engine/planning/annotation.zig's `sweepCandidates` verbatim, including
+/// the STRICT `>` (a row exactly `since_days` old is NOT swept) and the
+/// scope predicate, which is the same one `list` applies.
+///
+/// `scope` is a **sanctioned divergence from the pre-6150 oracle**, landed
+/// in both trees at once (plan 1001 / task 6150). Before it, `--scope` was
+/// declared on the leaf and applied nowhere: a sweep named at one scope
+/// archived every eligible row in the database, exited 0, and reported an
+/// accurate count. The count is why an output diff never caught it.
 /// @param conn An open, migrated database connection.
 /// @param since_days The staleness cutoff in days; must be >= 0.
-/// @return The ids to archive, in table order.
-export auto sweep_candidates(db::connection& conn, std::int64_t since_days)
+/// @param scope Scope-ref slug to restrict to; `std::nullopt` spans every
+/// scope, which is what a bare `annotate sweep` still does.
+/// @return The ids to archive, in table order, or `slug_not_found` when
+/// `scope` names a slug that does not resolve.
+export auto sweep_candidates(db::connection& conn, std::int64_t since_days, std::optional<std::string_view> scope = std::nullopt)
     -> std::expected<std::vector<std::int64_t>, annotation_error>;
 
 /// @brief Archive every `sweep_candidates` row, returning the count that
@@ -363,8 +378,12 @@ export auto sweep_candidates(db::connection& conn, std::int64_t since_days)
 /// concurrently between the SELECT and the UPDATE).
 /// @param conn An open, migrated database connection.
 /// @param since_days The staleness cutoff in days.
+/// @param scope Scope-ref slug to restrict to; `std::nullopt` spans every
+/// scope. An unresolvable slug refuses with `slug_not_found` BEFORE any row
+/// is archived, matching every sibling leaf.
 /// @return The number of rows archived.
-export auto sweep(db::connection& conn, std::int64_t since_days) -> std::expected<std::size_t, annotation_error>;
+export auto sweep(db::connection& conn, std::int64_t since_days, std::optional<std::string_view> scope = std::nullopt)
+    -> std::expected<std::size_t, annotation_error>;
 
 /// @brief Render `annotate sweep --json`. Oracle shape:
 /// `{"ok":true,"action":"sweep","since_days":30,"swept":0}`.

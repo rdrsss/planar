@@ -9,6 +9,7 @@ import std;
 import planar.db;
 import planar.json_text;
 import planar.scope_ref;
+import planar.policy;
 import planar.engine.planning.plan;
 import planar.engine.planning.transitions;
 
@@ -16,7 +17,28 @@ namespace planar::engine::planning {
 
 using json_text::json_string;
 
+namespace audit = planar::policy::audit;
+
 namespace {
+
+/// @brief Append one `audit_log` row, mapping a write failure into this
+/// module's error surface.
+///
+/// ROW ORDER IS OBSERVABLE. Every caller below records the TASK's own row
+/// BEFORE calling `recompute_plan`, because the oracle's `audit_log` shows
+/// the task's `status_change` immediately followed by the plan's
+/// `recompute plan ...` row, in that order (captured from `task block 1
+/// --on 2`). Recording after the recompute would invert them, and nothing
+/// rendered would change.
+/// @param conn An open, migrated connection.
+/// @param args The row to write.
+/// @return Nothing, or `audit_write_failed`.
+auto record_audit(db::connection& conn, const audit::record_args& args) -> std::expected<void, task_error> {
+  if (auto ok = audit::record(conn, args); !ok) {
+    return std::unexpected(task_error::audit_write_failed);
+  }
+  return {};
+}
 
 constexpr int k_sqlite_constraint_unique = 2067; // SQLITE_CONSTRAINT_UNIQUE
 
@@ -218,6 +240,11 @@ auto map_plan_error(plan_error e) -> task_error {
   case plan_error::unknown_status:
   case plan_error::query_failed:
     return task_error::query_failed;
+  // A plan-side `audit_log` write failure reached through `recompute_plan`
+  // stays an audit failure on the task side rather than collapsing into
+  // the generic query bucket -- both spell `WriteFailed` to the operator.
+  case plan_error::audit_write_failed:
+    return task_error::audit_write_failed;
   }
   return task_error::query_failed;
 }
@@ -436,6 +463,15 @@ auto create_task(db::connection& conn, const task_create_args& args) -> std::exp
     return std::unexpected(task_error::query_failed);
   }
   const auto id = stmt->column_int64(0);
+
+  // ORACLE: `create|task|1|create task 'Task One'` -- the TITLE, and
+  // recorded BEFORE the auto-promote recompute below (see `record_audit`).
+  if (auto a = record_audit(conn, audit::record_args{.verb    = audit::verb::create,
+                                                     .entity  = {.kind = "task", .id = id},
+                                                     .summary = std::format("create task '{}'", args.title)});
+      !a) {
+    return std::unexpected(a.error());
+  }
 
   if (!args.no_auto_promote && args.plan_id.has_value()) {
     if (auto r = recompute_plan(conn, *args.plan_id); !r) {
@@ -681,6 +717,8 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
   }
 
   if (first) {
+    // Before the audit write below on purpose: a patch that changes
+    // nothing writes no `audit_log` row in the oracle either.
     return show_task(conn, id);
   }
 
@@ -720,6 +758,19 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
       return std::unexpected(task_error::slug_conflict);
     }
     return std::unexpected(task_error::query_failed);
+  }
+
+  // ORACLE: a patch carrying a status writes `status_change`, any other
+  // patch writes `update`, and BOTH carry a NULL summary -- captured as
+  // `status_change|task|3|<NULL>` from `task update 3 --status todo
+  // --force` and `update|task|3|<NULL>` from `task update 3 --title ...`.
+  // Note this is the ONE status_change on a task with no summary text;
+  // `done`/`cancel`/`block`/`reopen` all carry one.
+  if (auto a = record_audit(
+          conn, audit::record_args{.verb   = patch.status.has_value() ? audit::verb::status_change : audit::verb::update,
+                                   .entity = {.kind = "task", .id = id}});
+      !a) {
+    return std::unexpected(a.error());
   }
 
   if (patch.force && patch.status.has_value()) {
@@ -771,6 +822,13 @@ auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expect
   if (auto r = set_status(conn, id, task_status::done); !r) {
     return std::unexpected(r.error());
   }
+  // ORACLE: the summary is the literal `done` -- the resulting status
+  // word, not a sentence.
+  if (auto a = record_audit(
+          conn, audit::record_args{.verb = audit::verb::status_change, .entity = {.kind = "task", .id = id}, .summary = "done"});
+      !a) {
+    return std::unexpected(a.error());
+  }
   auto updated = show_task(conn, id);
   if (!updated) {
     return std::unexpected(updated.error());
@@ -803,6 +861,14 @@ auto mark_cancelled(db::connection& conn, std::int64_t id) -> std::expected<task
   if (auto r = set_status(conn, id, task_status::cancelled); !r) {
     return std::unexpected(r.error());
   }
+  // ORACLE: `cancelled` -- the STATUS word, so it does not match the verb
+  // name `cancel` the operator typed.
+  if (auto a = record_audit(
+          conn,
+          audit::record_args{.verb = audit::verb::status_change, .entity = {.kind = "task", .id = id}, .summary = "cancelled"});
+      !a) {
+    return std::unexpected(a.error());
+  }
   auto updated = show_task(conn, id);
   if (!updated) {
     return std::unexpected(updated.error());
@@ -820,8 +886,6 @@ auto mark_cancelled(db::connection& conn, std::int64_t id) -> std::expected<task
 
 auto mark_blocked(db::connection& conn, std::int64_t id, std::int64_t blocked_on_id, std::optional<std::string_view> reason,
                   bool force) -> std::expected<task, task_error> {
-  (void)reason; // audit summary text not ported — see task.cppm file header.
-
   // Verify the blocker exists (mirrors zig: read-only, before the transaction).
   auto blocker = show_task(conn, blocked_on_id);
   if (!blocker) {
@@ -843,6 +907,18 @@ auto mark_blocked(db::connection& conn, std::int64_t id, std::int64_t blocked_on
   }
   if (auto r = set_status(conn, id, task_status::blocked); !r) {
     return std::unexpected(r.error());
+  }
+
+  // ORACLE: `blocked on task 2: waiting on T2` with a reason, and
+  // `blocked on task 1` -- no trailing colon -- without one. The
+  // `entity_links` row inserted below produces NO audit row of its own.
+  if (auto a = record_audit(
+          conn, audit::record_args{.verb    = audit::verb::status_change,
+                                   .entity  = {.kind = "task", .id = id},
+                                   .summary = reason.has_value() ? std::format("blocked on task {}: {}", blocked_on_id, *reason)
+                                                                 : std::format("blocked on task {}", blocked_on_id)});
+      !a) {
+    return std::unexpected(a.error());
   }
 
   {
@@ -898,6 +974,18 @@ auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::
   }
   if (auto r = set_status(conn, id, new_status); !r) {
     return std::unexpected(r.error());
+  }
+
+  // ORACLE: `reopen to todo: regressed`. The reason is not optional on
+  // this path -- the leaf refuses with `--reason is required for reopen`
+  // before the engine is reached -- so there is no reason-less arm to
+  // mirror here.
+  if (auto a = record_audit(
+          conn, audit::record_args{.verb    = audit::verb::status_change,
+                                   .entity  = {.kind = "task", .id = id},
+                                   .summary = std::format("reopen to {}: {}", task_status_to_text(new_status), reason)});
+      !a) {
+    return std::unexpected(a.error());
   }
 
   if (is_terminal(current->status) && is_open(new_status)) {

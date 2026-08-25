@@ -47,6 +47,10 @@ auto zig_error_name(pl::plan_error err) -> std::string_view {
     return "UnknownStatus";
   case pl::plan_error::query_failed:
     return "QueryFailed";
+  case pl::plan_error::audit_write_failed:
+    // zig `policy.audit.Error` has the single member `WriteFailed`, which
+    // the Zig call sites `try` straight out of the engine module.
+    return "WriteFailed";
   }
   return "Unknown";
 }

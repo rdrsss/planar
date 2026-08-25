@@ -28,11 +28,23 @@
 #     `head_sha_at_start` is NULL, which is every session this tree can
 #     currently open, so its absence changes nothing observable here.
 #   - `policy.audit.record` calls in `startSession` / `endSession` /
-#     `snapshot.create`. There is still no `policy.audit` module in the
-#     C++ tree; `engine_planning/CMakeLists.txt`,
-#     `engine_identity/association.cppm` and `engine_promotion` all
-#     document the same omission. No `capture` leaf reads or emits audit
-#     rows, so no observable CLI contract is affected.
+#     `snapshot.create`: STILL UNWIRED, and now for a real reason rather
+#     than a missing module. Task 6100 stood up the layer-1
+#     `planar.policy` module and wired `engine_planning` and
+#     `engine_identity`. This bucket has the tree's LARGEST remaining set
+#     -- seven call sites across session.zig (2), handoff.zig (4) and
+#     snapshot.zig (1) -- and its rows are the ones `planar audit trail`
+#     correlates sessions by, so it is the one that most wants its own
+#     cycle with its own oracle capture rather than a hurried pass. It IS
+#     observable, unlike the note this replaces claimed: running the
+#     oracle's `question add` produced a `create|session|1|start session
+#     vendor=cli` row this build does not write. This is one of only THREE
+#     buckets left carrying an actual audit gap (the others are
+#     `engine_entitylink` and `engine_promotion`); the other eight
+#     CMakeLists that used to carry a paragraph like this were audited and
+#     have no Zig call sites at all. Row shapes and the oracle-capture
+#     method are in src/lib/policy/CMakeLists.txt; the DEPENDS line below
+#     does not name `policy`, which is the mechanical tell.
 #
 # `runtime.cppm` is the umbrella re-export, matching
 # `lib/engine/identity/identity.cppm`.
@@ -110,8 +122,11 @@
 #     what the `handoff` composite uses to copy worktree context off the
 #     active claim, and a reader trusting this list would have re-ported it.
 #     Check the module interface, not this note.
-#   - `policy.audit.record`, still absent tree-wide (task 6100, an open
-#     operator decision). No claim verb reads or emits audit rows.
+#   - `policy.audit.record`: correct as-is. The claim surface is the one
+#     part of this bucket with NO Zig call sites (agentatomic/agentactivity
+#     write `agent_actions`, not `audit_log`), so nothing here is waiting
+#     on the layer-1 `planar.policy` module task 6100 landed. The gap in
+#     this bucket is session/handoff/snapshot, above.
 
 # --- the agent-lifecycle operator surface (plan 996, task 6040) ------------
 #
@@ -145,9 +160,10 @@
 #     bytes to hit.
 #   - `resolveWorktreeForTask`'s git side. The worktree fields it copies
 #     come from the claim row, which IS readable here; nothing shells git.
-#   - `policy.audit.record` in create/validate/consume/abandon. Still no
-#     `policy.audit` module tree-wide (task 6100). No handoff leaf reads or
-#     emits audit rows.
+#   - `policy.audit.record` in create/validate/consume/abandon -- four of
+#     this bucket's seven unwired call sites. The layer-1 `planar.policy`
+#     module exists as of task 6100; these were deliberately left for a
+#     dedicated cycle, see the session/snapshot note above for why.
 
 planar_module(engine_runtime
   INTERFACE

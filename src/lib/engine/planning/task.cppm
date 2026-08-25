@@ -50,9 +50,11 @@
 ///     acceptance criteria.
 ///   - `renderText`/`renderListText` — `cmd/`-layer output, excluded per
 ///     this task's CONSTRAINTS ("no cmd/ binary").
-///   - `policy.audit.record` calls — no `planar.engine.policy.audit`
-///     module exists in the C++ tree yet (same omission `plan.cppm`
-///     already documents).
+///   - ~~`policy.audit.record` calls~~ — PORTED at task 6100. `create`,
+///     `update`, `mark_done`, `mark_cancelled`, `mark_blocked` and
+///     `reopen` each append an `audit_log` row through layer-1
+///     `planar.policy`, and each records the TASK's row before calling
+///     `recompute_plan`, because the oracle's row order is observable.
 ///
 /// `mark_blocked` DOES still insert the `entity_links` `task -> task`
 /// `depends-on` edge (cheap, load-bearing for the "what is this task
@@ -190,6 +192,7 @@ export enum class task_error : std::uint8_t {
   /// for `--scope nosuchscope --due garbage`.
   invalid_due_at,
   query_failed,
+  audit_write_failed, ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
 };
 
 /// @brief Create a new task.

@@ -9,13 +9,29 @@ import std;
 import planar.db;
 import planar.json_text;
 import planar.scope_ref;
+import planar.policy;
 import planar.engine.planning.transitions;
 
 namespace planar::engine::planning {
 
 using json_text::json_string;
 
+namespace audit = planar::policy::audit;
+
 namespace {
+
+/// @brief Append one `audit_log` row, mapping a write failure into this
+/// module's error surface. Called AFTER the plan's own write succeeds --
+/// a refused plan mutation writes no audit row in the oracle.
+/// @param conn An open, migrated connection.
+/// @param args The row to write.
+/// @return Nothing, or `audit_write_failed`.
+auto record_audit(db::connection& conn, const audit::record_args& args) -> std::expected<void, plan_error> {
+  if (auto ok = audit::record(conn, args); !ok) {
+    return std::unexpected(plan_error::audit_write_failed);
+  }
+  return {};
+}
 
 // SQLite extended result code this module distinguishes. Mirrored here
 // rather than pulling in <sqlite3.h> — this module never touches the raw C
@@ -329,7 +345,16 @@ auto create_plan(db::connection& conn, const plan_create_args& args) -> std::exp
     return std::unexpected(plan_error::query_failed);
   }
 
-  return show_plan(conn, stmt->column_int64(0));
+  const auto id = stmt->column_int64(0);
+  // ORACLE: `create|plan|1|create plan 'Plan One'` -- the TITLE, not the
+  // slug, in single quotes.
+  if (auto a = record_audit(conn, audit::record_args{.verb    = audit::verb::create,
+                                                     .entity  = {.kind = "plan", .id = id},
+                                                     .summary = std::format("create plan '{}'", args.title)});
+      !a) {
+    return std::unexpected(a.error());
+  }
+  return show_plan(conn, id);
 }
 
 auto show_plan(db::connection& conn, std::int64_t id) -> std::expected<plan, plan_error> {
@@ -577,7 +602,9 @@ auto update_plan(db::connection& conn, std::int64_t id, const plan_update_args& 
   }
 
   if (first) {
-    // No-op patch: mirrors zig's early-return-with-fresh-show.
+    // No-op patch: mirrors zig's early-return-with-fresh-show. This
+    // returns BEFORE the audit write below on purpose -- a patch that
+    // changes nothing writes no `audit_log` row in the oracle either.
     return show_plan(conn, id);
   }
 
@@ -617,6 +644,17 @@ auto update_plan(db::connection& conn, std::int64_t id, const plan_update_args& 
       return std::unexpected(plan_error::slug_conflict);
     }
     return std::unexpected(plan_error::query_failed);
+  }
+
+  // ORACLE: a patch carrying a status writes `status_change`; any other
+  // patch writes `update`. BOTH carry a NULL summary -- captured as
+  // `update|plan|1|<NULL>`. Inside the transaction, so a failed commit
+  // takes the audit row with it.
+  if (auto a = record_audit(
+          conn, audit::record_args{.verb   = patch.status.has_value() ? audit::verb::status_change : audit::verb::update,
+                                   .entity = {.kind = "plan", .id = id}});
+      !a) {
+    return std::unexpected(a.error());
   }
 
   auto updated = show_plan(conn, id);
@@ -697,6 +735,22 @@ auto recompute_status(db::connection& conn, std::int64_t plan_id) -> std::expect
   auto step = stmt->step();
   if (!step) {
     return std::unexpected(plan_error::query_failed);
+  }
+
+  // ORACLE, captured verbatim from a `task update --status doing` that
+  // rolled its plan draft -> active:
+  //   recompute plan 1: draft -> active; tasks todo=1 doing=1 blocked=0 done=0 cancelled=0
+  // The arrow is U+2192 RIGHTWARDS ARROW, not "->", and every one of the
+  // five counters is present even at zero.
+  if (auto a = record_audit(conn, audit::record_args{.verb    = audit::verb::status_change,
+                                                     .entity  = {.kind = "plan", .id = plan_id},
+                                                     .summary = std::format("recompute plan {}: {} → {}; tasks todo={} doing={} "
+                                                                            "blocked={} done={} cancelled={}",
+                                                                            plan_id, plan_status_to_text(current_status),
+                                                                            plan_status_to_text(*target), agg->todo, agg->doing,
+                                                                            agg->blocked, agg->done, agg->cancelled)});
+      !a) {
+    return std::unexpected(a.error());
   }
 
   return recompute_result{

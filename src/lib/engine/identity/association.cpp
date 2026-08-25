@@ -9,12 +9,27 @@ module planar.engine.identity.association;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.policy;
 
 namespace planar::engine::identity {
 
 using json_text::json_string;
 
+namespace audit = planar::policy::audit;
+
 namespace {
+
+/// @brief Append one `audit_log` row, mapping a write failure into this
+/// module's error surface. Called AFTER the association's own write.
+/// @param conn An open, migrated connection.
+/// @param args The row to write.
+/// @return Nothing, or `audit_write_failed`.
+auto record_audit(db::connection& conn, const audit::record_args& args) -> std::expected<void, association_error> {
+  if (auto ok = audit::record(conn, args); !ok) {
+    return std::unexpected(association_error::audit_write_failed);
+  }
+  return {};
+}
 
 // SQLite extended result codes this module distinguishes. Mirrored here
 // rather than pulling in <sqlite3.h> — this module never touches the raw C
@@ -341,7 +356,19 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<asso
     return std::unexpected(association_error::query_failed);
   }
 
-  return show_by_id(conn, stmt->column_int64(0));
+  const auto id = stmt->column_int64(0);
+  // ORACLE: `create|association|1|create association 'project:p'` -- the
+  // SLUG, not the name. They differ whenever `--name` is passed, and the
+  // default makes them identical, so a fixture that never passes `--name`
+  // cannot tell the two apart. Captured against a slug-only fixture AND
+  // read off the Zig call site's argument to confirm which one it is.
+  if (auto a = record_audit(conn, audit::record_args{.verb    = audit::verb::create,
+                                                     .entity  = {.kind = "association", .id = id},
+                                                     .summary = std::format("create association '{}'", args.slug)});
+      !a) {
+    return std::unexpected(a.error());
+  }
+  return show_by_id(conn, id);
 }
 
 auto show_by_id(db::connection& conn, std::int64_t id) -> std::expected<association, association_error> {
@@ -435,7 +462,13 @@ auto add_member(db::connection& conn, std::string_view assoc_slug, std::string_v
     }
     return std::unexpected(association_error::query_failed);
   }
-  return {};
+  // ORACLE: verb `link` (not `create`), entity kind `association` with the
+  // ASSOCIATION's id -- not the project's -- and the summary
+  // `add project 'proj' to association 'project:p'`.
+  return record_audit(
+      conn, audit::record_args{.verb    = audit::verb::link,
+                               .entity  = {.kind = "association", .id = assoc->id},
+                               .summary = std::format("add project '{}' to association '{}'", project->slug, assoc->slug)});
 }
 
 auto remove_member(db::connection& conn, std::string_view assoc_slug, std::string_view repo_path)
@@ -466,7 +499,12 @@ auto remove_member(db::connection& conn, std::string_view assoc_slug, std::strin
   if (!step) {
     return std::unexpected(association_error::query_failed);
   }
-  return {};
+  // ORACLE: verb `unlink`, and `remove project 'proj' from association
+  // 'project:p'` -- "from", where `add_member` says "to".
+  return record_audit(
+      conn, audit::record_args{.verb    = audit::verb::unlink,
+                               .entity  = {.kind = "association", .id = assoc->id},
+                               .summary = std::format("remove project '{}' from association '{}'", project->slug, assoc->slug)});
 }
 
 auto members(db::connection& conn, std::string_view assoc_slug) -> std::expected<std::vector<project_ref>, association_error> {

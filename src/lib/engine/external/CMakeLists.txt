@@ -54,8 +54,13 @@
 # and link verbs are UNGUARDED BY DESIGN (docs/concepts.md §
 # cross-scope-guard).
 #
-# No `policy.audit` rows are written, following the precedent every engine
-# bucket in this tree documents (task 6100 is the open operator decision).
+# No `policy.audit` rows are written, and that is CORRECT rather than a gap
+# (task 6100). The layer-1 `planar.policy` module now exists and this bucket
+# was audited against it: the Zig originals behind the `external_links` and
+# `external_systems`/sync surfaces contain zero `policy.audit.record` call
+# sites. Verified with `grep -rln policy.audit.record zig/src/engine`, whose
+# whole output is five buckets: planning, identity, entitylink, promotion,
+# runtime.
 #
 # ## STDOUT TERMINATOR CONTRACT
 #
