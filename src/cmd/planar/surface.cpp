@@ -4057,18 +4057,6 @@ auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_vi
 
 auto unported_paths() -> std::span<std::string_view const> {
   static constexpr std::string_view k_unported[] = {
-      "annotate archive",
-      "annotate bulk-archive",
-      "annotate bulk-dismiss",
-      "annotate bulk-resolve",
-      "annotate dismiss",
-      "annotate remove",
-      "annotate resolve",
-      "annotate show",
-      "annotate sweep",
-      "annotate tag",
-      "annotate update",
-      "annotate verify",
       "artifact add",
       "artifact diff",
       "artifact edit",

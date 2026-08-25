@@ -110,6 +110,18 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("workflow show", handlers::workflow_show);
   table.emplace("annotate add", handlers::annotate_add);
   table.emplace("annotate list", handlers::annotate_list);
+  table.emplace("annotate show", handlers::annotate_show);
+  table.emplace("annotate update", handlers::annotate_update);
+  table.emplace("annotate remove", handlers::annotate_remove);
+  table.emplace("annotate tag", handlers::annotate_tag);
+  table.emplace("annotate resolve", handlers::annotate_resolve);
+  table.emplace("annotate dismiss", handlers::annotate_dismiss);
+  table.emplace("annotate archive", handlers::annotate_archive);
+  table.emplace("annotate bulk-resolve", handlers::annotate_bulk_resolve);
+  table.emplace("annotate bulk-dismiss", handlers::annotate_bulk_dismiss);
+  table.emplace("annotate bulk-archive", handlers::annotate_bulk_archive);
+  table.emplace("annotate verify", handlers::annotate_verify);
+  table.emplace("annotate sweep", handlers::annotate_sweep);
   table.emplace("unlink", handlers::unlink);
   table.emplace("ext register jira", handlers::ext_register_jira);
   table.emplace("ext register github", handlers::ext_register_github);

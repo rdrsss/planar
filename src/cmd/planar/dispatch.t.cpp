@@ -328,11 +328,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // before task 6141 ported ELEVEN more out of it — the four `plan` leaves
   // with engine support (`show`, `list`, `update`, `recompute-status`) and
   // the seven `task` ones (`show`, `list`, `update`, `done`, `cancel`,
-  // `block`, `reopen`). This number is load-bearing: it is what fails when
-  // a verb gains a handler and its generated inventory entry is not
-  // dropped in the same change. Update it WITH the port; never widen the
-  // check to make it stop firing.
-  CHECK(unported.size() == 172);
+  // `block`, `reopen`); 172 before task 6148 ported the remaining TWELVE
+  // `annotate` leaves out of it (`show`, `update`, `remove`, `tag`,
+  // `resolve`, `dismiss`, `archive`, the three `bulk-*`, `verify` and
+  // `sweep`), completing the family that `add` and `list` opened. This
+  // number is load-bearing: it is what fails when a verb gains a handler
+  // and its generated inventory entry is not dropped in the same change.
+  // Update it WITH the port; never widen the check to make it stop firing.
+  CHECK(unported.size() == 160);
   // The three duals are the entries that are NOT leaves; `resume` and
   // `handoff` have real handlers, so `health` is the only one here.
   CHECK(unported.contains("health"));
