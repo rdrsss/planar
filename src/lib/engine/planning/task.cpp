@@ -1009,6 +1009,148 @@ auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::
   return updated;
 }
 
+auto list_tasks_touching(db::connection& conn, std::int64_t repo_id, const task_list_filter& filter)
+    -> std::expected<std::vector<task>, task_error> {
+  std::vector<std::pair<task_scope_kind, std::optional<std::int64_t>>> scope_refs;
+  if (filter.scope.has_value()) {
+    auto resolved = resolve_scope_or_global(conn, filter.scope);
+    if (!resolved) {
+      return std::unexpected(resolved.error());
+    }
+    scope_refs.push_back(*resolved);
+  }
+  for (const auto& s : filter.scopes) {
+    auto resolved = resolve_scope_or_global(conn, std::optional<std::string>{s});
+    if (!resolved) {
+      return std::unexpected(resolved.error());
+    }
+    scope_refs.push_back(*resolved);
+  }
+
+  // All-or-nothing on the direct branch; see `list_plans_touching`.
+  bool branch_direct = true;
+  if (!scope_refs.empty()) {
+    branch_direct = false;
+    for (const auto& ref : scope_refs) {
+      if (ref.first == task_scope_kind::repo && (!ref.second.has_value() || *ref.second == repo_id)) {
+        branch_direct = true;
+        break;
+      }
+    }
+  }
+
+  auto const status_clause =
+      filter.status.has_value() ? std::string{" and status = ?"} : std::string{" and status in ('todo','doing','blocked')"};
+
+  std::string sql = "select * from (";
+  sql += k_select_columns;
+  sql += " where 1 = 1";
+  if (branch_direct) {
+    sql += " and scope_kind = 'repo' and scope_id = ?";
+    sql += status_clause;
+    if (filter.plan_id.has_value()) {
+      sql += " and plan_id = ?";
+    }
+    if (filter.priority_max.has_value()) {
+      sql += " and priority <= ?";
+    }
+  } else {
+    sql += " and 1 = 0";
+  }
+  sql += " union ";
+  sql += k_select_columns;
+  sql += " where 1 = 1";
+  sql += " and id in (select from_id from entity_links where from_kind = 'task' and to_kind = 'repo' and to_id = ? and "
+         "relationship = 'touches')";
+  sql += status_clause;
+  if (!scope_refs.empty()) {
+    sql += " and (";
+    for (std::size_t i = 0; i < scope_refs.size(); ++i) {
+      if (i > 0) {
+        sql += " or ";
+      }
+      if (scope_refs[i].first == task_scope_kind::global) {
+        sql += "scope_kind = 'global'";
+      } else {
+        sql += "(scope_kind = ? and scope_id = ?)";
+      }
+    }
+    sql += ")";
+  }
+  if (filter.plan_id.has_value()) {
+    sql += " and plan_id = ?";
+  }
+  if (filter.priority_max.has_value()) {
+    sql += " and priority <= ?";
+  }
+  // `order by id` — NOT `list_tasks`' `priority, updated_at desc, id`. The
+  // oracle wraps the UNION and orders by id alone; see the header.
+  sql += ") order by id";
+
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(task_error::query_failed);
+  }
+  int  idx       = 1;
+  auto bind_int  = [&](std::int64_t v) { return stmt->bind_int64(idx++, v).has_value(); };
+  auto bind_text = [&](std::string_view v) { return stmt->bind_text(idx++, v).has_value(); };
+
+  if (branch_direct) {
+    if (!bind_int(repo_id)) {
+      return std::unexpected(task_error::query_failed);
+    }
+    if (filter.status.has_value() && !bind_text(task_status_to_text(*filter.status))) {
+      return std::unexpected(task_error::query_failed);
+    }
+    if (filter.plan_id.has_value() && !bind_int(*filter.plan_id)) {
+      return std::unexpected(task_error::query_failed);
+    }
+    if (filter.priority_max.has_value() && !bind_int(*filter.priority_max)) {
+      return std::unexpected(task_error::query_failed);
+    }
+  }
+  if (!bind_int(repo_id)) {
+    return std::unexpected(task_error::query_failed);
+  }
+  if (filter.status.has_value() && !bind_text(task_status_to_text(*filter.status))) {
+    return std::unexpected(task_error::query_failed);
+  }
+  for (const auto& ref : scope_refs) {
+    if (ref.first == task_scope_kind::global) {
+      continue;
+    }
+    if (!ref.second.has_value()) {
+      return std::unexpected(task_error::query_failed);
+    }
+    if (!bind_text(scope_kind_to_text(ref.first)) || !bind_int(*ref.second)) {
+      return std::unexpected(task_error::query_failed);
+    }
+  }
+  if (filter.plan_id.has_value() && !bind_int(*filter.plan_id)) {
+    return std::unexpected(task_error::query_failed);
+  }
+  if (filter.priority_max.has_value() && !bind_int(*filter.priority_max)) {
+    return std::unexpected(task_error::query_failed);
+  }
+
+  std::vector<task> out;
+  for (;;) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(task_error::query_failed);
+    }
+    if (*step == db::step_result::done) {
+      break;
+    }
+    auto row = read_row(*stmt);
+    if (!row) {
+      return std::unexpected(row.error());
+    }
+    out.push_back(std::move(*row));
+  }
+  return out;
+}
+
 auto render_text(const task& t) -> std::string {
   std::string out;
   out += std::format("id:          {}\n", t.id);

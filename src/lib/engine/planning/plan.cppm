@@ -194,6 +194,40 @@ export auto list_plans(db::connection& conn, const plan_list_filter& filter) -> 
 /// @return The updated (or unchanged) row, or one of the errors above.
 export auto update_plan(db::connection& conn, std::int64_t id, const plan_update_args& patch) -> std::expected<plan, plan_error>;
 
+/// @brief List plans that are EITHER scoped directly to `repo_id` OR
+/// linked to it by `entity_links(relationship='touches')`, ordered by id.
+///
+/// Serves `plan list --touches <repo-slug>`, which refused at exit 64 from
+/// task 6141 until this landed (task 6187).
+///
+/// ## The two branches are filtered DIFFERENTLY, and that is the contract
+///
+/// The query is a UNION of a direct-scope branch and a touches-edge
+/// branch. `filter.scope` / `filter.scopes` apply INSIDE the touches
+/// branch only. They do not narrow the direct branch row-by-row; instead
+/// they switch that whole branch ON or OFF, and it is on only when the
+/// scope set contains a `repo` ref that is either unresolved-id or
+/// `repo_id` itself. A scope set naming only `global`, for instance,
+/// suppresses every directly-repo-scoped plan while still admitting
+/// global plans reached through a touches edge.
+///
+/// That asymmetry is the oracle's (`plan.zig`'s `listTouching`, and its
+/// own unit test "listTouching suppresses direct-repo branch when scope
+/// excludes repo" pins it). Applying the scope predicate uniformly to both
+/// branches would be tidier and would silently change which rows an
+/// operator sees.
+///
+/// The empty-status default is the OPEN set, exactly as `list_plans` has
+/// it, and independently in each branch — the defect that flipped `done`
+/// plans back to `active` came from omitting it in one place.
+/// @param conn An open, migrated database connection.
+/// @param repo_id The repo (`projects.id`) to filter on.
+/// @param filter Status/parent/scope filters, applied as described above.
+/// @return The matching rows ordered by id, `plan_error::slug_not_found`
+/// when a scope member does not resolve, or `plan_error::query_failed`.
+export auto list_plans_touching(db::connection& conn, std::int64_t repo_id, const plan_list_filter& filter)
+    -> std::expected<std::vector<plan>, plan_error>;
+
 /// @brief The outcome of a `recompute_status` call. Mirrors zig's
 /// plan.zig `RecomputeResult`.
 export struct recompute_result {

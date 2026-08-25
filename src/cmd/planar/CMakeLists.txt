@@ -308,6 +308,7 @@ planar_binary(planar
     git
     json_text
     engine_config
+    engine_entitylink
     engine_external
     engine_identity
     engine_models

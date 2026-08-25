@@ -11,6 +11,8 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.json_text;
+import planar.engine.entitylink;
 import planar.engine.identity;
 import planar.engine.planning;
 import planar.engine.runtime;
@@ -361,14 +363,25 @@ auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   return {};
 }
 
+namespace {
+
+/// @brief Forward declaration of the repo-slug resolver defined with the
+/// `task touches` block below.
+///
+/// `task list --touches` needs it and is defined ABOVE that block; an
+/// anonymous namespace re-opened later in the same translation unit is the
+/// SAME namespace, so this declares the one entity rather than a second.
+/// @param conn An open, migrated database connection.
+/// @param slug The repo slug.
+/// @return The row id, `std::nullopt` when absent, or the refusal.
+auto resolve_repo_slug(db::connection& conn, std::string_view slug) -> std::expected<std::optional<std::int64_t>, domain_error>;
+
+} // namespace
+
 auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
-  }
-
-  if (cliapp::flag_string(args, "--touches").has_value()) {
-    return std::unexpected(touches_not_implemented("task list"));
   }
 
   pl::task_list_filter filter{};
@@ -399,9 +412,29 @@ auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     filter.scopes = std::move(*slugs);
   }
 
-  auto rows = pl::list_tasks(**conn, filter);
-  if (!rows) {
-    return std::unexpected(map_task_error_for(rows.error(), "task list"));
+  // `--touches <repo-slug>` swaps the engine call for the UNION query
+  // rather than post-filtering the unfiltered list: the two branches
+  // (direct repo scope, touches edge) apply the scope predicate
+  // DIFFERENTLY, and a post-filter cannot express that. Refused at exit 64
+  // until task 6187 landed `list_tasks_touching`.
+  std::expected<std::vector<pl::task>, pl::task_error> rows;
+  if (auto const slug = cliapp::flag_string(args, "--touches"); slug.has_value()) {
+    auto repo_id = resolve_repo_slug(**conn, *slug);
+    if (!repo_id) {
+      return std::unexpected(repo_id.error());
+    }
+    if (!repo_id->has_value()) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("repo '{}' not found", *slug)));
+    }
+    rows = pl::list_tasks_touching(**conn, **repo_id, filter);
+    if (!rows) {
+      return std::unexpected(map_task_error_for(rows.error(), "task list --touches"));
+    }
+  } else {
+    rows = pl::list_tasks(**conn, filter);
+    if (!rows) {
+      return std::unexpected(map_task_error_for(rows.error(), "task list"));
+    }
   }
 
   if (cliapp::flag_bool(args, "--json")) {
@@ -623,6 +656,387 @@ auto task_reopen(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(map_task_error_for(updated.error(), "task reopen"));
   }
   emit_task(ctx, args, *updated);
+  return {};
+}
+
+// =========================================================================
+// `task touches` — the repo- and path-level declaration surface (task 6187).
+//
+// The engine halves were ALREADY ported and are NOT in `engine_planning`:
+// `add_touch_path` / `remove_touch_path` / `touched_paths` /
+// `touched_repo_ids`, plus generic `entity_links` add/list/remove, all live
+// in the layer-2 `planar.engine.entitylink` bucket. This cycle's brief
+// asserted the whole `task touches` surface had "no engine"; that was
+// checked against `entitylink.cppm` before any code was written and found
+// to be true only of `listTouching` (now in `engine_planning`) and of the
+// `infer` leaf. The rest is composition at layer 3, which is where it has
+// to happen anyway: `engine_entitylink` and `engine_planning` are both
+// layer 2 and `cmake/architecture.cmake` FATALs on an edge between them.
+// =========================================================================
+
+namespace {
+
+namespace el = engine::entitylink;
+
+/// @brief Resolve a repo slug to a `projects.id`.
+///
+/// A direct query rather than `entitylink::parse_ref`, which does not do
+/// slug lookup for the `repo` kind — `projects` carries the slug column but
+/// is not in the ref resolver's table. Same reason the oracle's handlers
+/// each carry their own `resolveRepoSlug`.
+/// @param conn An open, migrated database connection.
+/// @param slug The repo slug.
+/// @return The row id, `std::nullopt` when no such project exists, or the
+/// error when the query itself failed.
+auto resolve_repo_slug(db::connection& conn, std::string_view slug) -> std::expected<std::optional<std::int64_t>, domain_error> {
+  auto stmt = conn.prepare("select id from projects where slug = ?");
+  if (!stmt) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+  }
+  if (auto b = stmt->bind_text(1, slug); !b) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+  }
+  if (*stepped == db::step_result::done) {
+    return std::optional<std::int64_t>{};
+  }
+  return std::optional<std::int64_t>{stmt->column_int64(0)};
+}
+
+/// @brief Warn — never refuse — when the named repo belongs to no association.
+///
+/// Link verbs are unguarded on purpose: a touches edge into a DIFFERENT
+/// association is the legitimate polyrepo workflow, so scope disagreement
+/// is not an error. A repo in NO association is a different thing —
+/// nothing can reach it, so it is nearly always a stale duplicate slug
+/// picked over the live one, and declarations pile up against a root_path
+/// that is not the operator's checkout.
+///
+/// Every failure here is swallowed: a diagnostic must not turn a valid
+/// write into an error. Suppressed under `--json`, matching the oracle,
+/// so machine consumers get a clean stream.
+/// @param ctx The invocation context (the advisory goes to `ctx.err()`).
+/// @param conn An open, migrated database connection.
+/// @param repo_id The repo being declared against.
+/// @param slug The slug as the operator spelled it.
+void warn_if_orphan_repo(context& ctx, db::connection& conn, std::int64_t repo_id, std::string_view slug) {
+  auto stmt = conn.prepare("select count(*) from project_associations where project_id = ?");
+  if (!stmt) {
+    return;
+  }
+  if (auto b = stmt->bind_int64(1, repo_id); !b) {
+    return;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != db::step_result::row || stmt->column_int64(0) != 0) {
+    return;
+  }
+  ctx.err() << std::format("warning: repo '{}' belongs to no association — declarations on it are unreachable from any "
+                           "scope, and closure extraction will read its root_path rather than your checkout's\n",
+                           slug);
+
+  // Offer the likely intended repo: another project whose root_path has the
+  // same basename and which IS associated (the `planar` / `planar-2` shape).
+  auto alt = conn.prepare("select b.slug from projects a "
+                          "join projects b on b.id <> a.id "
+                          "where a.id = ? "
+                          "  and b.root_path is not null and a.root_path is not null "
+                          "  and replace(b.root_path, rtrim(b.root_path, replace(b.root_path, '/', '')), '') "
+                          "      = replace(a.root_path, rtrim(a.root_path, replace(a.root_path, '/', '')), '') "
+                          "  and exists (select 1 from project_associations pa where pa.project_id = b.id) "
+                          "limit 1");
+  if (!alt) {
+    return;
+  }
+  if (auto b = alt->bind_int64(1, repo_id); !b) {
+    return;
+  }
+  auto alt_stepped = alt->step();
+  if (!alt_stepped || *alt_stepped != db::step_result::row) {
+    return;
+  }
+  ctx.err() << std::format("         did you mean '{}'?\n", alt->column_text(0));
+}
+
+/// @brief Render the shared `add` / `remove` JSON result.
+///
+/// `path` is ALWAYS emitted, as `null` in repo-level mode rather than
+/// omitted — the oracle's struct declares it optional-with-default and its
+/// serializer writes the key regardless. A consumer keying on the field's
+/// PRESENCE to tell the two modes apart would break if it were dropped.
+/// @param task_id The task.
+/// @param repo_id The resolved repo id.
+/// @param repo_slug The slug as spelled by the operator.
+/// @param path The declared path, or unset in repo-level mode.
+/// @return The JSON object, with no trailing newline.
+auto touches_result_json(std::int64_t task_id, std::int64_t repo_id, std::string_view repo_slug,
+                         const std::optional<std::string>& path) -> std::string {
+  return std::format(R"({{"ok":true,"task_id":{},"repo_id":{},"repo_slug":{},"path":{}}})", task_id, repo_id,
+                     json_text::json_string(repo_slug), path.has_value() ? json_text::json_string(*path) : std::string{"null"});
+}
+
+/// @brief Resolve the `<task-id> <repo-slug>` pair `add` and `remove` share.
+/// @param ctx The invocation context.
+/// @param conn An open, migrated database connection.
+/// @param args The parsed arguments.
+/// @return The task id, repo id and slug, or the refusal.
+auto touches_endpoints(context& ctx, db::connection& conn, const cliapp::parsed_args& args)
+    -> std::expected<std::tuple<std::int64_t, std::int64_t, std::string>, domain_error> {
+  auto const task_id = entity_id_arg(args, "task-id", "task");
+  if (!task_id) {
+    return std::unexpected(task_id.error());
+  }
+  auto const slug = cliapp::positional_string(args, "repo-slug");
+  if (!slug.has_value()) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "repo-slug is required"));
+  }
+  auto resolved = resolve_repo_slug(conn, *slug);
+  if (!resolved) {
+    return std::unexpected(resolved.error());
+  }
+  if (!resolved->has_value()) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("repo '{}' not found", *slug)));
+  }
+  (void)ctx;
+  return std::make_tuple(*task_id, **resolved, *slug);
+}
+
+} // namespace
+
+auto task_touches_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto endpoints = touches_endpoints(ctx, **conn, args);
+  if (!endpoints) {
+    return std::unexpected(endpoints.error());
+  }
+  auto const [task_id, repo_id, slug] = *endpoints;
+  auto const path                     = cliapp::flag_string(args, "--path");
+  auto const as_json                  = cliapp::flag_bool(args, "--json");
+
+  if (!as_json) {
+    warn_if_orphan_repo(ctx, **conn, repo_id, slug);
+  }
+
+  // Path mode performs TWO writes and they must land together. A partial
+  // pair (edge present, path row missing) degrades the parallelizability
+  // rules to the coarse whole-repo signal without any error surfacing.
+  std::optional<db::transaction> tx;
+  if (path.has_value()) {
+    auto opened = (*conn)->begin_transaction();
+    if (!opened) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches add: savepoint: QueryFailed"));
+    }
+    tx.emplace(std::move(*opened));
+  }
+
+  auto linked = el::add(**conn, el::entity_link_add_args{.from_kind     = el::entity_kind::task,
+                                                         .from_id       = task_id,
+                                                         .to_kind       = el::entity_kind::repo,
+                                                         .to_id         = repo_id,
+                                                         .relationship_ = el::relationship::touches});
+  if (!linked) {
+    switch (linked.error()) {
+    case el::entity_link_error::link_exists:
+      // In path mode a pre-existing edge is EXPECTED — the path implies it.
+      // In repo-only mode it is the refusal.
+      if (!path.has_value()) {
+        return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                               std::format("touches link task:{} -> repo:{} already exists", task_id, slug)));
+      }
+      break;
+    case el::entity_link_error::endpoint_not_found:
+      // Only the TASK side can be missing: the repo id came from a
+      // successful slug lookup moments ago.
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("task:{} not found", task_id)));
+    case el::entity_link_error::unsupported_scope:
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "scoped entity links not yet supported (M3)"));
+    default:
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches add: QueryFailed"));
+    }
+  }
+
+  if (path.has_value()) {
+    if (auto written = el::add_touch_path(**conn, task_id, repo_id, *path); !written) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches add --path: QueryFailed"));
+    }
+    if (auto committed = tx->commit(); !committed) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, "task touches add: release savepoint: QueryFailed"));
+    }
+  }
+
+  if (as_json) {
+    ctx.out() << touches_result_json(task_id, repo_id, slug, path) << '\n';
+  } else if (path.has_value()) {
+    ctx.out() << std::format("path-touch added: task:{} -> repo:{} path:{}\n", task_id, slug, *path);
+  } else {
+    ctx.out() << std::format("touches link added: task:{} -> repo:{}\n", task_id, slug);
+  }
+  return {};
+}
+
+auto task_touches_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const task_id = entity_id_arg(args, "task-id", "task");
+  if (!task_id) {
+    return std::unexpected(task_id.error());
+  }
+
+  // Ordered by SLUG, not by link id — so this listing and
+  // `entitylink::touched_repo_ids` (ordered by link id) can disagree on
+  // order for the same task. The oracle's `task touches list` does its own
+  // slug-joined query rather than calling the engine helper, and that is
+  // reproduced here for the same reason: the operator-facing listing is
+  // alphabetical.
+  std::vector<std::string> repos;
+  {
+    auto stmt = (*conn)->prepare("select p.slug from entity_links el join projects p on p.id = el.to_id "
+                                 "where el.from_kind = 'task' and el.from_id = ? "
+                                 "  and el.to_kind = 'repo' and el.relationship = 'touches' order by p.slug");
+    if (!stmt) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches list (repos): QueryFailed"));
+    }
+    if (auto b = stmt->bind_int64(1, *task_id); !b) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches list bind: QueryFailed"));
+    }
+    for (;;) {
+      auto stepped = stmt->step();
+      if (!stepped) {
+        return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches list step: QueryFailed"));
+      }
+      if (*stepped == db::step_result::done) {
+        break;
+      }
+      repos.push_back(stmt->column_text(0));
+    }
+  }
+
+  std::vector<std::pair<std::string, std::string>> paths;
+  {
+    auto stmt = (*conn)->prepare("select p.slug, ttp.path from task_touch_paths ttp "
+                                 "join projects p on p.id = ttp.repo_id "
+                                 "where ttp.task_id = ? order by p.slug, ttp.path");
+    if (!stmt) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches list (paths): QueryFailed"));
+    }
+    if (auto b = stmt->bind_int64(1, *task_id); !b) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches list bind: QueryFailed"));
+    }
+    for (;;) {
+      auto stepped = stmt->step();
+      if (!stepped) {
+        return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches list step: QueryFailed"));
+      }
+      if (*stepped == db::step_result::done) {
+        break;
+      }
+      paths.emplace_back(stmt->column_text(0), stmt->column_text(1));
+    }
+  }
+
+  if (cliapp::flag_bool(args, "--json")) {
+    std::string out = std::format(R"({{"task_id":{},"repos":[)", *task_id);
+    for (std::size_t i = 0; i < repos.size(); ++i) {
+      if (i > 0) {
+        out += ",";
+      }
+      out += json_text::json_string(repos[i]);
+    }
+    out += R"(],"paths":[)";
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+      if (i > 0) {
+        out += ",";
+      }
+      out += std::format(R"({{"repo":{},"path":{}}})", json_text::json_string(paths[i].first),
+                         json_text::json_string(paths[i].second));
+    }
+    out += "]}";
+    ctx.out() << out << '\n';
+    return {};
+  }
+
+  ctx.out() << std::format("task:{} touches\n", *task_id);
+  if (repos.empty() && paths.empty()) {
+    ctx.out() << "  (none declared)\n";
+    return {};
+  }
+  for (const auto& slug : repos) {
+    ctx.out() << std::format("  repo: {}\n", slug);
+  }
+  for (const auto& row : paths) {
+    ctx.out() << std::format("  path: {}:{}\n", row.first, row.second);
+  }
+  return {};
+}
+
+auto task_touches_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto endpoints = touches_endpoints(ctx, **conn, args);
+  if (!endpoints) {
+    return std::unexpected(endpoints.error());
+  }
+  auto const [task_id, repo_id, slug] = *endpoints;
+  auto const path                     = cliapp::flag_string(args, "--path");
+  auto const as_json                  = cliapp::flag_bool(args, "--json");
+
+  if (path.has_value()) {
+    // Withdraws the PATH row only; the repo edge is deliberately left in
+    // place. See the declaration's documentation.
+    auto removed = el::remove_touch_path(**conn, task_id, repo_id, *path);
+    if (!removed) {
+      if (removed.error() == el::entity_link_error::not_found) {
+        return std::unexpected(
+            error_from_body(domain_error_kind::generic_failure,
+                            std::format("task:{} has no declared path touch '{}' on repo:{}", task_id, *path, slug)));
+      }
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches remove --path: QueryFailed"));
+    }
+    if (as_json) {
+      ctx.out() << touches_result_json(task_id, repo_id, slug, path) << '\n';
+    } else {
+      ctx.out() << std::format("path-touch removed: task:{} -> repo:{} path:{}\n", task_id, slug, *path);
+    }
+    return {};
+  }
+
+  auto links = el::list(**conn, el::entity_link_list_filter{.from_kind     = el::entity_kind::task,
+                                                            .from_id       = task_id,
+                                                            .to_kind       = el::entity_kind::repo,
+                                                            .to_id         = repo_id,
+                                                            .relationship_ = el::relationship::touches});
+  if (!links) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches remove lookup: QueryFailed"));
+  }
+  if (links->empty()) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           std::format("no touches link between task:{} and repo:{}", task_id, slug)));
+  }
+  if (auto dropped = el::remove(**conn, links->front().id); !dropped) {
+    if (dropped.error() == el::entity_link_error::not_found) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "link not found (already removed?)"));
+    }
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches remove: QueryFailed"));
+  }
+
+  if (as_json) {
+    ctx.out() << touches_result_json(task_id, repo_id, slug, std::nullopt) << '\n';
+  } else {
+    // U+2192 here, but ASCII `->` in `add`'s line. Both oracle-captured
+    // against the same database; the asymmetry is real and is pinned.
+    ctx.out() << std::format("touches link removed: task:{} → repo:{}\n", task_id, slug);
+  }
   return {};
 }
 

@@ -102,6 +102,7 @@ planar_module(engine_planning
     plan.cppm
     task.cppm
     annotation.cppm
+    plan_step.cppm
     test_spec_status.cppm
     planning.cppm
   SOURCES
@@ -109,6 +110,7 @@ planar_module(engine_planning
     plan.cpp
     task.cpp
     annotation.cpp
+    plan_step.cpp
     test_spec_status.cpp
   DEPENDS
     db

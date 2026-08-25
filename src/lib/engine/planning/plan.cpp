@@ -761,6 +761,156 @@ auto recompute_status(db::connection& conn, std::int64_t plan_id) -> std::expect
   };
 }
 
+auto list_plans_touching(db::connection& conn, std::int64_t repo_id, const plan_list_filter& filter)
+    -> std::expected<std::vector<plan>, plan_error> {
+  std::vector<std::pair<plan_scope_kind, std::optional<std::int64_t>>> scope_refs;
+  if (filter.scope.has_value()) {
+    auto resolved = resolve_scope_or_global(conn, filter.scope);
+    if (!resolved) {
+      return std::unexpected(resolved.error());
+    }
+    scope_refs.push_back(*resolved);
+  }
+  for (const auto& s : filter.scopes) {
+    auto resolved = resolve_scope_or_global(conn, std::optional<std::string>{s});
+    if (!resolved) {
+      return std::unexpected(resolved.error());
+    }
+    scope_refs.push_back(*resolved);
+  }
+
+  // The direct-repo-scope branch is ALL-OR-NOTHING against the scope set —
+  // see the header. With no scope set at all it stays on.
+  bool branch_direct = true;
+  if (!scope_refs.empty()) {
+    branch_direct = false;
+    for (const auto& ref : scope_refs) {
+      if (ref.first == plan_scope_kind::repo && (!ref.second.has_value() || *ref.second == repo_id)) {
+        branch_direct = true;
+        break;
+      }
+    }
+  }
+
+  // The status predicate is emitted per BRANCH, not once for the union, so
+  // both arms default to the open set independently. Losing it on either
+  // arm resurrects terminal plans into the listing.
+  auto const status_clause = [&]() -> std::string {
+    if (filter.statuses.empty()) {
+      return " and status in ('draft','active','paused')";
+    }
+    std::string out = " and status in (";
+    for (std::size_t i = 0; i < filter.statuses.size(); ++i) {
+      if (i > 0) {
+        out += ", ";
+      }
+      out += "?";
+    }
+    out += ")";
+    return out;
+  }();
+
+  std::string sql = "select * from (";
+  sql += k_select_columns;
+  sql += " where 1 = 1";
+  if (branch_direct) {
+    sql += " and scope_kind = 'repo' and scope_id = ?";
+    if (filter.parent_plan_id.has_value()) {
+      sql += " and parent_plan_id = ?";
+    }
+    sql += status_clause;
+  } else {
+    // A branch that is off is emitted as `1 = 0` rather than dropped, so
+    // the UNION keeps both arms and the column list stays identical.
+    sql += " and 1 = 0";
+  }
+  sql += " union ";
+  sql += k_select_columns;
+  sql += " where 1 = 1";
+  sql += " and id in (select from_id from entity_links where from_kind = 'plan' and to_kind = 'repo' and to_id = ? and "
+         "relationship = 'touches')";
+  if (filter.parent_plan_id.has_value()) {
+    sql += " and parent_plan_id = ?";
+  }
+  sql += status_clause;
+  if (!scope_refs.empty()) {
+    sql += " and (";
+    for (std::size_t i = 0; i < scope_refs.size(); ++i) {
+      if (i > 0) {
+        sql += " or ";
+      }
+      if (scope_refs[i].first == plan_scope_kind::global) {
+        sql += "scope_kind = 'global'";
+      } else {
+        sql += "(scope_kind = ? and scope_id = ?)";
+      }
+    }
+    sql += ")";
+  }
+  sql += ") order by id";
+
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(plan_error::query_failed);
+  }
+  int  idx       = 1;
+  auto bind_int  = [&](std::int64_t v) { return stmt->bind_int64(idx++, v).has_value(); };
+  auto bind_text = [&](std::string_view v) { return stmt->bind_text(idx++, v).has_value(); };
+
+  if (branch_direct) {
+    if (!bind_int(repo_id)) {
+      return std::unexpected(plan_error::query_failed);
+    }
+    if (filter.parent_plan_id.has_value() && !bind_int(*filter.parent_plan_id)) {
+      return std::unexpected(plan_error::query_failed);
+    }
+    for (const auto s : filter.statuses) {
+      if (!bind_text(plan_status_to_text(s))) {
+        return std::unexpected(plan_error::query_failed);
+      }
+    }
+  }
+  if (!bind_int(repo_id)) {
+    return std::unexpected(plan_error::query_failed);
+  }
+  if (filter.parent_plan_id.has_value() && !bind_int(*filter.parent_plan_id)) {
+    return std::unexpected(plan_error::query_failed);
+  }
+  for (const auto s : filter.statuses) {
+    if (!bind_text(plan_status_to_text(s))) {
+      return std::unexpected(plan_error::query_failed);
+    }
+  }
+  for (const auto& ref : scope_refs) {
+    if (ref.first == plan_scope_kind::global) {
+      continue;
+    }
+    if (!ref.second.has_value()) {
+      return std::unexpected(plan_error::query_failed);
+    }
+    if (!bind_text(scope_kind_to_text(ref.first)) || !bind_int(*ref.second)) {
+      return std::unexpected(plan_error::query_failed);
+    }
+  }
+
+  std::vector<plan> out;
+  for (;;) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(plan_error::query_failed);
+    }
+    if (*step == db::step_result::done) {
+      break;
+    }
+    auto row = read_row(*stmt);
+    if (!row) {
+      return std::unexpected(row.error());
+    }
+    out.push_back(std::move(*row));
+  }
+  return out;
+}
+
 auto render_text(const plan& p) -> std::string {
   std::string out;
   out += std::format("id:       {}\n", p.id);

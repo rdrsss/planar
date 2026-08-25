@@ -3326,18 +3326,30 @@ TEST_CASE("plan list refuses when the cwd pins no scope", "[cmd][handlers][plan]
   CHECK(out.str().empty());
 }
 
-TEST_CASE("plan list --touches refuses loudly rather than ignoring the filter", "[cmd][handlers][plan][parity][6141]") {
-  // `listTouching` is unported. Accepting the flag and returning an
-  // unfiltered list would be indistinguishable from success.
+TEST_CASE("plan list --touches refuses an unknown repo rather than ignoring the filter",
+          "[cmd][handlers][plan][parity][6141][6187]") {
+  // REPLACES the exit-64 assertion this case carried from task 6141, when
+  // `listTouching` was unported and the flag refused wholesale. Task 6187
+  // landed `list_plans_touching` / `list_tasks_touching`, so the flag now
+  // WORKS — but the property the original case existed to protect is
+  // unchanged and is what is asserted here instead: an unresolvable repo
+  // slug must REFUSE, never fall through to an unfiltered or empty list,
+  // because either would be indistinguishable from success.
+  //
+  // The positive filtering behaviour — including the branch asymmetry that
+  // makes the scope predicate apply to only one half of the UNION — is
+  // covered in `plan_task_remainder_leaves.t.cpp`, on a fixture with rows
+  // on both sides of every predicate.
   auto const fx = make_fixture("pltouch");
   seed_planning(fx);
   auto const got = dispatch(fx, {"plan", "list", "--touches", "acme"});
-  CHECK(got.code == 64);
-  CHECK(got.err.contains("--touches: not implemented in this build"));
+  CHECK(got.code == 1);
+  CHECK(got.err == "error: repo 'acme' not found\n");
   CHECK(got.out.empty());
 
   auto const tgot = dispatch(fx, {"task", "list", "--touches", "acme"});
-  CHECK(tgot.code == 64);
+  CHECK(tgot.code == 1);
+  CHECK(tgot.err == "error: repo 'acme' not found\n");
   CHECK(tgot.out.empty());
 }
 

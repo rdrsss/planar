@@ -108,6 +108,37 @@ auto split_csv(std::string_view raw) -> std::vector<std::string> {
   return out;
 }
 
+/// @brief Resolve a repo slug to a `projects.id` for `plan list --touches`.
+///
+/// A direct query: `projects` carries a slug column but is not in the
+/// entity-ref resolver's table, so slug lookup for the `repo` kind has to
+/// be done by hand. `handlers/task.cpp` carries its own copy for the same
+/// reason, and so does each of the oracle's handlers — the two live in
+/// different translation units and neither is layer-1 vocabulary worth
+/// extracting for two call sites.
+/// @param conn An open, migrated database connection.
+/// @param slug The repo slug.
+/// @return The row id, `std::nullopt` when no such project exists, or the
+/// refusal when the query itself failed.
+auto resolve_repo_slug_for_touches(db::connection& conn, std::string_view slug)
+    -> std::expected<std::optional<std::int64_t>, domain_error> {
+  auto stmt = conn.prepare("select id from projects where slug = ?");
+  if (!stmt) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+  }
+  if (auto b = stmt->bind_text(1, slug); !b) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+  }
+  if (*stepped == db::step_result::done) {
+    return std::optional<std::int64_t>{};
+  }
+  return std::optional<std::int64_t>{stmt->column_int64(0)};
+}
+
 /// @brief Emit the oracle's stderr advisory when closing a plan that still
 /// has open descendant plans.
 ///
@@ -263,10 +294,6 @@ auto plan_list(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     return std::unexpected(conn.error());
   }
 
-  if (cliapp::flag_string(args, "--touches").has_value()) {
-    return std::unexpected(touches_not_implemented("plan list"));
-  }
-
   pl::plan_list_filter filter{};
   filter.parent_plan_id = cliapp::flag_int(args, "--parent");
 
@@ -300,9 +327,33 @@ auto plan_list(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     filter.scopes = std::move(*slugs);
   }
 
-  auto rows = pl::list_plans(**conn, filter);
-  if (!rows) {
-    return std::unexpected(map_plan_error_for(rows.error(), "plan list"));
+  // `--touches <repo-slug>` selects a DIFFERENT query (the direct-scope /
+  // touches-edge UNION), not a post-filter over the plain listing — the
+  // two branches treat the scope predicate differently and a post-filter
+  // could not reproduce that. Refused at exit 64 until task 6187.
+  //
+  // The repo slug is resolved HERE, and an unknown slug refuses rather
+  // than listing empty: `repo 'nosuchrepo' not found`, oracle-captured.
+  // Falling through to an empty listing is the silent-filter defect this
+  // whole milestone keeps closing.
+  std::expected<std::vector<pl::plan>, pl::plan_error> rows;
+  if (auto const slug = cliapp::flag_string(args, "--touches"); slug.has_value()) {
+    auto repo_id = resolve_repo_slug_for_touches(**conn, *slug);
+    if (!repo_id) {
+      return std::unexpected(repo_id.error());
+    }
+    if (!repo_id->has_value()) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("repo '{}' not found", *slug)));
+    }
+    rows = pl::list_plans_touching(**conn, **repo_id, filter);
+    if (!rows) {
+      return std::unexpected(map_plan_error_for(rows.error(), "plan list --touches"));
+    }
+  } else {
+    rows = pl::list_plans(**conn, filter);
+    if (!rows) {
+      return std::unexpected(map_plan_error_for(rows.error(), "plan list"));
+    }
   }
 
   if (cliapp::flag_bool(args, "--json")) {
@@ -457,6 +508,224 @@ auto plan_recompute_status(context& ctx, const cliapp::parsed_args& args) -> han
     // no transitions.
     ctx.out() << std::format("\nrecomputed {} plans; {} transitioned\n", rows->size(), changed);
   }
+  return {};
+}
+
+// =========================================================================
+// `plan step` — the five leaves landed at task 6187 alongside their engine.
+//
+// Every one of them phrases the engine's errors ITSELF rather than falling
+// through to `map_plan_error_for`'s `<verb>: <ZigTag>` shape, because the
+// oracle does: `no plan with id 999`, `ordinal conflict: ...`, `no step
+// with id 99`, `step N is already terminal`, `step N cannot be skipped
+// (must be pending)`, `step N or task M not found`. Six distinct strings,
+// all exit 1, so nothing but a byte assertion separates them.
+// =========================================================================
+
+namespace {
+
+/// @brief Parse a required integer positional using the `plan step`
+/// family's OWN error wording.
+///
+/// `entity_id_arg` renders `"{label} id must be an integer, got '{raw}'"`,
+/// which is right for `plan show` (`plan id must be ...`) and WRONG here:
+/// every `plan step` leaf names the positional verbatim and appends no
+/// noun, so the oracle says `plan-id must be an integer, got 'abc'` and
+/// `step-id must be an integer, got 'abc'`. Passing `"plan-id"` as the
+/// label to the shared helper produced `plan-id id must be ...` — caught
+/// by the oracle-differential run, invisible to the exit code (both 2).
+/// @param args The parsed arguments.
+/// @param name The positional's declared name, used verbatim in the message.
+/// @return The parsed id, or `invalid_input` (exit 2).
+auto step_positional_id(const cliapp::parsed_args& args, std::string_view name) -> std::expected<std::int64_t, domain_error> {
+  auto const raw = cliapp::positional_string(args, name);
+  if (!raw.has_value()) {
+    // Unreachable through the tree (all four are declared required), but an
+    // absent id must never fall through to 0 and act on row 0.
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} is required", name)));
+  }
+  auto const parsed = cliapp::parse_int64_zig(*raw);
+  if (!parsed.has_value()) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, std::format("{} must be an integer, got '{}'", name, *raw)));
+  }
+  return *parsed;
+}
+
+/// @brief Emit one step in whichever shape `--json` selects.
+///
+/// The `ok` sentinel rides on the JSON form for all four MUTATION leaves
+/// and on none of the objects inside `plan step list`'s array — the
+/// oracle's asymmetry, carried by `render_step_json`'s `with_ok`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments, read for `--json`.
+/// @param s The step to render.
+void emit_step(context& ctx, const cliapp::parsed_args& args, const pl::plan_step& s) {
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << pl::render_step_json(s, true) << '\n';
+  } else {
+    ctx.out() << pl::render_step_text(s);
+  }
+}
+
+/// @brief Map a `plan_step_error` that the caller has no bespoke message
+/// for onto the generic `<verb>: <ZigTag>` shape.
+///
+/// Reached only by `query_failed` and `audit_write_failed` in practice;
+/// every other member has a caller-specific string. Kept rather than
+/// collapsed into a bare "failed" so an operator who hits the SQLite arm
+/// still gets the tag the oracle would have printed.
+/// @param err The engine error.
+/// @param verb The verb name to lead with.
+/// @return The mapped failure.
+auto map_step_error(pl::plan_step_error err, std::string_view verb) -> domain_error {
+  std::string_view tag = "Unknown";
+  switch (err) {
+  case pl::plan_step_error::not_found:
+    tag = "NotFound";
+    break;
+  case pl::plan_step_error::invalid_transition:
+    tag = "InvalidTransition";
+    break;
+  case pl::plan_step_error::ordinal_conflict:
+    tag = "OrdinalConflict";
+    break;
+  case pl::plan_step_error::query_failed:
+    tag = "QueryFailed";
+    break;
+  case pl::plan_step_error::audit_write_failed:
+    tag = "WriteFailed";
+    break;
+  }
+  return error_from_body(domain_error_kind::generic_failure, std::format("{}: {}", verb, tag));
+}
+
+} // namespace
+
+auto plan_step_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const plan_id = step_positional_id(args, "plan-id");
+  if (!plan_id) {
+    return std::unexpected(plan_id.error());
+  }
+  auto const body = cliapp::positional_string(args, "body");
+  if (!body.has_value()) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "body is required"));
+  }
+
+  pl::plan_step_add_args add{.plan_id = *plan_id, .body = *body, .ordinal = cliapp::flag_int(args, "--after")};
+  auto                   created = pl::add_step(**conn, add);
+  if (!created) {
+    switch (created.error()) {
+    case pl::plan_step_error::not_found:
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("no plan with id {}", *plan_id)));
+    case pl::plan_step_error::ordinal_conflict:
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, "ordinal conflict: a step at that position already exists"));
+    default:
+      return std::unexpected(map_step_error(created.error(), "plan step add"));
+    }
+  }
+  emit_step(ctx, args, *created);
+  return {};
+}
+
+auto plan_step_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const plan_id = step_positional_id(args, "plan-id");
+  if (!plan_id) {
+    return std::unexpected(plan_id.error());
+  }
+
+  auto rows = pl::list_steps(**conn, *plan_id);
+  if (!rows) {
+    return std::unexpected(map_step_error(rows.error(), "plan step list"));
+  }
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << pl::render_step_list_json(*rows) << '\n';
+  } else {
+    ctx.out() << pl::render_step_list_text(*rows, *plan_id);
+  }
+  return {};
+}
+
+namespace {
+
+/// @brief The shared body of `plan step done` and `plan step skip`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @param to_done Whether this is `done` (else `skip`).
+/// @return The handler result.
+auto step_transition_leaf(context& ctx, const cliapp::parsed_args& args, bool to_done) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const step_id = step_positional_id(args, "step-id");
+  if (!step_id) {
+    return std::unexpected(step_id.error());
+  }
+
+  auto moved = to_done ? pl::mark_step_done(**conn, *step_id) : pl::skip_step(**conn, *step_id);
+  if (!moved) {
+    switch (moved.error()) {
+    case pl::plan_step_error::not_found:
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("no step with id {}", *step_id)));
+    case pl::plan_step_error::invalid_transition:
+      // The two leaves phrase the SAME engine error differently, and
+      // `skip` says "cannot be skipped" even for an already-terminal step
+      // rather than borrowing `done`'s wording. Both oracle-captured
+      // against the same row.
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                             to_done ? std::format("step {} is already terminal", *step_id)
+                                                     : std::format("step {} cannot be skipped (must be pending)", *step_id)));
+    default:
+      return std::unexpected(map_step_error(moved.error(), to_done ? "plan step done" : "plan step skip"));
+    }
+  }
+  emit_step(ctx, args, *moved);
+  return {};
+}
+
+} // namespace
+
+auto plan_step_done(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return step_transition_leaf(ctx, args, true);
+}
+
+auto plan_step_skip(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return step_transition_leaf(ctx, args, false);
+}
+
+auto plan_step_link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const step_id = step_positional_id(args, "step-id");
+  if (!step_id) {
+    return std::unexpected(step_id.error());
+  }
+  auto const task_id = step_positional_id(args, "task-id");
+  if (!task_id) {
+    return std::unexpected(task_id.error());
+  }
+
+  auto linked = pl::link_step_task(**conn, *step_id, *task_id);
+  if (!linked) {
+    if (linked.error() == pl::plan_step_error::not_found) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, std::format("step {} or task {} not found", *step_id, *task_id)));
+    }
+    return std::unexpected(map_step_error(linked.error(), "plan step link"));
+  }
+  emit_step(ctx, args, *linked);
   return {};
 }
 

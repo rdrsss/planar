@@ -250,6 +250,26 @@ export auto list_tasks(db::connection& conn, const task_list_filter& filter) -> 
 /// `task_error::slug_not_found` / `task_error::query_failed`.
 export auto update_task(db::connection& conn, std::int64_t id, const task_update_args& patch) -> std::expected<task, task_error>;
 
+/// @brief List tasks that are EITHER scoped directly to `repo_id` OR
+/// linked to it by `entity_links(relationship='touches')`, ordered by id.
+///
+/// Serves `task list --touches <repo-slug>`. See
+/// `list_plans_touching`'s documentation for the branch-asymmetry
+/// contract, which is identical here.
+///
+/// Note the ORDER differs from `list_tasks`: that one sorts by
+/// `priority, updated_at desc, id` and this one by `id` alone. The oracle
+/// does the same — `listTouching` wraps its UNION in `select * from (...)
+/// order by id` — so `task list --touches` and a bare `task list` return
+/// the same rows in DIFFERENT orders. Reproduced, not harmonised.
+/// @param conn An open, migrated database connection.
+/// @param repo_id The repo (`projects.id`) to filter on.
+/// @param filter Status/plan/priority/scope filters.
+/// @return The matching rows ordered by id, `task_error::slug_not_found`
+/// when a scope member does not resolve, or `task_error::query_failed`.
+export auto list_tasks_touching(db::connection& conn, std::int64_t repo_id, const task_list_filter& filter)
+    -> std::expected<std::vector<task>, task_error>;
+
 /// @brief Mark a task done. Validated via the transition matrix
 /// (`force` bypasses it). Recomputes the task's plan status afterward.
 /// @param conn An open, migrated database connection.

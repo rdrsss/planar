@@ -131,4 +131,56 @@ export auto plan_update(context& ctx, const cliapp::parsed_args& args) -> handle
 /// or `generic_failure` (exit 1) when a single `--plan` target does not exist.
 export auto plan_recompute_status(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar plan step add <plan-id> <body> [--after <ordinal>] [--json]`.
+///
+/// `--after` sets the ordinal VERBATIM and renumbers nothing, so it
+/// collides rather than inserting; see
+/// `planar.engine.planning.plan_step`'s file header for the oracle
+/// captures that establish this against the flag's name.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `generic_failure` (exit 1) when the plan does not exist or the ordinal
+/// is taken.
+export auto plan_step_add(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar plan step list <plan-id> [--json]`.
+///
+/// An unknown plan id lists EMPTY at exit 0 rather than refusing — the
+/// oracle's behaviour, reproduced deliberately. See `list_steps`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id.
+export auto plan_step_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar plan step done <step-id> [--json]`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `generic_failure` (exit 1) when the step is missing or already terminal.
+export auto plan_step_done(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar plan step skip <step-id> [--json]`.
+///
+/// Refuses with a DIFFERENT message from `done` on the shared
+/// `invalid_transition` error (`cannot be skipped (must be pending)` vs
+/// `is already terminal`). Both exit 1, so the distinction is only
+/// observable byte-wise and is pinned as such.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `generic_failure` (exit 1) when the step is missing or not `pending`.
+export auto plan_step_skip(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar plan step link <step-id> <task-id> [--json]`.
+///
+/// A missing step and a missing task produce the SAME message
+/// (`step N or task M not found`), which is the oracle's; the handler does
+/// not distinguish them.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `generic_failure` (exit 1) when either row is missing.
+export auto plan_step_link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

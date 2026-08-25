@@ -336,25 +336,32 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `models` leaves with engine support (`evals`, `experiments`,
   // `outcomes` and all ten under `registry`), the five ported `bench`
   // leaves (`start`, `event`, `touch`, `finish`, `show`) and all four
-  // `run` leaves (`start`, `event`, `finish`, `show`).
+  // `run` leaves (`start`, `event`, `finish`, `show`); 138 before task 6187
+  // ported EIGHT more out of it — the whole five-leaf `plan step` family
+  // (`add`, `list`, `done`, `skip`, `link`), landed together with the
+  // `plan_steps` engine that had no port at all, and three of the four
+  // `task touches` leaves (`add`, `list`, `remove`).
   //
-  // Two leaves from those families STAYED in the inventory on purpose, and
-  // the distinction is the reason this count is 138 rather than 136:
-  // `bench harvest` and `models resolve` are each blocked at LAYER 2, with
-  // their engine halves deferred alongside their dependencies (a
-  // git-subprocess seam and the 2,725-line roles/profile/packet subsystem
-  // respectively). Wiring a handler over an absent engine would mean
-  // inventing behaviour; refusing at exit 64 by name does not.
+  // Three leaves from those families STAYED in the inventory on purpose,
+  // and the distinction is the reason this count is 130 rather than 127:
+  // `bench harvest`, `models resolve` and `task touches infer` are each
+  // blocked at LAYER 2, with their engine halves deferred alongside their
+  // dependencies (a git-subprocess seam, the 2,725-line roles/profile/
+  // packet subsystem, and `planning/touchinfer.zig`'s 773 lines of
+  // git-diff-and-language-aware path inference respectively). Wiring a
+  // handler over an absent engine would mean inventing behaviour;
+  // refusing at exit 64 by name does not.
   //
   // This number is load-bearing: it is what fails when a verb gains a
   // handler and its generated inventory entry is not dropped in the same
   // change. Update it WITH the port; never widen the check to make it stop
   // firing.
-  CHECK(unported.size() == 138);
-  // The two deliberately-deferred leaves from otherwise-ported families.
+  CHECK(unported.size() == 130);
+  // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
   CHECK(unported.contains("models resolve"));
+  CHECK(unported.contains("task touches infer"));
   // The three duals are the entries that are NOT leaves; `resume` and
   // `handoff` have real handlers, so `health` is the only one here.
   CHECK(unported.contains("health"));

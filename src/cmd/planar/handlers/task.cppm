@@ -163,4 +163,50 @@ export auto task_block(context& ctx, const cliapp::parsed_args& args) -> handler
 /// @return Success, or `invalid_input` (exit 2), or `generic_failure` (exit 1).
 export auto task_reopen(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar task touches add <task-id> <repo-slug> [--path <p>] [--json]`.
+///
+/// Without `--path` this writes only the coarse `entity_links` `task ->
+/// repo touches` edge, and a pre-existing edge is an ERROR. With `--path`
+/// it writes the edge AND a `task_touch_paths` row, treating a
+/// pre-existing edge as a no-op — a path-touch implies the repo-touch.
+/// The two writes commit atomically; a half-applied pair would make the
+/// parallelizability rules fall back to the coarse whole-repo signal and
+/// silently serialize a task that should be eligible.
+///
+/// Link verbs are documented UNGUARDED (CLAUDE.md § cross-scope guard), so
+/// no scope guard runs and `--scope` is accepted and ignored, as in the
+/// oracle.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer task id,
+/// or `generic_failure` (exit 1) for an unknown repo slug, a missing task,
+/// or an already-present edge in the no-`--path` mode.
+export auto task_touches_add(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar task touches list <task-id> [--json]`.
+///
+/// Lists both levels: the repo edges and the path declarations, each
+/// ordered by repo slug. An unknown task id lists EMPTY at exit 0 — the
+/// oracle performs no existence check and neither does this.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer task id.
+export auto task_touches_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar task touches remove <task-id> <repo-slug> [--path <p>] [--json]`.
+///
+/// DELIBERATELY not symmetric with `add`: `--path` withdraws one
+/// `task_touch_paths` row and LEAVES the repo edge, and removing the repo
+/// edge leaves any path rows in place. Both halves of that asymmetry are
+/// the oracle's, are documented in the verb's own help text, and are
+/// asserted directly — orphaned path rows keep driving eligibility after
+/// their edge is gone, so "remove the edge" is not a way to withdraw a
+/// path claim.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer task id,
+/// or `generic_failure` (exit 1) for an unknown repo slug, an undeclared
+/// path, or an absent edge.
+export auto task_touches_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

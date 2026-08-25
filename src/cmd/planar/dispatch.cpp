@@ -88,6 +88,14 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("plan list", handlers::plan_list);
   table.emplace("plan update", handlers::plan_update);
   table.emplace("plan recompute-status", handlers::plan_recompute_status);
+  // `plan step` — the whole five-leaf family, landed at task 6187 together
+  // with the `plan_steps` engine it calls. Until then the entity had no
+  // port at all and all five refused at exit 64.
+  table.emplace("plan step add", handlers::plan_step_add);
+  table.emplace("plan step list", handlers::plan_step_list);
+  table.emplace("plan step done", handlers::plan_step_done);
+  table.emplace("plan step skip", handlers::plan_step_skip);
+  table.emplace("plan step link", handlers::plan_step_link);
   table.emplace("assoc create", handlers::assoc_create);
   table.emplace("assoc add", handlers::assoc_add);
   table.emplace("task add", handlers::task_add);
@@ -98,6 +106,15 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("task cancel", handlers::task_cancel);
   table.emplace("task block", handlers::task_block);
   table.emplace("task reopen", handlers::task_reopen);
+  // `task touches` — three of four. `task touches infer` stays a declared
+  // exit-64 refusal: its engine half (`planning/touchinfer.zig`, 773 lines
+  // of git-diff and language-aware path inference) is unported, so there is
+  // nothing at layer 2 to call. The three landed here also unblock the
+  // `--touches` filter on `plan list` and `task list`, which refused at
+  // exit 64 from task 6141 for want of `listTouching`.
+  table.emplace("task touches add", handlers::task_touches_add);
+  table.emplace("task touches list", handlers::task_touches_list);
+  table.emplace("task touches remove", handlers::task_touches_remove);
   table.emplace("version", handlers::version);
   // `schema` and `completion` describe the TREE, so they take it; every
   // other handler describes DATA and does not. Same shape as the
