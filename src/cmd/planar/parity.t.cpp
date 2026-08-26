@@ -1458,19 +1458,48 @@ TEST_CASE("C++ and Zig agree over a seeded local sandbox lifecycle", "[cmd][pari
       }
       rest = out;
     }
-    // `"linked_at":"2026-08-25T23:59:59Z"` -> `"linked_at":"<STAMP>"`.
-    std::string      folded;
-    std::string_view view = rest;
+    // `"linked_at": "2026-08-25T23:59:59Z"` -> `"linked_at": "<STAMP>"`.
+    //
+    // The separator between the key and the value is PRESERVED rather than
+    // rewritten, because the two payloads this runs over are formatted
+    // DIFFERENTLY: the `--json` stdout is compact (`"linked_at":"…"`) and the
+    // on-disk `.link-manifest.json` is pretty-printed (`"linked_at": "…"`).
+    // A fold keyed on the compact spelling matches stdout and silently misses
+    // the manifest, which is exactly the bug that made this case fail about
+    // one run in three — the two binaries are invoked ~a second apart, so the
+    // unfolded manifest stamps disagree whenever that gap crosses a second
+    // boundary. Only the VALUE is tokenised, so a side that changed its
+    // formatting still diverges loudly.
+    constexpr std::string_view k_key = "\"linked_at\"";
+    std::string                folded;
+    std::string_view           view = rest;
     for (;;) {
-      auto const at = view.find("\"linked_at\":\"");
+      auto const at = view.find(k_key);
       if (at == std::string_view::npos) {
         folded.append(view);
         return folded;
       }
       folded.append(view.substr(0, at));
-      folded.append("\"linked_at\":\"<STAMP>\"");
-      view.remove_prefix(at + std::string_view{"\"linked_at\":\""}.size());
+      folded.append(k_key);
+      view.remove_prefix(at + k_key.size());
+      // Copy `<ws>*:<ws>*"` verbatim, then swap the quoted value for the
+      // token. Anything else between the key and a quote is NOT a string
+      // value (a `null`, a number, a different key) and is left alone rather
+      // than folded blind.
+      std::size_t open      = 0;
+      bool        saw_colon = false;
+      while (open < view.size() && (view[open] == ' ' || view[open] == '\t' || view[open] == '\n' || view[open] == '\r' ||
+                                    (view[open] == ':' && !saw_colon))) {
+        saw_colon = saw_colon || view[open] == ':';
+        ++open;
+      }
+      if (!saw_colon || open >= view.size() || view[open] != '"') {
+        continue;
+      }
+      folded.append(view.substr(0, open + 1));
+      view.remove_prefix(open + 1);
       auto const close = view.find('"');
+      folded.append("<STAMP>\"");
       view.remove_prefix(close == std::string_view::npos ? view.size() : close + 1);
     }
   };
@@ -1499,7 +1528,26 @@ TEST_CASE("C++ and Zig agree over a seeded local sandbox lifecycle", "[cmd][pari
     }
     return files;
   };
-  CHECK(manifests_of(space.cpp_root) == manifests_of(space.zig_root));
+  {
+    auto const mine = manifests_of(space.cpp_root);
+    auto const ref  = manifests_of(space.zig_root);
+    // NON-VACUITY OF THE FOLD. A stamp fold that stops matching is invisible:
+    // it does not fail, it just leaves two wall-clock stamps in place and
+    // reds the case whenever the two runs straddle a second. That is the
+    // exact defect this guard exists to catch — the skills manifest ends the
+    // sequence with `three` linked to claude, so it MUST carry a folded
+    // stamp and MUST NOT carry a raw one.
+    REQUIRE(mine.at("skills").contains("<STAMP>"));
+    REQUIRE(ref.at("skills").contains("<STAMP>"));
+    CHECK_FALSE(mine.at("skills").contains("\"linked_at\": \"2"));
+    CHECK_FALSE(ref.at("skills").contains("\"linked_at\": \"2"));
+    for (auto const& kind : {"skills", "agents"}) {
+      // Compared per KIND, not as one `std::map` — Catch2 cannot stringify
+      // the map (it prints `{ {?}, {?} }`) and the divergence was invisible.
+      INFO("manifest kind: " << kind);
+      CHECK(mine.at(kind) == ref.at(kind));
+    }
+  }
 
   auto const installs_of = [](const std::filesystem::path& root) {
     std::map<std::string, std::string> entries;

@@ -29,6 +29,7 @@ import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.question;
+import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.ext;
 import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
@@ -125,18 +126,33 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("task touches add", handlers::task_touches_add);
   table.emplace("task touches list", handlers::task_touches_list);
   table.emplace("task touches remove", handlers::task_touches_remove);
-  // `question` — five of ten, landed at task 6188 with the `question`
-  // engine they call. The five omitted are named refusals, not oversights:
-  // `edit`/`view`/`diff`/`review` are the workbench DRAFTING quartet
-  // (unported editflow plumbing), and `link` is one arm of the shared
-  // entity-link surface whose other six arms (`plan link`, `task link`,
-  // `links add/list/remove/trail`) all still refuse — see
-  // handlers/question.cppm's header.
+  // `question` — six of ten. Five landed at task 6188 with the `question`
+  // engine they call; `question link` joined them at task 6193 with the
+  // rest of the entity-link surface. The four still omitted are named
+  // refusals, not oversights: `edit`/`view`/`diff`/`review` are the
+  // workbench DRAFTING quartet (unported editflow plumbing).
   table.emplace("question add", handlers::question_add);
   table.emplace("question show", handlers::question_show);
   table.emplace("question list", handlers::question_list);
   table.emplace("question answer", handlers::question_answer);
   table.emplace("question wontfix", handlers::question_wontfix);
+  // The entity-link surface — all seven arms, landed together at task
+  // 6193. `engine_entitylink` was fully ported and exported no renderer,
+  // which is the single reason every one of these refused at exit 64.
+  // Task 6188 declined to wire `question link` alone for exactly this
+  // reason: one working arm beside six refusing ones reads as a bug.
+  //
+  // `links update` is absent because the ORACLE hides it (a documented
+  // stub deferred to M11); it is not among the four declared `links`
+  // leaves. The `ext`/`sync` families are a separate slice — they render
+  // `external_links`, a different table with its own envelopes.
+  table.emplace("links add", handlers::links_add);
+  table.emplace("links list", handlers::links_list);
+  table.emplace("links remove", handlers::links_remove);
+  table.emplace("links trail", handlers::links_trail);
+  table.emplace("plan link", handlers::plan_link);
+  table.emplace("task link", handlers::task_link);
+  table.emplace("question link", handlers::question_link);
   table.emplace("version", handlers::version);
   // `schema` and `completion` describe the TREE, so they take it; every
   // other handler describes DATA and does not. Same shape as the

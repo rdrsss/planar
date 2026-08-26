@@ -7,6 +7,8 @@ module planar.engine.entitylink;
 
 import std;
 import planar.db;
+import planar.json_text;
+import planar.policy;
 
 namespace planar::engine::entitylink {
 
@@ -282,6 +284,22 @@ auto add(db::connection& conn, const entity_link_add_args& args) -> std::expecte
   }
   auto new_id = stmt->column_int64(0);
 
+  // AFTER the insert has gone through, never before — a refused `add`
+  // leaves no audit row in the oracle. Wired at task 6193 alongside
+  // `trail()`, the reader that proves it: the write half alone had no
+  // consumer, which is why the previous cycle deferred both together.
+  if (auto rec = policy::audit::record(conn,
+                                       policy::audit::record_args{
+                                           .verb    = policy::audit::verb::link,
+                                           .entity  = {.kind = "entity_link", .id = new_id},
+                                           .actor   = std::nullopt,
+                                           .scope   = std::nullopt,
+                                           .summary = std::nullopt,
+                                       });
+      !rec) {
+    return std::unexpected(entity_link_error::audit_write_failed);
+  }
+
   return show(conn, new_id);
 }
 
@@ -303,7 +321,73 @@ auto remove(db::connection& conn, std::int64_t id) -> std::expected<void, entity
   if (!step) {
     return std::unexpected(entity_link_error::query_failed);
   }
+
+  // Same ordering rule as `add`: the audit row records a delete that has
+  // already happened. It deliberately OUTLIVES the row it describes — see
+  // `trail`'s doc comment.
+  if (auto rec = policy::audit::record(conn,
+                                       policy::audit::record_args{
+                                           .verb    = policy::audit::verb::unlink,
+                                           .entity  = {.kind = "entity_link", .id = id},
+                                           .actor   = std::nullopt,
+                                           .scope   = std::nullopt,
+                                           .summary = std::nullopt,
+                                       });
+      !rec) {
+    return std::unexpected(entity_link_error::audit_write_failed);
+  }
   return {};
+}
+
+auto trail(db::connection& conn, std::int64_t id) -> std::expected<std::vector<audit_row>, entity_link_error> {
+  // Existence FIRST: "no such link" and "link with an empty trail" are
+  // different answers and the oracle gives them different exit codes.
+  auto existing = show(conn, id);
+  if (!existing) {
+    return std::unexpected(existing.error());
+  }
+
+  auto stmt = conn.prepare("select id, verb, entity_kind, entity_id, actor, scope, summary, recorded_at "
+                           "from audit_log where entity_kind = 'entity_link' and entity_id = ? order by id");
+  if (!stmt) {
+    return std::unexpected(entity_link_error::query_failed);
+  }
+  if (auto b = stmt->bind_int64(1, id); !b) {
+    return std::unexpected(entity_link_error::query_failed);
+  }
+
+  // SQL NULL must stay distinguishable from `''`: `actor`, `scope` and
+  // `summary` are all nullable and all three are NULL on the CLI path, so
+  // a `column_text` that folded NULL to "" would make `"actor":null` and
+  // `"actor":""` render identically.
+  auto const text_opt = [&stmt](int index) -> std::optional<std::string> {
+    if (stmt->is_null(index)) {
+      return std::nullopt;
+    }
+    return stmt->column_text(index);
+  };
+
+  std::vector<audit_row> rows;
+  for (;;) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(entity_link_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      break;
+    }
+    rows.push_back(audit_row{
+        .id          = stmt->column_int64(0),
+        .verb        = stmt->column_text(1),
+        .entity_kind = stmt->column_text(2),
+        .entity_id   = stmt->column_int64(3),
+        .actor       = text_opt(4),
+        .scope       = text_opt(5),
+        .summary     = text_opt(6),
+        .recorded_at = stmt->column_text(7),
+    });
+  }
+  return rows;
 }
 
 auto show(db::connection& conn, std::int64_t id) -> std::expected<entity_link, entity_link_error> {
@@ -518,6 +602,147 @@ auto touched_repo_ids(db::connection& conn, std::int64_t task_id) -> std::expect
     out.push_back(stmt->column_int64(0));
   }
   return out;
+}
+
+// ===========================================================================
+// Renderers
+// ===========================================================================
+
+namespace {
+
+/// @brief `"<kind>:<id>"`, the ref spelling every one of these payloads uses.
+/// @param kind The entity kind.
+/// @param id The entity id.
+/// @return The rendered ref.
+auto ref_text(entity_kind kind, std::int64_t id) -> std::string {
+  return std::format("{}:{}", entity_kind_to_text(kind), id);
+}
+
+/// @brief A JSON `null` or a quoted, escaped string.
+/// @param value The optional text.
+/// @return `"null"` when unset, otherwise the quoted JSON string.
+auto json_opt(const std::optional<std::string>& value) -> std::string {
+  return value.has_value() ? json_text::json_string(*value) : std::string{"null"};
+}
+
+} // namespace
+
+auto merge_directed(std::span<const entity_link> from_links, std::span<const entity_link> to_links)
+    -> std::vector<directed_link> {
+  std::vector<directed_link> rows;
+  rows.reserve(from_links.size() + to_links.size());
+  for (auto const& link : from_links) {
+    rows.push_back(directed_link{.link = link, .outbound = true});
+  }
+  for (auto const& link : to_links) {
+    // A self-link satisfies BOTH half-queries. Listing it twice would
+    // report two edges where the table holds one.
+    auto const seen = std::ranges::any_of(from_links, [&link](const entity_link& f) { return f.id == link.id; });
+    if (seen) {
+      continue;
+    }
+    rows.push_back(directed_link{.link = link, .outbound = false});
+  }
+  return rows;
+}
+
+auto render_link_list_text(std::span<const directed_link> rows, entity_kind subject_kind, std::int64_t subject_id)
+    -> std::string {
+  if (rows.empty()) {
+    return std::format("no links for {}\n", ref_text(subject_kind, subject_id));
+  }
+  std::string out = std::format("{:<6} {:<10} {:<16} {}\n", "id", "direction", "relationship", "peer");
+  for (auto const& row : rows) {
+    // `{:<+6}` — left-aligned, width 6, FORCED SIGN. The `+` is the
+    // oracle's; see `render_link_list_text`'s doc comment.
+    auto const peer = row.outbound ? ref_text(row.link.to_kind, row.link.to_id) : ref_text(row.link.from_kind, row.link.from_id);
+    out += std::format("{:<+6} {:<10} {:<16} {}\n", row.link.id, row.outbound ? "from" : "to",
+                       relationship_to_text(row.link.relationship_), peer);
+  }
+  return out;
+}
+
+auto render_link_list_json(std::span<const directed_link> rows) -> std::string {
+  std::string out;
+  for (auto const& row : rows) {
+    out +=
+        std::format(R"({{"id":{},"from_kind":"{}","from_id":{},"to_kind":"{}","to_id":{},)"
+                    R"("relationship":"{}","created_at":{}}})"
+                    "\n",
+                    row.link.id, entity_kind_to_text(row.link.from_kind), row.link.from_id, entity_kind_to_text(row.link.to_kind),
+                    row.link.to_id, relationship_to_text(row.link.relationship_), json_text::json_string(row.link.created_at));
+  }
+  return out;
+}
+
+auto render_trail_text(std::span<const audit_row> rows, std::int64_t link_id) -> std::string {
+  if (rows.empty()) {
+    return std::format("no audit trail for entity_link:{}\n", link_id);
+  }
+  std::string out = std::format("{:<6} {:<12} {:<12} {}\n", "id", "verb", "actor", "recorded_at");
+  for (auto const& row : rows) {
+    // `(none)` is the oracle's literal for a NULL actor — NOT a blank
+    // column, which is what an empty-string fold would produce.
+    out += std::format("{:<+6} {:<12} {:<12} {}\n", row.id, row.verb, row.actor.value_or("(none)"), row.recorded_at);
+  }
+  return out;
+}
+
+auto render_trail_json(std::span<const audit_row> rows) -> std::string {
+  std::string out;
+  for (auto const& row : rows) {
+    out += std::format(R"({{"id":{},"verb":{},"entity_kind":{},"entity_id":{},)"
+                       R"("actor":{},"scope":{},"summary":{},"recorded_at":{}}})"
+                       "\n",
+                       row.id, json_text::json_string(row.verb), json_text::json_string(row.entity_kind), row.entity_id,
+                       json_opt(row.actor), json_opt(row.scope), json_opt(row.summary), json_text::json_string(row.recorded_at));
+  }
+  return out;
+}
+
+auto render_links_add_text(const entity_link& link, std::string_view relationship_text) -> std::string {
+  // TWO spaces before `(link id:` — the oracle's.
+  return std::format("created entity_link: {} --[{}]--> {}  (link id: {})\n", ref_text(link.from_kind, link.from_id),
+                     relationship_text, ref_text(link.to_kind, link.to_id), link.id);
+}
+
+auto render_links_add_json(const entity_link& link, std::string_view relationship_text) -> std::string {
+  return std::format(R"({{"ok":true,"id":{},"from_kind":"{}","from_id":{},"to_kind":"{}","to_id":{},)"
+                     R"("relationship":{}}})"
+                     "\n",
+                     link.id, entity_kind_to_text(link.from_kind), link.from_id, entity_kind_to_text(link.to_kind), link.to_id,
+                     json_text::json_string(relationship_text));
+}
+
+auto render_links_remove_text(std::int64_t link_id) -> std::string {
+  return std::format("entity link {} removed\n", link_id);
+}
+
+auto render_links_remove_json(std::int64_t link_id) -> std::string {
+  return std::format(R"({{"ok":true,"id":{}}})"
+                     "\n",
+                     link_id);
+}
+
+auto render_entity_link_text(entity_kind subject_kind, std::int64_t subject_id, const entity_link& link,
+                             std::string_view relationship_text) -> std::string {
+  // DOUBLE spaces around the `[relationship]` group — the oracle's.
+  return std::format("linked {} -> {}  [{}]  (link id: {})\n", ref_text(subject_kind, subject_id),
+                     ref_text(link.to_kind, link.to_id), relationship_text, link.id);
+}
+
+auto render_entity_link_json(std::string_view subject_id_key, std::int64_t subject_id, const entity_link& link,
+                             std::string_view relationship_text) -> std::string {
+  return std::format(R"({{"ok":true,"id":{},"{}":{},"to_kind":"{}","to_id":{},"relationship":{}}})"
+                     "\n",
+                     link.id, subject_id_key, subject_id, entity_kind_to_text(link.to_kind), link.to_id,
+                     json_text::json_string(relationship_text));
+}
+
+auto render_link_exists_error(entity_kind from_kind, std::int64_t from_id, entity_kind to_kind, std::int64_t to_id,
+                              std::string_view relationship_text, bool unicode_arrow) -> std::string {
+  return std::format("link {} {} {} [{}] already exists", ref_text(from_kind, from_id), unicode_arrow ? "→" : "->",
+                     ref_text(to_kind, to_id), relationship_text);
 }
 
 } // namespace planar::engine::entitylink

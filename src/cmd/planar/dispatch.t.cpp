@@ -377,20 +377,38 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // workbench drafting quartet (unported editflow plumbing), and `question
   // link` is one arm of the shared entity-link surface whose other six
   // arms all still refuse.
-  CHECK(unported.size() == 117);
+  //
+  // 117 before task 6193 ported the last SEVEN out of it — the whole
+  // entity-link surface: `links add`, `links list`, `links remove`,
+  // `links trail`, `plan link`, `task link` and `question link`.
+  // `engine_entitylink` had been fully ported since task cpp-entity-links
+  // and exported no RENDERER, which was the single reason all seven
+  // refused; task 6188 deliberately left `question link` behind rather
+  // than ship one working arm beside six refusing ones. They went in
+  // together, and the `question` family's remaining refusals dropped from
+  // five to four.
+  CHECK(unported.size() == 110);
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
   CHECK(unported.contains("models resolve"));
   CHECK(unported.contains("task touches infer"));
-  // ...and task 6188's five, from the now-partly-ported `question` family.
-  // A family that is HALF ported is exactly where a leaf goes missing
-  // quietly, so each is named rather than covered by the count alone.
+  // ...and task 6188's five, from the now-partly-ported `question` family
+  // — MINUS `question link`, which task 6193 ported. A family that is HALF
+  // ported is exactly where a leaf goes missing quietly, so each is named
+  // rather than covered by the count alone.
   CHECK(unported.contains("question edit"));
   CHECK(unported.contains("question view"));
   CHECK(unported.contains("question diff"));
   CHECK(unported.contains("question review"));
-  CHECK(unported.contains("question link"));
+  // The seven task 6193 ported must NOT be in the inventory. The count
+  // above would catch a leaf that stayed, but not a leaf that stayed while
+  // a DIFFERENT one was dropped by mistake — so each is named.
+  for (auto const& linked :
+       {"links add", "links list", "links remove", "links trail", "plan link", "task link", "question link"}) {
+    INFO("entity-link leaf: " << linked);
+    CHECK_FALSE(unported.contains(linked));
+  }
   // ...and the fourth, from task 6189's own families. `closure show` is
   // ported; `closure compute` must stay DECLARED, never silently absent.
   CHECK(unported.contains("closure compute"));

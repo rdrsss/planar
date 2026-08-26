@@ -36,6 +36,8 @@ export module planar.engine.entitylink;
 
 import std;
 import planar.db;
+import planar.json_text;
+import planar.policy;
 
 namespace planar::engine::entitylink {
 
@@ -152,6 +154,11 @@ export enum class entity_link_error : std::uint8_t {
   /// the offending ref (mirrors zig's `missingEndpoint`).
   endpoint_not_found,
   query_failed,
+  /// The row's own write succeeded but its `audit_log` companion did not.
+  /// Mirrors zig, where `add`/`remove` `try policy.audit.record(...)` and
+  /// let `policy.audit.Error.WriteFailed` propagate out of the engine's
+  /// error set (task 6193).
+  audit_write_failed,
 };
 
 /// @brief Which endpoint of a link failed the existence check. Mirrors
@@ -244,6 +251,205 @@ export auto show(db::connection& conn, std::int64_t id) -> std::expected<entity_
 /// `filter.scope` is non-null, or `entity_link_error::query_failed`.
 export auto list(db::connection& conn, const entity_link_list_filter& filter)
     -> std::expected<std::vector<entity_link>, entity_link_error>;
+
+// ===========================================================================
+// audit trail — the READ half of the `policy.audit` rows `add`/`remove` write
+// ===========================================================================
+
+/// @brief One `audit_log` row as returned by `trail`. Mirrors zig's
+/// entitylink.zig `AuditRow`, INCLUDING field order — `render_trail_json`
+/// serializes in this order and the oracle's bytes depend on it.
+///
+/// `actor`, `scope` and `summary` are genuinely NULLABLE columns, not
+/// empty-string sentinels: `add`/`remove` write all three unset, and the
+/// oracle renders them as JSON `null` and as the text literal `(none)`
+/// (for `actor`). An `std::optional` rather than a `std::string` is what
+/// keeps SQL NULL distinguishable from `''` here.
+export struct audit_row {
+  std::int64_t               id;          ///< The `audit_log` row's id.
+  std::string                verb;        ///< `"link"`, `"unlink"`, ...
+  std::string                entity_kind; ///< Always `"entity_link"` for these rows.
+  std::int64_t               entity_id;   ///< The `entity_links.id` the row is about.
+  std::optional<std::string> actor;       ///< Who did it; NULL on the CLI path today.
+  std::optional<std::string> scope;       ///< The write scope; NULL on the CLI path today.
+  std::optional<std::string> summary;     ///< One-line summary; NULL for these verbs.
+  std::string                recorded_at; ///< The stamp.
+};
+
+/// @brief Every `audit_log` row for one `entity_links` id, ordered by id.
+///
+/// The link's existence is verified FIRST, so a missing link is
+/// `not_found` rather than an empty trail — the two are different answers
+/// and the oracle distinguishes them (`links trail 999` refuses at exit 1;
+/// `links trail 2` on a link with no audit rows succeeds at exit 0).
+///
+/// Note the rows OUTLIVE the link: `remove` deletes the `entity_links` row
+/// but leaves both audit rows behind, so a removed link's trail is
+/// unreachable through this function even though the rows still exist.
+/// That is the oracle's behaviour, reproduced rather than fixed (D2).
+/// @param conn An open, migrated database connection.
+/// @param id The `entity_links` row id.
+/// @return The rows (possibly empty), `entity_link_error::not_found` when
+/// no such link exists, or `entity_link_error::query_failed`.
+export auto trail(db::connection& conn, std::int64_t id) -> std::expected<std::vector<audit_row>, entity_link_error>;
+
+// ===========================================================================
+// Renderers (D-renderers-in-layer-2)
+// ===========================================================================
+
+/// @brief One row of `links list` output: the link plus which END of it the
+/// listed subject sits on.
+///
+/// `links list <ref>` is an OR over both endpoint columns, so a row can
+/// arrive from either side and the `direction` column is not a property of
+/// the link — it is a property of the link RELATIVE to the subject. The
+/// renderer cannot recompute it (a task linked to itself is on both ends),
+/// so the caller states it.
+export struct directed_link {
+  entity_link link;     ///< The `entity_links` row.
+  bool        outbound; ///< True when the subject is the link's SOURCE (`from`).
+};
+
+/// @brief Merge the two half-queries `links list` issues into one ordered,
+/// de-duplicated listing.
+///
+/// The oracle runs `list` twice — once filtered on the from-side, once on
+/// the to-side — then emits every from-side row followed by the to-side
+/// rows whose id did not already appear. A self-link appears in BOTH
+/// halves and must be listed ONCE, as `from`; that de-duplication is the
+/// only reason this is a function rather than two loops at the call site.
+/// @param from_links Rows where the subject is the source.
+/// @param to_links Rows where the subject is the target.
+/// @return From-side rows in order, then the unseen to-side rows in order.
+export auto merge_directed(std::span<const entity_link> from_links, std::span<const entity_link> to_links)
+    -> std::vector<directed_link>;
+
+/// @brief `links list <ref>` text output — the complete payload, trailing
+/// newline included.
+///
+/// The empty case is NOT an empty string: it is the line `no links for
+/// <kind>:<id>`, which is why the subject is a parameter even though every
+/// non-empty row already names its peer.
+///
+/// The id column carries a FORCED `+` SIGN (`+2`, `+1234567`) — captured
+/// from the oracle, where zig's `{d:<6}` renders one. It is left-aligned in
+/// width 6 and OVERFLOWS rather than truncating past five digits. Do not
+/// "clean up" the sign: it is the oracle's bytes.
+/// @param rows The merged listing.
+/// @param subject_kind The listed entity's kind.
+/// @param subject_id The listed entity's id.
+/// @return The complete stdout payload.
+export auto render_link_list_text(std::span<const directed_link> rows, entity_kind subject_kind, std::int64_t subject_id)
+    -> std::string;
+
+/// @brief `links list <ref> --json` output — NDJSON, one object per line,
+/// EACH line's newline included.
+///
+/// This renderer OWNS its terminators, unlike `planar.engine.planning`'s
+/// `render_list_json` (a fragment the caller terminates). The reason is the
+/// empty case: the oracle emits ZERO BYTES for an empty `--json` listing,
+/// and a fragment contract would force the caller to write a bare `"\n"`.
+/// Write the result verbatim; append nothing.
+/// @param rows The merged listing.
+/// @return The complete stdout payload, empty for an empty listing.
+export auto render_link_list_json(std::span<const directed_link> rows) -> std::string;
+
+/// @brief `links trail <id>` text output — the complete payload, trailing
+/// newline included. Empty renders `no audit trail for entity_link:<id>`.
+///
+/// A NULL `actor` renders as the literal `(none)`, not as an empty column.
+/// @param rows The trail rows.
+/// @param link_id The link the trail is for, for the empty-case line.
+/// @return The complete stdout payload.
+export auto render_trail_text(std::span<const audit_row> rows, std::int64_t link_id) -> std::string;
+
+/// @brief `links trail <id> --json` output — NDJSON, each line terminated,
+/// ZERO BYTES when empty. Same owns-its-terminators contract as
+/// `render_link_list_json`.
+/// @param rows The trail rows.
+/// @return The complete stdout payload, empty for an empty trail.
+export auto render_trail_json(std::span<const audit_row> rows) -> std::string;
+
+/// @brief `links add` text output — the complete payload, newline included.
+/// @param link The created link.
+/// @param relationship_text The relationship as the OPERATOR spelled it.
+/// @return The complete stdout payload.
+export auto render_links_add_text(const entity_link& link, std::string_view relationship_text) -> std::string;
+
+/// @brief `links add --json` output — the complete payload, newline
+/// included.
+///
+/// This envelope is `{"ok":true,"id":…,"from_kind":…,"from_id":…,…}` and
+/// carries NO `created_at`, which is the third distinct JSON envelope on
+/// this family: `links list` emits the row WITH `created_at` and WITHOUT
+/// `ok`, and `<entity> link` emits a subject-keyed one. They were captured
+/// separately and are not interchangeable.
+/// @param link The created link.
+/// @param relationship_text The relationship as the OPERATOR spelled it.
+/// @return The complete stdout payload.
+export auto render_links_add_json(const entity_link& link, std::string_view relationship_text) -> std::string;
+
+/// @brief `links remove` text output — the complete payload, newline
+/// included.
+/// @param link_id The removed link's id.
+/// @return The complete stdout payload.
+export auto render_links_remove_text(std::int64_t link_id) -> std::string;
+
+/// @brief `links remove --json` output — `{"ok":true,"id":<n>}` plus a
+/// newline.
+/// @param link_id The removed link's id.
+/// @return The complete stdout payload.
+export auto render_links_remove_json(std::int64_t link_id) -> std::string;
+
+/// @brief `plan|task|question link` text output — the complete payload,
+/// newline included.
+///
+/// Note the DOUBLE spaces around the `[relationship]` group; they are the
+/// oracle's, and this shape (`linked plan:1 -> task:3  [cites]  (link id:
+/// 4)`) differs from `links add`'s (`created entity_link: task:1
+/// --[cites]--> task:2  (link id: 10)`) in every part but the id suffix.
+/// @param subject_kind The subject's kind (`plan`, `task` or `question`).
+/// @param subject_id The subject's id.
+/// @param link The created link.
+/// @param relationship_text The relationship as the OPERATOR spelled it.
+/// @return The complete stdout payload.
+export auto render_entity_link_text(entity_kind subject_kind, std::int64_t subject_id, const entity_link& link,
+                                    std::string_view relationship_text) -> std::string;
+
+/// @brief `plan|task|question link --json` output — the complete payload,
+/// newline included.
+///
+/// The subject's id is emitted under a PER-VERB key (`plan_id`, `task_id`,
+/// `question_id`) rather than a shared one, so the key is a parameter. The
+/// caller passes its own; there is no default, because a wrong default here
+/// would be silently plausible JSON.
+/// @param subject_id_key The subject's JSON key, e.g. `"plan_id"`.
+/// @param subject_id The subject's id.
+/// @param link The created link.
+/// @param relationship_text The relationship as the OPERATOR spelled it.
+/// @return The complete stdout payload.
+export auto render_entity_link_json(std::string_view subject_id_key, std::int64_t subject_id, const entity_link& link,
+                                    std::string_view relationship_text) -> std::string;
+
+/// @brief The `link … already exists` refusal BODY (no `error: ` prefix, no
+/// trailing newline).
+///
+/// @warning `plan link` spells its arrow with the UNICODE `→` (U+2192)
+/// while `links add`, `task link` and `question link` all spell theirs with
+/// the ASCII `->`. That is an inconsistency in the oracle
+/// (`handlers/plan/link.zig` writes `\u{2192}`; its two siblings write
+/// `->`), captured by running all four, and it is REPRODUCED rather than
+/// harmonised (D2). `unicode_arrow` is how a caller selects it — there is
+/// no default, so no call site can inherit the wrong arrow silently.
+/// @param from_kind The link's source kind.
+/// @param from_id The link's source id.
+/// @param to_kind The link's target kind.
+/// @param to_id The link's target id.
+/// @param relationship_text The relationship as the OPERATOR spelled it.
+/// @param unicode_arrow True for `plan link`'s `→`; false for the ASCII `->`.
+/// @return The message body.
+export auto render_link_exists_error(entity_kind from_kind, std::int64_t from_id, entity_kind to_kind, std::int64_t to_id,
+                                     std::string_view relationship_text, bool unicode_arrow) -> std::string;
 
 // ===========================================================================
 // task_touch_paths — path-level touch declarations (migration 00019)

@@ -30,19 +30,22 @@
 # that; it is a new, independent entry point onto the same table, not a
 # refactor of the existing one.
 #
-# NOT ported this cycle (see entitylink.cppm's file header for the full
-# per-cut rationale — this is the summary):
-#   - `policy.audit.record` calls: STILL UNWIRED, and now for a real
-#     reason rather than a missing module. Task 6100 stood up the layer-1
-#     `planar.policy` module and wired `engine_planning` and
-#     `engine_identity`; this bucket's two call sites (`link|entity_link` on `add`, `unlink` on `remove`, in zig/src/engine/entitylink.zig) was left for a follow-up because
-#     `trail()` — the READ side that consumes those rows — is cut this cycle too, so wiring the write half alone would ship a half-surface with no reader to prove it against. This is one of only THREE buckets left carrying an
-#     actual audit gap (the others are `engine_promotion` and `engine_runtime`) — the other
-#     eight CMakeLists that used to carry this paragraph were audited and
-#     have no Zig call sites at all. Row shapes and the oracle-capture
-#     method are in src/lib/policy/CMakeLists.txt; the DEPENDS line below
-#     does not name `policy` yet, which is the mechanical tell that this
-#     bucket is not wired.
+# CLOSED at task 6193 (previously the headline cut here):
+#   - `policy.audit.record` calls and `trail()`, landed TOGETHER for the
+#     reason the earlier cycle gave for deferring both: the write half has
+#     no consumer without the read half, so wiring one alone ships a
+#     surface nothing can prove. `add` now records `link|entity_link|<id>`
+#     and `remove` records `unlink|entity_link|<id>`, both AFTER their own
+#     write succeeds and both with `actor`/`scope`/`summary` NULL, which is
+#     what the oracle writes. `trail()` reads them back, ordered by id,
+#     refusing with `not_found` when the link itself does not exist. The
+#     `policy` entry in DEPENDS below is the mechanical tell that this
+#     bucket IS now wired. Row shapes and the oracle-capture method are in
+#     src/lib/policy/CMakeLists.txt. That leaves `engine_promotion` and
+#     `engine_runtime` as the two buckets still carrying an audit gap.
+#
+# NOT ported (see entitylink.cppm's file header for the full per-cut
+# rationale — this is the summary):
 #   - The composite `task touches add`/`remove` CLI-handler behavior
 #     (repo-slug -> repo-id resolution, the orphan-repo advisory, the
 #     savepoint-wrapped dual write) — that is `cmd/`-layer glue
@@ -72,4 +75,7 @@
 planar_module(engine_entitylink
   INTERFACE entitylink.cppm
   SOURCES entitylink.cpp
-  DEPENDS db)
+  DEPENDS
+    db
+    json_text
+    policy)

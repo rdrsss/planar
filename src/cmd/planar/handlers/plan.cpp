@@ -12,6 +12,8 @@ import planar.engine.planning;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.handlers.links;
+import planar.engine.entitylink;
 import planar.cmd.planar.scope;
 
 namespace planar::cmd::handlers {
@@ -727,6 +729,13 @@ auto plan_step_link(context& ctx, const cliapp::parsed_args& args) -> handler_re
   }
   emit_step(ctx, args, *linked);
   return {};
+}
+
+auto plan_link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  // `true`: `plan link` alone spells its duplicate-refusal arrow with
+  // the UNICODE `\u2192`. Its two siblings use the ASCII `->`. Oracle
+  // inconsistency, reproduced — see handlers/links.cppm's header.
+  return entity_link_verb(ctx, args, engine::entitylink::entity_kind::plan, "plan-id", "plan", "plan_id", "plan link", true);
 }
 
 } // namespace planar::cmd::handlers

@@ -12,6 +12,8 @@ import planar.engine.runtime;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.handlers.links;
+import planar.engine.entitylink;
 import planar.cmd.planar.scope;
 
 namespace planar::cmd::handlers {
@@ -407,6 +409,13 @@ auto question_wontfix(context& ctx, const cliapp::parsed_args& args) -> handler_
   }
   emit(ctx, args, *marked);
   return {};
+}
+
+auto question_link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  // `false`: the ASCII `->`. Only `plan link` uses the unicode arrow —
+  // see handlers/links.cppm's header.
+  return entity_link_verb(ctx, args, engine::entitylink::entity_kind::question, "question-id", "question", "question_id",
+                          "question link", false);
 }
 
 } // namespace planar::cmd::handlers

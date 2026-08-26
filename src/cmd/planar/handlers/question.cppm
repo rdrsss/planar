@@ -107,4 +107,19 @@ export auto question_answer(context& ctx, const cliapp::parsed_args& args) -> ha
 /// @return Success, or the failure to report.
 export auto question_wontfix(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar question link <question-id> <ref> --relationship <rel>
+/// [--scope <s>] [--json]`.
+///
+/// One arm of the shared entity-link surface; the whole body lives in
+/// `planar.cmd.planar.handlers.links::entity_link_verb`, which this
+/// forwards to with this verb's subject kind, JSON key and arrow. See that
+/// module's header for the three JSON envelopes, the zero-byte empty case
+/// and why `--scope` is accepted but inert.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, an
+/// absent `--relationship`, an unknown relationship or a malformed ref, or
+/// `generic_failure` (exit 1) for a duplicate link or a missing endpoint.
+export auto question_link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

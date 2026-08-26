@@ -19,6 +19,8 @@ import planar.engine.runtime;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.handlers.links;
+import planar.engine.entitylink;
 import planar.cmd.planar.scope;
 
 namespace planar::cmd::handlers {
@@ -1038,6 +1040,12 @@ auto task_touches_remove(context& ctx, const cliapp::parsed_args& args) -> handl
     ctx.out() << std::format("touches link removed: task:{} → repo:{}\n", task_id, slug);
   }
   return {};
+}
+
+auto task_link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  // `false`: the ASCII `->`. Only `plan link` uses the unicode arrow —
+  // see handlers/links.cppm's header.
+  return entity_link_verb(ctx, args, engine::entitylink::entity_kind::task, "task-id", "task", "task_id", "task link", false);
 }
 
 } // namespace planar::cmd::handlers

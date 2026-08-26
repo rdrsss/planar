@@ -706,7 +706,7 @@ TEST_CASE("question list --json is a single-line array of the show objects") {
 // The five leaves this task did NOT wire still refuse, loudly
 // ===========================================================================
 
-TEST_CASE("the drafting quartet and `question link` still refuse at exit 64, naming themselves") {
+TEST_CASE("the drafting quartet still refuses at exit 64, naming itself -- but `question link` does NOT") {
   auto const fx = make_fixture("refuse");
   seed(fx);
   REQUIRE(dispatch(fx, {"question", "add", "q", "--scope", "global"}).code == 0);
@@ -717,15 +717,30 @@ TEST_CASE("the drafting quartet and `question link` still refuse at exit 64, nam
     CHECK(r.code == 64);
     CHECK(r.err == std::format("error: question {}: not implemented in this build\n", leaf));
   }
+
+  {
+    auto conn = open_db(fx);
+    // A refusal that had half-written is the worse bug; the row is untouched
+    // and no audit row was added.
+    CHECK(question_rows(conn) == "1|global|<NULL>|q|<NULL>|open|<NULL>|<NULL>");
+    CHECK(audit_rows(conn, "question") == "create|1|create question 'q'|<NULL>|<NULL>");
+  }
+
+  // `question link` WAS in this list until plan 996 task 6193, which landed
+  // the whole entity-link surface at once. It is asserted WORKING here, in
+  // the very case that used to pin it as refusing, so the quartet's four
+  // remaining refusals cannot quietly absorb a fifth leaf again. Its own
+  // behaviour is covered in links_leaves.t.cpp; this is the boundary.
+  REQUIRE(dispatch(fx, {"plan", "create", "P", "--slug", "p", "--summary", "s", "--scope", "global"}).code == 0);
   auto const link = dispatch(fx, {"question", "link", "1", "plan:1", "--relationship", "derives-from"});
-  CHECK(link.code == 64);
-  CHECK(link.err == "error: question link: not implemented in this build\n");
+  CHECK(link.code == 0);
+  CHECK(link.err.empty());
+  CHECK(link.out == "linked question:1 -> plan:1  [derives-from]  (link id: 1)\n");
 
   auto conn = open_db(fx);
-  // A refusal that had half-written is the worse bug; the row is untouched
-  // and no audit row was added.
-  CHECK(question_rows(conn) == "1|global|<NULL>|q|<NULL>|open|<NULL>|<NULL>");
-  CHECK(audit_rows(conn, "question") == "create|1|create question 'q'|<NULL>|<NULL>");
+  // The fixture carries NO pre-existing edge (`question add` ran without
+  // `--plan`), so this is the first and only row.
+  CHECK(edge_rows(conn) == "1|plan|1|derives-from");
 }
 
 // ===========================================================================
