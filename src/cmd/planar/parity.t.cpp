@@ -39,28 +39,16 @@
 // directly by `every ported command declares what the oracle declares`
 // below, off the `schema` catalog. See ../catalog_parity.hpp.
 //
-// DATABASE SAFETY IS THE WHOLE REASON THIS FILE IS CAREFUL.
-// Both binaries resolve $PLANAR_DB and otherwise fall back to
-// ~/.planar/planar.db, and BOTH apply pending migrations AUTOMATICALLY on
-// first use. Shelling either with the inherited environment therefore opens
-// the operator's live database — and the moment a migration lands on this
-// branch, `ctest` would migrate it past the version every installed binary
-// supports and lock every other agent on the machine out. That is not
-// hypothetical: commit 3ec6c37 fixed exactly this defect in two cli parity
-// tests, found by an unexplained live-DB mtime movement. Every invocation
-// below runs under a per-case scratch root with PLANAR_DB, PLANAR_HOME,
-// PLANAR_CONFIG_PATH, PLANAR_LOCAL_HOME and HOME all redirected into it —
-// PLANAR_LOCAL_HOME included because the `local` sandbox resolves from that
-// variable (falling back to HOME), never PLANAR_HOME, and a future ported
-// leaf that reached it would otherwise write symlinks into the operator's
-// real ~/.claude.
-//
-// A NOTE ON REDIRECTING THE ZIG BINARY'S STDOUT.
-// Observed while capturing fixtures for this task: the Zig runtime's file
-// writer uses POSITIONAL writes, so two Zig invocations appending to the
-// SAME redirect target both start at offset 0 and the second overwrites the
-// first. Every invocation here gets its own freshly-created capture file,
-// which sidesteps it. Do not "simplify" this into a shared append target.
+// DATABASE SAFETY IS THE WHOLE REASON THE HARNESS IS CAREFUL, and the
+// harness now lives in ONE place: ../parity_harness.hpp. This file used to
+// carry its own verbatim copy of `run_pinned` / `make_arena` (task 6105,
+// before the shared header existed), and that copy is how a second defect
+// in the pinned-capture path survived here after being reasoned about
+// three times — see task 6198 and the header's own account. Read that file
+// before touching any invocation below; the `cd`-then-`env` ordering, the
+// per-invocation capture files and the pipe-rather-than-file redirect were
+// each a real bug, and the first of them wrote rows into the operator's
+// live ~/.planar/planar.db.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -76,114 +64,22 @@ import planar.db;
 import planar.db.migrate;
 
 #include "catalog_parity.hpp"
+#include "parity_harness.hpp"
 
 namespace {
 
-/// @brief One binary's observable output for one invocation.
-struct capture {
-  int         code = 0; ///< The process exit status.
-  std::string out;      ///< Everything written to stdout.
-  std::string err;      ///< Everything written to stderr.
-};
-
-/// @brief Read a whole file as bytes, or the empty string when absent.
-/// @param path The file to read.
-/// @return The file's contents.
-auto read_all(const std::filesystem::path& path) -> std::string {
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
-    return {};
-  }
-  std::ostringstream buffer;
-  buffer << file.rdbuf();
-  return buffer.str();
-}
-
-/// @brief Shell-quote one argument for the `/bin/sh` line built below.
-/// @param value The argument.
-/// @return The single-quoted form.
-auto shell_quote(std::string_view value) -> std::string {
-  std::string quoted = "'";
-  for (char const c : value) {
-    if (c == '\'') {
-      quoted += "'\\''";
-    } else {
-      quoted += c;
-    }
-  }
-  quoted += "'";
-  return quoted;
-}
-
-/// @brief Run `bin` with `args` inside `work`, under an environment pinned
-/// entirely to `work`.
-/// @param bin The binary to run.
-/// @param args The arguments.
-/// @param work The scratch root; also the working directory.
-/// @param tag A discriminator so each invocation gets its own capture files.
-/// @return The captured result.
-auto run_pinned(const std::filesystem::path& bin, std::span<const std::string> args, const std::filesystem::path& work,
-                std::string_view tag) -> capture {
-  auto const out_path = work / std::format("{}.out", tag);
-  auto const err_path = work / std::format("{}.err", tag);
-
-  // `cd` FIRST, then `env` — and never the other way round. The obvious
-  // spelling, `VAR=x cd dir && binary`, silently does NOT export the
-  // assignments to `binary`: POSIX keeps assignments preceding a special
-  // built-in only in shells that implement that rule, and this platform's
-  // /bin/sh does not (verified: `sh -c "FOO=bar cd /tmp && env | grep FOO"`
-  // prints nothing). This file was written that way first, and the result
-  // was that BOTH binaries fell back to the inherited HOME and wrote ten
-  // annotation rows into the operator's live ~/.planar/planar.db before the
-  // mismatch in row ids gave it away. Routing through `env` puts the
-  // variables in the child's environment unconditionally, with no
-  // shell-specific rule in the path.
-  //
-  // The failure was also nearly missed, because the FIRST probe for it —
-  // comparing the live database file's mtime before and after — reported
-  // "untouched". Under WAL (which the runtime enables on every connection)
-  // writes land in the `-wal` sibling and the main `.db` file's mtime does
-  // not move. An mtime check on the main file alone is not a valid
-  // liveness probe here; row counts are.
-  std::string line = std::format("cd {} && env", shell_quote((work / "proj").string()));
-  line += std::format(" PLANAR_DB={}", shell_quote((work / "planar.db").string()));
-  line += std::format(" PLANAR_HOME={}", shell_quote((work / "home").string()));
-  line += std::format(" PLANAR_CONFIG_PATH={}", shell_quote((work / "config.toml").string()));
-  line += std::format(" PLANAR_LOCAL_HOME={}", shell_quote((work / "localhome").string()));
-  line += std::format(" HOME={}", shell_quote((work / "fakehome").string()));
-  line += std::format(" PWD={} ", shell_quote((work / "proj").string()));
-  line += shell_quote(bin.string());
-  for (auto const& arg : args) {
-    line += " " + shell_quote(arg);
-  }
-  line += std::format(" > {} 2> {}", shell_quote(out_path.string()), shell_quote(err_path.string()));
-
-  int const status = std::system(line.c_str());
-  int const code   = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-  return capture{.code = code, .out = read_all(out_path), .err = read_all(err_path)};
-}
-
-/// @brief A pair of scratch roots — one per binary — seeded identically.
-struct arena {
-  std::filesystem::path cpp_root; ///< Scratch root for the C++ binary.
-  std::filesystem::path zig_root; ///< Scratch root for the Zig binary.
-};
-
-/// @brief Create a fresh arena.
-/// @param tag A short discriminator so a failure names its own case.
-/// @return The created arena.
-auto make_arena(std::string_view tag) -> arena {
-  auto const      base = std::filesystem::temp_directory_path() /
-                         std::format("planar_cmd_parity_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
-  std::error_code ec;
-  arena           result{.cpp_root = base / "cpp", .zig_root = base / "zig"};
-  for (auto const& root : {result.cpp_root, result.zig_root}) {
-    std::filesystem::create_directories(root / "home", ec);
-    std::filesystem::create_directories(root / "proj", ec);
-    std::filesystem::create_directories(root / "fakehome", ec);
-  }
-  return result;
-}
+// The harness — `capture`, `run_pinned`, `arena`, `make_arena` — lives in
+// ../parity_harness.hpp, which the other three binaries' parity files
+// already share. This file carried its own verbatim copy from task 6105,
+// which is how a SECOND defect in the pinned-capture path survived in it:
+// the file-redirect form corrupts any Zig invocation that writes a stream
+// twice (found by task 6198; see that header). One copy, one fix.
+using ::planar::cmd::parity::arena;
+using ::planar::cmd::parity::capture;
+using ::planar::cmd::parity::make_arena;
+using ::planar::cmd::parity::read_all;
+using ::planar::cmd::parity::run_pinned;
+using ::planar::cmd::parity::shell_quote;
 
 /// @brief Path to the built C++ binary (set by this target's CMakeLists).
 /// @return The path.

@@ -105,11 +105,38 @@ inline auto shell_quote(std::string_view value) -> std::string {
 /// `.db` file's mtime does not move. An mtime check on the main file is NOT
 /// a valid liveness probe here; a content hash or a row count is.
 ///
-/// A NOTE ON REDIRECTING THE ZIG BINARIES' STDOUT: the Zig runtime's file
-/// writer uses POSITIONAL writes, so two Zig invocations appending to the
-/// SAME redirect target both start at offset 0 and the second overwrites
-/// the first. Every invocation here gets its own freshly-created capture
-/// file, keyed by `tag`. Do not "simplify" this into a shared append target.
+/// THE ZIG RUNTIME'S FILE WRITER USES POSITIONAL WRITES, AND THAT IS A
+/// PER-WRITE HAZARD, NOT A PER-INVOCATION ONE.
+///
+/// The original form of this function redirected each stream straight into
+/// a file (`binary … > out 2> err`) and defended the hazard by giving every
+/// invocation its own freshly-created capture file, on the theory that the
+/// collision was between two Zig processes appending to a shared target.
+/// That theory is incomplete. Two writes from ONE Zig process to ONE file
+/// collide the same way: the second `pwrite` starts at offset 0 and
+/// overwrites the first. Measured on `planar task add --plan <dangling>`,
+/// which writes stderr twice:
+///
+///   truth (pipe):  "error: task.create exec failed: StepFailed\n
+///                   error: task add: QueryFailed\n"          (72 bytes)
+///   file redirect: "error: task add: QueryFailed\nd: StepFailed\n"
+///                                                            (43 bytes)
+///
+/// The second line landed at offset 0 and ate the first, leaving the tail
+/// of the longer message dangling as `d: StepFailed`. Every oracle stderr
+/// this harness captured from a multi-write invocation was therefore
+/// CORRUPT — silently, and in a way that reads as a real divergence.
+/// (Found by task 6198's state differential, whose staged expectation for
+/// task 6202 would otherwise have pinned the corrupted bytes as truth.)
+///
+/// The fix is to hand the child a PIPE rather than a seekable file: a pipe
+/// has no offset to seek to, so the Zig writer falls back to sequential
+/// writes. Each stream is piped through `cat`, which owns the file. The
+/// child's exit status is written to a third file rather than read from
+/// `std::system`, because the shell now reports the status of `cat`.
+///
+/// The per-invocation `tag` still keys all three files, and must keep doing
+/// so — concurrent Catch2 cases share `work`.
 /// @param bin The binary to run.
 /// @param args The arguments.
 /// @param work The scratch root; `work/proj` is also the working directory.
@@ -117,24 +144,45 @@ inline auto shell_quote(std::string_view value) -> std::string {
 /// @return The captured result.
 inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::string> args, const std::filesystem::path& work,
                        std::string_view tag) -> capture {
-  auto const out_path = work / std::format("{}.out", tag);
-  auto const err_path = work / std::format("{}.err", tag);
+  auto const out_path  = work / std::format("{}.out", tag);
+  auto const err_path  = work / std::format("{}.err", tag);
+  auto const code_path = work / std::format("{}.code", tag);
 
-  std::string line = std::format("cd {} && env", shell_quote((work / "proj").string()));
-  line += std::format(" PLANAR_DB={}", shell_quote((work / "planar.db").string()));
-  line += std::format(" PLANAR_HOME={}", shell_quote((work / "home").string()));
-  line += std::format(" PLANAR_CONFIG_PATH={}", shell_quote((work / "config.toml").string()));
-  line += std::format(" PLANAR_LOCAL_HOME={}", shell_quote((work / "localhome").string()));
-  line += std::format(" HOME={}", shell_quote((work / "fakehome").string()));
-  line += std::format(" PWD={} ", shell_quote((work / "proj").string()));
-  line += shell_quote(bin.string());
+  std::error_code discard;
+  std::filesystem::remove(code_path, discard);
+
+  std::string child = "env";
+  child += std::format(" PLANAR_DB={}", shell_quote((work / "planar.db").string()));
+  child += std::format(" PLANAR_HOME={}", shell_quote((work / "home").string()));
+  child += std::format(" PLANAR_CONFIG_PATH={}", shell_quote((work / "config.toml").string()));
+  child += std::format(" PLANAR_LOCAL_HOME={}", shell_quote((work / "localhome").string()));
+  child += std::format(" HOME={}", shell_quote((work / "fakehome").string()));
+  child += std::format(" PWD={} ", shell_quote((work / "proj").string()));
+  child += shell_quote(bin.string());
   for (auto const& arg : args) {
-    line += " " + shell_quote(arg);
+    child += " " + shell_quote(arg);
   }
-  line += std::format(" > {} 2> {}", shell_quote(out_path.string()), shell_quote(err_path.string()));
 
-  int const status = std::system(line.c_str());
-  int const code   = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  // `{ { child ; echo $? > code ; } 2>&1 1>&3 | cat > err ; } 3>&1 | cat > out`
+  //
+  // Redirections apply left to right. Inside the inner group fd1 is the
+  // pipe to `cat > err`; `2>&1` points stderr at it, then `1>&3` points
+  // stdout at fd3, which the outer group bound to the pipe feeding
+  // `cat > out`. Neither stream ever reaches a seekable file in the child.
+  std::string line = std::format("cd {} && {{ {{ {} ; echo $? > {} ; }} 2>&1 1>&3 | cat > {} ; }} 3>&1 | cat > {}",
+                                 shell_quote((work / "proj").string()), child, shell_quote(code_path.string()),
+                                 shell_quote(err_path.string()), shell_quote(out_path.string()));
+
+  static_cast<void>(std::system(line.c_str()));
+
+  int         code = -1;
+  auto const  raw  = read_all(code_path);
+  auto const  text = std::string_view{raw}.substr(0, raw.find('\n'));
+  int         parsed{};
+  auto const* first = text.data();
+  if (auto const [ptr, ec] = std::from_chars(first, first + text.size(), parsed); ec == std::errc{}) {
+    code = parsed;
+  }
   return capture{.code = code, .out = read_all(out_path), .err = read_all(err_path)};
 }
 
