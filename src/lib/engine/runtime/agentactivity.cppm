@@ -63,11 +63,12 @@
 ///   `policy.audit.record` call sites. The paragraph this replaces
 ///   inherited a gap from a sibling that has one. The real gap in this
 ///   bucket is session/handoff/snapshot — see CMakeLists.txt.
-/// - **`latest_active_claim_for_session`, `next_work`,
-///   `record_entity_create_action`.** The remaining read paths, which
-///   serve `planar` verbs (`resume`, `status`, entity-create auditing)
-///   rather than any leaf landed so far. Deferred with the verbs that
-///   consume them. Task 6120 landed the `planar-watch` half —
+/// - **`latest_active_claim_for_session`, `next_work`.** The remaining
+///   read paths, which serve `planar` verbs (`resume`, `status`) rather
+///   than any leaf landed so far. Deferred with the verbs that
+///   consume them. `record_entity_create_action` LANDED at task 6188,
+///   with the `question add` leaf that is the tree's first consumer —
+///   see its own doc comment for why it is called from layer 3. Task 6120 landed the `planar-watch` half —
 ///   `resolve_claim_scope`, `list_claims`, `list_active_claims_sorted`,
 ///   `list_stale_claims`, `list_actions*`, `list_claims_by_*`,
 ///   `latest_action_for_claim`, `collect_plan_activity`,
@@ -699,6 +700,40 @@ export auto start_action(db::connection& conn, const start_action_args& args) ->
 /// @return Success, or `query_failed`.
 export auto end_action(db::connection& conn, std::int64_t id, outcome result, std::optional<std::string_view> summary)
     -> std::expected<void, agent_error>;
+
+/// @brief Record a completed `other` action for an entity a session just
+/// CREATED — the entity-create activity hook (plan 467 Phase 1, task 3035).
+/// Landed at task 6188 with the `question add` leaf that first needs it.
+///
+/// Resolves the session's latest still-live claim and, when there is one,
+/// writes a single `agent_actions` row opened and closed in the same call
+/// (`start_action` then `end_action` with `outcome::ok`), matching the
+/// heartbeat row shape. **No active claim is a SILENT no-op, not a
+/// failure** (Decision D3): an operator running the verb from an
+/// interactive shell has no claim, and that is the common case.
+///
+/// This is the one place the whole surface deliberately swallows a real
+/// error. The INSERT the caller is hooking has ALREADY committed by the
+/// time this runs, so surfacing a failure here would report a create that
+/// did not fail. Both the Zig original and this port therefore return
+/// `void`; a caller wanting the errors would have to call `start_action` /
+/// `end_action` itself.
+///
+/// ## Why the hook lives here and is CALLED from layer 3
+///
+/// zig's `planning/question.zig` calls this from inside `create`. That is
+/// not available to the C++ tree: `engine_planning` and `engine_runtime`
+/// are both LAYER 2 and `cmake/architecture.cmake` FATALs on a same-layer
+/// edge (D15/D18). So `create_question` stays hook-free and the
+/// `question add` HANDLER composes the two — the D20 shape `annotate add`
+/// and `unlink` already use.
+/// @param conn An open, migrated connection.
+/// @param session_id The session whose claim (if any) owns the action.
+/// @param entity Which kind of entity was created.
+/// @param entity_id The created row's id.
+/// @param summary The action summary, e.g. `created question: <title>`.
+export auto record_entity_create_action(db::connection& conn, std::int64_t session_id, action_entity_kind entity,
+                                        std::int64_t entity_id, std::string_view summary) -> void;
 
 /// @brief Fetch an action by row id.
 /// @param conn An open, migrated connection.

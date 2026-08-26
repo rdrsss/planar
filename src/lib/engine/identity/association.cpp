@@ -566,4 +566,32 @@ auto render_json(const association& a) -> std::string {
                      json_string(a.updated_at));
 }
 
+auto render_member_list_text(std::span<const project_ref> members) -> std::string {
+  if (members.empty()) {
+    return "(no members)\n";
+  }
+  std::string out;
+  for (const auto& p : members) {
+    // ORACLE: the second column is `root_path`, and an unset one is the
+    // literal `(no root)`. See this function's doc comment for the fixture
+    // that separated `root_path` from the equally-plausible `name`.
+    out += std::format("{:<20}  {}\n", p.slug, p.root_path.value_or(std::string{"(no root)"}));
+  }
+  return out;
+}
+
+auto render_member_list_json(std::span<const project_ref> members) -> std::string {
+  std::string out = "[";
+  for (std::size_t i = 0; i < members.size(); ++i) {
+    if (i > 0) {
+      out += ",";
+    }
+    const auto& p = members[i];
+    out += std::format(R"({{"id":{},"slug":{},"name":{},"root_path":{}}})", p.id, json_string(p.slug), json_string(p.name),
+                       p.root_path.has_value() ? json_string(*p.root_path) : std::string{"null"});
+  }
+  out += "]";
+  return out;
+}
+
 } // namespace planar::engine::identity

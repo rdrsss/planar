@@ -43,6 +43,7 @@ namespace planar::engine::planning {
 export enum class transition_kind : std::uint8_t {
   plan,
   task,
+  question,
   annotation,
   handoff,
 };
@@ -76,6 +77,23 @@ export enum class transition_error : std::uint8_t {
 ///   done, cancelled -> terminal for bare update; `force=true` bypasses
 ///   the matrix entirely (the call site is responsible for recording any
 ///   reopen-audit row it wants).
+///
+/// Question matrix (status set: open, answered, wontfix):
+///   open              -> {answered, wontfix}
+///   answered, wontfix -> TERMINAL; every outgoing edge is refused
+/// This arm NEVER reports `unknown_status`: an unrecognized `from` is
+/// refused as `illegal_transition` alongside the two terminal states,
+/// because the Zig original's question branch has no unknown-source arm.
+/// That asymmetry with the plan/task arms is reproduced deliberately (D2) —
+/// it is operator-visible as the error name in `question wontfix:
+/// IllegalTransition`.
+///
+/// Because `check_transition` short-circuits on `from == to` BEFORE
+/// consulting any arm, `answered -> answered` and `wontfix -> wontfix`
+/// succeed: re-answering an answered question overwrites its answer, and
+/// re-`wontfix`-ing bumps `updated_at`. Both were confirmed by running the
+/// oracle, not inferred. `answered -> wontfix` is refused.
+/// `force` has no effect — the question verbs expose no `--force`.
 ///
 /// Annotation matrix (status set: active, resolved, dismissed, archived —
 /// the retention-tier model, plan 692):

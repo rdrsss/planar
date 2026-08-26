@@ -90,4 +90,34 @@ export auto assoc_create(context& ctx, const cliapp::parsed_args& args) -> handl
 /// failure.
 export auto assoc_add(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar assoc members <slug> [--json]`.
+///
+/// Port target: zig/src/cmd/planar/handlers/association/members.zig (plan
+/// 996, task 6188).
+///
+/// ## Why this leaf lagged the rest of its family
+///
+/// `engine_identity` has exported `members()` since the family was first
+/// ported; what it lacked was a renderer. `association.cppm` exported only
+/// `render_text(const association&)` and `render_json(const
+/// association&)`, both SINGULAR and both over the wrong type — `members()`
+/// returns `std::vector<project_ref>`. Task 6188 added
+/// `render_member_list_text` / `render_member_list_json` alongside them.
+///
+/// The leaf is worth more than one verb: five
+/// `groups_recommend_test` integration frames were still crashing after
+/// `groups recommend` itself was wired, because they die in the FIXTURE at
+/// `assoc members --json` rather than in the verb under test.
+///
+/// An unknown association REFUSES with `no association named '<slug>'` at
+/// exit 1 — the same wording `assoc add` uses for the same condition, and
+/// oracle-captured on both. Listing empty instead would be
+/// indistinguishable from a real association with no members, which is a
+/// legitimate state that prints `(no members)`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `generic_failure` (exit 1) for an unknown
+/// association or any other engine failure.
+export auto assoc_members(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

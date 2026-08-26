@@ -50,6 +50,24 @@ auto check_task(std::string_view from, std::string_view to) -> std::expected<voi
   return {};
 }
 
+/// @brief The `question` arm. Status set: open, answered, wontfix.
+///
+/// Note the missing `unknown_status` arm — it is not an omission. zig's
+/// `policy.status.check`'s `.question` branch returns `IllegalTransition`
+/// for EVERY non-`open` source, including a source it does not recognize,
+/// where the plan/task/annotation/handoff branches all distinguish the two.
+/// Reproduced rather than regularized (D2): the error name reaches the
+/// operator verbatim.
+/// @param from The current status text.
+/// @param to The desired status text.
+/// @return Success, or `illegal_transition`.
+auto check_question(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
+  if (from == "open" && (to == "answered" || to == "wontfix")) {
+    return {};
+  }
+  return std::unexpected(transition_error::illegal_transition);
+}
+
 auto check_annotation(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
   bool legal = false;
   if (from == "active") {
@@ -111,6 +129,8 @@ auto check_transition(transition_kind kind, std::string_view from, std::string_v
     return check_plan(from, to);
   case transition_kind::task:
     return check_task(from, to);
+  case transition_kind::question:
+    return check_question(from, to);
   case transition_kind::annotation:
     return check_annotation(from, to);
   case transition_kind::handoff:

@@ -316,6 +316,7 @@ planar_binary(planar
     handlers/plan.cppm
     handlers/assoc.cppm
     handlers/task.cppm
+    handlers/question.cppm
     handlers/handoff.cppm
     handlers/resume.cppm
     handlers/runs.cppm
@@ -349,6 +350,7 @@ planar_binary(planar
     handlers/plan.cpp
     handlers/assoc.cpp
     handlers/task.cpp
+    handlers/question.cpp
     handlers/handoff.cpp
     handlers/resume.cpp
     handlers/runs.cpp

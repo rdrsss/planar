@@ -26,7 +26,10 @@ using planar::engine::identity::create;
 using planar::engine::identity::create_args;
 using planar::engine::identity::list_all;
 using planar::engine::identity::members;
+using planar::engine::identity::project_ref;
 using planar::engine::identity::remove_member;
+using planar::engine::identity::render_member_list_json;
+using planar::engine::identity::render_member_list_text;
 using planar::engine::identity::show_by_slug;
 
 struct scratch_db_path {
@@ -354,4 +357,68 @@ TEST_CASE("add_member derives the project basename the way zig does", "[associat
   // falls back to `_`. Reaching the binder as a NULL-data `string_view`
   // here bound SQL NULL into a NOT NULL column and failed the whole verb.
   CHECK(find("/") == "_|");
+}
+
+// --- member-list renderers (plan 996, task 6188) -------------------------
+
+TEST_CASE("render_member_list_text: the second column is root_path, not name", "[association][render]") {
+  // The two are equal for a project registered by its own directory name,
+  // which is every project in the simple fixtures above — so the case that
+  // actually discriminates needs slug, name and path all DIFFERENT. This
+  // one was derived by running the oracle against a project at
+  // `../aaaa…`, which printed the PATH.
+  const std::vector<project_ref> rows{
+      {.id = 4, .slug = "_", .name = ".", .root_path = "."},
+      {.id = 3, .slug = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .name = "widgets", .root_path = "../elsewhere"},
+  };
+  CHECK(render_member_list_text(rows) == "_                     .\n"
+                                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  ../elsewhere\n");
+  // Neither `name` appears anywhere in the output — the assertion above
+  // would still pass if the renderer emitted `name` for row 1, whose two
+  // fields happen to match.
+  CHECK_FALSE(render_member_list_text(rows).contains("widgets"));
+}
+
+TEST_CASE("render_member_list_text: an unset root_path prints `(no root)`", "[association][render][null]") {
+  // `projects.root_path` is genuinely nullable, and a blank column would
+  // make an unregistered project indistinguishable from one rooted at "".
+  const std::vector<project_ref> unset{{.id = 1, .slug = "nullroot", .name = "Null Root", .root_path = std::nullopt}};
+  const std::vector<project_ref> empty_path{{.id = 1, .slug = "nullroot", .name = "Null Root", .root_path = std::string{}}};
+  CHECK(render_member_list_text(unset) == "nullroot              (no root)\n");
+  CHECK(render_member_list_text(empty_path) == "nullroot              \n");
+}
+
+TEST_CASE("render_member_list_*: the EMPTY case is a word, and the two forms differ", "[association][render][empty]") {
+  CHECK(render_member_list_text({}) == "(no members)\n");
+  CHECK(render_member_list_json({}) == "[]");
+}
+
+TEST_CASE("render_member_list_json: field order, null root_path, escaping", "[association][render]") {
+  const std::vector<project_ref> rows{
+      {.id = 2, .slug = "repo-2", .name = "repo", .root_path = "repo"},
+      {.id = 5, .slug = R"(q"uote)", .name = "n", .root_path = std::nullopt},
+  };
+  // Declaration order (id, slug, name, root_path), single line, `null` for
+  // the unset path — and the slug IS escaped here, unlike `assoc add
+  // --json`'s deliberately raw interpolation.
+  CHECK(render_member_list_json(rows) == R"([{"id":2,"slug":"repo-2","name":"repo","root_path":"repo"},)"
+                                         R"({"id":5,"slug":"q\"uote","name":"n","root_path":null}])");
+  CHECK(render_member_list_json(rows).find('\n') == std::string::npos);
+}
+
+TEST_CASE("members feeds the renderers in project-slug order", "[association][membership][render]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  REQUIRE(create(conn, create_args{.slug = "acme", .name = "Acme", .kind = association_kind::org}).has_value());
+  REQUIRE(add_member(conn, "acme", "/w/zebra").has_value());
+  REQUIRE(add_member(conn, "acme", "/w/alpha").has_value());
+
+  auto listed = members(conn, "acme");
+  REQUIRE(listed.has_value());
+  // Ordering is the ENGINE's, and the renderer must not re-sort: the
+  // insertion order here is the reverse of the slug order.
+  CHECK(render_member_list_text(*listed) == "alpha                 /w/alpha\n"
+                                            "zebra                 /w/zebra\n");
+  CHECK(render_member_list_json(*listed).starts_with(R"([{"id":)"));
+  CHECK(render_member_list_json(*listed).contains(R"("slug":"alpha")"));
 }

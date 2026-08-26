@@ -208,4 +208,49 @@ export auto render_text(const association& a) -> std::string;
 /// stringifying).
 export auto render_json(const association& a) -> std::string;
 
+/// @brief Render `members()`'s result as the operator-facing member table
+/// (plan 996, task 6188).
+///
+/// This module's other two renderers are SINGULAR (`const association&`),
+/// which is why `assoc members` could not be wired before: `members()`
+/// returns `std::vector<project_ref>` and there was nothing to render it
+/// with. The generic list path is keyed on an association's own list
+/// renderer, so this one is separate rather than an overload of it — the
+/// Zig original draws the same line (`renderProjectListText`, called
+/// directly by the handler instead of through `emitList`).
+///
+/// Two column values are NOT the obvious ones:
+///   - The second column is `root_path`, NOT `name`. Both are present on
+///     `project_ref` and they are equal for a project registered by its
+///     own directory name, so the fixture that distinguishes them needs a
+///     project whose slug, name and path all differ. One was built to
+///     settle it (`assoc members` on a project at `../aaaa…` printed the
+///     PATH).
+///   - An UNSET `root_path` prints the literal `(no root)`, not an empty
+///     column. That is a real state — `projects.root_path` is nullable —
+///     and blanking it would make an unregistered project look like one
+///     rooted at "".
+///
+/// Columns are `{:<20}  {}`: slug left-aligned and space-padded to twenty,
+/// two spaces, then the path unpadded. A slug wider than twenty is not
+/// truncated; it pushes the rest of the line right.
+/// @param members The rows to render, in the order `members()` returned
+/// them (project slug ascending).
+/// @return The complete block, INCLUDING the trailing newline on its last
+/// line — or the literal `"(no members)\n"` when empty, which is a WORD
+/// and not zero bytes. The caller writes it verbatim and appends nothing.
+export auto render_member_list_text(std::span<const project_ref> members) -> std::string;
+
+/// @brief Render `members()`'s result as the single-line JSON array.
+///
+/// Each element's field order is `project_ref`'s declaration order (`id`,
+/// `slug`, `name`, `root_path`), because the oracle's JSON path is
+/// `std.json.Stringify.value` over the Zig `Project` struct. `root_path`
+/// renders as `null` when unset — the same state `render_member_list_text`
+/// spells `(no root)`. The empty list renders `[]`.
+/// @param members The rows to render, in the order given.
+/// @return The JSON array with NO trailing newline — a fragment the caller
+/// terminates, same contract as `render_json`.
+export auto render_member_list_json(std::span<const project_ref> members) -> std::string;
+
 } // namespace planar::engine::identity

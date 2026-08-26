@@ -231,20 +231,21 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // THE HEADLINE PROPERTY of the full-surface declaration (plan 996, task
   // 6065). `planar` declares all 223 of the oracle's leaves so that
   // `zig/tools/cli_usage_lint` can resolve every authored command path;
-  // 172 of them land no behaviour. A declared node that dispatches to
+  // 117 of them land no behaviour (task 6188). A declared node that dispatches to
   // nothing is WORSE than an absent one if it exits 0, so each refuses
   // loudly and names itself.
   //
-  // The exemplar was `plan list` until task 6141 ported it. It has to be a
-  // leaf with no REQUIRED positional, or the parser refuses at exit 2
-  // before dispatch is reached at all and the case would assert the
-  // parser's behaviour rather than the table's — which is what `plan diff`
-  // did on the first attempt at this replacement. `question list` is the
-  // nearest arg-free sibling.
-  auto const leaf = dispatch({"question", "list"});
+  // The exemplar was `plan list` until task 6141 ported it, then `question
+  // list` until task 6188 ported that one too. It has to be a leaf with no
+  // REQUIRED positional, or the parser refuses at exit 2 before dispatch is
+  // reached at all and the case would assert the parser's behaviour rather
+  // than the table's — which is what `plan diff` did on the first attempt
+  // at this replacement. `scenario list` is the next arg-free sibling, and
+  // it stays valid until the `scenario` family is ported.
+  auto const leaf = dispatch({"scenario", "list"});
   CHECK(leaf.code == 64);
   CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: question list: not implemented in this build\n");
+  CHECK(leaf.err == "error: scenario list: not implemented in this build\n");
 
   // Deeper, to prove the key is the full path and not the leaf name.
   auto const deep = dispatch({"feedback", "triage", "list"});
@@ -366,12 +367,30 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // handler and its generated inventory entry is not dropped in the same
   // change. Update it WITH the port; never widen the check to make it stop
   // firing.
-  CHECK(unported.size() == 123);
+  //
+  // 123 before task 6188 ported SIX more out of it — `question add`,
+  // `show`, `list`, `answer` and `wontfix` (the `question` family's CRUD
+  // and transition half), plus `assoc members`, whose engine call already
+  // existed and whose only missing piece was a `project_ref` list
+  // renderer. The `question` family's other FIVE stayed, and their reasons
+  // are asserted individually below: `edit`/`view`/`diff`/`review` are the
+  // workbench drafting quartet (unported editflow plumbing), and `question
+  // link` is one arm of the shared entity-link surface whose other six
+  // arms all still refuse.
+  CHECK(unported.size() == 117);
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
   CHECK(unported.contains("models resolve"));
   CHECK(unported.contains("task touches infer"));
+  // ...and task 6188's five, from the now-partly-ported `question` family.
+  // A family that is HALF ported is exactly where a leaf goes missing
+  // quietly, so each is named rather than covered by the count alone.
+  CHECK(unported.contains("question edit"));
+  CHECK(unported.contains("question view"));
+  CHECK(unported.contains("question diff"));
+  CHECK(unported.contains("question review"));
+  CHECK(unported.contains("question link"));
   // ...and the fourth, from task 6189's own families. `closure show` is
   // ported; `closure compute` must stay DECLARED, never silently absent.
   CHECK(unported.contains("closure compute"));
@@ -413,7 +432,13 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
                                   "local import",
                                   "local migrate",
                                   "closure show",
-                                  "groups recommend"}) {
+                                  "groups recommend",
+                                  "question add",
+                                  "question show",
+                                  "question list",
+                                  "question answer",
+                                  "question wontfix",
+                                  "assoc members"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }

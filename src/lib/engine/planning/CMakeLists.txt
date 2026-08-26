@@ -45,6 +45,12 @@
 #     promotion subset in one cycle beats a rushed six-entity sweep with
 #     thin test coverage on all of them — this task's own brief invites
 #     exactly this cut ("A well-tested subset beats a rushed whole").
+#     UPDATE (task 6188): `plan_step` landed at task 6187 and `question`
+#     landed here, again as ONE family rather than four shallow ones. The
+#     remaining three — scenario, decision, artifact — are still out. See
+#     question.cppm's header for what the question port itself cut and
+#     where those cuts are composed instead (the entity-create activity
+#     hook moves to LAYER 3 rather than disappearing).
 #   - The active-work-claim TOCTOU guard (decision 533 / task 4165).
 #     CORRECTED at task 6141: this note used to say the guard was cut
 #     because `engine.runtime.agentactivity` was "a different,
@@ -101,6 +107,7 @@ planar_module(engine_planning
     transitions.cppm
     plan.cppm
     task.cppm
+    question.cppm
     annotation.cppm
     plan_step.cppm
     test_spec_status.cppm
@@ -109,6 +116,7 @@ planar_module(engine_planning
     transitions.cpp
     plan.cpp
     task.cpp
+    question.cpp
     annotation.cpp
     plan_step.cpp
     test_spec_status.cpp

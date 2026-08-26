@@ -1115,6 +1115,49 @@ auto end_action(db::connection& conn, std::int64_t id, outcome result, std::opti
   return {};
 }
 
+auto record_entity_create_action(db::connection& conn, std::int64_t session_id, action_entity_kind entity, std::int64_t entity_id,
+                                 std::string_view summary) -> void {
+  // Claim id AND vendor in ONE query — the Zig original notes the second
+  // round-trip it is avoiding, and the vendor is not optional on the
+  // action row.
+  //
+  // The lease predicate is `>=` against `now`, so a claim whose lease
+  // expired is NOT "the latest active claim": it is no claim at all, and
+  // the hook goes silent rather than attaching the action to a dead lease.
+  auto stmt = conn.prepare(std::format("select id, vendor from agent_work_claims\n"
+                                       "where session_id = ?\n"
+                                       "  and status = 'active'\n"
+                                       "  and lease_expires_at >= {}\n"
+                                       "order by claimed_at desc, id desc\n"
+                                       "limit 1",
+                                       k_now));
+  if (!stmt || !stmt->bind_int64(1, session_id)) {
+    return;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != db::step_result::row) {
+    // No active claim: operator shell invocation. Silent, per D3.
+    return;
+  }
+  auto const claim_id = stmt->column_int64(0);
+  auto const vendor   = stmt->column_text(1);
+
+  auto const action_id = start_action(conn, start_action_args{
+                                                .session_id = session_id,
+                                                .claim_id   = claim_id,
+                                                .kind       = action_kind::other,
+                                                .entity     = entity,
+                                                .entity_id  = entity_id,
+                                                .vendor     = vendor,
+                                            });
+  if (!action_id) {
+    return;
+  }
+  // Discarded deliberately — see this function's doc comment: the entity's
+  // own INSERT has already committed, so a failure here must not surface.
+  static_cast<void>(end_action(conn, *action_id, outcome::ok, summary));
+}
+
 auto get_action_by_id(db::connection& conn, std::int64_t id) -> std::expected<action, agent_error> {
   auto stmt = conn.prepare(std::string{k_action_columns} + "where id = ?");
   if (!stmt || !stmt->bind_int64(1, id)) {

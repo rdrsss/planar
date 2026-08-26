@@ -38,7 +38,14 @@
 #     cycle with its own oracle capture rather than a hurried pass. It IS
 #     observable, unlike the note this replaces claimed: running the
 #     oracle's `question add` produced a `create|session|1|start session
-#     vendor=cli` row this build does not write. This is one of only THREE
+#     vendor=cli` row this build does not write. Task 6188 WIRED `question
+#     add` and re-confirmed the divergence in a full oracle-differential
+#     run: it is now the family's ONLY remaining row difference, and it is
+#     tracked as planar task 6191. It was deliberately NOT closed there —
+#     `ensure_active` is reached by `capture` and `unlink` too, so a
+#     one-call-site fix silently changes two other verb families' audit
+#     trails while leaving five of the seven sites open. This is one of
+#     only THREE
 #     buckets left carrying an actual audit gap (the others are
 #     `engine_entitylink` and `engine_promotion`); the other eight
 #     CMakeLists that used to carry a paragraph like this were audited and

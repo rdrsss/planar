@@ -28,6 +28,7 @@ import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
+import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.ext;
 import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
@@ -101,6 +102,12 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("plan step link", handlers::plan_step_link);
   table.emplace("assoc create", handlers::assoc_create);
   table.emplace("assoc add", handlers::assoc_add);
+  // `assoc members` — the family's read half, wired at task 6188. Its
+  // engine call has existed since the family landed; what was missing was a
+  // renderer for `project_ref` (this module's other two are singular and
+  // over `association`). Five `groups_recommend_test` integration frames
+  // were crashing in their FIXTURE on this verb, not in the verb they test.
+  table.emplace("assoc members", handlers::assoc_members);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task list", handlers::task_list);
@@ -118,6 +125,18 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("task touches add", handlers::task_touches_add);
   table.emplace("task touches list", handlers::task_touches_list);
   table.emplace("task touches remove", handlers::task_touches_remove);
+  // `question` — five of ten, landed at task 6188 with the `question`
+  // engine they call. The five omitted are named refusals, not oversights:
+  // `edit`/`view`/`diff`/`review` are the workbench DRAFTING quartet
+  // (unported editflow plumbing), and `link` is one arm of the shared
+  // entity-link surface whose other six arms (`plan link`, `task link`,
+  // `links add/list/remove/trail`) all still refuse — see
+  // handlers/question.cppm's header.
+  table.emplace("question add", handlers::question_add);
+  table.emplace("question show", handlers::question_show);
+  table.emplace("question list", handlers::question_list);
+  table.emplace("question answer", handlers::question_answer);
+  table.emplace("question wontfix", handlers::question_wontfix);
   table.emplace("version", handlers::version);
   // `schema` and `completion` describe the TREE, so they take it; every
   // other handler describes DATA and does not. Same shape as the

@@ -175,4 +175,40 @@ auto assoc_add(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   return {};
 }
 
+auto assoc_members(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto slug = cliapp::positional_string(args, "slug");
+  if (!slug) {
+    // Unreachable through the CLI11 tree (declared required). Refusing
+    // rather than defaulting to "": an empty slug would resolve to no
+    // association and print `(no members)`, which reads as "this
+    // association is empty" rather than "you named nothing".
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "assoc members: slug is required"));
+  }
+
+  auto rows = id::members(**conn, *slug);
+  if (!rows) {
+    if (rows.error() == id::association_error::not_found) {
+      // Same wording as `assoc add`'s unknown-association arm, and it is a
+      // REFUSAL rather than an empty listing — see this leaf's declaration.
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, std::format("no association named '{}'", *slug)));
+    }
+    return std::unexpected(map_association_error(rows.error(), "members"));
+  }
+
+  // Terminator contract: the text renderer carries its own trailing
+  // newline; the JSON one is a fragment this caller terminates.
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << id::render_member_list_json(*rows) << '\n';
+  } else {
+    ctx.out() << id::render_member_list_text(*rows);
+  }
+  return {};
+}
+
 } // namespace planar::cmd::handlers

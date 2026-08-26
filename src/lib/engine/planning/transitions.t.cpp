@@ -101,6 +101,66 @@ TEST_CASE("task arm: unknown status returns unknown_status", "[transitions][task
   CHECK(r.error() == transition_error::unknown_status);
 }
 
+// --- question arm (plan 996, task 6188) --------------------------------
+
+TEST_CASE("question arm: open reaches both terminals", "[transitions][question]") {
+  CHECK(check_transition(transition_kind::question, "open", "answered", false).has_value());
+  CHECK(check_transition(transition_kind::question, "open", "wontfix", false).has_value());
+}
+
+TEST_CASE("question arm: both terminals refuse every outgoing edge", "[transitions][question]") {
+  for (auto const* from : {"answered", "wontfix"}) {
+    for (auto const* to : {"open", "answered", "wontfix"}) {
+      if (std::string_view{from} == to) {
+        continue; // identity is handled by the short-circuit, tested below.
+      }
+      auto r = check_transition(transition_kind::question, from, to, false);
+      INFO("from=" << from << " to=" << to);
+      REQUIRE_FALSE(r.has_value());
+      CHECK(r.error() == transition_error::illegal_transition);
+    }
+  }
+}
+
+TEST_CASE("question arm: identity succeeds on BOTH terminal statuses", "[transitions][question]") {
+  // This is not a curiosity — it is what makes `question answer` on an
+  // already-answered question overwrite the answer instead of refusing,
+  // and `question wontfix` on a wontfix row bump `updated_at`. Both were
+  // captured from the oracle before being pinned here.
+  CHECK(check_transition(transition_kind::question, "open", "open", false).has_value());
+  CHECK(check_transition(transition_kind::question, "answered", "answered", false).has_value());
+  CHECK(check_transition(transition_kind::question, "wontfix", "wontfix", false).has_value());
+}
+
+TEST_CASE("question arm: an UNKNOWN source is illegal, not unknown_status", "[transitions][question]") {
+  // The deliberate asymmetry with every other arm. zig's `.question`
+  // branch has no unknown-source case: anything that is not `open` falls
+  // to a bare `return Error.IllegalTransition`. The tag is
+  // operator-visible (`question wontfix: IllegalTransition`), so
+  // regularizing it would be a behaviour change, not a cleanup.
+  auto r = check_transition(transition_kind::question, "bogus", "answered", false);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::illegal_transition);
+
+  auto empty = check_transition(transition_kind::question, "", "answered", false);
+  REQUIRE_FALSE(empty.has_value());
+  CHECK(empty.error() == transition_error::illegal_transition);
+}
+
+TEST_CASE("question arm: an unknown TARGET from open is refused", "[transitions][question]") {
+  auto r = check_transition(transition_kind::question, "open", "retired", false);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::illegal_transition);
+}
+
+TEST_CASE("question arm: force does not bypass the matrix", "[transitions][question]") {
+  // `force` is honoured for the TASK arm only; the question verbs expose no
+  // `--force` and must not acquire one by accident.
+  auto r = check_transition(transition_kind::question, "answered", "open", true);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::illegal_transition);
+}
+
 // --- empty/absent cases ------------------------------------------------
 
 TEST_CASE("empty status strings are unknown, not illegal", "[transitions][empty]") {
