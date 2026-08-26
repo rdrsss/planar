@@ -23,6 +23,9 @@ import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.runs;
+import planar.cmd.planar.handlers.local;
+import planar.cmd.planar.handlers.closure;
+import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.ext;
@@ -207,6 +210,20 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("run event", handlers::run_event);
   table.emplace("run finish", handlers::run_finish);
   table.emplace("run show", handlers::run_show);
+
+  // `local` — the whole five-leaf family (task 6189). None of them opens
+  // SQLite; all five are filesystem state under `$PLANAR_LOCAL_HOME`/`$HOME`.
+  table.emplace("local list", handlers::local_list);
+  table.emplace("local link", handlers::local_link);
+  table.emplace("local unlink", handlers::local_unlink);
+  table.emplace("local import", handlers::local_import);
+  table.emplace("local migrate", handlers::local_migrate);
+  // `closure show` — the read side only. `closure compute` stays a declared
+  // exit-64 refusal: its extractor needs tree-sitter, which is not vendored
+  // here. See `handlers/closure.cppm`.
+  table.emplace("closure show", handlers::closure_show);
+  // `groups recommend` — the whole `groups` family, read-only.
+  table.emplace("groups recommend", handlers::groups_recommend);
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64. The inventory is generated alongside the surface

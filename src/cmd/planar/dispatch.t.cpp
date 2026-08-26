@@ -352,16 +352,29 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // handler over an absent engine would mean inventing behaviour;
   // refusing at exit 64 by name does not.
   //
+  // 130 before task 6189 ported SEVEN more out of it — the whole five-leaf
+  // `local` family (`list`, `link`, `unlink`, `import`, `migrate`), plus
+  // `closure show` and `groups recommend`, the read halves of two
+  // single-leaf families. `closure compute` STAYED, for the same
+  // layer-2 reason as the three above it: its extractor is 1637 lines of
+  // tree-sitter AST work over a filesystem corpus walk, and tree-sitter is
+  // not vendored in this tree. That leaves `closure` a family with one
+  // ported leaf and one declared refusal, which is the shape `bench` and
+  // `models` already have.
+  //
   // This number is load-bearing: it is what fails when a verb gains a
   // handler and its generated inventory entry is not dropped in the same
   // change. Update it WITH the port; never widen the check to make it stop
   // firing.
-  CHECK(unported.size() == 130);
+  CHECK(unported.size() == 123);
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
   CHECK(unported.contains("models resolve"));
   CHECK(unported.contains("task touches infer"));
+  // ...and the fourth, from task 6189's own families. `closure show` is
+  // ported; `closure compute` must stay DECLARED, never silently absent.
+  CHECK(unported.contains("closure compute"));
   // The three duals are the entries that are NOT leaves; `resume` and
   // `handoff` have real handlers, so `health` is the only one here.
   CHECK(unported.contains("health"));
@@ -393,7 +406,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
                                   "task done",
                                   "task cancel",
                                   "task block",
-                                  "task reopen"}) {
+                                  "task reopen",
+                                  "local list",
+                                  "local link",
+                                  "local unlink",
+                                  "local import",
+                                  "local migrate",
+                                  "closure show",
+                                  "groups recommend"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }

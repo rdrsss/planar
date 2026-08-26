@@ -1359,3 +1359,299 @@ TEST_CASE("PLANAR_PARITY_STRICT turns an absent oracle from a skip into a failur
   CHECK_FALSE(when_empty);
   CHECK(when_word);
 }
+
+TEST_CASE("C++ and Zig agree over a seeded local sandbox lifecycle", "[cmd][parity][oracle][local]") {
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+
+  // SEED EACH ARENA INDEPENDENTLY, never by copying one. The manifest records
+  // ABSOLUTE `source_path` / `target_path` values, so a copied arena would
+  // carry the other side's paths and the "divergence" would be the fixture.
+  // (The same mistake the workbench case above documents.)
+  auto const space = make_arena("localtree");
+
+  struct source {
+    std::string_view rel;  ///< Path under `<localhome>/.planar/local`.
+    std::string_view body; ///< File contents.
+  };
+  // ONE malformed entry only. `manifest::walk_sandbox` appends walk errors in
+  // DIRECTORY-ITERATION order, which is unspecified on both sides, so the SET
+  // of warning lines is the contract and their ORDER is not. A single entry
+  // makes the two agree without weakening the comparison.
+  std::vector<source> const sources{
+      {"skills/three/SKILL.md", "---\nname: three\ndescription: Three vendors.\nvendors: [claude, codex, copilot]\n---\n\nB.\n"},
+      {"skills/nodesc/SKILL.md", "---\nname: nodesc\n---\n\nNo description, so this LINTS.\n"},
+      {"skills/flat.md", "---\nname: flat\ndescription: Legacy flat shape.\n---\n\nFlat.\n"},
+      {"agents/an-agent.md", "---\nname: an-agent\ndescription: An agent.\n---\n\nA.\n"},
+  };
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    std::error_code ec;
+    auto const      sandbox = root / "localhome" / ".planar" / "local";
+    std::filesystem::create_directories(sandbox / "skills" / "broken", ec); // the one walk error
+    std::filesystem::create_directories(sandbox / "agents", ec);
+    for (auto const& [rel, body] : sources) {
+      auto const path = sandbox / rel;
+      std::filesystem::create_directories(path.parent_path(), ec);
+      std::ofstream file(path, std::ios::binary | std::ios::trunc);
+      REQUIRE(file.is_open());
+      file << body;
+    }
+  }
+
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  // An ORDERED sequence against ONE sandbox per binary: `list` only means
+  // anything after `link`, `migrate` only after the flat source has been
+  // seen, and `--reconcile` only after something is stale.
+  std::vector<step> const steps{
+      {"lclist0", {"local", "list"}},
+      {"lclistj0", {"local", "list", "--json"}},
+      {"lclinkdry", {"local", "link", "--dry-run"}},
+      {"lclink", {"local", "link"}},
+      {"lclink2", {"local", "link"}},
+      {"lclinkj", {"local", "link", "--json"}},
+      {"lclist1", {"local", "list"}},
+      {"lclistj1", {"local", "list", "--json"}},
+      {"lclistv", {"local", "list", "--vendor", "codex"}},
+      {"lclistvn", {"local", "list", "--vendor", "nope"}},
+      {"lclistve", {"local", "list", "--vendor", ""}},
+      {"lclinkone", {"local", "link", "three", "--vendor", "claude"}},
+      {"lclinkmiss", {"local", "link", "nosuch"}},
+      {"lcrecpos", {"local", "link", "--reconcile", "stray"}},
+      {"lcmigdry", {"local", "migrate", "--dry-run"}},
+      {"lcmig", {"local", "migrate"}},
+      {"lcmig2", {"local", "migrate"}},
+      {"lcmigj", {"local", "migrate", "--json"}},
+      {"lcunlink", {"local", "unlink", "an-agent"}},
+      {"lcunlink2", {"local", "unlink", "an-agent"}},
+      {"lcunlinkj", {"local", "unlink", "nodesc", "--json"}},
+      {"lcunlinkghost", {"local", "unlink", "ghost", "--purge"}},
+      {"lcrecdry", {"local", "link", "--reconcile", "--dry-run"}},
+      {"lcrec", {"local", "link", "--reconcile"}},
+      {"lclist2", {"local", "list"}},
+      {"lcimpbad", {"local", "import", "nope.md", "--kind", "bogus"}},
+      {"lcimpmiss", {"local", "import", "nope.md"}},
+  };
+
+  // `linked_at` is a wall-clock second stamp that reaches the `--json`
+  // payloads, so it cannot agree across two processes. Folding it to a token
+  // is what keeps those steps comparable without dropping them; everything
+  // else, including the arena root, is compared for real.
+  auto const normalize = [](std::string_view text, const std::filesystem::path& root) {
+    std::string out;
+    std::string rest{text};
+    for (auto const& [needle, token] : std::vector<std::pair<std::string, std::string>>{{root.string(), "<ARENA>"}}) {
+      out.clear();
+      std::string_view view = rest;
+      for (;;) {
+        auto const at = view.find(needle);
+        if (at == std::string_view::npos) {
+          out.append(view);
+          break;
+        }
+        out.append(view.substr(0, at));
+        out.append(token);
+        view.remove_prefix(at + needle.size());
+      }
+      rest = out;
+    }
+    // `"linked_at":"2026-08-25T23:59:59Z"` -> `"linked_at":"<STAMP>"`.
+    std::string      folded;
+    std::string_view view = rest;
+    for (;;) {
+      auto const at = view.find("\"linked_at\":\"");
+      if (at == std::string_view::npos) {
+        folded.append(view);
+        return folded;
+      }
+      folded.append(view.substr(0, at));
+      folded.append("\"linked_at\":\"<STAMP>\"");
+      view.remove_prefix(at + std::string_view{"\"linked_at\":\""}.size());
+      auto const close = view.find('"');
+      view.remove_prefix(close == std::string_view::npos ? view.size() : close + 1);
+    }
+  };
+
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(normalize(mine.out, space.cpp_root) == normalize(ref.out, space.zig_root));
+    CHECK(normalize(mine.err, space.cpp_root) == normalize(ref.err, space.zig_root));
+  }
+
+  // THE PERSISTED STATE IS THE REAL PRODUCT, and no summary line above would
+  // notice a divergence inside it. Both manifests are compared byte for byte
+  // (modulo the arena root and the stamp), and so is the SHAPE of the vendor
+  // trees the links landed in — a port that recorded the right manifest and
+  // created the wrong symlink would pass every stdout comparison.
+  auto const manifests_of = [&](const std::filesystem::path& root) {
+    std::map<std::string, std::string> files;
+    auto const                         sandbox = root / "localhome" / ".planar" / "local";
+    std::error_code                    ec;
+    for (auto const& kind : {"skills", "agents"}) {
+      auto const path          = sandbox / kind / ".link-manifest.json";
+      files[std::string{kind}] = std::filesystem::exists(path, ec) ? normalize(read_all(path), root) : "<ABSENT>";
+    }
+    return files;
+  };
+  CHECK(manifests_of(space.cpp_root) == manifests_of(space.zig_root));
+
+  auto const installs_of = [](const std::filesystem::path& root) {
+    std::map<std::string, std::string> entries;
+    auto const                         home = root / "localhome";
+    std::error_code                    ec;
+    for (auto const& vendor_dir : {".claude", ".codex", ".copilot", ".planar"}) {
+      auto const base = home / vendor_dir;
+      if (!std::filesystem::is_directory(base, ec)) {
+        continue;
+      }
+      for (auto const& entry :
+           std::filesystem::recursive_directory_iterator(base, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        std::error_code entry_ec;
+        auto const      rel = std::filesystem::relative(entry.path(), home, entry_ec).generic_string();
+        // The sandbox itself lives under `.planar/local`; only the INSTALLS
+        // beside it are the product.
+        if (rel.starts_with(".planar/local")) {
+          continue;
+        }
+        entries[rel] = std::filesystem::is_symlink(std::filesystem::symlink_status(entry.path(), entry_ec)) ? "symlink"
+                       : std::filesystem::is_directory(entry.path(), entry_ec)                              ? "dir"
+                                                                                                            : "regular";
+      }
+    }
+    return entries;
+  };
+  auto const cpp_installs = installs_of(space.cpp_root);
+  // NON-VACUITY: the comparison below is worthless if both sides installed
+  // nothing. The sequence ends with `three` still linked to claude.
+  CHECK_FALSE(cpp_installs.empty());
+  CHECK(cpp_installs == installs_of(space.zig_root));
+}
+
+TEST_CASE("C++ and Zig agree on closure show and groups recommend over seeded rows", "[cmd][parity][oracle][closure]") {
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+
+  auto const                                  space = make_arena("clogrp");
+  std::vector<std::vector<std::string>> const seed{
+      {"init", "--name", "demo", "--slug", "demo", "--allow-no-repo"},
+      {"assoc", "create", "project:demo", "--kind", "project"},
+      {"plan", "create", "Demo", "--slug", "demo-plan", "--summary", "S"},
+      {"task", "add", "T1", "--plan", "1", "--editor=false"},
+      {"task", "add", "T2", "--plan", "1", "--editor=false"},
+      {"task", "add", "T3", "--plan", "1", "--editor=false"},
+      {"task", "add", "T4", "--plan", "1", "--editor=false"},
+  };
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    for (std::size_t i = 0; i < seed.size(); ++i) {
+      auto const tag = std::format("cgseed{}_{}", root == space.cpp_root ? "c" : "z", i);
+      auto const ran = run_pinned(zig_bin(), seed[i], root, tag);
+      INFO("seed step: " << tag << " -> " << ran.err);
+      REQUIRE(ran.code == 0);
+      if (i == 1) {
+        std::vector<std::string> const attach{"assoc", "add", "project:demo", (root / "proj").string()};
+        REQUIRE(run_pinned(zig_bin(), attach, root, std::format("{}attach", tag)).code == 0);
+      }
+    }
+  }
+
+  // `closures` has no ported writer on EITHER side — `closure compute` is the
+  // unported half of this family and needs tree-sitter — so the rows are
+  // seeded through `sqlite3` directly, identically into both arenas. Every
+  // value is pinned, `created_at` included, so the two databases are
+  // byte-comparable in the columns these leaves render.
+  //
+  // The fixture is built to discriminate: two `modify` rows whose PATH order
+  // and SYMBOL order DISAGREE, one `transitive` row heavy enough (9000) that
+  // a slice including it could not report the asserted cost, a `done` task
+  // (weight 5000) that must not be grouped, and a dependency edge.
+  constexpr std::string_view k_seed_sql =
+      "insert into closures (task_id,repo_id,path,symbol,role,token_weight,extractor_version,created_at) values"
+      " (1,1,'z/last.zig','a.aaa','modify',10,'m2-closure-0.1','2026-01-01T00:00:00.000Z'),"
+      " (1,1,'a/first.zig','z.zzz','modify',20,'m2-closure-0.1','2026-01-01T00:00:00.000Z'),"
+      " (1,1,'m/mid.zig','m.mmm','reference',5,'m2-closure-0.1','2026-01-01T00:00:00.000Z'),"
+      " (1,1,'t/tr.zig','t.ttt','transitive',9000,'m2-closure-0.1','2026-01-01T00:00:00.000Z'),"
+      " (1,1,'z/last.zig','a.aaa','modify',7,'m2-closure-0.2','2026-01-01T00:00:00.000Z'),"
+      " (2,1,'b/two.zig','b.bbb','modify',30,'m2-closure-0.1','2026-01-01T00:00:00.000Z'),"
+      " (3,1,'c/three.zig','c.ccc','modify',40,'m2-closure-0.1','2026-01-01T00:00:00.000Z'),"
+      " (4,1,'d/four.zig','d.ddd','modify',5000,'m2-closure-0.1','2026-01-01T00:00:00.000Z');"
+      "update tasks set status='done' where id=4;"
+      "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship,created_at)"
+      " values ('task',2,'task',1,'depends-on','2026-01-01T00:00:00.000Z');";
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    auto const sql_path = root / "seed.sql";
+    {
+      std::ofstream file(sql_path, std::ios::binary | std::ios::trunc);
+      REQUIRE(file.is_open());
+      file << k_seed_sql;
+    }
+    auto const line = std::format("sqlite3 {} < {}", shell_quote((root / "planar.db").string()), shell_quote(sql_path.string()));
+    REQUIRE(std::system(line.c_str()) == 0);
+  }
+
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  std::vector<step> const steps{
+      {"cs1", {"closure", "show", "1"}},
+      {"cs1j", {"closure", "show", "1", "--json"}},
+      {"cs4", {"closure", "show", "4"}},
+      {"cs999", {"closure", "show", "999"}},
+      {"cs999j", {"closure", "show", "999", "--json"}},
+      {"csbad", {"closure", "show", "notanint"}},
+      {"cssep", {"closure", "show", "1_0"}},
+      {"cspad", {"closure", "show", "007"}},
+      {"csplus", {"closure", "show", "+12"}},
+      {"csovf", {"closure", "show", "9223372036854775808"}},
+      {"csmax", {"closure", "show", "9223372036854775807"}},
+      {"gr1", {"groups", "recommend", "1"}},
+      {"gr1j", {"groups", "recommend", "1", "--json"}},
+      {"grb", {"groups", "recommend", "1", "--budget", "25", "--json"}},
+      {"grb0", {"groups", "recommend", "1", "--budget", "0", "--json"}},
+      {"grbmax", {"groups", "recommend", "1", "--budget", "4294967295", "--json"}},
+      {"grbovf", {"groups", "recommend", "1", "--budget", "4294967296"}},
+      {"grbneg", {"groups", "recommend", "1", "--budget", "-1"}},
+      {"grbbad", {"groups", "recommend", "1", "--budget", "xyz"}},
+      {"grmiss", {"groups", "recommend", "999"}},
+      {"grbadid", {"groups", "recommend", "abc"}},
+      {"grsolverbad", {"groups", "recommend", "1", "--solver", "bogus"}},
+      {"grsolvergreedy", {"groups", "recommend", "1", "--solver", "greedy", "--json"}},
+      // `--solver mtkahypar` is DELIBERATELY ABSENT. The optional solver is
+      // not ported here, so this build always degrades to greedy — which is
+      // byte-identical to the oracle ON A HOST WITHOUT THE SOLVER INSTALLED
+      // and genuinely different on a host with it. Pinning either outcome
+      // would make the case pass or fail on what happens to be on the
+      // machine. The degradation itself IS pinned, against this binary
+      // alone, in closure_groups_leaves.t.cpp.
+  };
+
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(mine.out == ref.out);
+    CHECK(mine.err == ref.err);
+  }
+
+  // NON-VACUITY. Both leaves are read-only, so a seed that silently failed
+  // would make every comparison above a trivially-equal pair of empty
+  // answers. This asserts the fixture actually reached the binaries.
+  auto const populated =
+      run_pinned(cpp_bin(), std::vector<std::string>{"closure", "show", "1", "--json"}, space.cpp_root, "cgnonvac");
+  CHECK(populated.out.contains("\"symbol\":\"z.zzz\""));
+  CHECK(populated.out.contains("\"role\":\"transitive\""));
+  auto const grouped =
+      run_pinned(cpp_bin(), std::vector<std::string>{"groups", "recommend", "1", "--json"}, space.cpp_root, "cgnonvac2");
+  CHECK(grouped.out.contains("\"open_tasks\":3"));
+  // ...and the two filters this fixture exists to exercise really do exclude.
+  CHECK_FALSE(grouped.out.contains("t.ttt"));
+  CHECK_FALSE(grouped.out.contains("d.ddd"));
+}

@@ -242,6 +242,54 @@
 #   - cli_log invocation capture (no cli_log surface in this tree).
 #   - policy.audit rows -- following the precedent every engine bucket
 #     already documents; task 6100 is the open operator decision.
+#
+# --- task 6189: three engine-complete families, wired ---------------------
+#
+# Seven leaves, and the reason they landed together is that all three of
+# their buckets were finished at LAYER 2 and had never been called. Task
+# 6109 (engine_local) and task 6095 (engine_closure, engine_grouping) each
+# shipped the whole read/write path AND byte-exact renderers for every
+# render mode and every refusal line. What was missing was a caller.
+#
+#   local list/link/unlink/import/migrate
+#                      The whole family. It opens NO database -- the durable
+#                      state is two JSON manifests plus the vendor symlink
+#                      trees -- so it is the counterexample that keeps
+#                      `context::db_opened()` meaningful across a five-leaf
+#                      family rather than a single leaf. It is also the
+#                      family with THREE different JSON envelope conventions
+#                      (NDJSON, NDJSON-in-a-`result`-wrapper, and one object
+#                      per run) and two different zero-byte empty cases, all
+#                      of which the renderers own and this layer writes
+#                      verbatim.
+#   closure show       The read half. `closure compute` STAYS a declared
+#                      exit-64 refusal: its extractor is 1637 lines of
+#                      tree-sitter AST work over a filesystem corpus walk,
+#                      tree-sitter is not vendored here, and its handler
+#                      would additionally compose engine_planning +
+#                      engine_identity. Same shape as `bench harvest` and
+#                      `models resolve` -- a family with one ported leaf and
+#                      one refusal, named rather than silently absent.
+#   groups recommend   The whole `groups` family, read-only. `--solver
+#                      mtkahypar` is ACCEPTED rather than refused, because
+#                      the degradation is REPORTED (`solver:"greedy"`,
+#                      `optimal_available:false`) and is byte-identical to
+#                      what the oracle produces on a host with no solver
+#                      binary. An unknown `--solver` value is still exit 2,
+#                      so the flag is validated rather than ignored.
+#
+# The three DEPENDS added here -- engine_local, engine_closure,
+# engine_grouping -- are all layer-2 and none of the three handlers composes
+# two buckets, so no leaf in this batch needed the D20 shape.
+#
+# ORACLE PARITY NOTE, recorded because it is host-dependent and will mislead
+# whoever runs the differential next: `groups recommend --solver mtkahypar`
+# is DELIBERATELY absent from parity.t.cpp. MtKaHyPar is installed on the
+# machine this port was derived on, and there the oracle really does run it
+# and return a different partition (one slice of three tasks versus greedy's
+# two). Pinning either side would make the case pass or fail on what happens
+# to be on the host. The degradation itself is pinned against this binary
+# alone in closure_groups_leaves.t.cpp.
 
 planar_binary(planar
   MAIN
@@ -271,6 +319,9 @@ planar_binary(planar
     handlers/handoff.cppm
     handlers/resume.cppm
     handlers/runs.cppm
+    handlers/local.cppm
+    handlers/closure.cppm
+    handlers/groups.cppm
     verb_classification.cppm
     worktree_gate.cppm
     cli_log.cppm
@@ -301,16 +352,22 @@ planar_binary(planar
     handlers/handoff.cpp
     handlers/resume.cpp
     handlers/runs.cpp
+    handlers/local.cpp
+    handlers/closure.cpp
+    handlers/groups.cpp
     dispatch.cpp
   DEPENDS
     cliapp
     db
     git
     json_text
+    engine_closure
     engine_config
     engine_entitylink
     engine_external
+    engine_grouping
     engine_identity
+    engine_local
     engine_models
     engine_planning
     engine_runs
