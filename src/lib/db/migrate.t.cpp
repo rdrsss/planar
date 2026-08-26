@@ -250,8 +250,29 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
   }
 
   scratch_db_path zig_scratch;
-  const auto      cmd = std::format("PLANAR_DB={} {} init --skip-project --allow-no-repo --json >/dev/null 2>&1",
-                                    zig_scratch.path_.string(), zig_bin.string());
+  // Run from a NEUTRAL directory, not ctest's cwd.
+  //
+  // `init` is a planning verb, and the worktree gate refuses planning verbs
+  // whose cwd sits inside a linked git worktree (exit 8). The orchestrator
+  // dispatches coders into `.claude/worktrees/`, so ctest's cwd is inside one
+  // for every isolated cycle and this test failed there while passing in the
+  // main checkout — a deterministic red that looks unrelated to whatever the
+  // cycle changed (task 6144).
+  //
+  // `--skip-project` means the invocation registers no project and therefore
+  // has no use for the cwd at all, so relocating is honest rather than a
+  // bypass: the gate stays fully armed, and this test simply stops standing
+  // where it fires. Deliberately NOT solved with
+  // `PLANAR_DISABLE_WORKTREE_GATE` — that escape hatch is compiled into the
+  // C++ debug build only, and this line shells the ZIG reference binary.
+  //
+  // The `cd <dir> && env VAR=...` form is required: in this platform's
+  // /bin/sh, assignments that PRECEDE a `cd` do not survive the `&&`, so the
+  // older `PLANAR_DB=... cd x && bin` shape silently loses the variable and
+  // sends the reference binary at the operator's real database.
+  const auto neutral = std::filesystem::temp_directory_path().string();
+  const auto cmd = std::format("cd {} && env PLANAR_DB={} {} init --skip-project --allow-no-repo --json >/dev/null 2>&1", neutral,
+                               zig_scratch.path_.string(), zig_bin.string());
   REQUIRE(std::system(cmd.c_str()) == 0);
 
   auto zig_conn = planar::db::connection::open_read_only(zig_scratch.path_.string());
