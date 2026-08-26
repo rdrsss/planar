@@ -44,6 +44,7 @@ export enum class transition_kind : std::uint8_t {
   plan,
   task,
   question,
+  decision,
   annotation,
   handoff,
 };
@@ -87,6 +88,18 @@ export enum class transition_error : std::uint8_t {
 /// That asymmetry with the plan/task arms is reproduced deliberately (D2) —
 /// it is operator-visible as the error name in `question wontfix:
 /// IllegalTransition`.
+///
+/// Decision matrix (status set: proposed, accepted, superseded, withdrawn):
+///   proposed             -> {accepted, superseded, withdrawn}
+///   accepted             -> {superseded, withdrawn}
+///   superseded, withdrawn -> terminal; every outgoing edge is refused
+/// Unlike the question arm, this one DOES report `unknown_status` for an
+/// unrecognized source — `decision.validateTransition` folds that back onto
+/// its own `invalid_status`, the same spelling it gives a refused
+/// non-terminal move, while a refused TERMINAL move becomes
+/// `terminal_status`. That two-way split is what produces the
+/// operator-visible `decision 2 is terminal; cannot accept`.
+/// `force` has no effect — the decision verbs expose no `--force`.
 ///
 /// Because `check_transition` short-circuits on `from == to` BEFORE
 /// consulting any arm, `answered -> answered` and `wontfix -> wontfix`

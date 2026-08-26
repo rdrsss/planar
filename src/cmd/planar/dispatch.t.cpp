@@ -387,7 +387,16 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // than ship one working arm beside six refusing ones. They went in
   // together, and the `question` family's remaining refusals dropped from
   // five to four.
-  CHECK(unported.size() == 110);
+  //
+  // 110 before task 6194 ported SEVEN more out of it — the `decision`
+  // family's CRUD, transition and link half: `decision add`, `show`,
+  // `list`, `accept`, `supersede`, `withdraw` and `link`. `decision link`
+  // went in WITH them rather than being held back the way `question link`
+  // was, because the shared entity-link surface it forwards into had
+  // already landed at 6193; holding it would have left the incoherence the
+  // earlier hold existed to avoid, only mirrored. The family's other FOUR
+  // stay, named individually below.
+  CHECK(unported.size() == 103);
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
@@ -401,6 +410,24 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK(unported.contains("question view"));
   CHECK(unported.contains("question diff"));
   CHECK(unported.contains("question review"));
+  // ...and task 6194's four, from the now-partly-ported `decision` family.
+  // Same discipline, same reason: a half-ported family is where a leaf
+  // goes missing quietly. These four are the workbench drafting quartet
+  // again — and in the ORACLE two of them abort with a Zig stack trace
+  // while the other two report `no decision with id N` for a decision that
+  // exists, so there is no coherent contract to port even once editflow
+  // lands.
+  CHECK(unported.contains("decision edit"));
+  CHECK(unported.contains("decision view"));
+  CHECK(unported.contains("decision diff"));
+  CHECK(unported.contains("decision review"));
+  // The seven task 6194 ported must NOT be in the inventory — same
+  // named-rather-than-counted rule as the entity-link block below.
+  for (auto const& wired : {"decision add", "decision show", "decision list", "decision accept", "decision supersede",
+                            "decision withdraw", "decision link"}) {
+    INFO("decision leaf: " << wired);
+    CHECK_FALSE(unported.contains(wired));
+  }
   // The seven task 6193 ported must NOT be in the inventory. The count
   // above would catch a leaf that stayed, but not a leaf that stayed while
   // a DIFFERENT one was dropped by mistake — so each is named.

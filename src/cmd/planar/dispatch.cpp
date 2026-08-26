@@ -29,6 +29,7 @@ import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.question;
+import planar.cmd.planar.handlers.decision;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.ext;
 import planar.cmd.planar.handlers.unlink;
@@ -136,6 +137,24 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("question list", handlers::question_list);
   table.emplace("question answer", handlers::question_answer);
   table.emplace("question wontfix", handlers::question_wontfix);
+  // `decision` — seven of eleven, landed at task 6194 with the `decision`
+  // engine they call. `decision link` is included rather than held back the
+  // way `question link` was at task 6188, because the entity-link surface
+  // it forwards into landed in the meantime (task 6193): holding it now
+  // would leave a working `question link` beside a refusing `decision
+  // link`, which is the same incoherence the earlier hold was avoiding.
+  // The four omitted are the workbench DRAFTING quartet
+  // (`edit`/`view`/`diff`/`review`) — unported editflow plumbing, and the
+  // oracle's own four are incoherent besides (two abort with a Zig stack
+  // trace, two report NotFound for a decision that exists). See
+  // handlers/decision.cppm's header.
+  table.emplace("decision add", handlers::decision_add);
+  table.emplace("decision show", handlers::decision_show);
+  table.emplace("decision list", handlers::decision_list);
+  table.emplace("decision accept", handlers::decision_accept);
+  table.emplace("decision supersede", handlers::decision_supersede);
+  table.emplace("decision withdraw", handlers::decision_withdraw);
+  table.emplace("decision link", handlers::decision_link);
   // The entity-link surface — all seven arms, landed together at task
   // 6193. `engine_entitylink` was fully ported and exported no renderer,
   // which is the single reason every one of these refused at exit 64.

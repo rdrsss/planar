@@ -51,6 +51,21 @@
 #     question.cppm's header for what the question port itself cut and
 #     where those cuts are composed instead (the entity-create activity
 #     hook moves to LAYER 3 rather than disappearing).
+#     UPDATE (task 6194): `decision` landed, on the same one-family
+#     discipline; `scenario` and `artifact` remain out. Its port added the
+#     `.decision` arm to transitions.cpp — the first arm added because its
+#     CALLER arrived, which is the rule that file's header states. Two
+#     things about it are worth reading before the next family lands:
+#       - `supersede` writes its `entity_links` row DIRECTLY rather than
+#         composing `engine_entitylink`. That is forced twice over: the
+#         edge would be a layer-2-to-layer-2 dependency this file's own
+#         D15/D18 note forbids, AND `entitylink::add` writes a `link`
+#         audit row plus an endpoint check that the oracle's `supersede`
+#         does not. See decision.cppm's header.
+#       - `decision add --plan <n>` does NOT validate the plan, where
+#         `question add --plan <n>` does. Both behaviours are the oracle's
+#         and both are reproduced; the divergence is in the ORACLE, not in
+#         this port.
 #   - The active-work-claim TOCTOU guard (decision 533 / task 4165).
 #     CORRECTED at task 6141: this note used to say the guard was cut
 #     because `engine.runtime.agentactivity` was "a different,
@@ -108,6 +123,7 @@ planar_module(engine_planning
     plan.cppm
     task.cppm
     question.cppm
+    decision.cppm
     annotation.cppm
     plan_step.cppm
     test_spec_status.cppm
@@ -117,6 +133,7 @@ planar_module(engine_planning
     plan.cpp
     task.cpp
     question.cpp
+    decision.cpp
     annotation.cpp
     plan_step.cpp
     test_spec_status.cpp
