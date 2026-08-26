@@ -30,6 +30,7 @@ import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.decision;
+import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.ext;
 import planar.cmd.planar.handlers.unlink;
@@ -155,6 +156,30 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("decision supersede", handlers::decision_supersede);
   table.emplace("decision withdraw", handlers::decision_withdraw);
   table.emplace("decision link", handlers::decision_link);
+  // `scenario` — six of ten, landed at task 6195 with the `scenario`
+  // engine they call. `scenario link` goes in with them for the same
+  // reason `decision link` did: the shared entity-link surface it forwards
+  // into landed at task 6193, so holding it would leave a refusing arm
+  // beside two working ones.
+  //
+  // The four omitted are the workbench DRAFTING quartet
+  // (`edit`/`view`/`diff`/`review`) — unported `engine_workbench` plus
+  // editflow. Unlike `decision`'s four, the ORACLE's scenario quartet is
+  // NOT broken: `view`/`diff`/`review` on a plan-linked scenario all exit 0
+  // with coherent output, because `scenario add --plan` writes its edge
+  // with the `from_kind = 'test_scenario'` spelling editflow's anchor
+  // resolver queries. So these four are deferred for the DEPENDENCY alone
+  // and can be ported as-is once it lands. See handlers/scenario.cppm.
+  //
+  // `scenario list --touches` is SERVED here rather than refused at exit
+  // 64 the way `plan list --touches` and `task list --touches` are: this
+  // family's `listTouching` half is ported.
+  table.emplace("scenario add", handlers::scenario_add);
+  table.emplace("scenario show", handlers::scenario_show);
+  table.emplace("scenario list", handlers::scenario_list);
+  table.emplace("scenario verify", handlers::scenario_verify);
+  table.emplace("scenario retire", handlers::scenario_retire);
+  table.emplace("scenario link", handlers::scenario_link);
   // The entity-link surface — all seven arms, landed together at task
   // 6193. `engine_entitylink` was fully ported and exported no renderer,
   // which is the single reason every one of these refused at exit 64.

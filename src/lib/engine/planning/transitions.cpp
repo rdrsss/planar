@@ -100,6 +100,47 @@ auto check_decision(std::string_view from, std::string_view to) -> std::expected
   return {};
 }
 
+/// @brief The `scenario` arm. Status set: draft, ready, verified, failing,
+/// retired.
+///
+/// `retired` is the sole terminal state. `draft -> verified` is absent on
+/// purpose: `scenario verify` reaches `verified` from a draft row by
+/// walking `draft -> ready` and then `ready -> verified`, checking each hop
+/// here. A port that added the direct edge would make the auto-transition's
+/// intermediate `ready: auto-transition via verify` audit row disappear,
+/// which is operator-visible.
+///
+/// Both lateral edges between the two outcome states exist —
+/// `verified -> failing` AND `failing -> verified` — unlike the annotation
+/// arm, where outcome states never move laterally. Reproduced, not
+/// regularized (D2).
+/// @param from The current status text.
+/// @param to The desired status text.
+/// @return Success, `illegal_transition`, or `unknown_status`.
+auto check_scenario(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
+  bool legal = false;
+  if (from == "draft") {
+    legal = to == "ready" || to == "retired";
+  } else if (from == "ready") {
+    legal = to == "verified" || to == "failing" || to == "retired";
+  } else if (from == "verified") {
+    legal = to == "failing" || to == "retired";
+  } else if (from == "failing") {
+    legal = to == "verified" || to == "retired";
+  } else if (from == "retired") {
+    // Terminal for operator transitions. `retired -> retired` never
+    // reaches here — `check_transition` short-circuits first, which is why
+    // `scenario retire` on an already-retired scenario succeeds.
+    legal = false;
+  } else {
+    return std::unexpected(transition_error::unknown_status);
+  }
+  if (!legal) {
+    return std::unexpected(transition_error::illegal_transition);
+  }
+  return {};
+}
+
 auto check_annotation(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
   bool legal = false;
   if (from == "active") {
@@ -165,6 +206,8 @@ auto check_transition(transition_kind kind, std::string_view from, std::string_v
     return check_question(from, to);
   case transition_kind::decision:
     return check_decision(from, to);
+  case transition_kind::scenario:
+    return check_scenario(from, to);
   case transition_kind::annotation:
     return check_annotation(from, to);
   case transition_kind::handoff:

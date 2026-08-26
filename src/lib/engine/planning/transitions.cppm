@@ -45,6 +45,7 @@ export enum class transition_kind : std::uint8_t {
   task,
   question,
   decision,
+  scenario,
   annotation,
   handoff,
 };
@@ -100,6 +101,23 @@ export enum class transition_error : std::uint8_t {
 /// `terminal_status`. That two-way split is what produces the
 /// operator-visible `decision 2 is terminal; cannot accept`.
 /// `force` has no effect — the decision verbs expose no `--force`.
+///
+/// Scenario matrix (status set: draft, ready, verified, failing, retired):
+///   draft    -> {ready, retired}
+///   ready    -> {verified, failing, retired}
+///   verified -> {failing, retired}
+///   failing  -> {verified, retired}
+///   retired  -> terminal; every outgoing edge is refused
+/// Note `draft -> verified` is NOT an edge. `scenario verify` on a draft
+/// scenario nonetheless lands `verified`, because the engine walks the two
+/// legal hops `draft -> ready -> verified` and checks EACH against this
+/// matrix — the auto-transition honors the matrix step by step rather than
+/// bypassing it. `failing` is unreachable through today's CLI (no verb
+/// targets it) but is a legal SOURCE, so a row seeded there by another
+/// writer still moves correctly.
+/// Like the plan/task/decision/annotation arms and unlike `question`, this
+/// one DOES report `unknown_status` for an unrecognized source.
+/// `force` has no effect — the scenario verbs expose no `--force`.
 ///
 /// Because `check_transition` short-circuits on `from == to` BEFORE
 /// consulting any arm, `answered -> answered` and `wontfix -> wontfix`

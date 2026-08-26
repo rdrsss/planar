@@ -231,7 +231,7 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // THE HEADLINE PROPERTY of the full-surface declaration (plan 996, task
   // 6065). `planar` declares all 223 of the oracle's leaves so that
   // `zig/tools/cli_usage_lint` can resolve every authored command path;
-  // 117 of them land no behaviour (task 6188). A declared node that dispatches to
+  // 97 of them land no behaviour (task 6195). A declared node that dispatches to
   // nothing is WORSE than an absent one if it exits 0, so each refuses
   // loudly and names itself.
   //
@@ -240,12 +240,14 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // REQUIRED positional, or the parser refuses at exit 2 before dispatch is
   // reached at all and the case would assert the parser's behaviour rather
   // than the table's — which is what `plan diff` did on the first attempt
-  // at this replacement. `scenario list` is the next arg-free sibling, and
-  // it stays valid until the `scenario` family is ported.
-  auto const leaf = dispatch({"scenario", "list"});
+  // at this replacement. It was `scenario list` until task 6195 ported that
+  // one too; `artifact list` is the next arg-free sibling, and it stays
+  // valid until the `artifact` family — the last unported planning entity —
+  // is ported.
+  auto const leaf = dispatch({"artifact", "list"});
   CHECK(leaf.code == 64);
   CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: scenario list: not implemented in this build\n");
+  CHECK(leaf.err == "error: artifact list: not implemented in this build\n");
 
   // Deeper, to prove the key is the full path and not the leaf name.
   auto const deep = dispatch({"feedback", "triage", "list"});
@@ -396,7 +398,26 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // already landed at 6193; holding it would have left the incoherence the
   // earlier hold existed to avoid, only mirrored. The family's other FOUR
   // stay, named individually below.
-  CHECK(unported.size() == 103);
+  //
+  // 103 before task 6195 ported SIX more out of it — the `scenario`
+  // family's CRUD, transition and link half: `scenario add`, `show`,
+  // `list`, `verify`, `retire` and `link`. `scenario link` went in WITH
+  // them, on the reason 6194 established: the shared entity-link surface
+  // landed at 6193, so holding one arm back now creates the incoherence
+  // the original hold existed to avoid. The family's other FOUR stay,
+  // named individually below.
+  //
+  // Two things about this port are worth reading before `artifact`, the
+  // last unported planning family, lands:
+  //   - Its EMPTY `--status` filter means EVERY status, `retired`
+  //     included, where `question`'s means `open` and `decision`'s means
+  //     `{proposed, accepted}`. None of the three is derivable from
+  //     another; all three were captured by running them.
+  //   - `scenario list --touches` is SERVED rather than refused at exit 64
+  //     the way `plan list --touches` and `task list --touches` are. Its
+  //     `listTouching` half is ported, so `touches_not_implemented` has no
+  //     call site in this family.
+  CHECK(unported.size() == 97);
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
@@ -426,6 +447,33 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   for (auto const& wired : {"decision add", "decision show", "decision list", "decision accept", "decision supersede",
                             "decision withdraw", "decision link"}) {
     INFO("decision leaf: " << wired);
+    CHECK_FALSE(unported.contains(wired));
+  }
+  // ...and task 6195's four, from the now-partly-ported `scenario` family.
+  // The workbench drafting quartet a THIRD time — but note the reason is
+  // NOT the one `decision`'s four carry. The ORACLE's scenario quartet is
+  // COHERENT: `scenario view/diff/review` on a plan-linked scenario all
+  // exit 0 with real output (a front-mattered workbench document, a
+  // unified diff against `<root>/p1-anchor/scenarios/<n>-<slug>.md`), and
+  // `scenario edit` opens `$EDITOR`. Only an UNLINKED scenario hits
+  // editflow's `walkToAnchor` abort, and that is the resolver having no
+  // anchor rather than the verb being broken. The difference from
+  // `decision` is structural: `scenario add --plan` writes its edge with
+  // `from_kind = 'test_scenario'`, exactly the spelling the anchor
+  // resolver queries.
+  //
+  // So these four are deferred for the missing DEPENDENCY alone
+  // (`engine_workbench` plus editflow) and can be ported as-is once it
+  // lands — a weaker deferral than `decision`'s, recorded as such
+  // deliberately so the next cycle does not inherit the wrong reason.
+  CHECK(unported.contains("scenario edit"));
+  CHECK(unported.contains("scenario view"));
+  CHECK(unported.contains("scenario diff"));
+  CHECK(unported.contains("scenario review"));
+  // The six task 6195 ported must NOT be in the inventory.
+  for (auto const& wired :
+       {"scenario add", "scenario show", "scenario list", "scenario verify", "scenario retire", "scenario link"}) {
+    INFO("scenario leaf: " << wired);
     CHECK_FALSE(unported.contains(wired));
   }
   // The seven task 6193 ported must NOT be in the inventory. The count

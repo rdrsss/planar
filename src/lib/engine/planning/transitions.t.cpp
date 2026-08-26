@@ -245,3 +245,86 @@ TEST_CASE("handoff arm: force does not bypass the matrix", "[transitions][handof
   REQUIRE_FALSE(r.has_value());
   CHECK(r.error() == transition_error::illegal_transition);
 }
+
+// ===========================================================================
+// scenario arm (task 6195)
+// ===========================================================================
+//
+// The matrix is enumerated EXHAUSTIVELY below — all 5x5 non-identity pairs
+// are covered between the four cases — rather than spot-checked, because
+// two of its edges are counter-intuitive and a spot-check would miss them:
+// `draft -> verified` is ABSENT (the `verify` verb reaches it by walking
+// two hops), and `verified <-> failing` is bidirectional where the
+// annotation arm's outcome states never move laterally.
+
+TEST_CASE("scenario arm: every legal edge is accepted", "[transitions][scenario]") {
+  CHECK(check_transition(transition_kind::scenario, "draft", "ready", false).has_value());
+  CHECK(check_transition(transition_kind::scenario, "draft", "retired", false).has_value());
+  CHECK(check_transition(transition_kind::scenario, "ready", "verified", false).has_value());
+  CHECK(check_transition(transition_kind::scenario, "ready", "failing", false).has_value());
+  CHECK(check_transition(transition_kind::scenario, "ready", "retired", false).has_value());
+  CHECK(check_transition(transition_kind::scenario, "verified", "failing", false).has_value());
+  CHECK(check_transition(transition_kind::scenario, "verified", "retired", false).has_value());
+  // The BACK edge. `failing -> verified` is legal, so a re-run that passes
+  // recovers a failing scenario without an intermediate hop.
+  CHECK(check_transition(transition_kind::scenario, "failing", "verified", false).has_value());
+  CHECK(check_transition(transition_kind::scenario, "failing", "retired", false).has_value());
+}
+
+TEST_CASE("scenario arm: draft -> verified is NOT an edge", "[transitions][scenario]") {
+  // Load-bearing absence: it is what forces `verify_scenario` to walk
+  // `draft -> ready -> verified` and to write the intermediate
+  // `ready: auto-transition via verify` audit row. Adding the direct edge
+  // would make that row silently disappear.
+  auto const r = check_transition(transition_kind::scenario, "draft", "verified", false);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::illegal_transition);
+  auto const f = check_transition(transition_kind::scenario, "draft", "failing", false);
+  REQUIRE_FALSE(f.has_value());
+  CHECK(f.error() == transition_error::illegal_transition);
+}
+
+TEST_CASE("scenario arm: no edge ever runs backwards to draft or ready", "[transitions][scenario]") {
+  for (auto const from : {"ready", "verified", "failing", "retired"}) {
+    INFO(from << " -> draft");
+    auto const r = check_transition(transition_kind::scenario, from, "draft", false);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error() == transition_error::illegal_transition);
+  }
+  for (auto const from : {"verified", "failing", "retired"}) {
+    INFO(from << " -> ready");
+    auto const r = check_transition(transition_kind::scenario, from, "ready", false);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error() == transition_error::illegal_transition);
+  }
+}
+
+TEST_CASE("scenario arm: retired is terminal, but retired -> retired short-circuits", "[transitions][scenario]") {
+  for (auto const to : {"draft", "ready", "verified", "failing"}) {
+    INFO("retired -> " << to);
+    auto const r = check_transition(transition_kind::scenario, "retired", to, false);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error() == transition_error::illegal_transition);
+  }
+  // The identity move never reaches the arm at all, which is why
+  // `scenario retire` on an already-retired scenario succeeds and writes a
+  // second audit row.
+  CHECK(check_transition(transition_kind::scenario, "retired", "retired", false).has_value());
+}
+
+TEST_CASE("scenario arm: an unknown source is unknown_status, not illegal", "[transitions][scenario]") {
+  // Unlike the `question` arm, which folds an unrecognized source into
+  // `illegal_transition`. The difference reaches the operator as the error
+  // TAG, so it is asserted rather than assumed.
+  auto const r = check_transition(transition_kind::scenario, "bogus", "retired", false);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::unknown_status);
+}
+
+TEST_CASE("scenario arm: force does not bypass the matrix", "[transitions][scenario]") {
+  // `force` short-circuits for `task` ALONE. The scenario verbs expose no
+  // `--force`, but if one ever passed true it must not punch through.
+  auto const r = check_transition(transition_kind::scenario, "retired", "verified", true);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::illegal_transition);
+}

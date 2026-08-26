@@ -66,6 +66,22 @@
 #         `question add --plan <n>` does. Both behaviours are the oracle's
 #         and both are reproduced; the divergence is in the ORACLE, not in
 #         this port.
+#     UPDATE (task 6195): `scenario` landed, leaving `artifact` as the last
+#     unported planning entity. Its port added the `.scenario` arm to
+#     transitions.cpp, again because its caller arrived. Three things about
+#     it are worth reading before `artifact` lands:
+#       - Its EMPTY `--status` filter means EVERY status, `retired`
+#         included. `question`'s means `open` and `decision`'s means
+#         `{proposed, accepted}`. Three sibling families, three answers;
+#         none is derivable from another.
+#       - `--related <n>` and `--plan <n>` behave OPPOSITELY on the same
+#         verb: the first is a real column FK and refuses a nonexistent
+#         artifact, the second is an `entity_links` row and happily
+#         dangles. Neither is this port's code — see scenario.cppm.
+#       - `verify` does NOT call `test_spec_status`, contrary to task
+#         6195's brief. The dependency runs the other way and is
+#         data-level; verified by grep over the whole Zig tree before any
+#         code was written. See scenario.cppm's header.
 #   - The active-work-claim TOCTOU guard (decision 533 / task 4165).
 #     CORRECTED at task 6141: this note used to say the guard was cut
 #     because `engine.runtime.agentactivity` was "a different,
@@ -124,6 +140,7 @@ planar_module(engine_planning
     task.cppm
     question.cppm
     decision.cppm
+    scenario.cppm
     annotation.cppm
     plan_step.cppm
     test_spec_status.cppm
@@ -134,6 +151,7 @@ planar_module(engine_planning
     task.cpp
     question.cpp
     decision.cpp
+    scenario.cpp
     annotation.cpp
     plan_step.cpp
     test_spec_status.cpp
