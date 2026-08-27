@@ -4089,7 +4089,7 @@ auto unported_paths() -> std::span<std::string_view const> {
       "audit commits",
       "audit handoff-readiness",
       "audit publish-decision",
-      "audit trail",
+      // `audit trail` left this inventory at task 6262.
       "bench harvest",
       "capture commits",
       "closure compute",

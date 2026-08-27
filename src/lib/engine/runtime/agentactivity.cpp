@@ -1810,6 +1810,33 @@ auto list_claims_by_token(db::connection& conn, std::string_view token) -> std::
                         [token](db::statement& stmt) { return stmt.bind_text(1, token).has_value(); });
 }
 
+auto recent_actions_for_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t limit)
+    -> std::expected<std::vector<action>, agent_error> {
+  // DESC on the COALESCE, not on `started_at`. See the header: the
+  // neighbouring `list_actions_by_entity` sorts the opposite way on a
+  // different column, and the two are not interchangeable.
+  return collect_actions(conn,
+                         std::string{k_action_columns} +
+                             std::format("where entity_kind = ? and entity_id = ?\n"
+                                         "order by coalesce(ended_at, started_at) desc, id desc\nlimit {}",
+                                         limit),
+                         [entity_kind, entity_id](db::statement& stmt) {
+                           return stmt.bind_text(1, entity_kind).has_value() && stmt.bind_int64(2, entity_id).has_value();
+                         });
+}
+
+auto claim_transitions_for_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t limit)
+    -> std::expected<std::vector<claim>, agent_error> {
+  return collect_claims(conn,
+                        std::string{k_claim_columns} +
+                            std::format("where entity_kind = ? and entity_id = ?\n"
+                                        "order by coalesce(released_at, claimed_at) desc, id desc\nlimit {}",
+                                        limit),
+                        [entity_kind, entity_id](db::statement& stmt) {
+                          return stmt.bind_text(1, entity_kind).has_value() && stmt.bind_int64(2, entity_id).has_value();
+                        });
+}
+
 auto claim_belongs_to_plan(db::connection& conn, entity_kind kind, std::int64_t entity_id, std::int64_t plan_id) -> bool {
   switch (kind) {
   case entity_kind::plan:

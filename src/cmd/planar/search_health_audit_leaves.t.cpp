@@ -485,24 +485,30 @@ TEST_CASE("audit session gives a non-integer id exit 2 and a missing id exit 1",
   CHECK(missing_json.out.empty());
 }
 
-TEST_CASE("the four unported audit leaves still refuse at exit 64", "[cmd][audit][unported]") {
+TEST_CASE("the three unported audit leaves still refuse at exit 64", "[cmd][audit][unported]") {
   auto const fx = make_fixture("auditrest");
   seed_searchable(fx);
 
   // Pinned as a SET so porting one without updating the inventory fails
-  // here rather than drifting. Which of the four are blocked on what is in
+  // here rather than drifting. Which of the three are blocked on what is in
   // handlers/audit.cppm.
   //
-  // The argv differs per leaf and that is NOT incidental: `trail` and
-  // `publish-decision` take a positional, `commits` and
-  // `handoff-readiness` take none, and handing the latter two a stray
-  // argument refuses at exit 2 with `ExtrasError` BEFORE dispatch ever
-  // reaches the not-implemented handler. The first draft of this case did
-  // exactly that and reported exit 2 for two of the four — a refusal, but
-  // the wrong one, and one that would have kept "passing" long after those
-  // leaves were ported.
+  // FOUR before task 6262 ported `audit trail`. Its argv is not merely
+  // deleted from the list — it moves to the cases in
+  // audit_trail_leaf.t.cpp, where the SAME `audit trail task:1` now pins
+  // the oracle's exit-2 non-integer refusal rather than an exit-64
+  // placeholder. Those two answers look alike in a summary and are not:
+  // one says "this verb does not exist yet" and the other says "that is
+  // not an entity id".
+  //
+  // The argv differs per leaf and that is NOT incidental: `publish-decision`
+  // takes a positional, `commits` and `handoff-readiness` take none, and
+  // handing the latter two a stray argument refuses at exit 2 with
+  // `ExtrasError` BEFORE dispatch ever reaches the not-implemented handler.
+  // The first draft of this case did exactly that and reported exit 2 for
+  // two of them — a refusal, but the wrong one, and one that would have
+  // kept "passing" long after those leaves were ported.
   std::vector<std::pair<std::string, std::vector<std::string>>> const leaves{
-      {"trail", {"audit", "trail", "task:1"}},
       {"commits", {"audit", "commits"}},
       {"publish-decision", {"audit", "publish-decision", "1"}},
       {"handoff-readiness", {"audit", "handoff-readiness"}},

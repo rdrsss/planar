@@ -617,7 +617,14 @@ auto sequence() -> std::vector<step> {
 /// the skip from becoming permanent: porting one of them fails this lane
 /// until its entry is removed here, which is the same red-then-green
 /// discipline `known_divergences` applies to the defects.
-constexpr std::array<std::string_view, 3> expected_unported{"s02", "s28", "s38"};
+/// THREE before task 6262 ported `audit trail`. `s28` and `s38` are its two
+/// steps and they left this set together — which is the red-then-green this
+/// list exists for. They did NOT stop being compared: they now run as fully
+/// compared steps and agree, because `audit trail task:1` is a non-integer
+/// id on both sides and both answer exit 2 with the same wording. A port
+/// that had changed that refusal would have turned this removal into a
+/// divergence rather than a silent pass.
+constexpr std::array<std::string_view, 1> expected_unported{"s02"};
 
 /// @brief One staged divergence: a real defect with its own task, listed so
 /// this lane is green while the defect stands.

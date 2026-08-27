@@ -186,15 +186,37 @@
 # `engine_* -> engine_*` edge for that, which D15/D18 forbid. The Zig tree
 # files it as a sibling of session.zig under engine/runtime/ identically.
 #
-# Only ONE of its four functions is WIRED to a leaf in this cycle
-# (`session_timeline` serves `audit session`). The other three serve
-# `audit trail`, whose handler is 563 Zig lines and additionally needs the
-# `external_links` / `sync_events` read path that no module in this tree
-# has. They are ported anyway rather than left out because the task body
-# names the whole Zig module as the unit of work, and splitting one
-# 240-line read module across two cycles would leave the second cycle
-# re-deriving the same four `select` shapes. What is NOT here is that
-# external-link half; named rather than dropped silently.
+# Only ONE of its four functions was WIRED to a leaf in task 6090
+# (`session_timeline` serves `audit session`). The other three were ported
+# unwired rather than left out because the task body named the whole Zig
+# module as the unit of work, and splitting one 240-line read module across
+# two cycles would have left the second re-deriving the same four `select`
+# shapes.
+#
+# UPDATE (task 6262): all four are now wired. `audit trail` landed, and it
+# reaches the `external_links` / `sync_events` half through
+# `engine_external`'s `link::show`, `system::show_by_id` and
+# `sync::events_for_link` — the note this replaces said no module in this
+# tree had that read path, which was true when task 6090 wrote it and had
+# stopped being true by the time the leaf was ported. Check the module
+# interfaces, not this file.
+#
+# --- the session-commit READ path (plan 996, task 6262) --------------------
+#
+# `sessioncommits` is a DELIBERATE FRACTION of its 1205-line oracle: ONE
+# function, `list_for_sessions`, which is pure SQL over a table this tree
+# already migrates. It exists because `audit trail` renders a "commits:"
+# section and needed a home for that read other than handler-local SQL; the
+# oracle files the same function in the same module, so the carve-out
+# follows its layering rather than inventing one.
+#
+# EVERY git-subprocess function in the original is STILL DEFERRED —
+# `walk`, `walkStrict`, `walkClaimWindow`, `recordClaimWindowBestEffort`
+# and the ref-resolution machinery under them. Nothing here unblocks
+# `capture commits`, `audit commits`, `bench harvest` or the four
+# `planar-agent` terminal verbs' claim-window fold; those still wait on the
+# process-spawn seam. The module header says so at length, because the
+# module NAME is the thing most likely to mislead a later reader.
 
 planar_module(engine_runtime
   INTERFACE
@@ -207,6 +229,7 @@ planar_module(engine_runtime
     handoff.cppm
     resumecheck.cppm
     audit_trail.cppm
+    sessioncommits.cppm
     runtime.cppm
   SOURCES
     session.cpp
@@ -218,6 +241,7 @@ planar_module(engine_runtime
     handoff.cpp
     resumecheck.cpp
     audit_trail.cpp
+    sessioncommits.cpp
   DEPENDS
     db
     json_text
