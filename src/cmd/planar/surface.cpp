@@ -4135,7 +4135,10 @@ auto unported_paths() -> std::span<std::string_view const> {
       "workspace init",
       "workspace regenerate",
       "workspace routing build",
-      "workspace routing show",
+      // `workspace routing show` left this inventory at task 6110. Its
+      // decoder + both render arms landed as
+      // `planar.engine.workspace.routing`; `routing build`, the sibling
+      // that WRITES the file it reads, stays unported above.
   };
   return k_unported;
 }

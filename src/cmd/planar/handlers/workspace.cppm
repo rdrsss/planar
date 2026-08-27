@@ -68,4 +68,45 @@ namespace planar::cmd::handlers {
 /// query fails.
 export auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar workspace routing show [workspace] [--json]`.
+///
+/// ## Four failure paths, THREE different exit codes
+///
+/// All oracle-captured; the spread is the reason this leaf is not a
+/// two-liner:
+///
+///     no org / unmatched slug   exit 1  no org associations registered; ...
+///     two orgs, none named      exit 1  multiple org associations ...
+///     routing-table.json absent exit 1  routing table not found at <path>;
+///                                       run `planar workspace routing
+///                                       build` first
+///     file is not JSON          exit 1  decoding routing table failed:
+///                                       SyntaxError
+///     file is JSON, missing a   exit 2  decoding routing table failed:
+///     required field                    InvalidInput
+///
+/// The last two share ONE message template and differ only in the
+/// interpolated error tag, so a port that folded them together would move
+/// an exit code while keeping every message byte identical. See
+/// `planar.engine.workspace.routing`'s `decode_error`.
+///
+/// ## `--json` short-circuits before any of the decode failures
+///
+/// The JSON arm emits the file's bytes verbatim and never parses, so of the
+/// five rows above it can only reach the first three. A file containing
+/// `this is not json` exits 0 under `--json` and 1 without it. That is not
+/// a bug to reconcile — it is the arm's whole definition.
+///
+/// ## It uses `load_layout`, NOT `ensure_layout`
+///
+/// Unlike `doctor` and `routing build`, `show` must not create the state
+/// directory as a side effect of being asked to read from it. The Zig
+/// original calls `loadLayout` for exactly that reason and this port
+/// preserves it, so a `show` against a workspace that was never built
+/// leaves the filesystem untouched and refuses.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal matching one of the rows above.
+export auto workspace_routing_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

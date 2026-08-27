@@ -212,9 +212,15 @@ auto add_skills(CLI::App& root) -> void {
 }
 
 /// @brief The `workspace` group — transcribed from
-/// zig/src/cmd/planar/handlers/workspace/cmd.zig. One of its four
-/// subcommands is ported (`doctor`), so this group's own help page lists
-/// one command where the oracle lists four.
+/// zig/src/cmd/planar/handlers/workspace/cmd.zig. TWO of its four
+/// subcommands are ported (`doctor` and `routing show`), so this group's
+/// own help page lists two commands where the oracle lists four, and the
+/// nested `routing` group lists one child where the oracle lists two.
+///
+/// `routing` is registered as a GROUP even though only one of its two
+/// children is ported, which is the same rule the rest of the tree follows:
+/// omit the unported CHILD (`build`), not the group that would otherwise
+/// have nowhere to hang `show`.
 /// @param root The root app to attach the group to.
 auto add_workspace(CLI::App& root) -> void {
   CLI::App* workspace =
@@ -226,6 +232,14 @@ auto add_workspace(CLI::App& root) -> void {
   workspace->require_subcommand(0);
   CLI::App* doctor = workspace->add_subcommand("doctor", "Scan and fix workspace registration and state consistency.");
   add_json(*doctor);
+
+  CLI::App* routing = workspace->add_subcommand("routing", "Manage workspace routing table.");
+  routing->require_subcommand(0);
+  CLI::App* show = routing->add_subcommand("show", "Display current routing table.");
+  // The OPTIONAL `[workspace]` selector every workspace leaf takes: an id, a
+  // slug, either with an `org:` prefix, or absent for "the only one".
+  show->add_option("workspace");
+  add_json(*show);
 }
 
 /// @brief The `workbench` group — transcribed from

@@ -46,17 +46,26 @@
 #     `enrich_enabled` / `enrich_misses` fields are hardcoded `false` / `0`).
 #     Deferred on SIZE, with its own dependency surface intact.
 #
-#   - `workspace routing show`. Its `--json` arm is a VERBATIM cat of
-#     routing-table.json (appending `\n` only when the last byte is not already
-#     one), which is trivial -- but its TEXT arm renders every field of the
-#     routing table, so the whole data model has to exist first. Porting half a
-#     leaf would be worse than deferring it WITH `routing build`, which is what
-#     produces the model. Its refusals ARE here (see doctor.cppm's
-#     `no_orgs_error` / `ambiguous_orgs_error`, which all three refusing leaves
-#     share byte-for-byte), and its missing-file refusal is captured for the
-#     next cycle: exit 1, `error: routing table not found at <path>; run
-#     `planar workspace routing build` first`. Note `regenerate`'s equivalent
-#     message OMITS the path -- the two are NOT the same string.
+#     `routing.cppm` DOES ship the routing-table data model and its decoder,
+#     because `routing show` needs them; the builder's own surface (the glob
+#     matcher, the dependency walk, the language census, the capability-rule
+#     TOML loader, the overrides merge, and the JSON WRITE path) is what
+#     remains. See routing.cppm's header for the `languages` key-order trap
+#     any builder port will hit.
+#
+#   - ~~`workspace routing show`.~~ PORTED (task 6110, this cycle), against
+#     the previous cycle's note that it should be deferred WITH `routing
+#     build`. That note reasoned the text arm "renders every field of the
+#     routing table, so the whole data model has to exist first" -- true, but
+#     the model is produced by DECODING routing-table.json, not by building
+#     one. `show` never calls the builder: it reads the file off disk and
+#     decodes it. Decoder plus renderer is a COMPLETE leaf, so this is one
+#     whole leaf whose sibling stays deferred rather than half of one. The
+#     honest consequence: until `routing build` lands, this binary can only
+#     show a table some other binary wrote, so `build` then `show` is not yet
+#     a round trip here. Full argument in routing.cppm's header, including the
+#     two decode failures that carry two DIFFERENT exit codes (`SyntaxError`
+#     exit 1, `InvalidInput` exit 2) behind one message.
 #
 #   - `workspace regenerate`. It renders AGENTS.md through a hand-rolled
 #     template engine (`{{range}}` / `{{if}}` / `{{else}}` / `{{end}}` /
@@ -86,12 +95,15 @@ planar_module(engine_workspace
   INTERFACE
     identity.cppm
     doctor.cppm
+    routing.cppm
     workspace.cppm
   SOURCES
     identity.cpp
     doctor.cpp
+    routing.cpp
   DEPENDS
     db
+    json_dom
     json_text)
 
 # Glaze (D8) parses `associations.config_json`, which is operator-written JSON
