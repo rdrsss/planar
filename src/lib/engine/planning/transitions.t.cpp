@@ -328,3 +328,64 @@ TEST_CASE("scenario arm: force does not bypass the matrix", "[transitions][scena
   REQUIRE_FALSE(r.has_value());
   CHECK(r.error() == transition_error::illegal_transition);
 }
+
+// ===========================================================================
+// artifact arm (task 6196)
+// ===========================================================================
+
+TEST_CASE("artifact arm: the complete sixteen-edge matrix", "[transitions][artifact]") {
+  // Every one of the sixteen edges was RUN against the oracle
+  // (`artifact update <id> --status <to>` from a row seeded at `<from>`)
+  // before this table was written, so the table is a transcript rather
+  // than a reasoned-about generalisation. Two entries are not what the
+  // sibling arms would predict:
+  //
+  //   - `active -> draft` is LEGAL. An artifact walks BACK to draft;
+  //     `decision`'s `accepted` and `scenario`'s `ready` cannot return to
+  //     their first states.
+  //   - `draft -> superseded` and `draft -> retired` are REFUSED. A draft
+  //     must be activated before it can be laid to rest, so both terminal
+  //     states are reachable only through `active`. `scenario` lets a
+  //     draft retire directly.
+  struct edge {
+    std::string_view from;
+    std::string_view to;
+    bool             legal;
+  };
+  constexpr edge k_matrix[] = {
+      {"draft", "draft", true},        {"draft", "active", true},          {"draft", "superseded", false},
+      {"draft", "retired", false},     {"active", "draft", true},          {"active", "active", true},
+      {"active", "superseded", true},  {"active", "retired", true},        {"superseded", "draft", false},
+      {"superseded", "active", false}, {"superseded", "superseded", true}, {"superseded", "retired", false},
+      {"retired", "draft", false},     {"retired", "active", false},       {"retired", "superseded", false},
+      {"retired", "retired", true},
+  };
+
+  for (auto const& e : k_matrix) {
+    INFO(e.from << " -> " << e.to);
+    auto const r = check_transition(transition_kind::artifact, e.from, e.to, false);
+    CHECK(r.has_value() == e.legal);
+    if (!e.legal) {
+      CHECK(r.error() == transition_error::illegal_transition);
+    }
+  }
+}
+
+TEST_CASE("artifact arm: an unknown source is unknown_status, not illegal", "[transitions][artifact]") {
+  // Matches the plan/task/decision/scenario/annotation arms and NOT
+  // `question`, which folds an unrecognized source into
+  // `illegal_transition`. Unreachable through the CLI — the column carries
+  // a CHECK constraint and the handler validates the token first — but the
+  // mapping is total.
+  auto const r = check_transition(transition_kind::artifact, "bogus", "active", false);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::unknown_status);
+}
+
+TEST_CASE("artifact arm: force does not bypass the matrix", "[transitions][artifact]") {
+  // `force` short-circuits for `task` ALONE. `artifact update` exposes no
+  // `--force`, but if one ever passed true it must not punch through.
+  auto const r = check_transition(transition_kind::artifact, "retired", "active", true);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == transition_error::illegal_transition);
+}

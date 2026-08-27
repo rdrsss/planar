@@ -31,6 +31,7 @@ import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.decision;
 import planar.cmd.planar.handlers.scenario;
+import planar.cmd.planar.handlers.artifact;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.ext;
 import planar.cmd.planar.handlers.unlink;
@@ -180,6 +181,35 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("scenario verify", handlers::scenario_verify);
   table.emplace("scenario retire", handlers::scenario_retire);
   table.emplace("scenario link", handlers::scenario_link);
+  // `artifact` — FIVE of nine, landed at task 6196 with the `artifact`
+  // engine they call, completing the planning ENGINE surface. `artifact
+  // link` goes in with them on the reason 6194 and 6195 established.
+  //
+  // The four omitted are the workbench DRAFTING quartet a FOURTH time
+  // (`edit`/`view`/`diff`/`review`). The blocker has NARROWED since the
+  // scenario cycle recorded it: `engine_workbench` is ported and all ten
+  // `workbench` leaves are wired, so what remains is
+  // `zig/src/cmd/planar/editflow.zig` (2076 lines) plus `editor.zig` (342)
+  // — a CMD-layer module, not an engine one. It gates the same four leaves
+  // on `question`, `decision`, `scenario` and `artifact` alike, SIXTEEN in
+  // total, so it belongs to its own task rather than riding in on the one
+  // scoped to this family's engine.
+  //
+  // The oracle's artifact quartet is also NOT uniformly coherent, which is
+  // a second reason not to guess at it: `diff`/`review` on an unlinked
+  // artifact report a clean `artifact N is not linked to a plan`, while
+  // `view` on the SAME input dies with a raw Zig stack trace
+  // (`error: NoPlanLink` plus frames). `view` and `diff` also disagree
+  // about where the file lives — `diff`/`review`/`workbench push` use
+  // `<feature>/<id>-<slug>.md` while `view`/`edit` use
+  // `<feature>/artifacts/<id>-<slug>.md`, so a `view` leaves a file
+  // `workbench push` then reports as `new_on_fs` drift. Both shapes ship.
+  // See handlers/artifact.cppm.
+  table.emplace("artifact add", handlers::artifact_add);
+  table.emplace("artifact show", handlers::artifact_show);
+  table.emplace("artifact list", handlers::artifact_list);
+  table.emplace("artifact update", handlers::artifact_update);
+  table.emplace("artifact link", handlers::artifact_link);
   // The entity-link surface — all seven arms, landed together at task
   // 6193. `engine_entitylink` was fully ported and exported no renderer,
   // which is the single reason every one of these refused at exit 64.

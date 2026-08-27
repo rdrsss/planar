@@ -141,6 +141,7 @@ planar_module(engine_planning
     question.cppm
     decision.cppm
     scenario.cppm
+    artifact.cppm
     annotation.cppm
     plan_step.cppm
     test_spec_status.cppm
@@ -152,6 +153,7 @@ planar_module(engine_planning
     question.cpp
     decision.cpp
     scenario.cpp
+    artifact.cpp
     annotation.cpp
     plan_step.cpp
     test_spec_status.cpp

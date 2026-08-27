@@ -46,6 +46,7 @@ export enum class transition_kind : std::uint8_t {
   question,
   decision,
   scenario,
+  artifact,
   annotation,
   handoff,
 };
@@ -118,6 +119,25 @@ export enum class transition_error : std::uint8_t {
 /// Like the plan/task/decision/annotation arms and unlike `question`, this
 /// one DOES report `unknown_status` for an unrecognized source.
 /// `force` has no effect — the scenario verbs expose no `--force`.
+///
+/// Artifact matrix (status set: draft, active, superseded, retired), added
+/// with the `artifact` engine at task 6196. This header had CLAIMED to
+/// enforce `.artifact` since it was written, but `transition_kind` carried
+/// no such member and no arm existed — stale prose, now made true rather
+/// than deleted:
+///   draft      -> active
+///   active     -> {draft, superseded, retired}
+///   superseded -> terminal
+///   retired    -> terminal
+/// Two edges here are NOT what the sibling arms predict, and both were
+/// established by running all sixteen against the oracle. `active ->
+/// draft` IS legal — an artifact walks BACK to draft, where `decision`'s
+/// `accepted` and `scenario`'s `ready` cannot return to their first
+/// states. And `draft -> superseded` / `draft -> retired` are REFUSED — a
+/// draft must be activated before it can be laid to rest, so both terminal
+/// states are reachable only through `active`, where `scenario` lets a
+/// draft retire directly. `force` has no effect — `artifact update`
+/// exposes no `--force`.
 ///
 /// Because `check_transition` short-circuits on `from == to` BEFORE
 /// consulting any arm, `answered -> answered` and `wontfix -> wontfix`
