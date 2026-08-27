@@ -453,6 +453,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //     where `scenario add --plan 4242` succeeds and leaves a dangling
   //     edge. One flag name, opposite answers, both captured.
   //
+  // 62 and 65 respectively when tasks 6208 and 6214 each measured this
+  // against `68a1cba`; they landed together, so the count is 57. Each batch
+  // is asserted PER LEAF below — the arithmetic here agreeing is not what
+  // makes either correct.
+  //
   // 70 before task 6208 ported the last EIGHT drafting leaves out of it —
   // `plan` and `task`'s `edit | view | diff | review`. 6205 had held them
   // deliberately (the block further down was the guard); 6208 is the oracle
@@ -462,7 +467,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // leaf below rather than trusted to this count. With them the drafting
   // quartet is complete across all six planning families — twenty-four
   // leaves over one shared cmd-layer module.
-  CHECK(unported.size() == 62);
+  //
+  // 70 before task 6214 ported the whole FIVE-leaf `scope` family out of it:
+  // `show`, `suggest`, `use`, `pop`, `clear`. The last three are the
+  // plan-153-M5 removal refusals — they leave this inventory because a
+  // refusal the oracle OWNS is a port, where the exit-64 default is a
+  // placeholder claiming the verb might one day work. Named per leaf below.
+  CHECK(unported.size() == 57);
+  //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
   // leaf below rather than trusted to the count, same reason as every
@@ -490,6 +502,16 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   for (auto const& leaf :
        {"templates list", "templates show", "templates render", "templates validate", "templates init", "templates path"}) {
     INFO("templates leaf: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
+  }
+  // The five `scope` leaves task 6214 ported, named per leaf for the same
+  // reason as every batch above. `use` / `pop` / `clear` matter most here:
+  // they are REFUSALS either way, so nothing about their exit status alone
+  // distinguishes the ported form (exit 2, "removed in plan 153 M5", a
+  // remedy) from the unported one (exit 64, "not implemented in this
+  // build"). Only membership in this inventory does.
+  for (auto const& leaf : {"scope show", "scope suggest", "scope use", "scope pop", "scope clear"}) {
+    INFO("scope leaf: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
   // The three deliberately-deferred leaves from otherwise-ported families.

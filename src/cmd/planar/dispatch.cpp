@@ -15,6 +15,7 @@ import planar.cmd.planar.surface;
 import planar.cmd.planar.worktree_gate;
 import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.assoc;
+import planar.cmd.planar.handlers.scope;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
@@ -114,6 +115,16 @@ auto handlers(const CLI::App& root) -> handler_table {
   // over `association`). Five `groups_recommend_test` integration frames
   // were crashing in their FIXTURE on this verb, not in the verb they test.
   table.emplace("assoc members", handlers::assoc_members);
+  // `scope` — the WHOLE five-leaf family, landed at task 6214. Two do work
+  // (`show` reads the cwd-derived read set, `suggest` the project's existing
+  // memberships) and three are plan-153-M5 removal refusals that must NOT be
+  // left at the exit-64 default: the oracle answers exit 2 with a remedy
+  // paragraph, and exit 64 would read as "coming in a later build".
+  table.emplace("scope show", handlers::scope_show);
+  table.emplace("scope suggest", handlers::scope_suggest);
+  table.emplace("scope use", handlers::scope_use);
+  table.emplace("scope pop", handlers::scope_pop);
+  table.emplace("scope clear", handlers::scope_clear);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task list", handlers::task_list);

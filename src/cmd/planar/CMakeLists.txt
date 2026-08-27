@@ -315,6 +315,7 @@ planar_binary(planar
     handlers/models.cppm
     handlers/plan.cppm
     handlers/assoc.cppm
+    handlers/scope.cppm
     handlers/task.cppm
     handlers/question.cppm
     handlers/decision.cppm
@@ -357,6 +358,7 @@ planar_binary(planar
     handlers/models.cpp
     handlers/plan.cpp
     handlers/assoc.cpp
+    handlers/scope.cpp
     handlers/task.cpp
     handlers/question.cpp
     handlers/decision.cpp
