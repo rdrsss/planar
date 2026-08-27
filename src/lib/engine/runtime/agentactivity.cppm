@@ -995,6 +995,46 @@ export auto list_claims_by_session(db::connection& conn, std::int64_t session_id
 /// @return The matching row as a (0-or-1 element) list, or `query_failed`.
 export auto list_claims_by_token(db::connection& conn, std::string_view token) -> std::expected<std::vector<claim>, agent_error>;
 
+/// @brief `audit trail`'s "Agent activity" action source.
+///
+/// NOT a spelling of `list_actions_by_entity`, and the difference is the
+/// whole point of the separate function. That one is `planar-watch log`'s
+/// TIMELINE — `order by started_at asc, id asc`, oldest first, so a reader
+/// scrolls forward through a session. This one is a RECENT-ACTIVITY feed —
+/// `order by coalesce(ended_at, started_at) desc, id desc`, newest first,
+/// and it sorts on the END of a closed action rather than its start, so an
+/// action that ran long and finished late outranks a short one that started
+/// after it. Ported from the oracle's
+/// `engine.runtime.agentactivity.summary.recentActionsForEntity`, which is a
+/// separate function there for the same reason.
+///
+/// Collapsing the two would silently reverse `audit trail`'s fold-in and
+/// give it the wrong ten rows whenever more than `limit` exist.
+/// @param conn An open connection.
+/// @param entity_kind The stored `entity_kind` token, verbatim — not parsed
+/// into the enum, so an unknown kind returns no rows rather than raising.
+/// @param entity_id The entity's row id.
+/// @param limit The row cap.
+/// @return The rows NEWEST-first, or `query_failed`.
+export auto recent_actions_for_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id,
+                                      std::int64_t limit) -> std::expected<std::vector<action>, agent_error>;
+
+/// @brief `audit trail`'s "Agent activity" claim source.
+///
+/// Stands apart from `list_claims_by_entity` for the same reason its action
+/// sibling does, plus one more: that function takes NO limit and orders
+/// `claimed_at asc`; this one is capped and orders
+/// `coalesce(released_at, claimed_at) desc, id desc`, so a released claim
+/// sorts by when it ENDED. Ported from the oracle's
+/// `summary.claimTransitionsForEntity`.
+/// @param conn An open connection.
+/// @param entity_kind The stored token, verbatim.
+/// @param entity_id The entity's row id.
+/// @param limit The row cap.
+/// @return The rows NEWEST-first, or `query_failed`.
+export auto claim_transitions_for_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id,
+                                         std::int64_t limit) -> std::expected<std::vector<claim>, agent_error>;
+
 /// @brief Does a CLAIM on `(kind, id)` roll up to `plan_id`?
 ///
 /// Port of zig `planfilter.claimBelongsToPlan`: `--plan N` is WIDENED to

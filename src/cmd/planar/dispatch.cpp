@@ -139,11 +139,13 @@ auto handlers(const CLI::App& root) -> handler_table {
   // `health` is a DUAL node, so registering the child without the parent
   // is well-defined here. See handlers/health.cppm.
   table.emplace("health hygiene", handlers::health_hygiene);
-  // `audit session` — one of the family's five. `commits` (git subprocess
-  // walks via the unported `sessioncommits`), `publish-decision` (needs the
-  // adapter factory), `trail` and `handoff-readiness` stay at exit 64. See
-  // handlers/audit.cppm for which are BLOCKED and which are merely large.
+  // `audit` — two of the family's five. `commits` (git subprocess REVISION
+  // WALKS; task 6262 landed `sessioncommits`'s pure-SQL read half for
+  // `trail`'s fold-in, which does not help this leaf), `publish-decision`
+  // (needs the adapter factory) and `handoff-readiness` stay at exit 64.
+  // See handlers/audit.cppm for which are BLOCKED and which are merely large.
   table.emplace("audit session", handlers::audit_session);
+  table.emplace("audit trail", handlers::audit_trail);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task list", handlers::task_list);

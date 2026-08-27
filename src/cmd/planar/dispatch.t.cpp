@@ -507,6 +507,19 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //     it still lacks is the `external_links` / `sync_events` read path
   //     for its link-id arm.
   //
+  // TASK 6262 CORRECTS THE LAST BULLET AND MOVES ONE LEAF. `audit trail`
+  // is ported; 53 -> 52. Its link-id arm did NOT need a new read path —
+  // `engine_external`'s `link::show`, `system::show_by_id` and
+  // `sync::events_for_link` were already in the tree by the time the leaf
+  // was picked up, so the "no module has it" note above was true when
+  // written and stale when acted on. The commits fold-in did need
+  // something new, and got the PURE-SQL read half of `sessioncommits`
+  // (`list_for_sessions`); that does not touch `audit commits`, whose
+  // blocker is the git-walk half.
+  //
+  // `tree` was in this cycle's scope too and is deliberately UNTOUCHED
+  // rather than half-ported. It stays in the inventory below.
+  //
   // The task body's `listTouching` acceptance criterion was checked and is
   // STALE, not skipped: `list_plans_touching` / `list_tasks_touching` /
   // `list_questions_touching` / `list_scenarios_touching` all exist and all
@@ -519,7 +532,9 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // blocked on the create/propagate half of `engine_extsync` and on there
   // being no `sync` handler at this layer — absences the factory does not
   // touch. See src/cmd/planar/CMakeLists.txt's task-6258 section.
-  CHECK(unported.size() == 53);
+  // 53 before task 6262 ported ONE leaf out of it — `audit trail`. See the
+  // task-6262 note above for why its predicted blocker was not real.
+  CHECK(unported.size() == 52);
   //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
