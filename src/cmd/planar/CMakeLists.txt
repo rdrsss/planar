@@ -319,6 +319,7 @@ planar_binary(planar
     handlers/question.cppm
     handlers/decision.cppm
     handlers/scenario.cppm
+    handlers/artifact.cppm
     handlers/links.cppm
     handlers/handoff.cppm
     handlers/resume.cppm
@@ -356,6 +357,7 @@ planar_binary(planar
     handlers/question.cpp
     handlers/decision.cpp
     handlers/scenario.cpp
+    handlers/artifact.cpp
     handlers/links.cpp
     handlers/handoff.cpp
     handlers/resume.cpp

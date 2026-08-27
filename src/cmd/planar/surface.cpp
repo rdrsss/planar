@@ -4057,14 +4057,14 @@ auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_vi
 
 auto unported_paths() -> std::span<std::string_view const> {
   static constexpr std::string_view k_unported[] = {
-      "artifact add",
+      // `artifact add | show | list | update | link` left this inventory
+      // at task 6196 with the `artifact` engine. The four that remain are
+      // the workbench drafting quartet, blocked on `editflow` — a
+      // cmd-layer module that gates the same four leaves on `question`,
+      // `decision`, `scenario` and `artifact` alike.
       "artifact diff",
       "artifact edit",
-      "artifact link",
-      "artifact list",
       "artifact review",
-      "artifact show",
-      "artifact update",
       "artifact view",
       "assoc detect",
       "assoc list",

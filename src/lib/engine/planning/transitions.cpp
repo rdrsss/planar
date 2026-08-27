@@ -141,6 +141,44 @@ auto check_scenario(std::string_view from, std::string_view to) -> std::expected
   return {};
 }
 
+/// @brief The `artifact` arm. Status set: draft, active, superseded,
+/// retired.
+///
+/// All sixteen edges were run against the oracle rather than reasoned
+/// about, and two of them are not what a sibling arm would predict:
+///
+///   - `active -> draft` IS legal. An artifact can be walked BACK to
+///     draft, which no other family permits of its second state. The
+///     decision arm's `accepted` cannot return to `proposed`, and the
+///     scenario arm's `ready` cannot return to `draft`.
+///   - `draft -> superseded` and `draft -> retired` are NOT legal. A
+///     draft must be activated before it can be laid to rest, so the two
+///     terminal states are reachable only through `active`. `scenario`'s
+///     `draft -> retired` shortcut has no counterpart here.
+///
+/// `superseded` and `retired` are both terminal. Identity moves never
+/// reach this function — `check_transition` short-circuits first — which
+/// is what makes re-applying a terminal status succeed.
+/// @param from The current status text.
+/// @param to The desired status text.
+/// @return Success, `illegal_transition`, or `unknown_status`.
+auto check_artifact(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
+  bool legal = false;
+  if (from == "draft") {
+    legal = to == "active";
+  } else if (from == "active") {
+    legal = to == "draft" || to == "superseded" || to == "retired";
+  } else if (from == "superseded" || from == "retired") {
+    legal = false;
+  } else {
+    return std::unexpected(transition_error::unknown_status);
+  }
+  if (!legal) {
+    return std::unexpected(transition_error::illegal_transition);
+  }
+  return {};
+}
+
 auto check_annotation(std::string_view from, std::string_view to) -> std::expected<void, transition_error> {
   bool legal = false;
   if (from == "active") {
@@ -208,6 +246,8 @@ auto check_transition(transition_kind kind, std::string_view from, std::string_v
     return check_decision(from, to);
   case transition_kind::scenario:
     return check_scenario(from, to);
+  case transition_kind::artifact:
+    return check_artifact(from, to);
   case transition_kind::annotation:
     return check_annotation(from, to);
   case transition_kind::handoff:

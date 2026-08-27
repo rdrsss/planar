@@ -231,7 +231,7 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // THE HEADLINE PROPERTY of the full-surface declaration (plan 996, task
   // 6065). `planar` declares all 223 of the oracle's leaves so that
   // `zig/tools/cli_usage_lint` can resolve every authored command path;
-  // 97 of them land no behaviour (task 6195). A declared node that dispatches to
+  // 92 of them land no behaviour (task 6196). A declared node that dispatches to
   // nothing is WORSE than an absent one if it exits 0, so each refuses
   // loudly and names itself.
   //
@@ -240,14 +240,19 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // REQUIRED positional, or the parser refuses at exit 2 before dispatch is
   // reached at all and the case would assert the parser's behaviour rather
   // than the table's — which is what `plan diff` did on the first attempt
-  // at this replacement. It was `scenario list` until task 6195 ported that
-  // one too; `artifact list` is the next arg-free sibling, and it stays
-  // valid until the `artifact` family — the last unported planning entity —
-  // is ported.
-  auto const leaf = dispatch({"artifact", "list"});
+  // at this replacement. It was `scenario list` until task 6195 ported
+  // that one too, and `artifact list` until 6196 ported the last planning
+  // family out from under it.
+  //
+  // With every planning family's CRUD half now ported, the exemplar has to
+  // leave the planning surface entirely — so it is `assoc list`, which is
+  // arg-free and whose engine half is genuinely unported. Note this can no
+  // longer be replaced by "the next planning sibling": the next cycle that
+  // ports `assoc list` must reach for a different family again.
+  auto const leaf = dispatch({"assoc", "list"});
   CHECK(leaf.code == 64);
   CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: artifact list: not implemented in this build\n");
+  CHECK(leaf.err == "error: assoc list: not implemented in this build\n");
 
   // Deeper, to prove the key is the full path and not the leaf name.
   auto const deep = dispatch({"feedback", "triage", "list"});
@@ -417,7 +422,37 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //     the way `plan list --touches` and `task list --touches` are. Its
   //     `listTouching` half is ported, so `touches_not_implemented` has no
   //     call site in this family.
-  CHECK(unported.size() == 97);
+  //
+  // 97 before task 6196 ported FIVE more out of it — the `artifact`
+  // family's CRUD and link half: `artifact add`, `show`, `list`, `update`
+  // and `link`. `artifact link` went in WITH them, same reason as 6194's
+  // and 6195's. That leaves 92, and it completes the planning ENGINE
+  // surface: every planning entity's CRUD half is now ported.
+  //
+  // The family is NINE leaves, not five, and the four that stayed are the
+  // workbench drafting quartet a FOURTH time. Their blocker has NARROWED
+  // and the new statement of it matters for whoever picks it up:
+  // `engine_workbench` IS ported and all ten `workbench` leaves are wired,
+  // so the remaining dependency is `zig/src/cmd/planar/editflow.zig` (2076
+  // lines) plus `editor.zig` (342) — CMD-layer, not engine. One module
+  // gates SIXTEEN leaves across all four families, which is why it wants
+  // its own task rather than riding in on a per-family engine port.
+  //
+  // Three things about `artifact` are worth reading before that task:
+  //   - Its EMPTY `--status` filter means `{draft, active}` — the two
+  //     terminal statuses are off-screen. That is a FOURTH distinct answer
+  //     from four sibling families (`question` = `open`, `decision` =
+  //     `{proposed, accepted}`, `scenario` = every status). None is
+  //     derivable from another; all four were captured by running them.
+  //   - `artifact add` STARTS A SESSION, and it is the only leaf in the
+  //     family that touches `sessions`. `scenario add` — its closest
+  //     sibling — starts none. The ordering is observable: `--kind nosuch`
+  //     and `--body @missing` refuse with sessions = 0, `--scope nosuch`
+  //     refuses with sessions = 1.
+  //   - `artifact add --plan 999` REFUSES at exit 1 and writes nothing,
+  //     where `scenario add --plan 4242` succeeds and leaves a dangling
+  //     edge. One flag name, opposite answers, both captured.
+  CHECK(unported.size() == 92);
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
@@ -474,6 +509,31 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   for (auto const& wired :
        {"scenario add", "scenario show", "scenario list", "scenario verify", "scenario retire", "scenario link"}) {
     INFO("scenario leaf: " << wired);
+    CHECK_FALSE(unported.contains(wired));
+  }
+  // ...and task 6196's four, from the now-partly-ported `artifact` family
+  // — the last planning family, and the workbench drafting quartet for the
+  // fourth and final time. Named individually rather than covered by the
+  // count, same rule as the three families above.
+  //
+  // Their reason is neither `decision`'s ("no coherent contract to port")
+  // nor `scenario`'s ("coherent, deferred on the dependency alone"). It is
+  // BOTH, split across the four: `diff` and `review` are coherent — an
+  // unlinked artifact gets a clean `artifact N is not linked to a plan` —
+  // while `view` on the SAME input dies with a raw Zig stack trace, and
+  // `edit` announces its own `[M4 limitation: only title and status
+  // mutations are applied]` on stderr and silently discards body edits.
+  // `view`/`edit` also read a DIFFERENT workbench path than
+  // `diff`/`review` (`<feature>/artifacts/<id>-<slug>.md` vs the feature
+  // root), so a `view` writes a file `workbench push` then reports as
+  // `new_on_fs` drift. All four observations are oracle-captured.
+  CHECK(unported.contains("artifact edit"));
+  CHECK(unported.contains("artifact view"));
+  CHECK(unported.contains("artifact diff"));
+  CHECK(unported.contains("artifact review"));
+  // The five task 6196 ported must NOT be in the inventory.
+  for (auto const& wired : {"artifact add", "artifact show", "artifact list", "artifact update", "artifact link"}) {
+    INFO("artifact leaf: " << wired);
     CHECK_FALSE(unported.contains(wired));
   }
   // The seven task 6193 ported must NOT be in the inventory. The count
