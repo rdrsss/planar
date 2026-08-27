@@ -170,6 +170,40 @@ export enum class json_parse_error : std::uint8_t {
   malformed, ///< The bytes are not a single well-formed JSON document.
 };
 
+/// @brief WHY a parse failed, for the one caller that must tell them apart.
+///
+/// The coarse `json_parse_error` above stays the default, and the argument
+/// for it still holds for every caller that only needs "did it parse".
+/// `workspace routing show` is the exception: it interpolates zig's
+/// `@errorName` into its stderr, so the three parse failures the oracle
+/// distinguishes are three DIFFERENT stderr payloads. Oracle-captured
+/// against a pinned scratch arena:
+///
+///     b''                     UnexpectedEndOfInput   (also `   `, `{`,
+///                             `{"a":`, `{"a":"b`)
+///     b'this is not json'     SyntaxError            (also `x{}`,
+///                             `{} trailing`, `{"a":1,}`, `{'a':1}`,
+///                             `{"a":NaN}`, a raw control byte in a string)
+///     duplicate object key    DuplicateField
+///
+/// ## The classification is positional, and deliberately not per-site
+///
+/// `end_of_input` versus `syntax` is decided ONCE, in `parse_json_reason`,
+/// by asking where the cursor stopped: a parse that ran out of bytes is
+/// `end_of_input`; one that stopped with bytes still remaining is `syntax`.
+/// That rule reproduces every capture above, and it avoids tagging twenty
+/// separate `malformed` return sites — each of which would then be a place
+/// for the classification to drift.
+///
+/// `duplicate_field` cannot be positional (the cursor is mid-document
+/// either way), so the object parser sets a flag on the reader. It is the
+/// only side channel here.
+export enum class json_parse_reason : std::uint8_t {
+  syntax,          ///< An unexpected byte, with input still remaining. Zig's `SyntaxError`.
+  end_of_input,    ///< The document ended mid-value. Zig's `UnexpectedEndOfInput`.
+  duplicate_field, ///< An object repeated a key. Zig's `DuplicateField`.
+};
+
 /// @brief Maximum container nesting depth.
 ///
 /// A deliberate, documented divergence: the parser below is recursive, so
@@ -191,6 +225,15 @@ export inline constexpr std::size_t k_max_depth = 512;
 /// @param text The document bytes.
 /// @return The decoded value, or `json_parse_error::malformed`.
 export auto parse_json(std::string_view text) -> std::expected<json_value, json_parse_error>;
+
+/// @brief Decode one complete JSON document, reporting WHY a failure failed.
+///
+/// Identical acceptance to `parse_json` — which is now a thin wrapper that
+/// discards the reason — so the two can never disagree about whether a
+/// document is valid. See `json_parse_reason`.
+/// @param text The document bytes.
+/// @return The decoded value, or the reason it could not be decoded.
+export auto parse_json_reason(std::string_view text) -> std::expected<json_value, json_parse_reason>;
 
 /// @brief Encode `value` the way
 /// `std.json.Stringify(.{ .whitespace = .indent_2 })` does.

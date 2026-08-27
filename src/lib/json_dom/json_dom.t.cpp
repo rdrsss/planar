@@ -285,3 +285,71 @@ TEST_CASE("json_dom::find returns nullptr rather than a default for a missing ke
   REQUIRE(scalar.has_value());
   CHECK(scalar->find("a") == nullptr);
 }
+
+// ===========================================================================
+// task 6110 — `parse_json_reason`, the richer error `workspace routing show`
+// needs because it interpolates zig's `@errorName` into its stderr.
+//
+// ORACLE PROVENANCE. Each input below was fed to
+// `zig/zig-out/bin/planar workspace routing show` in a pinned scratch arena
+// and the interpolated tag captured off stderr, both streams through a pipe:
+//
+//   b''  b'   '  b'{'  b'{"a":'  b'{"a":"b'   -> UnexpectedEndOfInput
+//   b'this is not json'  b'x{}'  b'{} trailing'
+//     b'{"a":1,}'  b"{'a':1}"  b'{"a":NaN}'   -> SyntaxError
+//   a repeated object key                     -> DuplicateField
+// ===========================================================================
+
+TEST_CASE("json_dom separates running OUT of input from choking on a byte", "[json_dom]") {
+  using planar::json_dom::json_parse_reason;
+  using planar::json_dom::parse_json_reason;
+
+  // Ran out: the cursor stopped with nothing left to read.
+  for (std::string_view input : {"", "   ", "{", R"({"a":)", R"({"a":"b)", "[", R"(["x")"}) {
+    INFO("input: " << input);
+    auto const got = parse_json_reason(input);
+    REQUIRE_FALSE(got.has_value());
+    CHECK(got.error() == json_parse_reason::end_of_input);
+  }
+
+  // Choked: the cursor stopped with bytes REMAINING. `{} trailing` is the
+  // one that separates this from a naive "did we reach the end" test — the
+  // VALUE parsed fine and the failure is in the trailing-content check.
+  for (std::string_view input : {"this is not json", "x{}", "{} trailing", R"({"a":1,})", R"({'a':1})", R"({"a":NaN})"}) {
+    INFO("input: " << input);
+    auto const got = parse_json_reason(input);
+    REQUIRE_FALSE(got.has_value());
+    CHECK(got.error() == json_parse_reason::syntax);
+  }
+}
+
+TEST_CASE("json_dom reports a repeated object key as its own reason", "[json_dom]") {
+  using planar::json_dom::json_parse_reason;
+  using planar::json_dom::parse_json_reason;
+
+  auto const got = parse_json_reason(R"({"dup":"a","dup":"b"})");
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error() == json_parse_reason::duplicate_field);
+
+  // A NESTED duplicate reports the same way — the flag lives on the reader,
+  // not on the top-level object.
+  auto const nested = parse_json_reason(R"({"outer":{"dup":1,"dup":2}})");
+  REQUIRE_FALSE(nested.has_value());
+  CHECK(nested.error() == json_parse_reason::duplicate_field);
+
+  // And a document with DISTINCT keys still parses, so the two assertions
+  // above are about repetition rather than about objects being refused.
+  CHECK(parse_json_reason(R"({"a":1,"b":2})").has_value());
+}
+
+TEST_CASE("json_dom's two parse entry points never disagree about validity", "[json_dom]") {
+  using planar::json_dom::parse_json_reason;
+  // `parse_json` is now a wrapper that discards the reason, so acceptance
+  // must stay identical for every input — including the ones whose reasons
+  // differ from each other.
+  for (std::string_view input : {"", "   ", "{", "this is not json", "{} trailing", R"({"dup":1,"dup":2})", R"({"a":1})", "[]",
+                                 "42", "null", R"("hi")", "true"}) {
+    INFO("input: " << input);
+    CHECK(parse_json(input).has_value() == parse_json_reason(input).has_value());
+  }
+}

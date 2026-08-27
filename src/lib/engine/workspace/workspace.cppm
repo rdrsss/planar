@@ -6,3 +6,4 @@ export module planar.engine.workspace;
 
 export import planar.engine.workspace.identity;
 export import planar.engine.workspace.doctor;
+export import planar.engine.workspace.routing;

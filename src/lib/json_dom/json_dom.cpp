@@ -23,6 +23,13 @@ struct reader {
   std::string_view text;    ///< The whole document.
   std::size_t      pos = 0; ///< The read cursor.
 
+  /// @brief Set when a parse failed because an object repeated a key.
+  ///
+  /// A side channel rather than an error-set arm, so the twenty existing
+  /// `malformed` sites stay untouched. Only `parse_json_reason` reads it;
+  /// see this module interface's `json_parse_reason`.
+  bool saw_duplicate_field = false;
+
   /// @brief Whether the cursor is exhausted.
   /// @return `true` at end of input.
   [[nodiscard]] auto eof() const -> bool {
@@ -378,6 +385,7 @@ auto parse_value(reader& r, std::size_t depth) -> std::expected<json_value, json
       // `{"dup":"a","dup":"b"}` and the draft rendered `"b"`.
       auto const duplicate = std::ranges::any_of(out.object, [&](auto const& kv) { return kv.first == *key; });
       if (duplicate) {
+        r.saw_duplicate_field = true;
         return std::unexpected(json_parse_error::malformed);
       }
       out.object.emplace_back(std::move(*key), std::move(*val));
@@ -497,19 +505,39 @@ auto json_value::find(std::string_view key) const -> const json_value* {
   return it == object.end() ? nullptr : &it->second;
 }
 
-auto parse_json(std::string_view text) -> std::expected<json_value, json_parse_error> {
+auto parse_json_reason(std::string_view text) -> std::expected<json_value, json_parse_reason> {
   reader r{.text = text};
   auto   value = parse_value(r, 0);
-  if (!value.has_value()) {
-    return value;
-  }
-  r.skip_ws();
-  if (!r.eof()) {
+  if (value.has_value()) {
+    r.skip_ws();
+    if (r.eof()) {
+      return *std::move(value);
+    }
     // Trailing garbage. `std.json.parseFromSlice` rejects this; glaze's
-    // `read_json` would not. See this module interface's header.
-    return std::unexpected(json_parse_error::malformed);
+    // `read_json` would not. See this module interface's header. Input
+    // REMAINS, so this classifies as `syntax`, matching the oracle's
+    // `SyntaxError` on `{} trailing`.
+    return std::unexpected(json_parse_reason::syntax);
   }
-  return value;
+
+  if (r.saw_duplicate_field) {
+    return std::unexpected(json_parse_reason::duplicate_field);
+  }
+  // The whole classification, in ONE place rather than at each of the
+  // twenty failure sites: a parse that stopped with nothing left to read
+  // ran OUT of input; one that stopped with bytes remaining choked on a
+  // byte. Every oracle capture fits — see this module interface's
+  // `json_parse_reason`.
+  r.skip_ws();
+  return std::unexpected(r.eof() ? json_parse_reason::end_of_input : json_parse_reason::syntax);
+}
+
+auto parse_json(std::string_view text) -> std::expected<json_value, json_parse_error> {
+  auto value = parse_json_reason(text);
+  if (value.has_value()) {
+    return *std::move(value);
+  }
+  return std::unexpected(json_parse_error::malformed);
 }
 
 auto stringify_indent2(const json_value& value) -> std::string {

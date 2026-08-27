@@ -819,6 +819,185 @@ TEST_CASE("workspace doctor reports an unreadable config without repairing the r
 }
 
 // =========================================================================
+// task 6110 — `workspace routing show`.
+//
+// The decoder and both renderers are unit-tested in
+// src/lib/engine/workspace/routing.t.cpp. What only THIS layer can cover is
+// the path resolution, the file read, and the mapping of four failures onto
+// three exit codes — including the two decode failures that share one
+// message template and differ only in exit code.
+//
+// ORACLE PROVENANCE. Captured under a scratch HOME / PLANAR_HOME /
+// PLANAR_DB, an org registered via `workspace init --no-scan --name Acme
+// --slug acme`, and routing-table.json overwritten per probe. Both streams
+// through a pipe, never a file redirect.
+//
+//   no orgs at all
+//     $Z workspace routing show --json   exit 1, stderr
+//       b'error: no org associations registered; create one with `planar
+//         workspace init`\n'
+//     (`routing build` and `regenerate` emit the SAME line and exit 1.)
+//
+//   org present, routing-table.json absent
+//     $Z workspace routing show --json   exit 1, stderr
+//       b'error: routing table not found at <PH>/workspaces/1/
+//         routing-table.json; run `planar workspace routing build` first\n'
+//     Note this arrives on the --json arm too: the file read precedes the
+//     arm split.
+//
+//   file = b'this is not json'
+//     $Z workspace routing show --json   exit 0, stdout b'this is not json\n'
+//     $Z workspace routing show          exit 1, stderr
+//       b'error: decoding routing table failed: SyntaxError\n'
+//
+//   file = valid JSON with `schema_version` removed
+//     $Z workspace routing show          exit 2, stderr
+//       b'error: decoding routing table failed: InvalidInput\n'
+// =========================================================================
+
+namespace {
+
+/// @brief Register one org and return its state directory.
+///
+/// Mirrors `workspace init`'s database effect without invoking it — `init`
+/// is unported (layer 3), and this leaf only needs the association row.
+auto seed_org(const fixture& fx) -> std::filesystem::path {
+  std::ostringstream out;
+  std::ostringstream err;
+  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto               conn = ctx.ensure_db();
+  REQUIRE(conn.has_value());
+  auto const created = planar::engine::identity::create(
+      **conn, {.slug        = "acme",
+               .kind        = planar::engine::identity::association_kind::org,
+               .config_json = std::format(R"({{"root_path":"{}"}})", (fx.root / "proj").string())});
+  REQUIRE(created.has_value());
+  return fx.root / "home" / "workspaces" / "1";
+}
+
+/// @brief Write `body` to the org's routing table, creating the state dir.
+auto write_routing_table(const std::filesystem::path& state_dir, std::string_view body) -> std::filesystem::path {
+  std::filesystem::create_directories(state_dir);
+  auto const    path = state_dir / "routing-table.json";
+  std::ofstream file(path, std::ios::binary);
+  file << body;
+  file.close();
+  return path;
+}
+
+} // namespace
+
+TEST_CASE("workspace routing show refuses when no org is registered", "[cmd][handlers][parity]") {
+  auto const fx  = make_fixture("wrsnoorg");
+  auto const got = dispatch(fx, {"workspace", "routing", "show", "--json"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: no org associations registered; create one with `planar workspace init`\n");
+}
+
+TEST_CASE("workspace routing show refuses a missing table, naming the path", "[cmd][handlers][parity]") {
+  auto const fx        = make_fixture("wrsmissing");
+  auto const state_dir = seed_org(fx);
+  auto const expected  = (state_dir / "routing-table.json").string();
+
+  auto const got = dispatch(fx, {"workspace", "routing", "show"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == std::format("error: routing table not found at {}; run `planar workspace routing build` first\n", expected));
+
+  // The refusal reaches the --json arm too: the read precedes the split.
+  auto const as_json = dispatch(fx, {"workspace", "routing", "show", "--json"});
+  CHECK(as_json.code == 1);
+  CHECK(as_json.err == got.err);
+
+  // And `show` did NOT create the state directory on the way past — it uses
+  // load_layout, not ensure_layout. This is the assertion that separates it
+  // from `doctor`, which creates the directory as a side effect of being
+  // asked what is wrong.
+  CHECK_FALSE(std::filesystem::exists(state_dir));
+}
+
+TEST_CASE("workspace routing show json arm emits non-JSON bytes verbatim", "[cmd][handlers][parity]") {
+  auto const fx        = make_fixture("wrsverbatim");
+  auto const state_dir = seed_org(fx);
+  write_routing_table(state_dir, "this is not json");
+
+  auto const as_json = dispatch(fx, {"workspace", "routing", "show", "--json"});
+  CHECK(as_json.code == 0);
+  CHECK(as_json.err.empty());
+  CHECK(as_json.out == "this is not json\n");
+
+  // The SAME bytes on the text arm are a decode failure at exit 1. The two
+  // arms disagreeing on identical input is the contract, not a defect.
+  auto const as_text = dispatch(fx, {"workspace", "routing", "show"});
+  CHECK(as_text.code == 1);
+  CHECK(as_text.out.empty());
+  CHECK(as_text.err == "error: decoding routing table failed: SyntaxError\n");
+}
+
+TEST_CASE("workspace routing show maps its two decode failures onto DIFFERENT exit codes", "[cmd][handlers][parity]") {
+  auto const fx        = make_fixture("wrsexit");
+  auto const state_dir = seed_org(fx);
+
+  // Malformed bytes -> SyntaxError, exit 1.
+  write_routing_table(state_dir, "{not json");
+  auto const syntax = dispatch(fx, {"workspace", "routing", "show"});
+  CHECK(syntax.code == 1);
+  CHECK(syntax.err == "error: decoding routing table failed: SyntaxError\n");
+
+  // Well-formed JSON missing a required field -> InvalidInput, exit 2.
+  write_routing_table(state_dir, R"({"workspace_id":1,"workspace_slug":"a","workspace_name":"A",)"
+                                 R"("generated_at":"T","projects":[],)"
+                                 R"("cross_repo":{"dependency_edges":[]}})");
+  auto const invalid = dispatch(fx, {"workspace", "routing", "show"});
+  CHECK(invalid.code == 2);
+  CHECK(invalid.err == "error: decoding routing table failed: InvalidInput\n");
+
+  // The exit codes DIFFER while the message differs only in the tag. A port
+  // that folded these together would keep both stderr payloads plausible and
+  // silently move one exit code.
+  CHECK(syntax.code != invalid.code);
+}
+
+TEST_CASE("workspace routing show renders a decoded table", "[cmd][handlers][parity]") {
+  auto const fx        = make_fixture("wrsrender");
+  auto const state_dir = seed_org(fx);
+  write_routing_table(state_dir, R"({"schema_version":1,"workspace_id":1,"workspace_slug":"acme","workspace_name":"Acme",)"
+                                 R"("generated_at":"2020-01-01T00:00:00Z","generator_version":"gv-9","projects":[)"
+                                 R"({"slug":"alpha","root_path":"/r/alpha","summary":"Alpha repo.","summary_source":"readme",)"
+                                 R"("capabilities":["go-service"],"depends_on":["beta"],"depends_on_source":"go.mod",)"
+                                 R"("planar_focus":{"open_tasks":4,"open_questions":5}}],)"
+                                 R"("cross_repo":{"dependency_edges":[)"
+                                 R"({"from":"alpha","to":"beta","reason":"go.mod replace"}]}})");
+
+  auto const got = dispatch(fx, {"workspace", "routing", "show"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.out == "workspace: org:acme (id 1)\n"
+                   "generated: 2020-01-01T00:00:00Z (gv-9)\n"
+                   "projects:  1\n"
+                   "\n"
+                   "- alpha\n"
+                   "    path:         /r/alpha\n"
+                   "    capabilities: go-service\n"
+                   "    summary:      Alpha repo.\n"
+                   "    depends_on:   beta\n"
+                   "    open tasks:   4\n"
+                   "    open Qs:      5\n"
+                   "\n"
+                   "cross-repo edges:\n"
+                   "  alpha -> beta (go.mod replace)\n");
+
+  // The --json arm on the SAME file returns the stored bytes, not this
+  // render — proving the two arms read one file through two paths.
+  auto const as_json = dispatch(fx, {"workspace", "routing", "show", "--json"});
+  CHECK(as_json.code == 0);
+  CHECK(as_json.out.starts_with(R"({"schema_version":1,"workspace_id":1)"));
+  CHECK(as_json.out.ends_with("\n"));
+  CHECK(as_json.out != got.out);
+}
+
+// =========================================================================
 // task 6037 — the ten ported `workbench` leaves.
 //
 // ORACLE PROVENANCE. Captured under a scratch

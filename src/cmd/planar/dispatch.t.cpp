@@ -544,7 +544,22 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // the two starter blobs, and `config validate`'s four-step rule set.
   // 53 before task 6262 ported ONE leaf out of it — `audit trail`. See the
   // task-6262 note above for why its predicted blocker was not real.
-  CHECK(unported.size() == 47);
+  //
+  // 47 before task 6110 ported ONE leaf out of it — `workspace routing
+  // show` — leaving 46. One leaf, and the scope cut is the finding: the
+  // `workspace` family's other three unported leaves each carry a distinct
+  // blocker (`routing build` on size, `regenerate` on an unvendored xxh64,
+  // `init` on the absent layer-3 cmd surface), and `synthesize`, the other
+  // half of this task, needs ~575 lines of shared `llm` + `operatorpath` +
+  // `forwardspec` infrastructure that does not exist here yet AND has one
+  // arm (`--literal`) blocked on the unported `import`.
+  //
+  // `routing show` was the one leaf in that set with NO blocker, and the
+  // previous cycle's note that it should be deferred WITH `routing build`
+  // did not survive checking: `show` decodes routing-table.json off disk
+  // and never calls the builder. Argued in full in
+  // src/lib/engine/workspace/routing.cppm's header.
+  CHECK(unported.size() == 46);
   //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
