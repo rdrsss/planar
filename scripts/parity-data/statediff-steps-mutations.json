@@ -1,0 +1,71 @@
+[
+  ["init", "--skip-project", "--allow-no-repo", "--json"],
+  ["plan", "create", "P1", "--slug", "p1", "--json"],
+  ["task", "add", "T1", "--plan", "1", "--slug", "t1", "--no-editor", "--json"],
+  ["task", "add", "T2", "--plan", "1", "--slug", "t2", "--no-editor", "--json"],
+  ["task", "add", "T3", "--plan", "1", "--slug", "t3", "--no-editor", "--json"],
+
+  ["task", "update", "1", "--title", "T1 renamed", "--json"],
+  ["task", "update", "1", "--priority", "7", "--json"],
+  ["task", "update", "1", "--next-action", "do the thing", "--json"],
+  ["task", "update", "1", "--body", "", "--json"],
+
+  ["task", "block", "2", "--on", "1", "--json"],
+  ["task", "done", "1", "--json"],
+  ["task", "show", "2", "--json"],
+  ["task", "done", "2", "--json"],
+  ["task", "cancel", "3", "--json"],
+  ["task", "reopen", "3", "--json"],
+  ["task", "done", "3", "--json"],
+
+  ["plan", "recompute-status", "--all", "--json"],
+  ["plan", "show", "1", "--json"],
+  ["plan", "update", "1", "--title", "P1 renamed", "--json"],
+  ["plan", "next", "1", "--json"],
+  ["plan", "descendants", "1", "--json"],
+  ["plan", "divergence", "1", "--json"],
+
+  ["question", "add", "Q1", "--body", "b", "--json"],
+  ["question", "wontfix", "1", "--json"],
+  ["question", "answer", "1", "--answer", "a", "--json"],
+  ["question", "show", "1", "--json"],
+
+  ["decision", "add", "D1", "--body", "b", "--json"],
+  ["decision", "accept", "1", "--json"],
+  ["decision", "withdraw", "1", "--json"],
+  ["decision", "add", "D2", "--body", "b", "--json"],
+  ["decision", "supersede", "1", "--by", "2", "--json"],
+  ["decision", "list", "--json"],
+
+  ["scenario", "add", "S1", "--body", "b", "--json"],
+  ["scenario", "verify", "1", "--outcome", "pass", "--json"],
+  ["scenario", "verify", "1", "--outcome", "bogus", "--json"],
+  ["scenario", "retire", "1", "--json"],
+  ["scenario", "list", "--json"],
+
+  ["annotate", "add", "--anchor-path", "a.txt", "--title", "A1", "--body", "b"],
+  ["annotate", "add", "--anchor-path", "b.txt", "--title", "A2", "--body", "b"],
+  ["annotate", "resolve", "1"],
+  ["annotate", "dismiss", "2"],
+  ["annotate", "tag", "1", "--tags", "x, y,x"],
+  ["annotate", "bulk-resolve", "--anchor-path", "a.txt"],
+  ["annotate", "sweep", "--json"],
+  ["annotate", "list", "--json"],
+
+  ["links", "add", "task:1", "task:3", "--relationship", "depends-on"],
+  ["links", "remove", "task:1", "task:3", "--relationship", "depends-on"],
+  ["links", "trail", "task:1", "--json"],
+
+  ["capture", "session", "--json"],
+  ["capture", "note", "hello", "--json"],
+  ["capture", "end", "--json"],
+
+  ["task", "touches", "add", "1", "--path", "src/x.zig"],
+  ["task", "touches", "list", "1", "--json"],
+  ["task", "touches", "remove", "1", "--path", "src/x.zig"],
+
+  ["plan", "step", "add", "1", "--title", "step one"],
+  ["plan", "step", "list", "1", "--json"],
+  ["plan", "step", "done", "1", "--json"],
+  ["plan", "step", "skip", "1", "--json"]
+]
