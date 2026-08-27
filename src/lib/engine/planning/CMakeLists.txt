@@ -1,5 +1,13 @@
 # planar_engine_planning — engine/planning bucket (plan 996, task
 # cpp-planning-verbs). Layer-2 `engine_*` module (cmake/architecture.cmake):
+#
+# The `log` dependency (task 6202) is a legal downward layer-1 edge and
+# exists for ONE reason: the oracle's engine writes an inner
+# `<op> exec failed: <ErrName>` line to stderr from inside each failed
+# write, ahead of the handler's outer `error: <verb>: QueryFailed`. That
+# line is engine-side in the oracle and has to be engine-side here too —
+# see `task.cpp`'s `exec_failed` for the seam and `lib/log/log.cppm`'s
+# `diag_err` for why it bypasses spdlog's formatters.
 # may DEPEND on layer-1 modules only, never sideways onto another `engine_*`
 # bucket (D15/D18's same-layer prohibition for layers 2/3 — see task
 # cpp-planning-verbs's original writeup below for the brief/spec
@@ -160,6 +168,7 @@ planar_module(engine_planning
   DEPENDS
     db
     json_text
+    log
     scope_ref
     policy
   TEST_DEPENDS

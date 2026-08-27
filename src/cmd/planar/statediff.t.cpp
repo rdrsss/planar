@@ -516,9 +516,16 @@ struct step {
 /// replaced here by the nearest valid verbs.
 ///
 /// `init` deliberately keeps `--skip-project`, so the cwd resolves to NO
-/// registered scope. That is not an oversight: it is what exposes findings
-/// 6200 and 6201, which are divergences in the ORDER `--status` and scope
-/// are validated in and are invisible once a scope resolves.
+/// registered scope. That is not an oversight: it is what exposed finding
+/// 6200, a divergence in the ORDER `--status` and scope are validated in,
+/// which is invisible once a scope resolves.
+///
+/// The same property is why this lane can only ever be the ALARM and not
+/// the diagnosis. Running exclusively outside a scope, it cannot see the
+/// in-scope half of any ordering question — which is how 6201 came to be
+/// filed as an exit-code defect when the exit code was correct all along.
+/// Every finding here needs a pinned-arena probe of BOTH halves before it
+/// earns a fix.
 auto sequence() -> std::vector<step> {
   return {
       {{"init", "--skip-project", "--allow-no-repo", "--json"}},
@@ -565,9 +572,26 @@ auto sequence() -> std::vector<step> {
       // which is not a subcommand on either side.
       {{"audit", "trail", "task:1", "--json"}},
 
-      // The empty-`--status` shapes. Five families, and only two of them
-      // diverge — which is what makes 6200 a finding about `task` and
-      // `decision` specifically rather than about the flag.
+      // The empty-`--status` shapes. Five families; `task` and `decision`
+      // diverged here until task 6200.
+      //
+      // READ THIS BEFORE CONCLUDING ANYTHING FROM THESE FIVE STEPS. The
+      // empty string is the WEAKEST probe of the five-family ordering, and
+      // taking it at face value is what made 6200's own remedy wrong. It
+      // reports "plan/question/scenario resolve scope first, task/decision
+      // do not", and that is NOT what the oracle does. The three siblings
+      // comma-SPLIT `--status`, so `""` yields zero tokens and never
+      // reaches their validator at all; they fall through to the scope
+      // error while still validating status FIRST whenever a token exists.
+      // `--status bogus` from outside a scope separates them cleanly:
+      //
+      //     plan/question/scenario -> error: unknown status 'bogus'
+      //     task/decision          -> error: cwd is not inside any ...
+      //
+      // So the oracle genuinely carries TWO orderings, and `task`/`decision`
+      // are the odd pair — the opposite of the sibling-conformance story.
+      // The `..._list scope/status ordering` cases in `handlers.t.cpp` pin
+      // all ten cells directly so this can never be re-derived from `""`.
       {{"plan", "list", "--status", "", "--json"}},
       {{"task", "list", "--status", "", "--json"}},
       {{"question", "list", "--status", "", "--json"}},
@@ -611,13 +635,32 @@ struct known {
 ///
 ///   s13 state:audit_log  task 6199 — the C++ tree never writes the
 ///                        `session` start row the oracle writes.
-///   s30 stderr           task 6200 — `task list` validates `--status`
-///   s32 stderr           BEFORE resolving scope; the oracle resolves scope
-///                        first, so the two report different errors.
-///   s32 exit             task 6201 — `decision list` exits 2 where every
-///                        sibling family and the oracle exit 1.
-///   s37 stderr           task 6202 — `task add` drops the oracle's inner
-///                        `task.create exec failed` diagnostic line.
+///
+/// FOUR ENTRIES WERE REMOVED HERE, closing tasks 6200/6201/6202. They are
+/// described rather than deleted silently, because the removal is the
+/// assertion: this list is checked in both directions, so a re-entry would
+/// mean the fix regressed.
+///
+///   s30 stderr  \ task 6200 — `task list` / `decision list` validated
+///   s32 stderr  / `--status` BEFORE resolving the cwd-derived scope. Fixed
+///                 by reordering both handlers. The finding was real; its
+///                 stated remedy ("match their own three sibling families")
+///                 was NOT — see below.
+///   s32 exit      task 6201 — filed as "`decision list` exits 2 where the
+///                 oracle exits 1". NOT A DEFECT. Re-probed in a pinned
+///                 arena INSIDE a registered scope, `$Z decision list
+///                 --status ''` exits 2 exactly as this tree does; the
+///                 differential's zig=1 was the SCOPE error, which is what
+///                 s32 now returns on both sides once 6200's reordering
+///                 landed. This entry went away as a CONSEQUENCE of 6200
+///                 and no exit-code mapping was touched. Changing it to 1
+///                 would have broken every in-scope invocation.
+///   s37 stderr    task 6202 — `task add` dropped the oracle's inner
+///                 `task.create exec failed: StepFailed` line. Fixed at the
+///                 engine's exec seam (`engine/planning/task.cpp`'s
+///                 `exec_failed`), not in the handler: the oracle emits the
+///                 same shape from ~28 engine sites, so the handler was the
+///                 wrong altitude.
 const std::vector<known>& known_divergences() {
   static const std::vector<known> staged{
       // --- task 6199: the C++ tree never writes the session-start audit
@@ -628,35 +671,6 @@ const std::vector<known>& known_divergences() {
       {"s13", "state:audit_log",
        "+0 cpp-only / +1 zig-only | zig-only: id=6\\x1fverb='create'\\x1fentity_kind='session'\\x1fentity_id=1\\x1factor=NULL"
        "\\x1fscope=NULL\\x1fsummary='start session vendor=cli'\\x1frecorded_at=<volatile>"},
-
-      // --- task 6200: `--status` is validated BEFORE scope resolution in
-      // the C++ tree and after it in the oracle. Two families only —
-      // `plan`, `question` and `scenario` (s29, s31, s33) agree, which is
-      // what makes this a finding about these two handlers rather than
-      // about the flag.
-      {"s30", "stderr",
-       "cpp=[error: unknown status ''\\n] zig=[error: cwd is not inside any registered Planar scope; cd into a registered "
-       "scope or pass --scope global\\n]"},
-      {"s32", "stderr",
-       "cpp=[error: unknown status ''\\n] zig=[error: cwd is not inside any registered Planar scope; cd into a registered "
-       "scope or pass --scope global\\n]"},
-
-      // --- task 6201: `decision list` exits 2 where every sibling family
-      // and the oracle exit 1. Co-located with 6200 on s32 but a separate
-      // axis: fixing the validation order does not fix the exit code.
-      {"s32", "exit", "cpp=2 zig=1"},
-
-      // --- task 6202: `task add` drops the oracle's inner diagnostic.
-      //
-      // The bytes below are the TRUE oracle output. They were nearly
-      // staged as `zig=[error: task add: QueryFailed\ntask add: QueryFailed
-      // \nd: StepFailed\n]` — a corruption produced by the harness itself,
-      // not by either binary. See `../parity_harness.hpp`'s account of the
-      // positional-write hazard; this entry is the reason that defect was
-      // found.
-      {"s37", "stderr",
-       "cpp=[error: task add: QueryFailed\\n] zig=[error: task.create exec failed: StepFailed\\nerror: task add: "
-       "QueryFailed\\n]"},
   };
   return staged;
 }

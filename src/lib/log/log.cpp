@@ -131,4 +131,11 @@ auto scoped(std::string_view name) -> std::shared_ptr<spdlog::logger> {
   return logger;
 }
 
+auto diag_err(std::string_view message) -> void {
+  // Deliberately not `spdlog::error` — see the interface's account of why
+  // the bare `error: <message>` shape cannot come from either formatter.
+  std::cerr << "error: " << message << '\n';
+  std::cerr.flush();
+}
+
 } // namespace planar::log

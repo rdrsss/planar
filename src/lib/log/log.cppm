@@ -86,4 +86,41 @@ export auto init(mode m, level lvl = level::info) -> void;
 /// @return The (possibly newly created) scoped logger.
 export auto scoped(std::string_view name) -> std::shared_ptr<spdlog::logger>;
 
+/// @brief Write one `error: <message>` line straight to `std::cerr`, with
+/// no timestamp, logger name or level field — the byte-for-byte analog of
+/// the oracle's `std.log.err`, whose DEFAULT handler formats exactly that
+/// and nothing more.
+///
+/// ## Why this deliberately bypasses spdlog
+///
+/// `init()` above installs a stderr sink, so the stream is already right;
+/// what is wrong is the FORMAT. Both spdlog formatters this module offers
+/// carry the full field set (`%Y-%m-%dT%H:%M:%S.%e [%n] [%l] %v` in text
+/// mode, a JSON object in JSON mode). The oracle emits the bare line:
+///
+///     error: task.create exec failed: StepFailed
+///
+/// and `src/cmd/planar/statediff.t.cpp` compares stderr byte for byte, so
+/// a timestamp or a `[planar] [error]` prefix is a divergence. There is no
+/// spdlog pattern that yields the bare form AND leaves the configured
+/// text/JSON logger untouched for every other caller, so this one shape
+/// gets its own writer rather than a fourth formatter mode.
+///
+/// ## Why it is not routed through the handler's `err()` stream
+///
+/// Because the oracle does not route it either. `std.log.err` writes to
+/// the PROCESS stderr from inside the engine, with no reference to
+/// whatever writer the calling handler was given. Layer 2 has no access to
+/// layer 3's `context` anyway (D15), and inventing a sink parameter to
+/// thread one in would reproduce the line in a place the oracle never puts
+/// it. The consequence to know: in-process handler tests that capture
+/// `ctx.err()` do NOT see these lines — the subprocess parity lanes are
+/// what pin them, which is the same split the oracle has.
+///
+/// Flushes, so the line cannot be reordered behind the outer `error: <verb>:
+/// <kind>` line the handler writes to the same stream afterwards.
+/// @param message The message body, without the `error: ` prefix or the
+/// trailing newline.
+export auto diag_err(std::string_view message) -> void;
+
 } // namespace planar::log

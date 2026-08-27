@@ -390,16 +390,29 @@ auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   filter.plan_id      = cliapp::flag_int(args, "--plan");
   filter.priority_max = cliapp::flag_int(args, "--priority-max");
 
-  // ONE status, not a list — unlike `plan list`. `--status todo,doing`
-  // legitimately fails here; oracle-confirmed.
-  if (auto const raw = cliapp::flag_string(args, "--status"); raw.has_value()) {
-    auto const st = pl::task_status_from_text(*raw);
-    if (!st) {
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("unknown status '{}'", *raw)));
-    }
-    filter.status = *st;
-  }
-
+  // SCOPE IS RESOLVED BEFORE `--status` IS VALIDATED, and the order is
+  // load-bearing (task 6200). Standing outside any registered scope, the
+  // oracle reports the SCOPE error even when `--status` is also bad:
+  //
+  //   $Z task list --status bogus   (no registered scope)
+  //     -> exit 1, "error: cwd is not inside any registered Planar scope; ..."
+  //   $Z task list --status bogus   (inside a scope)
+  //     -> exit 1, "error: unknown status 'bogus'"
+  //
+  // `task` and `decision` are the ONLY two families that order it this way.
+  // `plan`, `question` and `scenario` validate `--status` FIRST and report
+  // the status error from outside a scope — verified against the oracle
+  // family by family, not inferred. Do NOT "harmonize" this with them: the
+  // three siblings only LOOK like they resolve scope first, because their
+  // `--status` is comma-split and an empty string yields zero tokens, so
+  // the empty case never reaches their validator at all. `--status bogus`
+  // separates the two orderings cleanly and the oracle answers differently.
+  //
+  // Note the asymmetry this preserves: an EXPLICIT `--scope` skips the
+  // cwd-derived read set entirely, so the status error still precedes the
+  // engine's `SlugNotFound` (`--scope nosuchslug --status bogus` reports
+  // the status). That is the oracle's behaviour too, and it falls out of
+  // resolving only the cwd-derived branch here.
   if (auto raw = cliapp::flag_string(args, "--scope"); raw.has_value()) {
     // NOT comma-split, unlike `plan list --scope`. The oracle hands the raw
     // string to the engine as ONE slug, so `--scope a,b` reports
@@ -412,6 +425,16 @@ auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result 
       return std::unexpected(slugs.error());
     }
     filter.scopes = std::move(*slugs);
+  }
+
+  // ONE status, not a list — unlike `plan list`. `--status todo,doing`
+  // legitimately fails here; oracle-confirmed.
+  if (auto const raw = cliapp::flag_string(args, "--status"); raw.has_value()) {
+    auto const st = pl::task_status_from_text(*raw);
+    if (!st) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("unknown status '{}'", *raw)));
+    }
+    filter.status = *st;
   }
 
   // `--touches <repo-slug>` swaps the engine call for the UNION query

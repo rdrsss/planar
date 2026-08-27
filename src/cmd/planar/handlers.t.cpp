@@ -3830,3 +3830,134 @@ TEST_CASE("a refused mutation writes no audit_log row", "[cmd][handlers][audit][
   REQUIRE(dispatch(fx, {"plan", "update", "1"}).code == 0);
   CHECK(audit_transcript(fx) == before);
 }
+
+// -------------------------------------------------------------------------
+// `<family> list` scope-vs-status validation ORDER (task 6200)
+// -------------------------------------------------------------------------
+//
+// Ten cells: five families x {inside a registered scope, outside every
+// registered scope}, each probed with `--status bogus`. They are pinned
+// TOGETHER, in one case, because the property under test is a DISAGREEMENT
+// between families and a per-family case cannot express it — split across
+// five files, the next porter reads whichever one they opened and
+// "harmonizes" the other four to match.
+//
+// The oracle carries TWO orderings and neither is derivable from the other:
+//
+//                       inside a scope        outside every scope
+//   plan                unknown status        unknown status
+//   question            unknown status        unknown status
+//   scenario            unknown status        unknown status
+//   task                unknown status        SCOPE error
+//   decision            unknown status (2)    SCOPE error
+//
+// Captured from `zig/zig-out/bin/planar` in a pinned scratch arena, family
+// by family, at task 6200. `decision`'s exit 2 in the left column is the
+// oracle's too and is NOT a defect — see the `decision list` case below and
+// `handlers/decision.cpp`'s note on task 6201.
+//
+// THE EMPTY STRING IS NOT A SUBSTITUTE FOR `bogus` HERE. `plan`,
+// `question` and `scenario` comma-split `--status`, so `--status ""`
+// produces zero tokens, skips their validator entirely, and makes all five
+// families report the scope error from outside — which reads as "everyone
+// resolves scope first" and is exactly the wrong conclusion. The
+// state-differential lane runs only the empty-string shape and only from
+// outside a scope, so it reported precisely that; see
+// `statediff.t.cpp`'s note at its `--status ""` steps.
+
+/// @brief Dispatch from a cwd that is registered nowhere, so the read-set
+/// resolution fails. Mirrors the inline pattern the `plan list` empty-read-
+/// set case above uses.
+/// @param fx The fixture, already `init`ed.
+/// @param args The argv tail.
+/// @return The captured invocation.
+namespace {
+auto dispatch_outside_scope(const fixture& fx, std::vector<std::string> args) -> invocation {
+  std::error_code ec;
+  std::filesystem::create_directories(fx.root / "elsewhere", ec);
+
+  auto outside        = fx;
+  outside.vars["PWD"] = (fx.root / "elsewhere").string();
+
+  std::vector<std::string> argv{"planar"};
+  argv.insert(argv.end(), args.begin(), args.end());
+
+  std::ostringstream out;
+  std::ostringstream err;
+  context            ctx{std::move(argv), planar::cmd::map_env(outside.vars), fx.root / "elsewhere", fx.db_path, out, err};
+  auto const         tree  = planar::cmd::root_app();
+  auto const         table = planar::cmd::handlers(*tree);
+  int const          code  = planar::cmd::run(ctx, *tree, table);
+  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+}
+
+constexpr std::string_view k_scope_err = "error: cwd is not inside any registered Planar scope; cd into a registered "
+                                         "scope or pass --scope global\n";
+} // namespace
+
+TEST_CASE("plan/question/scenario list validate --status BEFORE scope; task/decision resolve scope first",
+          "[cmd][handlers][parity][6200]") {
+  auto const fx = make_fixture("statusorder");
+  associate_cwd(fx, "acme");
+
+  // --- Inside a scope, all five report the status. This column is what
+  // makes the right-hand column meaningful: it proves every family's
+  // validator is reachable and rejects the token, so a scope error on the
+  // right is an ORDERING difference and not a family that quietly ignores
+  // `--status`.
+  for (auto const& family : {"plan", "question", "scenario", "task", "decision"}) {
+    CAPTURE(family);
+    auto const got = dispatch(fx, {family, "list", "--status", "bogus"});
+    CHECK(got.err == "error: unknown status 'bogus'\n");
+    CHECK(got.out.empty());
+    // Exit 1 everywhere EXCEPT `decision`, which exits 2. Oracle-captured
+    // on both sides of the split; see the `decision list` case.
+    CHECK(got.code == (std::string_view{family} == "decision" ? 2 : 1));
+  }
+
+  // --- Outside every registered scope, the two orderings separate.
+  for (auto const& family : {"plan", "question", "scenario"}) {
+    CAPTURE(family);
+    auto const got = dispatch_outside_scope(fx, {family, "list", "--status", "bogus"});
+    CHECK(got.err == "error: unknown status 'bogus'\n");
+    CHECK(got.code == 1);
+  }
+  for (auto const& family : {"task", "decision"}) {
+    CAPTURE(family);
+    auto const got = dispatch_outside_scope(fx, {family, "list", "--status", "bogus"});
+    CHECK(got.err == k_scope_err);
+    CHECK(got.out.empty());
+    // Exit 1 for BOTH, `decision` included: the scope error's code, not the
+    // status error's. This is the cell task 6201 was filed against, and it
+    // is 1 here because the reordering means the exit-2 arm is never
+    // reached — not because that arm was changed.
+    CHECK(got.code == 1);
+  }
+}
+
+TEST_CASE("an EXPLICIT --scope keeps the status error ahead of the engine's SlugNotFound", "[cmd][handlers][parity][6200]") {
+  // The other half of task 6200's reordering, and the reason it moved only
+  // the cwd-derived branch. An explicit `--scope` never consults the read
+  // set, so the status validator still runs first and beats the engine's
+  // own slug resolution — `--scope nosuchslug --status bogus` reports the
+  // STATUS on both families. Oracle-captured. Moving the whole scope
+  // concern ahead of `--status` (the obvious spelling of the fix) would
+  // report `SlugNotFound` here and trade one divergence for another.
+  auto const fx = make_fixture("statusorderscope");
+  associate_cwd(fx, "acme");
+
+  auto const t = dispatch(fx, {"task", "list", "--scope", "nosuchslug", "--status", "bogus"});
+  CHECK(t.err == "error: unknown status 'bogus'\n");
+  CHECK(t.code == 1);
+
+  auto const d = dispatch(fx, {"decision", "list", "--scope", "nosuchslug", "--status", "bogus"});
+  CHECK(d.err == "error: unknown status 'bogus'\n");
+  CHECK(d.code == 2);
+
+  // ...and with a VALID status the same argv reaches the engine and gets
+  // its SlugNotFound, proving the two errors really are ordered rather
+  // than one of them being unreachable.
+  CHECK(dispatch(fx, {"task", "list", "--scope", "nosuchslug", "--status", "todo"}).err == "error: task list: SlugNotFound\n");
+  CHECK(dispatch(fx, {"decision", "list", "--scope", "nosuchslug", "--status", "proposed"}).err ==
+        "error: decision list: SlugNotFound\n");
+}

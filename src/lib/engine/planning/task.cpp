@@ -8,6 +8,7 @@ module planar.engine.planning.task;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.log;
 import planar.scope_ref;
 import planar.policy;
 import planar.engine.planning.plan;
@@ -38,6 +39,42 @@ auto record_audit(db::connection& conn, const audit::record_args& args) -> std::
     return std::unexpected(task_error::audit_write_failed);
   }
   return {};
+}
+
+/// @brief Emit the oracle's INNER statement-failure diagnostic and map the
+/// failure to `query_failed` (task 6202).
+///
+/// The oracle wraps each write in `d.execParams(...) catch |e| { ...
+/// std.log.err("<op> exec failed: {s}", .{@errorName(e)}); return
+/// Error.QueryFailed; }`, so a failed write puts TWO lines on stderr — the
+/// engine's, naming the operation and the underlying failure, then the
+/// handler's `error: <verb>: QueryFailed`. Reproduced for `task add --plan
+/// <dangling>`, whose foreign key fires at step time:
+///
+///     error: task.create exec failed: StepFailed
+///     error: task add: QueryFailed
+///
+/// The `zig_error_name` argument is `@errorName(e)` from
+/// `zig/src/db/sqlite.zig`'s `execParams`, which distinguishes exactly
+/// three arms: `PrepareFailed` (:234), `BindFailed` (:247) and
+/// `StepFailed` (:252). This tree splits prepare/bind/step into separate
+/// `std::expected` arms already, so each one passes its own name rather
+/// than deriving one from a collapsed error value.
+///
+/// THIS IS ONE SITE OF ~28. The same `<op> exec failed` seam appears
+/// throughout the oracle's engine (`grep -rn "exec failed" zig/src/`:
+/// plan.create, question.create, decision.create, scenario.create,
+/// artifact.create, annotation.*, entitylink.*, project.*, association.*,
+/// runs.* and more). Only `task.create` is wired here because only its
+/// path is reachable from the state differential's sequence and pinned by
+/// task 6202; the rest are latent divergences that fire the moment a write
+/// on those paths fails. See this cycle's report for the follow-up.
+/// @param op The oracle's operation name, e.g. `task.create`.
+/// @param zig_error_name The `@errorName` the oracle would have formatted.
+/// @return Always `task_error::query_failed`.
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> task_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return task_error::query_failed;
 }
 
 constexpr int k_sqlite_constraint_unique = 2067; // SQLITE_CONSTRAINT_UNIQUE
@@ -412,55 +449,58 @@ auto create_task(db::connection& conn, const task_create_args& args) -> std::exp
                            "status, priority, next_action, due_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                            "returning id");
   if (!stmt) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "PrepareFailed"));
   }
   if (auto b = stmt->bind_text(1, scope_kind_to_text(scope_ref->first)); !b) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   auto b2 = scope_ref->second.has_value() ? stmt->bind_int64(2, *scope_ref->second) : stmt->bind_null(2);
   if (!b2) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   auto b3 = args.plan_id.has_value() ? stmt->bind_int64(3, *args.plan_id) : stmt->bind_null(3);
   if (!b3) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   auto b4 = args.parent_task_id.has_value() ? stmt->bind_int64(4, *args.parent_task_id) : stmt->bind_null(4);
   if (!b4) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   if (auto b = stmt->bind_text(5, args.title); !b) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   auto b6 = args.body.has_value() ? stmt->bind_text(6, *args.body) : stmt->bind_null(6);
   if (!b6) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   auto b7 = args.slug.has_value() ? stmt->bind_text(7, *args.slug) : stmt->bind_null(7);
   if (!b7) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   if (auto b = stmt->bind_text(8, task_status_to_text(args.status)); !b) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   if (auto b = stmt->bind_int64(9, args.priority); !b) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   auto b10 = args.next_action.has_value() ? stmt->bind_text(10, *args.next_action) : stmt->bind_null(10);
   if (!b10) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
   auto b11 = args.due_at.has_value() ? stmt->bind_text(11, *args.due_at) : stmt->bind_null(11);
   if (!b11) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "BindFailed"));
   }
 
   auto step = stmt->step();
   if (!step) {
+    // The unique check precedes the log, exactly as the oracle's
+    // `if (d.lastWasUniqueViolation()) return Error.SlugConflict;` precedes
+    // its `std.log.err` — a slug conflict emits NO inner line.
     if (is_unique_violation(step.error())) {
       return std::unexpected(task_error::slug_conflict);
     }
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.create", "StepFailed"));
   }
   const auto id = stmt->column_int64(0);
 

@@ -291,20 +291,12 @@ auto decision_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
   pl::decision_list_filter filter{};
   filter.plan_id = cliapp::flag_int(args, "--plan");
 
-  // `--status` is SINGLE-VALUED here — NOT comma-split, unlike `plan list`
-  // and `question list`. `--status proposed,accepted` is one unknown token.
-  if (auto const raw = cliapp::flag_string(args, "--status"); raw.has_value()) {
-    auto const st = pl::decision_status_from_text(*raw);
-    if (!st) {
-      // Exit 2, not 1: zig's list.zig dies with `error.InvalidInput`, which
-      // maps to 2. The same refusal on `question list` exits 1, because
-      // there it comes from the engine's `error.InvalidStatus`. Both
-      // captured.
-      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("unknown status '{}'", *raw)));
-    }
-    filter.status = *st;
-  }
-
+  // SCOPE IS RESOLVED BEFORE `--status` IS VALIDATED (task 6200). `decision`
+  // and `task` are the only two families that order it this way; `plan`,
+  // `question` and `scenario` validate the status first. Verified against
+  // the oracle per family — see `handlers/task.cpp`'s twin note for the
+  // probe matrix and for why the three siblings only APPEAR to agree.
+  //
   // Note the targets, which are the MIRROR IMAGE of `question list`'s: an
   // explicit `--scope` fills the SINGULAR field and leaves the vector
   // empty; the cwd-derived read set fills the VECTOR. That is what zig's
@@ -318,6 +310,30 @@ auto decision_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
       return std::unexpected(slugs.error());
     }
     filter.scopes = std::move(*slugs);
+  }
+
+  // `--status` is SINGLE-VALUED here — NOT comma-split, unlike `plan list`
+  // and `question list`. `--status proposed,accepted` is one unknown token.
+  if (auto const raw = cliapp::flag_string(args, "--status"); raw.has_value()) {
+    auto const st = pl::decision_status_from_text(*raw);
+    if (!st) {
+      // Exit 2, not 1: zig's list.zig dies with `error.InvalidInput`, which
+      // maps to 2. The same refusal on `question list` exits 1, because
+      // there it comes from the engine's `error.InvalidStatus`. Both
+      // captured.
+      //
+      // THIS EXIT CODE IS CORRECT AND MUST NOT BE "FIXED" TO 1. Task 6201
+      // was filed against it on the strength of the state-differential's
+      // `decision list --status ""` step, which runs from OUTSIDE any
+      // registered scope and showed cpp=2 / zig=1. Re-probed in a pinned
+      // arena INSIDE a scope, the oracle exits 2 here exactly as this tree
+      // does; the differential's zig=1 was the SCOPE error, which is what
+      // the reordering above now returns on that step too. Changing this
+      // arm to exit 1 would introduce a fresh divergence on every in-scope
+      // invocation. See this cycle's report and decision_leaves.t.cpp.
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("unknown status '{}'", *raw)));
+    }
+    filter.status = *st;
   }
 
   auto rows = pl::list_decisions(**conn, filter);
