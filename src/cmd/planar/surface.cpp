@@ -4062,17 +4062,27 @@ auto unported_paths() -> std::span<std::string_view const> {
       // the `editflow` port they were all blocked on.
       //
       // `plan edit | view | diff | review` and `task edit | view | diff |
-      // review` are STILL HERE, and their presence is deliberate rather
-      // than an oversight. They forward into the same ported `editflow`
-      // and would compile as-is. They are held because `editflow`'s
-      // `plan` and `task` arms reach code the four link-anchored families
-      // never touch — `walk_to_anchor` from a CHILD plan, `README.md` for
-      // an anchor, and `task_workbench_dir`'s repo-scope/`touches`/`cross`
-      // fallback — and none of that was derived from the oracle by task
-      // 6205, whose brief scoped it to sixteen. Wiring them on the
-      // strength of "the module is ported" is exactly the guess this
-      // milestone keeps finding as silent degradation. They want their own
-      // task and their own oracle run.
+      // review` — the remaining EIGHT — left it at task 6208, which is the
+      // oracle run task 6205 held them for. The three paths that hold-note
+      // named were each RUN against the oracle in a pinned arena before
+      // wiring, and all three confirmed the already-ported arms:
+      //   - `walk_to_anchor` from a CHILD plan and from a GRANDCHILD both
+      //     land on the root (`anchor_plan_id: 1` for plans 2 and 3).
+      //   - `README.md` is the anchor plan's OWN file; a non-anchor plan is
+      //     `plans/<slug>.md`.
+      //   - `task_workbench_dir` tries repo-scope, then a `touches` edge,
+      //     then `cross` — confirmed per arm INCLUDING the precedence case
+      //     the chain's shape alone does not settle: a task that is both
+      //     repo-scoped to `proj` and `touches proj2` lands in
+      //     `tasks/proj/`, so repo-scope wins.
+      //
+      // What the run DID find is a per-family divergence, and it is the
+      // reason this was worth a task rather than a one-line wiring change:
+      // for these two families a NONEXISTENT id reports `not_found`, not
+      // `no_plan_link`. `plan diff 999` says `no plan with id 999` where
+      // `question diff 999` says `question 999 is not linked to a plan`.
+      // The `not_found` arm that `editflow.cpp`'s `prose_error` documents
+      // as unreachable for the other four is the ONLY arm these two reach.
       "assoc detect",
       "assoc list",
       "assoc remove",
@@ -4106,13 +4116,9 @@ auto unported_paths() -> std::span<std::string_view const> {
       "models resolve",
       "plan closeout",
       "plan descendants",
-      "plan diff",
       "plan divergence",
-      "plan edit",
       "plan next",
       "plan recommend-strategy",
-      "plan review",
-      "plan view",
       "promote",
       "report",
       "scope clear",
@@ -4127,12 +4133,8 @@ auto unported_paths() -> std::span<std::string_view const> {
       "sync resolve",
       "sync status",
       "synthesize",
-      "task diff",
-      "task edit",
       "task packet",
-      "task review",
       "task touches infer",
-      "task view",
       "test-spec status",
       "tree",
       "workbench edit",
