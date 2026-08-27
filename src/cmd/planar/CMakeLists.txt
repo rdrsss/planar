@@ -79,11 +79,11 @@
 #                          `default_project` rather than emitting `null`.
 #                          All three are oracle-captured.
 #
-# The other three `ext` leaves are NOT here and each names what it waits on:
-# `ext test` on the adapter FACTORY (auth-env resolution plus the `gh auth
-# token` subprocess arm, whose five refusal messages are its whole observable
-# surface), and `ext create` / `ext propagate-one` / `ext propagate` on the
-# create/propagate half of `engine_extsync`. The `sync` family
+# `ext test` WAS here as a deferral and is now ported — see task 6258's
+# section at the end of this file. The other three `ext` leaves are still
+# absent and each names what it waits on: `ext create` / `ext propagate-one` /
+# `ext propagate` on the create/propagate half of `engine_extsync`. The `sync`
+# family
 # (`pull`/`push`/`status`/`resolve`) is likewise absent at THIS layer even
 # though its whole engine landed in task 6041: those handlers resolve an
 # entity ref through verbs (`task`, `plan`, `link`) that this binary does not
@@ -291,6 +291,43 @@
 # to be on the host. The degradation itself is pinned against this binary
 # alone in closure_groups_leaves.t.cpp.
 
+# --- task 6258: the adapter factory, and ONE leaf ------------------------
+#
+# `ext test`, plus the auth-resolution unit it was deferred on
+# (handlers/ext_adapter_factory.cppm). Four DEPENDS are new — `adapter`,
+# `http`, `engine_extsync` and the already-present `engine_external` — and
+# the factory is the reason: it composes the bucket that IMPLEMENTS adapters
+# with the bucket that stores the ROW an adapter is built from, and D18
+# FATALs that edge inside layer 2. Layer 3 is the first place both may be
+# named, which is where the Zig original also sits. This was checked against
+# cmake/architecture.cmake BEFORE the module was written, so unlike task 6190
+# it cost no mid-cycle redesign.
+#
+# WHAT THE FACTORY DID NOT UNBLOCK, contrary to the task's own premise. The
+# task body predicted eight leaves across two families. It is ONE:
+#
+#   ext create / propagate-one / propagate
+#                      Blocked on the create/propagate half of
+#                      engine_extsync, which is a SEPARATE absence from the
+#                      factory and is unchanged by this cycle.
+#   sync pull / push / resolve
+#                      Blocked on there being no `sync` handler module at
+#                      this layer at all, plus the entity-ref resolution
+#                      this file's earlier note already describes. The
+#                      factory is necessary for them and nowhere near
+#                      sufficient.
+#
+# Recorded because "the factory unblocks eight leaves" is the estimate that
+# justified scheduling this task, and it was wrong in a way only visible
+# after the factory existed.
+#
+# `ext test` REACHES NO NETWORK, which is why it needs no fixture server:
+# the oracle's own handler comment says it does not probe the remote, and
+# its `probeOk` only asks whether construction returned an adapter. So the
+# leaf is fully testable in-process, and the `gh-cli` arm is covered by
+# injecting a `token_command` rather than by depending on a `gh` binary
+# being installed on the test machine.
+
 planar_binary(planar
   MAIN
     main.cpp
@@ -306,6 +343,7 @@ planar_binary(planar
     handlers/workflow.cppm
     handlers/annotate.cppm
     handlers/ext.cppm
+    handlers/ext_adapter_factory.cppm
     handlers/unlink.cppm
     handlers/skills.cppm
     handlers/workspace.cppm
@@ -349,6 +387,7 @@ planar_binary(planar
     handlers/workflow.cpp
     handlers/annotate.cpp
     handlers/ext.cpp
+    handlers/ext_adapter_factory.cpp
     handlers/unlink.cpp
     handlers/skills.cpp
     handlers/workspace.cpp
@@ -377,14 +416,17 @@ planar_binary(planar
     handlers/groups.cpp
     dispatch.cpp
   DEPENDS
+    adapter
     cliapp
     db
     git
+    http
     json_text
     engine_closure
     engine_config
     engine_entitylink
     engine_external
+    engine_extsync
     engine_grouping
     engine_identity
     engine_local

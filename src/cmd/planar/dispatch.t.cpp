@@ -473,7 +473,16 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // plan-153-M5 removal refusals — they leave this inventory because a
   // refusal the oracle OWNS is a port, where the exit-64 default is a
   // placeholder claiming the verb might one day work. Named per leaf below.
-  CHECK(unported.size() == 57);
+  //
+  // 57 before task 6258 ported ONE leaf out of it — `ext test` — together
+  // with the adapter FACTORY it had been deferred on since task 6041. One
+  // leaf for a whole cycle is the honest count: the task predicted eight
+  // (the `sync` trio and the three remaining `ext` leaves alongside it),
+  // and that estimate did not survive the factory existing. Those six are
+  // blocked on the create/propagate half of `engine_extsync` and on there
+  // being no `sync` handler at this layer — absences the factory does not
+  // touch. See src/cmd/planar/CMakeLists.txt's task-6258 section.
+  CHECK(unported.size() == 56);
   //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
@@ -513,6 +522,16 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   for (auto const& leaf : {"scope show", "scope suggest", "scope use", "scope pop", "scope clear"}) {
     INFO("scope leaf: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
+  }
+  // The leaf task 6258 moved, named rather than trusted to the count. The
+  // three `ext` leaves BESIDE it must stay unported: the factory is a
+  // necessary but nowhere near sufficient condition for them, and a port
+  // that wired them off the back of this cycle would be claiming a
+  // create/propagate path that does not exist.
+  CHECK_FALSE(unported.contains("ext test"));
+  for (auto const& leaf : {"ext create", "ext propagate-one", "ext propagate"}) {
+    INFO("still-deferred ext leaf: " << leaf);
+    CHECK(unported.contains(leaf));
   }
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.

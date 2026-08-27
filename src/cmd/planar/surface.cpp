@@ -4105,7 +4105,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       "ext create",
       "ext propagate",
       "ext propagate-one",
-      "ext test",
       "feedback triage list",
       "feedback triage set",
       "feedback triage show",

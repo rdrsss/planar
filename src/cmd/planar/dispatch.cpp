@@ -354,6 +354,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("ext register jira", handlers::ext_register_jira);
   table.emplace("ext register github", handlers::ext_register_github);
   table.emplace("ext list", handlers::ext_list);
+  table.emplace("ext test", handlers::ext_test);
   // `skills` has no subcommands, so it is a LEAF and needs an entry here
   // even though the verb is retired and does nothing but render its own
   // help page. See that handler's header.

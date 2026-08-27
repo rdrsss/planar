@@ -1,21 +1,25 @@
 /// @file ext.cppm
-/// @brief `planar.cmd.planar.handlers.ext` — the three ported `planar ext`
-/// leaves: `register jira`, `register github` and `list` (plan 996, task
-/// 6041).
+/// @brief `planar.cmd.planar.handlers.ext` — the four ported `planar ext`
+/// leaves: `register jira`, `register github`, `list` (plan 996, task 6041)
+/// and `test` (task 6258).
 ///
-/// Port targets: zig/src/cmd/planar/handlers/ext/register/{jira,github}.zig
-/// and ext/list.zig.
+/// Port targets: zig/src/cmd/planar/handlers/ext/register/{jira,github}.zig,
+/// ext/list.zig and ext/test.zig.
 ///
-/// ## Why only three of six
+/// ## Why four of six
 ///
-/// `ext test` builds an adapter through the Zig `adapter_factory`, whose
-/// job is auth RESOLUTION — reading `$<auth_ref>` for `token-env` systems
-/// and shelling `gh auth token` for `gh-cli` ones — and whose five distinct
-/// refusal messages are the observable surface. That factory is deferred as
-/// a unit; it is not part of the adapter boundary this cycle landed.
-/// `ext create` / `ext propagate-one` / `ext propagate` are deferred with
-/// the create/propagate half of `engine_extsync` (see that bucket's
-/// CMakeLists.txt). Neither deferral is speculative: each names the surface
+/// `ext test` was deferred through task 6041 on the adapter FACTORY — the
+/// auth-resolution unit that turns an `external_systems` row into an adapter
+/// instance. Task 6258 ported it as
+/// `planar.cmd.planar.handlers.ext_adapter_factory`, and `ext test` is the
+/// leaf that makes it observable: SIX refusal messages (the header of that
+/// module says why it is six and not the five this file previously claimed)
+/// and one success line are its entire surface.
+///
+/// `ext create` / `ext propagate-one` / `ext propagate` remain deferred, and
+/// the factory did NOT unblock them — they wait on the create/propagate half
+/// of `engine_extsync` (see that bucket's CMakeLists.txt), which is a
+/// separate absence. Neither deferral is speculative: each names the surface
 /// it waits on.
 ///
 /// ## The three renderers, and why they live HERE
@@ -75,5 +79,19 @@ export auto ext_register_github(context& ctx, const cliapp::parsed_args& args) -
 /// @param args The parsed arguments.
 /// @return Success, or `generic_failure` (exit 1) on a query failure.
 export auto ext_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar ext test <slug> [--json]`.
+///
+/// Builds an adapter and reports whether it was wired. It does NOT contact
+/// the remote — the oracle's own comment says so and its `probeOk` only
+/// checks that construction produced an adapter — so this leaf reaches the
+/// network on no path and is testable with no fixture server. The whole
+/// observable surface is the six refusals in
+/// `planar.cmd.planar.handlers.ext_adapter_factory`, plus one success line.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, `not_found` (exit 1) for an unknown slug, or
+/// `invalid_input` (exit 2) for any credential or kind refusal.
+export auto ext_test(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers
