@@ -316,6 +316,9 @@ planar_binary(planar
     handlers/plan.cppm
     handlers/assoc.cppm
     handlers/scope.cppm
+    handlers/search.cppm
+    handlers/health.cppm
+    handlers/audit.cppm
     handlers/task.cppm
     handlers/question.cppm
     handlers/decision.cppm
@@ -359,6 +362,9 @@ planar_binary(planar
     handlers/plan.cpp
     handlers/assoc.cpp
     handlers/scope.cpp
+    handlers/search.cpp
+    handlers/health.cpp
+    handlers/audit.cpp
     handlers/task.cpp
     handlers/question.cpp
     handlers/decision.cpp
@@ -388,10 +394,12 @@ planar_binary(planar
     engine_grouping
     engine_identity
     engine_local
+    engine_health
     engine_models
     engine_planning
     engine_runs
     engine_runtime
+    engine_search
     engine_templates
     engine_workbench
     engine_workflows

@@ -16,6 +16,9 @@ import planar.cmd.planar.worktree_gate;
 import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.assoc;
 import planar.cmd.planar.handlers.scope;
+import planar.cmd.planar.handlers.search;
+import planar.cmd.planar.handlers.health;
+import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
@@ -125,6 +128,22 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("scope use", handlers::scope_use);
   table.emplace("scope pop", handlers::scope_pop);
   table.emplace("scope clear", handlers::scope_clear);
+  // `search` — the whole verb, landed at task 6090 with
+  // `planar.engine.search`. One leaf, and the only one of that task's nine
+  // that needed a new layer-2 bucket built from scratch.
+  table.emplace("search", handlers::search);
+  // `health hygiene` — the SUBCOMMAND only. The parent `planar health`
+  // stays at the exit-64 default deliberately: its handler folds
+  // `engine.installedsurface.status` (548 unported Zig lines) into every
+  // run and a projections-stubbed port would report the wrong `overall`.
+  // `health` is a DUAL node, so registering the child without the parent
+  // is well-defined here. See handlers/health.cppm.
+  table.emplace("health hygiene", handlers::health_hygiene);
+  // `audit session` — one of the family's five. `commits` (git subprocess
+  // walks via the unported `sessioncommits`), `publish-decision` (needs the
+  // adapter factory), `trail` and `handoff-readiness` stay at exit 64. See
+  // handlers/audit.cppm for which are BLOCKED and which are merely large.
+  table.emplace("audit session", handlers::audit_session);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task list", handlers::task_list);
