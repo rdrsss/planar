@@ -452,7 +452,17 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - `artifact add --plan 999` REFUSES at exit 1 and writes nothing,
   //     where `scenario add --plan 4242` succeeds and leaves a dangling
   //     edge. One flag name, opposite answers, both captured.
-  CHECK(unported.size() == 70);
+  //
+  // 70 before task 6208 ported the last EIGHT drafting leaves out of it —
+  // `plan` and `task`'s `edit | view | diff | review`. 6205 had held them
+  // deliberately (the block further down was the guard); 6208 is the oracle
+  // run it held them FOR, and the run earned its cycle: `plan` and `task`
+  // report `not_found` where the link-anchored four report `no_plan_link`,
+  // so their `diff`/`review` failure prose differs. That is asserted per
+  // leaf below rather than trusted to this count. With them the drafting
+  // quartet is complete across all six planning families — twenty-four
+  // leaves over one shared cmd-layer module.
+  CHECK(unported.size() == 62);
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
   // leaf below rather than trusted to the count, same reason as every
@@ -507,22 +517,34 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
       CHECK_FALSE(unported.contains(leaf));
     }
   }
-  // The `plan` and `task` quartets are the SAME eight leaves over the SAME
-  // now-ported module, and they deliberately STAY. `editflow`'s `plan` and
-  // `task` arms reach anchor-walking from a CHILD plan, `README.md` for an
-  // anchor, and `task_workbench_dir`'s repo-scope / `touches` / `cross`
-  // fallback -- none of which the four link-anchored families exercise,
-  // and none of which task 6205 derived from the oracle. Wiring them on
-  // the strength of "the module compiles for them too" is precisely the
-  // guess this milestone keeps finding as silent degradation.
+  // The `plan` and `task` quartets -- the same eight leaves over the same
+  // module -- landed at task 6208. Until then this block asserted the
+  // OPPOSITE, so that wiring them without doing the oracle run would fail
+  // here rather than ship silently. It did its job: the run it forced found
+  // a real divergence (below), which "the module compiles for them too"
+  // would have shipped wrong.
   //
-  // This block is what makes that a DECISION rather than an omission: it
-  // fails the day someone wires them without also moving this comment.
-  for (auto const& deferred :
-       {"plan edit", "plan view", "plan diff", "plan review", "task edit", "task view", "task diff", "task review"}) {
-    INFO("editflow leaf held for its own oracle run: " << deferred);
-    CHECK(unported.contains(deferred));
+  // The block is INVERTED rather than deleted, for the reason every other
+  // per-leaf loop in this file exists: eight leaves leaving one inventory in
+  // one commit is exactly where one silently stays behind while the total
+  // still moves by eight because something unrelated was dropped with them.
+  for (auto const& family : {"plan", "task"}) {
+    for (auto const& verb : {"edit", "view", "diff", "review"}) {
+      auto const leaf = std::format("{} {}", family, verb);
+      INFO("drafting leaf, oracle-derived at 6208: " << leaf);
+      CHECK_FALSE(unported.contains(leaf));
+    }
   }
+  // And the divergence the hold existed to surface, pinned where the next
+  // reader of this file will see it: `plan` and `task` resolve their anchor
+  // through `plans`/`tasks` rather than `entity_links`, so a nonexistent id
+  // is `not_found` for them and `no_plan_link` for the other four. The
+  // observable difference is the `diff`/`review` prose --
+  //   `plan diff 999`      -> `no plan with id 999`
+  //   `question diff 999`  -> `question 999 is not linked to a plan; ...`
+  // -- both exit 1, so ONLY the prose separates them. Asserted end-to-end
+  // in `drafting_leaves.t.cpp`; named here so a future batch that
+  // "unifies" the two arms trips a test that explains why not to.
   // The CRUD/transition halves each family's own cycle ported must still
   // not be in the inventory -- the count would catch a leaf that stayed,
   // but not a leaf that stayed while a DIFFERENT one was dropped by

@@ -96,9 +96,25 @@ auto prose_error(flow_error err, entity_kind kind, std::int64_t id, std::string_
   auto const label = entity_kind_name(kind);
   switch (err) {
   case flow_error::not_found:
-    // Unreachable for the four wired families — the anchor resolver
-    // queries `entity_links` first, so a nonexistent id reports
-    // `no_plan_link`. Declared because the oracle's handlers declare it.
+    // THE ARM THAT SPLITS THE SIX FAMILIES, and the reason `plan` and
+    // `task` were held for their own oracle run (task 6208) rather than
+    // wired alongside the other four at 6205.
+    //
+    // Unreachable for the four LINK-ANCHORED families: their anchor
+    // resolver queries `entity_links` FIRST, before any existence check, so
+    // a nonexistent id reports `no_plan_link` and lands on the arm below.
+    //
+    // For `plan` and `task` it is the only arm reachable. `plan` walks
+    // `plans.parent_plan_id` and `task` reads `tasks.plan_id`, both of
+    // which miss on a nonexistent id, so:
+    //
+    //   `plan diff 999`      exit 1, `no plan with id 999`
+    //   `task diff 999`      exit 1, `no task with id 999`
+    //   `question diff 999`  exit 1, `question 999 is not linked to a plan`
+    //
+    // Oracle-captured on all three. `not_found` maps to exit 1, same as
+    // `generic_failure`, so the exit code does not distinguish them — only
+    // the prose does, and `drafting_leaves.t.cpp` pins the prose.
     return error_from_body(domain_error_kind::not_found, std::format("no {} with id {}", label, id));
   case flow_error::no_plan_link:
     return error_from_body(domain_error_kind::generic_failure,

@@ -139,6 +139,40 @@ auto review_verb(context& ctx, const cliapp::parsed_args& args, entity_kind kind
 
 } // namespace
 
+// `plan` and `task` reuse the four shared bodies UNCHANGED. What made them
+// a task of their own rather than eight lines appended at 6205 is that the
+// bodies call into `editflow` arms the other four families never reach —
+// `walk_to_anchor` from a child plan, `README.md` for an anchor, and
+// `task_workbench_dir`'s repo-scope/`touches`/`cross` chain — each of which
+// was run against the oracle before these entry points were added. See this
+// module's interface header for the one place their observable behaviour
+// diverges from the other four.
+auto plan_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return edit_verb(ctx, args, entity_kind::plan);
+}
+auto plan_view(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return view_verb(ctx, args, entity_kind::plan);
+}
+auto plan_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return diff_verb(ctx, args, entity_kind::plan);
+}
+auto plan_review(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return review_verb(ctx, args, entity_kind::plan);
+}
+
+auto task_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return edit_verb(ctx, args, entity_kind::task);
+}
+auto task_view(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return view_verb(ctx, args, entity_kind::task);
+}
+auto task_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return diff_verb(ctx, args, entity_kind::task);
+}
+auto task_review(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  return review_verb(ctx, args, entity_kind::task);
+}
+
 auto question_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return edit_verb(ctx, args, entity_kind::question);
 }

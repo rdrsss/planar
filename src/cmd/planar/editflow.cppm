@@ -3,9 +3,13 @@
 /// drafting quartet shared by four planning families (plan 996, task 6205).
 ///
 /// Ported from `zig/src/cmd/planar/editflow.zig` (2076 lines). ONE module
-/// gates SIXTEEN leaves — `question`, `decision`, `scenario` and `artifact`
-/// each declare the same four — which is why it is a task of its own rather
-/// than a rider on any one family's engine port.
+/// gates TWENTY-FOUR leaves — `plan`, `task`, `question`, `decision`,
+/// `scenario` and `artifact` each declare the same four — which is why it
+/// is a task of its own rather than a rider on any one family's engine
+/// port. Sixteen were wired at task 6205; `plan`'s and `task`'s eight
+/// followed at task 6208, held back one cycle deliberately because they
+/// reach anchor-resolution arms the other four never touch. What that
+/// held-for run found is under "`plan` and `task` DISAGREE" below.
 ///
 /// It is a CMD-layer helper, a peer of `context` and `exit`, NOT an engine
 /// bucket and NOT under `handlers/`. That placement is inherited from the
@@ -99,13 +103,55 @@
 /// deletes at M10). It is called out here, in `dispatch.cpp` and in the
 /// test file rather than left for a reader to discover from a diff.
 ///
-/// Note also that the id is never checked for EXISTENCE first: `question
-/// view 999` and `question diff 999` report `NoPlanLink` and `is not linked
-/// to a plan`, NOT `no question with id 999`, because the resolver queries
-/// `entity_links` before it queries the entity. The `not_found` arm in the
-/// sixteen handlers is therefore unreachable for these four families. It is
-/// kept, because it is what the oracle's handlers declare, and dropping it
-/// would be a silent narrowing of the contract.
+/// Note also that for the four LINK-ANCHORED families the id is never
+/// checked for EXISTENCE first: `question view 999` and `question diff 999`
+/// report `NoPlanLink` and `is not linked to a plan`, NOT `no question with
+/// id 999`, because the resolver queries `entity_links` before it queries
+/// the entity. The `not_found` arm is therefore unreachable for those four.
+/// It is kept, because it is what the oracle's handlers declare — and
+/// because `plan` and `task` DO reach it. See the next section.
+///
+/// ### `plan` and `task` DISAGREE with the four, and it is the failure prose
+///
+/// Task 6205 wired the link-anchored four and held these two for their own
+/// oracle run precisely because their anchor resolvers are different code.
+/// The run (task 6208, pinned arena, stderr captured through a pipe)
+/// confirmed the ported arms and found exactly one behavioural split.
+///
+/// The SPLIT. `plan` walks `plans.parent_plan_id`; `task` reads
+/// `tasks.plan_id` and then walks. Neither touches `entity_links`, so
+/// neither can report `NoPlanLink` for a missing row — they report
+/// `NotFound`, and `diff`/`review` render it as different prose:
+///
+///   `plan diff 999`      exit 1, `error: no plan with id 999`
+///   `task diff 999`      exit 1, `error: no task with id 999`
+///   `question diff 999`  exit 1, `error: question 999 is not linked to a plan; ...`
+///
+/// `plan view 999` and `task view 999` take the bare-tag path as the other
+/// four do, but with `NotFound` rather than `NoPlanLink` as the tag.
+///
+/// What did NOT differ, each checked rather than assumed:
+///
+///   - `walk_to_anchor` from a CHILD plan resolves to the root, and so does
+///     a GRANDCHILD: plans 2 and 3 of a 1<-2<-3 chain both render
+///     `anchor_plan_id: 1`. A task pinned to plan 3 does too.
+///   - The ANCHOR plan renders to the feature's `README.md`; every other
+///     plan renders to `plans/<slug>.md`.
+///   - `task_workbench_dir` tries the task's repo-scope slug, then its
+///     first `touches` repo, then the literal `cross`. All three arms were
+///     run, AND the precedence case the chain's shape alone does not
+///     settle: a task both scoped `repo:proj` and `touches proj2` renders
+///     into `tasks/proj/`, so repo-scope wins over `touches`.
+///   - `view`/`edit` and `diff`/`review` AGREE about the path for both
+///     families. The `artifact` split does not generalise; these two are
+///     `question`-shaped in that respect.
+///   - The thin-vs-canonical RENDERER split DOES apply to both, so
+///     `plan view 1 && plan diff 1` still reports the two timestamp lines
+///     as pending, exactly as it does for the other four.
+///   - `apply_mutations`'s scenario-only transition guard means a `task`
+///     status edit is UNGUARDED here: `todo -> done` through front matter
+///     lands, skipping `doing`, and `done -> todo` lands too. Both were run
+///     against the oracle rather than inferred from the guard's shape.
 ///
 /// ### `diff` and `review` are the SAME verb when no verdict is given
 ///
@@ -143,10 +189,9 @@ namespace planar::cmd {
 
 /// @brief The six planning entity kinds the quartet covers.
 ///
-/// `plan` and `task` are declared because the flow genuinely handles them —
-/// `resolve_anchor_plan` and `entity_rel_path` both have live arms for them
-/// — but their eight leaves are NOT wired by this task. See this module's
-/// implementation notes and `dispatch.cpp`.
+/// All six are WIRED: the link-anchored four at task 6205, `plan` and
+/// `task` at task 6208 after the oracle run that task was held for. See
+/// this module's header for what that run found.
 export enum class entity_kind : std::uint8_t {
   plan,
   task,

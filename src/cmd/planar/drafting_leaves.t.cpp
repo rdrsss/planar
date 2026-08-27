@@ -1,7 +1,8 @@
 // @file drafting_leaves.t.cpp
-// @brief Leaf-level tests for the sixteen `edit | view | diff | review`
-// leaves across `question`, `decision`, `scenario` and `artifact` (plan 996
-// roadmap M12, task 6205).
+// @brief Leaf-level tests for the TWENTY-FOUR `edit | view | diff | review`
+// leaves across `plan`, `task`, `question`, `decision`, `scenario` and
+// `artifact` (plan 996 roadmap M12; the link-anchored sixteen at task 6205,
+// `plan` and `task` at task 6208).
 //
 // Same shape as `question_leaves.t.cpp` and its three siblings: dispatch the
 // real tree and table against a scratch root, then assert the
@@ -110,6 +111,69 @@
 //     third as a bare `error: QueryFailed`, because the reduced flow never
 //     writes the `answer_body`/`answered_at` the constraint requires.
 //     Oracle-confirmed and reproduced rather than improved.
+//
+// ## `plan` and `task` (task 6208), and why they were a SECOND oracle run
+//
+// Task 6205 wired sixteen leaves and left these eight declared-but-unported
+// on purpose, with a `dispatch.t.cpp` block that would fail the day someone
+// wired them without redoing the run. That block did its job. These two
+// families forward into the SAME module — the four handler bodies below are
+// reused unchanged — but they arrive through a different anchor resolver
+// and a different path builder, and the run found a real divergence the
+// "same module, therefore done" argument would have shipped wrong:
+//
+//   - A NONEXISTENT id is `not_found` for them and `no_plan_link` for the
+//     other four, because `plan` walks `plans.parent_plan_id` and `task`
+//     reads `tasks.plan_id` — neither touches `entity_links`. So
+//     `plan diff 999` says `no plan with id 999` where `question diff 999`
+//     says `question 999 is not linked to a plan`. Both exit 1, so the
+//     exit code does NOT separate them and only the prose does. This is
+//     the arm `editflow.cpp` documents as unreachable; it is unreachable
+//     for four of six families and the only reachable arm for the other
+//     two.
+//
+// Three behaviours the hold-note named were confirmed rather than changed:
+//
+//   - `walk_to_anchor` climbs the WHOLE chain. On plans 1 <- 2 <- 3 all
+//     three render `anchor_plan_id: 1`, as does a task pinned to plan 3. A
+//     resolver that returned `parent_plan_id` directly would still resolve
+//     every path and would silently split the feature directory in two.
+//   - The ANCHOR plan is the feature's `README.md`; any other plan is
+//     `plans/<slug>.md`.
+//   - `task_workbench_dir` tries repo-scope, then `touches`, then `cross`.
+//     All three arms are pinned, AND the precedence case the chain's shape
+//     alone does not settle: a task scoped `repo:proj` that ALSO touches
+//     `proj2` renders into `tasks/proj/`. Repo-scope wins.
+//
+// And two generalisations that were checked instead of assumed:
+//
+//   - Unlike `artifact`, `view`/`edit` and `diff`/`review` AGREE about the
+//     path for both families, so their `diff` reports a content diff rather
+//     than a whole-document deletion hunk.
+//   - The thin-vs-canonical renderer split DOES still apply, so `plan view`
+//     followed by `plan diff` is noisy for the documented reason.
+//   - `apply_mutations` guards `scenario` alone, so a `task` status edit
+//     moves `todo -> done` skipping `doing`, and back. Run in both
+//     directions rather than inferred from the guard's shape. Gate 1 still
+//     bites: an unknown status is refused by the front-matter parser.
+//
+// BREAK-PROBES for these cases, run via `scripts/break-probe.sh`. Each
+// mutant built and was KILLED by the single named test:
+//
+//   editflow: drop the anchor-plan README branch
+//       -> "plan view renders the ANCHOR to README.md ..."          killed
+//   editflow: walk_to_anchor returns the first parent, no loop
+//       -> "walk_to_anchor climbs the whole chain, not one level"   killed
+//   editflow: disable the repo-scope arm so touches/cross win
+//       -> "task_workbench_dir tries repo-scope, then touches ..."  killed
+//   editflow: unify not_found onto the no_plan_link wording
+//       -> "a nonexistent plan or task is not_found, ..."           killed
+//   editflow: extend the scenario-only transition guard to task
+//       -> "a task status edit runs NO transition guard, ..."       killed
+//   editor:   remove the fork so no child is ever created
+//       -> "the $EDITOR spawn is real for plan and task too, ..."   killed
+//   dispatch: unwire `task review` from the table
+//       -> "every leaf is in exactly one of the two populations"    killed
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -277,11 +341,65 @@ struct family {
   std::string_view slug;
 };
 
-/// @brief The four link-anchored families this task wired.
+/// @brief The four link-anchored families task 6205 wired.
 /// @return The families.
 auto families() -> std::vector<family> {
   return {
       {"question", "1-q-linked.md"}, {"decision", "1-d-linked.md"}, {"scenario", "1-s-linked.md"}, {"artifact", "1-a-linked.md"}};
+}
+
+/// @brief The feature directory `seed_hierarchy` renders into.
+///
+/// The association level is PRESENT here where `seed_linked`'s cases have
+/// none, because `plan` and `task` need registered projects — `repo:` scope
+/// and `touches` both name one — and registering a project means creating
+/// the association that owns it. `project:proj` sanitises to `project_proj`.
+/// @param fx The fixture.
+/// @return The absolute feature directory.
+auto hierarchy_feature_dir(const fixture& fx) -> std::filesystem::path {
+  return fx.root / "wb" / "project_proj" / "p1-anchor";
+}
+
+/// @brief Seed the plan CHAIN and the task SHAPES that `plan` and `task`
+/// reach and the four link-anchored families never do.
+///
+/// EVERY ROW HERE EXISTS TO PIN ONE ORACLE-DERIVED BEHAVIOUR, so nothing in
+/// it is incidental:
+///
+///   plans   1 <- 2 <- 3. Plan 1 is the anchor (`parent_plan_id` null), so
+///           `walk_to_anchor` is exercised at depth 0, 1 and 2. The four
+///           link-anchored families only ever reach depth 0.
+///
+///   task 1  association-scoped, `touches proj2`     -> `tasks/proj2/`
+///   task 2  association-scoped, NO touches          -> `tasks/cross/`
+///   task 3  `repo:proj`-scoped                      -> `tasks/proj/`
+///   task 4  `repo:proj2`-scoped, on the GRANDCHILD  -> `tasks/proj2/`
+///   task 5  `repo:proj`-scoped AND `touches proj2`  -> `tasks/proj/`
+///
+///   Task 5 is the one the chain's SHAPE does not settle: reading
+///   `task_workbench_dir` tells you repo-scope is tried first, but not
+///   whether the oracle agrees. It does — repo-scope wins over `touches`,
+///   captured by running it.
+///
+/// @param fx The fixture.
+void seed_hierarchy(const fixture& fx) {
+  REQUIRE(dispatch(fx, {"init", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string()}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj2").string()}).code == 0);
+
+  REQUIRE(dispatch(fx, {"plan", "create", "Anchor", "--slug", "anchor", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Child", "--slug", "child", "--parent", "1", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Grand", "--slug", "grand", "--parent", "2", "--json"}).code == 0);
+
+  REQUIRE(dispatch(fx, {"task", "add", "T touches", "--plan", "2", "--scope", "project:proj", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T cross", "--plan", "3", "--scope", "project:proj", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T repo", "--plan", "2", "--scope", "repo:proj", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T deep", "--plan", "3", "--scope", "repo:proj2", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T both", "--plan", "2", "--scope", "repo:proj", "--json"}).code == 0);
+
+  REQUIRE(dispatch(fx, {"task", "touches", "add", "1", "proj2"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "touches", "add", "5", "proj2"}).code == 0);
 }
 
 } // namespace
@@ -992,4 +1110,392 @@ TEST_CASE("the other three families run NO transition guard on the editor path",
 
   auto conn = open_db(fx);
   CHECK(scalar(conn, "select status from decisions where id = 1") == "superseded");
+}
+
+// ===========================================================================
+// `plan` and `task` — the eight leaves task 6205 held for their own oracle
+// run, wired at task 6208.
+//
+// The cases below are the run. Each pins one thing the four link-anchored
+// families do NOT exercise, so none of them can be satisfied by the fact
+// that the shared `editflow` module already compiled for these two kinds —
+// which is precisely the claim 6205 declined to ship on.
+// ===========================================================================
+
+TEST_CASE("plan view renders the ANCHOR to README.md and every other plan under plans/", "[cmd][drafting][view][plan]") {
+  // ORACLE PATH 1 of 3. `entity_rel_path`'s `plan` arm branches on
+  // `id == anchor_id`, which the four link-anchored families can never
+  // reach: none of them IS a plan. A port that dropped the branch would put
+  // the anchor at `plans/anchor.md`, still exit 0, still render correct
+  // bytes, and silently stop being the file `workbench pull` writes.
+  auto fx = make_fixture("planviewpaths");
+  seed_hierarchy(fx);
+  install_stub_pager(fx);
+
+  auto const dir = hierarchy_feature_dir(fx);
+
+  REQUIRE(dispatch(fx, {"plan", "view", "1"}).code == 0);
+  CHECK(std::filesystem::exists(dir / "README.md"));
+  CHECK(!std::filesystem::exists(dir / "plans" / "anchor.md"));
+
+  REQUIRE(dispatch(fx, {"plan", "view", "2"}).code == 0);
+  CHECK(std::filesystem::exists(dir / "plans" / "child.md"));
+
+  REQUIRE(dispatch(fx, {"plan", "view", "3"}).code == 0);
+  CHECK(std::filesystem::exists(dir / "plans" / "grand.md"));
+}
+
+TEST_CASE("walk_to_anchor climbs the whole chain, not one level", "[cmd][drafting][view][plan][anchor]") {
+  // ORACLE PATH 2 of 3, and the one a one-level fixture cannot catch. With
+  // plans 1 <- 2 <- 3, a resolver that returned `parent_plan_id` directly
+  // instead of looping would give plan 3 an anchor of 2. Every path would
+  // still resolve, every file would still be written, and the feature
+  // directory would silently split in two.
+  //
+  // The anchor is asserted through the RENDERED front matter rather than
+  // the resolver, because that is where an operator sees it.
+  auto fx = make_fixture("planwalk");
+  seed_hierarchy(fx);
+  install_stub_pager(fx);
+
+  auto const dir = hierarchy_feature_dir(fx);
+
+  for (auto const& [id, file] :
+       std::vector<std::pair<std::string, std::string>>{{"1", "README.md"}, {"2", "plans/child.md"}, {"3", "plans/grand.md"}}) {
+    INFO("plan " << id << " at depth " << id);
+    REQUIRE(dispatch(fx, {"plan", "view", id}).code == 0);
+    auto const body = read_file(dir / file);
+    REQUIRE(!body.empty());
+    CHECK(body.contains("anchor_plan_id: 1\n"));
+  }
+
+  // A task pinned to the GRANDCHILD walks the same chain, through
+  // `tasks.plan_id` first. Task 4 is on plan 3.
+  REQUIRE(dispatch(fx, {"task", "view", "4"}).code == 0);
+  auto const deep = read_file(dir / "tasks" / "proj2" / "4-t-deep.md");
+  REQUIRE(!deep.empty());
+  CHECK(deep.contains("anchor_plan_id: 1\n"));
+}
+
+TEST_CASE("task_workbench_dir tries repo-scope, then touches, then cross", "[cmd][drafting][view][task]") {
+  // ORACLE PATH 3 of 3, all four arms plus the precedence case. See
+  // `seed_hierarchy` for why each task exists.
+  //
+  // The precedence case (task 5) is the one that had to be RUN: reading the
+  // function tells you repo-scope is checked first, but "the code I am
+  // porting does X" is not evidence that the oracle does X — it is evidence
+  // about the same code. Task 5 is scoped `repo:proj` AND touches `proj2`,
+  // and lands under `tasks/proj/`.
+  auto fx = make_fixture("taskdirs");
+  seed_hierarchy(fx);
+  install_stub_pager(fx);
+
+  auto const dir = hierarchy_feature_dir(fx);
+
+  struct expectation {
+    std::string id;
+    std::string rel;
+    std::string why;
+  };
+  for (auto const& [id, rel, why] :
+       std::vector<expectation>{{"1", "tasks/proj2/1-t-touches.md", "association-scoped, resolved by its touches edge"},
+                                {"2", "tasks/cross/2-t-cross.md", "association-scoped with no touches, the cross fallback"},
+                                {"3", "tasks/proj/3-t-repo.md", "repo-scoped"},
+                                {"4", "tasks/proj2/4-t-deep.md", "repo-scoped to the OTHER repo, on the grandchild plan"},
+                                {"5", "tasks/proj/5-t-both.md", "repo-scoped AND touching: repo-scope wins"}}) {
+    INFO("task " << id << ": " << why);
+    REQUIRE(dispatch(fx, {"task", "view", id}).code == 0);
+    CHECK(std::filesystem::exists(dir / rel));
+  }
+
+  // Discrimination: the two arms are not collapsing onto one directory.
+  // Without this, a `task_workbench_dir` that returned the scope slug for
+  // everything would pass three of the five rows above.
+  CHECK(std::filesystem::exists(dir / "tasks" / "cross"));
+  CHECK(std::filesystem::exists(dir / "tasks" / "proj"));
+  CHECK(std::filesystem::exists(dir / "tasks" / "proj2"));
+  CHECK(!std::filesystem::exists(dir / "tasks" / "proj" / "1-t-touches.md"));
+  CHECK(!std::filesystem::exists(dir / "tasks" / "proj2" / "5-t-both.md"));
+}
+
+TEST_CASE("plan and task diff read the SAME path view wrote, unlike artifact", "[cmd][drafting][diff][plan][task]") {
+  // The generalisation this file's header warns against, checked instead of
+  // assumed. `artifact view` and `artifact diff` disagree about where the
+  // file lives; `plan` and `task` do NOT, so their `diff` finds the file
+  // and reports a CONTENT diff rather than a whole-document deletion hunk.
+  //
+  // The tell is the hunk header: an absent file gives `@@ -1,N +0,0 @@`.
+  auto fx = make_fixture("plantaskpath");
+  seed_hierarchy(fx);
+  install_stub_pager(fx);
+
+  REQUIRE(dispatch(fx, {"plan", "view", "2"}).code == 0);
+  auto const plan_diff = dispatch(fx, {"plan", "diff", "2"});
+  CHECK(plan_diff.code == 0);
+  CHECK(plan_diff.out.contains("plans/child.md"));
+  CHECK(!plan_diff.out.contains("+0,0"));
+
+  REQUIRE(dispatch(fx, {"task", "view", "3"}).code == 0);
+  auto const task_diff = dispatch(fx, {"task", "diff", "3"});
+  CHECK(task_diff.code == 0);
+  CHECK(task_diff.out.contains("tasks/proj/3-t-repo.md"));
+  CHECK(!task_diff.out.contains("+0,0"));
+
+  // ...and the THIN-vs-CANONICAL renderer split still applies to them, so
+  // the diff is non-empty for the documented reason rather than because the
+  // file is missing. Both timestamp lines are what the canonical renderer
+  // adds and the thin one omits.
+  CHECK(plan_diff.out.contains("-**Created:**"));
+  CHECK(plan_diff.out.contains("-**Updated:**"));
+  CHECK(task_diff.out.contains("-**Created:**"));
+  CHECK(task_diff.out.contains("-**Updated:**"));
+}
+
+TEST_CASE("a nonexistent plan or task is not_found, where the other four are no_plan_link",
+          "[cmd][drafting][diff][plan][task][divergence]") {
+  // THE FINDING THAT EARNED THIS CYCLE. `plan` walks `plans.parent_plan_id`
+  // and `task` reads `tasks.plan_id`; neither consults `entity_links`, so
+  // neither can report `NoPlanLink` for a row that is simply absent.
+  //
+  // `prose_error`'s `not_found` arm is documented in `editflow.cpp` as
+  // unreachable — true for the four families 6205 wired, false for these
+  // two, where it is the ONLY arm reachable. Both spellings exit 1, so the
+  // exit code does not separate them and only the prose does.
+  auto fx = make_fixture("plantasknotfound");
+  seed_hierarchy(fx);
+
+  auto const plan_diff = dispatch(fx, {"plan", "diff", "999"});
+  CHECK(plan_diff.code == 1);
+  CHECK(plan_diff.err == "error: no plan with id 999\n");
+
+  auto const task_diff = dispatch(fx, {"task", "diff", "999"});
+  CHECK(task_diff.code == 1);
+  CHECK(task_diff.err == "error: no task with id 999\n");
+
+  // `review` shares `load_snapshot`, so it shares the prose.
+  CHECK(dispatch(fx, {"plan", "review", "999"}).err == "error: no plan with id 999\n");
+  CHECK(dispatch(fx, {"task", "review", "999"}).err == "error: no task with id 999\n");
+
+  // THE DISCRIMINATION, and the reason this case is not just three string
+  // literals: a link-anchored family on the SAME database and the same
+  // missing-id shape reports the other wording entirely. If the two arms
+  // were ever unified, this half goes red.
+  auto const question_diff = dispatch(fx, {"question", "diff", "999"});
+  CHECK(question_diff.code == 1);
+  CHECK(question_diff.err == "error: question 999 is not linked to a plan; cannot resolve anchor plan\n");
+
+  // `view` takes the bare-tag path for all six, but the TAG differs for the
+  // same reason. (The oracle follows this with stack frames; see this
+  // module's header for the one deliberate divergence.)
+  auto const plan_view = dispatch(fx, {"plan", "view", "999"});
+  CHECK(plan_view.code == 1);
+  CHECK(plan_view.err == "error: cannot resolve anchor plan for plan 999: NotFound\nerror: NotFound\n");
+  auto const task_view = dispatch(fx, {"task", "view", "999"});
+  CHECK(task_view.code == 1);
+  CHECK(task_view.err == "error: cannot resolve anchor plan for task 999: NotFound\nerror: NotFound\n");
+}
+
+TEST_CASE("plan and task keep the diff-strict / view-lenient id asymmetry", "[cmd][drafting][diff][plan][task]") {
+  // The asymmetry `drafting.cppm`'s table documents, confirmed on the two
+  // families that reach it through a different resolver. `view 0` is NOT
+  // refused by the handler; it reaches the resolver and reports what the
+  // resolver finds — which for these two is `NotFound`, not `NoPlanLink`.
+  auto fx = make_fixture("plantaskid");
+  seed_hierarchy(fx);
+
+  auto const plan_zero = dispatch(fx, {"plan", "diff", "0"});
+  CHECK(plan_zero.code == 2);
+  CHECK(plan_zero.err == "error: plan id must be a positive integer, got 0\n");
+
+  auto const task_zero = dispatch(fx, {"task", "diff", "0"});
+  CHECK(task_zero.code == 2);
+  CHECK(task_zero.err == "error: task id must be a positive integer, got 0\n");
+
+  auto const lenient = dispatch(fx, {"plan", "view", "0"});
+  CHECK(lenient.code == 1); // reached the resolver, not the id guard
+  CHECK(lenient.err.contains("cannot resolve anchor plan for plan 0: NotFound"));
+
+  // Non-integer is refused by the shared parse for both verbs.
+  CHECK(dispatch(fx, {"plan", "view", "abc"}).err == "error: plan id must be an integer, got 'abc'\n");
+  CHECK(dispatch(fx, {"task", "diff", "abc"}).err == "error: task id must be an integer, got 'abc'\n");
+}
+
+TEST_CASE("plan and task review emit the envelope with their own entity name", "[cmd][drafting][review][plan][task]") {
+  auto fx = make_fixture("plantaskreview");
+  seed_hierarchy(fx);
+  install_stub_pager(fx);
+
+  auto const dir = hierarchy_feature_dir(fx);
+
+  auto const plan_json = dispatch(fx, {"plan", "review", "2", "--json"});
+  CHECK(plan_json.code == 0);
+  CHECK(plan_json.out == std::format(R"({{"entity":"plan","id":2,"anchor_plan_id":1,"workbench_path":"{}","verdict":null,)"
+                                     R"("has_changes":true,"persisted":false,"persistence":"none"}})"
+                                     "\n",
+                                     (dir / "plans" / "child.md").string()));
+
+  auto const task_json = dispatch(fx, {"task", "review", "3", "--json"});
+  CHECK(task_json.code == 0);
+  CHECK(task_json.out == std::format(R"({{"entity":"task","id":3,"anchor_plan_id":1,"workbench_path":"{}","verdict":null,)"
+                                     R"("has_changes":true,"persisted":false,"persistence":"none"}})"
+                                     "\n",
+                                     (dir / "tasks" / "proj" / "3-t-repo.md").string()));
+
+  // The text form with a verdict names the family and reports the same
+  // anchor the walk resolved.
+  auto const verdict = dispatch(fx, {"task", "review", "3", "--approve"});
+  CHECK(verdict.code == 0);
+  CHECK(verdict.out.starts_with("task 3 review: approve (persisted: no; reason: no per-entity review table)\n"));
+  CHECK(verdict.out.contains("anchor_plan: 1\n"));
+  CHECK(verdict.out.contains("changes_pending: yes\n"));
+
+  // Both verdicts together is refused before the database opens, same as
+  // the other four.
+  auto const both = dispatch(fx, {"plan", "review", "2", "--approve", "--request-changes"});
+  CHECK(both.code == 2);
+  CHECK(both.err == "error: --approve and --request-changes are mutually exclusive\n");
+}
+
+TEST_CASE("the $EDITOR spawn is real for plan and task too, and gets the TEMP path", "[cmd][drafting][edit][spawn][plan][task]") {
+  // WITNESSES 1 AND 2 on the two families this task wired. These leaves
+  // reach the editor through the same shared body, but they reach it AFTER
+  // a different anchor resolver and a different path builder, so a
+  // regression in either would surface here and nowhere in the sixteen
+  // cases above.
+  //
+  // The sentinels `PLAN-EDITED-BY-STUB-4c19` and `TASK-EDITED-BY-STUB-4c19`
+  // appear nowhere in `src/`. Neither can reach a row except by way of a
+  // spawned process writing a file this binary then read back.
+  auto fx = make_fixture("plantaskedit");
+  seed_hierarchy(fx);
+
+  auto const witness = fx.root / "editor-witness";
+  write_script(fx.root / "stub-editor", std::format("#!/bin/sh\n"
+                                                    "printf '%s\\n' \"$1\" >> {}\n"
+                                                    "sed -e \"s/^title: .*/title: EDITED-BY-STUB-4c19/\" \"$1\" > \"$1.new\"\n"
+                                                    "mv \"$1.new\" \"$1\"\n",
+                                                    witness.string()));
+  fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();
+
+  auto const plan_res = dispatch(fx, {"plan", "edit", "2"});
+  CHECK(plan_res.code == 0);
+  CHECK(plan_res.err.empty()); // a clean title-only edit is SILENT
+
+  auto const task_res = dispatch(fx, {"task", "edit", "3"});
+  CHECK(task_res.code == 0);
+  CHECK(task_res.err.empty());
+
+  // WITNESS 1: two children ran, and each was handed the TEMP copy rather
+  // than the workbench file.
+  auto const recorded = read_file(witness);
+  REQUIRE(!recorded.empty());
+  std::size_t spawns = 0;
+  for (auto const line : std::views::split(recorded, '\n')) {
+    std::string_view const path{line.begin(), line.end()};
+    if (path.empty()) {
+      continue;
+    }
+    ++spawns;
+    INFO("editor argv: " << path);
+    CHECK(path.starts_with((fx.root / "tmp" / "planar-edit-").string()));
+    CHECK(!path.contains("/wb/"));
+  }
+  CHECK(spawns == 2);
+
+  // WITNESS 2: the sentinel reached BOTH rows.
+  auto conn = open_db(fx);
+  CHECK(scalar(conn, "select title from plans where id = 2") == "EDITED-BY-STUB-4c19");
+  CHECK(scalar(conn, "select title from tasks where id = 3") == "EDITED-BY-STUB-4c19");
+}
+
+TEST_CASE("a non-zero $EDITOR exit aborts a plan or task edit without writing", "[cmd][drafting][edit][spawn][plan][task]") {
+  // WITNESS 3 on these two families.
+  auto fx = make_fixture("plantaskabort");
+  seed_hierarchy(fx);
+
+  write_script(fx.root / "stub-editor", "#!/bin/sh\n"
+                                        "sed -e 's/^title: .*/title: SHOULD-NOT-LAND/' \"$1\" > \"$1.new\"\n"
+                                        "mv \"$1.new\" \"$1\"\n"
+                                        "exit 3\n");
+  fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();
+
+  auto const plan_res = dispatch(fx, {"plan", "edit", "2"});
+  CHECK(plan_res.code == 0); // an aborted edit is not a FAILURE
+  CHECK(plan_res.err == "aborted: editor exited with code 3\n");
+
+  auto const task_res = dispatch(fx, {"task", "edit", "3"});
+  CHECK(task_res.code == 0);
+  CHECK(task_res.err == "aborted: editor exited with code 3\n");
+
+  auto conn = open_db(fx);
+  CHECK(scalar(conn, "select title from plans where id = 2") == "Child");
+  CHECK(scalar(conn, "select title from tasks where id = 3") == "T repo");
+}
+
+TEST_CASE("a task status edit runs NO transition guard, so todo jumps straight to done", "[cmd][drafting][edit][task]") {
+  // `apply_mutations` guards `scenario` and nothing else, and this is what
+  // that means for `task` in particular: the editor path will move a task
+  // `todo -> done` without passing through `doing`, and back again — edges
+  // `task done` and the status lifecycle in the CLI reference describe as
+  // ordered. Run against the oracle in both directions rather than inferred
+  // from the guard's shape, because "the guard names scenario" and "the
+  // other five are therefore unguarded" is exactly the kind of inference
+  // this milestone keeps finding to be half-true.
+  //
+  // Gate 1 still bites: the front-matter parser rejects a status outside
+  // `task`'s own set before this flow ever sees it. Unguarded is not
+  // unvalidated.
+  auto fx = make_fixture("taskstatus");
+  seed_hierarchy(fx);
+
+  auto const set_status = [&](std::string_view to) {
+    write_script(fx.root / "stub-editor", std::format("#!/bin/sh\n"
+                                                      "sed -e 's/^status: .*/status: {}/' \"$1\" > \"$1.new\"\n"
+                                                      "mv \"$1.new\" \"$1\"\n",
+                                                      to));
+    fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();
+    return dispatch(fx, {"task", "edit", "3"});
+  };
+
+  auto conn = open_db(fx);
+  REQUIRE(scalar(conn, "select status from tasks where id = 3") == "todo");
+
+  auto const forward = set_status("done");
+  CHECK(forward.code == 0);
+  CHECK(forward.err.empty());
+  CHECK(scalar(conn, "select status from tasks where id = 3") == "done");
+
+  auto const backward = set_status("todo");
+  CHECK(backward.code == 0);
+  CHECK(scalar(conn, "select status from tasks where id = 3") == "todo");
+
+  // GATE 1, which is NOT skipped. An unknown status never reaches the
+  // update at all; the parser refuses it and the row is untouched.
+  auto const bogus = set_status("nonsense");
+  CHECK(bogus.code == 1);
+  CHECK(bogus.err.contains("failed to parse editor output for task 3: InvalidFieldValue"));
+  CHECK(scalar(conn, "select status from tasks where id = 3") == "todo");
+}
+
+TEST_CASE("a non-title, non-status front-matter edit warns and is dropped, for plan and task",
+          "[cmd][drafting][edit][plan][task]") {
+  // The `[M4 limitation: ...]` arm, on a field only these two families
+  // carry in front matter. `priority` is rendered for `task` and for no
+  // other kind, so this is the one place the warning can be reached through
+  // a field that is not shared with the sixteen cases above.
+  auto fx = make_fixture("plantaskm4");
+  seed_hierarchy(fx);
+
+  write_script(fx.root / "stub-editor", "#!/bin/sh\n"
+                                        "sed -e 's/^priority: .*/priority: 7/' \"$1\" > \"$1.new\"\n"
+                                        "mv \"$1.new\" \"$1\"\n");
+  fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();
+
+  auto const res = dispatch(fx, {"task", "edit", "3"});
+  CHECK(res.code == 0);
+  CHECK(res.err == "[M4 limitation: only title and status mutations are applied; other fields are ignored]\n"
+                   "aborted: no changes made\n");
+
+  auto conn = open_db(fx);
+  CHECK(scalar(conn, "select priority from tasks where id = 3") == "100");
 }

@@ -262,12 +262,40 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("artifact view", handlers::artifact_view);
   table.emplace("artifact diff", handlers::artifact_diff);
   table.emplace("artifact review", handlers::artifact_review);
-  // `plan` and `task` carry the SAME quartet and are NOT wired here. They
-  // forward into the same ported module and would compile; they are held
-  // because `editflow`'s `plan`/`task` arms reach anchor-walking and
-  // repo-scope path code the four link-anchored families never exercise,
-  // and none of it was oracle-derived by this task. See the note beside
-  // them in `surface.cpp`'s `unported_paths`.
+  // `plan` and `task` carry the SAME quartet over the SAME module, and the
+  // remaining EIGHT arms landed at task 6208 — the oracle run 6205 held
+  // them for rather than wiring them on the strength of "it compiles for
+  // them too". Three arms the link-anchored four never reach were each run
+  // against the oracle in a pinned arena, and all three confirmed the port:
+  //   - `walk_to_anchor` from a CHILD plan, and from a GRANDCHILD, both
+  //     resolve to the root plan.
+  //   - The ANCHOR plan's file is the feature's `README.md`; any other
+  //     plan's is `plans/<slug>.md`.
+  //   - `task_workbench_dir` tries repo-scope, then `touches`, then
+  //     `cross`. The precedence case the chain's shape does not settle was
+  //     run too: repo-scoped `proj` PLUS `touches proj2` lands in
+  //     `tasks/proj/`, so repo-scope wins.
+  //
+  // ONE DIVERGENCE FROM THE OTHER FOUR, and it is the finding that made
+  // this a task: on a NONEXISTENT id these two report `not_found`, not
+  // `no_plan_link`, because their anchor resolvers read `plans` and `tasks`
+  // rather than `entity_links`. `plan diff 999` prints `no plan with id
+  // 999`; `question diff 999` prints `question 999 is not linked to a
+  // plan`. Both are exit 1. See `handlers/drafting.cppm`.
+  //
+  // What does NOT diverge, and was checked rather than assumed: unlike
+  // `artifact`, `view`/`edit` and `diff`/`review` agree about WHERE the
+  // file lives for both of these families. The thin-vs-canonical RENDERER
+  // split still applies to them, so `plan view 1 && plan diff 1` still
+  // reports the two timestamp lines as a pending change.
+  table.emplace("plan edit", handlers::plan_edit);
+  table.emplace("plan view", handlers::plan_view);
+  table.emplace("plan diff", handlers::plan_diff);
+  table.emplace("plan review", handlers::plan_review);
+  table.emplace("task edit", handlers::task_edit);
+  table.emplace("task view", handlers::task_view);
+  table.emplace("task diff", handlers::task_diff);
+  table.emplace("task review", handlers::task_review);
   // The entity-link surface — all seven arms, landed together at task
   // 6193. `engine_entitylink` was fully ported and exported no renderer,
   // which is the single reason every one of these refused at exit 64.
