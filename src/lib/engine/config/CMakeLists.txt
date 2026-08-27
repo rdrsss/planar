@@ -54,6 +54,13 @@ planar_module(engine_config
   DEPENDS
     db
     json_text
+    # `templates.cpp`'s validity probe. It used `glz::validate_json`, which
+    # ACCEPTS duplicate object keys where `std.json` rejects them — a
+    # captured divergence on `templates show`/`validate`/`render` (task
+    # 6190). `json_dom` is the tree's `std.json`-faithful parser; see
+    # src/lib/json_dom/CMakeLists.txt. Glaze is still linked below for
+    # `toml.cpp`, which is its real user here.
+    json_dom
   EMBED)
 
 target_link_libraries(planar_engine_config PRIVATE glaze::glaze)
