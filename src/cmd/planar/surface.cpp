@@ -4057,15 +4057,22 @@ auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_vi
 
 auto unported_paths() -> std::span<std::string_view const> {
   static constexpr std::string_view k_unported[] = {
-      // `artifact add | show | list | update | link` left this inventory
-      // at task 6196 with the `artifact` engine. The four that remain are
-      // the workbench drafting quartet, blocked on `editflow` — a
-      // cmd-layer module that gates the same four leaves on `question`,
-      // `decision`, `scenario` and `artifact` alike.
-      "artifact diff",
-      "artifact edit",
-      "artifact review",
-      "artifact view",
+      // The `question`, `decision`, `scenario` and `artifact` DRAFTING
+      // quartets — sixteen leaves — left this inventory at task 6205 with
+      // the `editflow` port they were all blocked on.
+      //
+      // `plan edit | view | diff | review` and `task edit | view | diff |
+      // review` are STILL HERE, and their presence is deliberate rather
+      // than an oversight. They forward into the same ported `editflow`
+      // and would compile as-is. They are held because `editflow`'s
+      // `plan` and `task` arms reach code the four link-anchored families
+      // never touch — `walk_to_anchor` from a CHILD plan, `README.md` for
+      // an anchor, and `task_workbench_dir`'s repo-scope/`touches`/`cross`
+      // fallback — and none of that was derived from the oracle by task
+      // 6205, whose brief scoped it to sixteen. Wiring them on the
+      // strength of "the module is ported" is exactly the guess this
+      // milestone keeps finding as silent degradation. They want their own
+      // task and their own oracle run.
       "assoc detect",
       "assoc list",
       "assoc remove",
@@ -4083,10 +4090,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       "config show",
       "config validate",
       "dashboard",
-      "decision diff",
-      "decision edit",
-      "decision review",
-      "decision view",
       "demote",
       "explore",
       "ext create",
@@ -4111,15 +4114,7 @@ auto unported_paths() -> std::span<std::string_view const> {
       "plan review",
       "plan view",
       "promote",
-      "question diff",
-      "question edit",
-      "question review",
-      "question view",
       "report",
-      "scenario diff",
-      "scenario edit",
-      "scenario review",
-      "scenario view",
       "scope clear",
       "scope pop",
       "scope show",

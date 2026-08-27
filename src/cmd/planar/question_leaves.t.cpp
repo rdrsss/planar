@@ -703,34 +703,63 @@ TEST_CASE("question list --json is a single-line array of the show objects") {
 }
 
 // ===========================================================================
-// The five leaves this task did NOT wire still refuse, loudly
+// The family's OTHER five leaves, at the boundary
 // ===========================================================================
 
-TEST_CASE("the drafting quartet still refuses at exit 64, naming itself -- but `question link` does NOT") {
+TEST_CASE("the drafting quartet is SERVED, not refused -- and still writes nothing when unanchored") {
   auto const fx = make_fixture("refuse");
   seed(fx);
   REQUIRE(dispatch(fx, {"question", "add", "q", "--scope", "global"}).code == 0);
 
-  for (auto const* leaf : {"edit", "view", "diff", "review"}) {
+  // This case pinned all four as exit-64 refusals until plan 996 task 6205
+  // landed `editflow`. It is kept, INVERTED, in the same place rather than
+  // deleted: the four are asserted SERVED here so the family's refusal set
+  // cannot quietly re-absorb one of them, which is the same reason
+  // `question link` is asserted working below rather than dropped.
+  //
+  // The question was added WITHOUT `--plan`, so it has no `derives-from`
+  // edge and the anchor resolver cannot place it. That is the interesting
+  // half: the verbs RUN, and refuse on the DATA rather than on the build.
+  // The two pairs refuse DIFFERENTLY, which is the oracle's asymmetry and
+  // not a rounding of it -- see `editflow.cppm`'s header.
+  for (auto const* leaf : {"edit", "view"}) {
     auto const r = dispatch(fx, {"question", leaf, "1"});
     INFO("leaf=" << leaf);
-    CHECK(r.code == 64);
-    CHECK(r.err == std::format("error: question {}: not implemented in this build\n", leaf));
+    CHECK(r.code == 1);
+    CHECK(r.out.empty());
+    // Two lines: the prose line `editflow` writes, then the bare Zig error
+    // TAG the oracle's un-caught handler lets the runtime print. The oracle
+    // follows the tag with seven stack frames naming absolute paths inside
+    // its own build tree; this build stops at the tag. THE ONE DELIBERATE
+    // DIVERGENCE, recorded in `editflow.cppm` and `dispatch.cpp` too.
+    CHECK(r.err == "error: cannot resolve anchor plan for question 1: NoPlanLink\nerror: NoPlanLink\n");
+  }
+  for (auto const* leaf : {"diff", "review"}) {
+    auto const r = dispatch(fx, {"question", leaf, "1"});
+    INFO("leaf=" << leaf);
+    CHECK(r.code == 1);
+    CHECK(r.out.empty());
+    // PROSE, naming the family and the id -- these two have `catch` arms
+    // where `view`/`edit` have none.
+    CHECK(r.err == "error: question 1 is not linked to a plan; cannot resolve anchor plan\n");
   }
 
   {
     auto conn = open_db(fx);
-    // A refusal that had half-written is the worse bug; the row is untouched
-    // and no audit row was added.
+    // The refusal that had half-written is the worse bug, and it is a LIVE
+    // hazard now that these four actually run: `edit` writes the workbench
+    // file BEFORE it spawns an editor, and `view` writes it before it
+    // spawns a pager. Neither may reach that point without an anchor.
     CHECK(question_rows(conn) == "1|global|<NULL>|q|<NULL>|open|<NULL>|<NULL>");
     CHECK(audit_rows(conn, "question") == "create|1|create question 'q'|<NULL>|<NULL>");
   }
 
   // `question link` WAS in this list until plan 996 task 6193, which landed
   // the whole entity-link surface at once. It is asserted WORKING here, in
-  // the very case that used to pin it as refusing, so the quartet's four
-  // remaining refusals cannot quietly absorb a fifth leaf again. Its own
-  // behaviour is covered in links_leaves.t.cpp; this is the boundary.
+  // the very case that used to pin it as refusing. With task 6205 the other
+  // four joined it, so this file now pins ZERO refusals for the family --
+  // all ten leaves are served. Its own behaviour is covered in
+  // links_leaves.t.cpp; this is the boundary.
   REQUIRE(dispatch(fx, {"plan", "create", "P", "--slug", "p", "--summary", "s", "--scope", "global"}).code == 0);
   auto const link = dispatch(fx, {"question", "link", "1", "plan:1", "--relationship", "derives-from"});
   CHECK(link.code == 0);
