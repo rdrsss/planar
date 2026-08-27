@@ -320,6 +320,9 @@ planar_binary(planar
     handlers/decision.cppm
     handlers/scenario.cppm
     handlers/artifact.cppm
+    editor.cppm
+    editflow.cppm
+    handlers/drafting.cppm
     handlers/links.cppm
     handlers/handoff.cppm
     handlers/resume.cppm
@@ -358,6 +361,9 @@ planar_binary(planar
     handlers/decision.cpp
     handlers/scenario.cpp
     handlers/artifact.cpp
+    editor.cpp
+    editflow.cpp
+    handlers/drafting.cpp
     handlers/links.cpp
     handlers/handoff.cpp
     handlers/resume.cpp

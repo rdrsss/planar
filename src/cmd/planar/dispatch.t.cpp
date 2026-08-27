@@ -452,88 +452,58 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - `artifact add --plan 999` REFUSES at exit 1 and writes nothing,
   //     where `scenario add --plan 4242` succeeds and leaves a dangling
   //     edge. One flag name, opposite answers, both captured.
-  CHECK(unported.size() == 92);
+  CHECK(unported.size() == 76);
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
   CHECK(unported.contains("models resolve"));
   CHECK(unported.contains("task touches infer"));
-  // ...and task 6188's five, from the now-partly-ported `question` family
-  // — MINUS `question link`, which task 6193 ported. A family that is HALF
-  // ported is exactly where a leaf goes missing quietly, so each is named
-  // rather than covered by the count alone.
-  CHECK(unported.contains("question edit"));
-  CHECK(unported.contains("question view"));
-  CHECK(unported.contains("question diff"));
-  CHECK(unported.contains("question review"));
-  // ...and task 6194's four, from the now-partly-ported `decision` family.
-  // Same discipline, same reason: a half-ported family is where a leaf
-  // goes missing quietly. These four are the workbench drafting quartet
-  // again — and in the ORACLE two of them abort with a Zig stack trace
-  // while the other two report `no decision with id N` for a decision that
-  // exists, so there is no coherent contract to port even once editflow
-  // lands.
-  CHECK(unported.contains("decision edit"));
-  CHECK(unported.contains("decision view"));
-  CHECK(unported.contains("decision diff"));
-  CHECK(unported.contains("decision review"));
-  // The seven task 6194 ported must NOT be in the inventory — same
-  // named-rather-than-counted rule as the entity-link block below.
-  for (auto const& wired : {"decision add", "decision show", "decision list", "decision accept", "decision supersede",
-                            "decision withdraw", "decision link"}) {
-    INFO("decision leaf: " << wired);
-    CHECK_FALSE(unported.contains(wired));
-  }
-  // ...and task 6195's four, from the now-partly-ported `scenario` family.
-  // The workbench drafting quartet a THIRD time — but note the reason is
-  // NOT the one `decision`'s four carry. The ORACLE's scenario quartet is
-  // COHERENT: `scenario view/diff/review` on a plan-linked scenario all
-  // exit 0 with real output (a front-mattered workbench document, a
-  // unified diff against `<root>/p1-anchor/scenarios/<n>-<slug>.md`), and
-  // `scenario edit` opens `$EDITOR`. Only an UNLINKED scenario hits
-  // editflow's `walkToAnchor` abort, and that is the resolver having no
-  // anchor rather than the verb being broken. The difference from
-  // `decision` is structural: `scenario add --plan` writes its edge with
-  // `from_kind = 'test_scenario'`, exactly the spelling the anchor
-  // resolver queries.
+  // 92 before task 6205 ported SIXTEEN out of it in one change -- the
+  // drafting quartet on all four link-anchored planning families, wired
+  // together with the `editflow` port that four consecutive cycles had
+  // deferred them on. It is the largest single batch this milestone has
+  // moved, and the ONLY one where the leaves span four families, because
+  // what blocked them was one shared cmd-layer module rather than any
+  // family's engine.
   //
-  // So these four are deferred for the missing DEPENDENCY alone
-  // (`engine_workbench` plus editflow) and can be ported as-is once it
-  // lands — a weaker deferral than `decision`'s, recorded as such
-  // deliberately so the next cycle does not inherit the wrong reason.
-  CHECK(unported.contains("scenario edit"));
-  CHECK(unported.contains("scenario view"));
-  CHECK(unported.contains("scenario diff"));
-  CHECK(unported.contains("scenario review"));
-  // The six task 6195 ported must NOT be in the inventory.
+  // Named individually, and in a shape that fails PER LEAF rather than
+  // per family, for the reason the count alone cannot serve: sixteen
+  // leaves leaving one inventory in one commit is exactly where one of
+  // them silently stays behind while the total still moves by sixteen
+  // because something unrelated was dropped in its place.
+  for (auto const& family : {"question", "decision", "scenario", "artifact"}) {
+    for (auto const& verb : {"edit", "view", "diff", "review"}) {
+      auto const leaf = std::format("{} {}", family, verb);
+      INFO("drafting leaf: " << leaf);
+      CHECK_FALSE(unported.contains(leaf));
+    }
+  }
+  // The `plan` and `task` quartets are the SAME eight leaves over the SAME
+  // now-ported module, and they deliberately STAY. `editflow`'s `plan` and
+  // `task` arms reach anchor-walking from a CHILD plan, `README.md` for an
+  // anchor, and `task_workbench_dir`'s repo-scope / `touches` / `cross`
+  // fallback -- none of which the four link-anchored families exercise,
+  // and none of which task 6205 derived from the oracle. Wiring them on
+  // the strength of "the module compiles for them too" is precisely the
+  // guess this milestone keeps finding as silent degradation.
+  //
+  // This block is what makes that a DECISION rather than an omission: it
+  // fails the day someone wires them without also moving this comment.
+  for (auto const& deferred :
+       {"plan edit", "plan view", "plan diff", "plan review", "task edit", "task view", "task diff", "task review"}) {
+    INFO("editflow leaf held for its own oracle run: " << deferred);
+    CHECK(unported.contains(deferred));
+  }
+  // The CRUD/transition halves each family's own cycle ported must still
+  // not be in the inventory -- the count would catch a leaf that stayed,
+  // but not a leaf that stayed while a DIFFERENT one was dropped by
+  // mistake, so each is named.
   for (auto const& wired :
-       {"scenario add", "scenario show", "scenario list", "scenario verify", "scenario retire", "scenario link"}) {
-    INFO("scenario leaf: " << wired);
-    CHECK_FALSE(unported.contains(wired));
-  }
-  // ...and task 6196's four, from the now-partly-ported `artifact` family
-  // — the last planning family, and the workbench drafting quartet for the
-  // fourth and final time. Named individually rather than covered by the
-  // count, same rule as the three families above.
-  //
-  // Their reason is neither `decision`'s ("no coherent contract to port")
-  // nor `scenario`'s ("coherent, deferred on the dependency alone"). It is
-  // BOTH, split across the four: `diff` and `review` are coherent — an
-  // unlinked artifact gets a clean `artifact N is not linked to a plan` —
-  // while `view` on the SAME input dies with a raw Zig stack trace, and
-  // `edit` announces its own `[M4 limitation: only title and status
-  // mutations are applied]` on stderr and silently discards body edits.
-  // `view`/`edit` also read a DIFFERENT workbench path than
-  // `diff`/`review` (`<feature>/artifacts/<id>-<slug>.md` vs the feature
-  // root), so a `view` writes a file `workbench push` then reports as
-  // `new_on_fs` drift. All four observations are oracle-captured.
-  CHECK(unported.contains("artifact edit"));
-  CHECK(unported.contains("artifact view"));
-  CHECK(unported.contains("artifact diff"));
-  CHECK(unported.contains("artifact review"));
-  // The five task 6196 ported must NOT be in the inventory.
-  for (auto const& wired : {"artifact add", "artifact show", "artifact list", "artifact update", "artifact link"}) {
-    INFO("artifact leaf: " << wired);
+       {"question add",  "question show", "question list",   "question answer",    "question wontfix",  "decision add",
+        "decision show", "decision list", "decision accept", "decision supersede", "decision withdraw", "decision link",
+        "scenario add",  "scenario show", "scenario list",   "scenario verify",    "scenario retire",   "scenario link",
+        "artifact add",  "artifact show", "artifact list",   "artifact update",    "artifact link"}) {
+    INFO("planning leaf: " << wired);
     CHECK_FALSE(unported.contains(wired));
   }
   // The seven task 6193 ported must NOT be in the inventory. The count

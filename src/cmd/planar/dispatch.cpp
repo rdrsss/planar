@@ -32,6 +32,7 @@ import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.decision;
 import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.artifact;
+import planar.cmd.planar.handlers.drafting;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.ext;
 import planar.cmd.planar.handlers.unlink;
@@ -210,6 +211,62 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("artifact list", handlers::artifact_list);
   table.emplace("artifact update", handlers::artifact_update);
   table.emplace("artifact link", handlers::artifact_link);
+  // The DRAFTING QUARTET, all sixteen arms, landed together at task 6205
+  // with the `editflow` port every one of them was blocked on. Four cycles
+  // deferred them four times; `engine_workbench` landing left
+  // `zig/src/cmd/planar/editflow.zig` (2076 lines) plus `editor.zig` (342)
+  // as the whole remaining dependency, and it is a CMD-layer module, so it
+  // is here rather than under `src/lib/`.
+  //
+  // THE FOUR FAMILIES AGREE, which is the finding this cycle did not
+  // expect. Every prior cycle recorded a real per-family divergence and
+  // the standing note for this one predicted a fifth — that `scenario`'s
+  // quartet works where `decision`'s does not, because `scenario add
+  // --plan` writes `from_kind = 'test_scenario'` and the others do not.
+  // The database says otherwise: all four families write a `derives-from`
+  // edge, `scenario` alone spells its `from_kind` `test_scenario`, and
+  // `entity_link_kind` already maps it. The observed split was a
+  // plan-LINKED row compared against an UNLINKED one.
+  //
+  // What does diverge is between VERBS, and all of it is preserved:
+  //   - `view`/`edit` render THIN (title + status); `diff`/`review` use
+  //     `engine.workbench.sync`'s CANONICAL renderer, which also carries
+  //     `**Created:**`/`**Updated:**`. So `view` then `diff` reports a
+  //     diff on the file `view` just wrote. All four families.
+  //   - `artifact` alone disagrees about WHERE: `view`/`edit` write
+  //     `<feature>/artifacts/<id>-<slug>.md`, `diff`/`review` read
+  //     `<feature>/<id>-<slug>.md`. This is the divergence the artifact
+  //     cycle recorded above; it survives the port intact.
+  //   - `diff`/`review` refuse `id <= 0` at exit 2 and map failures to
+  //     prose; `view`/`edit` do neither.
+  //
+  // ONE DELIBERATE DIVERGENCE: on an unlinked entity the oracle's
+  // `view`/`edit` print a prose line, then the bare tag `error: NoPlanLink`,
+  // then SEVEN Zig stack frames naming absolute paths inside the oracle's
+  // own build tree. This build emits the prose line, the tag and exit 1,
+  // and stops. See `editflow.cppm`'s header.
+  table.emplace("question edit", handlers::question_edit);
+  table.emplace("question view", handlers::question_view);
+  table.emplace("question diff", handlers::question_diff);
+  table.emplace("question review", handlers::question_review);
+  table.emplace("decision edit", handlers::decision_edit);
+  table.emplace("decision view", handlers::decision_view);
+  table.emplace("decision diff", handlers::decision_diff);
+  table.emplace("decision review", handlers::decision_review);
+  table.emplace("scenario edit", handlers::scenario_edit);
+  table.emplace("scenario view", handlers::scenario_view);
+  table.emplace("scenario diff", handlers::scenario_diff);
+  table.emplace("scenario review", handlers::scenario_review);
+  table.emplace("artifact edit", handlers::artifact_edit);
+  table.emplace("artifact view", handlers::artifact_view);
+  table.emplace("artifact diff", handlers::artifact_diff);
+  table.emplace("artifact review", handlers::artifact_review);
+  // `plan` and `task` carry the SAME quartet and are NOT wired here. They
+  // forward into the same ported module and would compile; they are held
+  // because `editflow`'s `plan`/`task` arms reach anchor-walking and
+  // repo-scope path code the four link-anchored families never exercise,
+  // and none of it was oracle-derived by this task. See the note beside
+  // them in `surface.cpp`'s `unported_paths`.
   // The entity-link surface — all seven arms, landed together at task
   // 6193. `engine_entitylink` was fully ported and exported no renderer,
   // which is the single reason every one of these refused at exit 64.

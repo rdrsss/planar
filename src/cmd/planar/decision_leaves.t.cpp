@@ -884,21 +884,36 @@ TEST_CASE("decision link refuses a missing relationship, an unknown one, and a s
 // the four deferred leaves
 // ===========================================================================
 
-TEST_CASE("the decision workbench quartet REFUSES at exit 64, naming itself") {
+TEST_CASE("the decision workbench quartet is SERVED, and writes nothing when unanchored") {
   auto const fx = make_fixture("deferred");
   seed(fx);
   add(fx, {"d", "--body", "b"});
 
-  // Named here as well as in dispatch.t.cpp's inventory, because the
-  // inventory proves the PATH is declared while this proves the operator
-  // actually reaches a refusal rather than a silent exit 0. Each is checked
-  // individually — a half-ported family is where a leaf goes missing.
-  for (auto const& verb : {"edit", "view", "diff", "review"}) {
+  // Pinned all four as exit-64 refusals until plan 996 task 6205 landed
+  // `editflow`. Inverted rather than deleted, for the reason the original
+  // gave: dispatch.t.cpp's inventory proves the PATH is declared, and this
+  // proves the operator reaches real behaviour rather than a silent exit 0.
+  //
+  // This decision was added without `--plan`, so it has no `derives-from`
+  // edge. The comment this case used to carry claimed the oracle's decision
+  // quartet was incoherent -- "two abort with a Zig stack trace, two report
+  // NotFound for a decision that exists". Running it says otherwise: the
+  // two that report prose say `is not linked to a plan`, NOT `no decision
+  // with id 1`, and the split is between VERB PAIRS, not a family defect.
+  // `decision` behaves exactly as `question`, `scenario` and `artifact` do.
+  for (auto const& verb : {"edit", "view"}) {
     INFO("decision " << verb);
     auto const res = dispatch(fx, {"decision", verb, "1"});
-    CHECK(res.code == 64);
-    CHECK(res.err == std::format("error: decision {}: not implemented in this build\n", verb));
+    CHECK(res.code == 1);
     CHECK(res.out.empty());
+    CHECK(res.err == "error: cannot resolve anchor plan for decision 1: NoPlanLink\nerror: NoPlanLink\n");
+  }
+  for (auto const& verb : {"diff", "review"}) {
+    INFO("decision " << verb);
+    auto const res = dispatch(fx, {"decision", verb, "1"});
+    CHECK(res.code == 1);
+    CHECK(res.out.empty());
+    CHECK(res.err == "error: decision 1 is not linked to a plan; cannot resolve anchor plan\n");
   }
 
   // ...and nothing they touched changed.
