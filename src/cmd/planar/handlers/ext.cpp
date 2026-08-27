@@ -13,6 +13,7 @@ import planar.engine.external;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.handlers.ext_adapter_factory;
 
 namespace planar::cmd::handlers {
 
@@ -155,6 +156,45 @@ auto ext_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     ctx.out() << std::format("{:<20}  {:<16}  {:<36}  {}\n", item.slug, system_ns::system_kind_to_text(item.kind),
                              item.base_url.value_or(std::string{}), item.default_project.value_or(std::string{}));
   }
+  return {};
+}
+
+auto ext_test(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const slug = positional_string(args, "slug").value_or(std::string{});
+
+  auto const sys = system_ns::show_by_slug(**conn, slug);
+  if (!sys) {
+    // NOT_FOUND is exit 1 here, not 2 — the credential refusals below are
+    // the exit-2 arms. Both codes are oracle-captured against the same verb.
+    return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("external system '{}' not found", slug)));
+  }
+
+  auto const built = build_adapter(*sys, default_deps(ctx.env()));
+  if (!built) {
+    return std::unexpected(factory_error_message(built.error(), *sys));
+  }
+
+  // The oracle's `probeOk` asks whether `build` produced an adapter, which
+  // it necessarily did on this line — so the "FAIL (adapter not
+  // configured)" arm beside it is UNREACHABLE in the oracle too, not just
+  // here. It is deliberately not reproduced: a branch no input can select
+  // cannot be pinned against the oracle, and writing one would imply a
+  // failure mode this verb does not have.
+  if (flag_bool(args, "--json")) {
+    std::string out = R"({"slug":)";
+    json_text::append_json_string(out, slug);
+    out += R"(,"ok":true})"
+           "\n";
+    ctx.out() << out;
+    return {};
+  }
+  // TWO spaces before the parenthesis — oracle-captured
+  // `jira-demo: ok  (adapter wired)\n`.
+  ctx.out() << std::format("{}: ok  (adapter wired)\n", slug);
   return {};
 }
 
