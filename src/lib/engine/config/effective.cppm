@@ -16,18 +16,27 @@
 ///   3. Config file values
 ///   4. Embedded defaults (lowest priority)
 ///
-/// Scope note (deliberate, not an oversight): the Zig oracle's
-/// `resolve()` ALSO walks `models.<vendor>.<tier>` candidate-list keys,
-/// `routing.<vendor>.<tier>.<work-type>` keys, and `roles.*`/
-/// `role_vendors.*` keys (plan 540/899/586). None of those keys have an
-/// embedded default any more — `defaults.toml`'s own test comment says so
-/// ("plan 950 removed Planar's model catalog and role->tier map") — and
-/// they belong to the tech-spec's separate `engine/ops` "models" bucket
-/// (routing-table generation), not this task's config-plane scope (task
-/// brief: "Config plane, templates #embed + overrides, init verb"). This
-/// port therefore resolves exactly the keys `defaults.toml` actually
-/// ships, matching the `config` struct's field set below. Porting the
-/// model/routing/role surface is a separate `engine/ops` task.
+/// Models / routing / roles (task 6080): `resolve()` ALSO walks
+/// `models.<vendor>.<tier>` candidate-list keys,
+/// `routing.<vendor>.<tier>.<work-type>` keys, and `roles.*` /
+/// `role_vendors.*` keys (plan 540/899/586), exactly as
+/// `effective.zig:515-608` does. An earlier revision of this file cut them
+/// on the grounds that `defaults.toml` ships no embedded default for any
+/// of them, which is true but NOT a reason to drop the walk: every one of
+/// those keys is OPERATOR-SUPPLIED, so the walk is precisely what carries a
+/// hand-written `~/.planar/config.toml` into the effective map. Two live
+/// consumers read the result — `config validate` cross-checks every
+/// `routing.<vendor>.<tier>.<work-type>` against its tier's candidate list
+/// and exits 1 on a miss
+/// (zig/src/cmd/planar/handlers/config/validate.zig:117-165, pinned by
+/// zig/integration_tests/config_test.zig:252-284), and `config show
+/// --effective` prints them with provenance and renders multi-candidate
+/// tiers as `(candidates: a, b)` / a JSON `candidates` array
+/// (zig/src/cmd/planar/handlers/config/show.zig:92-171, pinned at
+/// :205-245). None of these keys carry an env or per-association override
+/// in v1, matching the oracle. They are deliberately NOT fields on
+/// `config` below — the oracle does not put them there either; they exist
+/// only as effective-map entries for those two consumers.
 module;
 
 export module planar.engine.config.effective;
@@ -48,13 +57,41 @@ export enum class provenance : std::uint8_t {
 
 /// @brief A resolved value together with its provenance. `env_var_name` is
 /// non-empty only when `source_ == provenance::env`. Mirrors zig's
-/// `ValueWithSource` (the plan 899 `candidates` field is not carried here —
-/// see this file's header comment on the models/routing scope cut).
+/// `ValueWithSource` field-for-field, `candidates` included.
 export struct value_with_source {
   std::string value;        ///< The resolved value, rendered as text ("true"/"false" for bool, decimal for int).
   provenance  source_;      ///< Which layer supplied `value`.
   std::string env_var_name; ///< The environment variable name, when `source_ == provenance::env`.
+  /// @brief Full ordered candidate list, populated only for keys that
+  /// resolve through candidate-list-aware logic (currently
+  /// `models.<vendor>.<tier>`, plan 899 D3/D5). A scalar tier value
+  /// resolves to a one-element list; an array resolves to the ordered list
+  /// as-is. INVARIANT: when non-empty, `candidates[0] == value` always —
+  /// `value` is the tier default and stays scalar-compatible for every
+  /// existing reader. Empty for every other key.
+  std::vector<std::string> candidates;
 };
+
+/// @brief Canonical vendors participating in per-vendor
+/// `models.<vendor>.<tier>` and `routing.<vendor>.<tier>.<work-type>`
+/// resolution (plan 540/899). Mirrors zig's `vendors`.
+export inline constexpr std::array<std::string_view, 4> vendors = {"claude", "codex", "copilot", "gemini"};
+
+/// @brief Canonical model tiers (plan 540/899). Mirrors zig's `tiers`.
+export inline constexpr std::array<std::string_view, 3> tiers = {"small", "medium", "large"};
+
+/// @brief Canonical work-type enum (plan 899 D7): the single key that
+/// selects both the tier and, within the tier, the routed candidate (via
+/// the `[routing.<vendor>.<tier>]` map, D9). Every work type is uniformly a
+/// routing key (D11). Mirrors zig's `work_types`.
+export inline constexpr std::array<std::string_view, 6> work_types = {"schema", "engine",  "architectural",
+                                                                      "cli",    "feature", "mechanical"};
+
+/// @brief The built-in agent roles that always get a `roles.<name>` /
+/// `role_vendors.<name>` pick, whether or not the config file mentions
+/// them. Mirrors zig's `role_keys` / `builtin_roles`.
+export inline constexpr std::array<std::string_view, 6> builtin_roles = {"coder",      "reviewer",   "test-coder",
+                                                                         "documenter", "doc-author", "sync-reconciler"};
 
 /// @brief The effective map: flat dotted-key → `value_with_source`.
 /// `std::map` keeps keys in ascending lexicographic order natively, so
@@ -143,8 +180,9 @@ export struct templates_config {
 };
 
 /// @brief The fully-resolved, typed configuration. Mirrors zig's `Config`
-/// field-for-field (minus the models/routing/roles surface — see this
-/// file's header comment).
+/// field-for-field. The models/routing/roles keys are deliberately absent
+/// here — the oracle's `Config` has no field for them either; they live
+/// only in the effective map (see this file's header comment).
 export struct config {
   defaults_config      defaults;      ///< `[defaults]`.
   workbench_config     workbench;     ///< `[workbench]`.

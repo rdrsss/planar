@@ -5,9 +5,8 @@
 // zig/src/engine/config/effective.zig's own test suite pins: defaults with
 // no config file present, a config-file override, env-beats-file, the
 // jira-status-only per-association override, and the introspection
-// bool/int fields. See effective.cppm's header comment for the deliberate
-// models/routing/roles scope cut (no embedded default ships for those
-// keys any more, and they belong to a separate engine/ops task).
+// bool/int fields. The models/routing/roles surface (task 6080) has its own
+// section at the bottom of this file.
 #include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
 
@@ -20,6 +19,9 @@ using planar::engine::config::provenance;
 using planar::engine::config::resolve;
 using planar::engine::config::sensitive_name;
 using planar::engine::config::sorted_keys;
+using planar::engine::config::tiers;
+using planar::engine::config::vendors;
+using planar::engine::config::work_types;
 
 namespace {
 
@@ -227,4 +229,141 @@ TEST_CASE("sorted_keys: ascending lexicographic order", "[effective]") {
   auto keys = sorted_keys(res->effective);
   REQUIRE(keys.size() > 1);
   CHECK(std::ranges::is_sorted(keys));
+}
+
+// ---------------------------------------------------------------------------
+// Models / routing / roles (task 6080). Every expectation below was captured
+// from `zig/zig-out/bin/planar config show --effective` in a pinned scratch
+// arena, not derived by reading effective.zig. `defaults.toml` ships NO
+// embedded default for any of these keys (plan 950 removed the model
+// catalog), so the whole surface is operator-supplied — which is exactly why
+// dropping the walk was not the no-op it looked like.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("resolve: no models/routing/roles key is recorded without a config file", "[effective][models]") {
+  auto res = resolve(std::nullopt, env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  for (const auto& key : sorted_keys(res->effective)) {
+    CHECK_FALSE(key.starts_with("models."));
+    CHECK_FALSE(key.starts_with("routing."));
+    CHECK_FALSE(key.starts_with("roles."));
+    CHECK_FALSE(key.starts_with("role_vendors."));
+  }
+}
+
+TEST_CASE("resolve: a scalar model tier resolves to a one-element candidate list", "[effective][models]") {
+  auto res = resolve(std::string_view{"[models.claude]\nmedium = \"claude-sonnet-5\"\n"}, env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  const auto& entry = res->effective.at("models.claude.medium");
+  CHECK(entry.value == "claude-sonnet-5");
+  CHECK(entry.source_ == provenance::config_file);
+  REQUIRE(entry.candidates.size() == 1);
+  CHECK(entry.candidates[0] == entry.value); // The candidates[0] == value invariant.
+}
+
+TEST_CASE("resolve: an array model tier resolves to the ordered candidate list", "[effective][models]") {
+  auto res = resolve(std::string_view{"[models.codex]\nlarge = [\"gpt-5.5\", \"gpt-5.3-codex-spark\"]\n"}, env_view::empty(),
+                     std::nullopt);
+  REQUIRE(res.has_value());
+  const auto& entry = res->effective.at("models.codex.large");
+  REQUIRE(entry.candidates.size() == 2);
+  CHECK(entry.candidates[0] == "gpt-5.5");
+  CHECK(entry.candidates[1] == "gpt-5.3-codex-spark");
+  CHECK(entry.value == entry.candidates[0]); // list[0] is the tier default (D5).
+}
+
+TEST_CASE("resolve: an empty model tier array records nothing", "[effective][models]") {
+  auto res = resolve(std::string_view{"[models.codex]\nlarge = []\n"}, env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  CHECK_FALSE(res->effective.contains("models.codex.large"));
+}
+
+TEST_CASE("resolve: routing keys resolve per work type and absent ones record nothing", "[effective][models]") {
+  auto res = resolve(std::string_view{"[routing.claude.medium]\nengine = \"claude-haiku-4-5\"\ncli = \"claude-sonnet-5\"\n"},
+                     env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  CHECK(res->effective.at("routing.claude.medium.engine").value == "claude-haiku-4-5");
+  CHECK(res->effective.at("routing.claude.medium.engine").source_ == provenance::config_file);
+  CHECK(res->effective.at("routing.claude.medium.cli").value == "claude-sonnet-5");
+  // A work type present in neither the file nor the defaults is a miss, not
+  // an empty entry — callers read a miss as "fall back to the tier default".
+  CHECK_FALSE(res->effective.contains("routing.claude.medium.schema"));
+  CHECK_FALSE(res->effective.contains("routing.gemini.small.feature"));
+}
+
+TEST_CASE("resolve: every canonical vendor/tier/work-type combination is walked", "[effective][models]") {
+  // Build a config that sets one routing key for every (vendor, tier,
+  // work_type) triple; all of them must come back. This is the check that
+  // would have caught the dropped walk.
+  std::string file;
+  for (const auto vendor : vendors) {
+    for (const auto tier : tiers) {
+      file += std::format("[routing.{}.{}]\n", vendor, tier);
+      for (const auto work_type : work_types) {
+        file += std::format("{} = \"m-{}-{}-{}\"\n", work_type, vendor, tier, work_type);
+      }
+    }
+  }
+  auto res = resolve(std::string_view{file}, env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  for (const auto vendor : vendors) {
+    for (const auto tier : tiers) {
+      for (const auto work_type : work_types) {
+        const auto key = std::format("routing.{}.{}.{}", vendor, tier, work_type);
+        REQUIRE(res->effective.contains(key));
+        CHECK(res->effective.at(key).value == std::format("m-{}-{}-{}", vendor, tier, work_type));
+      }
+    }
+  }
+}
+
+TEST_CASE("resolve: built-in roles and role_vendors resolve from the config file", "[effective][models]") {
+  auto res = resolve(std::string_view{"[roles]\ncoder = \"medium\"\nreviewer = \"large\"\n"
+                                      "[role_vendors]\ncoder = \"codex\"\n"},
+                     env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  CHECK(res->effective.at("roles.coder").value == "medium");
+  CHECK(res->effective.at("roles.reviewer").value == "large");
+  CHECK(res->effective.at("role_vendors.coder").value == "codex");
+  // Built-ins the file does not mention have no embedded default either, so
+  // they are absent rather than empty.
+  CHECK_FALSE(res->effective.contains("roles.documenter"));
+  CHECK_FALSE(res->effective.contains("role_vendors.reviewer"));
+}
+
+TEST_CASE("resolve: a custom (non-built-in) role is picked up too", "[effective][models]") {
+  // plan 586 task 3937: any roles.<name> / role_vendors.<name> in the file
+  // that is not one of the six built-ins still lands in the effective map.
+  auto res = resolve(std::string_view{"[roles]\nmy-custom-role = \"large\"\n"
+                                      "[role_vendors]\nmy-custom-role = \"claude\"\n"},
+                     env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  CHECK(res->effective.at("roles.my-custom-role").value == "large");
+  CHECK(res->effective.at("role_vendors.my-custom-role").value == "claude");
+}
+
+TEST_CASE("resolve: models/routing/roles take no env override", "[effective][models]") {
+  // The oracle passes env_name = null for every key in this block; an env
+  // var of the "same shape" must not leak in.
+  const env_view env{{{"PLANAR_VENDOR", "codex"}, {"MODELS_CLAUDE_MEDIUM", "nope"}, {"ROLES_CODER", "nope"}}};
+  auto res = resolve(std::string_view{"[models.claude]\nmedium = \"claude-sonnet-5\"\n[roles]\ncoder = \"medium\"\n"}, env,
+                     std::nullopt);
+  REQUIRE(res.has_value());
+  CHECK(res->effective.at("models.claude.medium").value == "claude-sonnet-5");
+  CHECK(res->effective.at("models.claude.medium").source_ == provenance::config_file);
+  CHECK(res->effective.at("roles.coder").value == "medium");
+  CHECK(res->effective.at("roles.coder").source_ == provenance::config_file);
+}
+
+TEST_CASE("resolve: candidates is empty for every non-model-tier key", "[effective][models]") {
+  auto res = resolve(std::string_view{"[models.claude]\nmedium = [\"a\", \"b\"]\n[routing.claude.medium]\nengine = \"a\"\n"},
+                     env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  for (const auto& key : sorted_keys(res->effective)) {
+    if (key.starts_with("models.")) {
+      continue;
+    }
+    INFO("key = " << key);
+    CHECK(res->effective.at(key).candidates.empty());
+  }
 }

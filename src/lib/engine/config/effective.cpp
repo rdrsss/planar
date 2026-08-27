@@ -185,6 +185,102 @@ auto resolve_parent_field_names(const env_view& env, const toml_map& file_map, c
   return {};
 }
 
+/// @brief Store `raw` as the candidate list for `key`, with
+/// `candidates[0]` also landing in `.value` so every scalar-compatible
+/// reader is unaffected — D5's "list[0] is the tier default" holds by
+/// construction. Mirrors zig's `storeModelTierCandidates`.
+void store_model_tier_candidates(effective_map& eff, std::string_view key, std::vector<std::string> raw, provenance source) {
+  auto value = raw.front();
+  eff[std::string(key)] =
+      value_with_source{.value = std::move(value), .source_ = source, .env_var_name = "", .candidates = std::move(raw)};
+}
+
+/// @brief Resolve a `models.<vendor>.<tier>` key as a candidate list (plan
+/// 899 D3/D5): the value may be a scalar (one candidate) or an array (an
+/// ordered list) at either layer, file wins over default. Records nothing
+/// when the key is absent or empty at both layers, mirroring `pick_str`'s
+/// "nothing found → no provenance entry". Mirrors zig's
+/// `pickModelTierCandidates`.
+void pick_model_tier_candidates(std::string_view key, const toml_map& file_map, const toml_map& def_map, effective_map& eff) {
+  const auto try_layer = [&](const toml_map& map, provenance source) {
+    auto it = map.find(key);
+    if (it == map.end()) {
+      return false;
+    }
+    if (it->second.kind_ == toml_value::kind::string && !it->second.string_.empty()) {
+      store_model_tier_candidates(eff, key, {it->second.string_}, source);
+      return true;
+    }
+    if (it->second.kind_ == toml_value::kind::array && !it->second.array_.empty()) {
+      store_model_tier_candidates(eff, key, it->second.array_, source);
+      return true;
+    }
+    // An int/bool-valued tier key falls through to the next layer, exactly
+    // as the oracle's `.int, .bool => {}` arm does.
+    return false;
+  };
+  if (try_layer(file_map, provenance::config_file)) {
+    return;
+  }
+  static_cast<void>(try_layer(def_map, provenance::embedded_default));
+}
+
+/// @brief Resolve the models / routing / roles / role_vendors surface into
+/// `eff`. Mirrors `effective.zig:515-608` step for step, including the
+/// custom-role sweep (plan 586 task 3937) that picks any non-built-in
+/// `roles.<name>` / `role_vendors.<name>` present in the config file.
+/// Purely a side effect on `eff`: the oracle returns nothing from this
+/// block either, and none of these keys is a `config` struct field.
+void resolve_models_routing_roles(const env_view& env, const toml_map& file_map, const toml_map& def_map, effective_map& eff) {
+  // Model tier maps. No env override and no per-association override in
+  // v1, so `pick_model_tier_candidates` takes neither.
+  for (const auto vendor : vendors) {
+    for (const auto tier : tiers) {
+      pick_model_tier_candidates(std::format("models.{}.{}", vendor, tier), file_map, def_map, eff);
+    }
+  }
+
+  // Work-type routing map (plan 899 D4/D7/D9/D10/D11): a plain candidate
+  // model id string, never a list index (D10). A work type absent from
+  // both layers is simply not recorded — callers treat a routing-map miss
+  // as "fall back to the tier default".
+  for (const auto vendor : vendors) {
+    for (const auto tier : tiers) {
+      for (const auto work_type : work_types) {
+        static_cast<void>(
+            pick_str(std::format("routing.{}.{}.{}", vendor, tier, work_type), "", env, std::nullopt, file_map, def_map, eff));
+      }
+    }
+  }
+
+  // Role→tier (plan 540), scalar-only. `role_vendors.*` are override-only
+  // (no embedded default → the resolver falls back to `[defaults].vendor`);
+  // they are picked so an operator-set value resolves.
+  for (const auto role : builtin_roles) {
+    static_cast<void>(pick_str(std::format("roles.{}", role), "", env, std::nullopt, file_map, def_map, eff));
+    static_cast<void>(pick_str(std::format("role_vendors.{}", role), "", env, std::nullopt, file_map, def_map, eff));
+  }
+
+  // User-defined custom roles (plan 586 task 3937): any `roles.<name>` /
+  // `role_vendors.<name>` in the config file that is NOT a built-in gets
+  // picked so `buildRouting` can enumerate it. File-only — no env
+  // override, no embedded-default counterpart.
+  for (const auto& [file_key, unused] : file_map) {
+    std::string_view suffix;
+    if (file_key.starts_with("roles.")) {
+      suffix = std::string_view{file_key}.substr(std::string_view{"roles."}.size());
+    } else if (file_key.starts_with("role_vendors.")) {
+      suffix = std::string_view{file_key}.substr(std::string_view{"role_vendors."}.size());
+    } else {
+      continue;
+    }
+    if (suffix.empty() || std::ranges::contains(builtin_roles, suffix)) {
+      continue;
+    }
+    static_cast<void>(pick_str(file_key, "", env, std::nullopt, file_map, def_map, eff));
+  }
+}
+
 /// @brief Look up `associations.<slug>.<subkey>` in `file_map`. Only the
 /// bare (unquoted) dotted form is checked — the zig oracle's second lookup
 /// attempt (a quoted `associations."<slug>".<subkey>"` form) is dead code
@@ -249,6 +345,11 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
   const auto templates_dir   = pick_str("templates.dir", "PLANAR_TEMPLATES_DIR", env, std::nullopt, file_map, *def_map, eff);
   const auto templates_set =
       pick_str("templates.default_set", "PLANAR_TEMPLATES_DEFAULT_SET", env, std::nullopt, file_map, *def_map, eff);
+
+  // Models / routing / roles (task 6080) — same position in the sequence
+  // the oracle walks them (effective.zig:515-608), between the templates
+  // keys and `external.jira.base_url`.
+  resolve_models_routing_roles(env, file_map, *def_map, eff);
 
   const auto jira_base_url  = pick_str("external.jira.base_url", "JIRA_BASE_URL", env, std::nullopt, file_map, *def_map, eff);
   const auto jira_user_env  = pick_str("external.jira.user_env", "", env, std::nullopt, file_map, *def_map, eff);
