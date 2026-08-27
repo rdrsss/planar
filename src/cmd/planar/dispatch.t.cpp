@@ -559,7 +559,68 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // did not survive checking: `show` decodes routing-table.json off disk
   // and never calls the builder. Argued in full in
   // src/lib/engine/workspace/routing.cppm's header.
-  CHECK(unported.size() == 46);
+  // 47 before task 6272 ported ONE leaf out of it — `workflow run` — with
+  // the layer-1 `planar.process` spawn seam it had been deferred on since
+  // task 6105. That leaves 46, and the count is the WHOLE story of that
+  // cycle, which is why it is worth reading here rather than only in
+  // src/lib/process/CMakeLists.txt.
+  //
+  // FIVE leaves named "a process-spawn seam" as their blocker. The seam now
+  // exists at layer 1 and moved exactly ONE of them:
+  //   workflow run     MOVED. `catalog::find` was already ported and shared
+  //                    with `workflow show` (`not_found_error` is one
+  //                    function serving both, byte-identical). The spawn
+  //                    genuinely was the only missing piece — 167 zig lines
+  //                    of handler and no engine half at all.
+  //   capture commits   NOT moved. Needs ~1100 unported lines: the git-WALK
+  //                    half of `runtime/sessioncommits.zig`. The C++
+  //                    `sessioncommits` module is deliberately one pure-SQL
+  //                    function (`list_for_sessions`, carved out for `audit
+  //                    trail`) and says so in its own header.
+  //   bench harvest    NOT moved. Needs ~671 unported lines
+  //                    (`runs/harvest.zig`); no C++ equivalent exists.
+  //   audit commits    NOT moved, and NOT spawn-blocked at all — this
+  //                    inventory's own note above (and task 6262's) lumped
+  //                    it with the 1205-line git-walk blocker. It actually
+  //                    needs `listFiltered` + `writeJson`/`writeJsonList`,
+  //                    ~130 zig lines, of which `listFiltered` is PURE SQL.
+  //                    Cheaper than its comment claims; recorded here so
+  //                    whoever picks it up does not re-scope it as a git
+  //                    walk.
+  //   closure compute  NOT moved. Its blocker was never the spawn — it is
+  //                    tree-sitter, which is still not vendored.
+  //
+  // That is the second time this milestone a predicted unblock collapsed on
+  // contact (task 6258 predicted eight and moved one). The pattern both
+  // times: several leaves named the same MISSING THING from outside, and
+  // the thing they were each actually waiting on was different.
+  //
+  // Three other things the cycle established, each contradicting a comment
+  // that was in this tree:
+  //   - "There is no process-spawn seam anywhere in this tree" was false
+  //     THREE times over when task 6272 acted on it. `planar.git::run`
+  //     (layer 1, popen), `editor::spawn_inherit` (layer 3, fork/execv,
+  //     inherited stdio, injected env — structurally exactly what `workflow
+  //     run` needed) and `ext_adapter_factory::spawn_capture` (layer 3,
+  //     posix_spawnp) all existed. What was missing was a runner at a layer
+  //     every consumer can reach, named for processes rather than for the
+  //     first caller that needed one.
+  //   - `groups recommend --solver mtkahypar` was on the blocked list and is
+  //     NOT in this inventory at all: it has been wired since task 6189, and
+  //     its degradation is reported rather than refused.
+  //   - The worktree gate's "needs a git-subprocess seam that does not
+  //     exist" note in src/cmd/planar/CMakeLists.txt outlived the seam by
+  //     two tasks. Corrected there.
+  CHECK(unported.size() == 45);
+  // The leaf task 6272 moved, named rather than trusted to the count. The
+  // four leaves that were predicted to move WITH it must stay unported —
+  // wiring any of them off the back of this cycle would claim an engine
+  // half that does not exist.
+  CHECK_FALSE(unported.contains("workflow run"));
+  for (auto const& leaf : {"capture commits", "audit commits"}) {
+    INFO("still-deferred spawn-adjacent leaf: " << leaf);
+    CHECK(unported.contains(leaf));
+  }
   //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per

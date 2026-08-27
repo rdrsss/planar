@@ -7,15 +7,10 @@
 
 module;
 
-#include <cerrno>
-#include <fcntl.h>
-#include <spawn.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 module planar.cmd.planar.handlers.ext_adapter_factory;
 
 import std;
+import planar.process;
 import planar.adapter;
 import planar.http;
 import planar.engine.external;
@@ -23,10 +18,6 @@ import planar.engine.extsync.github;
 import planar.engine.extsync.jira;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
-
-/// @brief The process environment, for `posix_spawnp`. Declared rather than
-/// included because no portable header exposes it consistently.
-extern "C" char** environ; // NOLINT(readability-redundant-declaration)
 
 namespace planar::cmd::handlers {
 
@@ -101,92 +92,20 @@ auto resolve_credential(const system_ns::external_system& sys, const factory_dep
 } // namespace
 
 auto spawn_capture(std::string_view program, std::span<const std::string_view> args) -> token_command_result {
-  std::array<int, 2> fds{-1, -1};
-  if (::pipe(fds.data()) != 0) {
-    return {};
-  }
-  int const read_fd  = fds[0];
-  int const write_fd = fds[1];
-
-  // argv must be NUL-terminated C strings that outlive the spawn call, so
-  // the views are copied into owned storage first.
-  std::vector<std::string> owned;
-  owned.reserve(args.size() + 1);
-  owned.emplace_back(program);
-  for (auto const& arg : args) {
-    owned.emplace_back(arg);
-  }
-  std::vector<char*> argv;
-  argv.reserve(owned.size() + 1);
-  for (auto& entry : owned) {
-    argv.push_back(entry.data());
-  }
-  argv.push_back(nullptr);
-
-  posix_spawn_file_actions_t actions{};
-  if (::posix_spawn_file_actions_init(&actions) != 0) {
-    ::close(read_fd);
-    ::close(write_fd);
-    return {};
-  }
-  // stdout -> the pipe; stderr -> /dev/null. The oracle captures the
-  // child's stderr into a buffer it frees, so a failing `gh` must not
-  // reach the operator's terminal.
-  ::posix_spawn_file_actions_addclose(&actions, read_fd);
-  ::posix_spawn_file_actions_adddup2(&actions, write_fd, STDOUT_FILENO);
-  ::posix_spawn_file_actions_addclose(&actions, write_fd);
-  ::posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-
-  ::pid_t   pid = 0;
-  int const rc  = ::posix_spawnp(&pid, owned.front().c_str(), &actions, nullptr, argv.data(), environ);
-  ::posix_spawn_file_actions_destroy(&actions);
-  ::close(write_fd);
-
-  if (rc != 0) {
-    // ENOENT and friends land HERE rather than as an exit status, which is
-    // the whole reason this is posix_spawnp and not popen. Measured on this
-    // platform: a missing program gives rc=2/ENOENT and leaves `pid` at 0.
-    //
-    // DO NOT remove this early return on the grounds that the code below
-    // "would return the same thing anyway". It does, for the wrong reason —
-    // `waitpid(0, ...)` with no children returns ECHILD, which also maps to
-    // `spawned = false` — and that equivalence holds ONLY while the process
-    // has no other children. In a process that does (this binary's own test
-    // suite, once it spawns anything else), `waitpid(0, ...)` waits on ANY
-    // child in the caller's process group and would report an unrelated
-    // child's exit status as this command's. A break-probe against this
-    // line SURVIVES for exactly that reason; see ext_factory.t.cpp's header.
-    ::close(read_fd);
-    return {};
-  }
-
-  std::string            output;
-  std::array<char, 4096> buffer{};
-  for (;;) {
-    auto const got = ::read(read_fd, buffer.data(), buffer.size());
-    if (got > 0) {
-      output.append(buffer.data(), static_cast<std::size_t>(got));
-      continue;
-    }
-    if (got < 0 && errno == EINTR) {
-      continue;
-    }
-    break;
-  }
-  ::close(read_fd);
-
-  int status = 0;
-  while (::waitpid(pid, &status, 0) < 0) {
-    if (errno != EINTR) {
-      return {};
-    }
-  }
-
-  int exit_code = 1;
-  if (WIFEXITED(status)) {
-    exit_code = WEXITSTATUS(status);
-  }
-  return {.spawned = true, .exit_code = exit_code, .output = std::move(output)};
+  // The body moved to `planar.process::capture` (layer 1) at task 6272,
+  // unchanged. BOTH of the measured, load-bearing properties documented on
+  // this function travelled with it and are commented at the new site:
+  // `posix_spawnp` reports ENOENT directly (rc=2, pid=0) rather than through
+  // `waitpid`, and the early return on `rc != 0` must not be folded into the
+  // `waitpid` path even though a break-probe against it SURVIVES. See
+  // `src/lib/process/process.cpp` and `process.t.cpp`'s header.
+  //
+  // This wrapper stays because `token_command_result` is the factory's own
+  // vocabulary — `resolve_credential` switches on `spawned` to keep
+  // `gh_cli_not_found` and `gh_cli_failed` apart — and because
+  // `ext_factory.t.cpp` pins `spawn_capture` itself.
+  auto ran = planar::process::capture(program, args);
+  return {.spawned = ran.spawned, .exit_code = ran.exit_code, .output = std::move(ran.output)};
 }
 
 auto gh_auth_token_command() -> token_command {

@@ -65,4 +65,50 @@ export auto workflow_list(context& ctx, const cliapp::parsed_args& args) -> hand
 /// matches.
 export auto workflow_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar workflow run <name> --phase <phase> [--args <json>]
+/// [--worktree <dir>] [--sandbox-root <dir>] [--local]`.
+///
+/// Port target: `zig/src/cmd/planar/handlers/workflow/run.zig` (167 lines).
+/// The THIRD `workflow` leaf, deferred at task 6105 and wired at task 6272
+/// once `planar.process` existed.
+///
+/// ## What this leaf is, exactly
+///
+/// `catalog::find` (already ported, and shared byte-for-byte with `workflow
+/// show` — including `not_found_error`, which the two leaves emit
+/// IDENTICALLY, single quotes included) plus a process spawn. There is no
+/// engine half beyond what `show` already uses, which is what made this the
+/// ONE leaf the process-spawn seam actually unblocked; see
+/// `src/lib/process/CMakeLists.txt` for the other four that were predicted
+/// and did not survive checking.
+///
+/// ## Three properties that are contract, not implementation detail
+///
+/// 1. **stdio is INHERITED, not captured.** The workflow's `flow.result`
+///    JSON streams straight to the caller's terminal, and
+///    `planar-execute`'s own diagnostics (`planar-execute: phase function
+///    not found: build`) arrive on stderr in its OWN voice, not wrapped in
+///    this binary's `error: ` prefix. Capturing and re-emitting would
+///    change both.
+/// 2. **The child's exit status is propagated EXACTLY**, via
+///    `domain_error::passthrough_code` rather than a `domain_error_kind`
+///    bucket — a workflow's `flow.fail` can end in a code no bucket names.
+/// 3. **SQLite is never opened.** Resolution is filesystem-only, so
+///    `ctx.db_opened()` stays false, exactly as it does for `list` and
+///    `show`.
+///
+/// ## Binary resolution order, which is also the test seam
+///
+/// `$PLANAR_EXECUTE_BIN` -> sibling of `argv[0]` -> `planar-execute` on
+/// `$PATH`. The first is read through `ctx.env()` (never `std::getenv` —
+/// see `src/cmd/planar/CMakeLists.txt`), which is what lets the spawn be
+/// tested against a stub script with no process-environment mutation and no
+/// real `planar-execute` on the test machine.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success when the child exits 0; a `generic_failure` carrying the
+/// child's exact status otherwise, or the engine's complete `error:
+/// workflow '<name>' not found` line when no workflow matches.
+export auto workflow_run(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

@@ -106,6 +106,17 @@ export struct domain_error {
   /// verbatim. When false, the reporting site composes
   /// `"error: " + text + "\n"` around it.
   bool rendered = false;
+  /// @brief An EXACT process exit code, overriding `kind`'s bucket.
+  ///
+  /// Unset for every ordinary failure, which is the whole point: the bucket
+  /// table above is this binary's policy and nothing should route around
+  /// it. It is set by exactly one caller — `workflow run`, which execs
+  /// `planar-execute` and must propagate that child's status *exactly*
+  /// (`zig/src/cmd/planar/handlers/workflow/run.zig` ends in
+  /// `std.process.exit(code)`). A workflow's `flow.fail` can end in a code
+  /// no `domain_error_kind` names, and mapping it into the nearest bucket
+  /// would silently rewrite a caller-visible status.
+  std::optional<int> passthrough_code;
 };
 
 /// @brief Build a `domain_error` from a message BODY — no `error: `
@@ -166,6 +177,12 @@ export auto exit_code_for(domain_error_kind kind) -> int {
 /// @param err The handler failure.
 /// @return The process exit code.
 export auto exit_code(const domain_error& err) -> int {
+  // The override is consulted BEFORE the bucket table, and only ever set by
+  // a handler that is propagating another process's status verbatim. See
+  // `domain_error::passthrough_code`.
+  if (err.passthrough_code.has_value()) {
+    return *err.passthrough_code;
+  }
   return exit_code_for(err.kind);
 }
 

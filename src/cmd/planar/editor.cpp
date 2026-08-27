@@ -9,6 +9,7 @@ module;
 module planar.cmd.planar.editor;
 
 import std;
+import planar.process;
 import planar.cmd.planar.context;
 
 namespace planar::cmd {
@@ -45,81 +46,19 @@ auto resolve_editor(const env_lookup& env, const std::optional<std::string>& ove
   return "vi";
 }
 
+// Both of the following moved to `planar.process` (layer 1) at task 6272,
+// unchanged in behavior, so `workflow run` could reach the same runner
+// without importing a module named for `$EDITOR` — and so the layer-2
+// consumers still waiting on a spawn can reach it at all. These remain
+// exported here because the editor/pager vocabulary is what `editflow` and
+// `handlers/config.cpp` are written against; they are pure delegation.
+
 auto resolve_program(const env_lookup& env, std::string_view program) -> std::optional<std::string> {
-  if (program.empty()) {
-    return std::nullopt;
-  }
-  auto const executable = [](const std::string& candidate) { return ::access(candidate.c_str(), X_OK) == 0; };
-
-  if (program.contains('/')) {
-    std::string direct{program};
-    return executable(direct) ? std::optional{direct} : std::nullopt;
-  }
-
-  auto const path = env("PATH");
-  if (!path.has_value() || path->empty()) {
-    return std::nullopt;
-  }
-  for (auto const part : std::views::split(*path, ':')) {
-    std::string_view const dir{part.begin(), part.end()};
-    if (dir.empty()) {
-      continue;
-    }
-    auto candidate = std::format("{}/{}", dir, program);
-    if (executable(candidate)) {
-      return candidate;
-    }
-  }
-  return std::nullopt;
+  return planar::process::resolve_program(env, program);
 }
 
 auto spawn_inherit(const env_lookup& env, std::span<const std::string> argv) -> std::optional<int> {
-  if (argv.empty()) {
-    return std::nullopt;
-  }
-  auto const resolved = resolve_program(env, argv[0]);
-  if (!resolved.has_value()) {
-    return std::nullopt;
-  }
-
-  std::vector<char*> raw;
-  raw.reserve(argv.size() + 1);
-  raw.push_back(const_cast<char*>(resolved->c_str()));
-  for (auto const& arg : argv.subspan(1)) {
-    raw.push_back(const_cast<char*>(arg.c_str()));
-  }
-  raw.push_back(nullptr);
-
-  // stdout is flushed before the fork: the child INHERITS this process's
-  // descriptors, so anything still sitting in this process's buffers would
-  // otherwise be duplicated into the child and written twice.
-  std::cout.flush();
-  std::cerr.flush();
-
-  pid_t const pid = ::fork();
-  if (pid < 0) {
-    return std::nullopt;
-  }
-  if (pid == 0) {
-    // Child. `execv` is async-signal-safe; nothing else happens here.
-    // stdin/stdout/stderr are left alone, which is the whole point — a
-    // full-screen editor needs the real terminal.
-    ::execv(raw[0], raw.data());
-    ::_exit(127);
-  }
-
-  int status = 0;
-  while (::waitpid(pid, &status, 0) < 0) {
-    if (errno != EINTR) {
-      return std::nullopt;
-    }
-  }
-  if (WIFEXITED(status)) {
-    return WEXITSTATUS(status);
-  }
-  // Killed by a signal. The Zig original maps every non-`.exited`
-  // termination to 1, and `editflow` reads this as "abort without writing".
-  return 1;
+  return planar::process::run_inherited(env, argv);
 }
 
 auto invoke(const env_lookup& env, std::string_view initial_content, const invoke_opts& opts)
