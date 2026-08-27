@@ -172,6 +172,30 @@
 #     module exists as of task 6100; these were deliberately left for a
 #     dedicated cycle, see the session/snapshot note above for why.
 
+# --- the audit READ plane (plan 996, task 6090) ----------------------------
+#
+# `audit_trail` ports zig/src/engine/runtime/audit_trail.zig whole:
+# `forEntity`, `forEntityWithLinks`, `forEntityGrep`, `sessionTimeline`.
+# Before this it had NO C++ counterpart at any layer -- the write path
+# (`src/lib/policy/audit.cppm`) existed, the read path did not, and the two
+# are easy to conflate by name alone. See audit_trail.cppm's header.
+#
+# It lands in THIS bucket, not a new `engine_audit`, because
+# `session_timeline` reads `sessions` / `session_entries` -- the tables
+# `session.cppm` already owns. A separate bucket would need an
+# `engine_* -> engine_*` edge for that, which D15/D18 forbid. The Zig tree
+# files it as a sibling of session.zig under engine/runtime/ identically.
+#
+# Only ONE of its four functions is WIRED to a leaf in this cycle
+# (`session_timeline` serves `audit session`). The other three serve
+# `audit trail`, whose handler is 563 Zig lines and additionally needs the
+# `external_links` / `sync_events` read path that no module in this tree
+# has. They are ported anyway rather than left out because the task body
+# names the whole Zig module as the unit of work, and splitting one
+# 240-line read module across two cycles would leave the second cycle
+# re-deriving the same four `select` shapes. What is NOT here is that
+# external-link half; named rather than dropped silently.
+
 planar_module(engine_runtime
   INTERFACE
     session.cppm
@@ -182,6 +206,7 @@ planar_module(engine_runtime
     agentrender.cppm
     handoff.cppm
     resumecheck.cppm
+    audit_trail.cppm
     runtime.cppm
   SOURCES
     session.cpp
@@ -192,6 +217,7 @@ planar_module(engine_runtime
     agentrender.cpp
     handoff.cpp
     resumecheck.cpp
+    audit_trail.cpp
   DEPENDS
     db
     json_text

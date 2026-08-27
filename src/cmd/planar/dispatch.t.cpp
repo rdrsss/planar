@@ -286,9 +286,18 @@ TEST_CASE("a declared-but-unported DUAL node refuses too, instead of exiting 0",
   CHECK(dual.err == "error: health: not implemented in this build\n");
 
   // ...and the group half of the same node still resolves its children.
+  //
+  // The child asserted here is `health hygiene`, which task 6090 PORTED —
+  // so what it proves is now the stronger half of the same property: the
+  // parent's own exit-64 refusal does NOT swallow a working child. Before
+  // 6090 this line read `child.code == 64`, and leaving it that way after
+  // the port made this case the only red test in the suite. It was
+  // RETARGETED rather than weakened: a `CHECK(child.code != 64)` would
+  // have gone green for a child that failed some other way.
   auto const child = dispatch({"health", "hygiene"});
-  CHECK(child.code == 64);
-  CHECK(child.err == "error: health hygiene: not implemented in this build\n");
+  CHECK(child.code == 0);
+  CHECK(child.err.empty());
+  CHECK(child.out.contains("=== Stale draft plans"));
 
   // The discrimination: a PURE group with no handler must still render
   // help at exit 0, because that is what the oracle does for the other 35.
@@ -473,7 +482,36 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // plan-153-M5 removal refusals — they leave this inventory because a
   // refusal the oracle OWNS is a port, where the exit-64 default is a
   // placeholder claiming the verb might one day work. Named per leaf below.
-  CHECK(unported.size() == 57);
+  //
+  // 57 before task 6090 ported THREE more out of it: `search`,
+  // `health hygiene` and `audit session`. That leaves 54.
+  //
+  // Task 6090's scope was NINE leaves (five `audit`, two `health`, one
+  // `tree`, one `search`) and it deliberately took three completely rather
+  // than nine partially. What the run established about the other six is
+  // worth reading before anyone picks them up, because four of them are
+  // BLOCKED on a dependency rather than merely large:
+  //   - `health` needs `engine.installedsurface` (548 unported Zig lines of
+  //     manifest-driven filesystem classification). Its `check` half ports
+  //     easily; the leaf does not, because `projection_freshness` feeds the
+  //     `overall` rollup the verb's exit-1-on-degraded contract reads.
+  //   - `audit commits` needs `engine.runtime.sessioncommits` (1205 lines
+  //     of git subprocess walks) — the same blocker `capture commits` and
+  //     `bench harvest` already carry.
+  //   - `audit publish-decision` needs an adapter INSTANCE, i.e. the
+  //     auth-resolving adapter factory `ext create`/`propagate`/`test` and
+  //     the three `sync` leaves are also waiting on.
+  //   - `tree` and `audit trail` are merely large (1284 and 563 non-test
+  //     Zig lines). `audit trail`'s ENTITY arm is ALREADY SERVED by the
+  //     `planar.engine.runtime.audit_trail` module this task landed; what
+  //     it still lacks is the `external_links` / `sync_events` read path
+  //     for its link-id arm.
+  //
+  // The task body's `listTouching` acceptance criterion was checked and is
+  // STALE, not skipped: `list_plans_touching` / `list_tasks_touching` /
+  // `list_questions_touching` / `list_scenarios_touching` all exist and all
+  // four `--touches` flags are wired. Task 6187 landed them.
+  CHECK(unported.size() == 54);
   //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
