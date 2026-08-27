@@ -114,6 +114,19 @@
 # wrappers over it. Layer 1 is forced rather than chosen: `detect_worktree`
 # is called from `engine/identity` (layer 2), which cannot reach a `cmd_*`
 # copy without the layer-2 -> layer-3 edge D15 forbids. DEPENDS nothing.
+# `process` (plan 996, task 6272) is the layer-1 process-spawn seam — the
+# GENERAL runner `git` deliberately is not. Two shapes: `run_inherited`
+# (fork/execv, the caller's own terminal, for a child that must stream) and
+# `capture` (posix_spawnp, stdout piped, stderr discarded, for a child whose
+# output is a value). Both keep "the program never ran" separate from "the
+# program ran and failed", which `git` deliberately erases and which
+# callers render as different refusals. Its absence was cited as the blocker
+# on FIVE leaves; verified at task 6272, it was the real and only blocker on
+# exactly ONE (`workflow run`) — `capture commits` and `bench harvest` are
+# blocked on ~1100 and ~671 unported engine lines respectively, and `audit
+# commits` needs `listFiltered`, which is pure SQL and not spawn-blocked at
+# all. Both bodies moved DOWN from layer 3 unchanged in behavior; `editor`
+# and `ext_adapter_factory` are now thin delegates. DEPENDS nothing.
 # `engine/local` (plan 996, task 6109) is the operator-local skills/agents
 # sandbox behind all five `planar local` leaves. It depends on NOTHING but
 # `json_text` -- the sandbox is pure filesystem state and holds no SQLite
@@ -174,6 +187,7 @@ add_subdirectory(json_text)
 add_subdirectory(json_dom)
 add_subdirectory(policy)
 add_subdirectory(git)
+add_subdirectory(process)
 add_subdirectory(http)
 add_subdirectory(adapter)
 add_subdirectory(engine/identity)

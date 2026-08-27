@@ -161,6 +161,44 @@ auto write_shipped_workflow(const fixture& fx, std::string_view filename, std::s
   file << content;
 }
 
+/// @brief A string appearing NOWHERE else in `src/`, so its presence in a
+/// witness file proves the `workflow run` stub actually executed. A handler
+/// that faked success cannot invent it. Deliberately not derived from any
+/// constant under test.
+constexpr std::string_view k_run_sentinel = "zqEXECUTE-PROV-4c81-plan996-6272-xqz";
+
+/// @brief Write the `planar-execute` stub used by the `workflow run` cases.
+///
+/// Records the sentinel and then one line per received argument to
+/// `witness`, then exits with `code`. Those are witnesses 1-3 from the
+/// block comment above the `workflow run` cases.
+/// @param path Where to write the script.
+/// @param witness The file the stub records its argv into.
+/// @param code The exit status the stub should report.
+auto write_run_stub(const std::filesystem::path& path, const std::filesystem::path& witness, int code) -> void {
+  {
+    std::ofstream out(path, std::ios::binary);
+    out << std::format("#!/bin/sh\n"
+                       "printf '%s\\n' '{}' > '{}'\n"
+                       "for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done\n"
+                       "exit {}\n",
+                       k_run_sentinel, witness.string(), witness.string(), code);
+  }
+  std::filesystem::permissions(path, std::filesystem::perms::owner_all | std::filesystem::perms::group_read |
+                                         std::filesystem::perms::group_exec);
+}
+
+/// @brief Read a witness file whole, or the empty string when absent.
+/// @param path The witness path.
+/// @return Its bytes.
+auto slurp_witness(const std::filesystem::path& path) -> std::string {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return {};
+  }
+  return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
+
 } // namespace
 
 TEST_CASE("version writes the build line and exits 0 without opening the database", "[cmd][handlers]") {
@@ -257,6 +295,130 @@ TEST_CASE("workflow show on a miss exits 1 with the complete error line on stder
   // travels as a rendered payload rather than a message body.
   CHECK(got.err == "error: workflow 'nope' not found\n");
   CHECK_FALSE(got.db_open);
+}
+
+// --- `workflow run` (task 6272) -------------------------------------------
+//
+// The spawn is REAL in every case below: `$PLANAR_EXECUTE_BIN` points at a
+// stub script written into the fixture root, reached through the fixture's
+// env map, so nothing here mutates the test process's environment and no
+// real `planar-execute` need exist on the machine.
+//
+// Three independent witnesses, the shape the editflow cycle established:
+//   1. argv       — the stub records `"$@"` to a witness file.
+//   2. provenance — `k_run_sentinel` appears NOWHERE in `src/`, so its
+//                   presence proves the stub actually ran.
+//   3. exit code  — the stub exits with a code these cases chose.
+// Break-probing `process::run_inherited`'s fork/execv kills every one of
+// them by name; see src/lib/process/process.t.cpp's header.
+
+TEST_CASE("workflow run on a miss exits 1 with the SAME line workflow show emits", "[cmd][handlers][parity]") {
+  auto const fx = make_fixture("wrunmiss");
+  // No PLANAR_EXECUTE_BIN is set: resolution must fail BEFORE any spawn is
+  // attempted, so a missing workflow can never be reported as a spawn
+  // failure.
+  auto const got = dispatch(fx, {"workflow", "run", "nope", "--phase", "x"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  // Byte-identical to `workflow show nope`, single quotes included — one
+  // renderer serving both leaves.
+  CHECK(got.err == "error: workflow 'nope' not found\n");
+  CHECK_FALSE(got.db_open);
+}
+
+TEST_CASE("workflow run execs planar-execute with the exact argv the oracle builds", "[cmd][handlers][spawn]") {
+  auto fx = make_fixture("wrunargv");
+  // The `@meta` name differs from the FILENAME on purpose: it proves the
+  // spawn receives the resolved PATH, not the name the operator typed.
+  write_shipped_workflow(fx, "finalize_closeout.lua",
+                         "--[[ @meta\n"
+                         "name: finalize-closeout\n"
+                         "phases: closeout\n"
+                         "--]]\n");
+
+  auto const witness = fx.root / "argv.txt";
+  auto const stub    = fx.root / "stub-execute.sh";
+  write_run_stub(stub, witness, 0);
+  fx.vars["PLANAR_EXECUTE_BIN"] = stub.string();
+
+  auto const got = dispatch(fx, {"workflow", "run", "finalize-closeout", "--phase", "closeout", "--args", R"({"k":1})"});
+  CHECK(got.code == 0);
+  CHECK_FALSE(got.db_open);
+
+  auto const recorded = slurp_witness(witness);
+  // Non-emptiness FIRST: a witness that silently stayed empty would let
+  // every assertion below pass vacuously.
+  REQUIRE_FALSE(recorded.empty());
+  CHECK(recorded.contains(k_run_sentinel));
+
+  auto const workflow_path = (fx.root / "home" / "workflows" / "finalize_closeout.lua").string();
+  // `run <resolved-path> --phase <phase> --args <json>` — the oracle's
+  // order, and the resolved PATH rather than the name the operator typed.
+  CHECK(recorded == std::format("{}\nrun\n{}\n--phase\ncloseout\n--args\n{{\"k\":1}}\n", k_run_sentinel, workflow_path));
+}
+
+TEST_CASE("workflow run omits an absent optional flag rather than passing it empty", "[cmd][handlers][spawn]") {
+  auto fx = make_fixture("wrunopt");
+  write_shipped_workflow(fx, "wf.lua", "-- @meta name: wf\n");
+
+  auto const witness = fx.root / "argv.txt";
+  auto const stub    = fx.root / "stub-execute.sh";
+  write_run_stub(stub, witness, 0);
+  fx.vars["PLANAR_EXECUTE_BIN"] = stub.string();
+
+  auto const got = dispatch(fx, {"workflow", "run", "wf", "--phase", "build"});
+  CHECK(got.code == 0);
+
+  auto const recorded = slurp_witness(witness);
+  REQUIRE_FALSE(recorded.empty());
+  // The three optional flags are ABSENT, not present-and-empty: `--args ""`
+  // is a different invocation from no `--args` at all.
+  CHECK_FALSE(recorded.contains("--args"));
+  CHECK_FALSE(recorded.contains("--worktree"));
+  CHECK_FALSE(recorded.contains("--sandbox-root"));
+  auto const workflow_path = (fx.root / "home" / "workflows" / "wf.lua").string();
+  CHECK(recorded == std::format("{}\nrun\n{}\n--phase\nbuild\n", k_run_sentinel, workflow_path));
+}
+
+TEST_CASE("workflow run propagates planar-execute's exit code EXACTLY", "[cmd][handlers][spawn]") {
+  auto fx = make_fixture("wrunexit");
+  write_shipped_workflow(fx, "wf.lua", "-- @meta name: wf\n");
+
+  auto const witness = fx.root / "argv.txt";
+  auto const stub    = fx.root / "stub-execute.sh";
+  // 23 is this case's own choice and matches no `domain_error_kind` bucket
+  // — which is the point. A handler that routed the failure through the
+  // bucket table would report 1 here.
+  write_run_stub(stub, witness, 23);
+  fx.vars["PLANAR_EXECUTE_BIN"] = stub.string();
+
+  auto const got = dispatch(fx, {"workflow", "run", "wf", "--phase", "build"});
+  CHECK(got.code == 23);
+  // Nothing is added to either stream: the child already spoke in its own
+  // voice, over the INHERITED descriptors this handler never captured.
+  CHECK(got.out.empty());
+  CHECK(got.err.empty());
+
+  // The spawn really happened — otherwise "exit 23" could come from a
+  // handler that never forked.
+  auto const recorded = slurp_witness(witness);
+  REQUIRE_FALSE(recorded.empty());
+  CHECK(recorded.contains(k_run_sentinel));
+}
+
+TEST_CASE("workflow run reports an unspawnable planar-execute distinctly from a non-zero exit", "[cmd][handlers][spawn]") {
+  auto fx = make_fixture("wrunnobin");
+  write_shipped_workflow(fx, "wf.lua", "-- @meta name: wf\n");
+  // An absolute path that does not exist. `resolve_program` refuses before
+  // forking, so this is "never ran" rather than any exit status — the same
+  // distinction `gh binary not on PATH` rests on.
+  auto const absent             = (fx.root / "no-such-execute").string();
+  fx.vars["PLANAR_EXECUTE_BIN"] = absent;
+
+  auto const got = dispatch(fx, {"workflow", "run", "wf", "--phase", "build"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == std::format("error: spawning planar-execute: {}\n", absent));
 }
 
 TEST_CASE("annotate add without --anchor-path exits 2 before touching the engine", "[cmd][handlers][parity]") {

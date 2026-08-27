@@ -4131,7 +4131,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       "workbench edit",
       "workbench extract-questions",
       "workbench publish",
-      "workflow run",
       "workspace init",
       "workspace regenerate",
       "workspace routing build",

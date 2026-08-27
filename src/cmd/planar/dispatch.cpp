@@ -358,6 +358,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   });
   table.emplace("workflow list", handlers::workflow_list);
   table.emplace("workflow show", handlers::workflow_show);
+  table.emplace("workflow run", handlers::workflow_run);
   table.emplace("annotate add", handlers::annotate_add);
   table.emplace("annotate list", handlers::annotate_list);
   table.emplace("annotate show", handlers::annotate_show);

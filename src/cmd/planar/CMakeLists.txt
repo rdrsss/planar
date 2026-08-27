@@ -236,9 +236,19 @@
 # --- deferred, with their dependencies -------------------------------------
 #
 #   - The bare-invocation TTY cockpit gate (no cockpit in this tree).
-#   - The worktree gate (needs a git-subprocess seam that does not exist --
-#     the same dependency that deferred `bench harvest`, `capture commits`
-#     and `workflow run`).
+#   - (RESOLVED) The worktree gate. It needed a git-subprocess seam; `git`
+#     (tasks 6128/6137) landed one and `worktree_gate.cpp` now calls
+#     `git::detect_worktree`. This bullet said "does not exist" long after
+#     it did.
+#   - (RESOLVED for ONE of the three named here) `workflow run`, wired at
+#     task 6272 over the new layer-1 `process` seam. The other two are NOT
+#     spawn-blocked and never were, which is why they are still absent:
+#     `bench harvest` needs ~671 unported engine lines (`runs/harvest.zig`)
+#     and `capture commits` ~1100 (the git-walk half of
+#     `runtime/sessioncommits.zig`). The seam was a necessary condition for
+#     all three and a sufficient one for exactly one — the same shape task
+#     6258 hit when the adapter factory unblocked one leaf of a predicted
+#     eight. See src/lib/process/CMakeLists.txt.
 #   - cli_log invocation capture (no cli_log surface in this tree).
 #   - policy.audit rows -- following the precedent every engine bucket
 #     already documents; task 6100 is the open operator decision.
@@ -428,6 +438,7 @@ planar_binary(planar
     cliapp
     db
     git
+    process
     http
     json_text
     engine_closure

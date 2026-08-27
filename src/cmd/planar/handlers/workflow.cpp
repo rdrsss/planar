@@ -8,6 +8,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.engine.workflows;
 import planar.cliapp.args;
+import planar.process;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -16,6 +17,42 @@ namespace planar::cmd::handlers {
 
 namespace catalog = engine::workflows::catalog;
 namespace render  = engine::workflows::render;
+
+namespace {
+
+/// @brief Locate the `planar-execute` binary.
+///
+/// Probes in the oracle's order, first hit wins:
+///   1. `$PLANAR_EXECUTE_BIN`, read through `env` (an EMPTY value does not
+///      count as a hit — the oracle's `if (v.len > 0)`).
+///   2. A sibling of `argv[0]`, i.e. the installed-case
+///      `~/.planar/bin/planar-execute`. Only when it is actually there.
+///   3. The bare name `planar-execute`, left for `PATH` resolution.
+///
+/// Step 3 is a bare name rather than a refusal on purpose: the oracle
+/// returns one and lets the spawn fail, so "not installed" surfaces as a
+/// spawn failure at the call site rather than a different error here.
+/// @param ctx The invocation context, for `env()` and `argv()`.
+/// @return The program to exec.
+auto resolve_execute_bin(const context& ctx) -> std::string {
+  if (auto const override_bin = ctx.env()("PLANAR_EXECUTE_BIN"); override_bin.has_value() && !override_bin->empty()) {
+    return *override_bin;
+  }
+  auto const argv = ctx.argv();
+  if (!argv.empty()) {
+    std::filesystem::path const self{argv[0]};
+    if (self.has_parent_path()) {
+      auto            candidate = self.parent_path() / "planar-execute";
+      std::error_code ec;
+      if (std::filesystem::exists(candidate, ec)) {
+        return candidate.string();
+      }
+    }
+  }
+  return "planar-execute";
+}
+
+} // namespace
 
 auto workflow_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const local_only = flag_bool(args, "--local");
@@ -43,6 +80,62 @@ auto workflow_show(context& ctx, const cliapp::parsed_args& args) -> handler_res
   }
   ctx.out() << (flag_bool(args, "--json") ? render::entry_json(*hit) : render::show_text(*hit));
   return {};
+}
+
+auto workflow_run(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto const name = positional_string(args, "name").value_or(std::string{});
+  auto const dirs = catalog::resolve_dirs(ctx.env());
+
+  // `--local` restricts resolution to the sandbox; otherwise shipped wins
+  // on a name collision. Both are `catalog::find`/`list`'s behaviour, shared
+  // with `workflow show` rather than reimplemented here.
+  std::optional<catalog::entry> hit;
+  if (flag_bool(args, "--local")) {
+    for (auto const& candidate : catalog::list(dirs, true)) {
+      if (catalog::effective_name(candidate) == name) {
+        hit = candidate;
+        break;
+      }
+    }
+  } else {
+    hit = catalog::find(dirs, name);
+  }
+  if (!hit.has_value()) {
+    // The SAME complete line `workflow show nope` emits — one function,
+    // byte-identical between the two leaves including the single quotes.
+    return std::unexpected(error_from_rendered(domain_error_kind::generic_failure, render::not_found_error(name)));
+  }
+
+  // planar-execute run <path> --phase <phase> [--args <json>] [--worktree
+  // <dir>] [--sandbox-root <dir>]. Each optional flag is forwarded only
+  // when non-empty, matching the oracle's `if (args.X.len > 0)` — passing
+  // an empty `--args` would be a different invocation.
+  std::vector<std::string> argv{resolve_execute_bin(ctx), "run", hit->path, "--phase",
+                                flag_string(args, "--phase").value_or(std::string{})};
+  for (auto const* flag : {"--args", "--worktree", "--sandbox-root"}) {
+    if (auto const value = flag_string(args, flag); value.has_value() && !value->empty()) {
+      argv.emplace_back(flag);
+      argv.emplace_back(*value);
+    }
+  }
+
+  // Inherited stdio: the workflow's result JSON streams straight through
+  // and planar-execute's diagnostics keep their own voice. `run_inherited`
+  // flushes this process's buffers before forking.
+  auto const code = process::run_inherited(ctx.env(), argv);
+  if (!code.has_value()) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("spawning planar-execute: {}", argv.front())));
+  }
+  if (*code == 0) {
+    return {};
+  }
+  // Exit status propagated EXACTLY, and nothing written to stderr: the
+  // child already said whatever it had to say, in its own voice. An empty
+  // `rendered` payload is written verbatim, i.e. not at all.
+  auto failed             = error_from_rendered(domain_error_kind::generic_failure, std::string{});
+  failed.passthrough_code = *code;
+  return std::unexpected(std::move(failed));
 }
 
 } // namespace planar::cmd::handlers
