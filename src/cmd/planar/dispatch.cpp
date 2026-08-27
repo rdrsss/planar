@@ -28,6 +28,7 @@ import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.runs;
 import planar.cmd.planar.handlers.local;
+import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.groups;
@@ -460,6 +461,20 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("templates validate", handlers::templates_validate);
   table.emplace("templates init", handlers::templates_init);
   table.emplace("templates path", handlers::templates_path);
+  // `config` — the whole five-leaf family (task 6259). The engine half
+  // (`planar.engine.config`) landed complete in commit 82820b7; this is
+  // wiring over it plus the config-file PATH, which is a process concern
+  // the engine deliberately does not own.
+  //
+  // NONE of the five opens SQLite, and `ctx.db_opened()` is pinned false
+  // after each. `config init` and `config path` are what an operator runs
+  // BEFORE `planar init`; a version that opened the database would also
+  // MIGRATE it.
+  table.emplace("config show", handlers::config_show);
+  table.emplace("config edit", handlers::config_edit);
+  table.emplace("config validate", handlers::config_validate);
+  table.emplace("config init", handlers::config_init);
+  table.emplace("config path", handlers::config_path);
   // `closure show` — the read side only. `closure compute` stays a declared
   // exit-64 refusal: its extractor needs tree-sitter, which is not vendored
   // here. See `handlers/closure.cppm`.

@@ -207,12 +207,21 @@ export enum class effective_error : std::uint8_t {
 /// @brief Injectable environment-variable accessor (mirrors zig's
 /// `std.process.Environ` test-injectable parameter to `resolve()`).
 export class env_view {
+public:
+  /// @brief The callable an `from_lookup` view delegates to: variable name
+  /// in, value or unset out.
+  using lookup_fn = std::function<std::optional<std::string>(std::string_view)>;
+
 private:
   std::map<std::string, std::string, std::less<>> vars_;
   /// Whether `get()` falls back to `std::getenv` on a `vars_` miss. Always
-  /// `false` for `empty()` and the explicit-map constructor — the whole
-  /// point of both is hermeticity — and `true` only for `from_process()`.
+  /// `false` for `empty()`, the explicit-map constructor and
+  /// `from_lookup()` — the whole point of all three is hermeticity — and
+  /// `true` only for `from_process()`.
   bool consult_process_env_ = false;
+  /// The delegate installed by `from_lookup()`, consulted on a `vars_`
+  /// miss and before the (disabled) process fallback. Empty otherwise.
+  lookup_fn lookup_;
 
   explicit env_view(bool consult_process_env) : consult_process_env_(consult_process_env) {
   }
@@ -242,6 +251,37 @@ public:
     return env_view{/*consult_process_env=*/true};
   }
 
+  /// @brief A view that DELEGATES every lookup to `lookup`.
+  ///
+  /// Exists for `src/cmd/planar/`'s `config` handlers, and the alternative
+  /// it replaces is why it is worth having. `config show --effective` must
+  /// report env provenance for every key that HAS an env override, so the
+  /// handler has to hand `resolve()` a view over the real environment.
+  /// `from_process()` would do that — and would also make every handler
+  /// test read the developer's own shell, which is precisely the
+  /// hermeticity hole `empty()` exists to close. The obvious alternative,
+  /// forwarding a hard-coded list of the eight variables `resolve()`
+  /// consults, puts a second copy of that list one layer up, where it
+  /// drifts the first time a `pick_str` call site gains or loses an env
+  /// name — and a stale copy fails SILENTLY, as a key that quietly stops
+  /// reporting `[env: …]`.
+  ///
+  /// Delegating instead keeps the list in exactly one place (the
+  /// `pick_str` call sites) while leaving the SOURCE of the environment
+  /// the caller's choice: production passes `context::process_env()`, a
+  /// test passes `map_env(...)`, and neither this class nor the handler
+  /// names a variable.
+  ///
+  /// Empty-is-unset is applied to the delegate's answer too, matching both
+  /// the explicit-map constructor and the `from_process()` fallback.
+  /// @param lookup The delegate. Must outlive nothing — it is copied.
+  /// @return A view reading through `lookup`, never `std::getenv`.
+  static auto from_lookup(lookup_fn lookup) -> env_view {
+    env_view view{/*consult_process_env=*/false};
+    view.lookup_ = std::move(lookup);
+    return view;
+  }
+
   /// @brief Look up `name`. An empty string is treated the same as unset
   /// (mirrors every `pickStr`/`resolveParentFieldNames` call site in the
   /// zig oracle, which all guard `ev.len > 0` before honoring an env
@@ -267,6 +307,16 @@ public:
 /// file failed to parse.
 export auto resolve(std::optional<std::string_view> file_content, const env_view& env, std::optional<std::string_view> assoc_slug)
     -> std::expected<resolved, effective_error>;
+
+/// @brief The embedded `defaults.toml`, exactly as `#embed` captured it.
+///
+/// `config show --defaults` writes these bytes VERBATIM and appends
+/// nothing — the file ends in its own newline and the oracle prints it with
+/// `{s}`, not `{s}\n`. Exported so the handler does not need a second copy
+/// of the file (which would drift) or a re-render of the parsed map (which
+/// would lose the comments that are most of the file's value).
+/// @return The embedded defaults, byte for byte.
+export auto defaults_toml() -> std::string_view;
 
 /// @brief Report whether `name` refers to a sensitive value that should be
 /// masked in `config show` output. Mirrors zig's `sensitiveName`

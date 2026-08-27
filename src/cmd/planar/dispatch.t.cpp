@@ -519,7 +519,17 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // blocked on the create/propagate half of `engine_extsync` and on there
   // being no `sync` handler at this layer — absences the factory does not
   // touch. See src/cmd/planar/CMakeLists.txt's task-6258 section.
-  CHECK(unported.size() == 53);
+  //
+  // 53 before task 6259 ported the whole FIVE-leaf `config` family out of
+  // it: `show`, `edit`, `validate`, `init`, `path`. Named per leaf below
+  // rather than trusted to the count, same reason as every batch above it.
+  //
+  // Nothing was blocking these beyond the wiring itself: the engine half
+  // (`planar.engine.config`) landed complete in commit 82820b7, and the
+  // three pieces this cycle added at THIS layer are the ones the engine
+  // deliberately does not own — the config-file path (a process concern),
+  // the two starter blobs, and `config validate`'s four-step rule set.
+  CHECK(unported.size() == 48);
   //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
@@ -642,6 +652,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
        {"links add", "links list", "links remove", "links trail", "plan link", "task link", "question link"}) {
     INFO("entity-link leaf: " << linked);
     CHECK_FALSE(unported.contains(linked));
+  }
+  // The five `config` leaves task 6259 ported, named individually for the
+  // reason every loop above it exists: five leaving one inventory in one
+  // commit is where one silently stays behind while the total still moves
+  // by five because something unrelated was dropped with them.
+  for (auto const& leaf : {"config show", "config edit", "config validate", "config init", "config path"}) {
+    INFO("config leaf: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
   }
   // ...and the fourth, from task 6189's own families. `closure show` is
   // ported; `closure compute` must stay DECLARED, never silently absent.

@@ -371,6 +371,7 @@ planar_binary(planar
     handlers/runs.cppm
     handlers/local.cppm
     handlers/templates.cppm
+    handlers/config.cppm
     handlers/closure.cppm
     handlers/groups.cppm
     verb_classification.cppm
@@ -418,6 +419,7 @@ planar_binary(planar
     handlers/runs.cpp
     handlers/local.cpp
     handlers/templates.cpp
+    handlers/config.cpp
     handlers/closure.cpp
     handlers/groups.cpp
     dispatch.cpp

@@ -307,10 +307,19 @@ auto env_view::get(std::string_view name) const -> std::optional<std::string> {
   if (auto it = vars_.find(name); it != vars_.end()) {
     return it->second.empty() ? std::nullopt : std::optional<std::string>{it->second};
   }
+  // A from_lookup() view answers from its delegate, with the same
+  // empty-is-unset rule the map and process arms apply.
+  if (lookup_) {
+    auto value = lookup_(name);
+    if (!value.has_value() || value->empty()) {
+      return std::nullopt;
+    }
+    return value;
+  }
   // Fall back to the real process environment ONLY for from_process()
-  // views. empty() and the explicit-map constructor both leave
-  // consult_process_env_ false, so a hermetic view stays hermetic on a
-  // miss instead of silently reading the developer's real environment.
+  // views. empty(), the explicit-map constructor and from_lookup() all
+  // leave consult_process_env_ false, so a hermetic view stays hermetic on
+  // a miss instead of silently reading the developer's real environment.
   if (!consult_process_env_) {
     return std::nullopt;
   }
@@ -437,6 +446,10 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
           },
       .effective = std::move(eff),
   };
+}
+
+auto defaults_toml() -> std::string_view {
+  return k_defaults_toml;
 }
 
 auto sensitive_name(std::string_view name) -> bool {

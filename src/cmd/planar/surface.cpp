@@ -4093,11 +4093,11 @@ auto unported_paths() -> std::span<std::string_view const> {
       "bench harvest",
       "capture commits",
       "closure compute",
-      "config edit",
-      "config init",
-      "config path",
-      "config show",
-      "config validate",
+      // The five `config` leaves -- `show`, `edit`, `validate`, `init`,
+      // `path` -- left this inventory at task 6259. Their engine half
+      // (`planar.engine.config`) had been complete since commit 82820b7;
+      // what landed was the wiring plus the config-file PATH, the two
+      // starter blobs, and `config validate`'s four-step rule set.
       "dashboard",
       "demote",
       "explore",
