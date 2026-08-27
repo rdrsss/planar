@@ -120,4 +120,81 @@ export auto assoc_add(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// association or any other engine failure.
 export auto assoc_members(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar assoc list [--kind] [--json]`.
+///
+/// Port target: zig/src/cmd/planar/handlers/association/list.zig (plan
+/// 996, task 6279).
+///
+/// ## `--kind` refuses at exit 2, and an ABSENT `--kind` cannot refuse
+///
+/// The same split `assoc_create`'s header documents, and for the same
+/// reason: zig only calls `Kind.fromText` inside `if (args.kind) |k|`, so
+/// an absent flag leaves `ListFilter.kind` null and never reaches the
+/// refusal. The message is byte-identical to `assoc create`'s — `unknown
+/// kind '<value>'` — and so is its `error.InvalidInput` -> exit 2 mapping.
+///
+/// `--kind ''` is NOT absent. An empty string is a present flag whose
+/// value parses as no kind, so it REFUSES at exit 2 rather than listing
+/// everything. That distinction is the one an implementer is most likely
+/// to erase by testing `flag_string(...).value_or("")` for emptiness.
+///
+/// ## This leaf is NOT scope-resolved
+///
+/// Same reason `assoc create` is not: an association IS a scope. `list`
+/// answers over every row in the table regardless of where it is run from,
+/// and the zig handler correspondingly never touches `scope.zig`. There is
+/// no cwd-derived filter to apply and adding one would silently hide rows.
+///
+/// An empty table is a LISTING (`(no associations)` / `[]`), not a
+/// refusal — the opposite posture from `assoc members` on an unknown slug,
+/// because "no associations exist" is a real answer where "no association
+/// named X" is a bad argument.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for an unknown `--kind`,
+/// or `generic_failure` (exit 1) on any engine failure.
+export auto assoc_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar assoc remove <slug> <repo-path> [--json]`.
+///
+/// Port target: zig/src/cmd/planar/handlers/association/remove.zig (plan
+/// 996, task 6279).
+///
+/// ## The two bespoke messages are NOT `assoc add`'s two
+///
+/// `assoc add` spells its pair `no association named '<slug>'` and
+/// `project at '<path>' is already a member of '<slug>'`. This verb shares
+/// only the FIRST. Its second arm is `NotAMember`, and the oracle words it
+/// `no project registered at '<repo-path>'` — a sentence about the PROJECT
+/// that names neither the association nor the membership, because
+/// `removeMember` reaches `NotAMember` both when no `projects` row is
+/// registered at the path at all and when one is but is not linked. Both
+/// exit 1.
+///
+/// ## The path is matched VERBATIM, and that is where task 6256 bites
+///
+/// `remove_member` looks the project up by `root_path` string equality
+/// against whatever `assoc add` stored. `assoc add` stores its argument
+/// uncanonicalised, so `assoc add acme .` writes the literal `.` and this
+/// verb can only remove it by being handed the literal `.` back. A fixture
+/// that seeds with `.` and removes with an absolute path gets
+/// `NotAMember` — and a test asserting only "the membership is gone"
+/// passes against a membership that was never created. Seed with absolute
+/// paths and assert the row EXISTS before removing it.
+///
+/// ## Success output is hand-rolled and the JSON is deliberately unescaped
+///
+/// Same shape and same reason as `assoc_add`'s: `remove_member` returns
+/// `void`, so the oracle prints a fixed sentence built from the two
+/// ARGUMENTS with a raw `{s}` substitution and no `writeJsonString` call.
+/// A slug or path containing a double quote therefore produces invalid
+/// JSON on both sides. Escaping here would be better JSON and a byte-level
+/// divergence.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `generic_failure` (exit 1) for an unknown
+/// association, an unregistered/unlinked project, or any other engine
+/// failure.
+export auto assoc_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

@@ -4083,9 +4083,15 @@ auto unported_paths() -> std::span<std::string_view const> {
       // `question diff 999` says `question 999 is not linked to a plan`.
       // The `not_found` arm that `editflow.cpp`'s `prose_error` documents
       // as unreachable for the other four is the ONLY arm these two reach.
+      // `assoc list` and `assoc remove` left this inventory at task 6279.
+      // `assoc detect` did NOT, and the gap is the point: the family's
+      // three remainders were deliberately uneven. `remove` was
+      // handler-only, `list` a ten-line kind filter beside an already
+      // present `list_all`; `detect` is the ~680-line proposal engine
+      // (`detectProposals` / `proposalsFromSignals` / `enrichProposals` /
+      // `applyProposals`), which shares no code with the other two and is
+      // the whole of the remaining work here.
       "assoc detect",
-      "assoc list",
-      "assoc remove",
       "audit commits",
       "audit handoff-readiness",
       "audit publish-decision",

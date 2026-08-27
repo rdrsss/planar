@@ -119,6 +119,20 @@ auto handlers(const CLI::App& root) -> handler_table {
   // over `association`). Five `groups_recommend_test` integration frames
   // were crashing in their FIXTURE on this verb, not in the verb they test.
   table.emplace("assoc members", handlers::assoc_members);
+  // `assoc list` + `assoc remove` — the family's two CHEAP remainders,
+  // landed at task 6279. `remove` was handler-only (`remove_member` shipped
+  // with the family); `list` needed a ten-line kind filter beside the
+  // already-present `list_all`, plus the pair of list renderers.
+  //
+  // `assoc list` is also `statediff.t.cpp`'s LAST `expected_unported`
+  // entry, so wiring it here is what emptied that set.
+  //
+  // `assoc detect` stays unported: it is the ~680-line proposal engine
+  // (`detectProposals`/`proposalsFromSignals`/`enrichProposals`/
+  // `applyProposals`), which is the whole of the remaining work in this
+  // family and shares nothing with these two.
+  table.emplace("assoc list", handlers::assoc_list);
+  table.emplace("assoc remove", handlers::assoc_remove);
   // `scope` — the WHOLE five-leaf family, landed at task 6214. Two do work
   // (`show` reads the cwd-derived read set, `suggest` the project's existing
   // memberships) and three are plan-153-M5 removal refusals that must NOT be

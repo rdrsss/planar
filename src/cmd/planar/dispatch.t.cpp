@@ -245,14 +245,22 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // family out from under it.
   //
   // With every planning family's CRUD half now ported, the exemplar has to
-  // leave the planning surface entirely — so it is `assoc list`, which is
-  // arg-free and whose engine half is genuinely unported. Note this can no
-  // longer be replaced by "the next planning sibling": the next cycle that
-  // ports `assoc list` must reach for a different family again.
-  auto const leaf = dispatch({"assoc", "list"});
+  // leave the planning surface entirely. It was `assoc list` until task
+  // 6279 ported that too — and the note the previous cycle left here ("the
+  // next cycle that ports `assoc list` must reach for a different family
+  // again") is exactly what happened, one cycle later.
+  //
+  // It is now `dashboard`: a TOP-LEVEL leaf rather than a family member,
+  // arg-free (no positionals at all in `surface.cpp`, so the parser cannot
+  // refuse at exit 2 before dispatch is reached), and blocked on the
+  // agent-claim roll-up its `--agents` arm needs. Being top-level is a
+  // small additional guarantee — there is no sibling port that can drag it
+  // along by accident, the way each planning family's CRUD half dragged
+  // its predecessors.
+  auto const leaf = dispatch({"dashboard"});
   CHECK(leaf.code == 64);
   CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: assoc list: not implemented in this build\n");
+  CHECK(leaf.err == "error: dashboard: not implemented in this build\n");
 
   // Deeper, to prove the key is the full path and not the leaf name.
   auto const deep = dispatch({"feedback", "triage", "list"});
@@ -611,7 +619,19 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - The worktree gate's "needs a git-subprocess seam that does not
   //     exist" note in src/cmd/planar/CMakeLists.txt outlived the seam by
   //     two tasks. Corrected there.
-  CHECK(unported.size() == 45);
+  //
+  // 45 before task 6279 moved `assoc list` and `assoc remove`. Named
+  // rather than trusted to the delta: `remove` was handler-only, `list`
+  // needed a ten-line kind filter beside the already-present `list_all`
+  // plus the two list renderers. `assoc detect` deliberately did NOT move
+  // — it is the ~680-line proposal engine and shares no code with them.
+  CHECK(unported.size() == 43);
+  for (auto const& leaf : {"assoc list", "assoc remove"}) {
+    INFO("moved by task 6279: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
+  }
+  INFO("task 6279 deliberately left `assoc detect` — the ~680-line proposal engine");
+  CHECK(unported.contains("assoc detect"));
   // The leaf task 6272 moved, named rather than trusted to the count. The
   // four leaves that were predicted to move WITH it must stay unported —
   // wiring any of them off the back of this cycle would claim an engine

@@ -133,6 +133,30 @@ export auto show_by_slug(db::connection& conn, std::string_view slug) -> std::ex
 /// `association_error::query_failed`.
 export auto list_all(db::connection& conn) -> std::expected<std::vector<association>, association_error>;
 
+/// @brief The `list` predicate. Mirrors zig's `ListFilter` (plan 996,
+/// task 6279).
+///
+/// One field, and the oracle's struct has exactly the same one — this is
+/// not a trimmed port. An unset `kind` composes no `where` term at all, so
+/// `list(conn, {})` and `list_all(conn)` run the identical statement and
+/// `list_all` is now a call through to it.
+export struct list_filter {
+  std::optional<association_kind> kind; ///< Restrict to this kind; unset lists every kind.
+};
+
+/// @brief List associations matching `filter`, ordered by slug.
+///
+/// The kind term binds `association_kind_to_text(k)` — the HYPHENATED wire
+/// form for `ad_hoc` — because that is what the `kind` column stores
+/// (zig binds `@tagName(k)`, which prints `ad-hoc`). Binding the C++
+/// enumerator's spelling `ad_hoc` would match no row and the verb would
+/// answer `(no associations)` for a kind that exists.
+/// @param conn An open, migrated database connection.
+/// @param filter The predicate; a default-constructed one lists everything.
+/// @return The rows, or `association_error::unknown_kind` /
+/// `association_error::query_failed`.
+export auto list(db::connection& conn, const list_filter& filter) -> std::expected<std::vector<association>, association_error>;
+
 /// @brief Provenance of a `project_associations` membership row. Mirrors
 /// zig's `AddMemberSource`.
 export enum class add_member_source : std::uint8_t {
@@ -207,6 +231,38 @@ export auto render_text(const association& a) -> std::string;
 /// caller terminates (the oracle's `output.emit` prints `"\n"` after
 /// stringifying).
 export auto render_json(const association& a) -> std::string;
+
+/// @brief Render `list()`'s result as the operator-facing association
+/// table (plan 996, task 6279).
+///
+/// Columns are `{:<20}  {:<12}  {}` — slug padded to twenty, kind padded
+/// to TWELVE, then the name unpadded. The kind column's width is twelve
+/// and not the twenty its neighbour uses; the widest kind text is
+/// `personal` at eight, so a fixture built only from short kinds cannot
+/// tell twelve from any larger number and the value has to come from the
+/// oracle's format string rather than from measuring output.
+///
+/// The third column is `name`, NOT `root_path` — this renderer's sibling
+/// `render_member_list_text` prints a PATH in its second column, and the
+/// two are easy to cross-wire because both are "the wide trailing column".
+/// @param items The rows, in the order `list()` returned them (slug ascending).
+/// @return The complete block, INCLUDING its trailing newline — or the
+/// literal `"(no associations)\n"` when empty, which is a WORD and not zero
+/// bytes, and is spelled differently from the member renderer's
+/// `"(no members)\n"`. The caller writes it verbatim and appends nothing.
+export auto render_list_text(std::span<const association> items) -> std::string;
+
+/// @brief Render `list()`'s result as the single-line JSON array.
+///
+/// Each element is exactly `render_json`'s object — the oracle's JSON path
+/// is `std.json.Stringify.value` over the SLICE, which serializes each
+/// element by the same declaration-order rules the singular renderer
+/// mirrors. The empty list renders `[]`, NOT the text renderer's
+/// `(no associations)` sentence.
+/// @param items The rows, in the order given.
+/// @return The JSON array with NO trailing newline — a fragment the caller
+/// terminates, same contract as `render_json`.
+export auto render_list_json(std::span<const association> items) -> std::string;
 
 /// @brief Render `members()`'s result as the operator-facing member table
 /// (plan 996, task 6188).
