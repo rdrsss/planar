@@ -129,6 +129,16 @@ inline auto shell_quote(std::string_view value) -> std::string {
 /// (Found by task 6198's state differential, whose staged expectation for
 /// task 6202 would otherwise have pinned the corrupted bytes as truth.)
 ///
+/// IT IS NOT STDERR-ONLY, AND IT REACHES ACROSS INVOCATIONS. Task 6258
+/// measured the same corruption on STDOUT, and — worse — through a shared
+/// capture FILE rather than within one invocation: a later unpiped oracle
+/// call rewound the file and ate everything written before it, so an
+/// earlier probe's output vanished entirely rather than merely truncating.
+/// So the rule is not "pipe stderr on multi-write verbs". It is: EVERY
+/// oracle invocation goes through a pipe, both streams, always. A capture
+/// that reads as empty or short is the expected symptom, and it looks
+/// exactly like a verb that legitimately printed nothing.
+///
 /// The fix is to hand the child a PIPE rather than a seekable file: a pipe
 /// has no offset to seek to, so the Zig writer falls back to sequential
 /// writes. Each stream is piped through `cat`, which owns the file. The
