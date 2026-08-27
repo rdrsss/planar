@@ -342,6 +342,73 @@ auto resolve_for_write(db::connection& conn, std::optional<std::string_view> sco
       .scope = derived->scope, .from_explicit_flag = false, .reason = derived->reason, .project_slug = derived->project_slug};
 }
 
+auto reason_from_source(std::string_view source) -> std::string_view {
+  if (source == "user") {
+    return "explicit member";
+  }
+  if (source == "auto:git-remote") {
+    return "from git remote";
+  }
+  if (source == "auto:path") {
+    return "from parent directory";
+  }
+  if (source == "auto:lang") {
+    return "from language ecosystem";
+  }
+  return source;
+}
+
+auto suggest(db::connection& conn, std::string_view root_path) -> std::expected<std::vector<scope_suggestion>, scope_error> {
+  std::int64_t project_id = 0;
+  {
+    auto stmt = conn.prepare("select id from projects where root_path = ?");
+    if (!stmt) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (auto bound = stmt->bind_text(1, root_path); !bound) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      // Not a project root. An empty answer, not a failure — see the doc
+      // comment.
+      return std::vector<scope_suggestion>{};
+    }
+    project_id = stmt->column_int64(0);
+  }
+
+  auto stmt = conn.prepare("select a.id, a.slug, pa.source "
+                           "from project_associations pa "
+                           "join associations a on a.id = pa.association_id "
+                           "where pa.project_id = ? "
+                           "order by a.slug");
+  if (!stmt) {
+    return std::unexpected(scope_error::query_failed);
+  }
+  if (auto bound = stmt->bind_int64(1, project_id); !bound) {
+    return std::unexpected(scope_error::query_failed);
+  }
+
+  std::vector<scope_suggestion> out;
+  while (true) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      break;
+    }
+    auto const source = stmt->column_text(2);
+    out.push_back(scope_suggestion{.slug           = stmt->column_text(1),
+                                   .association_id = stmt->column_int64(0),
+                                   .reason         = std::string{reason_from_source(source)}});
+  }
+  return out;
+}
+
 // =========================================================================
 // The READ set (task 6141) — port of zig/src/cmd/planar/scope.zig's
 // `resolveForReadSet` / `readScopeFilterSlugs` and their private helpers.

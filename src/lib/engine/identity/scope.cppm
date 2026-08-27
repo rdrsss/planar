@@ -302,6 +302,49 @@ export auto resolve_for_write(db::connection& conn, std::optional<std::string_vi
     -> std::expected<write_scope_resolution, write_scope_failure>;
 
 // =========================================================================
+// Membership suggestions (task 6214)
+//
+// Port of zig/src/engine/identity/scope.zig's `suggest` /
+// `reasonFromSource`. Serves `planar scope suggest`, and nothing else.
+// =========================================================================
+
+/// @brief One association the cwd project already belongs to, as
+/// `planar scope suggest` reports it. Mirrors zig's `Suggestion`.
+export struct scope_suggestion {
+  std::string  slug;               ///< The association's slug.
+  std::int64_t association_id = 0; ///< The `associations` row id.
+  std::string  reason;             ///< Human-readable provenance; see `reason_from_source`.
+};
+
+/// @brief Render a `project_associations.source` value as the label
+/// `planar scope suggest` prints.
+///
+/// An UNRECOGNISED source falls through to the raw stored string rather
+/// than to a placeholder — that is the oracle's `return source`, and it
+/// means a source value added by a newer binary degrades to something the
+/// operator can still read instead of to `unknown`.
+/// @param source The raw `project_associations.source` value.
+/// @return The label.
+export auto reason_from_source(std::string_view source) -> std::string_view;
+
+/// @brief The associations whose member set already contains the project
+/// rooted EXACTLY at `root_path`.
+///
+/// `root_path` is matched with `=`, not by prefix — deliberately, and it is
+/// the oracle's rule (`select id from projects where root_path = ?`). So
+/// this returns nothing from a SUBDIRECTORY of a registered project, unlike
+/// every other cwd-consuming surface in this module, which match by longest
+/// prefix. A no-match returns an EMPTY vector rather than an error: "this
+/// directory is not a project root" is an answer `scope suggest` renders,
+/// not a failure.
+/// @param conn An open, migrated database connection.
+/// @param root_path The absolute path to test as a project root.
+/// @return The suggestions ordered by association slug (possibly empty), or
+/// `scope_error::query_failed`.
+export auto suggest(db::connection& conn, std::string_view root_path)
+    -> std::expected<std::vector<scope_suggestion>, scope_error>;
+
+// =========================================================================
 // The READ set (task 6141)
 //
 // Writes resolve to exactly one scope; reads resolve to a SET. The two are

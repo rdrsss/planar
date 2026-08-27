@@ -452,7 +452,13 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - `artifact add --plan 999` REFUSES at exit 1 and writes nothing,
   //     where `scenario add --plan 4242` succeeds and leaves a dangling
   //     edge. One flag name, opposite answers, both captured.
-  CHECK(unported.size() == 70);
+  CHECK(unported.size() == 65);
+  // 70 before task 6214 ported the whole FIVE-leaf `scope` family out of it:
+  // `show`, `suggest`, `use`, `pop`, `clear`. The last three are the
+  // plan-153-M5 removal refusals — they leave this inventory because a
+  // refusal the oracle OWNS is a port, where the exit-64 default is a
+  // placeholder claiming the verb might one day work. Named per leaf below.
+  //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
   // leaf below rather than trusted to the count, same reason as every
@@ -480,6 +486,16 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   for (auto const& leaf :
        {"templates list", "templates show", "templates render", "templates validate", "templates init", "templates path"}) {
     INFO("templates leaf: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
+  }
+  // The five `scope` leaves task 6214 ported, named per leaf for the same
+  // reason as every batch above. `use` / `pop` / `clear` matter most here:
+  // they are REFUSALS either way, so nothing about their exit status alone
+  // distinguishes the ported form (exit 2, "removed in plan 153 M5", a
+  // remedy) from the unported one (exit 64, "not implemented in this
+  // build"). Only membership in this inventory does.
+  for (auto const& leaf : {"scope show", "scope suggest", "scope use", "scope pop", "scope clear"}) {
+    INFO("scope leaf: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
   // The three deliberately-deferred leaves from otherwise-ported families.
