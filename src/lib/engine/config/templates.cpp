@@ -2,13 +2,10 @@
 /// @brief Implementation of `planar.engine.config.templates` (see
 /// templates.cppm).
 
-module;
-
-#include <glaze/json/read.hpp>
-
 module planar.engine.config.templates;
 
 import std;
+import planar.json_dom;
 import planar.engine.config.templates_embed;
 
 namespace planar::engine::config {
@@ -67,16 +64,29 @@ auto try_read_file(const std::filesystem::path& path) -> std::optional<std::stri
 /// disk/embedded candidate and treats a parse failure as
 /// `error.InvalidJson` — caught by `load()`'s `catch {}` and treated
 /// exactly like a missing file (falls through to the next resolution
-/// level). Zig's `std.json.parseFromSlice` rejects trailing content
-/// after the top-level value; a plain `glz::read_json` call does NOT —
-/// Glaze's `validate_trailing_whitespace` option defaults to unset/false
-/// (glaze/core/opts.hpp:125), so `{"a":1}garbage` reads the object and
-/// silently ignores "garbage" (task 6086). `glz::validate_json` is
-/// Glaze's own purpose-built validity probe and enables that option
-/// (glaze/json/read.hpp's `opts_validate`), so route through it instead
-/// of a bespoke `glz::read_json` into a throwaway generic value.
+/// level).
+///
+/// Routed through `planar.json_dom` — the tree's own `std.json`-faithful
+/// parser — rather than `glz::validate_json`, and that swap is the fix for
+/// a captured divergence rather than a preference (task 6190).
+///
+/// **Glaze accepts DUPLICATE OBJECT KEYS; `std.json` rejects them.**
+/// `ParseOptions.duplicate_field_behavior` defaults to `.@"error"`
+/// (std/json/static.zig:19-26), so the oracle fails to parse
+/// `{"dup":"a","dup":"b"}`, falls through every resolution level, and
+/// answers `templates show probe/px/dup` with
+/// `error: template probe/px/dup not found` at exit 1. Through
+/// `glz::validate_json` this function said "valid", the candidate won its
+/// level, and the leaf rendered the LAST value at exit 0. Captured against
+/// the built oracle by a differential run over the whole `templates`
+/// family.
+///
+/// The trailing-content half of the old rationale still stands and is
+/// still covered: `std.json.parseFromSlice` requires the document to be
+/// exhausted, `glz::read_json` does not (task 6086), and `parse_json`
+/// rejects trailing bytes explicitly.
 auto is_valid_json(std::string_view raw) -> bool {
-  return !glz::validate_json(raw);
+  return json_dom::parse_json(raw).has_value();
 }
 
 /// @brief Resolve `path` and, if it opens AND parses as valid JSON,

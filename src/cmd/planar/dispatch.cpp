@@ -24,6 +24,7 @@ import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.runs;
 import planar.cmd.planar.handlers.local;
+import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.skills;
@@ -384,6 +385,22 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("local unlink", handlers::local_unlink);
   table.emplace("local import", handlers::local_import);
   table.emplace("local migrate", handlers::local_migrate);
+  // `templates` — the whole six-leaf family (task 6190). The RESOLUTION
+  // half of the plane had been ported since task 6032
+  // (`planar.engine.config.templates`); what was missing was the RENDERING
+  // half — a JSON DOM that preserves key order, the `{{...}}` substituter,
+  // the validator, the DB context builder and the disk extractor — which
+  // landed as `planar.engine.templates` alongside these handlers.
+  //
+  // Only `templates render` opens SQLite, and only to read: the other five
+  // work on a machine that has never run `planar init`, which is why
+  // `ctx.db_opened()` is pinned false for them.
+  table.emplace("templates list", handlers::templates_list);
+  table.emplace("templates show", handlers::templates_show);
+  table.emplace("templates render", handlers::templates_render);
+  table.emplace("templates validate", handlers::templates_validate);
+  table.emplace("templates init", handlers::templates_init);
+  table.emplace("templates path", handlers::templates_path);
   // `closure show` — the read side only. `closure compute` stays a declared
   // exit-64 refusal: its extractor needs tree-sitter, which is not vendored
   // here. See `handlers/closure.cppm`.

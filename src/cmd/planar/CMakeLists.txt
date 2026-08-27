@@ -328,6 +328,7 @@ planar_binary(planar
     handlers/resume.cppm
     handlers/runs.cppm
     handlers/local.cppm
+    handlers/templates.cppm
     handlers/closure.cppm
     handlers/groups.cppm
     verb_classification.cppm
@@ -369,6 +370,7 @@ planar_binary(planar
     handlers/resume.cpp
     handlers/runs.cpp
     handlers/local.cpp
+    handlers/templates.cpp
     handlers/closure.cpp
     handlers/groups.cpp
     dispatch.cpp
@@ -388,6 +390,7 @@ planar_binary(planar
     engine_planning
     engine_runs
     engine_runtime
+    engine_templates
     engine_workbench
     engine_workflows
     engine_workspace)

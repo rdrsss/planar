@@ -452,7 +452,36 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - `artifact add --plan 999` REFUSES at exit 1 and writes nothing,
   //     where `scenario add --plan 4242` succeeds and leaves a dangling
   //     edge. One flag name, opposite answers, both captured.
-  CHECK(unported.size() == 76);
+  CHECK(unported.size() == 70);
+  // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
+  // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
+  // leaf below rather than trusted to the count, same reason as every
+  // batch above it.
+  //
+  // Unlike the previous batches, what blocked this family was half an
+  // ENGINE rather than a cmd-layer module. The RESOLUTION half (the
+  // three-level fallback chain, the two enumerators) had been ported since
+  // task 6032 and lives in `engine_config`; the RENDERING half did not
+  // exist at all. Worth reading before touching it:
+  //   - `templates render` prints the template's own KEY ORDER, so the
+  //     port carries a hand-rolled insertion-ordered JSON DOM. Glaze's
+  //     `json_t` is `std::map`-backed and would have re-sorted every
+  //     rendered payload — valid JSON, identical values, different bytes,
+  //     exit 0, invisible to every lane. See `engine/templates/jsonval.cppm`.
+  //   - `{{if .X}}` on a value longer than 128 BYTES fails the whole render
+  //     with `OutOfMemory` at exit 1. That is the ORACLE's behaviour (zig's
+  //     `evalTruthy` uses a 128-byte stack buffer), captured at exactly 128
+  //     pass / 129 fail, and reproduced deliberately. It is a real Planar
+  //     defect and needs its own task against the oracle.
+  //   - `templates path` ignores `--system`, `--set` AND `--json`;
+  //     `templates init` ignores `--force`. Both reproduced, both captured.
+  //   - Only `templates render` opens SQLite. The other five are pinned to
+  //     leave `ctx.db_opened()` false.
+  for (auto const& leaf :
+       {"templates list", "templates show", "templates render", "templates validate", "templates init", "templates path"}) {
+    INFO("templates leaf: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
+  }
   // The three deliberately-deferred leaves from otherwise-ported families.
   // They must remain DECLARED (exit 64), never silently absent.
   CHECK(unported.contains("bench harvest"));
