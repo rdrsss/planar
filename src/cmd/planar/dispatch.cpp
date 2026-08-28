@@ -17,6 +17,7 @@ import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.assoc;
 import planar.cmd.planar.handlers.scope;
 import planar.cmd.planar.handlers.search;
+import planar.cmd.planar.handlers.tree;
 import planar.cmd.planar.handlers.health;
 import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.capture;
@@ -133,6 +134,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // `planar.engine.search`. One leaf, and the only one of that task's nine
   // that needed a new layer-2 bucket built from scratch.
   table.emplace("search", handlers::search);
+  table.emplace("tree", handlers::tree);
   // `health hygiene` — the SUBCOMMAND only. The parent `planar health`
   // stays at the exit-64 default deliberately: its handler folds
   // `engine.installedsurface.status` (548 unported Zig lines) into every

@@ -338,6 +338,45 @@
 # injecting a `token_command` rather than by depending on a `gh` binary
 # being installed on the test machine.
 
+# TASK 6278 added `tree` -- the hierarchical drill-down verb, and the
+# largest single unblocked leaf left in the inventory (1284 non-test Zig
+# lines). Its engine is the new layer-2 `engine_tree`; see
+# src/lib/engine/tree/CMakeLists.txt for what was ported, what was
+# deliberately not, and why the agent-activity rollup is duplicated there
+# rather than reached sideways into `engine_runtime`.
+#
+# TWO NAMING HAZARDS IN THIS DIRECTORY, both live:
+#   - `tree.cppm` here is the binary's CLI11 COMMAND TREE builder. The verb
+#     is `handlers/tree.cppm`. They are neighbours with nearly the same
+#     name and are not related.
+#   - `tree` needed NO change to `tree.cpp`: the node was already declared
+#     in the generated surface catalog (k_path_30), and `apply_surface`
+#     builds it. Wiring the leaf was the dispatch entry plus removing it
+#     from `unported_paths()`.
+#
+# WHAT THE ORACLE RUN FOUND, and none of it transfers from a sibling verb:
+#   - `--sort` is DECLARED AND INERT. tree.zig stores `Filter.sort` and
+#     never reads it; every query orders by id. `--sort updated` and
+#     `--sort bogus` are byte-identical to a bare `tree` and neither
+#     refuses. Reproduced deliberately (accept, ignore) and pinned in
+#     tree_leaf.t.cpp so a future "fix" trips a test. It is a real Planar
+#     defect and needs its own task against the oracle.
+#   - EMPTY FLAG VALUES MEAN THREE DIFFERENT THINGS on this one verb:
+#     `--kind ''` refuses at exit 2, `--status ''` matches nothing at exit
+#     0, and `--scope ''` means GLOBAL at exit 0.
+#   - The two refusals do NOT share an exit code: an unknown `--kind` is 2,
+#     an unknown `--scope` is 1.
+#   - `--depth 0` is UNBOUNDED, identical to `--depth -1`; the oracle's
+#     guard is `max_depth <= 0`.
+#   - `--kind <any derived kind>` renders an EMPTY tree. The scaffold rule
+#     keeps a filtered-out plan only for a plan-or-task descendant, so
+#     artifact/decision/scenario/question filters all collapse. Captured
+#     for all four rather than generalised from one.
+#
+# `tree --help` is NOT oracle-comparable and no test claims it is -- CLI11
+# renders help here (see tree.cppm). The declaration is compared instead,
+# via parity.t.cpp's `schema` catalog case, which already covered this leaf.
+
 planar_binary(planar
   MAIN
     main.cpp
@@ -365,6 +404,7 @@ planar_binary(planar
     handlers/assoc.cppm
     handlers/scope.cppm
     handlers/search.cppm
+    handlers/tree.cppm
     handlers/health.cppm
     handlers/audit.cppm
     handlers/task.cppm
@@ -413,6 +453,7 @@ planar_binary(planar
     handlers/assoc.cpp
     handlers/scope.cpp
     handlers/search.cpp
+    handlers/tree.cpp
     handlers/health.cpp
     handlers/audit.cpp
     handlers/task.cpp
@@ -455,6 +496,7 @@ planar_binary(planar
     engine_runs
     engine_runtime
     engine_search
+    engine_tree
     engine_templates
     engine_workbench
     engine_workflows
