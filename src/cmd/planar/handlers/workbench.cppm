@@ -111,4 +111,34 @@ export auto workbench_gc(context& ctx, const cliapp::parsed_args& args) -> handl
 /// @return Success, or the failure.
 export auto workbench_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief `planar workbench extract-questions <plan> [--json]`.
+///
+/// Read-only: it scans the feature tree that `workbench push` already
+/// wrote and never touches the database or the filesystem. An ABSENT tree
+/// is not an error — it prints a `run 'workbench push <plan>' first` hint
+/// and exits 0.
+///
+/// The scan is top-level-only and skips `README.md`; see
+/// `planar.engine.workbench.questions` for why that is the leaf's most
+/// misleading property.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure.
+export auto workbench_extract_questions(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar workbench edit <plan> [--editor <cmd>] [--json]`.
+///
+/// `push` -> spawn `$EDITOR` on the FEATURE DIRECTORY -> `pull`, printing
+/// a sync summary either side. The editor is given the directory, not a
+/// temp file, which is what separates this leaf from the drafting quartet's
+/// `edit` arms.
+///
+/// It always uses the default failure-terminal filter and never
+/// auto-cleans: the editor-first flow exposes neither `--filter-mode` nor
+/// `--apply-cleanup`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure.
+export auto workbench_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

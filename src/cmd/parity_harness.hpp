@@ -91,6 +91,18 @@ inline auto shell_quote(std::string_view value) -> std::string {
 /// not hypothetical: commit 3ec6c37 fixed exactly this defect in two cli
 /// parity tests.
 ///
+/// EVERY REDIRECTABLE ROOT IS REDIRECTED DIRECTLY, NOT VIA `HOME`. The
+/// workbench root resolves as `$PLANAR_WORKBENCH_ROOT` → `workbench.root`
+/// in the config → `~/.planar/workbench/`. Before task 6305 this function
+/// set only the first four `PLANAR_*` vars, so a workbench-touching parity
+/// case landed in `$HOME/.planar/workbench` and was contained solely by
+/// `HOME` also being redirected. That containment is real but INCIDENTAL:
+/// it survives only as long as nobody reorders or trims the env map, and
+/// the failure mode when it breaks is a parity case writing into the
+/// operator's live workbench while every assertion still passes. Pin the
+/// root that the runtime actually consults first, so containment does not
+/// depend on a fallback chain.
+///
 /// `cd` FIRST, then `env` — and never the other way round. The obvious
 /// spelling, `VAR=x cd dir && binary`, silently does NOT export the
 /// assignments to `binary` on this platform's `/bin/sh` (verified:
@@ -166,6 +178,7 @@ inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::st
   child += std::format(" PLANAR_HOME={}", shell_quote((work / "home").string()));
   child += std::format(" PLANAR_CONFIG_PATH={}", shell_quote((work / "config.toml").string()));
   child += std::format(" PLANAR_LOCAL_HOME={}", shell_quote((work / "localhome").string()));
+  child += std::format(" PLANAR_WORKBENCH_ROOT={}", shell_quote((work / "workbench").string()));
   child += std::format(" HOME={}", shell_quote((work / "fakehome").string()));
   child += std::format(" PWD={} ", shell_quote((work / "proj").string()));
   child += shell_quote(bin.string());

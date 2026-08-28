@@ -14,6 +14,7 @@ export import planar.engine.workbench.gc;
 export import planar.engine.workbench.lint;
 export import planar.engine.workbench.manifest;
 export import planar.engine.workbench.parse;
+export import planar.engine.workbench.questions;
 export import planar.engine.workbench.render;
 export import planar.engine.workbench.render_cli;
 export import planar.engine.workbench.root;

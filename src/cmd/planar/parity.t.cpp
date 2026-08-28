@@ -117,6 +117,33 @@ TEST_CASE("the pinned environment actually reaches the child process", "[cmd][pa
   // environment would have used.
   CHECK_FALSE(std::filesystem::exists(space.cpp_root / "fakehome" / ".planar" / "planar.db"));
 
+  // THE WORKBENCH ROOT IS A SECOND, INDEPENDENT ESCAPE (task 6305). It
+  // resolves `$PLANAR_WORKBENCH_ROOT` → config → `~/.planar/workbench`, so
+  // before that variable was pinned a workbench case was contained only by
+  // `HOME` also being redirected — incidental containment that a reorder of
+  // the env map silently removes. Both halves are asserted, because the
+  // absence half alone passes for the wrong reason: a `workbench push` that
+  // failed outright writes nothing to EITHER location.
+  auto const seeded = std::to_array<std::vector<std::string>>({
+      {"init", "--name", "envpin", "--slug", "envpin"},
+      {"assoc", "create", "project:envpin", "--kind", "project"},
+      {"assoc", "add", "project:envpin", (space.cpp_root / "proj").string()},
+      {"plan", "create", "Env Pin", "--slug", "env-pin", "--summary", "Probe."},
+  });
+  for (std::size_t i = 0; i < seeded.size(); ++i) {
+    auto const ran = run_pinned(cpp_bin(), seeded[i], space.cpp_root, std::format("envpinseed{}", i));
+    INFO("seed step " << i << " -> " << ran.err);
+    REQUIRE(ran.code == 0);
+  }
+  auto const pushed = run_pinned(cpp_bin(), std::array<std::string, 3>{"workbench", "push", "1"}, space.cpp_root, "envpinwb");
+  INFO("workbench push -> " << pushed.err);
+  REQUIRE(pushed.code == 0);
+  // PRESENT: the pinned root received the tree.
+  CHECK(std::filesystem::is_directory(space.cpp_root / "workbench"));
+  CHECK_FALSE(std::filesystem::is_empty(space.cpp_root / "workbench"));
+  // ABSENT: neither fallback location was reached.
+  CHECK_FALSE(std::filesystem::exists(space.cpp_root / "fakehome" / ".planar" / "workbench"));
+
   // The half of this probe that needs the oracle is CONDITIONAL rather than
   // gating the whole case: the C++ assertions above stand on their own. But
   // silently dropping half a safety probe is exactly what task 6071 is
@@ -1232,8 +1259,10 @@ TEST_CASE("C++ and Zig agree over a seeded workbench feature tree", "[cmd][parit
   // SQLite stamps at write time and cannot agree across two processes.
   auto const tree_of = [](const std::filesystem::path& root) {
     std::map<std::string, std::string> files;
-    auto const                         wb = root / "fakehome" / ".planar" / "workbench";
-    std::error_code                    ec;
+    // `$PLANAR_WORKBENCH_ROOT` (task 6305), not the `~/.planar/workbench`
+    // fallback this used to read through `HOME`.
+    auto const      wb = root / "workbench";
+    std::error_code ec;
     if (!std::filesystem::is_directory(wb, ec)) {
       return files;
     }
@@ -1841,4 +1870,164 @@ TEST_CASE("C++ and Zig agree on closure show and groups recommend over seeded ro
   // ...and the two filters this fixture exists to exercise really do exclude.
   CHECK_FALSE(grouped.out.contains("t.ttt"));
   CHECK_FALSE(grouped.out.contains("d.ddd"));
+}
+
+TEST_CASE("C++ and Zig agree on extract-questions and on the workbench edit round trip", "[cmd][parity][oracle][workbench]") {
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+
+  // THE FIXTURE IS BUILT BY A REAL `workbench push`, NOT BY HAND. This leaf
+  // reads only TOP-LEVEL `.md` files and skips `README.md`, so the obvious
+  // feature tree — a README plus `questions/` and `tasks/` subdirectories —
+  // makes it return `[]` on BOTH binaries, and every comparison below would
+  // pass while comparing two empty lists. Hand-authoring a `.md` does not
+  // escape it either: the file must satisfy `workbench::parse::parse`, and
+  // a malformed one is silently skipped, so the result is empty again for a
+  // different reason. The `REQUIRE`s after the seed are what make that
+  // failure loud instead of green.
+  //
+  // Seeded independently per arena, never copied: `projects.root_path` is
+  // absolute (see the `wbtree` case above for what copying cost).
+  auto const        space       = make_arena("wbq");
+  std::string const bullet_body = "Intro line.\n"
+                                  "\n"
+                                  "## Open Questions\n"
+                                  "\n"
+                                  "- Should we cache the result? It would help a lot on repeated reads and we think it "
+                                  "matters.\n"
+                                  "- What about eviction?\n"
+                                  "  - nested bullet counts too\n"
+                                  "\n"
+                                  "## Next Section\n"
+                                  "\n"
+                                  "- not a question\n";
+  std::string const h3_body     = "Preamble.\n"
+                                  "\n"
+                                  "## Open Questions\n"
+                                  "\n"
+                                  "### Which serializer?\n"
+                                  "\n"
+                                  "JSON is the default.\n"
+                                  "It has two lines.\n"
+                                  "\n"
+                                  "### Do we version the payload?\n"
+                                  "\n"
+                                  "Yes, probably.\n"
+                                  "\n"
+                                  "# Terminator\n";
+
+  std::vector<std::vector<std::string>> const seed{
+      {"init", "--name", "demo", "--slug", "demo"},
+      {"assoc", "create", "project:demo", "--kind", "project"},
+      {"plan", "create", "Demo Feature", "--slug", "demo-feature", "--summary", "A demo."},
+      // BOTH extraction branches, plus a spec with no section at all, plus
+      // a question entity so the tree has a real subdirectory to ignore.
+      {"artifact", "add", "Bullet Spec", "--kind", "tech_spec", "--plan", "1", "--body", bullet_body, "--editor=false"},
+      {"artifact", "add", "H3 Spec", "--kind", "tech_spec", "--plan", "1", "--body", h3_body, "--editor=false"},
+      {"artifact", "add", "Empty Spec", "--kind", "tech_spec", "--plan", "1", "--body", "No questions here.", "--editor=false"},
+      {"question", "add", "Which format?", "--plan", "1"},
+      {"plan", "create", "Unpushed", "--slug", "unpushed", "--summary", "no tree"},
+  };
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    for (std::size_t i = 0; i < seed.size(); ++i) {
+      auto const tag = std::format("wbqseed{}_{}", root == space.cpp_root ? "c" : "z", i);
+      auto const ran = run_pinned(zig_bin(), seed[i], root, tag);
+      INFO("seed step: " << tag << " -> " << ran.err);
+      REQUIRE(ran.code == 0);
+      if (i == 1) {
+        std::vector<std::string> const attach{"assoc", "add", "project:demo", (root / "proj").string()};
+        REQUIRE(run_pinned(zig_bin(), attach, root, std::format("{}attach", tag)).code == 0);
+      }
+    }
+    REQUIRE(run_pinned(zig_bin(), std::array<std::string, 3>{"workbench", "push", "1"}, root, "wbqpush").code == 0);
+    // THE ANTI-VACUITY GUARD. A top-level, non-README spec must exist in
+    // each arena before anything is compared.
+    REQUIRE(std::filesystem::exists(root / "workbench" / "project_demo" / "p1-demo-feature" / "1-bullet-spec.md"));
+  }
+
+  // A STUB EDITOR per arena. It records its argv and then mutates the body
+  // so the trailing `pull` has something real to apply.
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    auto const    script = root / "stub-editor";
+    std::ofstream file(script, std::ios::binary | std::ios::trunc);
+    REQUIRE(file.good());
+    file << "#!/bin/sh\n"
+         << "printf '%s\\n' \"$1\" >> " << (root / "argv-witness").string() << "\n"
+         << "sed -i '' 's/^Intro line\\./XYZZY-PARITY-EDIT/' \"$1/1-bullet-spec.md\"\n"
+         << "exit 0\n";
+    file.close();
+    std::error_code ec;
+    std::filesystem::permissions(script, std::filesystem::perms::owner_all, ec);
+    REQUIRE(!ec);
+  }
+
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  std::vector<step> const steps{
+      {"eqtext", {"workbench", "extract-questions", "1"}},
+      {"eqjson", {"workbench", "extract-questions", "1", "--json"}},
+      // An unpushed plan HINTS at exit 0 rather than failing.
+      {"eqnotree", {"workbench", "extract-questions", "2"}},
+      {"eqmissing", {"workbench", "extract-questions", "999"}},
+      {"eqinvalid", {"workbench", "extract-questions", "0"}},
+      {"edmissing", {"workbench", "edit", "999"}},
+      {"edinvalid", {"workbench", "edit", "0"}},
+  };
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(mine.out == ref.out);
+    CHECK(mine.err == ref.err);
+  }
+
+  // NON-VACUITY, asserted on the PAYLOAD rather than on the agreement: two
+  // identical empty captures satisfy every CHECK above.
+  auto const text =
+      run_pinned(cpp_bin(), std::vector<std::string>{"workbench", "extract-questions", "1"}, space.cpp_root, "eqnonvac");
+  CHECK(text.out.contains("1-bullet-spec.md (artifact 1): 3 question(s)"));
+  CHECK(text.out.contains("2-h3-spec.md (artifact 2): 2 question(s)"));
+  CHECK(text.out.contains("3-empty-spec.md (artifact 3): 0 question(s)"));
+  // The bullet branch's 60-byte elision and the H3 branch's joined body.
+  CHECK(text.out.contains("Should we cache the result? — It would help a lot on repeated reads and we think it matter…"));
+  CHECK(text.out.contains("Which serializer? — JSON is the default.\nIt has two lines."));
+  // The subdirectory and the README were NOT scanned, and the section
+  // terminator held.
+  CHECK_FALSE(text.out.contains("README.md"));
+  CHECK_FALSE(text.out.contains("which-format"));
+  CHECK_FALSE(text.out.contains("not a question"));
+
+  // `workbench edit` needs `PLANAR_EDITOR`, which the pinned environment
+  // does not carry, so it is prefixed onto the argv by running the binary
+  // THROUGH `env`.
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    auto const                     bin = root == space.cpp_root ? cpp_bin() : zig_bin();
+    std::vector<std::string> const args{std::format("PLANAR_EDITOR={}", (root / "stub-editor").string()), bin.string(),
+                                        "workbench", "edit", "1"};
+    auto const                     ran = run_pinned("/usr/bin/env", args, root, "wbedit");
+    INFO("edit -> " << ran.err);
+    CHECK(ran.code == 0);
+  }
+  auto const mine_edit = read_all(space.cpp_root / "argv-witness");
+  auto const ref_edit  = read_all(space.zig_root / "argv-witness");
+  // THE SPAWN HAPPENED on both sides...
+  REQUIRE_FALSE(mine_edit.empty());
+  REQUIRE_FALSE(ref_edit.empty());
+  // ...and each was handed its OWN arena's FEATURE DIRECTORY — not a temp
+  // file, which is what the drafting quartet's editor gets and what an
+  // implementer carrying that witness over would have asserted.
+  CHECK(mine_edit == (space.cpp_root / "workbench" / "project_demo" / "p1-demo-feature").string() + "\n");
+  CHECK(ref_edit == (space.zig_root / "workbench" / "project_demo" / "p1-demo-feature").string() + "\n");
+  // The trailing `pull` applied the stub's edit on both sides, so the
+  // round trip is witnessed end to end rather than only at the spawn.
+  for (auto const& root : {space.cpp_root, space.zig_root}) {
+    auto const shown = run_pinned(root == space.cpp_root ? cpp_bin() : zig_bin(),
+                                  std::vector<std::string>{"artifact", "show", "1"}, root, "wbeditshow");
+    INFO("artifact show -> " << shown.err);
+    CHECK(shown.out.contains("XYZZY-PARITY-EDIT"));
+  }
 }

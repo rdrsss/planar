@@ -720,16 +720,41 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                              inventory — which is exactly why sizing
   //                              this family by its handlers would have been
   //                              wrong.
-  for (auto const& leaf : {"link", "workbench edit", "workbench extract-questions", "workbench publish", "feedback triage list",
-                           "feedback triage show", "feedback triage set"}) {
+  for (auto const& leaf : {"link", "workbench publish", "feedback triage list", "feedback triage show", "feedback triage set"}) {
     INFO("probed but deliberately not moved by task 6299: " << leaf);
     CHECK(unported.contains(leaf));
+  }
+  // TASK 6302 MOVED THE TWO WORKBENCH LEAVES the block above had held back,
+  // and the reasons it recorded for holding them turned out to be the
+  // reasons they were cheap:
+  //
+  //   workbench edit               The "interactive editor round trip" was a
+  //                                test-design question, and it was already
+  //                                answered — the drafting quartet's
+  //                                `PLANAR_EDITOR` stub-script pattern
+  //                                applies unchanged. The one thing that
+  //                                does NOT transfer is the argv witness:
+  //                                this leaf hands the editor the FEATURE
+  //                                DIRECTORY, not a temp file.
+  //   workbench extract-questions  The ~200 lines of pure text walk landed
+  //                                in `planar.engine.workbench.questions`
+  //                                rather than the handler, matching where
+  //                                every other workbench leaf's pure half
+  //                                lives.
+  //
+  // `workbench publish` stays above, and is now the ONLY blocked leaf in
+  // the family rather than one of three.
+  for (auto const& leaf : {"workbench edit", "workbench extract-questions"}) {
+    INFO("moved by task 6302: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
   }
   // 36 after task 6298 moved TWO of the eight leaves it was handed:
   // `sync status` and `plan descendants`. The other six stayed, and the
   // reason each stayed was measured rather than assumed — see the block
   // below this CHECK.
-  CHECK(unported.size() == 33);
+  // 33 before task 6302; 31 after it moved `workbench edit` and
+  // `workbench extract-questions`.
+  CHECK(unported.size() == 31);
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));

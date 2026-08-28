@@ -4192,8 +4192,15 @@ auto unported_paths() -> std::span<std::string_view const> {
       // value. `--sort` is accepted and INERT in the oracle, and is
       // reproduced that way deliberately; see
       // `src/lib/engine/tree/CMakeLists.txt`.
-      "workbench edit",
-      "workbench extract-questions",
+      // `workbench edit` and `workbench extract-questions` LEFT this
+      // inventory at task 6302. Neither was ever architecturally blocked:
+      // `edit` is push -> spawn `$EDITOR` on the feature directory -> pull
+      // over the already-ported `editor::spawn_inherit`, and
+      // `extract-questions` needed only a pure text walk, now
+      // `planar.engine.workbench.questions`. `publish` stays, and is the
+      // only workbench leaf with a real blocker: it needs
+      // `extsync.parent_issue.recordLink` and `create_remote`, and lands
+      // with the adapters.
       "workbench publish",
       "workspace init",
       "workspace regenerate",
