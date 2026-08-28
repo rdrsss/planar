@@ -158,14 +158,31 @@ export enum class adapter_kind : std::uint8_t {
 /// the Zig `Handle`, which also owned the token because the Zig adapters hold
 /// borrowed slices. Declaration order is load-bearing: `_wire` is declared
 /// first so it is destroyed LAST, after the adapter that points at it.
+///
+/// ## WHY `transport()` AND `token()` EXIST WHEN `instance()` ALREADY DOES
+///
+/// Added at task 6295 for `ext create`, and they are the WHOLE of that
+/// leaf's precondition. The four-operation `external_adapter` interface
+/// covers validate / pull / push / render — but NOT create. The oracle's
+/// creation path (`ext/remote.zig`) never goes through the adapter at all:
+/// it builds the provider URL itself, sends a POST on the RAW transport, and
+/// parses the response for the provider's own id field. So it needs the two
+/// things the adapter copied privately and the interface does not re-expose.
+///
+/// Routing create through a fifth virtual on `external_adapter` would have
+/// been the tidier-looking option and was rejected: it would put a method on
+/// the interface that the Zig original's `requireAdapter` does not enforce,
+/// widening a contract this port is not entitled to change.
 export class adapter_handle {
 public:
   /// @brief Take ownership of a transport and the adapter built over it.
   /// @param wire The transport; must be the one `made` points at.
   /// @param made The adapter.
   /// @param which Which concrete type `made` is.
-  adapter_handle(std::unique_ptr<http::transport> wire, std::unique_ptr<adapter::external_adapter> made, adapter_kind which)
-      : _wire(std::move(wire)), _adapter(std::move(made)), _kind(which) {
+  /// @param bearer The resolved credential, for the creation path.
+  adapter_handle(std::unique_ptr<http::transport> wire, std::unique_ptr<adapter::external_adapter> made, adapter_kind which,
+                 std::string bearer)
+      : _wire(std::move(wire)), _adapter(std::move(made)), _kind(which), _token(std::move(bearer)) {
   }
 
   /// @brief The adapter, for dispatch through the abstract interface.
@@ -178,11 +195,28 @@ public:
   [[nodiscard]] auto kind() const -> adapter_kind {
     return _kind;
   }
+  /// @brief The raw transport, for the creation path that does not go
+  /// through the adapter interface. See this class's header.
+  /// @return The transport.
+  [[nodiscard]] auto transport() const -> http::transport& {
+    return *_wire;
+  }
+  /// @brief The resolved bearer token, for the creation path's
+  /// `Authorization` header.
+  ///
+  /// May be EMPTY and that is not an error: a `token-env` row whose variable
+  /// is set to the empty string resolves successfully — see this module's
+  /// header on the two credential sources disagreeing about emptiness.
+  /// @return The token.
+  [[nodiscard]] auto token() const -> std::string_view {
+    return _token;
+  }
 
 private:
   std::unique_ptr<http::transport>           _wire;    ///< Destroyed LAST — the adapter points at it.
   std::unique_ptr<adapter::external_adapter> _adapter; ///< The constructed adapter.
   adapter_kind                               _kind;    ///< Which concrete type `_adapter` is.
+  std::string                                _token;   ///< The resolved credential.
 };
 
 /// @brief The three injected seams `build_adapter` resolves through.

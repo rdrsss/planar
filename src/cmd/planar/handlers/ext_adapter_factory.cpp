@@ -139,8 +139,12 @@ auto build_adapter(const engine::external::system::external_system& sys, const f
 
   // A NULL `base_url` becomes the EMPTY string rather than a refusal — the
   // oracle's `sys.base_url orelse ""`. `ext test` on such a row exits 0.
-  auto const                     base_url = sys.base_url.value_or(std::string{});
-  adapter::auth_credential const cred{.kind = adapter::auth_kind::bearer, .token = std::move(*token)};
+  auto const base_url = sys.base_url.value_or(std::string{});
+  // The credential is COPIED into the handle as well as moved into the
+  // adapter: `ext create` sends its POST on the raw transport and has to
+  // build its own `Authorization` header, and the adapter does not re-expose
+  // what it copied. See `adapter_handle`'s header.
+  adapter::auth_credential const cred{.kind = adapter::auth_kind::bearer, .token = *token};
 
   auto wire = deps.wire();
   if (!wire) {
@@ -149,10 +153,10 @@ auto build_adapter(const engine::external::system::external_system& sys, const f
 
   if (sys.kind == system_ns::system_kind::jira) {
     auto made = std::make_unique<engine::extsync::jira::jira_adapter>(base_url, cred, *wire);
-    return std::make_unique<adapter_handle>(std::move(wire), std::move(made), adapter_kind::jira);
+    return std::make_unique<adapter_handle>(std::move(wire), std::move(made), adapter_kind::jira, std::move(*token));
   }
   auto made = std::make_unique<engine::extsync::github::github_adapter>(base_url, cred, *wire);
-  return std::make_unique<adapter_handle>(std::move(wire), std::move(made), adapter_kind::github);
+  return std::make_unique<adapter_handle>(std::move(wire), std::move(made), adapter_kind::github, std::move(*token));
 }
 
 auto factory_error_message(factory_error err, const engine::external::system::external_system& sys) -> domain_error {

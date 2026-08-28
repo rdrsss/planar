@@ -747,6 +747,25 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   for (auto const& leaf : {"workbench edit", "workbench extract-questions"}) {
     INFO("moved by task 6302: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
+  //
+  // `link` LEFT this list at task 6301, which took the decision task 6299
+  // deferred. The base verb was portable exactly as measured; the
+  // `--propagate` flag is refused at exit 64 on the `touches_not_implemented`
+  // precedent, BEFORE the link row is written so the refusal's own
+  // "re-run without --propagate" advice still works. That divergence is
+  // recorded in handlers/link.cppm and asserted below.
+  for (auto const& leaf : {"workbench edit", "workbench extract-questions", "workbench publish", "feedback triage list",
+                           "feedback triage show", "feedback triage set"}) {
+    INFO("probed but deliberately not moved by task 6299: " << leaf);
+    CHECK(unported.contains(leaf));
+  }
+  INFO("moved by task 6301, with --propagate refused as a recorded divergence: link");
+  CHECK_FALSE(unported.contains("link"));
+  // The flag's blocker is still present, which is what makes the divergence
+  // a deferral rather than a gap: both propagate leaves stay unported.
+  for (auto const& leaf : {"ext propagate", "ext propagate-one"}) {
+    INFO("`link --propagate` waits on this: " << leaf);
+    CHECK(unported.contains(leaf));
   }
   // 36 after task 6298 moved TWO of the eight leaves it was handed:
   // `sync status` and `plan descendants`. The other six stayed, and the
@@ -754,7 +773,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // below this CHECK.
   // 33 before task 6302; 31 after it moved `workbench edit` and
   // `workbench extract-questions`.
-  CHECK(unported.size() == 31);
+  // 33 before task 6309, which moved THREE: `plan next` and `ext create`
+  // (both named as blocked by task 6298's probe and both sized correctly),
+  // plus `link` (task 6301, minus its `--propagate` flag). 33 - 3 = 30.
+  CHECK(unported.size() == 28);
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
@@ -790,19 +812,26 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                           of loader substrate (`loadOpenTasks`,
   //                           `loadTouches`, `loadClosureTouches`), so the
   //                           two belong to ONE cycle, not two halves.
-  //   plan next               `agentactivity.store.nextWork`, named as
-  //                           unported in agentactivity.cppm's own header.
-  //                           ~120 self-contained lines; the cheapest of
-  //                           the six.
   //   task packet             `engine/routing/packet.zig`, 1674 lines —
   //                           the subsystem `engine/models/CMakeLists.txt`
   //                           already defers `models resolve` against.
-  //   ext create              two `adapter_handle` accessors plus the
-  //                           `remote.zig` POST path; see task 6295.
-  for (auto const& leaf :
-       {"plan closeout", "plan divergence", "plan recommend-strategy", "plan next", "task packet", "ext create"}) {
+  //
+  // `plan next` and `ext create` were BOTH on this list and both left it at
+  // task 6309, each for the reason task 6298 measured:
+  //
+  //   plan next    `agentactivity::next_work`, ~120 self-contained lines,
+  //                named as unported in agentactivity.cppm's own header.
+  //                Sized correctly and landed as sized.
+  //   ext create   two `adapter_handle` accessors plus the `remote.zig`
+  //                POST path, and ZERO of `engine_extsync`'s unported
+  //                lines. See handlers/ext.cppm.
+  for (auto const& leaf : {"plan closeout", "plan divergence", "plan recommend-strategy", "task packet"}) {
     INFO("task 6298 verified this one BLOCKED rather than assuming it: " << leaf);
     CHECK(unported.contains(leaf));
+  }
+  for (auto const& leaf : {"plan next", "ext create"}) {
+    INFO("moved by task 6309: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
   }
   for (auto const& leaf : {"assoc list", "assoc remove"}) {
     INFO("moved by task 6279: " << leaf);
@@ -873,7 +902,13 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // that wired them off the back of this cycle would be claiming a
   // create/propagate path that does not exist.
   CHECK_FALSE(unported.contains("ext test"));
-  for (auto const& leaf : {"ext create", "ext propagate-one", "ext propagate"}) {
+  // `ext create` was one of those three and LEFT at task 6295, which found
+  // the grouping half-wrong: the factory really was insufficient for it, but
+  // what it additionally needed was two `adapter_handle` accessors, NOT the
+  // create/propagate half of `engine_extsync`. Its two siblings genuinely do
+  // reach `propagate.zig` and stay.
+  CHECK_FALSE(unported.contains("ext create"));
+  for (auto const& leaf : {"ext propagate-one", "ext propagate"}) {
     INFO("still-deferred ext leaf: " << leaf);
     CHECK(unported.contains(leaf));
   }

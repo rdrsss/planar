@@ -10,6 +10,8 @@ import planar.db;
 import planar.json_text;
 import planar.engine.identity;
 import planar.engine.planning;
+import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.agentrender;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -820,6 +822,190 @@ auto plan_descendants(context& ctx, const cliapp::parsed_args& args) -> handler_
       prefix = "plan (child)";
     }
     out += std::format("{}:{}  {}\n", prefix, entry.id, entry.title);
+  }
+  ctx.out() << out;
+  return {};
+}
+
+auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  namespace aa = engine::runtime::agentactivity;
+  namespace ar = engine::runtime::agentrender;
+
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const id = entity_id_arg(args, "plan-id", "plan");
+  if (!id) {
+    return std::unexpected(id.error());
+  }
+
+  // The handler's own existence probe, exactly as `plan descendants` keeps
+  // one: the selector returns an EMPTY result for an unknown plan rather
+  // than failing, so without this probe `plan next 999` would print a
+  // cheerful all-zeros header at exit 0 instead of refusing.
+  {
+    auto stmt = (*conn)->prepare("select count(*) from plans where id = ?");
+    if (!stmt || !stmt->bind_int64(1, *id)) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan next: QueryFailed"));
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan next: QueryFailed"));
+    }
+    if (*stepped == db::step_result::done || stmt->column_int64(0) == 0) {
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("plan {} not found", *id)));
+    }
+  }
+
+  auto const rows = aa::next_work(**conn, *id);
+  if (!rows) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("plan next selector: {}", aa::error_name(rows.error()))));
+  }
+
+  std::size_t n_avail   = 0;
+  std::size_t n_claimed = 0;
+  std::size_t n_stale   = 0;
+  std::size_t n_blocked = 0;
+  for (auto const& row : *rows) {
+    switch (row.bucket) {
+    case aa::next_work_bucket::available:
+      ++n_avail;
+      break;
+    case aa::next_work_bucket::claimed:
+      ++n_claimed;
+      break;
+    case aa::next_work_bucket::stale:
+      ++n_stale;
+      break;
+    case aa::next_work_bucket::blocked:
+      ++n_blocked;
+      break;
+    }
+  }
+
+  // Its own query over the same `plan_tree` CTE — see plan.cppm.
+  std::int64_t done_count = 0;
+  {
+    auto stmt = (*conn)->prepare("with recursive plan_tree(id) as (\n"
+                                 "  select id from plans where id = ?\n"
+                                 "  union all\n"
+                                 "  select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id\n"
+                                 ")\n"
+                                 "select count(*) from tasks\n"
+                                 "where plan_id in (select id from plan_tree) and status = 'done'");
+    if (!stmt || !stmt->bind_int64(1, *id)) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan next done count: QueryFailed"));
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan next done count: QueryFailed"));
+    }
+    if (*stepped == db::step_result::row) {
+      done_count = stmt->column_int64(0);
+    }
+  }
+
+  if (cliapp::flag_bool(args, "--json")) {
+    // One pass per bucket, in the oracle's field order. The claimed and
+    // stale arrays wrap each task in a `{task, claim}` envelope; available
+    // and blocked are bare task objects.
+    auto const append_task_for = [&](std::string& out, std::int64_t task_id) -> bool {
+      auto row = aa::get_task(**conn, task_id);
+      if (!row) {
+        return false;
+      }
+      ar::append_task(out, *row);
+      return true;
+    };
+
+    std::string out = std::format("{{\"plan_id\":{}", *id);
+    for (auto const bucket : {aa::next_work_bucket::available, aa::next_work_bucket::claimed, aa::next_work_bucket::stale,
+                              aa::next_work_bucket::blocked}) {
+      std::string_view key = "available";
+      if (bucket == aa::next_work_bucket::claimed) {
+        key = "claimed";
+      } else if (bucket == aa::next_work_bucket::stale) {
+        key = "stale";
+      } else if (bucket == aa::next_work_bucket::blocked) {
+        key = "blocked";
+      }
+      bool const wrapped = bucket == aa::next_work_bucket::claimed || bucket == aa::next_work_bucket::stale;
+
+      out += std::format(",\"{}\":[", key);
+      bool first = true;
+      for (auto const& row : *rows) {
+        if (row.bucket != bucket) {
+          continue;
+        }
+        if (!first) {
+          out += ",";
+        }
+        first = false;
+        if (wrapped) {
+          out += R"({"task":)";
+        }
+        if (!append_task_for(out, row.task_id)) {
+          return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan next: QueryFailed"));
+        }
+        if (wrapped) {
+          out += R"(,"claim":)";
+          if (row.covering.has_value()) {
+            ar::append_claim_view(out, *row.covering,
+                                  ar::claim_view_extras{.entity_scope = aa::resolve_claim_scope(**conn, *row.covering)});
+          } else {
+            out += "null";
+          }
+          out += "}";
+        }
+      }
+      out += "]";
+    }
+    out += std::format(",\"summary\":{{\"available\":{},\"claimed\":{},\"stale\":{},\"blocked\":{},\"done\":{}}}}}\n", n_avail,
+                       n_claimed, n_stale, n_blocked, done_count);
+    ctx.out() << out;
+    return {};
+  }
+
+  bool const include_claimed = cliapp::flag_bool(args, "--include-claimed");
+  bool const include_stale   = cliapp::flag_bool(args, "--include-stale");
+
+  std::string out = std::format("plan:{}  available:{}  claimed:{}  stale:{}  blocked:{}  done:{}\n", *id, n_avail, n_claimed,
+                                n_stale, n_blocked, done_count);
+  for (auto const& row : *rows) {
+    // The token stand-in for a bucket row whose claim could not be read
+    // back. Unreachable through the CLI (the id came from the same
+    // transaction) but the oracle spells it, so it is spelled here.
+    // Both arms are spelled as `string_view` deliberately. Written as a
+    // ternary over `std::string` and a literal, the common type is
+    // `std::string`, so the view would be built from a temporary that dies
+    // at the end of the expression — which `-Wreturn-stack-address` caught
+    // here rather than at runtime.
+    auto const token = [&] -> std::string_view {
+      if (!row.covering.has_value()) {
+        return std::string_view{"?"};
+      }
+      return std::string_view{row.covering->claim_token};
+    };
+    switch (row.bucket) {
+    case aa::next_work_bucket::available:
+      out += std::format("  available  task:{}  {}  [pri:{}]\n", row.task_id, row.title, row.priority);
+      break;
+    case aa::next_work_bucket::claimed:
+      if (include_claimed) {
+        out += std::format("  claimed    task:{}  {}  [pri:{}, claim:{}]\n", row.task_id, row.title, row.priority, token());
+      }
+      break;
+    case aa::next_work_bucket::stale:
+      if (include_stale) {
+        out += std::format("  stale      task:{}  {}  [pri:{}, claim:{}]\n", row.task_id, row.title, row.priority, token());
+      }
+      break;
+    case aa::next_work_bucket::blocked:
+      out += std::format("  blocked    task:{}  {}  [pri:{}]\n", row.task_id, row.title, row.priority);
+      break;
+    }
   }
   ctx.out() << out;
   return {};
