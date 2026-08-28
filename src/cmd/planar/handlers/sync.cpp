@@ -734,4 +734,84 @@ auto sync_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   return {};
 }
 
+auto sync_status(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const as_json = cliapp::flag_bool(args, "--json");
+  auto const system  = cliapp::flag_string(args, "--system");
+  auto const entity  = cliapp::flag_string(args, "--entity");
+
+  // `--system` is NOT validated against `external_systems`; an unknown slug
+  // is an empty result, not a refusal. See this leaf's header.
+  link_ns::list_filter filter;
+  if (system.has_value()) {
+    filter.system_slug = *system;
+  }
+  if (entity.has_value()) {
+    auto const ref = parse_kind_id_ref(*entity);
+    if (!ref) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                             std::format("invalid --entity value '{}'; expected <kind>:<integer-id>", *entity)));
+    }
+    filter.entity_kind = ref->kind;
+    filter.entity_id   = ref->id;
+  }
+
+  auto const rows = sync_ns::status(**conn, filter);
+  if (!rows) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("sync status: {}", sync_error_name(rows.error()))));
+  }
+
+  if (as_json) {
+    // Line-delimited objects, no enclosing array. An empty set emits
+    // nothing at all -- emitting `[]` here would be the natural-looking
+    // mistake.
+    std::string out;
+    for (auto const& row : *rows) {
+      out += std::format(R"({{"link_id":{},"entity_kind":)", row.link_id);
+      json_text::append_json_string(out, link_ns::external_entity_kind_to_text(row.entity_kind));
+      out += std::format(R"(,"entity_id":{},"external_id":)", row.entity_id);
+      json_text::append_json_string(out, row.external_id);
+      out += std::format(R"(,"system_id":{})", row.system_id);
+      // Omitted entirely when NULL, rather than rendered as `null`.
+      if (row.last_synced_at.has_value()) {
+        out += R"(,"last_synced_at":)";
+        json_text::append_json_string(out, *row.last_synced_at);
+      }
+      out += R"(,"last_sync_status":)";
+      json_text::append_json_string(out, link_ns::sync_status_to_text(row.last_sync_status));
+      out += "}\n";
+    }
+    ctx.out() << out;
+    return {};
+  }
+
+  if (rows->empty()) {
+    ctx.out() << "no external links\n";
+    return {};
+  }
+
+  // Column widths are the oracle's `{s:<6} {s:<14} {s:<18} {s:<8} {s:<24}`
+  // separated by TWO spaces each. On the data rows the entity column is not
+  // one padded field but `<kind>:<id>` where only the ID carries the width,
+  // so the rendered column is wider than its header whenever the kind is
+  // longer than three characters. That is the oracle's, not a bug to fix
+  // here.
+  ctx.out() << std::format("{:<6}  {:<14}  {:<18}  {:<8}  {:<24}  {}\n", "link", "entity", "external-id", "system", "last-sync",
+                           "status");
+  std::string out;
+  for (auto const& row : *rows) {
+    auto const last = row.last_synced_at.has_value() ? std::string_view{*row.last_synced_at} : std::string_view{"never"};
+    out += std::format("{:<6}  {}:{:<11}  {:<18}  {:<8}  {:<24}  {}\n", row.link_id,
+                       link_ns::external_entity_kind_to_text(row.entity_kind), row.entity_id, row.external_id, row.system_id,
+                       last, link_ns::sync_status_to_text(row.last_sync_status));
+  }
+  ctx.out() << out;
+  return {};
+}
+
 } // namespace planar::cmd::handlers

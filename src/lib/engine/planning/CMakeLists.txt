@@ -153,6 +153,7 @@ planar_module(engine_planning
     annotation.cppm
     plan_step.cppm
     test_spec_status.cppm
+    descendants.cppm
     planning.cppm
   SOURCES
     transitions.cpp
@@ -165,6 +166,7 @@ planar_module(engine_planning
     annotation.cpp
     plan_step.cpp
     test_spec_status.cpp
+    descendants.cpp
   DEPENDS
     db
     json_text

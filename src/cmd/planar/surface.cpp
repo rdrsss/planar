@@ -4121,8 +4121,35 @@ auto unported_paths() -> std::span<std::string_view const> {
       "import",
       "link",
       "models resolve",
+      // `plan descendants` left this inventory at task 6298, and its four
+      // family siblings below did NOT. It had been grouped with them and
+      // with `ext propagate` as blocked on the create/propagate half of
+      // `engine_extsync`; for THIS leaf that was false. Its whole engine
+      // need is `walkTree` -- 78 of `propagate.zig`'s 409 lines, three SQL
+      // queries reaching no adapter, transport, credential or template.
+      // `strategyForSystem`, `selectStrategy`, `countDistinctReposInFeature`,
+      // `hasExistingMirrorLink` and `loadExistingMirror` are all unreached
+      // from it, so `ext propagate` stays below with the rest of that file.
+      //
+      // The walk landed as `planar.engine.planning.descendants`, NOT under
+      // `engine_extsync`, because that bucket's stated invariant is that it
+      // carries NO `db` edge (see its CMakeLists) and this is nothing but
+      // SQL. Third instance of the same correction as `audit commits`
+      // (task 6272) and the `sync` write trio (task 6294): a LEAF's
+      // dependencies inferred from its MODULE's.
       "plan closeout",
-      "plan descendants",
+      // The four `plan` leaves below stayed at task 6298, each with a
+      // measured blocker rather than an inherited one:
+      //   closeout    `engine/planning/closeout.zig`, 913 lines, absent.
+      //   divergence  } both on `engine/planning/strategy.zig`. `divergence`
+      //   recommend-  } needs one entry point and `recommendWith` another,
+      //   strategy    } but they share ~300 lines of loader substrate
+      //               } (`loadOpenTasks`/`loadTouches`/`loadClosureTouches`),
+      //               } so they are ONE cycle, not two halves.
+      //   next        `agentactivity.store.nextWork`, ~120 self-contained
+      //               lines, already named as unported in
+      //               agentactivity.cppm's own header. The cheapest of the
+      //               four and the obvious next one to take.
       "plan divergence",
       "plan next",
       "plan recommend-strategy",
@@ -4137,12 +4164,13 @@ auto unported_paths() -> std::span<std::string_view const> {
       // full — so the whole cycle was handler wiring plus one missing
       // cmd-layer helper (`guard_with_membership`). See handlers/sync.cppm.
       //
-      // `sync status` stays here and is NOT a fourth free leaf: it is the
-      // one member of the family that renders `engine.external.sync.status`
-      // rows, a listing shape none of the three above produces, and it takes
-      // `--entity` rather than a positional. It was never in this task's
-      // six.
-      "sync status",
+      // `sync status` left this inventory at task 6298. Task 6294's note
+      // called it "NOT a fourth free leaf" and the shape bore that out --
+      // it renders `engine.external.sync.status` rows, a listing none of
+      // pull/push/resolve produces, takes `--entity` rather than a
+      // positional, and runs NO cross-scope guard. But its ENGINE half was
+      // already complete (`sync::status` + `link::list_filter` shipped with
+      // the module), so what it needed was rendering, not engine work.
       "synthesize",
       "task packet",
       "task touches infer",
