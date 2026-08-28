@@ -584,6 +584,132 @@ TEST_CASE("C++ and Zig agree on the three sync write leaves over seeded links", 
   CHECK(mine_events.contains("TransportFailed"));
 }
 
+TEST_CASE("C++ and Zig agree on promote, demote and test-spec status", "[cmd][parity][oracle]") {
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+
+  // Both arenas are seeded by the ORACLE, as in the `sync` case above, so
+  // the two databases start byte-identical and every row id below is the
+  // same on both sides. Every seed verb here IS ported, so seeding each
+  // arena with its own binary would also work — but it would make an id
+  // drift in a seed verb read as a divergence in `promote`, which is the
+  // opposite of what this case is for.
+  //
+  // TWO associations, and that is load-bearing: with one, `promote` can
+  // only ever move a row in from global or report `scope_unchanged`, and
+  // the association-to-association arm — the only one whose `--json`
+  // envelope carries a non-null `previous_scope_id` — is unreachable.
+  auto const                                  space = make_arena("promotion");
+  std::vector<std::vector<std::string>> const seed{
+      {"init", "--name", "Proj", "--slug", "proj", "--allow-no-repo", "--json"},
+      {"assoc", "create", "project:proj", "--kind", "project", "--json"},
+      {"assoc", "create", "org:acme", "--kind", "org", "--json"},
+      {"plan", "create", "Anchor", "--slug", "anchor", "--scope", "project:proj", "--json"},
+      {"plan", "create", "M1 Foundation", "--slug", "m1", "--parent", "1", "--scope", "project:proj", "--json"},
+      {"task", "add", "T one", "--plan", "2", "--slug", "t-one", "--no-editor", "--json"},
+  };
+  for (std::size_t i = 0; i < seed.size(); ++i) {
+    auto const tag = std::format("pseed{}", i);
+    auto const a   = run_pinned(zig_bin(), seed[i], space.cpp_root, tag);
+    auto const b   = run_pinned(zig_bin(), seed[i], space.zig_root, tag);
+    INFO("seed step: " << tag);
+    REQUIRE(a.code == 0);
+    REQUIRE(b.code == 0);
+  }
+
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  // ORDER IS LOAD-BEARING for the mutating steps: each `promote`/`demote`
+  // observes the scope the previous one left behind, which is what makes
+  // the `scope_unchanged` and already-global arms reachable at all.
+  std::vector<step> const steps{
+      // --- refusals, before any success ---
+      {"pref1", {"promote", "plan", "--to", "org:acme"}},
+      {"pref2", {"promote", "plan:", "--to", "org:acme"}},
+      {"pref3", {"promote", ":1", "--to", "org:acme"}},
+      {"pslug", {"promote", "plan:some-slug", "--to", "org:acme"}},
+      // The two bad-kind arms, which land in different buckets: `bogus` is
+      // not an `entity_kind` (exit 2, parse_ref), `session` is one but is
+      // not promotable (exit 1, the pre-read).
+      {"pbogus", {"promote", "bogus:1", "--to", "org:acme"}},
+      {"psess", {"promote", "session:1", "--to", "org:acme"}},
+      // Non-positive ids are MALFORMED, not absent — a different code and a
+      // different message from `plan:999`.
+      {"pzero", {"promote", "plan:0", "--to", "org:acme"}},
+      {"pneg", {"promote", "plan:-1", "--to", "org:acme"}},
+      {"pabsent", {"promote", "plan:999", "--to", "org:acme"}},
+      {"prepo", {"promote", "plan:1", "--to", "repo:proj"}},
+      {"punk", {"promote", "plan:1", "--to", "nonexistent"}},
+      {"psame", {"promote", "plan:1", "--to", "project:proj"}},
+      {"dref", {"demote", "plan"}},
+      {"dslug", {"demote", "plan:some-slug"}},
+      {"dabsent", {"demote", "plan:999"}},
+      // --- successes, walking one row around the scope graph ---
+      {"pmove", {"promote", "plan:1", "--to", "org:acme"}},
+      {"pmovej", {"promote", "plan:1", "--to", "project:proj", "--json"}},
+      {"ddown", {"demote", "plan:1", "--json"}},
+      {"dagain", {"demote", "plan:1"}},
+      // `--from` is read and DISCARDED: a slug that does not exist is not a
+      // refusal, because the engine call takes no source scope.
+      {"dfrom", {"demote", "plan:1", "--from", "nonexistent-slug"}},
+      {"pback", {"promote", "plan:1", "--to", "org:acme"}},
+      {"ptask", {"promote", "task:1", "--to", "org:acme", "--json"}},
+      {"dtask", {"demote", "task:1", "--from", "org:acme"}},
+      // --- test-spec status: a real MILESTONE reports "not found" ---
+      {"tsmid", {"test-spec", "status", "2"}},
+      {"tsmslug", {"test-spec", "status", "m1"}},
+      {"tsabsent", {"test-spec", "status", "999"}},
+      {"tsnope", {"test-spec", "status", "nope"}},
+      {"tsid", {"test-spec", "status", "1"}},
+      {"tsidj", {"test-spec", "status", "1", "--json"}},
+      {"tsslug", {"test-spec", "status", "anchor"}},
+      {"tsslugj", {"test-spec", "status", "anchor", "--json"}},
+  };
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(mine.out == ref.out);
+    CHECK(mine.err == ref.err);
+  }
+
+  // `promote` and `demote` write `scope_kind`/`scope_id`, and the stream
+  // above renders those columns only through the handler's own envelope.
+  // Without this a port that printed the right envelope while writing the
+  // wrong row — or writing nothing — would pass every assertion above.
+  auto const scopes = [](const std::filesystem::path& root) {
+    auto conn = planar::db::connection::open((root / "planar.db").string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare("select 'plan', id, scope_kind, coalesce(scope_id,-1) from plans"
+                              " union all select 'task', id, scope_kind, coalesce(scope_id,-1) from tasks"
+                              " order by 1, 2");
+    REQUIRE(stmt.has_value());
+    std::string rendered;
+    for (;;) {
+      auto stepped = stmt->step();
+      REQUIRE(stepped.has_value());
+      if (*stepped == planar::db::step_result::done) {
+        break;
+      }
+      rendered +=
+          std::format("{}:{}|{}|{}\n", stmt->column_text(0), stmt->column_int64(1), stmt->column_text(2), stmt->column_int64(3));
+    }
+    return rendered;
+  };
+  auto const mine_scopes = scopes(space.cpp_root);
+  CHECK(mine_scopes == scopes(space.zig_root));
+  // Non-empty, so the diff above cannot be two empty strings agreeing — and
+  // the plan really did end up back in an association rather than global,
+  // which is the state the last mutating step left.
+  CHECK_FALSE(mine_scopes.empty());
+  CHECK(mine_scopes.contains("plan:1|association|2\n"));
+  CHECK(mine_scopes.contains("task:1|global|-1\n"));
+}
+
 TEST_CASE("C++ and Zig agree on workspace doctor's diagnose-and-repair pass", "[cmd][parity][oracle]") {
   PLANAR_REQUIRE_ORACLE(
       oracle_available(),

@@ -4109,7 +4109,12 @@ auto unported_paths() -> std::span<std::string_view const> {
       // what landed was the wiring plus the config-file PATH, the two
       // starter blobs, and `config validate`'s four-step rule set.
       "dashboard",
-      "demote",
+      // `demote` and `promote` left this inventory at task 6299, together
+      // with `test-spec status` below. All three were handler-only: their
+      // engines — `planar.engine.promotion` (task 6094) and
+      // `planar.engine.planning.test_spec_status` — had been ported in FULL
+      // including their output renderers, so the cycle wired three leaves
+      // and wrote no engine code.
       "explore",
       "ext create",
       "ext propagate",
@@ -4126,7 +4131,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       "plan divergence",
       "plan next",
       "plan recommend-strategy",
-      "promote",
       "report",
       "spec ingest",
       // `sync pull`, `sync push` and `sync resolve` left this inventory at
@@ -4146,7 +4150,8 @@ auto unported_paths() -> std::span<std::string_view const> {
       "synthesize",
       "task packet",
       "task touches infer",
-      "test-spec status",
+      // `test-spec status` left this inventory at task 6299 — see the note
+      // beside `explore` above.
       // `tree` left this inventory at task 6278. Its whole product is a
       // RENDERED hierarchy, so every expected byte — connectors, indent
       // extensions, dirs-first grouping, the summary footer — was captured

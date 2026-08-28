@@ -646,7 +646,86 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // is the same failure mode `audit commits` hit above (a LEAF's
   // dependencies inferred from its MODULE's) in a new disguise: here it was
   // two engine modules whose NAMES look alike.
-  CHECK(unported.size() == 38);
+  //
+  // 35 after task 6299 moved `promote`, `demote` and `test-spec status` —
+  // the first three of the TEN leaves that had never been examined at all
+  // this milestone. All three were handler-only, and for once the reason is
+  // boring rather than a corrected mis-grouping: `planar.engine.promotion`
+  // (task 6094) and `planar.engine.planning.test_spec_status` had each been
+  // ported in FULL, renderers included, long before any handler existed to
+  // call them. Nothing about that was inferrable from the leaves' names;
+  // it came from grepping for the SYMBOLS their oracle handlers call.
+  // (`test-spec status` in particular reads as a `spec ingest` sibling and
+  // is not one: `spec ingest` stays unported below.)
+  //
+  // The other seven of the ten did NOT move, and the split is the cycle's
+  // real product. See the per-leaf notes below.
+  CHECK(unported.size() == 35);
+  for (auto const& leaf : {"promote", "demote", "test-spec status"}) {
+    INFO("moved by task 6299: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
+  }
+  // The seven task 6299 probed and did NOT move, each for its own measured
+  // reason. Pinned as PRESENT so a later cycle cannot wire one off the back
+  // of this one's count without saying so:
+  //
+  //   link                       NOT engine-blocked. `external::link::create`,
+  //                              `external::system::show_by_slug` and all
+  //                              three `*_from_text` enums are present. Its
+  //                              blocker is one FLAG: `--propagate` calls the
+  //                              `ext propagate` handler, which is unported,
+  //                              and the oracle's own header comment claiming
+  //                              the flag "refuses with NotImplemented" is
+  //                              STALE — the code runs the propagation. A
+  //                              port must either land `ext propagate` or
+  //                              pin a divergence on that flag, and neither
+  //                              belongs in a probe cycle.
+  //   workbench edit             NOT blocked either, and this was the
+  //                              cycle's near-miss: `editor::resolve_editor`
+  //                              + `editor::spawn_inherit` and
+  //                              `workbench::sync::{push,pull}` all exist,
+  //                              so it is genuinely handler-only. It is held
+  //                              back only because its contract is an
+  //                              INTERACTIVE editor round trip whose oracle
+  //                              capture needs a non-interactive editor
+  //                              stand-in, which is a test-design question
+  //                              rather than a port.
+  //   workbench extract-questions  Engine deps all present
+  //                              (`workbench::parse::parse`,
+  //                              `sync::feature_dir_for`, `root`). What is
+  //                              missing is ~200 lines of PURE text
+  //                              extraction (the `## Open Questions` section
+  //                              walk, the H3-vs-bullet branch, the
+  //                              first-sentence split) that lives in the
+  //                              oracle's HANDLER and belongs in the engine
+  //                              layer here. Cheap, but it is new code with
+  //                              its own captures, not wiring.
+  //   workbench publish          GENUINELY BLOCKED, and the only one of the
+  //                              three workbench leaves that is. It calls
+  //                              `engine.extsync.parent_issue.recordLink`
+  //                              and `ext/remote.createRemote`;
+  //                              `extsync/parent_issue.zig` is listed
+  //                              unported in this tree's own
+  //                              engine/extsync/CMakeLists.txt. Contradicts
+  //                              the plausible reading that "the workbench
+  //                              engine is fully ported" settles all three.
+  //   feedback triage list|show|set  The one family with NO engine here at
+  //                              all: `planar.engine.planning.feedback_triage`
+  //                              does not exist in this tree (302 Zig lines,
+  //                              four enums, `parse_ref`/`entity_scope`/
+  //                              `set`/`show`/`list` plus two renderers).
+  //                              The `feedback_triage` TABLE is present
+  //                              (migration 00028), so this is an engine
+  //                              port, not a schema one. Their handlers are
+  //                              9/20/21/27 lines — the smallest in the
+  //                              inventory — which is exactly why sizing
+  //                              this family by its handlers would have been
+  //                              wrong.
+  for (auto const& leaf : {"link", "workbench edit", "workbench extract-questions", "workbench publish", "feedback triage list",
+                           "feedback triage show", "feedback triage set"}) {
+    INFO("probed but deliberately not moved by task 6299: " << leaf);
+    CHECK(unported.contains(leaf));
+  }
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));

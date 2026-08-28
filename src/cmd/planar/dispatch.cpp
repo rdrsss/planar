@@ -18,6 +18,8 @@ import planar.cmd.planar.handlers.assoc;
 import planar.cmd.planar.handlers.scope;
 import planar.cmd.planar.handlers.search;
 import planar.cmd.planar.handlers.tree;
+import planar.cmd.planar.handlers.promotion;
+import planar.cmd.planar.handlers.test_spec;
 import planar.cmd.planar.handlers.health;
 import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.capture;
@@ -404,6 +406,11 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("sync pull", handlers::sync_pull);
   table.emplace("sync push", handlers::sync_push);
   table.emplace("sync resolve", handlers::sync_resolve);
+  // `promote` and `demote` are TOP-LEVEL leaves, not a family: they take no
+  // subcommand, so their table key is the bare verb.
+  table.emplace("promote", handlers::promote);
+  table.emplace("demote", handlers::demote);
+  table.emplace("test-spec status", handlers::test_spec_status);
   // `skills` has no subcommands, so it is a LEAF and needs an entry here
   // even though the verb is retired and does nothing but render its own
   // help page. See that handler's header.

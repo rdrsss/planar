@@ -376,6 +376,55 @@
 # `tree --help` is NOT oracle-comparable and no test claims it is -- CLI11
 # renders help here (see tree.cppm). The declaration is compared instead,
 # via parity.t.cpp's `schema` catalog case, which already covered this leaf.
+#
+# TASK 6299 added `promote`, `demote` and `test-spec status` (handlers/
+# promotion.{cppm,cpp} and handlers/test_spec.{cppm,cpp}), and its FIRST
+# deliverable was a probe rather than a port: ten leaves that had never been
+# examined this milestone, measured by SYMBOL against this tree. The split it
+# found is the reason only three moved.
+#
+# WHAT MOVED, and why it was cheap: nothing about these three was inferrable
+# from their names. `planar.engine.promotion` (task 6094) and
+# `planar.engine.planning.test_spec_status` had each been ported in FULL --
+# mutations, lookups AND output renderers -- long before any handler existed
+# to call them, so all three leaves are lookup/compute/write wiring. The only
+# new build edge is `engine_promotion` in DEPENDS below.
+#
+# WHAT THE ORACLE RUN FOUND, none of it transferable from a sibling:
+#   - THE TWO BAD-KIND REFUSALS DO NOT SHARE A BUCKET. `promote bogus:1`
+#     exits 2 (`parse_ref` does not know the kind) and `promote session:1`
+#     exits 1 with `reading entity scope: InvalidScope` (`session` IS an
+#     `entity_kind`, so it survives `parse_ref` and is refused by the
+#     pre-read). Collapsing promotability into one check would have merged
+#     them.
+#   - `plan:0` and `plan:-1` are MALFORMED, not absent: exit 2 invalid-ref,
+#     not the exit 1 `NotFound` a well-formed absent id gets.
+#   - `demote --from` is parsed and DISCARDED. A slug that does not exist is
+#     not a refusal; the engine call takes no source scope.
+#   - `test-spec status` on a REAL MILESTONE reports `plan '2' not found`.
+#     Both lookups require `parent_plan_id is null`, so a valid non-anchor
+#     plan is indistinguishable from an absent one. Reproduced as-is.
+#   - The success messages carry a DOUBLE space before `(was:`, and the text
+#     table's counts carry an explicit `+` sign. Both come from the engine's
+#     own renderers and were captured there.
+#
+# WHAT DID NOT MOVE, and it is the more useful half of the cycle. Seven of
+# the ten stayed, each for a measured reason, and the per-leaf findings are
+# recorded in dispatch.t.cpp beside the count assertion. The two worth
+# repeating here because they contradict a plausible reading:
+#   - "the workbench engine is fully ported, so its three remaining leaves
+#     are free" is HALF TRUE. `workbench edit` and `extract-questions` need
+#     nothing missing; `workbench publish` calls
+#     `engine.extsync.parent_issue.recordLink`, and that module is listed
+#     unported in src/lib/engine/extsync/CMakeLists.txt.
+#   - `link` is NOT engine-blocked -- `external::link::create` and
+#     `external::system::show_by_slug` are both here. It is blocked on one
+#     FLAG: `--propagate` runs `ext propagate`. The oracle's own
+#     handlers/link.zig header claims that flag "refuses with NotImplemented
+#     when set"; that comment is STALE and the code propagates. Captured:
+#     `link plan:1 --to jira-demo:DEMO-2 --propagate --json` writes the link
+#     row, emits a second propagation envelope, and exits 2. Needs a task
+#     against the oracle for the stale comment.
 
 planar_binary(planar
   MAIN
@@ -406,6 +455,8 @@ planar_binary(planar
     handlers/scope.cppm
     handlers/search.cppm
     handlers/tree.cppm
+    handlers/promotion.cppm
+    handlers/test_spec.cppm
     handlers/health.cppm
     handlers/audit.cppm
     handlers/task.cppm
@@ -456,6 +507,8 @@ planar_binary(planar
     handlers/scope.cpp
     handlers/search.cpp
     handlers/tree.cpp
+    handlers/promotion.cpp
+    handlers/test_spec.cpp
     handlers/health.cpp
     handlers/audit.cpp
     handlers/task.cpp
@@ -495,6 +548,11 @@ planar_binary(planar
     engine_health
     engine_models
     engine_planning
+    # New at task 6299, for handlers/promotion.cpp. `promote` and `demote`
+    # are the binary's only consumers of this bucket, and it carries their
+    # output renderers as well as the two mutations — see its own header for
+    # why those renderers live in the engine rather than here.
+    engine_promotion
     engine_runs
     engine_runtime
     engine_search
