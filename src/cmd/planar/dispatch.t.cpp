@@ -660,7 +660,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //
   // The other seven of the ten did NOT move, and the split is the cycle's
   // real product. See the per-leaf notes below.
-  CHECK(unported.size() == 35);
   for (auto const& leaf : {"promote", "demote", "test-spec status"}) {
     INFO("moved by task 6299: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
@@ -726,16 +725,60 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
     INFO("probed but deliberately not moved by task 6299: " << leaf);
     CHECK(unported.contains(leaf));
   }
+  // 36 after task 6298 moved TWO of the eight leaves it was handed:
+  // `sync status` and `plan descendants`. The other six stayed, and the
+  // reason each stayed was measured rather than assumed — see the block
+  // below this CHECK.
+  CHECK(unported.size() == 33);
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
-  // `sync status` is the family's fourth leaf and did NOT move. It renders
-  // a listing shape none of the three above produces and was never among
-  // task 6294's six; wiring it off the back of that cycle would be the
-  // "predicted unblock" error the task existed to avoid.
-  INFO("task 6294 deliberately left the family's listing leaf");
-  CHECK(unported.contains("sync status"));
+  // `sync status` — the family's fourth leaf — moved at task 6298. Task
+  // 6294 had deliberately left it because it renders a listing shape none
+  // of its three siblings produces and takes `--entity` rather than a
+  // positional. Both remained true; what made it cheap is that its ENGINE
+  // half (`sync::status` + `link::list_filter`) had shipped with the module
+  // all along, so the leaf needed rendering and no engine work.
+  INFO("moved by task 6298: sync status");
+  CHECK_FALSE(unported.contains("sync status"));
+  // `plan descendants` moved at task 6298 for the third instance of the
+  // same correction `audit commits` and the `sync` trio each produced: it
+  // was carried as blocked on the create/propagate half of
+  // `engine_extsync`, but the LEAF needs only `walkTree` — 78 lines of
+  // three SQL queries reaching no adapter, transport, credential or
+  // template. It landed in `engine_planning` rather than `engine_extsync`
+  // because that bucket's stated invariant is that it has NO `db` edge.
+  INFO("moved by task 6298: plan descendants");
+  CHECK_FALSE(unported.contains("plan descendants"));
+  // The six task 6298 did NOT move, each with the blocker that was
+  // VERIFIED for it rather than inherited from the brief. These are
+  // asserted present so that a later cycle claiming one of them has to
+  // delete the line and say why.
+  //
+  //   plan closeout           `engine/planning/closeout.zig`, 913 lines,
+  //                           entirely absent here. The janitor's
+  //                           authoritative close gate.
+  //   plan divergence         }  both on `engine/planning/strategy.zig`.
+  //   plan recommend-strategy }  `divergence` needs only one entry point,
+  //                           but it and `recommendWith` share ~300 lines
+  //                           of loader substrate (`loadOpenTasks`,
+  //                           `loadTouches`, `loadClosureTouches`), so the
+  //                           two belong to ONE cycle, not two halves.
+  //   plan next               `agentactivity.store.nextWork`, named as
+  //                           unported in agentactivity.cppm's own header.
+  //                           ~120 self-contained lines; the cheapest of
+  //                           the six.
+  //   task packet             `engine/routing/packet.zig`, 1674 lines —
+  //                           the subsystem `engine/models/CMakeLists.txt`
+  //                           already defers `models resolve` against.
+  //   ext create              two `adapter_handle` accessors plus the
+  //                           `remote.zig` POST path; see task 6295.
+  for (auto const& leaf :
+       {"plan closeout", "plan divergence", "plan recommend-strategy", "plan next", "task packet", "ext create"}) {
+    INFO("task 6298 verified this one BLOCKED rather than assuming it: " << leaf);
+    CHECK(unported.contains(leaf));
+  }
   for (auto const& leaf : {"assoc list", "assoc remove"}) {
     INFO("moved by task 6279: " << leaf);
     CHECK_FALSE(unported.contains(leaf));

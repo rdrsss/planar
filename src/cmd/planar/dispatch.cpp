@@ -369,6 +369,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("links remove", handlers::links_remove);
   table.emplace("links trail", handlers::links_trail);
   table.emplace("plan link", handlers::plan_link);
+  table.emplace("plan descendants", handlers::plan_descendants);
   table.emplace("task link", handlers::task_link);
   table.emplace("question link", handlers::question_link);
   table.emplace("version", handlers::version);
@@ -411,6 +412,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("promote", handlers::promote);
   table.emplace("demote", handlers::demote);
   table.emplace("test-spec status", handlers::test_spec_status);
+  table.emplace("sync status", handlers::sync_status);
   // `skills` has no subcommands, so it is a LEAF and needs an entry here
   // even though the verb is retired and does nothing but render its own
   // help page. See that handler's header.

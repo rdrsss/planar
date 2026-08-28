@@ -171,4 +171,39 @@ export auto sync_push(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// @return Success, or the failure to report.
 export auto sync_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief `planar sync status [--entity <kind:id>] [--system <slug>] [--json]`.
+///
+/// ## IT SHARES NOTHING WITH THE OTHER THREE BUT `parse_kind_id_ref`
+///
+/// The inventory note this leaf left behind called it out as "NOT a fourth
+/// free leaf", and the shape is why: it renders `engine::external::sync::
+/// status` rows — a LISTING none of pull/push/resolve produces — it takes
+/// `--entity` rather than a positional ref, and it runs NO cross-scope
+/// guard at all. `guard_with_membership` is not reached from here. Adding
+/// the guard "for consistency with its siblings" would refuse reads the
+/// oracle allows.
+///
+/// ## `--entity` IS A FILTER, AND A MALFORMED ONE REFUSES BEFORE THE QUERY
+///
+/// `--system` is passed straight through as `list_filter::system_slug` with
+/// no existence check, so an unknown slug matches nothing and exits 0.
+/// `--entity` is different: it is PARSED, and a malformed value refuses at
+/// exit 2 without touching the database. The asymmetry is the oracle's --
+/// an unknown system is an empty result, an unparseable entity is an error.
+///
+/// ## THE JSON FORM IS LINE-DELIMITED, AND EMPTY MEANS EMPTY
+///
+/// Each row is its own object on its own line; there is no enclosing array
+/// and no separating comma. An empty match set therefore emits ZERO BYTES
+/// under `--json` -- not `[]` -- while the text form prints
+/// `no external links`. Both exit 0. A port that emitted `[]` would be
+/// well-formed JSON and still wrong.
+///
+/// `last_synced_at` is OMITTED from the object when NULL rather than
+/// emitted as `null`, so the key set varies row to row.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure to report.
+export auto sync_status(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

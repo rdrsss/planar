@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.json_text;
 import planar.engine.identity;
 import planar.engine.planning;
 import planar.cmd.planar.context;
@@ -736,6 +737,92 @@ auto plan_link(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   // the UNICODE `\u2192`. Its two siblings use the ASCII `->`. Oracle
   // inconsistency, reproduced — see handlers/links.cppm's header.
   return entity_link_verb(ctx, args, engine::entitylink::entity_kind::plan, "plan-id", "plan", "plan_id", "plan link", true);
+}
+
+auto plan_descendants(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  namespace de = engine::planning::descendants;
+
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const id = entity_id_arg(args, "plan-id", "plan");
+  if (!id) {
+    return std::unexpected(id.error());
+  }
+
+  // The handler's OWN existence probe, before the walk. See plan.cppm.
+  {
+    auto stmt = (*conn)->prepare("select count(*) from plans where id = ?");
+    if (!stmt) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan descendants: QueryFailed"));
+    }
+    if (auto bound = stmt->bind_int64(1, *id); !bound) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan descendants: QueryFailed"));
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan descendants: QueryFailed"));
+    }
+    if (*stepped == db::step_result::done || stmt->column_int64(0) == 0) {
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no plan with id {}", *id)));
+    }
+  }
+
+  auto const tree = de::walk_tree(**conn, *id);
+  if (!tree) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure,
+                        std::format("plan descendants: walk tree: {}",
+                                    tree.error() == de::descendants_error::not_found ? "NotFound" : "QueryFailed")));
+  }
+
+  auto const kind_text = [](de::entry_kind kind) -> std::string_view { return kind == de::entry_kind::task ? "task" : "plan"; };
+  auto const role_text = [](de::entry_kind kind) -> std::string_view {
+    switch (kind) {
+    case de::entry_kind::plan_anchor:
+      return "anchor";
+    case de::entry_kind::plan_child:
+      return "child";
+    case de::entry_kind::task:
+      return "task";
+    }
+    return "task";
+  };
+
+  if (cliapp::flag_bool(args, "--json")) {
+    std::string out   = "[";
+    bool        first = true;
+    for (auto const& entry : *tree) {
+      if (!first) {
+        out += ",";
+      }
+      first = false;
+      out += R"({"kind":)";
+      json_text::append_json_string(out, kind_text(entry.kind));
+      out += R"(,"role":)";
+      json_text::append_json_string(out, role_text(entry.kind));
+      out += std::format(R"(,"id":{},"title":)", entry.id);
+      json_text::append_json_string(out, entry.title);
+      out += "}";
+    }
+    out += "]\n";
+    ctx.out() << out;
+    return {};
+  }
+
+  std::string out;
+  for (auto const& entry : *tree) {
+    std::string_view prefix = "task";
+    if (entry.kind == de::entry_kind::plan_anchor) {
+      prefix = "plan (anchor)";
+    } else if (entry.kind == de::entry_kind::plan_child) {
+      prefix = "plan (child)";
+    }
+    out += std::format("{}:{}  {}\n", prefix, entry.id, entry.title);
+  }
+  ctx.out() << out;
+  return {};
 }
 
 } // namespace planar::cmd::handlers

@@ -198,4 +198,33 @@ export auto plan_step_link(context& ctx, const cliapp::parsed_args& args) -> han
 /// `generic_failure` (exit 1) for a duplicate link or a missing endpoint.
 export auto plan_link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar plan descendants <plan-id> [--json]`. READ-ONLY.
+///
+/// ## THE EXISTENCE PROBE IS THE HANDLER'S OWN, AND IT MUST STAY
+///
+/// The oracle runs a `select count(*) from plans where id = ?` in the
+/// HANDLER before calling the walk, and refuses with `no plan with id N` at
+/// exit 1. `walk_tree` would also fail on an unknown anchor, but through its
+/// title lookup and with a different error, so deleting the probe as
+/// redundant would change the message. The probe is kept and the walk's
+/// `not_found` arm is consequently unreachable from the CLI.
+///
+/// ## THE TWO OUTPUT SHAPES DISAGREE ABOUT WHAT A PLAN IS CALLED
+///
+/// JSON carries `kind` and `role` as SEPARATE fields, where `kind` collapses
+/// the anchor/child distinction to `"plan"` and `role` preserves it
+/// (`"anchor"` / `"child"` / `"task"`). Text carries one prefix string that
+/// fuses them: `plan (anchor)`, `plan (child)`, `task`. So `role` is
+/// `"task"` for a task while `kind` is also `"task"` -- the fields are
+/// redundant on tasks and load-bearing only on plans.
+///
+/// The text row is `<prefix>:<id>  <title>` with TWO spaces; the JSON form
+/// is a single-line array. Both end in exactly one newline, and an anchor
+/// with no descendants still emits its own entry rather than an empty list.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `not_found` (exit 1) when the anchor plan does not exist.
+export auto plan_descendants(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers
