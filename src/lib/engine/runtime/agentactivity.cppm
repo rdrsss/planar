@@ -1116,4 +1116,59 @@ export struct forest_node {
 export auto walk_action_forest(db::connection& conn, std::optional<std::int64_t> root_session_id)
     -> std::expected<std::vector<forest_node>, agent_error>;
 
+// =========================================================================
+// next_work — the claim-aware "what is available on this plan" selector
+// (task 6309)
+// =========================================================================
+
+/// @brief Which bucket `next_work` sorted a task into.
+export enum class next_work_bucket : std::uint8_t {
+  available, ///< No live claim covers it and it is pickable.
+  claimed,   ///< A live, unexpired claim covers it.
+  stale,     ///< A `stale` claim, or an `active` one whose lease has passed.
+  blocked,   ///< `tasks.status = 'blocked'`, regardless of any claim.
+};
+
+/// @brief One classified task.
+export struct next_work_row {
+  next_work_bucket     bucket{};   ///< Which bucket.
+  std::int64_t         task_id{};  ///< The task's row id.
+  std::string          title;      ///< The task's title.
+  std::string          status;     ///< `tasks.status`, verbatim.
+  std::int64_t         priority{}; ///< Priority; LOWER sorts first.
+  std::optional<claim> covering;   ///< The claim, for `claimed` / `stale` only.
+};
+
+/// @brief Classify every task under `plan_id` and its descendant plans.
+///
+/// ## THE BUCKET LADDER IS ORDERED, AND THE ORDER IS THE CONTRACT
+///
+/// `blocked` is tested FIRST and wins over any claim, so a blocked task
+/// that also carries a live claim reports `blocked`, not `claimed`. Then
+/// the live claim, then the stale one, then status. A port that tested the
+/// claim first would move that task between buckets with no schema change
+/// to show for it.
+///
+/// ## `doing` WITH NO LIVE CLAIM IS `available`, NOT A FIFTH BUCKET
+///
+/// A task left at `doing` after its claim was reconciled away is surfaced
+/// as `available` so a fresh pull picks it up. `done` and `cancelled` are
+/// dropped from the result entirely — they are in NO bucket, which is why
+/// `plan next`'s done count is a separate query rather than a tally of
+/// these rows.
+///
+/// ## CLAIM PRECEDENCE IS task > plan_step > NEAREST plan
+///
+/// A claim on an ancestor plan (or on one of its steps) covers every
+/// descendant task without a per-task claim row existing, and the
+/// `task_ancestors` CTE is what carries the DEPTH that makes "nearest"
+/// meaningful. Ties break on `c.id desc` — the newest claim wins.
+///
+/// The selector NEVER mutates task status; it is a display read. The
+/// status-flipping queries are `agentatomic`'s.
+/// @param conn An open connection (read-only is sufficient).
+/// @param plan_id The anchor plan.
+/// @return The rows, ordered `priority asc, id asc`, or `query_failed`.
+export auto next_work(db::connection& conn, std::int64_t plan_id) -> std::expected<std::vector<next_work_row>, agent_error>;
+
 } // namespace planar::engine::runtime::agentactivity

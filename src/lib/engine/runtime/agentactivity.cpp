@@ -2007,4 +2007,137 @@ auto walk_action_forest(db::connection& conn, std::optional<std::int64_t> root_s
   return nodes;
 }
 
+namespace {
+
+/// @brief The correlated sub-select that finds the claim covering a task.
+///
+/// Composed twice with a different WHERE tail — once for the LIVE claim and
+/// once for the STALE one — because the two differ only in that predicate
+/// and a copied 12-line sub-select is exactly the drift `k_claim_columns`
+/// exists to prevent one file over.
+///
+/// The `left join` onto `task_ancestors` is what turns a claim on an
+/// ancestor plan (or one of its steps) into coverage of a descendant task;
+/// `ta.task_id is not null` is the "this ancestor claim reaches me" test,
+/// and `ta.depth` carries the distance the ORDER BY reads as "nearest".
+/// @param predicate The liveness tail, already spelled.
+/// @return The sub-select, parenthesised and ready to embed.
+auto covering_claim_select(std::string_view predicate) -> std::string {
+  return std::format("(\n"
+                     "  select c.id\n"
+                     "  from agent_work_claims c\n"
+                     "  left join plan_steps ps on c.entity_kind = 'plan_step' and ps.id = c.entity_id\n"
+                     "  left join task_ancestors ta on ta.task_id = t.id and ta.plan_id =\n"
+                     "    case when c.entity_kind = 'plan' then c.entity_id\n"
+                     "         when c.entity_kind = 'plan_step' then ps.plan_id end\n"
+                     "  where ((c.entity_kind = 'task' and c.entity_id = t.id)\n"
+                     "      or (c.entity_kind in ('plan','plan_step') and ta.task_id is not null))\n"
+                     "    and {}\n"
+                     "  order by case c.entity_kind when 'task' then 0 when 'plan_step' then 1 else 2 end,\n"
+                     "           coalesce(ta.depth, 0), c.id desc\n"
+                     "  limit 1\n"
+                     ")",
+                     predicate);
+}
+
+} // namespace
+
+auto next_work(db::connection& conn, std::int64_t plan_id) -> std::expected<std::vector<next_work_row>, agent_error> {
+  // The two liveness predicates are spelled OUT here rather than reusing
+  // this file's `lease_live()` / `stale_predicate()` helpers, and the
+  // reason is not style: both helpers emit UNQUALIFIED `status` /
+  // `lease_expires_at`, which is unambiguous in the single-table reads they
+  // were written for and ambiguous here — the sub-select joins
+  // `plan_steps`, which has a `status` column of its own. `stale_predicate`
+  // is also unparenthesised at the top level (its callers put it directly
+  // after `where`), so composing it under an `and` would silently invert
+  // the precedence. Qualified and parenthesised, exactly as the oracle
+  // writes it.
+  auto const live_tail = std::format("c.status = 'active'\n      and c.lease_expires_at >= {}", k_now);
+  auto const stale_tail =
+      std::format("(c.status = 'stale'\n        or (c.status = 'active' and c.lease_expires_at < {}))", k_now);
+
+  auto const sql = std::format("with recursive\n"
+                               "plan_tree(id) as (\n"
+                               "  select id from plans where id = ?\n"
+                               "  union all\n"
+                               "  select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id\n"
+                               "),\n"
+                               "task_ancestors(task_id, plan_id, depth) as (\n"
+                               "  select t.id, t.plan_id, 0\n"
+                               "  from tasks t join plan_tree pt on pt.id = t.plan_id\n"
+                               "  union all\n"
+                               "  select ta.task_id, p.parent_plan_id, ta.depth + 1\n"
+                               "  from task_ancestors ta\n"
+                               "  join plans p on p.id = ta.plan_id\n"
+                               "  where p.parent_plan_id is not null\n"
+                               ")\n"
+                               "select t.id, t.title, t.status, t.priority,\n"
+                               "       {} as active_claim_id,\n"
+                               "       {} as stale_claim_id\n"
+                               "from tasks t\n"
+                               "join plan_tree pt on pt.id = t.plan_id\n"
+                               "order by t.priority asc, t.id asc",
+                               covering_claim_select(live_tail), covering_claim_select(stale_tail));
+
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  if (!stmt->bind_int64(1, plan_id)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+
+  std::vector<next_work_row> rows;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped != db::step_result::row) {
+      break;
+    }
+
+    auto const status    = std::string{stmt->column_text(2)};
+    auto const active_id = opt_int(*stmt, 4);
+    auto const stale_id  = opt_int(*stmt, 5);
+
+    // The ladder. `blocked` first and unconditionally — see the header.
+    next_work_bucket     bucket{};
+    std::optional<claim> covering;
+    if (status == "blocked") {
+      bucket = next_work_bucket::blocked;
+    } else if (active_id.has_value()) {
+      bucket    = next_work_bucket::claimed;
+      auto held = get_claim_by_id(conn, *active_id);
+      if (!held) {
+        return std::unexpected(held.error());
+      }
+      covering = std::move(*held);
+    } else if (stale_id.has_value()) {
+      bucket    = next_work_bucket::stale;
+      auto held = get_claim_by_id(conn, *stale_id);
+      if (!held) {
+        return std::unexpected(held.error());
+      }
+      covering = std::move(*held);
+    } else if (status == "todo" || status == "doing") {
+      // `doing` with no live claim: a reconciled-away claim's leftover.
+      // Surfaced as available so a fresh pull picks it up.
+      bucket = next_work_bucket::available;
+    } else {
+      // done / cancelled: in NO bucket at all.
+      continue;
+    }
+
+    rows.push_back(next_work_row{.bucket   = bucket,
+                                 .task_id  = stmt->column_int64(0),
+                                 .title    = std::string{stmt->column_text(1)},
+                                 .status   = status,
+                                 .priority = stmt->column_int64(3),
+                                 .covering = std::move(covering)});
+  }
+  return rows;
+}
+
 } // namespace planar::engine::runtime::agentactivity

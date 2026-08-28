@@ -227,4 +227,43 @@ export auto plan_link(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// `not_found` (exit 1) when the anchor plan does not exist.
 export auto plan_descendants(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar plan next <plan-id> [--include-claimed]
+/// [--include-stale] [--json]`. READ-ONLY (plan 996, task 6309).
+///
+/// Port target: `zig/src/cmd/planar/handlers/plan/next.zig` over
+/// `agentactivity::next_work`, which landed with this leaf.
+///
+/// ## IT IS NOT `plan descendants` WITH A CLAIM COLUMN
+///
+/// The two verbs walk the graph DIFFERENTLY and legitimately disagree about
+/// what a plan contains. `plan descendants` follows `entity_links`
+/// `derives-from` edges out of the anchor; `next_work` follows
+/// `plans.parent_plan_id` and then `tasks.plan_id`. A task whose plan is a
+/// `parent_plan_id` child of the anchor but carries no `derives-from` edge
+/// is listed HERE and invisible THERE, on the same database. That is a fact
+/// about the two readings, not a bug in either, and `plan_next_leaf.t.cpp`
+/// seeds a task that exercises exactly that gap so a future "unify the two
+/// walks" cleanup fails a test instead of passing review.
+///
+/// ## THE TEXT FORM HIDES TWO BUCKETS AND THE JSON FORM NEVER DOES
+///
+/// `--include-claimed` / `--include-stale` gate the TEXT rows only. The
+/// JSON object always carries all four arrays, and the HEADER line's
+/// counts are always the true totals — so text output with neither flag
+/// shows `claimed:2` in the header and zero claimed rows beneath it. That
+/// reads like a bug and is the oracle's behaviour.
+///
+/// ## `done` IS A SEPARATE QUERY, NOT A FIFTH BUCKET
+///
+/// `next_work` drops `done` and `cancelled` rows entirely, so the summary's
+/// `done` count cannot be tallied from them and comes from its own
+/// `count(*)` over the same `plan_tree` CTE. Note the asymmetry that
+/// follows: `cancelled` tasks are counted NOWHERE — not in a bucket, not in
+/// `done`. Every other status is in exactly one place.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `not_found` (exit 1) when the plan does not exist.
+export auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

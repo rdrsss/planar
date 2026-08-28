@@ -4116,7 +4116,14 @@ auto unported_paths() -> std::span<std::string_view const> {
       // including their output renderers, so the cycle wired three leaves
       // and wrote no engine code.
       "explore",
-      "ext create",
+      // `ext create` left this inventory at task 6295. It had been carried
+      // as blocked on the create/propagate half of `engine_extsync` and
+      // needed ZERO of those lines: its only uses of that surface were
+      // `common.{LocalEntity, CreateOptions, Header}`, all three already
+      // present as `adapter::local_entity` / `adapter::create_options` /
+      // `http::header`. The real precondition was two `adapter_handle`
+      // accessors. Its two siblings below stay — they DO reach
+      // `propagate.zig`.
       "ext propagate",
       "ext propagate-one",
       "feedback triage list",
@@ -4124,7 +4131,13 @@ auto unported_paths() -> std::span<std::string_view const> {
       "feedback triage show",
       "health",
       "import",
-      "link",
+      // `link` left this inventory at task 6301. It was never engine-blocked:
+      // `external::link::create`, `external::system::show_by_slug` and the
+      // three `*_from_text` enums were all present, and the belief that it
+      // was blocked rested on the ORACLE'S OWN HEADER COMMENT claiming
+      // `--propagate` "refuses with NotImplemented" — which is false; the
+      // code propagates. That one FLAG is the only blocked part, and it is
+      // refused at exit 64 as a recorded divergence. See handlers/link.cppm.
       "models resolve",
       // `plan descendants` left this inventory at task 6298, and its four
       // family siblings below did NOT. It had been grouped with them and
@@ -4151,12 +4164,12 @@ auto unported_paths() -> std::span<std::string_view const> {
       //   strategy    } but they share ~300 lines of loader substrate
       //               } (`loadOpenTasks`/`loadTouches`/`loadClosureTouches`),
       //               } so they are ONE cycle, not two halves.
-      //   next        `agentactivity.store.nextWork`, ~120 self-contained
-      //               lines, already named as unported in
-      //               agentactivity.cppm's own header. The cheapest of the
-      //               four and the obvious next one to take.
+      //
+      // `plan next` LEFT this inventory at task 6309 — it was the fourth
+      // and cheapest of the group, and it went exactly as sized:
+      // `agentactivity::next_work` plus handler rendering, no surprises in
+      // the engine half. The three above it stay.
       "plan divergence",
-      "plan next",
       "plan recommend-strategy",
       "report",
       "spec ingest",

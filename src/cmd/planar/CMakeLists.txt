@@ -443,6 +443,10 @@ planar_binary(planar
     handlers/ext.cppm
     handlers/ext_adapter_factory.cppm
     handlers/sync.cppm
+    # `link` (singular) writes `external_links` and is `unlink`'s exact
+    # counterpart; `links` (plural, above) writes `entity_links`. The two
+    # spellings mirror the CLI's own `planar link` vs `planar links add`.
+    handlers/link.cppm
     handlers/unlink.cppm
     handlers/skills.cppm
     handlers/workspace.cppm
@@ -495,6 +499,7 @@ planar_binary(planar
     handlers/ext.cpp
     handlers/ext_adapter_factory.cpp
     handlers/sync.cpp
+    handlers/link.cpp
     handlers/unlink.cpp
     handlers/skills.cpp
     handlers/workspace.cpp
@@ -578,6 +583,13 @@ endif()
 # so the CLI11 module target is linked per binary rather than laundered
 # through a shared layer-1 wrapper.
 target_link_libraries(planar_cmd_planar PRIVATE CLI11::CLI11_Module)
+# Glaze, new at task 6295 for `ext create`. That leaf POSTs on the RAW
+# transport rather than through the `external_adapter` interface — the
+# four-operation interface has no create — so it has to read the provider's
+# response itself (Jira's `key`, GitHub's `number` / `html_url`). Every
+# other JSON parse in this binary's layer is Glaze's too; `planar.json_text`
+# is emit-only and deliberately stays that way.
+target_link_libraries(planar_cmd_planar PRIVATE glaze::glaze)
 if(TARGET planar_cmd_planar_tests)
   target_link_libraries(planar_cmd_planar_tests PRIVATE CLI11::CLI11_Module)
   # `../catalog_parity.hpp` — the declaration-level oracle comparison that

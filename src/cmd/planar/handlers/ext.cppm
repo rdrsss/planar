@@ -94,4 +94,67 @@ export auto ext_list(context& ctx, const cliapp::parsed_args& args) -> handler_r
 /// `invalid_input` (exit 2) for any credential or kind refusal.
 export auto ext_test(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar ext create <system-slug> --from <kind:id>
+/// [--type <t>] [--role <r>] [--sync <d>] [--json]` (plan 996, task 6295).
+///
+/// Renders the local entity through the adapter, POSTs the payload, and
+/// records the resulting `external_links` row.
+///
+/// ## IT NEEDS NONE OF `engine_extsync`'s UNPORTED LINES
+///
+/// The prediction carried into this cycle was that `ext create` waited on
+/// the create/propagate half of `engine_extsync` (~3665 Zig lines). It does
+/// not. Its only uses of that surface are `common.{LocalEntity,
+/// CreateOptions, Header}`, all three of which already existed here as
+/// `adapter::local_entity`, `adapter::create_options` and `http::header`.
+/// What was actually missing was two `adapter_handle` accessors — see
+/// `ext_adapter_factory.cppm` for why the creation path cannot go through
+/// the `external_adapter` interface.
+///
+/// ## ITS ADAPTER-BUILD REFUSALS ARE PROSE AT EXIT 2, LIKE `ext test`
+///
+/// AND NOT like the `sync` trio, which emits the raw Zig tag at exit 1.
+/// That rule was learned on the sync verbs and does NOT generalise:
+/// `ext/create.zig` maps every factory error to `error.InvalidInput` with
+/// an interpolated message, so `factory_error_message` is the right
+/// reference here and `factory_error_name` (`handlers/sync.cpp`) is the
+/// wrong one. Verified against the running oracle, not inferred from either
+/// sibling.
+///
+/// ## `--from` IS PARSED LOOSELY AND VALIDATED LATE, AND THAT IS OBSERVABLE
+///
+/// `handlers/sync.cppm`'s `parse_kind_id_ref` is deliberately NOT reused
+/// here despite being the obvious candidate. It validates the kind against
+/// the seven `external_entity_kind` spellings; the oracle's `ext create`
+/// parses ANY non-empty kind and lets the local read refuse. The two
+/// disagree on real input:
+///
+///   --from foo:1        parses here, and refuses with
+///                       `ext create: read local foo:1: InvalidInput`.
+///                       `parse_kind_id_ref` would have refused earlier
+///                       with `invalid --from value` — a different message.
+///   --from decision:1   is a VALID `external_entity_kind` and still
+///                       refuses, because the local read serves only
+///                       task / plan / question / artifact. So the two kind
+///                       sets are genuinely different sizes: seven that a
+///                       link may point at, four this verb can read.
+///
+/// ## THE REMOTE IS CREATED BEFORE `--role` AND `--sync` ARE VALIDATED
+///
+/// Oracle-captured from the fixture server's own request log, and preserved
+/// under D2: `ext create <sys> --from task:1 --role bogus` POSTs the
+/// ticket, THEN refuses at exit 2, leaving a real remote issue with no local
+/// link. A duplicate `ext create` does the same — it POSTs a SECOND ticket
+/// before discovering the existing link and refusing at exit 6. Both are
+/// defects in the oracle rather than in this port, and both are pinned in
+/// `ext_create_leaf.t.cpp` so that fixing them is a deliberate, recorded
+/// divergence rather than a silent one.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success; `not_found` (exit 1) for an unknown slug or an absent
+/// local row; `invalid_input` (exit 2) for a malformed ref, an unreadable
+/// kind, a credential refusal or a bad `--role` / `--sync`; or
+/// `slug_conflict` (exit 6) when the link already exists.
+export auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers
