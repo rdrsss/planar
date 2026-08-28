@@ -4127,7 +4127,18 @@ auto unported_paths() -> std::span<std::string_view const> {
       "task packet",
       "task touches infer",
       "test-spec status",
-      "tree",
+      // `tree` left this inventory at task 6278. Its whole product is a
+      // RENDERED hierarchy, so every expected byte — connectors, indent
+      // extensions, dirs-first grouping, the summary footer — was captured
+      // from the oracle against a fixture three levels deep with siblings
+      // at more than one level, never reconstructed from what looked
+      // reasonable. The capture also settled what no sibling verb could
+      // have told it: on this one verb `--kind ''` REFUSES (exit 2),
+      // `--status ''` matches nothing (exit 0), and `--scope ''` means
+      // GLOBAL (exit 0) — three different meanings for the same empty
+      // value. `--sort` is accepted and INERT in the oracle, and is
+      // reproduced that way deliberately; see
+      // `src/lib/engine/tree/CMakeLists.txt`.
       "workbench edit",
       "workbench extract-questions",
       "workbench publish",

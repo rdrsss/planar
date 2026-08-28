@@ -611,7 +611,12 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - The worktree gate's "needs a git-subprocess seam that does not
   //     exist" note in src/cmd/planar/CMakeLists.txt outlived the seam by
   //     two tasks. Corrected there.
-  CHECK(unported.size() == 45);
+  // 45 before task 6278 ported `tree`, the hierarchical drill-down verb
+  // and the largest single unblocked leaf left (1284 non-test Zig lines).
+  // Named below rather than trusted to the count, same reason as every
+  // batch above it.
+  CHECK(unported.size() == 44);
+  CHECK_FALSE(unported.contains("tree"));
   // The leaf task 6272 moved, named rather than trusted to the count. The
   // four leaves that were predicted to move WITH it must stay unported —
   // wiring any of them off the back of this cycle would claim an engine
