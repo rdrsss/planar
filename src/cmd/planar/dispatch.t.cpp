@@ -720,7 +720,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                              inventory — which is exactly why sizing
   //                              this family by its handlers would have been
   //                              wrong.
-  for (auto const& leaf : {"link", "workbench publish", "feedback triage list", "feedback triage show", "feedback triage set"}) {
+  // `link` also left this list, at task 6301 — see the note further below.
+  for (auto const& leaf : {"workbench publish", "feedback triage list", "feedback triage show", "feedback triage set"}) {
     INFO("probed but deliberately not moved by task 6299: " << leaf);
     CHECK(unported.contains(leaf));
   }
@@ -747,6 +748,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   for (auto const& leaf : {"workbench edit", "workbench extract-questions"}) {
     INFO("moved by task 6302: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
+  }
   //
   // `link` LEFT this list at task 6301, which took the decision task 6299
   // deferred. The base verb was portable exactly as measured; the
@@ -754,8 +756,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // precedent, BEFORE the link row is written so the refusal's own
   // "re-run without --propagate" advice still works. That divergence is
   // recorded in handlers/link.cppm and asserted below.
-  for (auto const& leaf : {"workbench edit", "workbench extract-questions", "workbench publish", "feedback triage list",
-                           "feedback triage show", "feedback triage set"}) {
+  for (auto const& leaf : {"workbench publish", "feedback triage list", "feedback triage show", "feedback triage set"}) {
     INFO("probed but deliberately not moved by task 6299: " << leaf);
     CHECK(unported.contains(leaf));
   }
