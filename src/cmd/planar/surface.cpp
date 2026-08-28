@@ -4126,9 +4126,9 @@ auto unported_paths() -> std::span<std::string_view const> {
       // `propagate.zig`.
       "ext propagate",
       "ext propagate-one",
-      "feedback triage list",
-      "feedback triage set",
-      "feedback triage show",
+      // The three `feedback triage` leaves left this inventory at task 6303,
+      // together with the `engine.planning.feedback_triage` engine that was
+      // the whole of what blocked them.
       "health",
       "import",
       // `link` left this inventory at task 6301. It was never engine-blocked:
@@ -4179,7 +4179,9 @@ auto unported_paths() -> std::span<std::string_view const> {
       // What they call is `engine.external.sync.{pullLink, pushLink,
       // resolveConflict}` — a DIFFERENT module that was already ported in
       // full — so the whole cycle was handler wiring plus one missing
-      // cmd-layer helper (`guard_with_membership`). See handlers/sync.cppm.
+      // cmd-layer helper (`guard_with_membership`, which moved to
+      // `planar.cmd.planar.scope` at task 6303 when `feedback triage set`
+      // became its second caller family). See handlers/sync.cppm.
       //
       // `sync status` left this inventory at task 6298. Task 6294's note
       // called it "NOT a fourth free leaf" and the shape bore that out --

@@ -167,6 +167,32 @@
 #                               layer-2 edge. Same seam
 #                               `agentatomic::task_policy` uses.
 #
+#   feedback triage      LANDED at task 6303, with
+#                        `engine.planning.feedback_triage` (302 Zig lines)
+#                        underneath it. What this family cost was the
+#                        FIXTURE, not the code: `findingPlan` compares the
+#                        finding's plan slug against the literal
+#                        `planar-feedback`, so a plain plan makes every
+#                        interesting arm refuse with `DifferentFeedbackPlan`
+#                        for the same uninteresting reason. A usable arena
+#                        needs an association (a bare registered project
+#                        refuses `plan create` at exit 5), a plan created
+#                        with that exact slug, and — for the QUESTION arm —
+#                        a `derives-from` entity link, which `question add
+#                        --plan` writes for you. `AmbiguousFeedbackPlan` is
+#                        reachable ONLY through a question carrying two such
+#                        links, and is unreachable for a task at all.
+#                        Oracle-captured empty states, unchanged by the port:
+#                          feedback triage list --json  -> exit 0, `[]\n`
+#                          feedback triage list         -> exit 0,
+#                                                          `(no feedback triage)\n`
+#                          feedback triage show 1 --json -> exit 2,
+#                            `error: finding must be task:<id> or question:<id>`
+#                        The `<finding>` positional is an ENTITY REF, not an
+#                        integer, and the id inside it takes Zig's `parseInt`
+#                        spelling: `task:+2` and `task:1_0` both parse,
+#                        `task:2_` does not.
+#
 # NOT landed, with the oracle behavior captured so the port that lands them
 # has bytes to hit:
 #
@@ -180,20 +206,6 @@
 #                        success where the oracle produces a packet.
 #   capture commits      Task 6099. 1205 lines of git shelling, no
 #                        process-spawn seam. Deferred WITH its dependency.
-#   feedback triage      Three leaves, blocked at layer 2 on
-#                        `engine.planning.feedback_triage` (302 lines), which
-#                        has no counterpart in `src/lib/engine/planning/`.
-#                        Oracle-captured against a pinned scratch arena:
-#                          feedback triage list --json  -> exit 0, `[]\n`
-#                                                          (TERMINATED, unlike
-#                                                          `handoff list --json`)
-#                          feedback triage list         -> exit 0,
-#                                                          `(no feedback triage)\n`
-#                          feedback triage show 1 --json -> exit 2,
-#                            `error: finding must be task:<id> or question:<id>`
-#                        Note the `<finding>` positional is an ENTITY REF,
-#                        not an integer — a port that declares it as an int
-#                        will get the exit code and the message wrong.
 #   report               Task 6121. Needs the two introspect buckets. Its
 #                        full `--json` envelope was re-captured this cycle
 #                        and is unchanged from task 6106's finding: every
@@ -464,6 +476,7 @@ planar_binary(planar
     handlers/health.cppm
     handlers/audit.cppm
     handlers/task.cppm
+    handlers/feedback.cppm
     handlers/question.cppm
     handlers/decision.cppm
     handlers/scenario.cppm
@@ -517,6 +530,7 @@ planar_binary(planar
     handlers/health.cpp
     handlers/audit.cpp
     handlers/task.cpp
+    handlers/feedback.cpp
     handlers/question.cpp
     handlers/decision.cpp
     handlers/scenario.cpp
