@@ -467,6 +467,123 @@ TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][pari
                         "cli|action|unlink: removed external link 2\n");
 }
 
+TEST_CASE("C++ and Zig agree on the three sync write leaves over seeded links", "[cmd][parity][oracle]") {
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+
+  // Same posture as the `unlink` case above: `init`, `ext register` and
+  // `link` are unported, so the ORACLE seeds BOTH arenas and the two
+  // databases start identical by construction.
+  //
+  // The registered base URL is `127.0.0.1:9` (the `discard` port, bound on
+  // neither a stock macOS nor Linux host), so every adapter call is REFUSED
+  // immediately. That is deliberate on two counts: it reaches no network,
+  // and it makes the transport-failure arm deterministic without a fixture
+  // server inside the parity lane. The SUCCESS and CONFLICT arms are covered
+  // over a real in-process server in `sync_leaves.t.cpp`.
+  auto const                                  space = make_arena("syncseed");
+  std::vector<std::vector<std::string>> const seed{
+      {"init", "--skip-project", "--allow-no-repo", "--json"},
+      // `--auth-env HOME`, not a dedicated variable: `run_pinned` builds a
+      // FIXED environment with no extension point, so a name it does not set
+      // would make the factory refuse and every case below would take the
+      // adapter-build path instead of the result-stream path. That is not
+      // hypothetical — this case was written with `DEMO_TOKEN` first and all
+      // twenty-two result-stream comparisons ran against the refusal
+      // (which is how the port's `factory_error_message`-instead-of-raw-tag
+      // bug was found). `HOME` is always set by the harness and is not a
+      // credential; the fixture never reads the token's value.
+      {"ext", "register", "jira", "jira-demo", "--base-url", "http://127.0.0.1:9", "--project", "DEMO", "--auth-env", "HOME"},
+      {"task", "add", "Demo task", "--json"},
+      {"plan", "create", "Demo plan", "--json"},
+      // One `two-way` link and one `read-only` one: `--all` selects both for
+      // pull and only the first for push, so a transposed pair of engine
+      // queries is visible in the row COUNT rather than only in a message.
+      {"link", "task:1", "--to", "jira-demo:DEMO-1", "--role", "mirror", "--sync", "two-way", "--json"},
+      {"link", "plan:1", "--to", "jira-demo:DEMO-2", "--role", "mirror", "--sync", "read-only", "--json"},
+  };
+  for (std::size_t i = 0; i < seed.size(); ++i) {
+    auto const tag = std::format("sseed{}", i);
+    auto const a   = run_pinned(zig_bin(), seed[i], space.cpp_root, tag);
+    auto const b   = run_pinned(zig_bin(), seed[i], space.zig_root, tag);
+    INFO("seed step: " << tag);
+    REQUIRE(a.code == 0);
+    REQUIRE(b.code == 0);
+  }
+
+  struct step {
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+  };
+  std::vector<step> const steps{
+      // Refusals: the four malformed-target shapes, the well-formed missing
+      // one, the empty entity match, and the unknown `--system`.
+      {"noargs", {"sync", "pull"}},
+      {"noargsp", {"sync", "push"}},
+      {"badref", {"sync", "pull", "not-a-ref"}},
+      {"nokind", {"sync", "pull", ":5"}},
+      {"unkkind", {"sync", "pull", "nosuch:5"}},
+      {"widekind", {"sync", "pull", "plan_step:5"}},
+      {"missing", {"sync", "pull", "999"}},
+      {"nolinks", {"sync", "pull", "task:99"}},
+      {"nolinksj", {"sync", "pull", "task:99", "--json"}},
+      {"unksys", {"sync", "pull", "--all", "--system", "nope"}},
+      // Result streams, in both render modes.
+      {"pull1", {"sync", "pull", "1"}},
+      {"pull1j", {"sync", "pull", "1", "--json"}},
+      {"pullall", {"sync", "pull", "--all"}},
+      {"pullallj", {"sync", "pull", "--all", "--json"}},
+      {"pushro", {"sync", "push", "2"}},
+      {"pushroj", {"sync", "push", "2", "--json"}},
+      {"pushall", {"sync", "push", "--all"}},
+      {"pushallj", {"sync", "push", "--all", "--json"}},
+      {"pullent", {"sync", "pull", "task:1"}},
+      {"pullsys", {"sync", "pull", "--all", "--system", "jira-demo"}},
+      // Resolve refusals across all three exit buckets.
+      {"resid", {"sync", "resolve", "abc", "--keep", "local", "--evidence-token", "t", "--expected-local-updated-at", "v"}},
+      {"reskeep", {"sync", "resolve", "1", "--keep", "sideways", "--evidence-token", "t", "--expected-local-updated-at", "v"}},
+      {"resmiss", {"sync", "resolve", "4242", "--keep", "local", "--evidence-token", "t", "--expected-local-updated-at", "v"}},
+      {"resev", {"sync", "resolve", "1", "--keep", "local", "--evidence-token", "t", "--expected-local-updated-at", "v"}},
+      {"resevj",
+       {"sync", "resolve", "1", "--keep", "remote", "--evidence-token", "t", "--expected-local-updated-at", "v", "--json"}},
+  };
+  for (auto const& [tag, args] : steps) {
+    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
+    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
+    INFO("step: " << tag);
+    CHECK(mine.code == ref.code);
+    CHECK(mine.out == ref.out);
+    CHECK(mine.err == ref.err);
+  }
+
+  // `sync_events` is written by every pull and push and is invisible in
+  // stdout. Without this, a port that rendered the right lines but never
+  // recorded the attempt would pass every assertion above.
+  auto const events = [](const std::filesystem::path& root) {
+    auto conn = planar::db::connection::open((root / "planar.db").string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare("select link_id, direction, outcome, coalesce(detail,'') from sync_events order by id");
+    REQUIRE(stmt.has_value());
+    std::string rendered;
+    for (;;) {
+      auto stepped = stmt->step();
+      REQUIRE(stepped.has_value());
+      if (*stepped == planar::db::step_result::done) {
+        break;
+      }
+      rendered +=
+          std::format("{}|{}|{}|{}\n", stmt->column_int64(0), stmt->column_text(1), stmt->column_text(2), stmt->column_text(3));
+    }
+    return rendered;
+  };
+  auto const mine_events = events(space.cpp_root);
+  CHECK(mine_events == events(space.zig_root));
+  // Non-empty, so the diff above cannot be two empty strings agreeing.
+  CHECK_FALSE(mine_events.empty());
+  CHECK(mine_events.contains("TransportFailed"));
+}
+
 TEST_CASE("C++ and Zig agree on workspace doctor's diagnose-and-repair pass", "[cmd][parity][oracle]") {
   PLANAR_REQUIRE_ORACLE(
       oracle_available(),

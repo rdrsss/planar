@@ -635,7 +635,28 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // leaf had been counted among the git-walk-blocked group here since the
   // inventory was written; the grouping was wrong (see below) and the
   // correction is why the count moved twice in one cycle.
-  CHECK(unported.size() == 41);
+  //
+  // 41 after task 6277, and 38 after task 6294 moved the THREE `sync`
+  // write leaves — `sync pull`, `sync push`, `sync resolve`. That task was
+  // briefed as "six leaves all blocked on the create/propagate half of
+  // `engine_extsync`"; for these three the premise was simply false. None
+  // of the four oracle files behind them contains the token `extsync`.
+  // They call `engine.external.sync`, a different module already ported in
+  // full, so the cycle cost handler wiring and one cmd-layer helper. This
+  // is the same failure mode `audit commits` hit above (a LEAF's
+  // dependencies inferred from its MODULE's) in a new disguise: here it was
+  // two engine modules whose NAMES look alike.
+  CHECK(unported.size() == 38);
+  for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
+    INFO("moved by task 6294: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
+  }
+  // `sync status` is the family's fourth leaf and did NOT move. It renders
+  // a listing shape none of the three above produces and was never among
+  // task 6294's six; wiring it off the back of that cycle would be the
+  // "predicted unblock" error the task existed to avoid.
+  INFO("task 6294 deliberately left the family's listing leaf");
+  CHECK(unported.contains("sync status"));
   for (auto const& leaf : {"assoc list", "assoc remove"}) {
     INFO("moved by task 6279: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
