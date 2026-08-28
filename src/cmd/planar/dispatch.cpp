@@ -42,6 +42,7 @@ import planar.cmd.planar.handlers.artifact;
 import planar.cmd.planar.handlers.drafting;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.ext;
+import planar.cmd.planar.handlers.sync;
 import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
@@ -400,6 +401,9 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("ext register github", handlers::ext_register_github);
   table.emplace("ext list", handlers::ext_list);
   table.emplace("ext test", handlers::ext_test);
+  table.emplace("sync pull", handlers::sync_pull);
+  table.emplace("sync push", handlers::sync_push);
+  table.emplace("sync resolve", handlers::sync_resolve);
   // `skills` has no subcommands, so it is a LEAF and needs an entry here
   // even though the verb is retired and does nothing but render its own
   // help page. See that handler's header.

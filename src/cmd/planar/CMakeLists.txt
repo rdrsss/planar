@@ -393,6 +393,7 @@ planar_binary(planar
     handlers/annotate.cppm
     handlers/ext.cppm
     handlers/ext_adapter_factory.cppm
+    handlers/sync.cppm
     handlers/unlink.cppm
     handlers/skills.cppm
     handlers/workspace.cppm
@@ -442,6 +443,7 @@ planar_binary(planar
     handlers/annotate.cpp
     handlers/ext.cpp
     handlers/ext_adapter_factory.cpp
+    handlers/sync.cpp
     handlers/unlink.cpp
     handlers/skills.cpp
     handlers/workspace.cpp

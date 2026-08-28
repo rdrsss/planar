@@ -4129,9 +4129,19 @@ auto unported_paths() -> std::span<std::string_view const> {
       "promote",
       "report",
       "spec ingest",
-      "sync pull",
-      "sync push",
-      "sync resolve",
+      // `sync pull`, `sync push` and `sync resolve` left this inventory at
+      // task 6294. All three were briefed as blocked on the unported
+      // create/propagate half of `engine_extsync`; none of them touches it.
+      // What they call is `engine.external.sync.{pullLink, pushLink,
+      // resolveConflict}` — a DIFFERENT module that was already ported in
+      // full — so the whole cycle was handler wiring plus one missing
+      // cmd-layer helper (`guard_with_membership`). See handlers/sync.cppm.
+      //
+      // `sync status` stays here and is NOT a fourth free leaf: it is the
+      // one member of the family that renders `engine.external.sync.status`
+      // rows, a listing shape none of the three above produces, and it takes
+      // `--entity` rather than a positional. It was never in this task's
+      // six.
       "sync status",
       "synthesize",
       "task packet",
