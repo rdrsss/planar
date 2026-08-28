@@ -9,14 +9,21 @@
 /// `audit session` landed at task 6090; `audit trail` at task 6262. Named
 /// rather than left to be inferred from the dispatch table:
 ///
-///   - `audit commits` rests on the GIT-WALK half of
-///     `engine.runtime.sessioncommits` — revision walks, ref resolution,
-///     per-commit metadata, all through subprocess calls. No process-spawn
-///     abstraction exists in this tree, and `capture commits` and `bench
-///     harvest` are already deferred on the same dependency. Task 6262
-///     landed that module's READ half (`list_for_sessions`, pure SQL) for
-///     `audit trail`'s commits fold-in; that does NOT unblock this leaf,
-///     which is about walking git, not reading rows.
+///   - `audit commits` landed at task 6277. THE ENTRY THAT USED TO SIT
+///     HERE WAS WRONG and is worth recording rather than deleting: it
+///     said this leaf "rests on the GIT-WALK half of
+///     `engine.runtime.sessioncommits` … it is about walking git, not
+///     reading rows", and grouped it with `capture commits` and `bench
+///     harvest` as blocked on a process-spawn seam.
+///
+///     The oracle handler is 78 lines and spawns nothing. It calls
+///     `session.getById`, `task.show`, `listFiltered` and `writeJsonList`
+///     — all pure SQL over rows an EARLIER `capture commits` run wrote.
+///     Walking git is what FILLS `session_commits`; this leaf only
+///     queries it. `capture commits` and `bench harvest` remain genuinely
+///     blocked. The mistake was inferring a leaf's dependencies from its
+///     MODULE's rather than from its own handler, and it survived three
+///     files and two tasks before task 6272 caught it.
 ///   - `audit publish-decision` posts a decision body to the operational
 ///     plane, so it needs an adapter INSTANCE — the auth-resolving adapter
 ///     factory that `ext create` / `ext propagate` / `ext test` and the
@@ -119,6 +126,56 @@ namespace planar::cmd::handlers {
 /// @param args The parsed command line.
 /// @return Success after writing the timeline, or the refusal.
 export auto audit_session(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar audit commits [--session N] [--task N]
+/// [--json|--shas]`.
+///
+/// Port target: zig/src/cmd/planar/handlers/audit/commits.zig (plan 996,
+/// task 6277). See this file's header for why the "blocked on the git
+/// walk" note that used to stand here was wrong.
+///
+/// ## THREE OUTPUT SHAPES, AND `--json` + `--shas` IS A REFUSAL
+///
+/// `--json` and `--shas` are mutually exclusive and combining them exits 2
+/// with `cannot combine --json with --shas`. That check runs FIRST — before
+/// `--session` / `--task` are resolved — so `audit commits --json --shas
+/// --session 99` reports the combination, not the missing session
+/// (oracle-captured; the natural port validates ids first and answers the
+/// other message).
+///
+/// The three shapes disagree about the empty case and all three are
+/// pinned:
+///   - text  -> the HEADER ROW ALONE. Not `(no commits)`, not zero bytes.
+///   - json  -> `[]`.
+///   - shas  -> ZERO BYTES. The only one of the three that prints nothing.
+///
+/// ## `--session` AND `--task` ARE VALIDATED FOR EXISTENCE, IN THAT ORDER
+///
+/// Each is looked up before the listing runs, and a well-formed id naming
+/// nothing REFUSES at exit 1 (`session 99 not found` / `task 99 not
+/// found`) rather than listing empty. Session is checked first:
+/// `--session 99 --task 99` reports the session. Contrast the sibling
+/// `audit trail 99`, which answers exit 0 with an empty trail for a
+/// nonexistent entity — same family, opposite posture, both captured.
+///
+/// A task that EXISTS but carries no claim is not an error: exit 0 and the
+/// empty shape for whichever output mode is active.
+///
+/// ## `--task` DROPS ROWS THAT `--session` KEEPS
+///
+/// `session_commits` has no `task_id`; the task predicate joins
+/// `agent_work_claims` through `claim_id`. The join is INNER, so filtering
+/// by task silently excludes every commit recorded outside a claim window
+/// (`claim_id is null`) — rows the same session lists happily without the
+/// flag. That is the oracle's behaviour, captured against a fixture whose
+/// three rows are split exactly on this, and it is not a bug this port may
+/// round off.
+/// @param ctx The process context.
+/// @param args The parsed command line.
+/// @return Success after writing, or `invalid_input` (exit 2) for the flag
+/// combination, `not_found` (exit 1) for an unknown session or task, or
+/// `generic_failure` (exit 1) on an engine failure.
+export auto audit_commits(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar audit trail [<entity-id>] [--kind K] [--grep P]
 /// [--link N] [--json]`.

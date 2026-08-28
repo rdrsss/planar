@@ -625,11 +625,18 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // needed a ten-line kind filter beside the already-present `list_all`
   // plus the two list renderers. `assoc detect` deliberately did NOT move
   // — it is the ~680-line proposal engine and shares no code with them.
-  CHECK(unported.size() == 43);
+  //
+  // 43 after task 6279 and 42 after task 6277 moved `audit commits`. That
+  // leaf had been counted among the git-walk-blocked group here since the
+  // inventory was written; the grouping was wrong (see below) and the
+  // correction is why the count moved twice in one cycle.
+  CHECK(unported.size() == 42);
   for (auto const& leaf : {"assoc list", "assoc remove"}) {
     INFO("moved by task 6279: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
+  INFO("moved by task 6277 after the git-walk grouping was corrected: audit commits");
+  CHECK_FALSE(unported.contains("audit commits"));
   INFO("task 6279 deliberately left `assoc detect` — the ~680-line proposal engine");
   CHECK(unported.contains("assoc detect"));
   // The leaf task 6272 moved, named rather than trusted to the count. The
@@ -637,7 +644,13 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // wiring any of them off the back of this cycle would claim an engine
   // half that does not exist.
   CHECK_FALSE(unported.contains("workflow run"));
-  for (auto const& leaf : {"capture commits", "audit commits"}) {
+  // `audit commits` WAS in this list and should never have been: it was
+  // grouped with the genuinely spawn-blocked leaves on the strength of its
+  // MODULE's dependencies rather than its own handler's, which calls
+  // `listFiltered` + `writeJsonList` and spawns nothing. Task 6272
+  // corrected the grouping and 6277 ported it. `capture commits` stays —
+  // it really does need the walk.
+  for (auto const& leaf : {"capture commits"}) {
     INFO("still-deferred spawn-adjacent leaf: " << leaf);
     CHECK(unported.contains(leaf));
   }

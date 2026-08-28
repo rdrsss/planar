@@ -11,6 +11,8 @@ import planar.json_text;
 import planar.engine.runtime.audit_trail;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.sessioncommits;
+import planar.engine.runtime.session;
+import planar.engine.planning.task;
 import planar.engine.external.link;
 import planar.engine.external.system;
 import planar.engine.external.sync;
@@ -26,6 +28,11 @@ namespace sc   = engine::runtime::sessioncommits;
 namespace xl   = engine::external::link;
 namespace xsys = engine::external::system;
 namespace xsy  = engine::external::sync;
+namespace sess = engine::runtime::session;
+// `task.cppm` files its declarations directly in `planar::engine::planning`
+// — there is no `::task` namespace to alias, unlike every other engine
+// module aliased above.
+namespace pt = engine::planning;
 
 namespace {
 
@@ -490,6 +497,109 @@ auto audit_session(context& ctx, const cliapp::parsed_args& args) -> handler_res
   }
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? render_json(*timeline) : render_text(*timeline));
+  return {};
+}
+
+namespace {
+
+/// @brief Render the commit rows as the operator-facing table.
+///
+/// The HEADER IS UNCONDITIONAL — it prints even when `rows` is empty,
+/// which is what makes `audit commits` on an empty table look like a
+/// listing with nothing in it rather than a verb that did nothing. The
+/// two other output modes disagree (`[]` and zero bytes respectively) and
+/// all three are pinned.
+///
+/// Column widths, transcribed from the oracle's format strings rather
+/// than measured: sha left-40, session right-7, claim right-5,
+/// committed_at left-25, subject unpadded. `session` and `claim` are
+/// exactly seven and five characters, so the HEADER cannot distinguish
+/// those two widths from any smaller number — only a data row can.
+///
+/// The two null columns spell their absence differently from each other's
+/// neighbours: a null `claim_id` is `-` right-aligned in five, a null
+/// `committed_at` is `-` left-aligned in twenty-five, and a null `subject`
+/// is the EMPTY STRING, not `-`. So a row with no subject ends in the
+/// gutter's two spaces and nothing else — trailing whitespace that is part
+/// of the contract.
+/// @param rows The rows, in the order `list_filtered` returned them.
+/// @return The complete block including the trailing newline on every line.
+auto render_commit_table(std::span<const sc::commit_row> rows) -> std::string {
+  auto out = std::format("{:<40}  {:>7}  {:>5}  {:<25}  {}\n", "SHA", "session", "claim", "committed_at", "subject");
+  for (auto const& row : rows) {
+    out += std::format("{:<40}  {:>7}  ", row.sha, row.session_id);
+    out += row.claim_id.has_value() ? std::format("{:>5}", *row.claim_id) : std::format("{:>5}", "-");
+    out += "  ";
+    out += std::format("{:<25}", row.committed_at.value_or(std::string{"-"}));
+    // `""` for a null subject, NOT `-`.
+    out += std::format("  {}\n", row.subject.value_or(std::string{}));
+  }
+  return out;
+}
+
+} // namespace
+
+auto audit_commits(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  // `ensureDb` FIRST, before the flag-combination check — zig opens with
+  // `try runtime.ensureDb()`, so a refused `--json --shas` still creates
+  // and migrates the database.
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const json = cliapp::flag_bool(args, "--json");
+  auto const shas = cliapp::flag_bool(args, "--shas");
+  // BEFORE the id lookups. `--json --shas --session 99` reports THIS, not
+  // the missing session. Oracle-captured.
+  if (json && shas) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "cannot combine --json with --shas"));
+  }
+
+  auto const session_id = cliapp::flag_int(args, "--session");
+  auto const task_id    = cliapp::flag_int(args, "--task");
+
+  // Existence checks, SESSION FIRST — `--session 99 --task 99` reports the
+  // session. Each is a refusal, not an empty listing; contrast `audit
+  // trail 99`, which succeeds with an empty trail. The rows are read only
+  // to prove the id resolves; nothing from them reaches the output.
+  if (session_id.has_value()) {
+    auto row = sess::get_by_id(**conn, *session_id);
+    if (!row) {
+      if (row.error() == sess::session_error::not_found) {
+        return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("session {} not found", *session_id)));
+      }
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "audit commits: QueryFailed"));
+    }
+  }
+  if (task_id.has_value()) {
+    auto row = pt::show_task(**conn, *task_id);
+    if (!row) {
+      if (row.error() == pt::task_error::not_found) {
+        return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("task {} not found", *task_id)));
+      }
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "audit commits: QueryFailed"));
+    }
+  }
+
+  auto rows = sc::list_filtered(**conn, sc::list_filter{.session_id = session_id, .task_id = task_id});
+  if (!rows) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "audit commits: QueryFailed"));
+  }
+
+  if (json) {
+    ctx.out() << sc::render_json_list(*rows) << '\n';
+    return {};
+  }
+  if (shas) {
+    // ZERO BYTES when empty — the only one of the three shapes that
+    // prints nothing at all.
+    for (auto const& row : *rows) {
+      ctx.out() << row.sha << '\n';
+    }
+    return {};
+  }
+  ctx.out() << render_commit_table(*rows);
   return {};
 }
 

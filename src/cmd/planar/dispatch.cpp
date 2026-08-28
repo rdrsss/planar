@@ -154,13 +154,19 @@ auto handlers(const CLI::App& root) -> handler_table {
   // `health` is a DUAL node, so registering the child without the parent
   // is well-defined here. See handlers/health.cppm.
   table.emplace("health hygiene", handlers::health_hygiene);
-  // `audit` — two of the family's five. `commits` (git subprocess REVISION
-  // WALKS; task 6262 landed `sessioncommits`'s pure-SQL read half for
-  // `trail`'s fold-in, which does not help this leaf), `publish-decision`
-  // (needs the adapter factory) and `handoff-readiness` stay at exit 64.
-  // See handlers/audit.cppm for which are BLOCKED and which are merely large.
+  // `audit` — three of the family's five. `publish-decision` (needs the
+  // adapter factory) and `handoff-readiness` (merely large) stay at exit
+  // 64. See handlers/audit.cppm for which is which.
+  //
+  // The note that used to stand here said `commits` needed git subprocess
+  // REVISION WALKS. It does not, and never did — the oracle handler calls
+  // `listFiltered` and `writeJsonList` over rows an earlier `capture
+  // commits` wrote, and spawns nothing. `capture commits` and `bench
+  // harvest` really are blocked on the walk; this leaf was mis-grouped
+  // with them. Corrected at task 6272, ported at 6277.
   table.emplace("audit session", handlers::audit_session);
   table.emplace("audit trail", handlers::audit_trail);
+  table.emplace("audit commits", handlers::audit_commits);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task list", handlers::task_list);

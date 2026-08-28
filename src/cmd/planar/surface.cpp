@@ -4092,7 +4092,11 @@ auto unported_paths() -> std::span<std::string_view const> {
       // `applyProposals`), which shares no code with the other two and is
       // the whole of the remaining work here.
       "assoc detect",
-      "audit commits",
+      // `audit commits` left this inventory at task 6277. It had been
+      // listed as blocked on the git-walk seam alongside `capture commits`
+      // and `bench harvest`; that grouping was wrong (its handler spawns
+      // nothing and reads rows the walk WRITES) and was corrected at task
+      // 6272. The other two stay — they are genuinely blocked.
       "audit handoff-readiness",
       "audit publish-decision",
       // `audit trail` left this inventory at task 6262.
