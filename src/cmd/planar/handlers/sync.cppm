@@ -40,7 +40,7 @@
 /// same argument. `adapter_kind` stays on the handle because `ext` verbs
 /// that build a provider-specific URL still need it.
 ///
-/// ## `guard_with_membership` IS THE ONE HELPER THAT HAD TO BE PORTED
+/// ## `guard_with_membership` HAS MOVED TO `planar.cmd.planar.scope`
 ///
 /// `engine::identity::check_scope_guard` is the pure comparison and was
 /// already ported. The membership-aware wrapper
@@ -51,10 +51,14 @@
 /// and preserved here — an association write scope covers its member repos,
 /// a repo write scope never covers the association.
 ///
-/// It lives in this module rather than in `planar.cmd.planar.scope` because
-/// these three leaves are its only callers today. When a second family needs
-/// it, it moves; a shared helper with one caller is a guess about the
-/// future, and D19 is about deduplicating drift that EXISTS.
+/// It used to live in THIS module, with a note saying it would move when a
+/// second family needed it. Task 6303 is that move: `feedback triage set`
+/// calls the same wrapper (`zig/.../handlers/feedback/triage/set.zig` calls
+/// `scope.guardWithMembership` exactly as the sync leaves do), so the helper
+/// now lives in `planar.cmd.planar.scope` next to `resolve_write_scope`,
+/// which every one of its callers already invokes immediately before it.
+/// The alternative — importing one handler family from another — is the
+/// `cmd_* -> cmd_*` edge D18 prohibits.
 ///
 /// ## THE TWO EXIT CODES `pull` HAS AND `push` DOES NOT
 ///
@@ -137,20 +141,6 @@ export auto parse_kind_id_ref(std::string_view text) -> std::optional<kind_id_re
 /// @return The label (unset for global / session), or the failure.
 export auto entity_scope_slug(db::connection& conn, const engine::external::link::ext_link& row)
     -> std::expected<std::optional<std::string>, domain_error>;
-
-/// @brief The membership-aware cross-scope guard.
-///
-/// Delegates to `engine::identity::check_scope_guard` first. On a refusal it
-/// applies exactly one widening: an entity at `repo:<project>` is allowed
-/// when the operator's write scope is an ASSOCIATION that the project is a
-/// member of. Every other refusal stands, and the reverse direction (a repo
-/// write scope reaching an association entity) is never widened.
-/// @param conn An open, migrated database connection.
-/// @param entity_scope The entity's scope label (unset = global).
-/// @param write_scope The operator's resolved write scope (unset = global).
-/// @return Success when the write is allowed, or `false` when refused.
-export auto guard_with_membership(db::connection& conn, std::optional<std::string_view> entity_scope,
-                                  std::optional<std::string_view> write_scope) -> bool;
 
 /// @brief `planar sync pull <ref> | --all [--system <slug>] [--scope <s>] [--json]`.
 /// @param ctx The invocation context.

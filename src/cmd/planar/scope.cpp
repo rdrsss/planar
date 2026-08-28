@@ -6,6 +6,7 @@ module planar.cmd.planar.scope;
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.db;
 import planar.engine.identity;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -79,6 +80,45 @@ auto map_scope_failure(const engine::identity::write_scope_failure& failure, std
                                        cwd, failure.ambiguity->assoc_scope, failure.ambiguity->repo_scope));
   }
   return map_scope_error(failure.code, verb);
+}
+
+auto guard_with_membership(db::connection& conn, std::optional<std::string_view> entity_scope,
+                           std::optional<std::string_view> write_scope) -> bool {
+  if (engine::identity::check_scope_guard(entity_scope, write_scope)) {
+    return true;
+  }
+  // Only a genuine mismatch between two PRESENT scopes is ever widened.
+  if (!entity_scope.has_value() || !write_scope.has_value()) {
+    return false;
+  }
+  constexpr std::string_view k_repo_prefix{"repo:"};
+  constexpr std::string_view k_assoc_prefix{"assoc:"};
+  if (!entity_scope->starts_with(k_repo_prefix)) {
+    return false;
+  }
+  auto assoc_slug = *write_scope;
+  if (assoc_slug.starts_with(k_assoc_prefix)) {
+    assoc_slug.remove_prefix(k_assoc_prefix.size());
+  }
+  // A repo write scope never widens to reach anything; the asymmetry is the
+  // point of the rule.
+  if (assoc_slug.starts_with(k_repo_prefix)) {
+    return false;
+  }
+  auto const project_slug = entity_scope->substr(k_repo_prefix.size());
+
+  auto statement = conn.prepare("select 1 from project_associations pa "
+                                "join projects p on p.id = pa.project_id "
+                                "join associations a on a.id = pa.association_id "
+                                "where p.slug = ? and a.slug = ? limit 1");
+  if (!statement) {
+    return false;
+  }
+  if (!statement->bind_text(1, project_slug) || !statement->bind_text(2, assoc_slug)) {
+    return false;
+  }
+  auto const stepped = statement->step();
+  return stepped.has_value() && *stepped == db::step_result::row;
 }
 
 auto resolve_write_scope(context& ctx, std::optional<std::string_view> scope_flag, std::string_view verb)

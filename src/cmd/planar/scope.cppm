@@ -32,11 +32,38 @@ module;
 export module planar.cmd.planar.scope;
 
 import std;
+import planar.db;
 import planar.engine.identity;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 
 namespace planar::cmd {
+
+/// @brief The membership-aware cross-scope guard.
+///
+/// Delegates to `engine::identity::check_scope_guard` first. On a refusal it
+/// applies exactly one widening: an entity at `repo:<project>` is allowed
+/// when the operator's write scope is an ASSOCIATION that the project is a
+/// member of. Every other refusal stands, and the reverse direction (a repo
+/// write scope reaching an association entity) is never widened.
+///
+/// Lived in `planar.cmd.planar.handlers.sync` until task 6303, which gave it
+/// its second caller family (`feedback triage set`). It sits here rather than
+/// in either handler because a handler importing another handler is the
+/// `cmd_* -> cmd_*` edge D18 prohibits, and because every caller invokes
+/// `resolve_write_scope` immediately before it — the guard's second argument
+/// is that call's result.
+///
+/// NOTE the refusal MESSAGE is deliberately not here. `sync` says "target is
+/// outside the operator write scope", `feedback triage set` says "Refusing
+/// cross-scope write; pass --scope ...", and `task` says a third thing; all
+/// three were captured from the oracle and are not one string.
+/// @param conn An open, migrated database connection.
+/// @param entity_scope The entity's scope label (unset = global).
+/// @param write_scope The operator's resolved write scope (unset = global).
+/// @return True when the write is allowed, false when refused.
+export auto guard_with_membership(db::connection& conn, std::optional<std::string_view> entity_scope,
+                                  std::optional<std::string_view> write_scope) -> bool;
 
 /// @brief Resolve the write scope for a mutating verb: the `--scope` value
 /// when the operator passed one, otherwise the cwd-derived scope.

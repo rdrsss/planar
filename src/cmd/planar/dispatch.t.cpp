@@ -263,9 +263,16 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   CHECK(leaf.err == "error: dashboard: not implemented in this build\n");
 
   // Deeper, to prove the key is the full path and not the leaf name.
-  auto const deep = dispatch({"feedback", "triage", "list"});
+  //
+  // This was `feedback triage list` until task 6303 ported that family, and
+  // the replacement has the same two constraints the top-level exemplar
+  // above has: it must be genuinely unported, and its positionals must all
+  // be OPTIONAL or the parser refuses at exit 2 before dispatch is reached.
+  // `task touches infer`, the only other three-level unported path, fails
+  // the second test (`task-id` is required), which leaves this one.
+  auto const deep = dispatch({"workspace", "routing", "build"});
   CHECK(deep.code == 64);
-  CHECK(deep.err == "error: feedback triage list: not implemented in this build\n");
+  CHECK(deep.err == "error: workspace routing build: not implemented in this build\n");
 
   // Discrimination: a PORTED verb on the same binary does not answer 64,
   // so exit 64 is not simply what this binary now does.
@@ -710,20 +717,34 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                              engine is fully ported" settles all three.
   //   feedback triage list|show|set  The one family with NO engine here at
   //                              all: `planar.engine.planning.feedback_triage`
-  //                              does not exist in this tree (302 Zig lines,
+  //                              did not exist in this tree (302 Zig lines,
   //                              four enums, `parse_ref`/`entity_scope`/
   //                              `set`/`show`/`list` plus two renderers).
   //                              The `feedback_triage` TABLE is present
-  //                              (migration 00028), so this is an engine
+  //                              (migration 00028), so this was an engine
   //                              port, not a schema one. Their handlers are
   //                              9/20/21/27 lines — the smallest in the
   //                              inventory — which is exactly why sizing
   //                              this family by its handlers would have been
-  //                              wrong.
+  //                              wrong. MOVED at task 6303; see below.
   // `link` also left this list, at task 6301 — see the note further below.
-  for (auto const& leaf : {"workbench publish", "feedback triage list", "feedback triage show", "feedback triage set"}) {
+  for (auto const& leaf : {"workbench publish"}) {
     INFO("probed but deliberately not moved by task 6299: " << leaf);
     CHECK(unported.contains(leaf));
+  }
+  // TASK 6303 MOVED THE THREE `feedback triage` LEAVES, and the block above
+  // sized them correctly: the engine was the whole job and the handlers were
+  // trivia. What that sizing did NOT capture, and what actually cost the
+  // cycle, is the FIXTURE. `findingPlan` compares the finding's plan slug
+  // against the literal `planar-feedback`, so every arm of this family
+  // refuses with `DifferentFeedbackPlan` against an ordinary plan — and a
+  // bare registered project cannot even create a plan (exit 5 until the
+  // project joins an association). `AmbiguousFeedbackPlan` is reachable only
+  // through a QUESTION carrying two `derives-from` plan links, and is not
+  // reachable for a task at all.
+  for (auto const& leaf : {"feedback triage list", "feedback triage show", "feedback triage set"}) {
+    INFO("moved by task 6303: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
   }
   // TASK 6302 MOVED THE TWO WORKBENCH LEAVES the block above had held back,
   // and the reasons it recorded for holding them turned out to be the
@@ -756,7 +777,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // precedent, BEFORE the link row is written so the refusal's own
   // "re-run without --propagate" advice still works. That divergence is
   // recorded in handlers/link.cppm and asserted below.
-  for (auto const& leaf : {"workbench publish", "feedback triage list", "feedback triage show", "feedback triage set"}) {
+  // (The duplicate of the loop above, which task 6303 reduced to the one
+  // leaf that is still blocked. Kept rather than deleted because it sits
+  // after the `link` note and reads as that note's precondition.)
+  for (auto const& leaf : {"workbench publish"}) {
     INFO("probed but deliberately not moved by task 6299: " << leaf);
     CHECK(unported.contains(leaf));
   }
@@ -777,7 +801,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // 33 before task 6309, which moved THREE: `plan next` and `ext create`
   // (both named as blocked by task 6298's probe and both sized correctly),
   // plus `link` (task 6301, minus its `--propagate` flag). 33 - 3 = 30.
-  CHECK(unported.size() == 28);
+  // 28 before task 6303, which moved the three `feedback triage` leaves
+  // (`list`, `show`, `set`) together with the
+  // `engine.planning.feedback_triage` engine that was the whole of what
+  // blocked them. 28 - 3 = 25.
+  CHECK(unported.size() == 25);
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));

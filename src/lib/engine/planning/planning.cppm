@@ -12,6 +12,11 @@
 /// unported is a CMD-layer dependency, not an engine one: `editflow`
 /// (zig/src/cmd/planar/editflow.zig) still gates the
 /// `edit`/`view`/`diff`/`review` drafting quartet on all FOUR families.
+///
+/// `feedback_triage` joined at task 6303 and is NOT one of the planning
+/// entities that sentence is about: it is a satellite table (migration
+/// 00028) keyed on a task OR a question, and it was the last engine any
+/// declared leaf in the tree was still waiting on.
 module;
 
 export module planar.engine.planning;
@@ -27,3 +32,4 @@ export import planar.engine.planning.annotation;
 export import planar.engine.planning.plan_step;
 export import planar.engine.planning.test_spec_status;
 export import planar.engine.planning.descendants;
+export import planar.engine.planning.feedback_triage;

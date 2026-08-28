@@ -556,44 +556,10 @@ auto entity_scope_slug(db::connection& conn, const engine::external::link::ext_l
   return *resolved;
 }
 
-auto guard_with_membership(db::connection& conn, std::optional<std::string_view> entity_scope,
-                           std::optional<std::string_view> write_scope) -> bool {
-  if (engine::identity::check_scope_guard(entity_scope, write_scope)) {
-    return true;
-  }
-  // Only a genuine mismatch between two PRESENT scopes is ever widened.
-  if (!entity_scope.has_value() || !write_scope.has_value()) {
-    return false;
-  }
-  constexpr std::string_view k_repo_prefix{"repo:"};
-  constexpr std::string_view k_assoc_prefix{"assoc:"};
-  if (!entity_scope->starts_with(k_repo_prefix)) {
-    return false;
-  }
-  auto assoc_slug = *write_scope;
-  if (assoc_slug.starts_with(k_assoc_prefix)) {
-    assoc_slug.remove_prefix(k_assoc_prefix.size());
-  }
-  // A repo write scope never widens to reach anything; the asymmetry is the
-  // point of the rule.
-  if (assoc_slug.starts_with(k_repo_prefix)) {
-    return false;
-  }
-  auto const project_slug = entity_scope->substr(k_repo_prefix.size());
-
-  auto statement = conn.prepare("select 1 from project_associations pa "
-                                "join projects p on p.id = pa.project_id "
-                                "join associations a on a.id = pa.association_id "
-                                "where p.slug = ? and a.slug = ? limit 1");
-  if (!statement) {
-    return false;
-  }
-  if (!statement->bind_text(1, project_slug) || !statement->bind_text(2, assoc_slug)) {
-    return false;
-  }
-  auto const stepped = statement->step();
-  return stepped.has_value() && *stepped == db::step_result::row;
-}
+// `guard_with_membership` moved to `planar.cmd.planar.scope` at task 6303,
+// when `feedback triage set` became its second caller family. The two call
+// sites below are unchanged; this TU already imports that module for
+// `resolve_write_scope`.
 
 auto sync_pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return run_pull_or_push(ctx, args, true, "sync pull");
