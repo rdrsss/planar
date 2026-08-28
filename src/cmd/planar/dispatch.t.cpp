@@ -245,14 +245,22 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // family out from under it.
   //
   // With every planning family's CRUD half now ported, the exemplar has to
-  // leave the planning surface entirely — so it is `assoc list`, which is
-  // arg-free and whose engine half is genuinely unported. Note this can no
-  // longer be replaced by "the next planning sibling": the next cycle that
-  // ports `assoc list` must reach for a different family again.
-  auto const leaf = dispatch({"assoc", "list"});
+  // leave the planning surface entirely. It was `assoc list` until task
+  // 6279 ported that too — and the note the previous cycle left here ("the
+  // next cycle that ports `assoc list` must reach for a different family
+  // again") is exactly what happened, one cycle later.
+  //
+  // It is now `dashboard`: a TOP-LEVEL leaf rather than a family member,
+  // arg-free (no positionals at all in `surface.cpp`, so the parser cannot
+  // refuse at exit 2 before dispatch is reached), and blocked on the
+  // agent-claim roll-up its `--agents` arm needs. Being top-level is a
+  // small additional guarantee — there is no sibling port that can drag it
+  // along by accident, the way each planning family's CRUD half dragged
+  // its predecessors.
+  auto const leaf = dispatch({"dashboard"});
   CHECK(leaf.code == 64);
   CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: assoc list: not implemented in this build\n");
+  CHECK(leaf.err == "error: dashboard: not implemented in this build\n");
 
   // Deeper, to prove the key is the full path and not the leaf name.
   auto const deep = dispatch({"feedback", "triage", "list"});
@@ -615,14 +623,39 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // and the largest single unblocked leaf left (1284 non-test Zig lines).
   // Named below rather than trusted to the count, same reason as every
   // batch above it.
-  CHECK(unported.size() == 44);
   CHECK_FALSE(unported.contains("tree"));
+  //
+  // 45 before task 6279 moved `assoc list` and `assoc remove`. Named
+  // rather than trusted to the delta: `remove` was handler-only, `list`
+  // needed a ten-line kind filter beside the already-present `list_all`
+  // plus the two list renderers. `assoc detect` deliberately did NOT move
+  // — it is the ~680-line proposal engine and shares no code with them.
+  //
+  // 43 after task 6279 and 42 after task 6277 moved `audit commits`. That
+  // leaf had been counted among the git-walk-blocked group here since the
+  // inventory was written; the grouping was wrong (see below) and the
+  // correction is why the count moved twice in one cycle.
+  CHECK(unported.size() == 41);
+  for (auto const& leaf : {"assoc list", "assoc remove"}) {
+    INFO("moved by task 6279: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
+  }
+  INFO("moved by task 6277 after the git-walk grouping was corrected: audit commits");
+  CHECK_FALSE(unported.contains("audit commits"));
+  INFO("task 6279 deliberately left `assoc detect` — the ~680-line proposal engine");
+  CHECK(unported.contains("assoc detect"));
   // The leaf task 6272 moved, named rather than trusted to the count. The
   // four leaves that were predicted to move WITH it must stay unported —
   // wiring any of them off the back of this cycle would claim an engine
   // half that does not exist.
   CHECK_FALSE(unported.contains("workflow run"));
-  for (auto const& leaf : {"capture commits", "audit commits"}) {
+  // `audit commits` WAS in this list and should never have been: it was
+  // grouped with the genuinely spawn-blocked leaves on the strength of its
+  // MODULE's dependencies rather than its own handler's, which calls
+  // `listFiltered` + `writeJsonList` and spawns nothing. Task 6272
+  // corrected the grouping and 6277 ported it. `capture commits` stays —
+  // it really does need the walk.
+  for (auto const& leaf : {"capture commits"}) {
     INFO("still-deferred spawn-adjacent leaf: " << leaf);
     CHECK(unported.contains(leaf));
   }

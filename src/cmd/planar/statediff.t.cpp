@@ -624,7 +624,21 @@ auto sequence() -> std::vector<step> {
 /// id on both sides and both answer exit 2 with the same wording. A port
 /// that had changed that refusal would have turned this removal into a
 /// divergence rather than a silent pass.
-constexpr std::array<std::string_view, 1> expected_unported{"s02"};
+/// THE SET IS NOW EMPTY, as of task 6279. `s02` is `assoc list --json`,
+/// the last entry, and it left when the leaf was wired. Emptying it does
+/// NOT retire the assertion — it strengthens it: checked in both
+/// directions against an empty expectation, ANY step that starts answering
+/// exit 64 + "not implemented in this build" now fails this lane
+/// immediately, which is exactly the regression an inventory that could
+/// only shrink was blind to.
+///
+/// `s02` did not stop being compared either. It now runs as a fully
+/// compared step over all three channels plus the state tables, and the
+/// port had to agree on the empty-`--kind`-absent listing, the `[]` JSON
+/// for the one row `s01` created, and the `associations` table state — a
+/// port that had changed any of them would have turned this removal into a
+/// divergence rather than a silent pass.
+constexpr std::array<std::string_view, 0> expected_unported{};
 
 /// @brief One staged divergence: a real defect with its own task, listed so
 /// this lane is green while the defect stands.

@@ -211,4 +211,84 @@ auto assoc_members(context& ctx, const cliapp::parsed_args& args) -> handler_res
   return {};
 }
 
+auto assoc_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  // Before the `--kind` check, same ordering (and same reason) as
+  // `assoc_create`'s: zig opens with `try runtime.ensureDb()`, so a
+  // refused `--kind nope` still creates and migrates the database.
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  id::list_filter filter{};
+  // PRESENCE, not emptiness. `--kind ''` is present and refuses; an absent
+  // flag can never reach the refusal. See this leaf's declaration.
+  if (auto const kind_raw = cliapp::flag_string(args, "--kind")) {
+    auto const kind = id::association_kind_from_text(*kind_raw);
+    if (!kind) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("unknown kind '{}'", *kind_raw)));
+    }
+    filter.kind = *kind;
+  }
+
+  auto rows = id::list(**conn, filter);
+  if (!rows) {
+    return std::unexpected(map_association_error(rows.error(), "list"));
+  }
+
+  // Terminator contract: the text renderer carries its own trailing
+  // newline; the JSON one is a fragment this caller terminates.
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << id::render_list_json(*rows) << '\n';
+  } else {
+    ctx.out() << id::render_list_text(*rows);
+  }
+  return {};
+}
+
+auto assoc_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto slug = cliapp::positional_string(args, "slug");
+  // `repo-path` is HYPHENATED in surface.cpp's `k_pos_55`, exactly as it
+  // is in `assoc add`'s `k_pos_54`. Reading it as "repo_path" returns
+  // unset on every call and turns the whole verb into the refusal below.
+  auto path = cliapp::positional_string(args, "repo-path");
+  if (!slug || !path) {
+    // Unreachable through the CLI11 tree (both declared required).
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "assoc remove: slug and repo-path are required"));
+  }
+
+  // `*path` VERBATIM — it is matched by string equality against whatever
+  // `assoc add` stored, which is itself uncanonicalised. See this
+  // function's declaration for the task-6256 shape this preserves.
+  auto removed = id::remove_member(**conn, *slug, *path);
+  if (!removed) {
+    switch (removed.error()) {
+    case id::association_error::not_found:
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, std::format("no association named '{}'", *slug)));
+    case id::association_error::not_a_member:
+      // Names the PATH and nothing else — not `assoc add`'s
+      // already-a-member wording. See the declaration.
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, std::format("no project registered at '{}'", *path)));
+    default:
+      return std::unexpected(map_association_error(removed.error(), "remove"));
+    }
+  }
+
+  if (cliapp::flag_bool(args, "--json")) {
+    // Interpolated RAW, deliberately — same defect, deliberately
+    // preserved, as `assoc_add`'s. See the declaration.
+    ctx.out() << std::format(R"({{"status":"removed","association":"{}","repo_path":"{}"}})", *slug, *path) << '\n';
+  } else {
+    ctx.out() << std::format("removed project at {} from {}\n", *path, *slug);
+  }
+  return {};
+}
+
 } // namespace planar::cmd::handlers

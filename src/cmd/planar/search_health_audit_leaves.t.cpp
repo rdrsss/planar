@@ -485,12 +485,12 @@ TEST_CASE("audit session gives a non-integer id exit 2 and a missing id exit 1",
   CHECK(missing_json.out.empty());
 }
 
-TEST_CASE("the three unported audit leaves still refuse at exit 64", "[cmd][audit][unported]") {
+TEST_CASE("the two unported audit leaves still refuse at exit 64", "[cmd][audit][unported]") {
   auto const fx = make_fixture("auditrest");
   seed_searchable(fx);
 
   // Pinned as a SET so porting one without updating the inventory fails
-  // here rather than drifting. Which of the three are blocked on what is in
+  // here rather than drifting. Which of the two is blocked on what is in
   // handlers/audit.cppm.
   //
   // FOUR before task 6262 ported `audit trail`. Its argv is not merely
@@ -501,15 +501,24 @@ TEST_CASE("the three unported audit leaves still refuse at exit 64", "[cmd][audi
   // one says "this verb does not exist yet" and the other says "that is
   // not an entity id".
   //
+  // THREE until task 6277 ported `audit commits`, and that one is the
+  // instructive removal. It sat here as "blocked on the git-walk seam"
+  // alongside `capture commits` and `bench harvest` — a grouping inferred
+  // from `engine.runtime.sessioncommits`'s dependencies rather than from
+  // the leaf's own 78-line handler, which spawns nothing. This case kept
+  // passing for as long as the wrong grouping stood, which is precisely
+  // what a set pinned only in one direction cannot catch: it proves the
+  // listed leaves refuse, never that they SHOULD. The both-directions
+  // count in dispatch.t.cpp is what actually holds that line.
+  //
   // The argv differs per leaf and that is NOT incidental: `publish-decision`
-  // takes a positional, `commits` and `handoff-readiness` take none, and
-  // handing the latter two a stray argument refuses at exit 2 with
-  // `ExtrasError` BEFORE dispatch ever reaches the not-implemented handler.
-  // The first draft of this case did exactly that and reported exit 2 for
-  // two of them — a refusal, but the wrong one, and one that would have
-  // kept "passing" long after those leaves were ported.
+  // takes a positional and `handoff-readiness` takes none, and handing the
+  // latter a stray argument refuses at exit 2 with `ExtrasError` BEFORE
+  // dispatch ever reaches the not-implemented handler. The first draft of
+  // this case did exactly that and reported exit 2 — a refusal, but the
+  // wrong one, and one that would have kept "passing" long after those
+  // leaves were ported.
   std::vector<std::pair<std::string, std::vector<std::string>>> const leaves{
-      {"commits", {"audit", "commits"}},
       {"publish-decision", {"audit", "publish-decision", "1"}},
       {"handoff-readiness", {"audit", "handoff-readiness"}},
   };

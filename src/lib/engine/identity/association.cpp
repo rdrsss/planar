@@ -408,9 +408,32 @@ auto show_by_slug(db::connection& conn, std::string_view slug) -> std::expected<
 }
 
 auto list_all(db::connection& conn) -> std::expected<std::vector<association>, association_error> {
-  auto stmt = conn.prepare(std::format("{} order by slug", k_select_columns));
+  // `list_all` is `list` with no predicate, and composing it that way
+  // rather than keeping a second copy of the statement is what makes the
+  // two provably agree on the ordering.
+  return list(conn, list_filter{});
+}
+
+auto list(db::connection& conn, const list_filter& filter) -> std::expected<std::vector<association>, association_error> {
+  // `where 1 = 1` so the optional term appends unconditionally, exactly as
+  // the oracle composes it. It costs nothing and it is the difference
+  // between one statement shape and two.
+  std::string sql = std::format("{} where 1 = 1", k_select_columns);
+  if (filter.kind.has_value()) {
+    sql += " and kind = ?";
+  }
+  sql += " order by slug";
+
+  auto stmt = conn.prepare(sql);
   if (!stmt) {
     return std::unexpected(association_error::query_failed);
+  }
+  if (filter.kind.has_value()) {
+    // The WIRE form (`ad-hoc`), not the enumerator's spelling — see this
+    // function's declaration.
+    if (auto bound = stmt->bind_text(1, association_kind_to_text(*filter.kind)); !bound) {
+      return std::unexpected(association_error::query_failed);
+    }
   }
 
   std::vector<association> out;
@@ -564,6 +587,31 @@ auto render_json(const association& a) -> std::string {
                      a.auto_detected ? "true" : "false",
                      a.config_json.has_value() ? json_string(*a.config_json) : std::string{"null"}, json_string(a.created_at),
                      json_string(a.updated_at));
+}
+
+auto render_list_text(std::span<const association> items) -> std::string {
+  if (items.empty()) {
+    // `(no associations)`, not the member renderer's `(no members)`.
+    return "(no associations)\n";
+  }
+  std::string out;
+  for (const auto& a : items) {
+    // Third column is `name`. Second is the kind at width TWELVE.
+    out += std::format("{:<20}  {:<12}  {}\n", a.slug, association_kind_to_text(a.kind), a.name);
+  }
+  return out;
+}
+
+auto render_list_json(std::span<const association> items) -> std::string {
+  std::string out = "[";
+  for (std::size_t i = 0; i < items.size(); ++i) {
+    if (i > 0) {
+      out += ",";
+    }
+    out += render_json(items[i]);
+  }
+  out += "]";
+  return out;
 }
 
 auto render_member_list_text(std::span<const project_ref> members) -> std::string {
