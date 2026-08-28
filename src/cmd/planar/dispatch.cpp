@@ -429,6 +429,8 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("workbench restore", handlers::workbench_restore);
   table.emplace("workbench gc", handlers::workbench_gc);
   table.emplace("workbench list", handlers::workbench_list);
+  table.emplace("workbench extract-questions", handlers::workbench_extract_questions);
+  table.emplace("workbench edit", handlers::workbench_edit);
   table.emplace("capture session", handlers::capture_session);
   table.emplace("capture end", handlers::capture_end);
   table.emplace("capture note", handlers::capture_note);

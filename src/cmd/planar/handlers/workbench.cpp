@@ -10,6 +10,7 @@ import planar.db;
 import planar.engine.workbench;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
+import planar.cmd.planar.editor;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 
@@ -492,6 +493,144 @@ auto workbench_lint(context& ctx, const cliapp::parsed_args& args) -> handler_re
   if (value->errors > 0 || value->warnings > 0) {
     return std::unexpected(
         error_from_body(kind_t::generic_failure, wb::render_cli::error_body_lint_issues(value->errors, value->warnings)));
+  }
+  return {};
+}
+
+auto workbench_extract_questions(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const argument = positional_string(args, "plan").value_or(std::string{});
+  auto       plan     = resolve_plan(ctx, **conn, argument);
+  if (!plan) {
+    return std::unexpected(plan.error());
+  }
+  // A plain resolve, NOT the ensuring one: a read-only leaf must not leave a
+  // workbench root behind on a machine that has none. Mirrors the oracle's
+  // bare `resolveRoot` call here versus `resolveAndEnsureWorkbenchRoot` in
+  // `list` / `gc` / `archive` / `restore`.
+  auto root = resolve_root(ctx, false);
+  if (!root) {
+    return std::unexpected(root.error());
+  }
+  auto const feature_dir = wb::sync::feature_dir_for(*root, *plan);
+
+  // An ABSENT tree is a HINT at exit 0, not a failure — this leaf reports on
+  // what `push` wrote and has nothing to say before the first push.
+  if (!wb::fsutil::path_exists(feature_dir)) {
+    ctx.out() << std::format("workbench tree not found for plan {}; run 'workbench push {}' first\n", plan->id, argument);
+    return {};
+  }
+
+  std::vector<wb::questions::file_questions> results;
+  for (auto const& name : wb::questions::collect_top_level_specs(feature_dir)) {
+    auto const contents = wb::fsutil::read_file(std::filesystem::path{feature_dir} / name);
+    if (!contents) {
+      // The oracle interpolates a Zig error tag here. Reaching this arm at
+      // all needs the file to vanish between the directory listing and the
+      // read, so neither binary can produce it deterministically and no
+      // test pins the tag.
+      ctx.err() << std::format("warning: reading {} failed: ReadFailed\n", name);
+      continue;
+    }
+    auto const parsed = wb::parse::parse(*contents);
+    if (!parsed) {
+      // A MALFORMED FILE IS SWALLOWED, and that is reproduced deliberately
+      // (D2), not overlooked. The same file `workbench push` rejects as
+      // `MissingRequiredField` at exit 1 is skipped silently here, so a
+      // spec with broken front matter reports zero questions rather than an
+      // error. Filed as planar task 6304; changing it is a behaviour
+      // change that belongs in that task, not smuggled into a port.
+      // TODO(plan:996, task:6304): decide whether to surface these.
+      continue;
+    }
+    results.push_back({.artifact_id = parsed->frontmatter.entity_id,
+                       .file        = name,
+                       .questions   = wb::questions::extract_questions(parsed->body)});
+  }
+
+  if (wants_json(args)) {
+    ctx.out() << wb::questions::render_json(results) << "\n";
+  } else {
+    ctx.out() << wb::questions::render_text(results);
+  }
+  return {};
+}
+
+auto workbench_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const argument = positional_string(args, "plan").value_or(std::string{});
+  auto       plan     = resolve_plan(ctx, **conn, argument);
+  if (!plan) {
+    return std::unexpected(plan.error());
+  }
+  // The oracle resolves the root AFTER the push, because its `push` reaches
+  // the environment itself. Here every engine entry point takes the root as
+  // a parameter (see engine/workbench/CMakeLists.txt § FILESYSTEM SAFETY),
+  // so it is resolved once up front and used for both halves. `create` is
+  // true to match the oracle's `resolveAndEnsureWorkbenchRoot`; the push
+  // would create the feature directory underneath it regardless, so the
+  // reordering is not observable.
+  auto root = resolve_root(ctx, true);
+  if (!root) {
+    return std::unexpected(root.error());
+  }
+
+  // Always the default filter and never a cleanup: `workbench edit` exposes
+  // neither `--filter-mode` nor `--apply-cleanup`.
+  auto pushed = wb::sync::push(**conn, plan->id, *root, wb::terminal::mode::failures, false);
+  if (!pushed) {
+    return std::unexpected(
+        error_from_body(kind_t::generic_failure, std::format("workbench push failed: {}", sync_error_tag(pushed.error()))));
+  }
+  if (wants_json(args)) {
+    ctx.out() << wb::render_cli::render_sync_result_json(*pushed);
+  } else {
+    // `verbose` is hard-false: the editor-first flow prints a summary line,
+    // never the per-entry list.
+    ctx.out() << wb::render_cli::render_sync_result_text(plan->id, plan->slug, wb::sync::mode::push, "push", *pushed, false);
+  }
+  if (pushed->conflicts > 0) {
+    return std::unexpected(error_from_body(kind_t::sync_conflict, wb::render_cli::error_body_conflicts(pushed->conflicts)));
+  }
+
+  // THE EDITOR IS GIVEN THE FEATURE DIRECTORY, not a temp file. That is the
+  // difference between this leaf and the drafting quartet's `edit` arms,
+  // and it is what makes the round trip a `pull` rather than a single-file
+  // write-back. Oracle-probed: the stub's `$1` is the feature directory.
+  auto const override_flag = flag_string(args, "--editor");
+  auto const editor_cmd    = resolve_editor(
+      ctx.env(), override_flag && !override_flag->empty() ? std::optional<std::string>{*override_flag} : std::nullopt);
+  std::array<std::string, 2> const argv{editor_cmd, wb::sync::feature_dir_for(*root, *plan)};
+  auto const                       status = spawn_inherit(ctx.env(), argv);
+  if (!status) {
+    // Unresolvable command or a failed fork. The oracle's `std.process.spawn`
+    // reports this as `error.FileNotFound` BEFORE creating a child, which is
+    // why it is distinguishable from a real non-zero exit at all.
+    return std::unexpected(error_from_body(kind_t::generic_failure, "running editor failed: FileNotFound"));
+  }
+  if (*status != 0) {
+    return std::unexpected(
+        error_from_body(kind_t::generic_failure, std::format("editor \"{}\" exited with status {}", editor_cmd, *status)));
+  }
+
+  auto pulled = wb::sync::pull(**conn, plan->id, *root);
+  if (!pulled) {
+    return std::unexpected(
+        error_from_body(kind_t::generic_failure, std::format("workbench pull failed: {}", sync_error_tag(pulled.error()))));
+  }
+  if (wants_json(args)) {
+    ctx.out() << wb::render_cli::render_sync_result_json(*pulled);
+  } else {
+    ctx.out() << wb::render_cli::render_sync_result_text(plan->id, plan->slug, wb::sync::mode::pull, "pull", *pulled, false);
+  }
+  if (pulled->conflicts > 0) {
+    return std::unexpected(error_from_body(kind_t::sync_conflict, wb::render_cli::error_body_conflicts(pulled->conflicts)));
   }
   return {};
 }

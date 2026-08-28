@@ -96,19 +96,29 @@
 #     external-system/adapter surfaces — so there is nothing to call. It
 #     lands with the adapters.
 #
-#   - `workbench extract-questions` (402 lines). A self-contained read-only
-#     Markdown pass that scrapes `## Open questions` sections out of
-#     top-level specs. Nothing blocks it architecturally; it is deferred on
-#     size, and it shares no code with the sync engine.
+#   ~~`workbench extract-questions`~~ and ~~`workbench edit`~~ — BOTH LANDED
+#   at task 6302, and neither was ever architecturally blocked:
 #
-#   - `workbench edit`. Spawns `$EDITOR` as a subprocess. Same
-#     process-spawn dependency that defers `workflow run` (see
-#     engine/workflows/CMakeLists.txt) and `bench harvest` (engine/runs).
+#   - `extract-questions` is now `questions.cppm`. Its pure half (the
+#     section walk and the two renderers) sits in this bucket rather than
+#     the handler, following the same split every other leaf uses. Read that
+#     module's header before writing a fixture for it: the scan is
+#     top-level-only and skips `README.md`, so the obvious feature tree
+#     yields an empty list and a silently vacuous test.
 #
-#   Each of the three is absent from the layer-3 command tree as well, so
-#   the `workbench` group's help page lists ten commands where the oracle
-#   lists thirteen — the same accounted-for divergence `workflow` and
-#   `workspace` already carry. No PORTED leaf drops a flag.
+#   - `edit` needed no engine code at all. It is `push` -> spawn `$EDITOR`
+#     on the feature directory -> `pull`, and the spawn primitive already
+#     existed at layer 3 (`planar.cmd.planar.editor::spawn_inherit`, ported
+#     for the drafting quartet). The claim that it shared `workflow run`'s
+#     process-spawn blocker was inherited, not measured — `workflow run`
+#     needs a spawn in the ENGINE, which is a different problem.
+#
+#   `publish` above is now the ONLY blocked leaf in this bucket. It used to
+#   be stated as one of three, which made a genuine adapter dependency read
+#   like the same kind of deferral as two leaves that had none.
+#
+#   So the `workbench` group's help page now lists twelve commands where the
+#   oracle lists thirteen. No PORTED leaf drops a flag.
 #
 #   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
 #     (task 6100). The layer-1 `planar.policy` module now exists, and this
@@ -122,6 +132,7 @@
 planar_module(engine_workbench
   INTERFACE
     parse.cppm
+    questions.cppm
     render.cppm
     feature.cppm
     terminal.cppm
@@ -135,6 +146,7 @@ planar_module(engine_workbench
     workbench.cppm
   SOURCES
     parse.cpp
+    questions.cpp
     render.cpp
     feature.cpp
     terminal.cpp
