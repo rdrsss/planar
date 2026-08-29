@@ -518,9 +518,19 @@ TEST_CASE("the two unported audit leaves still refuse at exit 64", "[cmd][audit]
   // this case did exactly that and reported exit 2 — a refusal, but the
   // wrong one, and one that would have kept "passing" long after those
   // leaves were ported.
+  //
+  // TWO until task 6329 ported `audit handoff-readiness`, leaving ONE.
+  // That removal is the same shape as `audit commits`' above and is the
+  // second in this family: the leaf was recorded as "merely LARGE rather
+  // than blocked" and is in fact the family's SMALLEST at 101 zig lines,
+  // over `engine.runtime.resumecheck` alone — a module that was already in
+  // the tree when the note was written. Its argv moves to
+  // audit_handoff_readiness_leaf.t.cpp, where the bare invocation now pins
+  // the oracle's exit-1 below-threshold refusal instead of this exit-64
+  // placeholder. Same argv, different answer, and the difference is the
+  // whole point of moving it rather than deleting it.
   std::vector<std::pair<std::string, std::vector<std::string>>> const leaves{
       {"publish-decision", {"audit", "publish-decision", "1"}},
-      {"handoff-readiness", {"audit", "handoff-readiness"}},
   };
   for (auto const& [verb, argv] : leaves) {
     auto const refused = dispatch(fx, argv);

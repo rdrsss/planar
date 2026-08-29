@@ -475,6 +475,7 @@ planar_binary(planar
     handlers/test_spec.cppm
     handlers/health.cppm
     handlers/audit.cppm
+    handlers/dashboard.cppm
     handlers/task.cppm
     handlers/feedback.cppm
     handlers/question.cppm
@@ -529,6 +530,7 @@ planar_binary(planar
     handlers/test_spec.cpp
     handlers/health.cpp
     handlers/audit.cpp
+    handlers/dashboard.cpp
     handlers/task.cpp
     handlers/feedback.cpp
     handlers/question.cpp

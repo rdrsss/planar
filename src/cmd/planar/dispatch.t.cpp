@@ -250,17 +250,29 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // next cycle that ports `assoc list` must reach for a different family
   // again") is exactly what happened, one cycle later.
   //
-  // It is now `dashboard`: a TOP-LEVEL leaf rather than a family member,
-  // arg-free (no positionals at all in `surface.cpp`, so the parser cannot
-  // refuse at exit 2 before dispatch is reached), and blocked on the
-  // agent-claim roll-up its `--agents` arm needs. Being top-level is a
-  // small additional guarantee — there is no sibling port that can drag it
-  // along by accident, the way each planning family's CRUD half dragged
-  // its predecessors.
-  auto const leaf = dispatch({"dashboard"});
+  // It was `dashboard` until task 6329 ported it — and the note that stood
+  // here called it "blocked on the agent-claim roll-up its `--agents` arm
+  // needs", which was the same stale reading as `surface.cpp`'s: that
+  // roll-up (`agentactivity`'s claim and next-work readers, `agentrender`'s
+  // fragment writers) had been in the tree for milestones.
+  //
+  // It is now `report`, which keeps every property the exemplar needs and
+  // is blocked for a reason that will NOT age out the way `dashboard`'s
+  // did: it needs `engine/introspect.zig` and
+  // `engine/introspection_adapters.zig`, 2649 zig lines with no C++
+  // counterpart of any kind. TOP-LEVEL rather than a family member (no
+  // sibling port can drag it along by accident) and arg-free — no
+  // positionals at all in `surface.cpp`, so the parser cannot refuse at
+  // exit 2 before dispatch is reached.
+  auto const leaf = dispatch({"report"});
   CHECK(leaf.code == 64);
   CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: dashboard: not implemented in this build\n");
+  CHECK(leaf.err == "error: report: not implemented in this build\n");
+
+  // And the sibling that left the inventory this cycle answers its own
+  // verb instead of 64, which is what makes the row above a statement
+  // about `report` rather than about top-level leaves in general.
+  CHECK(dispatch({"dashboard", "--help"}).code == 0);
 
   // Deeper, to prove the key is the full path and not the leaf name.
   //
@@ -870,7 +882,64 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // instead — see src/lib/engine/ingest/CMakeLists.txt for why that is the
   // honest placement rather than a workaround, and why D19's
   // extract-to-layer-1 remedy was measured and rejected.
-  CHECK(unported.size() == 19);
+  // 19 before task 6329 moved TWO out of it — `dashboard` and `audit
+  // handoff-readiness` — leaving 17. That task's brief was a PROBE of the
+  // last five leaves nobody had examined, and the probe is the finding:
+  //
+  //   dashboard                MOVED. Its recorded blocker ("the absent
+  //                            layer-3 cmd surface", task 6102) was
+  //                            removed by task 6105 and the note was never
+  //                            revisited. Every engine symbol it needs was
+  //                            already here. 275 zig lines, no engine work.
+  //   audit handoff-readiness  MOVED. Recorded in handlers/audit.cppm as
+  //                            "merely LARGE"; it is 101 zig lines, the
+  //                            SMALLEST leaf in its family, over
+  //                            `resumecheck` alone.
+  //   report                   NOT moved, and genuinely blocked: it needs
+  //                            `engine/introspect.zig` (1330 lines) plus
+  //                            `engine/introspection_adapters.zig` (1319).
+  //                            Neither has any C++ equivalent. Its stated
+  //                            layer-3 blocker was ALSO stale — the real
+  //                            one is 2649 unported engine lines.
+  //   explore                  NOT moved, and the most blocked leaf in the
+  //                            inventory. The handler is 93 lines, which
+  //                            is why it reads cheap; it launches the
+  //                            COCKPIT, 33,452 zig lines under
+  //                            cmd/planar/cockpit/ with no C++ counterpart
+  //                            at all. Its non-TTY arm falls back to help
+  //                            and would port in an afternoon — porting
+  //                            only that arm would make the verb answer
+  //                            `exit 0 + help text` on a TTY, which is the
+  //                            one outcome the leaf exists to avoid.
+  //   models resolve           NOT moved, and its blocker was UNDER-stated
+  //                            rather than over-stated — the one direction
+  //                            this milestone had not yet seen. Task 6324
+  //                            recorded the planning half of
+  //                            `routing/packet.zig` as what it needs. That
+  //                            half (~270 lines) is necessary and not
+  //                            sufficient: `handleResolve` also calls
+  //                            `routing.roles` (325 lines: `Role`,
+  //                            `packetClass`, `resolveTaskPacket`,
+  //                            `resolvePlanning`, `Resolution`) and
+  //                            `routing.profile.compile` (726 lines),
+  //                            NEITHER of which exists here. ~1320 lines,
+  //                            not ~270.
+  //
+  // The two that moved are the two whose blockers were stale. The three
+  // that stayed each have a real one, and `report` and `explore` were
+  // parked under the SAME stale layer-3 note that `dashboard` was — so
+  // that note was wrong about one leaf and accidentally right about two.
+  CHECK(unported.size() == 17);
+  INFO("moved by task 6329: dashboard");
+  CHECK_FALSE(unported.contains("dashboard"));
+  INFO("moved by task 6329: audit handoff-readiness");
+  CHECK_FALSE(unported.contains("audit handoff-readiness"));
+  // Probed by task 6329 and deliberately NOT moved. Pinned per leaf so a
+  // later cycle cannot wire one off the back of this cycle's count.
+  for (auto const& leaf : {"report", "explore", "models resolve"}) {
+    INFO("probed by task 6329 and blocked for a NAMED reason: " << leaf);
+    CHECK(unported.contains(leaf));
+  }
   INFO("moved by task 6324, completing the `task` family's big unblocked leaf: task packet");
   CHECK_FALSE(unported.contains("task packet"));
   INFO("moved by task 6275: workspace routing build");

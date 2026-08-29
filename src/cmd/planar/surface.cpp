@@ -4095,7 +4095,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       // and `bench harvest`; that grouping was wrong (its handler spawns
       // nothing and reads rows the walk WRITES) and was corrected at task
       // 6272. The other two stay — they are genuinely blocked.
-      "audit handoff-readiness",
       "audit publish-decision",
       // `audit trail` left this inventory at task 6262.
       "bench harvest",
@@ -4106,7 +4105,10 @@ auto unported_paths() -> std::span<std::string_view const> {
       // (`planar.engine.config`) had been complete since commit 82820b7;
       // what landed was the wiring plus the config-file PATH, the two
       // starter blobs, and `config validate`'s four-step rule set.
-      "dashboard",
+      // `dashboard` left this inventory at task 6329. It had been parked
+      // behind "the absent layer-3 cmd surface" since task 6102 — a
+      // blocker layer 3's arrival at task 6105 removed and nobody
+      // revisited. Every engine symbol it needs was already present.
       // `demote` and `promote` left this inventory at task 6299, together
       // with `test-spec status` below. All three were handler-only: their
       // engines — `planar.engine.promotion` (task 6094) and
