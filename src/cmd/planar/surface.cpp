@@ -4226,7 +4226,15 @@ auto unported_paths() -> std::span<std::string_view const> {
       // already complete (`sync::status` + `link::list_filter` shipped with
       // the module), so what it needed was rendering, not engine work.
       "synthesize",
-      "task packet",
+      // `task packet` left this inventory at task 6324. Task 6298 had
+      // verified it BLOCKED on `engine/routing/packet.zig`'s 1674 lines and
+      // was right about the size and wrong about the block: the LEAF needs
+      // only that file's TASK half, and the PLANNING half it shares a file
+      // with belongs to `models resolve`, which stays deferred with
+      // `roles.zig` and `profile.zig`. It landed in `engine_ingest` rather
+      // than a new `engine_routing` bucket because its freshness computation
+      // is defined in terms of `materialize`'s digests and D15/D18 FATAL on
+      // a layer-2-to-layer-2 edge — see src/lib/engine/ingest/CMakeLists.txt.
       "task touches infer",
       // `test-spec status` left this inventory at task 6299 — see the note
       // beside `explore` above.

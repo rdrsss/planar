@@ -84,6 +84,30 @@ export auto task_add(context& ctx, const cliapp::parsed_args& args) -> handler_r
 /// `not_found` (exit 1) when no task has that id.
 export auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar task packet <task-id> [--json]` (plan 996, task
+/// 6324).
+///
+/// Compiles the authoritative current routing packet for a task. This is the
+/// verb the ORCHESTRATOR reads to decide whether a task is dispatchable, so
+/// two things about its result shape are contract rather than presentation:
+///
+///   - **An unready packet is exit 0.** `ready: false` with a populated
+///     `reasons` array is a successful answer to the question asked, not a
+///     failure. The only non-zero exits are a non-integer id (2) and an
+///     unknown task (1). A caller that treats a refusal as an error would
+///     stop for the wrong reason and lose the reasons list.
+///   - **An unknown task REFUSES rather than emitting an empty packet.**
+///     Returning a well-formed all-empty packet for a task that does not
+///     exist would read as "not ready yet" instead of "you asked about
+///     nothing", which is the worse failure of the two.
+///
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success (including for an unready packet), `invalid_input`
+/// (exit 2) for a non-integer id, or `not_found` (exit 1) when no task has
+/// that id.
+export auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 /// @brief Handle `planar task list [--scope] [--status] [--plan]
 /// [--priority-max] [--json]`.
 ///

@@ -164,6 +164,21 @@ export [[nodiscard]] auto reconcile(db::connection& conn, std::int64_t anchor_pl
 export [[nodiscard]] auto source_digest(std::string_view source_kind, std::int64_t source_id, std::string_view locator,
                                         std::string_view semantic_source) -> std::string;
 
+/// @brief `sha256(input)` as 64 lowercase hex characters (FIPS 180-4).
+///
+/// Exported at task 6324 for `packet.cpp`, which digests whole evidence texts
+/// and canonical bodies rather than the four-field preimage `source_digest`
+/// builds. Both modules live in this bucket, so sharing the implementation
+/// costs no new dependency and avoids a second copy.
+///
+/// NOTE for whoever needs a THIRD one: `engine/external/sha256.hpp` and
+/// `engine/workbench/manifest.cpp` each already carry their own. Consolidating
+/// all four into a layer-1 module is D19's remedy and is worth doing, but it
+/// is a cross-bucket refactor rather than a line item on a port cycle.
+/// @param input The bytes to digest.
+/// @return The 64-character lowercase hex digest.
+export [[nodiscard]] auto sha256_hex(std::string_view input) -> std::string;
+
 /// @brief Strips the synthetic wrapper `planar artifact show` puts around a
 /// stored body, returning the authored document.
 ///
