@@ -14,6 +14,7 @@ import planar.db;
 import planar.json_text;
 import planar.engine.entitylink;
 import planar.engine.identity;
+import planar.engine.ingest.packet;
 import planar.engine.planning;
 import planar.engine.runtime;
 import planar.cmd.planar.context;
@@ -362,6 +363,35 @@ auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     return std::unexpected(map_task_error_for(found.error(), "task show"));
   }
   emit_task(ctx, args, *found);
+  return {};
+}
+
+auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  namespace pk = engine::ingest::packet;
+
+  // The database is opened BEFORE the id is parsed, matching the oracle's
+  // handler: `ensureDb()` then `parseInt`. The order is only observable when
+  // both would fail, but it is observable.
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const id = entity_id_arg(args, "task-id", "task");
+  if (!id) {
+    return std::unexpected(id.error());
+  }
+
+  auto packet = pk::assemble_task(**conn, *id);
+  if (!packet) {
+    if (packet.error() == pk::packet_error::task_not_found) {
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no task with id {}", *id)));
+    }
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task packet: QueryFailed"));
+  }
+
+  // An unready packet is a SUCCESSFUL answer — see task.cppm. Both renderers
+  // return complete stdout payloads including their trailing newline.
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? pk::render_json(*packet) : pk::render_text(*packet));
   return {};
 }
 

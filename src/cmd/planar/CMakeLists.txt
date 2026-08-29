@@ -563,6 +563,12 @@ planar_binary(planar
     engine_extsync
     engine_grouping
     engine_identity
+    # New at task 6324, for `task packet` (handlers/task.cpp). The leaf uses
+    # exactly one entry point — `packet::assemble_task` plus its two
+    # renderers. It does NOT reach the spec-ingest read pipeline; see
+    # src/lib/engine/ingest/CMakeLists.txt for why the routing packet shares
+    # that bucket instead of getting an `engine_routing` one of its own.
+    engine_ingest
     engine_local
     engine_health
     engine_models

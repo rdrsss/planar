@@ -855,7 +855,23 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   synthesize     BLOCKED twice over — ~575 lines of absent `llm` /
   //                  `operatorpath` / `forwardspec`, and a `--literal` arm
   //                  delegating to the unported `import`.
-  CHECK(unported.size() == 21);
+  // 21 before task 6324, which moved exactly ONE: `task packet`, the last
+  // big unblocked leaf of the `task` family. Task 6298 had verified it
+  // BLOCKED on `engine/routing/packet.zig`'s 1674 lines, and that sizing was
+  // right about the size and wrong about the block — the leaf needs only the
+  // module's TASK half, and the PLANNING half it shares a file with belongs
+  // to `models resolve`, which stays deferred. 21 - 1 = 20.
+  //
+  // Its port did NOT create the `engine_routing` bucket the Zig directory
+  // layout suggests, because that bucket cannot be built: the packet's
+  // freshness computation is defined in terms of `materialize`'s digests and
+  // D15/D18 FATAL on a layer-2-to-layer-2 edge. It landed in `engine_ingest`
+  // instead — see src/lib/engine/ingest/CMakeLists.txt for why that is the
+  // honest placement rather than a workaround, and why D19's
+  // extract-to-layer-1 remedy was measured and rejected.
+  CHECK(unported.size() == 20);
+  INFO("moved by task 6324, completing the `task` family's big unblocked leaf: task packet");
+  CHECK_FALSE(unported.contains("task packet"));
   INFO("moved by task 6275: workspace routing build");
   CHECK_FALSE(unported.contains("workspace routing build"));
   // Its three family siblings stayed, and each is pinned so a later cycle
@@ -899,6 +915,15 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   task packet             `engine/routing/packet.zig`, 1674 lines —
   //                           the subsystem `engine/models/CMakeLists.txt`
   //                           already defers `models resolve` against.
+  //                           LEFT this list at task 6324. 6298's sizing was
+  //                           right about the line count and wrong about the
+  //                           block: the LEAF needs only the file's TASK half
+  //                           (assemble/compile/canonical/render), and the
+  //                           PLANNING half — which is what `models resolve`
+  //                           actually rests on, together with `roles.zig` and
+  //                           `profile.zig` — was left untouched. `models
+  //                           resolve` is therefore still deferred and still
+  //                           for its own reasons.
   //
   // `plan next` and `ext create` were BOTH on this list and both left it at
   // task 6309, each for the reason task 6298 measured:
@@ -909,8 +934,9 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   ext create   two `adapter_handle` accessors plus the `remote.zig`
   //                POST path, and ZERO of `engine_extsync`'s unported
   //                lines. See handlers/ext.cppm.
-  INFO("task 6298 verified this one BLOCKED rather than assuming it: task packet");
-  CHECK(unported.contains("task packet"));
+  // (`task packet` was asserted PRESENT here until task 6324 ported it; the
+  // CHECK_FALSE that replaced it sits with the count above, where the
+  // arithmetic that has to agree with it lives.)
   // `plan closeout` was the fourth of that group and LEFT this inventory at
   // task 6317, which completes the `plan` family — it has no unported leaf
   // left. 6298 sized it right: 913 lines, entirely absent, and the only one

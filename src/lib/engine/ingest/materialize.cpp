@@ -80,7 +80,10 @@ constexpr std::array<std::uint32_t, 64> sha256_k = {
   return (x >> n) | (x << (32U - n));
 }
 
-[[nodiscard]] auto sha256_hex(std::string_view input) -> std::string {
+/// The algorithm itself. `sha256_hex` below is the exported thin wrapper
+/// (task 6324) — kept separate so the module-scope name and this
+/// internal-linkage one cannot collide in unqualified lookup.
+[[nodiscard]] auto sha256_hex_raw(std::string_view input) -> std::string {
   std::array<std::uint32_t, 8> h = {0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
                                     0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U};
 
@@ -887,6 +890,10 @@ auto materialize_error::describe() const -> std::string {
     out.append(diagnostic.describe());
   }
   return out;
+}
+
+auto sha256_hex(std::string_view input) -> std::string {
+  return sha256_hex_raw(input);
 }
 
 auto source_digest(std::string_view source_kind, std::int64_t source_id, std::string_view locator,

@@ -47,6 +47,40 @@
 #
 # `ingest.cppm` is the umbrella re-export, matching `engine/planning/
 # planning.cppm`'s pattern.
+#
+# `packet.cppm` (plan 996, task 6324) is the routing packet behind
+# `planar task packet <id>`. Its Zig original lives in `engine/routing/`, so
+# the obvious placement is a new `engine_routing` bucket — that bucket CANNOT
+# BE BUILT. The packet's whole freshness computation is defined in terms of
+# `materialize`'s digests (`artifact_section`, `roadmap_section`, `section`,
+# `field`, `source_digest`, `materializer_version`), and D15/D18 FATAL on a
+# layer-2 `engine_*` depending on another layer-2 `engine_*`.
+#
+# D19's remedy — extract the shared primitive to layer 1 — was measured and
+# rejected rather than skipped: `roadmap_section` calls `parse::parse_roadmap`,
+# so extracting the helpers drags `parse.cppm` (the whole markdown-parsing half
+# of this bucket) down a layer to serve one caller. That is the same "layering
+# inverted, not respected" argument this file already makes about `apply.zig`
+# above, and it applies with the same force here.
+#
+# Co-location is also the honest description of the coupling rather than a
+# workaround for it. `materialize` WRITES the `routing_task_facts` rows;
+# `packet` READS them back and RECOMPUTES the identical digest live to decide
+# whether each fact is still current. The oracle says so itself at
+# `zig/src/engine/ingestor/materialize.zig:489` — the two halves must agree
+# byte for byte or every fact is permanently stale the instant it is written.
+# A configure-time wall between two functions that are one contract would be
+# the worse outcome.
+#
+# The PLANNING half of `packet.zig` is NOT here: it serves `models resolve`
+# (already deferred by `engine/models/CMakeLists.txt`) and depends on
+# `test_spec_status`, an `engine_planning` module, so it meets this same wall
+# from the other side. Whoever takes `models resolve` inherits that decision.
+#
+# This module added ONE export to `materialize.cppm`: `sha256_hex`, which
+# `packet` digests whole evidence texts with. See its doc comment for the
+# standing note that three other sha256 copies exist in the tree and that
+# consolidating them is a cross-bucket refactor, not a port-cycle line item.
 
 planar_module(engine_ingest
   INTERFACE
@@ -55,6 +89,7 @@ planar_module(engine_ingest
     coverage.cppm
     render.cppm
     materialize.cppm
+    packet.cppm
     ingest.cppm
   SOURCES
     parse.cpp
@@ -62,6 +97,7 @@ planar_module(engine_ingest
     coverage.cpp
     render.cpp
     materialize.cpp
+    packet.cpp
   DEPENDS
     db
     json_text)

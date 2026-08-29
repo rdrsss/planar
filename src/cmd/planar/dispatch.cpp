@@ -176,6 +176,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("audit commits", handlers::audit_commits);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
+  table.emplace("task packet", handlers::task_packet);
   table.emplace("task list", handlers::task_list);
   table.emplace("task update", handlers::task_update);
   table.emplace("task done", handlers::task_done);

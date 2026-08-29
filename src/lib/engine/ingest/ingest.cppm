@@ -18,3 +18,7 @@ export import planar.engine.ingest.diff;
 export import planar.engine.ingest.coverage;
 export import planar.engine.ingest.render;
 export import planar.engine.ingest.materialize;
+// The routing packet (task 6324) is the READ-BACK of the routing facts
+// `materialize` writes, which is why it shares this bucket — see
+// packet.cppm's header and this bucket's CMakeLists.txt.
+export import planar.engine.ingest.packet;
