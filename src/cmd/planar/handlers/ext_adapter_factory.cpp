@@ -7,6 +7,19 @@
 
 module;
 
+// Glaze is not a module, so it comes in through the global module fragment
+// rather than an import. `create_remote`'s response parse is this file's
+// only consumer — see ext_adapter_factory.cppm on why the creation path
+// reads the provider's response itself instead of going through the adapter
+// interface.
+//
+// `engine/extsync/json_read.hpp` has the same three accessors and is
+// deliberately NOT reused: it belongs to a different TARGET, and including
+// a private header across that boundary is the `cmd_* -> engine_*` file
+// edge D18 exists to keep out. The guards below reproduce its semantics —
+// a wrong-typed value reads as ABSENT, never as a parse failure.
+#include <glaze/glaze.hpp>
+
 module planar.cmd.planar.handlers.ext_adapter_factory;
 
 import std;
@@ -182,6 +195,113 @@ auto factory_error_message(factory_error err, const engine::external::system::ex
                                                                          system_ns::system_kind_to_text(sys.kind)));
   }
   return error_from_body(domain_error_kind::generic_failure, "ext test: building adapter");
+}
+
+namespace {
+
+/// @brief Trim ONE trailing slash, as the oracle's `trimSlash` does.
+///
+/// One, not all: `http://h//` keeps a slash. Preserved rather than
+/// "improved" because the resulting URL is observable in `external_url`.
+/// @param text The base URL.
+/// @return The trimmed view.
+auto trim_slash(std::string_view text) -> std::string_view {
+  if (!text.empty() && text.back() == '/') {
+    return text.substr(0, text.size() - 1);
+  }
+  return text;
+}
+
+/// @brief POST `payload` to the provider's create endpoint and read back the
+/// id it assigned.
+///
+/// Does NOT go through the adapter interface — see `adapter_handle`'s
+/// header. The two providers differ in every part: the URL, the `Accept`
+/// header, the response field carrying the id, and how the id is spelled
+/// locally (Jira's bare `key`, GitHub's `<project>#<number>`).
+/// @param handle The built adapter handle.
+/// @param sys The registered system row.
+/// @param payload The rendered request body.
+/// @return The created ticket, or the Zig error TAG to report.
+} // namespace
+
+// The parameter type is spelled in FULL rather than through the `system_ns`
+// alias, matching the declaration in ext_adapter_factory.cppm exactly.
+// Doxygen matches a definition to its declaration textually, so the aliased
+// spelling reads as a second, undocumented entity and fails the lint —
+// `build_adapter` above spells it the same way for the same reason.
+auto create_remote(const adapter_handle& handle, const engine::external::system::external_system& sys, std::string_view payload)
+    -> std::expected<created_remote, std::string_view> {
+  bool const is_jira = handle.kind() == adapter_kind::jira;
+
+  // Jira has NO default base URL and refuses without one; GitHub falls back
+  // to the public API host. GitHub additionally requires a project, Jira
+  // does not (its project rides inside the rendered payload).
+  std::string base;
+  if (is_jira) {
+    if (!sys.base_url.has_value()) {
+      return std::unexpected(std::string_view{"InvalidInput"});
+    }
+    base = *sys.base_url;
+  } else {
+    base = sys.base_url.value_or("https://api.github.com");
+  }
+
+  std::string url;
+  if (is_jira) {
+    url = std::format("{}/rest/api/3/issue", trim_slash(base));
+  } else {
+    if (!sys.default_project.has_value()) {
+      return std::unexpected(std::string_view{"InvalidInput"});
+    }
+    url = std::format("{}/repos/{}/issues", trim_slash(base), *sys.default_project);
+  }
+
+  http::request req{
+      .verb    = http::method::post,
+      .url     = url,
+      .headers = {http::header{.name = "Content-Type", .value = "application/json"},
+                  http::header{.name = "Authorization", .value = std::format("Bearer {}", handle.token())},
+                  http::header{.name = "Accept", .value = is_jira ? "application/json" : "application/vnd.github+json"}},
+      .body    = std::string{payload}};
+
+  auto sent = handle.transport().send(req);
+  if (!sent) {
+    return std::unexpected(std::string_view{"TransportFailed"});
+  }
+  if (sent->status < 200 || sent->status >= 300) {
+    return std::unexpected(std::string_view{"UnexpectedStatus"});
+  }
+
+  auto parsed = glz::read_json<glz::generic>(sent->body);
+  if (!parsed || !parsed->is_object()) {
+    return std::unexpected(std::string_view{"ParseFailed"});
+  }
+  glz::generic const& root = *parsed;
+
+  if (is_jira) {
+    // The `key` must be PRESENT and a STRING. A Jira 2xx carrying no key is
+    // `ParseFailed`, not an empty id.
+    if (!root.contains("key") || !root.at("key").is_string()) {
+      return std::unexpected(std::string_view{"ParseFailed"});
+    }
+    auto const key = root.at("key").get<std::string>();
+    return created_remote{.external_id = key, .external_url = std::format("{}/browse/{}", trim_slash(base), key)};
+  }
+
+  if (!root.contains("number") || !root.at("number").is_number()) {
+    return std::unexpected(std::string_view{"ParseFailed"});
+  }
+  auto const number = static_cast<std::int64_t>(root.at("number").get<double>());
+
+  // A MISSING or non-string `html_url` is the EMPTY string, NOT a failure —
+  // the oracle's nested `if`. The empty URL is then stored as SQL NULL. So
+  // the two fields are asymmetric: the id is required, the URL is not.
+  std::string html_url;
+  if (root.contains("html_url") && root.at("html_url").is_string()) {
+    html_url = root.at("html_url").get<std::string>();
+  }
+  return created_remote{.external_id = std::format("{}#{}", *sys.default_project, number), .external_url = std::move(html_url)};
 }
 
 } // namespace planar::cmd::handlers

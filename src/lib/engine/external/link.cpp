@@ -507,4 +507,80 @@ auto store_baseline(db::connection& conn, std::int64_t link_id, std::string_view
   return {};
 }
 
+auto load_existing_mirror(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t system_id)
+    -> std::expected<std::string, link_error> {
+  auto stmt = conn.prepare("select coalesce(external_id, '') from external_links "
+                           "where entity_kind = ? and entity_id = ? and system_id = ? and link_role = 'mirror' limit 1");
+  if (!stmt) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (!stmt->bind_text(1, entity_kind) || !stmt->bind_int64(2, entity_id) || !stmt->bind_int64(3, system_id)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(link_error::query_failed);
+  }
+  // No row is the EMPTY STRING, not `not_found` — see link.cppm.
+  if (*stepped == db::step_result::done) {
+    return std::string{};
+  }
+  return std::string{stmt->column_text(0)};
+}
+
+auto record_mirror_link(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t system_id,
+                        std::string_view external_id, std::string_view external_url, sync_direction direction)
+    -> std::expected<std::int64_t, link_error> {
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return std::unexpected(link_error::query_failed);
+  }
+
+  std::int64_t link_id = 0;
+  {
+    auto stmt = conn.prepare("insert into external_links "
+                             "(entity_kind, entity_id, system_id, external_id, external_url, link_role, "
+                             "sync_direction, last_sync_status) "
+                             "values (?, ?, ?, ?, ?, 'mirror', ?, 'ok') returning id");
+    if (!stmt) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (!stmt->bind_text(1, entity_kind) || !stmt->bind_int64(2, entity_id) || !stmt->bind_int64(3, system_id) ||
+        !stmt->bind_text(4, external_id)) {
+      return std::unexpected(link_error::query_failed);
+    }
+    // An EMPTY url is SQL NULL, not an empty string — the oracle's explicit
+    // null branch. `list`/`show` then report it as unset.
+    auto const url_opt = external_url.empty() ? std::nullopt : std::optional{std::string{external_url}};
+    if (!bind_text_opt(*stmt, 5, url_opt) || !stmt->bind_text(6, sync_direction_to_text(direction))) {
+      return std::unexpected(link_error::query_failed);
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(is_unique_violation(stepped.error()) ? link_error::link_exists : link_error::query_failed);
+    }
+    if (*stepped == db::step_result::done) {
+      return std::unexpected(link_error::query_failed);
+    }
+    link_id = stmt->column_int64(0);
+  }
+
+  // The second write is what separates this from `create`. `fields_changed`
+  // and `detail` stay NULL — the oracle's three-column insert.
+  {
+    auto event = conn.prepare("insert into sync_events (link_id, direction, outcome) values (?, 'push', 'ok')");
+    if (!event || !event->bind_int64(1, link_id)) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (!event->step()) {
+      return std::unexpected(link_error::query_failed);
+    }
+  }
+
+  if (!tx->commit()) {
+    return std::unexpected(link_error::query_failed);
+  }
+  return link_id;
+}
+
 } // namespace planar::engine::external::link

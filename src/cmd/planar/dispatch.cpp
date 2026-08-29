@@ -439,6 +439,10 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("ext list", handlers::ext_list);
   table.emplace("ext test", handlers::ext_test);
   table.emplace("ext create", handlers::ext_create);
+  // Task 6335. Carried as blocked on all 3665 unported lines of the
+  // create/propagate half; needed TWO functions (~40 lines) and none of
+  // `parent_issue.zig` or `projects_v2.zig`. `ext propagate` stays deferred.
+  table.emplace("ext propagate-one", handlers::ext_propagate_one);
   table.emplace("sync pull", handlers::sync_pull);
   table.emplace("sync push", handlers::sync_push);
   table.emplace("sync resolve", handlers::sync_resolve);
@@ -467,6 +471,9 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("workbench list", handlers::workbench_list);
   table.emplace("workbench extract-questions", handlers::workbench_extract_questions);
   table.emplace("workbench edit", handlers::workbench_edit);
+  // Task 6335. Carried as blocked on the create/propagate half of
+  // `engine_extsync`; needed 36 of its 3665 lines (`recordLink`).
+  table.emplace("workbench publish", handlers::workbench_publish);
   table.emplace("capture session", handlers::capture_session);
   table.emplace("capture end", handlers::capture_end);
   table.emplace("capture note", handlers::capture_note);

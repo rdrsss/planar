@@ -63,6 +63,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
+import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 
 namespace planar::cmd::handlers {
@@ -128,5 +129,22 @@ export auto templates_init(context& ctx, const cliapp::parsed_args& args) -> han
 /// @return Success, or a `generic_failure` (exit 1) when the root cannot be
 /// resolved. Never opens the database.
 export auto templates_path(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Resolve the operator's templates directory, for handlers OUTSIDE
+/// this family that must render a template.
+///
+/// `$PLANAR_TEMPLATES_DIR` > `[templates] dir` in the config file > the
+/// embedded default, then tilde-expanded.
+///
+/// Exported at task 6335 for `ext propagate-one`, which renders through the
+/// same loader and MUST resolve the root identically — a second
+/// implementation would let the two families disagree about which template
+/// set wins, and nothing in the state differential compares resolution
+/// order. It forwards exactly one environment variable into the config
+/// layer rather than the whole process environment; see the definition on
+/// why that hermeticity matters.
+/// @param ctx The invocation context.
+/// @return The resolved root, or the exit-1 refusal.
+export auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error>;
 
 } // namespace planar::cmd::handlers

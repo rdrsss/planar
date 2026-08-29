@@ -269,3 +269,174 @@ TEST_CASE("deleting a link detaches its sync_events rather than cascading them",
   CHECK(count->column_int64(0) == 1);
   CHECK(count->column_int64(1) == 1);
 }
+
+// ---------------------------------------------------------------------------
+// `load_existing_mirror` / `record_mirror_link` — task 6335.
+//
+// Both came out of `zig/src/engine/extsync/` and landed HERE rather than in
+// `planar.engine.extsync`, because that bucket carries no `db` edge and
+// these are nothing but SQL against the two tables this module owns. See
+// link.cppm and the extsync bucket's CMakeLists.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("load_existing_mirror answers the empty string for no row and the id for one", "[engine][external][link][mirror]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+
+  // THE ABSENT CASE, and on its own it can pass for the wrong reason: an
+  // implementation that always returned the empty string would satisfy it.
+  // The PRESENT case below is what rules that out.
+  auto const absent = link::load_existing_mirror(conn, "task", 5, system_id);
+  REQUIRE(absent.has_value());
+  CHECK(absent->empty());
+
+  auto created = link::create(conn, link::create_args{
+                                        .entity_kind = link::external_entity_kind::task,
+                                        .entity_id   = 5,
+                                        .system_id   = system_id,
+                                        .external_id = "owner/repo#7",
+                                        .role        = link::link_role::mirror,
+                                    });
+  REQUIRE(created.has_value());
+
+  auto const present = link::load_existing_mirror(conn, "task", 5, system_id);
+  REQUIRE(present.has_value());
+  CHECK(*present == "owner/repo#7");
+
+  // Same entity, DIFFERENT system: absent. Without this the query could
+  // ignore `system_id` and both cases above would still pass.
+  auto const other_system = insert_system(conn, "gh2");
+  auto const elsewhere    = link::load_existing_mirror(conn, "task", 5, other_system);
+  REQUIRE(elsewhere.has_value());
+  CHECK(elsewhere->empty());
+
+  // Same id, different KIND: absent. `plan:5` and `task:5` are different
+  // entities and a query that dropped `entity_kind` would conflate them.
+  auto const other_kind = link::load_existing_mirror(conn, "plan", 5, system_id);
+  REQUIRE(other_kind.has_value());
+  CHECK(other_kind->empty());
+}
+
+TEST_CASE("load_existing_mirror ignores a non-mirror link on the same entity", "[engine][external][link][mirror]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+
+  // A `reference` row — what `planar link` writes — must NOT suppress
+  // propagation. `ext propagate-one` reads this as "not yet propagated".
+  auto created = link::create(conn, link::create_args{
+                                        .entity_kind = link::external_entity_kind::task,
+                                        .entity_id   = 9,
+                                        .system_id   = system_id,
+                                        .external_id = "owner/repo#3",
+                                        .role        = link::link_role::reference,
+                                    });
+  REQUIRE(created.has_value());
+
+  auto const found = link::load_existing_mirror(conn, "task", 9, system_id);
+  REQUIRE(found.has_value());
+  CHECK(found->empty());
+}
+
+TEST_CASE("record_mirror_link writes the link AND its push/ok sync event", "[engine][external][link][mirror]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+
+  auto const link_id = link::record_mirror_link(conn, "plan", 4, system_id, "DEMO-1", "https://example.invalid/DEMO-1",
+                                                link::sync_direction::two_way);
+  REQUIRE(link_id.has_value());
+
+  auto row = conn.prepare("select entity_kind, entity_id, external_id, external_url, link_role, sync_direction, "
+                          "last_sync_status from external_links where id = ?");
+  REQUIRE(row.has_value());
+  REQUIRE(row->bind_int64(1, *link_id).has_value());
+  auto stepped = row->step();
+  REQUIRE(stepped.has_value());
+  REQUIRE(*stepped == planar::db::step_result::row);
+  CHECK(row->column_text(0) == "plan");
+  CHECK(row->column_int64(1) == 4);
+  CHECK(row->column_text(2) == "DEMO-1");
+  CHECK(row->column_text(3) == "https://example.invalid/DEMO-1");
+  // `mirror` and `ok` are HARDCODED, not parameters.
+  CHECK(row->column_text(4) == "mirror");
+  CHECK(row->column_text(5) == "two-way");
+  CHECK(row->column_text(6) == "ok");
+
+  // THE POINT OF THE FUNCTION. `link::create` writes external_links and
+  // NOTHING else, so an implementation that delegated to it would satisfy
+  // every check above and fail only here.
+  auto event = conn.prepare("select direction, outcome, fields_changed is null, detail is null "
+                            "from sync_events where link_id = ?");
+  REQUIRE(event.has_value());
+  REQUIRE(event->bind_int64(1, *link_id).has_value());
+  auto event_step = event->step();
+  REQUIRE(event_step.has_value());
+  REQUIRE(*event_step == planar::db::step_result::row);
+  CHECK(event->column_text(0) == "push");
+  CHECK(event->column_text(1) == "ok");
+  CHECK(event->column_int64(2) == 1);
+  CHECK(event->column_int64(3) == 1);
+
+  // The mirror it wrote is exactly what `load_existing_mirror` reads back —
+  // the two functions are each other's round trip.
+  auto const read_back = link::load_existing_mirror(conn, "plan", 4, system_id);
+  REQUIRE(read_back.has_value());
+  CHECK(*read_back == "DEMO-1");
+}
+
+TEST_CASE("record_mirror_link stores an EMPTY url as SQL NULL", "[engine][external][link][mirror]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+
+  // GitHub may answer with no `html_url`; the oracle stores NULL rather than
+  // the empty string, and `show`/`list` then report it as unset.
+  auto const link_id = link::record_mirror_link(conn, "task", 2, system_id, "owner/repo#5", "", link::sync_direction::read_only);
+  REQUIRE(link_id.has_value());
+
+  auto row = conn.prepare("select external_url is null from external_links where id = ?");
+  REQUIRE(row.has_value());
+  REQUIRE(row->bind_int64(1, *link_id).has_value());
+  auto stepped = row->step();
+  REQUIRE(stepped.has_value());
+  REQUIRE(*stepped == planar::db::step_result::row);
+  CHECK(row->column_int64(0) == 1);
+
+  // The PRESENT case, so the assertion above cannot pass because the column
+  // is always null.
+  auto const with_url = link::record_mirror_link(conn, "task", 3, system_id, "owner/repo#6", "https://x.invalid/6",
+                                                 link::sync_direction::read_only);
+  REQUIRE(with_url.has_value());
+  auto row2 = conn.prepare("select external_url is null from external_links where id = ?");
+  REQUIRE(row2.has_value());
+  REQUIRE(row2->bind_int64(1, *with_url).has_value());
+  auto stepped2 = row2->step();
+  REQUIRE(stepped2.has_value());
+  REQUIRE(*stepped2 == planar::db::step_result::row);
+  CHECK(row2->column_int64(0) == 0);
+}
+
+TEST_CASE("record_mirror_link refuses a duplicate and leaves no orphan event", "[engine][external][link][mirror]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+
+  auto const first = link::record_mirror_link(conn, "plan", 1, system_id, "DEMO-9", "", link::sync_direction::two_way);
+  REQUIRE(first.has_value());
+
+  auto const again = link::record_mirror_link(conn, "plan", 1, system_id, "DEMO-9", "", link::sync_direction::two_way);
+  REQUIRE_FALSE(again.has_value());
+  CHECK(again.error() == link::link_error::link_exists);
+
+  // The transaction rolled back, so the failed attempt contributed no
+  // sync_events row. Exactly one link, exactly one event.
+  auto count = conn.prepare("select (select count(*) from external_links), (select count(*) from sync_events)");
+  REQUIRE(count.has_value());
+  auto counted = count->step();
+  REQUIRE(counted.has_value());
+  REQUIRE(*counted == planar::db::step_result::row);
+  CHECK(count->column_int64(0) == 1);
+  CHECK(count->column_int64(1) == 1);
+}

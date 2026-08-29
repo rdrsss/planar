@@ -388,4 +388,8 @@ auto templates_path(context& ctx, const cliapp::parsed_args& args) -> handler_re
   return {};
 }
 
+auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error> {
+  return resolve_templates_root(ctx);
+}
+
 } // namespace planar::cmd::handlers

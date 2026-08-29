@@ -4,18 +4,6 @@
 
 module;
 
-// Glaze is not a module, so it comes in through the global module fragment
-// rather than an import. `ext create` is this file's only consumer — see
-// ext.cppm on why the creation path reads the provider's response itself
-// instead of going through the adapter interface.
-//
-// `engine/extsync/json_read.hpp` has the same three accessors and is
-// deliberately NOT reused: it belongs to a different TARGET, and including
-// a private header across that boundary is the `cmd_* -> engine_*` file
-// edge D18 exists to keep out. The guards below reproduce its semantics —
-// a wrong-typed value reads as ABSENT, never as a parse failure.
-#include <glaze/glaze.hpp>
-
 module planar.cmd.planar.handlers.ext;
 
 import std;
@@ -26,14 +14,23 @@ import planar.db;
 import planar.http;
 import planar.json_text;
 import planar.engine.external;
+import planar.json_dom;
+import planar.engine.config;
+import planar.engine.templates;
+import planar.engine.extsync.propagate;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.ext_adapter_factory;
+import planar.cmd.planar.handlers.templates;
 
 namespace planar::cmd::handlers {
 
-namespace system_ns = engine::external::system;
+namespace system_ns         = engine::external::system;
+namespace jd                = json_dom;
+namespace cfg               = engine::config;
+namespace tmpl              = engine::templates;
+namespace extsync_propagate = engine::extsync::propagate;
 
 namespace {
 
@@ -293,109 +290,13 @@ auto read_local_entity(db::connection& conn, const raw_ref& ref) -> std::expecte
                                .priority = stmt->column_int64(3)};
 }
 
-/// @brief What a successful remote creation yielded.
-struct created_remote {
-  std::string external_id;  ///< The provider-side id, in Planar's spelling.
-  std::string external_url; ///< The ticket URL; EMPTY when the provider gave none.
-};
-
-/// @brief Trim ONE trailing slash, as the oracle's `trimSlash` does.
-///
-/// One, not all: `http://h//` keeps a slash. Preserved rather than
-/// "improved" because the resulting URL is observable in `external_url`.
-/// @param text The base URL.
-/// @return The trimmed view.
-auto trim_slash(std::string_view text) -> std::string_view {
-  if (!text.empty() && text.back() == '/') {
-    return text.substr(0, text.size() - 1);
-  }
-  return text;
-}
-
-/// @brief POST `payload` to the provider's create endpoint and read back the
-/// id it assigned.
-///
-/// Does NOT go through the adapter interface — see `adapter_handle`'s
-/// header. The two providers differ in every part: the URL, the `Accept`
-/// header, the response field carrying the id, and how the id is spelled
-/// locally (Jira's bare `key`, GitHub's `<project>#<number>`).
-/// @param handle The built adapter handle.
-/// @param sys The registered system row.
-/// @param payload The rendered request body.
-/// @return The created ticket, or the Zig error TAG to report.
-auto create_remote(const adapter_handle& handle, const system_ns::external_system& sys, std::string_view payload)
-    -> std::expected<created_remote, std::string_view> {
-  bool const is_jira = handle.kind() == adapter_kind::jira;
-
-  // Jira has NO default base URL and refuses without one; GitHub falls back
-  // to the public API host. GitHub additionally requires a project, Jira
-  // does not (its project rides inside the rendered payload).
-  std::string base;
-  if (is_jira) {
-    if (!sys.base_url.has_value()) {
-      return std::unexpected(std::string_view{"InvalidInput"});
-    }
-    base = *sys.base_url;
-  } else {
-    base = sys.base_url.value_or("https://api.github.com");
-  }
-
-  std::string url;
-  if (is_jira) {
-    url = std::format("{}/rest/api/3/issue", trim_slash(base));
-  } else {
-    if (!sys.default_project.has_value()) {
-      return std::unexpected(std::string_view{"InvalidInput"});
-    }
-    url = std::format("{}/repos/{}/issues", trim_slash(base), *sys.default_project);
-  }
-
-  http::request req{
-      .verb    = http::method::post,
-      .url     = url,
-      .headers = {http::header{.name = "Content-Type", .value = "application/json"},
-                  http::header{.name = "Authorization", .value = std::format("Bearer {}", handle.token())},
-                  http::header{.name = "Accept", .value = is_jira ? "application/json" : "application/vnd.github+json"}},
-      .body    = std::string{payload}};
-
-  auto sent = handle.transport().send(req);
-  if (!sent) {
-    return std::unexpected(std::string_view{"TransportFailed"});
-  }
-  if (sent->status < 200 || sent->status >= 300) {
-    return std::unexpected(std::string_view{"UnexpectedStatus"});
-  }
-
-  auto parsed = glz::read_json<glz::generic>(sent->body);
-  if (!parsed || !parsed->is_object()) {
-    return std::unexpected(std::string_view{"ParseFailed"});
-  }
-  glz::generic const& root = *parsed;
-
-  if (is_jira) {
-    // The `key` must be PRESENT and a STRING. A Jira 2xx carrying no key is
-    // `ParseFailed`, not an empty id.
-    if (!root.contains("key") || !root.at("key").is_string()) {
-      return std::unexpected(std::string_view{"ParseFailed"});
-    }
-    auto const key = root.at("key").get<std::string>();
-    return created_remote{.external_id = key, .external_url = std::format("{}/browse/{}", trim_slash(base), key)};
-  }
-
-  if (!root.contains("number") || !root.at("number").is_number()) {
-    return std::unexpected(std::string_view{"ParseFailed"});
-  }
-  auto const number = static_cast<std::int64_t>(root.at("number").get<double>());
-
-  // A MISSING or non-string `html_url` is the EMPTY string, NOT a failure —
-  // the oracle's nested `if`. The empty URL is then stored as SQL NULL. So
-  // the two fields are asymmetric: the id is required, the URL is not.
-  std::string html_url;
-  if (root.contains("html_url") && root.at("html_url").is_string()) {
-    html_url = root.at("html_url").get<std::string>();
-  }
-  return created_remote{.external_id = std::format("{}#{}", *sys.default_project, number), .external_url = std::move(html_url)};
-}
+// `created_remote`, `trim_slash` and `create_remote` MOVED to
+// `planar.cmd.planar.handlers.ext_adapter_factory` at task 6335. They were
+// TU-local here while `ext create` was their only caller; `ext propagate-one`
+// and `workbench publish` are now the second and third, and all three must
+// POST through the identical URL/header/parse shape. Duplicating it would
+// have let the three drift apart silently — nothing in the state differential
+// compares request shapes. See that module's header.
 
 } // namespace
 
@@ -507,6 +408,290 @@ auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler_result
   ctx.out() << std::format("created {} on {} for {}:{}\n", created->external_id, slug, ref->kind, ref->id);
   // TWO spaces after the id — oracle-captured `link id: 1  (two-way mirror)`.
   ctx.out() << std::format("link id: {}  ({} {})\n", stored->id, sync_text, role_text);
+  return {};
+}
+
+namespace {
+
+/// @brief How an entity sits in the feature tree, which picks its template.
+enum class entity_role : std::uint8_t {
+  plan_anchor, ///< The feature's root plan.
+  plan_child,  ///< A plan with a parent.
+  task,        ///< A task.
+};
+
+/// @brief Map `(system_kind, role)` to the template kind to render.
+///
+/// `strategy_kind` is deliberately NOT a parameter: the oracle takes it and
+/// discards it for GitHub (`_ = strategy_kind;`), and Jira never branches on
+/// it either. Taking it would imply an influence that does not exist — see
+/// ext.cppm.
+auto template_kind_for_entity(std::string_view system_kind, entity_role role) -> std::optional<std::string_view> {
+  if (system_kind == "jira") {
+    switch (role) {
+    case entity_role::plan_anchor:
+      return "epic";
+    case entity_role::plan_child:
+      return "story";
+    case entity_role::task:
+      return "sub-task";
+    }
+  }
+  if (system_kind == "github-issues") {
+    switch (role) {
+    case entity_role::plan_anchor:
+      return "parent-issue";
+    case entity_role::plan_child:
+      return "issue";
+    case entity_role::task:
+      return "sub-task";
+    }
+  }
+  return std::nullopt;
+}
+
+/// @brief Decide whether a plan ref is the anchor or a child.
+///
+/// A task is always `task`. A plan is a CHILD when `parent_plan_id` is
+/// non-null and an ANCHOR otherwise — the oracle reads the nullable column
+/// rather than walking to a root.
+auto determine_role(db::connection& conn, std::string_view kind, std::int64_t id)
+    -> std::expected<entity_role, std::string_view> {
+  if (kind == "task") {
+    return entity_role::task;
+  }
+  auto stmt = conn.prepare("select parent_plan_id from plans where id = ?");
+  if (!stmt || !stmt->bind_int64(1, id)) {
+    return std::unexpected(std::string_view{"QueryFailed"});
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(std::string_view{"QueryFailed"});
+  }
+  if (*stepped == db::step_result::done) {
+    return std::unexpected(std::string_view{"NotFound"});
+  }
+  return stmt->is_null(0) ? entity_role::plan_anchor : entity_role::plan_child;
+}
+
+/// @brief Read a plan's or task's title, for the rendered result line.
+auto load_entity_title(db::connection& conn, std::string_view kind, std::int64_t id)
+    -> std::expected<std::string, std::string_view> {
+  auto stmt = conn.prepare(kind == "task" ? "select coalesce(title,'') from tasks where id = ?"
+                                          : "select coalesce(title,'') from plans where id = ?");
+  if (!stmt || !stmt->bind_int64(1, id)) {
+    return std::unexpected(std::string_view{"QueryFailed"});
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(std::string_view{"QueryFailed"});
+  }
+  if (*stepped == db::step_result::done) {
+    return std::unexpected(std::string_view{"NotFound"});
+  }
+  return std::string{stmt->column_text(0)};
+}
+
+} // namespace
+
+auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const from = flag_string(args, "--from").value_or(std::string{});
+  auto const ref  = parse_raw_ref(from);
+  if (!ref) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                           std::format("invalid --from value '{}'; expected kind:integer-id", from)));
+  }
+  if (ref->kind != "plan" && ref->kind != "task") {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                           std::format("unsupported entity kind '{}'; accepted: plan, task", ref->kind)));
+  }
+
+  // `parent-issue` / `projects-v2` are named ONLY to refuse them: both need
+  // the feature-tree walk this per-entity primitive does not do.
+  std::string strategy_override;
+  if (auto const strat = flag_string(args, "--strategy"); strat.has_value()) {
+    if (*strat == "parent-issue" || *strat == "projects-v2") {
+      return std::unexpected(
+          error_from_body(domain_error_kind::invalid_input,
+                          std::format("strategy '{}' is not supported by propagate-one; use ext propagate --github-strategy {}",
+                                      *strat, *strat)));
+    }
+    if (*strat != "tracking-issue") {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                             std::format("invalid --strategy '{}'; accepted: tracking-issue", *strat)));
+    }
+    strategy_override = "github-tracking-issue";
+  }
+
+  auto const sync_text = flag_string(args, "--sync").value_or(std::string{"read-only"});
+  auto const direction = link_ns::sync_direction_from_text(sync_text);
+  if (!direction) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input,
+                        std::format("invalid --sync '{}'; accepted: read-only, write-back, two-way", sync_text)));
+  }
+
+  auto const slug = positional_string(args, "system").value_or(std::string{});
+  auto const sys  = system_ns::show_by_slug(**conn, slug);
+  if (!sys) {
+    return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("external system '{}' not found", slug)));
+  }
+
+  auto const title = load_entity_title(**conn, ref->kind, ref->id);
+  if (!title) {
+    auto const kind = title.error() == "NotFound" ? domain_error_kind::not_found : domain_error_kind::generic_failure;
+    return std::unexpected(error_from_body(kind, title.error() == "NotFound"
+                                                     ? std::format("{}:{} not found", ref->kind, ref->id)
+                                                     : std::format("ext propagate-one: read entity: {}", title.error())));
+  }
+
+  auto const role = determine_role(**conn, ref->kind, ref->id);
+  if (!role) {
+    auto const kind = role.error() == "NotFound" ? domain_error_kind::not_found : domain_error_kind::generic_failure;
+    return std::unexpected(error_from_body(kind, role.error() == "NotFound"
+                                                     ? std::format("{}:{} not found", ref->kind, ref->id)
+                                                     : std::format("ext propagate-one: determine role: {}", role.error())));
+  }
+
+  auto const       kind_text = system_ns::system_kind_to_text(sys->kind);
+  std::string_view strategy_kind;
+  if (!strategy_override.empty()) {
+    strategy_kind = strategy_override;
+  } else {
+    auto const picked = extsync_propagate::strategy_for_system(kind_text);
+    if (!picked) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, "ext propagate-one: resolve strategy: UnsupportedSystemKind"));
+    }
+    strategy_kind = picked->kind;
+  }
+
+  auto const template_kind = template_kind_for_entity(kind_text, *role);
+  if (!template_kind) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           "ext propagate-one: map strategy to template: UnsupportedSystemKind"));
+  }
+
+  // ORDER IS OBSERVABLE AND IS THE ORACLE'S, not the tidiest one. The
+  // templates root and the adapter resolve BEFORE the idempotency check, so
+  // a REPEAT with a missing credential still refuses on the credential
+  // rather than reporting a successful skip. Checking the mirror first would
+  // read better and would diverge.
+  auto root = templates_root_for(ctx);
+  if (!root) {
+    return std::unexpected(root.error());
+  }
+
+  bool const                                     dry_run = flag_bool(args, "--dry-run");
+  std::optional<std::unique_ptr<adapter_handle>> handle;
+  if (!dry_run) {
+    auto built = build_adapter(*sys, default_deps(ctx.env()));
+    if (!built) {
+      return std::unexpected(factory_error_message(built.error(), *sys));
+    }
+    handle = std::move(*built);
+  }
+
+  // THE IDEMPOTENCY GATE. It precedes the template load and the POST, which
+  // is what makes a repeat send nothing — see ext.cppm on the three
+  // different answers this tree gives to "it already exists".
+  auto const existing = link_ns::load_existing_mirror(**conn, ref->kind, ref->id, sys->id);
+  if (!existing) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: QueryFailed"));
+  }
+
+  std::string      external_id;
+  std::string_view op;
+
+  if (!existing->empty()) {
+    op          = "skipped";
+    external_id = *existing;
+  } else {
+    auto built_ctx = ref->kind == "task" ? tmpl::build_task_context(**conn, ref->id) : tmpl::build_plan_context(**conn, ref->id);
+    if (!built_ctx) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: building render context"));
+    }
+    auto const entry = cfg::load_template("default", kind_text, *template_kind, *root);
+    if (!entry) {
+      return std::unexpected(error_from_body(domain_error_kind::not_found,
+                                             std::format("ext propagate-one: no template for {}/{}", kind_text, *template_kind)));
+    }
+    auto const decoded = jd::parse_json(entry->raw);
+    if (!decoded) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, std::format("templates: {}: InvalidJson", entry->path)));
+    }
+    auto const rendered = tmpl::render_template(*decoded, *built_ctx);
+    if (!rendered) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                             std::format("rendering template: {}", tmpl::error_name(rendered.error()))));
+    }
+    // indent-2, matching the oracle's `Stringify.value(.. .indent_2)`. The
+    // provider receives these exact bytes.
+    auto const payload = jd::stringify_indent2(*rendered);
+
+    if (dry_run) {
+      op          = "planned";
+      external_id = std::format("<{}>", *template_kind);
+    } else {
+      auto const created = create_remote(*handle->get(), *sys, payload);
+      if (!created) {
+        return std::unexpected(
+            error_from_body(domain_error_kind::generic_failure, std::format("ext propagate-one: {}", created.error())));
+      }
+      auto const entity_kind = link_ns::external_entity_kind_from_text(ref->kind);
+      if (!entity_kind) {
+        return std::unexpected(
+            error_from_body(domain_error_kind::invalid_input, std::format("unsupported entity kind '{}'", ref->kind)));
+      }
+      // Only the ANCHOR caches the strategy, so a later `ext propagate` hits
+      // the stickiness path. Raw interpolation matches the oracle; the value
+      // comes from a closed set.
+      auto const config_json =
+          *role == entity_role::plan_anchor ? std::optional{std::format(R"({{"strategy":"{}"}})", strategy_kind)} : std::nullopt;
+      auto const stored = link_ns::create(
+          **conn, link_ns::create_args{
+                      .entity_kind    = *entity_kind,
+                      .entity_id      = ref->id,
+                      .system_id      = sys->id,
+                      .external_id    = created->external_id,
+                      .external_url   = created->external_url.empty() ? std::nullopt : std::optional{created->external_url},
+                      .role           = link_ns::link_role::mirror,
+                      .direction      = *direction,
+                      .initial_status = link_ns::sync_status::ok,
+                      .config_json    = config_json,
+                  });
+      if (!stored) {
+        return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: insert link"));
+      }
+      op          = "created";
+      external_id = created->external_id;
+    }
+  }
+
+  if (flag_bool(args, "--json")) {
+    std::string out = R"({"ok":true,"entity_kind":)";
+    json_text::append_json_string(out, ref->kind);
+    out += std::format(R"(,"entity_id":{},"title":)", ref->id);
+    json_text::append_json_string(out, *title);
+    out += R"(,"op":)";
+    json_text::append_json_string(out, op);
+    out += R"(,"external_id":)";
+    json_text::append_json_string(out, external_id);
+    out += R"(,"system":)";
+    json_text::append_json_string(out, sys->slug);
+    out += R"(,"strategy":)";
+    json_text::append_json_string(out, strategy_kind);
+    out += "}";
+    ctx.out() << out << '\n';
+  } else {
+    ctx.out() << std::format("{}{} {}:{} ({}) -> {}\n", dry_run ? "(dry-run) " : "", op, ref->kind, ref->id, *title, external_id);
+  }
   return {};
 }
 

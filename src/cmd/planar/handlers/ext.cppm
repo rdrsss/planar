@@ -157,4 +157,62 @@ export auto ext_test(context& ctx, const cliapp::parsed_args& args) -> handler_r
 /// `slug_conflict` (exit 6) when the link already exists.
 export auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief `planar ext propagate-one <system> --from <kind:id> [--strategy s]
+/// [--sync d] [--dry-run] [--json]`.
+///
+/// Render one entity's template, POST the counterpart, record the
+/// `external_links` row.
+///
+/// ## It needed 36 of `propagate.zig`'s 409 lines
+///
+/// Carried as blocked on the whole create/propagate half of
+/// `engine_extsync` (3665 lines). Measured by symbol at task 6335 it reaches
+/// exactly two functions — `strategyForSystem` and `loadExistingMirror` —
+/// and neither reaches anything else in that surface. They landed as
+/// `engine::extsync::propagate::strategy_for_system` (pure) and
+/// `engine::external::link::load_existing_mirror` (SQL), split across two
+/// buckets because `engine_extsync` carries no `db` edge. `parent_issue.zig`
+/// and `projects_v2.zig` — 2394 lines the brief flagged as possibly
+/// unnecessary — are reached by NOTHING here.
+///
+/// ## THIS is the idempotent one, and it is idempotent for a structural reason
+///
+/// `ext create` has two recorded side-effect-first defects: it POSTs before
+/// validating `--role` (6312) and POSTs a SECOND ticket on a repeat (6313).
+/// This verb has neither, and not by accident — `load_existing_mirror` is the
+/// FIRST thing it does, before the template is even loaded, and every
+/// argument refusal (`--from` shape, entity kind, `--strategy`, `--sync`)
+/// precedes both the adapter build and the POST. A repeat returns
+/// `op:"skipped"` carrying the EXISTING external id and sends nothing.
+///
+/// This shape is the one to copy when 6312/6313 are eventually fixed. Note
+/// `workbench publish` is a THIRD shape again — it REFUSES on an existing
+/// link rather than skipping.
+///
+/// ## `--strategy` accepts one value and names two others to refuse them
+///
+/// `parent-issue` and `projects-v2` are recognized only so they can be
+/// rejected with the advice to use `ext propagate --github-strategy`: both
+/// need the feature-tree walk this per-entity primitive does not do.
+/// `tracking-issue` is the only accepted value. Anything else is a generic
+/// invalid-value refusal. All three arms are exit 2.
+///
+/// ## The strategy affects the OUTPUT, not the template
+///
+/// `template_kind_for_entity` discards `strategy_kind` for GitHub outright —
+/// all GitHub strategies share the same three template kinds. The resolved
+/// strategy reaches the emitted JSON `"strategy"` field and (for an anchor)
+/// the link's `config_json` cache, and nothing else. A reader who assumes
+/// `--strategy` selects a template will misread this verb.
+///
+/// ## `--dry-run` builds NO adapter
+///
+/// It renders the payload and returns `op:"planned"` with a placeholder
+/// `<template-kind>` id. Because the adapter is never built, a dry run does
+/// not resolve credentials and cannot fail on a missing token.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure.
+export auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

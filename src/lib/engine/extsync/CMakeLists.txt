@@ -35,8 +35,24 @@
 #     `getProjectV2Fields`, `graphqlDo`) — `ext propagate --github-strategy
 #     projects-v2`. This is also why `planar.adapter`'s unified error set
 #     carries no `GraphqlError`: no ported operation can produce one.
-#   - `zig/src/engine/extsync/{strategy,propagate,parent_issue,projects_v2}.zig`
+#   - `zig/src/engine/extsync/{strategy,parent_issue,projects_v2}.zig`
 #     entirely — the `ext propagate` verb family.
+#   - `propagate.zig` PARTIALLY. Task 6335 measured this file by symbol rather
+#     than by name and found it divides cleanly: `ext propagate-one` reaches
+#     only `strategyForSystem` and `loadExistingMirror`, and neither reaches
+#     anything else in it. Those two landed — the pure one HERE as
+#     `propagate.cppm`, the SQL one in `planar.engine.external.link` as
+#     `load_existing_mirror`, because this bucket has no `db` edge. The
+#     remaining five functions (`selectStrategy`,
+#     `countDistinctReposInFeature`, `walkTree`, `freeTree`,
+#     `hasExistingMirrorLink`) plus six declarations with no caller anywhere
+#     stay with `ext propagate`. `walkTree` had already left this file for
+#     `planar.engine.planning.descendants` at task 6298 on the same reasoning.
+#   - `parent_issue.zig`'s `recordLink` ALSO landed at task 6335, in
+#     `planar.engine.external.link` as `record_mirror_link` — it was the only
+#     one of that file's ~20 exports `workbench publish` needed, and it is 36
+#     lines of SQL with no adapter, transport or credential edge. The other
+#     ~1170 lines stay deferred with `ext propagate`.
 #
 # ## The tests do not touch the network, at two levels
 #
@@ -63,11 +79,13 @@ planar_module(engine_extsync
     support.cppm
     jira.cppm
     github.cppm
+    propagate.cppm
     extsync.cppm
   SOURCES
     support.cpp
     jira.cpp
     github.cpp
+    propagate.cpp
   DEPENDS adapter http json_text)
 
 target_link_libraries(planar_engine_extsync PRIVATE glaze::glaze)

@@ -308,4 +308,64 @@ export auto load_baseline(db::connection& conn, std::int64_t link_id) -> std::ex
 export auto store_baseline(db::connection& conn, std::int64_t link_id, std::string_view title, std::string_view status_value)
     -> std::expected<void, link_error>;
 
+/// @brief Read the `mirror` link's external id for one entity on one system.
+///
+/// The oracle spells this `extsync.propagate.loadExistingMirror`. It lands
+/// here rather than in `planar.engine.extsync` because that bucket carries no
+/// `db` edge by design and this function is nothing but SQL against
+/// `external_links` — the `plan descendants` split (task 6298) again. See
+/// `planar.engine.extsync.propagate`'s header for why that file divides.
+///
+/// ## The empty string is a real answer, not a failure
+///
+/// The oracle returns an ALLOCATED EMPTY STRING when no row matches, and its
+/// caller (`ext propagate-one`) branches on `.len > 0`. The `coalesce` means
+/// a matching row whose `external_id` is SQL NULL is likewise the empty
+/// string. So "no mirror link" and "a mirror link with no id" are
+/// deliberately indistinguishable to the caller, and `propagate-one` treats
+/// both as "not yet propagated". Reproduced rather than tightened.
+///
+/// Filters on `link_role = 'mirror'`: a `parent` or `child` row for the same
+/// entity does NOT suppress propagation.
+///
+/// @param conn An open, migrated database connection.
+/// @param entity_kind The entity kind TEXT, as stored.
+/// @param entity_id The entity id.
+/// @param system_id The registered system.
+/// @return The external id, the empty string when there is no mirror row, or
+/// the query failure.
+export auto load_existing_mirror(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id,
+                                 std::int64_t system_id) -> std::expected<std::string, link_error>;
+
+/// @brief Insert a `mirror` link AND its `push`/`ok` sync event in one
+/// transaction.
+///
+/// The oracle spells this `extsync.parent_issue.recordLink`, and it is the
+/// ONLY thing `workbench publish` needs from that 1205-line file.
+///
+/// ## This is NOT `create` with different arguments
+///
+/// `create` writes `external_links` and nothing else. This writes a
+/// `sync_events` row too — `(link_id, 'push', 'ok')`, with `fields_changed`
+/// and `detail` left NULL — and wraps both in `begin immediate` so a
+/// published mirror can never exist without its audit event. A caller that
+/// substituted `create` would leave the sync history silently short one row,
+/// which no state differential over `external_links` alone would catch.
+///
+/// `link_role` is always `mirror` and `last_sync_status` always `ok`; neither
+/// is a parameter, matching the oracle's hardcoded literals.
+///
+/// @param conn An open, migrated database connection.
+/// @param entity_kind The entity kind TEXT, as stored.
+/// @param entity_id The entity id.
+/// @param system_id The registered system.
+/// @param external_id The id the provider assigned.
+/// @param external_url The provider URL; an EMPTY view is stored as SQL NULL,
+/// matching the oracle's explicit null branch.
+/// @param direction The sync direction to record.
+/// @return The new link's id, or the failure.
+export auto record_mirror_link(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t system_id,
+                               std::string_view external_id, std::string_view external_url, sync_direction direction)
+    -> std::expected<std::int64_t, link_error>;
+
 } // namespace planar::engine::external::link

@@ -250,4 +250,43 @@ export auto build_adapter(const engine::external::system::external_system& sys, 
 /// @return The domain error, message included.
 export auto factory_error_message(factory_error err, const engine::external::system::external_system& sys) -> domain_error;
 
+/// @brief What a successful remote creation yielded.
+export struct created_remote {
+  std::string external_id;  ///< The provider-side id, in Planar's spelling.
+  std::string external_url; ///< The ticket URL; EMPTY when the provider gave none.
+};
+
+/// @brief POST `payload` to the provider's create endpoint and read back the
+/// id it assigned.
+///
+/// Does NOT go through the adapter interface — see `adapter_handle`'s header.
+/// The two providers differ in every part: the URL, the `Accept` header, the
+/// response field carrying the id, and how the id is spelled locally (Jira's
+/// bare `key`, GitHub's `<project>#<number>`).
+///
+/// ## Why this is exported rather than TU-local
+///
+/// It was private to `ext.cpp` while `ext create` was its only caller. Task
+/// 6335 added `ext propagate-one` and `workbench publish`, both of which must
+/// POST through the IDENTICAL shape — same URL construction, same three
+/// headers, same asymmetric id/URL parse. A per-handler copy would drift
+/// without any gate noticing: the state differential compares database rows,
+/// not request shapes, so two handlers building subtly different URLs would
+/// both look correct to it.
+///
+/// ## The two asymmetries worth not "fixing"
+///
+///   1. **The id is required, the URL is not.** A 2xx with no `key` (Jira) or
+///      no `number` (GitHub) is `ParseFailed`; a missing or non-string
+///      `html_url` is the EMPTY STRING and stored as SQL NULL.
+///   2. **`trim_slash` trims ONE trailing slash, not all.** `http://h//`
+///      keeps a slash. That is observable in the stored `external_url`.
+///
+/// @param handle The built adapter handle.
+/// @param sys The registered system row.
+/// @param payload The rendered request body.
+/// @return The created ticket, or the Zig error TAG to report.
+export auto create_remote(const adapter_handle& handle, const engine::external::system::external_system& sys,
+                          std::string_view payload) -> std::expected<created_remote, std::string_view>;
+
 } // namespace planar::cmd::handlers

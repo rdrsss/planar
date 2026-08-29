@@ -765,10 +765,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                              this family by its handlers would have been
   //                              wrong. MOVED at task 6303; see below.
   // `link` also left this list, at task 6301 — see the note further below.
-  for (auto const& leaf : {"workbench publish"}) {
-    INFO("probed but deliberately not moved by task 6299: " << leaf);
-    CHECK(unported.contains(leaf));
-  }
+  // `workbench publish` MOVED at task 6335 — its 6299-era probe had sized it
+  // against `parent_issue.zig` as a whole, where the real reach was one
+  // 36-line SQL function.
+  INFO("moved by task 6335: workbench publish");
+  CHECK_FALSE(unported.contains("workbench publish"));
   // TASK 6303 MOVED THE THREE `feedback triage` LEAVES, and the block above
   // sized them correctly: the engine was the whole job and the handlers were
   // trivia. What that sizing did NOT capture, and what actually cost the
@@ -817,18 +818,21 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // (The duplicate of the loop above, which task 6303 reduced to the one
   // leaf that is still blocked. Kept rather than deleted because it sits
   // after the `link` note and reads as that note's precondition.)
-  for (auto const& leaf : {"workbench publish"}) {
-    INFO("probed but deliberately not moved by task 6299: " << leaf);
-    CHECK(unported.contains(leaf));
-  }
+  // `workbench publish` MOVED at task 6335 — its 6299-era probe had sized it
+  // against `parent_issue.zig` as a whole, where the real reach was one
+  // 36-line SQL function.
+  INFO("moved by task 6335: workbench publish");
+  CHECK_FALSE(unported.contains("workbench publish"));
   INFO("moved by task 6301, with --propagate refused as a recorded divergence: link");
   CHECK_FALSE(unported.contains("link"));
   // The flag's blocker is still present, which is what makes the divergence
   // a deferral rather than a gap: both propagate leaves stay unported.
-  for (auto const& leaf : {"ext propagate", "ext propagate-one"}) {
-    INFO("`link --propagate` waits on this: " << leaf);
-    CHECK(unported.contains(leaf));
-  }
+  // `link --propagate` calls the `ext propagate` handler specifically, NOT
+  // `propagate-one`, so the divergence survives task 6335 moving the latter.
+  INFO("`link --propagate` waits on this: ext propagate");
+  CHECK(unported.contains("ext propagate"));
+  INFO("moved by task 6335, and NOT what `link --propagate` calls: ext propagate-one");
+  CHECK_FALSE(unported.contains("ext propagate-one"));
   // 36 after task 6298 moved TWO of the eight leaves it was handed:
   // `sync status` and `plan descendants`. The other six stayed, and the
   // reason each stayed was measured rather than assumed — see the block
@@ -944,7 +948,17 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // that stayed each have a real one, and `report` and `explore` were
   // parked under the SAME stale layer-3 note that `dashboard` was — so
   // that note was wrong about one leaf and accidentally right about two.
-  CHECK(unported.size() == 16);
+  // 16 -> 14 at task 6335: `ext propagate-one` and `workbench publish` both
+  // moved. Neither needed the create/propagate half of `engine_extsync` it
+  // was carried under — measured by SYMBOL, `propagate-one` reaches two
+  // functions (~40 lines) and `workbench publish` reaches one (36 lines), and
+  // NOTHING reaches `parent_issue.zig`'s or `projects_v2.zig`'s 2394 lines.
+  // The four leaves that task 6335 was briefed to unblock split three ways:
+  // two moved, `ext propagate` genuinely needs the bulk and stays, and
+  // `audit publish-decision` needs ZERO of those 3665 lines but is blocked on
+  // something else entirely — `postComment` on both adapters, which no ported
+  // verb has ever needed. See surface.cpp's entries for all three.
+  CHECK(unported.size() == 14);
   INFO("moved by task 6329: dashboard");
   CHECK_FALSE(unported.contains("dashboard"));
   INFO("moved by task 6329: audit handoff-readiness");
@@ -1130,10 +1144,18 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // create/propagate half of `engine_extsync`. Its two siblings genuinely do
   // reach `propagate.zig` and stay.
   CHECK_FALSE(unported.contains("ext create"));
-  for (auto const& leaf : {"ext propagate-one", "ext propagate"}) {
-    INFO("still-deferred ext leaf: " << leaf);
-    CHECK(unported.contains(leaf));
-  }
+  // "Its two siblings genuinely do reach `propagate.zig`" was TRUE and
+  // insufficient, which is why task 6335 re-measured it. `propagate-one`
+  // reaches that file — for exactly two functions, ~40 lines, neither of
+  // which reaches anything else in the create/propagate surface. Reaching a
+  // file is not the same as needing it, and the whole `ext` family's sizing
+  // rested on the conflation. MOVED at task 6335.
+  CHECK_FALSE(unported.contains("ext propagate-one"));
+  // `ext propagate` is the one leaf of the four that genuinely wants the
+  // bulk: `selectStrategy`, `walkTree`, all of `strategy.zig`, and both
+  // GitHub-specific files.
+  INFO("still-deferred ext leaf: ext propagate");
+  CHECK(unported.contains("ext propagate"));
   // The deliberately-deferred leaves from otherwise-ported families. They
   // must remain DECLARED (exit 64), never silently absent.
   //
