@@ -28,8 +28,17 @@
 ///     plane, so it needs an adapter INSTANCE — the auth-resolving adapter
 ///     factory that `ext create` / `ext propagate` / `ext test` and the
 ///     three `sync` leaves are all still waiting on.
-///   - `audit handoff-readiness` is the one that is merely LARGE rather
-///     than blocked.
+///   - `audit handoff-readiness` landed at task 6329, and THE ENTRY THAT
+///     USED TO SIT HERE — "the one that is merely LARGE rather than
+///     blocked" — was wrong in the same direction as the `audit commits`
+///     entry above it. The oracle handler is 101 lines. It is the
+///     SMALLEST leaf in this family, not the largest, and its one
+///     dependency (`engine.runtime.resumecheck`) was already in the tree
+///     when the note was written. Recorded rather than deleted because
+///     this is now the second time this file has over-stated a leaf's
+///     cost from something other than the leaf's own handler.
+///
+///     `audit publish-decision` is the family's only remaining leaf.
 ///
 /// ## `audit trail` IS TWO VERBS SHARING A NAME, AND `--link` WINS
 ///
@@ -186,5 +195,37 @@ export auto audit_commits(context& ctx, const cliapp::parsed_args& args) -> hand
 /// @param args The parsed command line.
 /// @return Success after writing the trail, or the refusal.
 export auto audit_trail(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar audit handoff-readiness [--threshold N] [--json]`.
+///
+/// Port target: zig/src/cmd/planar/handlers/audit/handoff_readiness.zig
+/// (plan 996, task 6329).
+///
+/// Scans every task whose status is `todo`, `doing` or `blocked`, runs
+/// `resumecheck::validate` over each, and reports the pass rate.
+///
+/// Three behaviours that a natural port gets wrong, all oracle-captured:
+///
+///   - **The scan is GLOBAL.** No `--scope` flag, no scope predicate. It
+///     counts in-flight tasks across every association in the database.
+///   - **The threshold gate TRUNCATES while the display ROUNDS.** `ok` is
+///     `int64(pct) >= threshold`; both rendered forms round. At 2 of 3
+///     tasks passing the text arm prints `FAIL: threshold not met (67% <
+///     67%)`, which is self-contradictory on its face and is nonetheless
+///     the contract. Reproduced exactly.
+///   - **The FAIL list is not gated on the verdict.** A passing run at a
+///     low threshold still lists every failing task, then prints `OK:`.
+///
+///   - An EMPTY database is `ok:true` at any threshold, including 101 —
+///     `total == 0` short-circuits ahead of the comparison, so the
+///     `percentage:0.00` it reports alongside is not what was tested.
+///
+/// The refusal is emitted AFTER the payload, like `resume validate`: the
+/// JSON or text body is written unconditionally and the exit-1 refusal
+/// (`handoff readiness below threshold`) follows on stderr.
+/// @param ctx The process context.
+/// @param args The parsed command line.
+/// @return Success when the threshold is met, or the exit-1 refusal.
+export auto audit_handoff_readiness(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

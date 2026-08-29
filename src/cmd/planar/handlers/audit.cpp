@@ -12,6 +12,7 @@ import planar.engine.runtime.audit_trail;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.sessioncommits;
 import planar.engine.runtime.session;
+import planar.engine.runtime.resumecheck;
 import planar.engine.planning.task;
 import planar.engine.external.link;
 import planar.engine.external.system;
@@ -29,6 +30,7 @@ namespace xl   = engine::external::link;
 namespace xsys = engine::external::system;
 namespace xsy  = engine::external::sync;
 namespace sess = engine::runtime::session;
+namespace rck  = engine::runtime::resumecheck;
 // `task.cppm` files its declarations directly in `planar::engine::planning`
 // — there is no `::task` namespace to alias, unlike every other engine
 // module aliased above.
@@ -871,6 +873,111 @@ auto audit_trail(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   // so `--kind ""` survives as the empty string and renders `for :1`.
   auto const kind = cliapp::flag_string(args, "--kind").value_or("task");
   return run_entity_form(ctx, **conn, kind, *id, cliapp::flag_string(args, "--grep"), json);
+}
+
+namespace {
+
+/// @brief One in-flight task's readiness verdict, in scan order.
+struct readiness_row {
+  std::int64_t id{};
+  std::string  title;
+  std::string  status;
+  bool         resumable{};
+};
+
+} // namespace
+
+auto audit_handoff_readiness(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  // The oracle reads `--threshold` straight off the parsed args with no
+  // range check at all, so 0, 101 and negatives are all accepted and simply
+  // compared against. Pinned rather than "fixed".
+  auto const threshold = cliapp::flag_int(args, "--threshold").value_or(90);
+
+  // GLOBAL, NOT SCOPE-FILTERED. This leaf has no `--scope` flag and the
+  // oracle's query carries no scope predicate — it scans every in-flight
+  // task in the database. Most sibling verbs filter by the cwd-derived
+  // scope; this one deliberately does not, and a port that "helpfully"
+  // adds the filter answers a different question.
+  auto stmt = (*conn)->prepare("select id, coalesce(title,''), coalesce(status,'') from tasks "
+                               "where status in ('todo','doing','blocked') order by id");
+  if (!stmt) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "audit handoff-readiness: task scan"));
+  }
+
+  std::vector<readiness_row> rows;
+  std::int64_t               passing = 0;
+  while (true) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "audit handoff-readiness: task step"));
+    }
+    if (*step == db::step_result::done) {
+      break;
+    }
+    auto const id     = stmt->column_int64(0);
+    auto       title  = stmt->column_text(1);
+    auto       status = stmt->column_text(2);
+
+    // A validate FAILURE counts as not-resumable rather than aborting the
+    // scan — the oracle swallows the error into a `resumable=false` row.
+    auto const checked   = rck::validate(**conn, id);
+    bool const resumable = checked.has_value() && checked->resumable;
+    if (resumable) {
+      ++passing;
+    }
+    rows.emplace_back(id, std::move(title), std::move(status), resumable);
+  }
+
+  auto const   total   = static_cast<std::int64_t>(rows.size());
+  auto const   failing = total - passing;
+  double const pct     = total > 0 ? static_cast<double>(passing) / static_cast<double>(total) * 100.0 : 0.0;
+
+  // TRUNCATION, NOT ROUNDING, AND THE DISPLAY DISAGREES WITH IT. The gate
+  // is `int64(pct) >= threshold`, which truncates; both rendered forms
+  // ROUND (`{d:.2}` / `{d:.0}` in zig). At 2-of-3 the text arm therefore
+  // prints the literally self-contradictory `FAIL: threshold not met (67%
+  // < 67%)` — 66.67 rounds up for display and truncates down for the
+  // comparison. Captured from the oracle and reproduced exactly; it is an
+  // oracle defect, not a transcription slip, and is pinned as such.
+  //
+  // `total == 0` short-circuits to OK even though `pct` is 0.0, so an
+  // empty database passes any threshold.
+  bool const ok = total == 0 || static_cast<std::int64_t>(pct) >= threshold;
+
+  auto const below = [&] {
+    return std::unexpected(error_from_body(domain_error_kind::not_found, "handoff readiness below threshold"));
+  };
+
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << std::format(R"({{"total":{},"passing":{},"failing":{},"percentage":{:.2f},"threshold":{},"ok":{}}})"
+                             "\n",
+                             total, passing, failing, pct, threshold, ok ? "true" : "false");
+    if (!ok) {
+      return below();
+    }
+    return {};
+  }
+
+  ctx.out() << std::format("handoff-readiness: {}/{} tasks pass ({:.0f}%, threshold {}%)\n", passing, total, pct, threshold);
+  // The FAIL list is emitted UNCONDITIONALLY — it is not gated on `ok`, so
+  // a run that meets a low threshold still lists every failing task above
+  // its `OK:` line.
+  for (auto const& row : rows) {
+    if (!row.resumable) {
+      ctx.out() << std::format("  FAIL task:{} \"{}\" [{}]\n", row.id, row.title, row.status);
+    }
+  }
+  if (ok) {
+    ctx.out() << "OK: threshold met\n";
+    return {};
+  }
+  ctx.out() << std::format("FAIL: threshold not met ({:.0f}% < {}%)\n", pct, threshold);
+  return below();
 }
 
 } // namespace planar::cmd::handlers

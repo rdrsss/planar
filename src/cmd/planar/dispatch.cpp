@@ -22,6 +22,7 @@ import planar.cmd.planar.handlers.promotion;
 import planar.cmd.planar.handlers.test_spec;
 import planar.cmd.planar.handlers.health;
 import planar.cmd.planar.handlers.audit;
+import planar.cmd.planar.handlers.dashboard;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
@@ -175,6 +176,8 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("audit session", handlers::audit_session);
   table.emplace("audit trail", handlers::audit_trail);
   table.emplace("audit commits", handlers::audit_commits);
+  table.emplace("audit handoff-readiness", handlers::audit_handoff_readiness);
+  table.emplace("dashboard", handlers::dashboard);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task packet", handlers::task_packet);
