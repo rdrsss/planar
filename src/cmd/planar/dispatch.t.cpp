@@ -930,19 +930,50 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                            only that arm would make the verb answer
   //                            `exit 0 + help text` on a TTY, which is the
   //                            one outcome the leaf exists to avoid.
-  //   models resolve           NOT moved, and its blocker was UNDER-stated
-  //                            rather than over-stated — the one direction
-  //                            this milestone had not yet seen. Task 6324
-  //                            recorded the planning half of
-  //                            `routing/packet.zig` as what it needs. That
-  //                            half (~270 lines) is necessary and not
-  //                            sufficient: `handleResolve` also calls
-  //                            `routing.roles` (325 lines: `Role`,
-  //                            `packetClass`, `resolveTaskPacket`,
-  //                            `resolvePlanning`, `Resolution`) and
-  //                            `routing.profile.compile` (726 lines),
-  //                            NEITHER of which exists here. ~1320 lines,
-  //                            not ~270.
+  //   models resolve           STILL NOT MOVED, but two of its three
+  //                            blockers were removed by task 6111.
+  //
+  //                            History, because the size estimate moved
+  //                            TWICE in opposite directions. Task 6324
+  //                            recorded only the planning half of
+  //                            `routing/packet.zig` (~270 lines). Task 6329
+  //                            corrected that UPWARD to ~1320, having found
+  //                            that `handleResolve` also calls
+  //                            `routing.roles` (325) and
+  //                            `routing.profile.compile` (726) — the one
+  //                            UNDER-statement this milestone saw.
+  //
+  //                            Task 6111 then measured the ~1320 and found
+  //                            it ~25% high, for a reason worth keeping:
+  //                            those are WHOLE-FILE line counts, and a Zig
+  //                            file carries its tests inline. roles.zig is
+  //                            202 implementation + 123 `test`; profile.zig
+  //                            is 507 + 219. A C++ port writes its own
+  //                            fixtures, so only the 709 implementation
+  //                            lines transfer.
+  //
+  //                            Both LANDED as `engine/models/{profile,
+  //                            roles}` — NOT `engine/ingest`, because their
+  //                            vocabulary is `tier`/`work_type`/
+  //                            `complexity`, which already live in
+  //                            engine_models. Each names its own input view
+  //                            instead of consuming `engine_ingest`'s
+  //                            `evidence`, so no layer-2-to-layer-2 edge
+  //                            exists and no D19 taxonomy extraction was
+  //                            needed. See engine/models/profile.cppm.
+  //
+  //                            What is genuinely left is the SMALLEST of the
+  //                            three: `assemble_planning` +
+  //                            `compile_planning` (~300 implementation
+  //                            lines), which must live in engine/ingest
+  //                            beside the task half it shares digest and
+  //                            canonicalization helpers with, plus the cmd
+  //                            wiring. That module cannot call
+  //                            engine_planning's already-ported
+  //                            `test_spec_status::compute`; it must
+  //                            duplicate the three counting queries the way
+  //                            engine_grouping duplicates its `closures`
+  //                            read.
   //
   // The two that moved are the two whose blockers were stale. The three
   // that stayed each have a real one, and `report` and `explore` were
