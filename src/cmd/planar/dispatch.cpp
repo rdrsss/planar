@@ -440,6 +440,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("skills", handlers::skills);
   table.emplace("workspace doctor", handlers::workspace_doctor);
   table.emplace("workspace routing show", handlers::workspace_routing_show);
+  table.emplace("workspace routing build", handlers::workspace_routing_build);
   table.emplace("workbench lint", handlers::workbench_lint);
   table.emplace("workbench pull", handlers::workbench_pull);
   table.emplace("workbench push", handlers::workbench_push);

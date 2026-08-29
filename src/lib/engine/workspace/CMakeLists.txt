@@ -36,22 +36,49 @@
 #
 # NOT ported, named explicitly rather than silently dropped:
 #
-#   - `workspace routing build`. It is the routing-table BUILDER: capability
-#     rule matching over a hand-rolled glob matcher, a `go.mod` / `package.json`
-#     cross-repo dependency walk, entry-point discovery, a recursive language
-#     census, README first-paragraph extraction, and an operator-override merge
-#     -- 1410 lines in zig/src/engine/workspace/routing.zig. It is NOT
-#     architecturally blocked (SQLite + filesystem only; `--enrich`, the one
-#     arm that would have shelled git, is an unimplemented no-op whose
-#     `enrich_enabled` / `enrich_misses` fields are hardcoded `false` / `0`).
-#     Deferred on SIZE, with its own dependency surface intact.
+#   - ~~`workspace routing build`.~~ PORTED (task 6275, this cycle), as
+#     `routing_build.cpp`. It was deferred on SIZE alone -- 1410 lines and no
+#     architectural blocker -- and that sizing held: SQLite plus filesystem,
+#     no new dependency, no spawn seam. `--enrich`, the one arm that would
+#     have shelled git, is an unimplemented no-op in the oracle whose
+#     `enrich_enabled` / `enrich_misses` fields are hardcoded `false` / `0`,
+#     and is reproduced as exactly that, warning line included.
 #
-#     `routing.cppm` DOES ship the routing-table data model and its decoder,
-#     because `routing show` needs them; the builder's own surface (the glob
-#     matcher, the dependency walk, the language census, the capability-rule
-#     TOML loader, the overrides merge, and the JSON WRITE path) is what
-#     remains. See routing.cppm's header for the `languages` key-order trap
-#     any builder port will hit.
+#     `build` then `show` is now a genuine round trip in this tree, which it
+#     was not after task 6110.
+#
+#     THREE things the cycle established that were not knowable from the
+#     source, each captured against the oracle in a pinned scratch arena and
+#     each pinned by a test:
+#
+#       * The `languages` key order really is a Zig hash artifact and is the
+#         port's ONE deliberate output divergence -- this builder sorts. Task
+#         6274 had predicted this; the capture confirmed it across three
+#         repositories in a single build (`go, markdown` / `typescript,
+#         markdown, json` / `javascript, markdown, python, json`). Every
+#         OTHER collection the builder emits is explicitly ordered by the
+#         oracle and was checked one at a time rather than assumed to share
+#         the problem.
+#
+#       * A capability pattern CONTAINING A SLASH never matches, because
+#         `patternFinds` frees the joined subdirectory path before opening it
+#         (`defer` inside the `if` block). So the default `protobuf` rule
+#         fires only through its `*.proto` arm and the `proto/*.proto` arm
+#         beside it is dead. Five consecutive builds, three fixtures,
+#         identical every time. REPRODUCED as observed rather than repaired,
+#         on the same grounds that keep `--enrich` a no-op; it is an oracle
+#         defect and belongs in a task row against routing.zig.
+#
+#       * The capability-rules TOML has a two-arm error surface with TWO
+#         EXIT CODES behind one message (`ParseFailed` 1, `InvalidInput` 2),
+#         and which arm a malformed line takes is not derivable from its
+#         shape -- `match_all = 1.5` is ParseFailed while `match_all = 7` is
+#         InvalidInput. Captured one line at a time; the table is in
+#         routing_build.cpp beside the parser.
+#
+#     `globExists` and `pathExistsJoin` are defined in routing.zig and called
+#     from nowhere in the Zig tree. Task 6110 had already noticed them; they
+#     are deliberately NOT transcribed.
 #
 #   - ~~`workspace routing show`.~~ PORTED (task 6110, this cycle), against
 #     the previous cycle's note that it should be deferred WITH `routing
@@ -61,11 +88,21 @@
 #     one. `show` never calls the builder: it reads the file off disk and
 #     decodes it. Decoder plus renderer is a COMPLETE leaf, so this is one
 #     whole leaf whose sibling stays deferred rather than half of one. The
-#     honest consequence: until `routing build` lands, this binary can only
-#     show a table some other binary wrote, so `build` then `show` is not yet
-#     a round trip here. Full argument in routing.cppm's header, including the
-#     two decode failures that carry two DIFFERENT exit codes (`SyntaxError`
-#     exit 1, `InvalidInput` exit 2) behind one message.
+#     honest consequence it recorded -- that until `routing build` landed this
+#     binary could only show a table some other binary wrote -- was true then
+#     and is no longer: task 6275 landed the sibling and closed the loop.
+#     Full argument in routing.cppm's header, including the two decode
+#     failures that carry two DIFFERENT exit codes (`SyntaxError` exit 1,
+#     `InvalidInput` exit 2) behind one message.
+#
+#     Task 6275 also found ONE defect in that port and corrected it in the
+#     same cycle: `routing show`'s AMBIGUOUS refusal ("multiple org
+#     associations registered ...") exits 2 in the oracle and exited 1 here.
+#     Both `show` and `build` die through the identical
+#     `exit.die(ctx, error.InvalidInput, ...)`, and the message bytes matched
+#     exactly, so nothing short of comparing EXIT CODES could have caught it
+#     -- which is precisely the failure mode routing.cppm's header warns
+#     about, arriving on the arm one layer up from the one it warns about.
 #
 #   - `workspace regenerate`. It renders AGENTS.md through a hand-rolled
 #     template engine (`{{range}}` / `{{if}}` / `{{else}}` / `{{end}}` /
@@ -101,6 +138,7 @@ planar_module(engine_workspace
     identity.cpp
     doctor.cpp
     routing.cpp
+    routing_build.cpp
   DEPENDS
     db
     json_dom

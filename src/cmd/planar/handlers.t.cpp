@@ -1160,6 +1160,251 @@ TEST_CASE("workspace routing show renders a decoded table", "[cmd][handlers][par
 }
 
 // =========================================================================
+// task 6275 — `workspace routing build`, and one CORRECTION to `show`.
+//
+// ORACLE PROVENANCE. Captured against zig/zig-out/bin/planar in a pinned
+// scratch arena (HOME / PLANAR_HOME / PLANAR_DB all redirected into it),
+// BOTH streams through a pipe, exit code read OUTSIDE the pipe:
+//
+//   $Z workspace routing build
+//     exit 0, stdout b'built <path> (3 projects, 2 cross-repo deps)\n'
+//   $Z workspace routing build --json
+//     exit 0, stdout b'{"path":"<path>","projects":3,"dependency_edges":2,
+//                       "enrich_enabled":false,"enrich_misses":0}\n'
+//   $Z workspace routing build --enrich
+//     exit 0, stdout b'warning: --enrich is not yet implemented in Zig;
+//                       skipping enrichment pass\nbuilt <path> (...)\n'
+//     -- the warning is on STDOUT, and it PRECEDES the result line
+//   $Z workspace routing build --enrich --json
+//     exit 0, the JSON only; the warning is suppressed under --json
+//   $Z workspace routing build nosuch          exit 1  no org associations ...
+//   two orgs: $Z workspace routing build       exit 2  multiple org ...
+//   malformed rules TOML                       exit 1  ... ParseFailed
+//   unquoted rules scalar                      exit 2  ... InvalidInput
+//   overrides = b'not json'                    exit 1  ... SyntaxError
+//   overrides = b'[]'                          exit 2  ... InvalidInput
+//
+// AND the correction, captured side by side with two orgs registered:
+//   zig  workspace routing show   exit 2
+//   this workspace routing show   exit 1   <-- was wrong, see workspace.cppm
+// with stderr byte-identical on both, which is why only an exit-code
+// assertion could see it.
+
+namespace {
+
+/// @brief Register a second org, to reach the AMBIGUOUS refusal.
+auto seed_second_org(const fixture& fx) -> void {
+  std::ostringstream out;
+  std::ostringstream err;
+  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto               conn = ctx.ensure_db();
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::engine::identity::create(**conn, {.slug = "other", .kind = planar::engine::identity::association_kind::org})
+              .has_value());
+}
+
+} // namespace
+
+TEST_CASE("workspace routing build writes a table and reports it", "[cmd][handlers][parity]") {
+  auto const fx        = make_fixture("wrbbuild");
+  auto const state_dir = seed_org(fx);
+  auto const expected  = (state_dir / "routing-table.json").string();
+
+  // The state directory does NOT exist yet — `build` uses `ensure_layout`
+  // and creates it, which is the difference from `show` beside it.
+  CHECK_FALSE(std::filesystem::exists(state_dir));
+
+  auto const got = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  // Zero members, so zero projects and zero edges — the fixture registers an
+  // org and no repositories.
+  CHECK(got.out == std::format("built {} (0 projects, 0 cross-repo deps)\n", expected));
+  CHECK(std::filesystem::exists(expected));
+}
+
+TEST_CASE("workspace routing build --json reports the hardcoded enrich fields", "[cmd][handlers][parity]") {
+  auto const fx        = make_fixture("wrbjson");
+  auto const state_dir = seed_org(fx);
+  auto const expected  = (state_dir / "routing-table.json").string();
+
+  auto const got = dispatch(fx, {"workspace", "routing", "build", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  // `enrich_enabled` and `enrich_misses` are hardcoded in the oracle too —
+  // the enrichment pass does not exist in either implementation.
+  CHECK(got.out == std::format(R"({{"path":"{}","projects":0,"dependency_edges":0,)"
+                               R"("enrich_enabled":false,"enrich_misses":0}})"
+                               "\n",
+                               expected));
+}
+
+TEST_CASE("workspace routing build --enrich warns on STDOUT, before the result, and only without --json",
+          "[cmd][handlers][parity]") {
+  // Three separate captures, because none of the three follows from the
+  // others: the stream, the ORDER, and the --json suppression.
+  auto const fx        = make_fixture("wrbenrich");
+  auto const state_dir = seed_org(fx);
+  auto const expected  = (state_dir / "routing-table.json").string();
+
+  auto const text = dispatch(fx, {"workspace", "routing", "build", "--enrich"});
+  CHECK(text.code == 0);
+  // STDOUT, not stderr — stderr stays empty.
+  CHECK(text.err.empty());
+  CHECK(text.out == std::format("warning: --enrich is not yet implemented in Zig; skipping enrichment pass\n"
+                                "built {} (0 projects, 0 cross-repo deps)\n",
+                                expected));
+
+  auto const as_json = dispatch(fx, {"workspace", "routing", "build", "--enrich", "--json"});
+  CHECK(as_json.code == 0);
+  CHECK(as_json.err.empty());
+  // Suppressed entirely under --json, and the enrich fields stay false/0
+  // even though the flag was passed.
+  CHECK_FALSE(as_json.out.contains("warning"));
+  CHECK(as_json.out.contains(R"("enrich_enabled":false,"enrich_misses":0)"));
+}
+
+TEST_CASE("workspace routing build refuses when no org is registered", "[cmd][handlers][parity]") {
+  auto const fx  = make_fixture("wrbnoorg");
+  auto const got = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: no org associations registered; create one with `planar workspace init`\n");
+}
+
+TEST_CASE("the AMBIGUOUS org refusal exits 2 on BOTH routing leaves", "[cmd][handlers][parity]") {
+  // The task-6275 correction. `show` answered 1 here and 2 in the oracle,
+  // with byte-identical stderr, so nothing that asserts on the MESSAGE could
+  // catch it — this asserts the code. `build` is checked beside it because
+  // both leaves refuse through the same `error.InvalidInput`.
+  auto const fx = make_fixture("wrbambig");
+  seed_org(fx);
+  seed_second_org(fx);
+
+  constexpr std::string_view k_message =
+      "error: multiple org associations registered; pass the workspace slug or id explicitly\n";
+
+  auto const built = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(built.code == 2);
+  CHECK(built.err == k_message);
+
+  auto const shown = dispatch(fx, {"workspace", "routing", "show"});
+  CHECK(shown.code == 2);
+  CHECK(shown.err == k_message);
+
+  // Discrimination: naming one of the two orgs resolves it, so exit 2 above
+  // is about the ambiguity and not about having two rows in the table.
+  auto const named = dispatch(fx, {"workspace", "routing", "build", "acme"});
+  CHECK(named.code == 0);
+  CHECK(named.err.empty());
+}
+
+TEST_CASE("workspace routing build splits its rules-file failures across two exit codes", "[cmd][handlers][parity]") {
+  auto const fx = make_fixture("wrbrules");
+  seed_org(fx);
+  auto const rules = fx.root / "home" / "templates" / "workspace-capabilities.toml";
+  std::filesystem::create_directories(rules.parent_path());
+
+  auto const put_rules = [&](std::string_view body) {
+    std::ofstream out(rules, std::ios::binary | std::ios::trunc);
+    out << body;
+  };
+
+  put_rules("[[rule]]\ntag = \"x\"\nmatch_all = [oops]\n");
+  auto const parse_failed = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(parse_failed.code == 1);
+  CHECK(parse_failed.err == "error: loading capability rules failed: ParseFailed\n");
+
+  put_rules("[[rule]]\ntag = unquoted\n");
+  auto const invalid = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(invalid.code == 2);
+  CHECK(invalid.err == "error: loading capability rules failed: InvalidInput\n");
+
+  // A WELL-FORMED file is accepted, so the two refusals above are about the
+  // content and not about the file's mere presence.
+  put_rules("[[rule]]\ntag = \"ok\"\nmatch_all = [\"*.go\"]\n");
+  auto const accepted = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(accepted.code == 0);
+  CHECK(accepted.err.empty());
+}
+
+TEST_CASE("workspace routing build splits its overrides failures across two exit codes", "[cmd][handlers][parity]") {
+  auto const fx        = make_fixture("wrbov");
+  auto const state_dir = seed_org(fx);
+  std::filesystem::create_directories(state_dir);
+  auto const overrides = state_dir / "routing-table-overrides.json";
+
+  auto const put_overrides = [&](std::string_view body) {
+    std::ofstream out(overrides, std::ios::binary | std::ios::trunc);
+    out << body;
+  };
+
+  put_overrides("not json\n");
+  auto const syntax = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(syntax.code == 1);
+  CHECK(syntax.err == "error: loading routing overrides failed: SyntaxError\n");
+
+  // Parses, but is not an object — a DIFFERENT exit code behind the SAME
+  // message template.
+  put_overrides("[]\n");
+  auto const invalid = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(invalid.code == 2);
+  CHECK(invalid.err == "error: loading routing overrides failed: InvalidInput\n");
+
+  put_overrides(R"({"schema_version":1,"projects":{}})");
+  auto const accepted = dispatch(fx, {"workspace", "routing", "build"});
+  CHECK(accepted.code == 0);
+  CHECK(accepted.err.empty());
+}
+
+TEST_CASE("build then show is a round trip through the CLI", "[cmd][handlers][parity]") {
+  // What this cycle exists for. Task 6110 could only SHOW a table some other
+  // binary wrote; the two leaves now close over one file.
+  //
+  // Deliberately run as two DISPATCHES rather than by calling the engine
+  // twice: the property is that the bytes one leaf writes are the bytes the
+  // other reads, and only going through the file proves it.
+  auto const fx        = make_fixture("wrbtrip");
+  auto const state_dir = seed_org(fx);
+
+  // Register a member so the round trip carries a project rather than being
+  // trivially true over an empty table.
+  {
+    std::ostringstream out;
+    std::ostringstream err;
+    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    auto               conn = ctx.ensure_db();
+    REQUIRE(conn.has_value());
+    auto stmt = (*conn)->prepare("insert into projects (slug, name, root_path) values ('alpha', 'alpha', ?)");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_text(1, (fx.root / "proj").string()).has_value());
+    REQUIRE(stmt->step().has_value());
+    REQUIRE((*conn)
+                ->execute("insert into project_associations (project_id, association_id, source) values (1, 1, 'user')")
+                .has_value());
+  }
+
+  auto const built = dispatch(fx, {"workspace", "routing", "build"});
+  REQUIRE(built.code == 0);
+  CHECK(built.out.contains("(1 projects, 0 cross-repo deps)"));
+
+  auto const shown = dispatch(fx, {"workspace", "routing", "show"});
+  CHECK(shown.code == 0);
+  CHECK(shown.err.empty());
+  CHECK(shown.out.starts_with("workspace: org:acme (id 1)\n"));
+  CHECK(shown.out.contains("projects:  1\n"));
+  CHECK(shown.out.contains("- alpha\n"));
+
+  // And the --json arm cats back the very bytes `build` wrote.
+  auto const as_json = dispatch(fx, {"workspace", "routing", "show", "--json"});
+  CHECK(as_json.code == 0);
+  std::ifstream     input(state_dir / "routing-table.json", std::ios::binary);
+  std::string const raw{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+  CHECK_FALSE(raw.empty());
+  CHECK(as_json.out == raw);
+}
+
+// =========================================================================
 // task 6037 — the ten ported `workbench` leaves.
 //
 // ORACLE PROVENANCE. Captured under a scratch
