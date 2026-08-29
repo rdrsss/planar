@@ -52,5 +52,5 @@ if(TARGET planar_db_tests)
   # (rather than fails) when this path does not exist, e.g. before `zig
   # build` has run under zig/.
   target_compile_definitions(planar_db_tests PRIVATE
-    PLANAR_ZIG_BIN="${CMAKE_SOURCE_DIR}/zig/zig-out/bin/planar")
+    PLANAR_ZIG_BIN="${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar")
 endif()

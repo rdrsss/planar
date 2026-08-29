@@ -103,7 +103,7 @@ planar_binary(planar_execute
 if(TARGET planar_cmd_planar_execute_tests)
   target_compile_definitions(planar_cmd_planar_execute_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_execute>\""
-    "PLANAR_ZIG_BIN=\"${CMAKE_SOURCE_DIR}/zig/zig-out/bin/planar-execute\"")
+    "PLANAR_ZIG_BIN=\"${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar-execute\"")
   target_include_directories(planar_cmd_planar_execute_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
   add_dependencies(planar_cmd_planar_execute_tests planar_cmd_planar_execute)
 endif()

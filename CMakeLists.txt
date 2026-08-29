@@ -215,6 +215,47 @@ _planar_add_architecture_guard_test(nontarget-dep-caught fail
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# ---------------------------------------------------------------------------
+# PLANAR_ORACLE_ROOT — where the Zig parity oracle lives (plan 996, task 6333)
+#
+# Every parity test resolves its reference binary under `zig/zig-out/bin/`.
+# That directory is a BUILD ARTIFACT and is gitignored, so it exists only in
+# the main checkout — never in a fresh `git worktree`. Resolving it against
+# CMAKE_SOURCE_DIR therefore pointed at a path that does not exist for every
+# worktree dispatch, and because the parity cases SKIP rather than fail on an
+# absent oracle, the suite reported `100% tests passed` with the entire
+# oracle comparison switched off. Sixteen worktree cycles ran that way before
+# anyone noticed, because a silent skip is indistinguishable from a pass.
+#
+# `git rev-parse --git-common-dir` yields the MAIN checkout's `.git` from
+# inside any worktree, which is the same trick the Makefile already uses to
+# share ZIG_LOCAL_CACHE_DIR. Strip the trailing `/.git` and that is the
+# checkout root. Falls back to CMAKE_SOURCE_DIR outside a git tree (a release
+# tarball), where the skip is correct because there is no oracle to find.
+execute_process(
+  COMMAND git rev-parse --path-format=absolute --git-common-dir
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  OUTPUT_VARIABLE _planar_git_common_dir
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(_planar_git_common_dir)
+  cmake_path(GET _planar_git_common_dir PARENT_PATH PLANAR_ORACLE_ROOT)
+else()
+  set(PLANAR_ORACLE_ROOT "${CMAKE_SOURCE_DIR}")
+endif()
+
+# Say so out loud. The failure this replaces was silent in both directions:
+# the oracle was missing AND nothing said the comparison had stopped running.
+if(EXISTS "${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar")
+  message(STATUS "planar: parity oracle found at ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin")
+else()
+  message(WARNING
+    "planar: NO parity oracle at ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin — "
+    "every [parity] case will SKIP and the suite will still report success. "
+    "Build it with `make -C zig build` (or `zig build` in zig/), or set "
+    "PLANAR_PARITY_STRICT=1 to make the absence fail instead of skip.")
+endif()
+
 include(dependencies)   # CPM + vendored packages (cmake/dependencies.cmake)
 include(module)         # planar_module() (cmake/module.cmake)
 

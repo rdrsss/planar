@@ -210,9 +210,49 @@ inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::st
 }
 
 /// @brief A pair of scratch roots — one per binary — seeded identically.
+///
+/// REMOVES ITSELF ON DESTRUCTION (plan 996, task 6311). Every case in every
+/// parity file builds one of these under `$TMPDIR`, and until this destructor
+/// existed none of them were ever cleaned up. Measured twice: 106,886 stale
+/// `planar_*` directories holding 82 GB, and separately 25,551 regenerated in
+/// roughly a day of cycles. Both times the volume filled.
+///
+/// The reason that mattered more than the disk is the FAILURE SIGNATURE. When
+/// the volume fills mid-suite, SQLite cannot open its scratch databases and
+/// ctest reports a mass `conn.has_value() == false` cascade — which reads
+/// exactly like a database-layer regression. One cycle spent real time
+/// debugging the DB layer before checking `df`. A leak whose symptom
+/// impersonates a code defect is worth more than a leak that merely consumes
+/// space.
+///
+/// Set `PLANAR_KEEP_ARENAS=1` to retain them. A failing differential is
+/// exactly when the arena's contents are worth reading, and re-running the
+/// one failing case with that variable set is cheaper than retaining
+/// thousands of directories against the possibility. That trade is the whole
+/// reason the original code kept everything: nobody wanted to delete the
+/// evidence. This keeps the evidence available on demand instead.
 struct arena {
   std::filesystem::path cpp_root; ///< Scratch root for the C++ binary.
   std::filesystem::path zig_root; ///< Scratch root for the Zig binary.
+
+  arena()                        = default;
+  arena(const arena&)            = delete; ///< Owns a directory; copying would double-remove.
+  arena& operator=(const arena&) = delete;
+  arena(arena&&)                 = default;
+  arena& operator=(arena&&)      = default;
+
+  /// @brief Remove the arena unless `PLANAR_KEEP_ARENAS` is set.
+  ~arena() {
+    if (cpp_root.empty()) {
+      return; // moved-from
+    }
+    char const* keep = std::getenv("PLANAR_KEEP_ARENAS");
+    if (keep != nullptr && *keep != '\0' && *keep != '0') {
+      return;
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(cpp_root.parent_path(), ec); // best effort
+  }
 };
 
 /// @brief Create a fresh arena.
@@ -222,7 +262,12 @@ inline auto make_arena(std::string_view tag) -> arena {
   auto const      base = std::filesystem::temp_directory_path() /
                          std::format("planar_cmd_parity_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
   std::error_code ec;
-  arena           result{.cpp_root = base / "cpp", .zig_root = base / "zig"};
+  // Field-assigned rather than designated-initialized: `arena` declares a
+  // destructor and deleted copies (task 6311), which disqualifies it as an
+  // aggregate, so `{.cpp_root = ...}` no longer compiles.
+  arena result;
+  result.cpp_root = base / "cpp";
+  result.zig_root = base / "zig";
   for (auto const& root : {result.cpp_root, result.zig_root}) {
     std::filesystem::create_directories(root / "home", ec);
     std::filesystem::create_directories(root / "proj", ec);

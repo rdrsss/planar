@@ -133,7 +133,7 @@ endif()
 if(TARGET planar_cmd_planar_watch_tests)
   target_compile_definitions(planar_cmd_planar_watch_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_watch>\""
-    "PLANAR_ZIG_BIN=\"${CMAKE_SOURCE_DIR}/zig/zig-out/bin/planar-watch\"")
+    "PLANAR_ZIG_BIN=\"${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar-watch\"")
   target_include_directories(planar_cmd_planar_watch_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
   # `../catalog_parity.hpp` parses the two catalogs with Glaze (plan 996,
   # task 6065 brought this binary into the catalog comparison; before it

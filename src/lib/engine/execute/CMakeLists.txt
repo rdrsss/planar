@@ -82,5 +82,5 @@ target_link_libraries(planar_engine_execute PRIVATE lua::lua)
 if(TARGET planar_engine_execute_tests)
   target_link_libraries(planar_engine_execute_tests PRIVATE lua::lua)
   target_compile_definitions(planar_engine_execute_tests PRIVATE
-    "PLANAR_ZIG_EXECUTE_BIN=\"${CMAKE_SOURCE_DIR}/zig/zig-out/bin/planar-execute\"")
+    "PLANAR_ZIG_EXECUTE_BIN=\"${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar-execute\"")
 endif()
