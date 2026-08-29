@@ -7,3 +7,4 @@ export module planar.engine.extsync;
 export import planar.engine.extsync.support;
 export import planar.engine.extsync.jira;
 export import planar.engine.extsync.github;
+export import planar.engine.extsync.propagate;

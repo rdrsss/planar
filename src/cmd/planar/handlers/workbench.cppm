@@ -141,4 +141,41 @@ export auto workbench_extract_questions(context& ctx, const cliapp::parsed_args&
 /// @return Success, or the failure.
 export auto workbench_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief `planar workbench publish <plan> --system <slug> [--json]`.
+///
+/// Renders the feature's workbench, concatenates every manifest file into ONE
+/// body, and POSTs it as a single external mirror, recording the link.
+///
+/// ## Its blocker was one 36-line function, not a 1205-line file
+///
+/// This leaf sat in the unported inventory carried as "needs
+/// `extsync.parent_issue.recordLink` and `create_remote`, and lands with the
+/// adapters" — read as blocked on the whole create/propagate half of
+/// `engine_extsync` (3665 lines). Task 6335 measured it by symbol: its ONLY
+/// reach into that surface is `recordLink`, 36 lines of SQL with no adapter,
+/// transport, credential or template edge, now
+/// `engine::external::link::record_mirror_link`. `create_remote` was already
+/// in this tree, TU-private to `ext.cpp`; it is now shared. Sixth over-stated
+/// blocker of this milestone.
+///
+/// ## Four refusals, all BEFORE the POST
+///
+/// Unlike `ext create` (defects 6312/6313), every check here precedes the
+/// side effect: unknown plan, unknown system, an EXISTING link on that
+/// system, and unresolved workbench conflicts all refuse before anything is
+/// sent. The duplicate check makes the verb refuse-on-repeat rather than
+/// idempotent-skip — a THIRD shape, distinct from both `ext create`'s
+/// duplicate-POST and `ext propagate-one`'s skip. All three ship as measured.
+///
+/// ## The bundle separator and marker are observable
+///
+/// Files join with `\n\n---\n\n` and each is preceded by
+/// `<!-- planar-workbench: <path> -->\n\n`. The manifest is ordered by
+/// `file_path` in SQL, so the body is deterministic. A file over 4 MiB is a
+/// read failure, not a truncation.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure.
+export auto workbench_publish(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

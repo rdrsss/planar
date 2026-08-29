@@ -9,14 +9,20 @@ import planar.cliapp.args;
 import planar.db;
 import planar.engine.workbench;
 import planar.cliapp.args;
+import planar.adapter;
+import planar.json_text;
+import planar.engine.external;
+import planar.engine.planning;
 import planar.cmd.planar.context;
 import planar.cmd.planar.editor;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.handlers.ext_adapter_factory;
 
 namespace planar::cmd::handlers {
 
-namespace wb = engine::workbench;
+namespace wb      = engine::workbench;
+namespace link_ns = engine::external::link;
 
 namespace {
 
@@ -631,6 +637,157 @@ auto workbench_edit(context& ctx, const cliapp::parsed_args& args) -> handler_re
   }
   if (pulled->conflicts > 0) {
     return std::unexpected(error_from_body(kind_t::sync_conflict, wb::render_cli::error_body_conflicts(pulled->conflicts)));
+  }
+  return {};
+}
+
+namespace {
+
+/// @brief The concatenated workbench body plus how many files went into it.
+struct bundle {
+  std::string body;      ///< Every manifest file, joined.
+  std::size_t files = 0; ///< How many were read.
+};
+
+/// @brief The oracle's 4 MiB per-file read ceiling.
+///
+/// A file ABOVE it is a read FAILURE, not a truncation — the oracle's
+/// `.limited(4 * 1024 * 1024)` errors rather than clamping. Reproduced so a
+/// pathological file refuses loudly instead of publishing a silently
+/// truncated mirror.
+constexpr std::size_t k_max_workbench_file = 4UZ * 1024 * 1024;
+
+/// @brief Read every manifest file for `plan_id` and join them into one body.
+auto build_bundle(db::connection& conn, std::string_view root, std::int64_t plan_id) -> std::expected<bundle, domain_error> {
+  auto rows = wb::manifest::load(conn, plan_id);
+  if (!rows) {
+    return std::unexpected(error_from_body(kind_t::generic_failure, "workbench publish: reading rendered files: QueryFailed"));
+  }
+  bundle out;
+  for (auto const& row : *rows) {
+    auto const abs     = std::filesystem::path{root} / row.file_path;
+    auto       content = wb::fsutil::read_file(abs);
+    if (!content || content->size() > k_max_workbench_file) {
+      return std::unexpected(
+          error_from_body(kind_t::generic_failure, std::format("workbench publish: reading rendered files: {}", row.file_path)));
+    }
+    if (out.files > 0) {
+      out.body += "\n\n---\n\n";
+    }
+    out.body += std::format("<!-- planar-workbench: {} -->\n\n{}", row.file_path, *content);
+    ++out.files;
+  }
+  return out;
+}
+
+} // namespace
+
+auto workbench_publish(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const argument = positional_string(args, "plan").value_or(std::string{});
+  auto       anchor   = resolve_plan(ctx, **conn, argument);
+  if (!anchor) {
+    return std::unexpected(anchor.error());
+  }
+  auto const plan = engine::planning::show_plan(**conn, anchor->id);
+  if (!plan) {
+    return std::unexpected(error_from_body(kind_t::generic_failure, "workbench publish: loading plan: QueryFailed"));
+  }
+
+  auto const slug = flag_string(args, "--system").value_or(std::string{});
+  auto const sys  = engine::external::system::show_by_slug(**conn, slug);
+  if (!sys) {
+    return std::unexpected(error_from_body(kind_t::not_found, std::format("external system '{}' not found", slug)));
+  }
+
+  // REFUSE on an existing link rather than skipping. This verb is neither
+  // `ext create` (which POSTs a duplicate) nor `ext propagate-one` (which
+  // skips) — see workbench.cppm.
+  auto const existing = link_ns::list(
+      **conn,
+      link_ns::list_filter{.entity_kind = link_ns::external_entity_kind::plan, .entity_id = plan->id, .system_id = sys->id});
+  if (!existing) {
+    return std::unexpected(error_from_body(kind_t::generic_failure, "workbench publish: checking existing links: QueryFailed"));
+  }
+  if (!existing->empty()) {
+    return std::unexpected(
+        error_from_body(kind_t::already_exists, std::format("plan {} already has an external link on {}", plan->id, slug)));
+  }
+
+  auto root = resolve_root(ctx, false);
+  if (!root) {
+    return std::unexpected(root.error());
+  }
+
+  // Render the workbench BEFORE building the adapter, and refuse on any
+  // conflict: publishing a tree with unresolved conflicts would mirror a
+  // half-merged document.
+  auto const pushed = wb::sync::push(**conn, plan->id, *root, wb::terminal::mode::failures, false);
+  if (!pushed) {
+    return std::unexpected(error_from_body(
+        kind_t::generic_failure, std::format("workbench publish: rendering workbench: {}", sync_error_tag(pushed.error()))));
+  }
+  if (pushed->conflicts > 0) {
+    return std::unexpected(error_from_body(
+        kind_t::sync_conflict, std::format("{} workbench conflict(s) must be resolved before publication", pushed->conflicts)));
+  }
+
+  auto const made = build_bundle(**conn, *root, plan->id);
+  if (!made) {
+    return std::unexpected(made.error());
+  }
+
+  auto const built = build_adapter(*sys, default_deps(ctx.env()));
+  if (!built) {
+    return std::unexpected(factory_error_message(built.error(), *sys));
+  }
+
+  // The whole bundle rides in `body`; `kind` is `plan` regardless of how many
+  // files went in.
+  adapter::local_entity const   local{.kind   = "plan",
+                                      .id     = plan->id,
+                                      .title  = plan->title,
+                                      .body   = made->body,
+                                      .status = std::string{engine::planning::plan_status_to_text(plan->status)}};
+  adapter::create_options const opts{.project = sys->default_project};
+
+  auto const payload = built->get()->instance().render(local, opts);
+  if (!payload) {
+    return std::unexpected(
+        error_from_body(kind_t::generic_failure, std::format("workbench publish: rendering external payload: {}",
+                                                             adapter::adapter_error_name(payload.error()))));
+  }
+
+  auto const created = create_remote(**built, *sys, *payload);
+  if (!created) {
+    return std::unexpected(error_from_body(kind_t::generic_failure,
+                                           std::format("workbench publish: creating external mirror: {}", created.error())));
+  }
+
+  // `record_mirror_link`, NOT `link::create` — it writes the `sync_events`
+  // audit row too. See link.cppm.
+  auto const link_id = link_ns::record_mirror_link(**conn, "plan", plan->id, sys->id, created->external_id, created->external_url,
+                                                   link_ns::sync_direction::two_way);
+  if (!link_id) {
+    return std::unexpected(error_from_body(kind_t::generic_failure, "workbench publish: recording external link: QueryFailed"));
+  }
+
+  if (flag_bool(args, "--json")) {
+    std::string out = std::format(R"({{"ok":true,"plan_id":{},"system":)", plan->id);
+    json_text::append_json_string(out, sys->slug);
+    out += std::format(R"(,"link_id":{},"external_id":)", *link_id);
+    json_text::append_json_string(out, created->external_id);
+    out += R"(,"external_url":)";
+    json_text::append_json_string(out, created->external_url);
+    out += std::format(R"(,"files_published":{},"bytes_published":{}}})", made->files, made->body.size());
+    ctx.out() << out << '\n';
+  } else {
+    ctx.out() << std::format("published {} workbench file(s) for plan:{} to {}:{}\n", made->files, plan->id, sys->slug,
+                             created->external_id);
   }
   return {};
 }

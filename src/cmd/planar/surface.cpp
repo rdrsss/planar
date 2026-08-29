@@ -4125,7 +4125,35 @@ auto unported_paths() -> std::span<std::string_view const> {
       // accessors. Its two siblings below stay — they DO reach
       // `propagate.zig`.
       "ext propagate",
-      "ext propagate-one",
+      // `ext propagate-one` left this inventory at task 6335, and it is the
+      // SIXTH over-stated blocker of this milestone. It was carried under the
+      // whole create/propagate half of `engine_extsync` — 3665 lines across
+      // five files — and measured by SYMBOL it reaches exactly two functions,
+      // ~40 lines: `strategyForSystem` (pure; landed as
+      // `planar.engine.extsync.propagate`) and `loadExistingMirror` (SQL;
+      // landed in `planar.engine.external.link`, because `engine_extsync`
+      // carries no `db` edge). It reaches NOTHING in `parent_issue.zig` or
+      // `projects_v2.zig` — the 2394 lines the task brief flagged as
+      // "possibly not needed"; they are not needed, confirmed by call graph
+      // rather than assumed. Same correction as `audit commits` (6272), the
+      // `sync` trio (6294) and `plan descendants` (6298): a LEAF's
+      // dependencies inferred from its MODULE's.
+      //
+      // `ext propagate` STAYS. It is the one leaf of the four that genuinely
+      // wants the bulk — `selectStrategy`, `walkTree`, all of `strategy.zig`,
+      // and both GitHub-specific files.
+      //
+      // Worth reading before touching either creation path: `propagate-one`
+      // is the IDEMPOTENT one, structurally — `load_existing_mirror` runs
+      // before the template is loaded and before any adapter exists, and a
+      // repeat returns `op:"skipped"` sending nothing. That makes it the
+      // correct shape already present in this tree for defects 6312 and 6313
+      // (`ext create` POSTs before validating `--role`, and POSTs a SECOND
+      // ticket on repeat). Both defects remain reproduced deliberately in
+      // `ext_create`; neither is visible to the state differential, because
+      // both trees POST identically — only a fixture server's request log
+      // shows them. `workbench publish` is a THIRD shape again: it REFUSES on
+      // an existing link rather than skipping.
       // The three `feedback triage` leaves left this inventory at task 6303,
       // together with the `engine.planning.feedback_triage` engine that was
       // the whole of what blocked them.
@@ -4266,7 +4294,16 @@ auto unported_paths() -> std::span<std::string_view const> {
       // only workbench leaf with a real blocker: it needs
       // `extsync.parent_issue.recordLink` and `create_remote`, and lands
       // with the adapters.
-      "workbench publish",
+      //
+      // It LEFT this inventory at task 6335, and that deferral note was the
+      // most misleading of the four: read as "lands with the adapters" it
+      // implied the 1205-line `parent_issue.zig`. The leaf's whole reach into
+      // that file is `recordLink` — 36 lines of SQL with no adapter,
+      // transport, credential or template edge — now
+      // `engine::external::link::record_mirror_link`, which is NOT `create`
+      // with different arguments: it writes the `sync_events` audit row too.
+      // `create_remote` was already in this tree, TU-private to `ext.cpp`; it
+      // is now shared out of `ext_adapter_factory` for its three callers.
       "workspace init",
       "workspace regenerate",
       // `workspace routing show` left this inventory at task 6110 and
