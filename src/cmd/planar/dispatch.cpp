@@ -184,13 +184,22 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("task cancel", handlers::task_cancel);
   table.emplace("task block", handlers::task_block);
   table.emplace("task reopen", handlers::task_reopen);
-  // `task touches` — three of four. `task touches infer` stays a declared
-  // exit-64 refusal: its engine half (`planning/touchinfer.zig`, 773 lines
-  // of git-diff and language-aware path inference) is unported, so there is
-  // nothing at layer 2 to call. The three landed here also unblock the
-  // `--touches` filter on `plan list` and `task list`, which refused at
-  // exit 64 from task 6141 for want of `listTouching`.
+  // `task touches` — all four, complete at task 6330 with `infer`. The
+  // note that stood here deferred `infer` as "773 lines of git-diff and
+  // language-aware path inference"; that description was WRONG on both
+  // counts and is corrected rather than carried forward.
+  // `planning/touchinfer.zig` shells nothing, imports no git and knows no
+  // languages — it splits the task's own title/body/next_action on
+  // whitespace, keeps the path-shaped tokens, and stats each against the
+  // repo checkout. The paraphrase had simply outlived contact with the
+  // file. See touchinfer.cppm for the algorithm and for the one divergence
+  // (expansion ORDER: the oracle emits readdir order, this sorts).
+  //
+  // The three that landed earlier also unblocked the `--touches` filter on
+  // `plan list` and `task list`, which refused at exit 64 from task 6141
+  // for want of `listTouching`.
   table.emplace("task touches add", handlers::task_touches_add);
+  table.emplace("task touches infer", handlers::task_touches_infer);
   table.emplace("task touches list", handlers::task_touches_list);
   table.emplace("task touches remove", handlers::task_touches_remove);
   // `feedback triage` — all three leaves, landed at task 6303 with the

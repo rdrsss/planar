@@ -217,6 +217,31 @@ export auto task_touches_add(context& ctx, const cliapp::parsed_args& args) -> h
 /// @return Success, or `invalid_input` (exit 2) for a non-integer task id.
 export auto task_touches_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar task touches infer <task-id> [--repo <slug>]
+/// [--apply] [--wide] [--json]`.
+///
+/// PREVIEW BY DEFAULT: without `--apply` nothing is written. That is
+/// load-bearing rather than a nicety — per decision 906 the two error
+/// directions are asymmetric (over-declaring costs recoverable throughput,
+/// under-declaring costs correctness at fan-in) and inference cannot tell
+/// which it produced. Only the operator can, so it proposes and stops.
+///
+/// `--apply` writes only the writable classifications, and only when at
+/// least one exists: applying to a task whose every candidate is held back
+/// writes NOTHING, not even the coarse repo edge. `"applied"` in the JSON
+/// still reports `true` in that case — it mirrors the flag, not the effect.
+/// Both behaviours are oracle-captured.
+///
+/// Link verbs are documented UNGUARDED (CLAUDE.md § cross-scope guard), and
+/// this one takes no `--scope` at all, so no guard runs.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer task id or
+/// a repo registered with no `root_path`, or `generic_failure` (exit 1) for
+/// a missing task, an unknown `--repo` slug, or a cwd inside no registered
+/// checkout.
+export auto task_touches_infer(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 /// @brief Handle `planar task touches remove <task-id> <repo-slug> [--path <p>] [--json]`.
 ///
 /// DELIBERATELY not symmetric with `add`: `--path` withdraws one

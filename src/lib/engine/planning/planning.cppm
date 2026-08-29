@@ -35,3 +35,4 @@ export import planar.engine.planning.descendants;
 export import planar.engine.planning.feedback_triage;
 export import planar.engine.planning.strategy;
 export import planar.engine.planning.closeout;
+export import planar.engine.planning.touchinfer;

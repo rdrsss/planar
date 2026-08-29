@@ -1095,6 +1095,273 @@ auto task_touches_remove(context& ctx, const cliapp::parsed_args& args) -> handl
   return {};
 }
 
+namespace {
+
+/// @brief The checkout `task touches infer` resolves tokens against.
+struct infer_repo {
+  std::int64_t id = 0;
+  std::string  slug;
+  std::string  root;
+};
+
+/// @brief Resolve the repo to resolve paths against.
+///
+/// By slug when `--repo` is given, else the project whose `root_path` is a
+/// prefix of the operator's cwd. LONGEST prefix wins, so a submodule
+/// checkout beats its superproject — that precedence is the whole reason
+/// this is not a plain `resolve_repo_slug` call.
+///
+/// A project registered with an EMPTY `root_path` is `invalid_input` (exit
+/// 2), not "not found": the slug matched, so the operator named a real repo
+/// and the fault is in its registration.
+/// @param ctx The invocation context, read for the cwd.
+/// @param conn The open database connection.
+/// @param slug_opt The `--repo` value, if given.
+/// @return The repo, or the operator-facing failure.
+auto resolve_infer_repo(context& ctx, db::connection& conn, std::optional<std::string> const& slug_opt)
+    -> std::expected<infer_repo, domain_error> {
+  if (slug_opt.has_value()) {
+    auto stmt = conn.prepare("select id, slug, root_path from projects where slug = ?");
+    if (!stmt) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+    }
+    if (auto b = stmt->bind_text(1, *slug_opt); !b) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+    }
+    if (*stepped == db::step_result::done) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("repo '{}' not found", *slug_opt)));
+    }
+    auto root = stmt->column_text(2);
+    if (root.empty()) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::invalid_input, "repo has no root_path recorded; cannot resolve paths against it"));
+    }
+    return infer_repo{.id = stmt->column_int64(0), .slug = stmt->column_text(1), .root = std::move(root)};
+  }
+
+  auto stmt = conn.prepare("select id, slug, root_path from projects where root_path is not null");
+  if (!stmt) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+  }
+  const std::string         cwd = ctx.cwd().string();
+  std::optional<infer_repo> best;
+  for (;;) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "repo lookup: QueryFailed"));
+    }
+    if (*stepped == db::step_result::done) {
+      break;
+    }
+    auto root = stmt->column_text(2);
+    // Longest matching prefix wins, so a submodule checkout beats its
+    // superproject. Plain `starts_with` on the STRING, exactly as the oracle
+    // does it — no path-component normalisation, so `/a/repo2` does match a
+    // registration at `/a/repo`. That is the oracle's behaviour and is
+    // reproduced rather than corrected.
+    if (root.empty() || !cwd.starts_with(root)) {
+      continue;
+    }
+    if (best.has_value() && root.size() <= best->root.size()) {
+      continue;
+    }
+    best = infer_repo{.id = stmt->column_int64(0), .slug = stmt->column_text(1), .root = std::move(root)};
+  }
+  if (!best.has_value()) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "no repo matches the current directory; pass --repo <slug>"));
+  }
+  return *best;
+}
+
+/// @brief Render the `--json` payload for `task touches infer`.
+///
+/// `applied` mirrors the FLAG, not whether anything was written: the oracle
+/// emits `"applied":true,"written":0` when `--apply` runs against a task
+/// whose every candidate is held back. Captured directly, and pinned.
+/// @param inf The inference.
+/// @param repo The resolved repo.
+/// @param applied Whether `--apply` was passed.
+/// @param written The number of path rows written.
+/// @param wide Whether `--wide` was passed.
+/// @return The complete payload INCLUDING its trailing newline.
+auto infer_json(const engine::planning::touchinfer::inference& inf, const infer_repo& repo, bool applied, std::size_t written,
+                bool wide) -> std::string {
+  namespace ti    = engine::planning::touchinfer;
+  std::string out = std::format(R"({{"task_id":{},"repo_id":{},"repo_slug":)", inf.task_id, repo.id);
+  json_text::append_json_string(out, repo.slug);
+  out += std::format(R"(,"applied":{},"written":{},"review":{},"candidates":[)", applied ? "true" : "false", written,
+                     inf.review_count(wide));
+  for (std::size_t i = 0; i < inf.candidates.size(); ++i) {
+    const auto& c = inf.candidates[i];
+    if (i > 0) {
+      out += ',';
+    }
+    out += R"({"token":)";
+    json_text::append_json_string(out, c.token);
+    out += R"(,"evidence":)";
+    json_text::append_json_string(out, ti::to_text(c.evidence_));
+    out += R"(,"classification":)";
+    json_text::append_json_string(out, ti::to_text(c.classification_));
+    out += R"(,"paths":[)";
+    for (std::size_t j = 0; j < c.paths.size(); ++j) {
+      if (j > 0) {
+        out += ',';
+      }
+      json_text::append_json_string(out, c.paths[j]);
+    }
+    out += "]}";
+  }
+  out += "]}\n";
+  return out;
+}
+
+} // namespace
+
+auto task_touches_infer(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  namespace ti = engine::planning::touchinfer;
+
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const task_id = entity_id_arg(args, "task-id", "task");
+  if (!task_id) {
+    return std::unexpected(task_id.error());
+  }
+
+  auto repo = resolve_infer_repo(ctx, **conn, cliapp::flag_string(args, "--repo"));
+  if (!repo) {
+    return std::unexpected(repo.error());
+  }
+
+  auto inferred = ti::infer(**conn, *task_id, repo->id, std::filesystem::path(repo->root));
+  if (!inferred) {
+    if (inferred.error() == ti::infer_error::not_found) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("task {} not found", *task_id)));
+    }
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches infer: QueryFailed"));
+  }
+  const auto& inf = *inferred;
+
+  auto const apply   = cliapp::flag_bool(args, "--apply");
+  auto const wide    = cliapp::flag_bool(args, "--wide");
+  auto const as_json = cliapp::flag_bool(args, "--json");
+
+  // ---- apply ------------------------------------------------------------
+  //
+  // Both writes per path (the repo-level edge and the path rows) must land
+  // together, for the reason `touches add --path` wraps them: a partial
+  // commit leaves the coarse repo edge without its path row, and
+  // recommend-strategy then falls back to the whole-repo signal and
+  // serializes a task that should have been eligible.
+  //
+  // Note the guard is `writable_count > 0`, so `--apply` against a task
+  // whose candidates are ALL held back writes NOTHING — not even the repo
+  // edge. Verified against the oracle: `--apply` on a `directory`-only task
+  // without `--wide` leaves `task touches list` empty on both levels.
+  std::size_t written = 0;
+  if (apply && inf.writable_count(wide) > 0) {
+    auto opened = (*conn)->begin_transaction();
+    if (!opened) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches infer: savepoint: QueryFailed"));
+    }
+    db::transaction tx{std::move(*opened)};
+
+    // The path-touch implies the repo-touch; keep the coarse signal
+    // consistent with the fine one. A pre-existing edge is a no-op.
+    auto linked = el::add(**conn, el::entity_link_add_args{.from_kind     = el::entity_kind::task,
+                                                           .from_id       = *task_id,
+                                                           .to_kind       = el::entity_kind::repo,
+                                                           .to_id         = repo->id,
+                                                           .relationship_ = el::relationship::touches});
+    if (!linked && linked.error() != el::entity_link_error::link_exists) {
+      // No endpoint_not_found arm in the oracle either: both endpoints are
+      // known to exist by here — `infer` read the task and failed with
+      // "task N not found" if it was missing, and the repo was resolved
+      // from cwd or --repo.
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task touches infer: repo edge: QueryFailed"));
+    }
+
+    for (const auto& c : inf.candidates) {
+      if (!ti::is_writable(c.classification_, wide)) {
+        continue;
+      }
+      for (const auto& p : c.paths) {
+        // `add_touch_path` is `insert or ignore` against
+        // `unique(task_id, repo_id, path)`, so re-running is a no-op and two
+        // candidates proposing the same path collapse. `written` counts
+        // ATTEMPTS, not inserts — a second `--apply` reports the same count
+        // it did the first time. Oracle-captured, and pinned.
+        if (auto ok = el::add_touch_path(**conn, *task_id, repo->id, p); !ok) {
+          return std::unexpected(
+              error_from_body(domain_error_kind::generic_failure, std::format("task touches infer: write {}: QueryFailed", p)));
+        }
+        ++written;
+      }
+    }
+
+    if (auto committed = tx.commit(); !committed) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, "task touches infer: release savepoint: QueryFailed"));
+    }
+  }
+
+  // ---- report -----------------------------------------------------------
+  if (as_json) {
+    ctx.out() << infer_json(inf, *repo, apply, written, wide);
+    return {};
+  }
+
+  ctx.out() << std::format("task:{}  repo:{}  proposed:{}  review:{}  {}\n", *task_id, repo->slug, inf.writable_count(wide),
+                           inf.review_count(wide), apply ? "APPLIED" : "preview (nothing written)");
+
+  for (const auto& c : inf.candidates) {
+    if (!ti::is_writable(c.classification_, wide)) {
+      continue;
+    }
+    for (const auto& p : c.paths) {
+      ctx.out() << std::format("  + {}\n      [{} via {}: {}]\n", p, ti::to_text(c.classification_), ti::to_text(c.evidence_),
+                               c.token);
+    }
+  }
+
+  if (inf.review_count(wide) > 0) {
+    ctx.out() << "\nnot written — review:\n";
+    std::size_t wide_available = 0;
+    for (const auto& c : inf.candidates) {
+      if (ti::is_writable(c.classification_, wide)) {
+        continue;
+      }
+      // Show the expansion size for wide candidates: it is the whole basis
+      // for judging one. A token that would declare 35 files is a different
+      // proposition from one that would declare 2.
+      if (!c.paths.empty()) {
+        ++wide_available;
+        ctx.out() << std::format("  ? {}  [{} via {} — would declare {} path(s)]\n", c.token, ti::to_text(c.classification_),
+                                 ti::to_text(c.evidence_), c.paths.size());
+      } else {
+        ctx.out() << std::format("  ? {}  [{} via {}]\n", c.token, ti::to_text(c.classification_), ti::to_text(c.evidence_));
+      }
+    }
+    if (!wide && wide_available > 0) {
+      ctx.out() << std::format("\n  {} directory/basename candidate(s) withheld — add --wide to include them.\n"
+                               "  Wide expansion measured NEGATIVE for eligibility: it intersects peers\n"
+                               "  and rule 2 drops both, so it can remove tasks that were otherwise fine.\n",
+                               wide_available);
+    }
+  }
+
+  if (!apply && inf.writable_count(wide) > 0) {
+    ctx.out() << std::format("\napply with: planar task touches infer {} --apply\n", *task_id);
+  }
+  return {};
+}
+
 auto task_link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // `false`: the ASCII `->`. Only `plan link` uses the unicode arrow —
   // see handlers/links.cppm's header.
