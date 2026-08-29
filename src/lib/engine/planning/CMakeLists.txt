@@ -130,10 +130,28 @@
 #     `renderText`/`renderListText` (PORTED: the single-entity renderers at
 #     task 6133/6135, the list renderers at task 6141, when `plan list` and
 #     `task list` were wired).
-#   - Still open: the `task_touch_paths`/`touches` surface — `listTouching`
-#     has no port, so `plan list --touches` / `task list --touches` refuse
-#     at exit 64 rather than silently ignoring the filter — and
-#     the `policy.audit.record` calls, which are now PORTED (task 6100):
+#   - The `task_touch_paths`/`touches` surface — CLOSED. `listTouching`
+#     landed with `task touches add|list|remove`, and `touchinfer` landed at
+#     task 6330 with `task touches infer`, completing the family.
+#
+#     READ `touchinfer.cppm`'s DIVERGENCE section before touching that code.
+#     It is the SECOND divergence in this bucket and is unrelated to
+#     `closeout`'s: `touchinfer.zig` uses the same
+#     `std.Io.Threaded.global_single_threaded.io()` handle, but only for
+#     `openDir`/`openFile`/`iterate`, which WORK — the Zig 0.16.0 defect is
+#     confined to `std.process.run` on that handle, and `touchinfer` shells
+#     nothing. Verified by running the oracle, not by reading it. What
+#     diverges instead is expansion ORDER: the oracle emits readdir order
+#     (captured as `["docs/b.md","docs/sub/c.md","docs/a.md"]` for a
+#     three-file tree — APFS hash order, not a rule), and this port sorts.
+#     The divergence cannot reach state: the `too_broad` cutoff is a count
+#     test, no truncated list ever escapes, and `task touches list` orders in
+#     SQL.
+#
+#     Note also that the leaf's deferral note in `dispatch.cpp` described it
+#     as "773 lines of git-diff and language-aware path inference". That was
+#     wrong on both counts and was corrected, not carried forward.
+#   - The `policy.audit.record` calls, which are now PORTED (task 6100):
 #     `planar.policy` exists at layer 1 and plan/task/annotation all write
 #     through it. See src/lib/policy/CMakeLists.txt for the oracle-derived
 #     row shapes and for which buckets are still unwired.
@@ -178,6 +196,7 @@ planar_module(engine_planning
     feedback_triage.cppm
     strategy.cppm
     closeout.cppm
+    touchinfer.cppm
     planning.cppm
   SOURCES
     transitions.cpp
@@ -194,6 +213,7 @@ planar_module(engine_planning
     feedback_triage.cpp
     strategy.cpp
     closeout.cpp
+    touchinfer.cpp
   DEPENDS
     db
     git

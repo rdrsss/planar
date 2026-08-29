@@ -4235,7 +4235,12 @@ auto unported_paths() -> std::span<std::string_view const> {
       // than a new `engine_routing` bucket because its freshness computation
       // is defined in terms of `materialize`'s digests and D15/D18 FATAL on
       // a layer-2-to-layer-2 edge — see src/lib/engine/ingest/CMakeLists.txt.
-      "task touches infer",
+      // `task touches infer` left this inventory at task 6330, completing
+      // the `task touches` family. Its deferral note called it "773 lines
+      // of git-diff and language-aware path inference"; running the oracle
+      // showed that to be wrong on both counts — it shells nothing, imports
+      // no git and knows no languages. See dispatch.cpp's registration
+      // comment and touchinfer.cppm.
       // `test-spec status` left this inventory at task 6299 — see the note
       // beside `explore` above.
       // `tree` left this inventory at task 6278. Its whole product is a

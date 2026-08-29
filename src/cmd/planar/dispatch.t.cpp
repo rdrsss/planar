@@ -271,18 +271,18 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // reached.
   //
   // With `workspace routing build` gone there is NO three-level path left
-  // that satisfies both. The inventory's only other three-level entry is
-  // `task touches infer`, whose `task-id` is required — so it fails at the
-  // parser and would assert the parser's behaviour rather than the table's.
-  // The replacement is therefore two-level rather than three, and the
-  // property under test is unaffected: `regenerate` is a leaf name that
+  // that satisfies both. The inventory's only other three-level entry was
+  // `task touches infer`, whose `task-id` is required — so it would have
+  // failed at the parser and asserted the parser's behaviour rather than the
+  // table's. The replacement is therefore two-level rather than three, and
+  // the property under test is unaffected: `regenerate` is a leaf name that
   // exists only under `workspace`, so answering to the full path `workspace
   // regenerate` still proves the key is the path.
   //
   // Worth stating plainly so the next cycle does not go hunting: three
-  // levels is not recoverable here. It only comes back if a future cycle
-  // ports `task touches infer` (leaving nothing) or declares a new
-  // three-level family.
+  // levels is not recoverable here. Task 6330 ported `task touches infer`,
+  // so the inventory now holds NO three-level path at all — it comes back
+  // only if some future cycle declares a new three-level family.
   auto const deep = dispatch({"workspace", "regenerate"});
   CHECK(deep.code == 64);
   CHECK(deep.err == "error: workspace regenerate: not implemented in this build\n");
@@ -398,7 +398,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // blocked at LAYER 2, with their engine halves deferred alongside their
   // dependencies (a git-subprocess seam, the 2,725-line roles/profile/
   // packet subsystem, and `planning/touchinfer.zig`'s 773 lines of
-  // git-diff-and-language-aware path inference respectively). Wiring a
+  // git-diff-and-language-aware path inference respectively).
+  //
+  // CORRECTION (task 6330): that last characterisation was wrong, and the
+  // cycle that ported the leaf established it by RUNNING the oracle.
+  // `touchinfer.zig` shells nothing, imports no git and knows no languages;
+  // it is whitespace tokenisation plus `stat()`. It was never blocked, only
+  // unported. The sentence is left standing as the historical record of why
+  // the count was 130 at the time, with this note beside it. Wiring a
   // handler over an absent engine would mean inventing behaviour;
   // refusing at exit 64 by name does not.
   //
@@ -870,7 +877,15 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // instead — see src/lib/engine/ingest/CMakeLists.txt for why that is the
   // honest placement rather than a workaround, and why D19's
   // extract-to-layer-1 remedy was measured and rejected.
-  CHECK(unported.size() == 19);
+  //
+  // 19 before task 6330 ported `task touches infer`, COMPLETING the
+  // `task touches` family (add / infer / list / remove). It was deferred as
+  // "773 lines of git-diff and language-aware path inference" and running
+  // the oracle showed that description to be wrong on both counts — it
+  // shells nothing and knows no languages. 19 - 1 = 18.
+  CHECK(unported.size() == 18);
+  INFO("moved by task 6330, completing the `task touches` family: task touches infer");
+  CHECK_FALSE(unported.contains("task touches infer"));
   INFO("moved by task 6324, completing the `task` family's big unblocked leaf: task packet");
   CHECK_FALSE(unported.contains("task packet"));
   INFO("moved by task 6275: workspace routing build");
@@ -951,8 +966,9 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `closeout` alone needed five distinct oracle probe arms — empty, open
   // task, open descendant plan, live claim, stale claim — plus a
   // locality-bearing fixture with a real git repository to reach the
-  // advisory layer at all. `task touches infer` stays below with its
-  // 773-line `touchinfer.zig` intact.
+  // advisory layer at all. `task touches infer` waited one cycle and landed
+  // at task 6330 — and it needed NO git fixture at all, because
+  // `touchinfer.zig` shells nothing.
   INFO("moved by task 6317, completing the `plan` family: plan closeout");
   CHECK_FALSE(unported.contains("plan closeout"));
   // Named individually rather than trusted to the count above: this file's
@@ -1049,11 +1065,16 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
     INFO("still-deferred ext leaf: " << leaf);
     CHECK(unported.contains(leaf));
   }
-  // The three deliberately-deferred leaves from otherwise-ported families.
-  // They must remain DECLARED (exit 64), never silently absent.
+  // The deliberately-deferred leaves from otherwise-ported families. They
+  // must remain DECLARED (exit 64), never silently absent.
+  //
+  // `task touches infer` was the third of these until task 6330, which
+  // ported it and completed the `task touches` family. It had been deferred
+  // as "773 lines of git-diff and language-aware path inference" — a
+  // description running the oracle showed to be wrong on both counts. It is
+  // asserted ABSENT at the top of this test alongside the count.
   CHECK(unported.contains("bench harvest"));
   CHECK(unported.contains("models resolve"));
-  CHECK(unported.contains("task touches infer"));
   // 92 before task 6205 ported SIXTEEN out of it in one change -- the
   // drafting quartet on all four link-anchored planning families, wired
   // together with the `editflow` port that four consecutive cycles had
