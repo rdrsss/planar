@@ -4095,7 +4095,12 @@ auto unported_paths() -> std::span<std::string_view const> {
       // and `bench harvest`; that grouping was wrong (its handler spawns
       // nothing and reads rows the walk WRITES) and was corrected at task
       // 6272. The other two stay — they are genuinely blocked.
-      "audit publish-decision",
+      // `audit publish-decision` left this inventory at task 6339, closing
+      // the `audit` family. It had been carried as needing an adapter
+      // INSTANCE — the auth-resolving factory landed at task 6258 — and
+      // what actually remained was `postComment` on both adapters (~81
+      // lines, not part of the four-operation `external_adapter`
+      // interface) plus this 176-line handler. See handlers/audit.cppm.
       // `audit trail` left this inventory at task 6262.
       "bench harvest",
       "capture commits",

@@ -308,6 +308,39 @@ auto github_adapter::push(std::string_view external_id, const adapter::field_cha
   return outcome;
 }
 
+auto github_adapter::post_comment(std::string_view external_id, std::string_view body) const
+    -> std::expected<void, adapter_error> {
+  auto const parts = parse_external_id(external_id);
+  if (!parts.has_value()) {
+    return std::unexpected(adapter_error::invalid_external_id);
+  }
+  auto const url = std::format("{}/repos/{}/{}/issues/{}/comments", _base_url, parts->owner, parts->repo, parts->number);
+
+  std::string payload = R"({"body":)";
+  json_text::append_json_string(payload, body);
+  payload += "}";
+
+  auto const auth = support::auth_header(_cred);
+  if (!auth) {
+    return std::unexpected(auth.error());
+  }
+  auto const sent = _transport->send({
+      .verb    = http::method::post,
+      .url     = url,
+      .headers = {{.name = "Content-Type", .value = "application/json"},
+                  {.name = "Accept", .value = "application/vnd.github+json"},
+                  {.name = "Authorization", .value = *auth}},
+      .body    = payload,
+  });
+  if (!sent) {
+    return std::unexpected(adapter_error::transport_failed);
+  }
+  if (sent->status != 201 && sent->status != 200) {
+    return std::unexpected(adapter_error::unexpected_status);
+  }
+  return {};
+}
+
 auto github_adapter::render(const adapter::local_entity& local, const adapter::create_options& opts) const
     -> std::expected<std::string, adapter_error> {
   // The Zig original discards CreateOptions here (`_: extsync.CreateOptions`)

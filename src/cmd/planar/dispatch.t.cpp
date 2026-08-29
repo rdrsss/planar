@@ -986,10 +986,21 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // NOTHING reaches `parent_issue.zig`'s or `projects_v2.zig`'s 2394 lines.
   // The four leaves that task 6335 was briefed to unblock split three ways:
   // two moved, `ext propagate` genuinely needs the bulk and stays, and
-  // `audit publish-decision` needs ZERO of those 3665 lines but is blocked on
-  // something else entirely — `postComment` on both adapters, which no ported
-  // verb has ever needed. See surface.cpp's entries for all three.
-  CHECK(unported.size() == 14);
+  // `audit publish-decision` needed ZERO of those 3665 lines but was blocked
+  // on something else entirely — `postComment` on both adapters, which no
+  // ported verb had ever needed. See surface.cpp's entries for all three.
+  //
+  // 14 -> 13 at task 6339: `audit publish-decision` moved, closing the
+  // `audit` family. `postComment` landed on both adapters (~81 lines, a
+  // fifth adapter-specific method outside the four-operation
+  // `external_adapter` interface) plus the 176-line handler. `ext propagate`
+  // — the ONE thing left carrying the bulk of `engine_extsync`'s unported
+  // lines — is untouched by this move: its own caller of `postComment`
+  // (`parent_issue.zig`'s injected `postCommentFn`) is a separate wiring
+  // this task did not need.
+  CHECK(unported.size() == 13);
+  INFO("moved by task 6339: audit publish-decision");
+  CHECK_FALSE(unported.contains("audit publish-decision"));
   INFO("moved by task 6329: dashboard");
   CHECK_FALSE(unported.contains("dashboard"));
   INFO("moved by task 6329: audit handoff-readiness");
