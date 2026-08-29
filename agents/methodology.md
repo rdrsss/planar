@@ -632,14 +632,27 @@ exactly like success:
   compiler works, not that the test discriminates. It is not a kill.
 - **The test filter matched nothing.** Confirm the filter names real test
   names, not framework tags, and that it selected at least one.
+- **The mutation changed the file but not the behaviour.** A substitution
+  that lands on a comment, on whitespace, on dead code, or inside an
+  unreachable branch passes the zero-match check above and still compiles
+  to a semantically identical binary. No test can catch it, so the green
+  result says nothing — but it looks exactly like a survivor. Confirm the
+  mutation actually changed compiled output before believing any verdict
+  about the test.
 
 A survivor is a finding, not a footnote: either the test needs rebuilding
 around what is actually observable, or the mutation is provably equivalent
 — and "provably" means the difference was measured, not argued.
 
+An **inert** mutant is a different finding from a survivor, and conflating
+them is how a test acquires evidence it never earned. A survivor indicts
+the test; an inert mutant indicts the probe and must be re-aimed and
+re-run before the test is judged at all.
+
 In the Planar repository the C++ tree ships `scripts/break-probe.sh`,
-which enforces all four checks around one probe and reports
-`killed` / `SURVIVOR`. Prefer it over a hand-run sequence.
+which enforces all five checks around one probe and reports
+`killed` (exit 0) / `SURVIVOR` (exit 1) / `INERT` (exit 3), with exit 2
+reserved for a broken probe. Prefer it over a hand-run sequence.
 
 ## Dispatch Granularity
 

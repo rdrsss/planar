@@ -134,7 +134,7 @@ carry made the target Homebrew-ARM-macOS-only.
 
 `scripts/break-probe.sh` runs one break-probe — mutate, rebuild, assert
 the named ctest case fails, restore, rebuild, assert it passes — and
-enforces the four checks that otherwise make a probe pass silently
+enforces the five checks that otherwise make a probe pass silently
 meaningless:
 
 | Trap | What it looks like | What the script does |
@@ -143,6 +143,7 @@ meaningless:
 | The mutation's anchor matched zero occurrences | a green test, indistinguishable from a survivor | diffs each `--file` against its backup and refuses a no-op mutation |
 | The mutant does not compile | looks like a kill | fails loudly; a compiler-rejected mutant is not a kill |
 | `ctest -R` matched zero tests | proves nothing, either exit code | asserts the filter names at least one real ctest test (Catch2 **tags** are not ctest names) |
+| The mutation changed the file but **not the behaviour** — it landed on a comment, whitespace, dead code, or an unreachable branch | a green test reported as `SURVIVOR`, indicting a test that was never actually challenged | hashes the behaviour-bearing sections (`__text`, `__cstring`, `__data`) of every linked binary before and after the mutant build, and reports **`INERT`** as a verdict distinct from `SURVIVOR` |
 
 ```
 scripts/break-probe.sh \
@@ -152,10 +153,38 @@ scripts/break-probe.sh \
   --test 'planar-watch parity: every command declares what the oracle declares'
 ```
 
-Exit 0 is `killed`, exit 1 is `SURVIVOR`, exit 2 is a broken probe. A
-survivor is a finding about the test, not a footnote — see
-[`agents/methodology.md`](../agents/methodology.md) § Break-probe
+Exit 0 is `killed`, exit 1 is `SURVIVOR`, exit 3 is `INERT`, exit 2 is a
+broken probe. A survivor is a finding about the test, not a footnote —
+see [`agents/methodology.md`](../agents/methodology.md) § Break-probe
 discipline.
+
+`INERT` is deliberately not folded into `SURVIVOR`. The two look
+identical from the test's point of view — the mutant builds, the named
+test stays green — and mean opposite things: a survivor indicts the
+**test**, an inert mutant indicts the **probe**. Reporting the second as
+the first is how a test acquires evidence it never earned, so an `INERT`
+result means "re-aim the mutation at a line that actually executes", not
+"the test is weak".
+
+Getting that discriminator right needed measurement rather than
+reasoning; two plausible-looking versions were wrong (task 6336, on this
+toolchain):
+
+- Hashing the `.o` files does **not** work. A module interface unit's
+  object embeds the BMI, which carries the source text, so editing a
+  comment in a `.cppm` changes its `.o` — the check would have called
+  the exact mutation it exists to catch "behavioural".
+- Hashing the linked executable fails too, with or without
+  `llvm-strip`: a fully stripped Mach-O still differed after a
+  comment-only edit.
+- Dumping only the loadable sections works: across a comment-only edit
+  every byte of `__text`/`__cstring`/`__data` was identical, while a
+  one-line behavioural edit moved thousands of them.
+
+The check is conservative by construction — it claims `INERT` only on
+byte-identical sections, so residual build nondeterminism can only cost
+a missed `INERT`, never a false one — and it refuses to run at all if it
+dumps no sections, so the discriminator cannot silently match nothing.
 
 ## Validation evidence
 
