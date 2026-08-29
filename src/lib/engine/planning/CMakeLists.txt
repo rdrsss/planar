@@ -8,6 +8,27 @@
 # line is engine-side in the oracle and has to be engine-side here too —
 # see `task.cpp`'s `exec_failed` for the seam and `lib/log/log.cppm`'s
 # `diag_err` for why it bypasses spdlog's formatters.
+#
+# The `git` dependency (task 6317) is the SECOND downward layer-1 edge, and
+# it arrived with `plan closeout`. `git` carries no name prefix, so
+# `_planar_module_layer` classifies it LAYER 1 and a layer-2 → layer-1 edge
+# is the ordinary case D15 permits, not an exception. It is engine-side for
+# the same reason `log` is: `closeout.zig` runs its advisory ancestry probes
+# from inside the engine, ahead of any renderer, and moving them to layer 3
+# would split one evaluation across two layers for no gain.
+#
+# READ `closeout.cppm`'s DIVERGENCE section before touching that code. The
+# oracle's own git probes are DEAD — they route through
+# `std.Io.Threaded.global_single_threaded.io()`, on which every
+# `std.process.run` fails with OutOfMemory under Zig 0.16.0 (reproduced
+# standalone, three allocators) — so the oracle answers "git-evidence
+# unavailable" for every input, including a clone where the identical
+# commands succeed from a shell. This module ports the logic WORKING over
+# `planar.git`. That is a deliberate, documented divergence and the ONLY one
+# in this bucket. It is confined to ADVISORY fields: `ready`, `applied`,
+# `blocked_by`, `warnings`, every count, the exit code, the `plans` UPDATE
+# and the `audit_log` row never read the git layer, so the authoritative
+# gate stays bit-identical to the oracle's.
 # may DEPEND on layer-1 modules only, never sideways onto another `engine_*`
 # bucket (D15/D18's same-layer prohibition for layers 2/3 — see task
 # cpp-planning-verbs's original writeup below for the brief/spec
@@ -156,6 +177,7 @@ planar_module(engine_planning
     descendants.cppm
     feedback_triage.cppm
     strategy.cppm
+    closeout.cppm
     planning.cppm
   SOURCES
     transitions.cpp
@@ -171,8 +193,10 @@ planar_module(engine_planning
     descendants.cpp
     feedback_triage.cpp
     strategy.cpp
+    closeout.cpp
   DEPENDS
     db
+    git
     json_text
     log
     scope_ref
