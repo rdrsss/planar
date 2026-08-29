@@ -34,3 +34,4 @@ export import planar.engine.planning.test_spec_status;
 export import planar.engine.planning.descendants;
 export import planar.engine.planning.feedback_triage;
 export import planar.engine.planning.strategy;
+export import planar.engine.planning.closeout;

@@ -607,6 +607,35 @@ auto sequence() -> std::vector<step> {
       {{"audit", "trail", "task:1", "--json"}},
       {{"plan", "recompute-status", "--all", "--json"}},
       {{"plan", "list", "--json"}},
+
+      // `plan closeout` (task 6317) runs LAST, and it is the only step in
+      // this sequence that can close a plan. Ordering it here keeps its
+      // writes out of every earlier step's post-state; the three steps are
+      // ordered refusal -> preview -> apply so the apply's `plans` UPDATE
+      // and `audit_log` row are the last state either binary produces.
+      //
+      // THE TWO PLANS ARE DIFFERENT ON PURPOSE, and a break-probe is why.
+      // Plan 2 has NO tasks, so it is READY: pointing the `--dry-run` step at
+      // it too would have exercised the ready arm twice and the BLOCKED arm
+      // never. Probing that — mutating the `open task(s)` reason string —
+      // produced a SURVIVOR against an earlier version of this list, which is
+      // exactly the vacuous coverage the probe exists to expose. Plan 1 keeps
+      // its two `todo` tasks (nothing in this sequence transitions them), so
+      // it is genuinely blocked and the preview renders a reason.
+      //
+      // The preview step is also the only one that would catch a divergence
+      // in the blocked-preview EXIT CODE, which the oracle answers 0.
+      //
+      // NOTE for whoever extends this list: no claim in this arena carries a
+      // `repo_root`, so both binaries emit the identical synthetic `(none)`
+      // git-evidence entry and this lane stays green. A step that SEEDS a
+      // locality-bearing claim will diverge on the advisory git fields BY
+      // DESIGN — read `src/lib/engine/planning/closeout.cppm`'s DIVERGENCE
+      // section before filing it as a defect. The hard gate, the exit code
+      // and every table this lane diffs are unaffected either way.
+      {{"plan", "closeout", "9999", "--json"}},
+      {{"plan", "closeout", "1", "--dry-run", "--json"}},
+      {{"plan", "closeout", "2", "--json"}},
   };
 }
 

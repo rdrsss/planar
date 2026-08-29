@@ -388,6 +388,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // -- see strategy.cppm for the measured disagreements.
   table.emplace("plan recommend-strategy", handlers::plan_recommend_strategy);
   table.emplace("plan divergence", handlers::plan_divergence);
+  table.emplace("plan closeout", handlers::plan_closeout);
   table.emplace("task link", handlers::task_link);
   table.emplace("question link", handlers::question_link);
   table.emplace("version", handlers::version);

@@ -4155,9 +4155,36 @@ auto unported_paths() -> std::span<std::string_view const> {
       // SQL. Third instance of the same correction as `audit commits`
       // (task 6272) and the `sync` write trio (task 6294): a LEAF's
       // dependencies inferred from its MODULE's.
-      "plan closeout",
-      // Of the four `plan` leaves task 6298 measured, only `closeout` is
-      // left: `engine/planning/closeout.zig`, 913 lines, absent.
+      // `plan closeout` LEFT this inventory at task 6317, and with it the
+      // `plan` family has no unported leaf at all. It was the last of the
+      // four task 6298 measured, and the only one of them that WRITES —
+      // `CLAUDE.md` calls it the authoritative gate for closing a plan, so
+      // every arm was captured in a pinned scratch arena against a
+      // deliberately disposable fixture, never against a real database.
+      //
+      // Three things about it are worth reading before anything else
+      // touches `agent_work_claims`:
+      //   - THE THREE CLAIM-READING QUERIES DISAGREE ABOUT `status`. The
+      //     COUNT query filters `status='active'`; the two LOCALITY queries
+      //     behind the advisory git layer do not, so a `released` claim
+      //     contributes git evidence while contributing no count. Measured,
+      //     not inferred.
+      //   - `--dry-run` EXITS 0 EVEN WHEN THE GATE FAILS, and the verb's own
+      //     help string above says the opposite. That sentence is stale in
+      //     the oracle and is reproduced verbatim; the handler comment
+      //     beside the check has the real rule and the measurement agrees
+      //     with the comment. Fifth time this milestone that prose lost to
+      //     code.
+      //   - THE ALREADY-TERMINAL SHORT-CIRCUIT RETURNS A DIFFERENT SHAPE:
+      //     `git_evidence: []` where a live evaluation with no locality data
+      //     returns a ONE-entry synthetic `(none)` row. Same plan, before
+      //     and after closing.
+      //
+      // It is also the ONE leaf in this tree with a deliberate behavioural
+      // divergence from the oracle, confined to advisory fields. See
+      // `src/lib/engine/planning/closeout.cppm`'s DIVERGENCE section and the
+      // note in that bucket's CMakeLists before assuming a git-evidence
+      // difference is a bug.
       //
       // `plan next` LEFT this inventory at task 6309 — it was the fourth
       // and cheapest of the group, and it went exactly as sized:

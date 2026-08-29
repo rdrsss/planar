@@ -809,7 +809,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // recommend-strategy` — in ONE cycle, because they share ~300 lines of
   // loader substrate in the oracle's `strategy.zig` and could not honestly
   // be split. 28 - 2 = 26.
-  CHECK(unported.size() == 23);
+  // 23 before task 6317, which moved exactly ONE: `plan closeout`, the last
+  // unported leaf of the `plan` family and the only WRITING verb of the four
+  // task 6298 measured. Its sibling on that task's brief, `task touches
+  // infer`, was deliberately NOT attempted — see the block below. 23 - 1 = 22.
+  CHECK(unported.size() == 22);
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
@@ -836,9 +840,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // asserted present so that a later cycle claiming one of them has to
   // delete the line and say why.
   //
-  //   plan closeout           `engine/planning/closeout.zig`, 913 lines,
-  //                           entirely absent here. The janitor's
-  //                           authoritative close gate.
   //   plan divergence         }  both on `engine/planning/strategy.zig`.
   //   plan recommend-strategy }  `divergence` needs only one entry point,
   //                           but it and `recommendWith` share ~300 lines
@@ -858,10 +859,25 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   ext create   two `adapter_handle` accessors plus the `remote.zig`
   //                POST path, and ZERO of `engine_extsync`'s unported
   //                lines. See handlers/ext.cppm.
-  for (auto const& leaf : {"plan closeout", "task packet"}) {
-    INFO("task 6298 verified this one BLOCKED rather than assuming it: " << leaf);
-    CHECK(unported.contains(leaf));
-  }
+  INFO("task 6298 verified this one BLOCKED rather than assuming it: task packet");
+  CHECK(unported.contains("task packet"));
+  // `plan closeout` was the fourth of that group and LEFT this inventory at
+  // task 6317, which completes the `plan` family — it has no unported leaf
+  // left. 6298 sized it right: 913 lines, entirely absent, and the only one
+  // of the four that WRITES (`plans.status` plus an `audit_log` row, in one
+  // transaction that rolls the status change back if the audit INSERT
+  // fails).
+  //
+  // Its cycle deliberately left `task touches infer`, the other leaf on the
+  // same brief, untouched. That was the brief's own instruction ("land one
+  // completely rather than both partially") and it was the right call:
+  // `closeout` alone needed five distinct oracle probe arms — empty, open
+  // task, open descendant plan, live claim, stale claim — plus a
+  // locality-bearing fixture with a real git repository to reach the
+  // advisory layer at all. `task touches infer` stays below with its
+  // 773-line `touchinfer.zig` intact.
+  INFO("moved by task 6317, completing the `plan` family: plan closeout");
+  CHECK_FALSE(unported.contains("plan closeout"));
   // Named individually rather than trusted to the count above: this file's
   // own rule is that a multi-leaf move must assert each leaf, because a
   // count that happens to balance hides a leaf moved by accident and a leaf

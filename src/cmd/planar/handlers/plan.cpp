@@ -1097,4 +1097,47 @@ auto plan_divergence(context& ctx, const cliapp::parsed_args& args) -> handler_r
   return {};
 }
 
+auto plan_closeout(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  namespace co = engine::planning::closeout;
+
+  auto const id = entity_id_arg(args, "plan-id", "plan");
+  if (!id) {
+    return std::unexpected(id.error());
+  }
+
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  bool const dry_run = cliapp::flag_bool(args, "--dry-run");
+  auto const result  = co::evaluate(**conn, *id, !dry_run, cliapp::flag_bool(args, "--check-merge"));
+  if (!result) {
+    switch (result.error()) {
+    case co::closeout_error::not_found:
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no plan with id {}", *id)));
+    case co::closeout_error::query_failed:
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan closeout: QueryFailed"));
+    case co::closeout_error::write_failed:
+      // The apply transaction rolled back, so the plan is still open and
+      // the audit log is still consistent with it.
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan closeout: WriteFailed"));
+    }
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan closeout: QueryFailed"));
+  }
+
+  // The report goes out FIRST and unconditionally — the refusal below is an
+  // additional stderr line, not a replacement for it.
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? co::render_json(*result) : co::render_text(*result, dry_run));
+
+  // Only the APPLY path refuses. See this leaf's declaration in plan.cppm
+  // for why `--dry-run` exits 0 here despite the help text saying otherwise.
+  if (!result->ready && !dry_run) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::sync_conflict,
+                        std::format("plan {} is not ready to close ({} reason(s))", *id, result->blocked_by.size())));
+  }
+  return {};
+}
+
 } // namespace planar::cmd::handlers

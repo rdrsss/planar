@@ -304,4 +304,34 @@ export auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& arg
 /// `not_found` (exit 1) when the plan does not exist.
 export auto plan_divergence(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief `plan closeout <plan-id> [--dry-run] [--check-merge] [--json]`
+/// (task 6317).
+///
+/// The delivery-evidence gate `CLAUDE.md` names AUTHORITATIVE for closing a
+/// plan. NOT a read verb: without `--dry-run` it marks a passing plan `done`
+/// and writes an `audit_log` row. See
+/// `planar.engine.planning.closeout`'s header for the three hard-gate rules,
+/// the already-terminal short-circuit's different result shape, and the one
+/// deliberate divergence (the advisory git layer, dead in the oracle, is
+/// ported working).
+///
+/// TWO THINGS ABOUT THIS LEAF'S EXIT BEHAVIOUR ARE EASY TO GET BACKWARDS,
+/// and both were measured rather than read:
+///
+///   - `--dry-run` EXITS 0 EVEN WHEN THE GATE FAILS. The verb's own help
+///     text says the opposite ("non-zero exit in both dry-run and apply
+///     modes"); that sentence is stale in the oracle and is carried
+///     verbatim in `surface.cpp`. A preview must let a caller read
+///     `{ready, blocked_by}` and decide, so only the APPLY path refuses.
+///   - On the blocked APPLY path the FULL report still goes to STDOUT and
+///     the refusal to STDERR, in that order. Writing the error instead of
+///     the report would lose the operator's only account of what blocked.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, `invalid_input` (exit 2) for a non-integer id,
+/// `not_found` (exit 1) when the plan does not exist, `sync_conflict`
+/// (exit 3) when the gate fails on the apply path, or `generic_failure`
+/// (exit 1) on a query or audit-write failure.
+export auto plan_closeout(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers
