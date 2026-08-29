@@ -291,4 +291,51 @@ auto assoc_remove(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   return {};
 }
 
+auto assoc_detect(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  // FIRST, before any probing -- zig opens with `try runtime.ensureDb()`,
+  // so even a pure preview creates and migrates the database.
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const cwd       = ctx.cwd();
+  auto const cwd_str   = cwd.string();
+  auto       proposals = id::detect_proposals(cwd);
+
+  // Enrich BEFORE deciding whether to apply, so the preview path and the
+  // apply path share one annotation step. An unregistered cwd is fine here.
+  if (auto enriched = id::enrich_proposals(**conn, proposals, cwd_str); !enriched) {
+    return std::unexpected(map_association_error(enriched.error(), "detect"));
+  }
+
+  if (cliapp::flag_bool(args, "--apply")) {
+    if (auto applied = id::apply_proposals(**conn, proposals, cwd_str); !applied) {
+      if (applied.error() == id::association_error::not_found) {
+        // Names the cwd and the remedy. The oracle's exact sentence,
+        // backtick-free -- it spells the command bare.
+        return std::unexpected(
+            error_from_body(domain_error_kind::generic_failure,
+                            std::format("no project registered at cwd ({}); run `planar init` first", cwd_str)));
+      }
+      return std::unexpected(map_association_error(applied.error(), "detect"));
+    }
+    // ORACLE: re-enrich after applying, and SWALLOW any failure (zig writes
+    // `catch {}`). This is why a successful `--apply` prints `already a
+    // member` for every row rather than the labels the preview showed.
+    (void)id::enrich_proposals(**conn, proposals, cwd_str);
+  }
+
+  // Terminator contract: the text renderer carries its own trailing
+  // newline; the JSON one is a fragment this caller terminates. Note the
+  // JSON renderer's empty case is a different SHAPE, not just empty --
+  // see `render_detect_json`'s declaration.
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << id::render_detect_json(proposals) << '\n';
+  } else {
+    ctx.out() << id::render_detect_text(proposals);
+  }
+  return {};
+}
+
 } // namespace planar::cmd::handlers

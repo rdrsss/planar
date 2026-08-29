@@ -197,4 +197,41 @@ export auto assoc_list(context& ctx, const cliapp::parsed_args& args) -> handler
 /// failure.
 export auto assoc_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief `planar assoc detect [--apply] [--json]` — propose (or create)
+/// auto-detected associations for the operator's cwd. Plan 996, task 6325.
+///
+/// ## Without `--apply` this verb writes NOTHING
+///
+/// The default is a preview: `detect_proposals` probes the filesystem and
+/// `enrich_proposals` reads the DB, but no row is written. A test asserting
+/// only that the command exits 0 cannot tell the preview from the mutation
+/// — it must assert `assoc list` is UNCHANGED afterwards.
+///
+/// ## It opens the database even in preview mode
+///
+/// `ensure_db` runs first, so an invocation in a directory with no database
+/// still creates and migrates one before printing a proposal. Same ordering
+/// (and same reason) as `assoc_create`'s.
+///
+/// ## `--apply` re-enriches, so its output is not the pre-apply output
+///
+/// After applying, the oracle calls `enrich_proposals` a SECOND time and
+/// discards any failure. Every proposal therefore prints `already a member`
+/// on a successful `--apply`, never the `will create` the same invocation
+/// would have shown a moment earlier. A test that expects `--apply` to echo
+/// the preview's labels is asserting the wrong contract.
+///
+/// ## The refusal names `planar init`, and it fires before the empty check
+///
+/// `--apply` in an unregistered directory exits 1 with `no project
+/// registered at cwd (<path>); run `planar init` first` — including when
+/// there were no proposals to apply at all, because the engine resolves the
+/// project before it loops. Only `--apply` can fail this way; the preview
+/// path tolerates an unregistered cwd.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `generic_failure` (exit 1) when `--apply` finds no
+/// registered project at the cwd or any engine call fails.
+export auto assoc_detect(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

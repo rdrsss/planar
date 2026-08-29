@@ -39,10 +39,21 @@ planar_module(engine_identity
     association.cpp
   DEPENDS
     db
+    git
     json_text
     scope_ref
     policy
   )
+
+# `git` (task 6325): `association.cpp`'s `detect_proposals` probes the
+# cwd's `origin` remote to derive its `host:` and `org:` proposals. It
+# calls `planar.git`'s `probe_origin_url`, which already carries the
+# oracle's exit-status and empty-stdout handling, rather than opening a
+# second subprocess path. `git` is layer 1, so this is a layer-2-to-layer-1
+# edge and D18 is unaffected. This is a NEW dependency for the module --
+# `scope.cpp` does not import `planar.git` (its worktree detection is
+# reached through the handler, not from inside the engine), so
+# `association.cpp` is currently the only file here that needs it.
 
 # `json_text` (task 6133): `association.cpp`'s `render_json` needs the one
 # shared RFC 8259 string-escape table rather than a second local copy —
