@@ -8,6 +8,7 @@ module planar.engine.identity.association;
 
 import std;
 import planar.db;
+import planar.git;
 import planar.json_text;
 import planar.policy;
 
@@ -639,6 +640,468 @@ auto render_member_list_json(std::span<const project_ref> members) -> std::strin
                        p.root_path.has_value() ? json_string(*p.root_path) : std::string{"null"});
   }
   out += "]";
+  return out;
+}
+
+// ===========================================================================
+// Auto-detection (proposals, enrichment, apply) — plan 996, task 6325
+// ===========================================================================
+
+namespace {
+
+/// @brief Strip `suffix` from `s` if present. Mirrors zig's `trimSuffix`.
+auto trim_suffix(std::string_view s, std::string_view suffix) -> std::string_view {
+  if (s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix) {
+    return s.substr(0, s.size() - suffix.size());
+  }
+  return s;
+}
+
+/// @brief Lowercase, keep `[a-z0-9._-]`, collapse every other run to a
+/// single dash, then strip trailing dashes. Mirrors zig's
+/// `sanitizeHostSlug`.
+///
+/// This is NOT this file's existing `slugify_path_segment`, and the
+/// difference is not cosmetic. That helper keeps ALNUM ONLY and falls back
+/// to the literal `"_"` on empty input; this one additionally preserves
+/// `.`, `_` and `-`, and returns EMPTY when nothing survives. Reusing it
+/// here would turn `host:my_host.example.com` into `host:my-host-example-com`
+/// — a different slug, a different row, silently. Probed against the
+/// oracle: `HOST..com` stays `host..com`, doubled dot and all.
+///
+/// The dash-collapse state starts as "already dashed" so leading junk
+/// produces no leading dash, and a kept literal `-` re-arms it so `a--b`
+/// survives verbatim rather than collapsing.
+auto sanitize_host_slug(std::string_view s) -> std::string {
+  std::string out;
+  bool        prev_dash = true;
+  for (const unsigned char raw : s) {
+    const auto lower = static_cast<unsigned char>(std::tolower(raw));
+    const bool keep  = (std::isalnum(lower) != 0) || lower == '.' || lower == '_' || lower == '-';
+    if (keep) {
+      out.push_back(static_cast<char>(lower));
+      prev_dash = (lower == '-');
+    } else if (!prev_dash) {
+      out.push_back('-');
+      prev_dash = true;
+    }
+  }
+  while (!out.empty() && out.back() == '-') {
+    out.pop_back();
+  }
+  return out;
+}
+
+/// @brief Lowercase, keep `[a-z0-9_-]`, collapse every other run to a
+/// single dash, then strip trailing dashes. Mirrors zig's
+/// `sanitizeSlugPart`.
+///
+/// Differs from `sanitize_host_slug` by exactly one character class: `.`
+/// is NOT kept here, so a parent directory named `dot.name` becomes
+/// `dot-name` while a HOST named `dot.name` stays `dot.name`. Both were
+/// probed. It differs from `slugify_path_segment` in the same two ways
+/// that helper's sibling does — `_`/`-` preserved, empty stays empty — so
+/// `a__b` and `a--b` survive intact and a directory named `+++` sanitizes
+/// to nothing rather than to `_`.
+auto sanitize_slug_part(std::string_view s) -> std::string {
+  std::string out;
+  bool        prev_dash = true;
+  for (const unsigned char raw : s) {
+    const auto lower = static_cast<unsigned char>(std::tolower(raw));
+    const bool keep  = (std::isalnum(lower) != 0) || lower == '_' || lower == '-';
+    if (keep) {
+      out.push_back(static_cast<char>(lower));
+      prev_dash = (lower == '-');
+    } else if (!prev_dash) {
+      out.push_back('-');
+      prev_dash = true;
+    }
+  }
+  while (!out.empty() && out.back() == '-') {
+    out.pop_back();
+  }
+  return out;
+}
+
+/// @brief The ecosystem marker files, in the order the oracle tests them.
+///
+/// The ORDER is the tie-break and it is not alphabetical, not
+/// most-specific-first, and not stable under reordering: a repository
+/// carrying `go.mod` AND `Cargo.toml` AND `package.json` AND
+/// `pyproject.toml` resolves to `go` purely because `go.mod` is tested
+/// first. Probed against the oracle with exactly that four-marker fixture.
+/// Only ONE proposal is ever emitted — the search returns on first hit
+/// rather than accumulating.
+constexpr std::array<std::pair<std::string_view, std::string_view>, 4> k_lang_markers{{
+    {"go.mod", "go"},
+    {"Cargo.toml", "rust"},
+    {"package.json", "javascript"},
+    {"pyproject.toml", "python"},
+}};
+
+/// @brief Return the ecosystem tag for `dir`, or unset.
+///
+/// Top-level only — deliberately conservative, matching zig's `detectLang`.
+/// A `go.mod` one directory down does not register.
+auto detect_lang(const std::filesystem::path& dir) -> std::optional<std::string> {
+  for (const auto& [file, lang] : k_lang_markers) {
+    std::error_code ec;
+    // `exists` and not `is_regular_file`: the oracle's probe is
+    // `Dir.accessAbsolute`, which succeeds for a DIRECTORY named `go.mod`
+    // too. The error_code overload is used so a permission failure on one
+    // candidate skips it rather than throwing.
+    if (std::filesystem::exists(dir / file, ec) && !ec) {
+      return std::string{lang};
+    }
+  }
+  return std::nullopt;
+}
+
+/// @brief Resolve `root_path` to a `projects.id`, or zero when no project
+/// is registered there. Zero is a sentinel the oracle uses too.
+auto lookup_project_id(db::connection& conn, std::string_view root_path) -> std::expected<std::int64_t, association_error> {
+  auto stmt = conn.prepare("select id from projects where root_path = ?");
+  if (!stmt) {
+    return std::unexpected(association_error::query_failed);
+  }
+  if (auto bound = stmt->bind_text(1, root_path); !bound) {
+    return std::unexpected(association_error::query_failed);
+  }
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(association_error::query_failed);
+  }
+  if (*step == db::step_result::done) {
+    return 0;
+  }
+  return stmt->column_int64(0);
+}
+
+} // namespace
+
+auto parse_remote(std::string_view remote) -> remote_parts {
+  // SCP-style `git@host:owner/repo.git`. Matched on the literal prefix, so
+  // `ssh://git@host/owner/repo.git` deliberately falls through to the
+  // URL branch below (probed: it yields host `github.com`, owner `owner`).
+  constexpr std::string_view k_scp_prefix = "git@";
+  if (remote.starts_with(k_scp_prefix)) {
+    auto const rest  = remote.substr(k_scp_prefix.size());
+    auto const colon = rest.find(':');
+    if (colon == std::string_view::npos) {
+      // A bare `git@github.com` names no repository. Probed: no proposals.
+      return {};
+    }
+    auto const host      = rest.substr(0, colon);
+    auto const path      = rest.substr(colon + 1);
+    auto const slash     = path.find('/');
+    auto const owner_raw = slash == std::string_view::npos ? path : path.substr(0, slash);
+    return {.host = host, .owner = trim_suffix(owner_raw, ".git")};
+  }
+
+  // URL-style `scheme://[user@]host[:port]/owner/repo.git`. No `://` at
+  // all means an unrecognized remote (a local path, say) and BOTH fields
+  // come back empty, which produces no proposals rather than a guess.
+  auto const scheme_end = remote.find("://");
+  if (scheme_end == std::string_view::npos) {
+    return {};
+  }
+  auto rest = remote.substr(scheme_end + 3);
+  if (auto const at = rest.find('@'); at != std::string_view::npos) {
+    rest = rest.substr(at + 1);
+  }
+  auto const slash_idx = rest.find('/');
+  if (slash_idx == std::string_view::npos) {
+    return {};
+  }
+  auto host = rest.substr(0, slash_idx);
+  if (auto const colon = host.find(':'); colon != std::string_view::npos) {
+    host = host.substr(0, colon);
+  }
+  auto const path = rest.substr(slash_idx + 1);
+  if (path.empty()) {
+    // `https://github.com/` — a host with no owner. The HOST proposal
+    // still fires; only the org one is dropped. Probed.
+    return {.host = host, .owner = {}};
+  }
+  auto const next_slash = path.find('/');
+  auto const owner_raw  = next_slash == std::string_view::npos ? path : path.substr(0, next_slash);
+  return {.host = host, .owner = trim_suffix(owner_raw, ".git")};
+}
+
+auto proposals_from_signals(const detect_signals& sig) -> std::vector<proposal> {
+  std::vector<proposal> out;
+
+  // ORACLE ORDER: host, org, path, lang. Append order, not sorted.
+  if (sig.git_remote.has_value()) {
+    auto const parts = parse_remote(*sig.git_remote);
+    if (!parts.host.empty()) {
+      out.push_back(proposal{.slug   = std::format("host:{}", sanitize_host_slug(parts.host)),
+                             .kind   = association_kind::host,
+                             .source = add_member_source::auto_git_remote,
+                             .reason = "from git remote host"});
+    }
+    if (!parts.owner.empty()) {
+      out.push_back(proposal{.slug   = std::format("org:{}", sanitize_slug_part(parts.owner)),
+                             .kind   = association_kind::org,
+                             .source = add_member_source::auto_git_remote,
+                             .reason = "from git remote org"});
+    }
+  }
+
+  if (sig.parent_basename.has_value()) {
+    auto const& raw = *sig.parent_basename;
+    if (!raw.empty() && raw != "." && raw != "/") {
+      // The sanitized part is re-tested for emptiness AFTER sanitizing: a
+      // directory named `+++` passes the literal checks above and still
+      // must not produce a bare `path:`. Probed — the oracle emits nothing.
+      auto part = sanitize_slug_part(raw);
+      if (!part.empty()) {
+        out.push_back(proposal{.slug   = std::format("path:{}", part),
+                               .kind   = association_kind::path,
+                               .source = add_member_source::auto_path,
+                               .reason = "from parent directory"});
+      }
+    }
+  }
+
+  if (sig.lang.has_value() && !sig.lang->empty()) {
+    // The lang tag is NOT sanitized — it is one of four literals this code
+    // chose itself, never operator input.
+    out.push_back(proposal{.slug   = std::format("lang:{}", *sig.lang),
+                           .kind   = association_kind::lang,
+                           .source = add_member_source::auto_lang,
+                           .reason = "from detected language ecosystem"});
+  }
+
+  return out;
+}
+
+auto detect_proposals(const std::filesystem::path& dir) -> std::vector<proposal> {
+  detect_signals sig;
+  sig.git_remote = git::probe_origin_url(dir);
+
+  // The PARENT's basename, not `dir`'s. `path_basename` rather than
+  // `std::filesystem::path::filename` for the trailing-separator reason
+  // documented on that helper. A path with no parent (`/`) contributes
+  // nothing, which is the only way the whole result comes back empty.
+  auto const dir_str = dir.string();
+  if (auto const slash = dir_str.find_last_of('/'); slash != std::string::npos && slash > 0) {
+    sig.parent_basename = path_basename(std::string_view{dir_str}.substr(0, slash));
+  }
+
+  sig.lang = detect_lang(dir);
+  return proposals_from_signals(sig);
+}
+
+auto enrich_proposals(db::connection& conn, std::span<proposal> proposals, std::string_view root_path)
+    -> std::expected<void, association_error> {
+  // An unregistered root_path is NOT an error here — id zero just means the
+  // membership probe below is skipped. `apply_proposals` refuses the same
+  // state; this one previews it.
+  auto project_id = lookup_project_id(conn, root_path);
+  if (!project_id) {
+    return std::unexpected(project_id.error());
+  }
+
+  for (auto& p : proposals) {
+    auto stmt = conn.prepare("select id from associations where slug = ?");
+    if (!stmt) {
+      return std::unexpected(association_error::query_failed);
+    }
+    if (auto bound = stmt->bind_text(1, p.slug); !bound) {
+      return std::unexpected(association_error::query_failed);
+    }
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(association_error::query_failed);
+    }
+    if (*step == db::step_result::done) {
+      // No association row: BOTH flags stay false. `member_exists` is not
+      // even probed, because a membership cannot exist without one.
+      continue;
+    }
+    auto const assoc_id = stmt->column_int64(0);
+    p.assoc_exists      = true;
+    if (*project_id == 0) {
+      continue;
+    }
+
+    auto count = conn.prepare("select count(*) from project_associations where project_id = ? and association_id = ?");
+    if (!count) {
+      return std::unexpected(association_error::query_failed);
+    }
+    if (auto bound = count->bind_int64(1, *project_id); !bound) {
+      return std::unexpected(association_error::query_failed);
+    }
+    if (auto bound = count->bind_int64(2, assoc_id); !bound) {
+      return std::unexpected(association_error::query_failed);
+    }
+    auto count_step = count->step();
+    if (!count_step) {
+      return std::unexpected(association_error::query_failed);
+    }
+    if (*count_step != db::step_result::done) {
+      p.member_exists = count->column_int64(0) > 0;
+    }
+  }
+  return {};
+}
+
+auto apply_proposals(db::connection& conn, std::span<const proposal> proposals, std::string_view root_path)
+    -> std::expected<void, association_error> {
+  auto tx = conn.begin_transaction();
+  if (!tx) {
+    return std::unexpected(association_error::query_failed);
+  }
+
+  // The REFUSAL comes first, and it precedes the loop — so an empty
+  // proposal set against an unregistered project still fails `not_found`
+  // rather than succeeding vacuously. Probed against the oracle at `/`.
+  auto project_id = lookup_project_id(conn, root_path);
+  if (!project_id) {
+    return std::unexpected(project_id.error());
+  }
+  if (*project_id == 0) {
+    return std::unexpected(association_error::not_found);
+  }
+
+  for (const auto& p : proposals) {
+    // `insert or ignore`, NOT an upsert: an association a human created
+    // keeps its own `name` and its `auto_detected = 0`. Only a row this
+    // statement actually inserts gets `auto_detected = 1` and name == slug.
+    {
+      auto stmt = conn.prepare("insert or ignore into associations (slug, name, kind, auto_detected) values (?, ?, ?, 1)");
+      if (!stmt) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto bound = stmt->bind_text(1, p.slug); !bound) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto bound = stmt->bind_text(2, p.slug); !bound) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto bound = stmt->bind_text(3, association_kind_to_text(p.kind)); !bound) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto step = stmt->step(); !step) {
+        return std::unexpected(association_error::query_failed);
+      }
+    }
+
+    // Re-read the id rather than using last_insert_rowid: on the
+    // `or ignore` path nothing was inserted and that rowid would name an
+    // unrelated row.
+    std::int64_t assoc_id = 0;
+    {
+      auto stmt = conn.prepare("select id from associations where slug = ?");
+      if (!stmt) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto bound = stmt->bind_text(1, p.slug); !bound) {
+        return std::unexpected(association_error::query_failed);
+      }
+      auto step = stmt->step();
+      if (!step) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (*step == db::step_result::done) {
+        // The row we just ensured is missing. The oracle reports this as a
+        // generic query failure, not `not_found`.
+        return std::unexpected(association_error::query_failed);
+      }
+      assoc_id = stmt->column_int64(0);
+    }
+
+    // The membership row DOES upsert, so a re-detection refreshes `source`
+    // to the current `auto:*` value. This is the one place the two
+    // statements' conflict policies differ, and it is deliberate.
+    {
+      auto stmt = conn.prepare("insert into project_associations (project_id, association_id, source) values (?, ?, ?) "
+                               "on conflict (project_id, association_id) do update set source = excluded.source");
+      if (!stmt) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto bound = stmt->bind_int64(1, *project_id); !bound) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto bound = stmt->bind_int64(2, assoc_id); !bound) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto bound = stmt->bind_text(3, add_member_source_to_text(p.source)); !bound) {
+        return std::unexpected(association_error::query_failed);
+      }
+      if (auto step = stmt->step(); !step) {
+        return std::unexpected(association_error::query_failed);
+      }
+    }
+
+    // ORACLE: verb `link`, entity kind `association` with the ASSOCIATION's
+    // id, and a summary carrying a literal U+2192 RIGHTWARDS ARROW -- not
+    // an ASCII `->`. This is the fourth and last of the Zig module's audit
+    // call sites.
+    if (auto a = record_audit(
+            conn, audit::record_args{.verb    = audit::verb::link,
+                                     .entity  = {.kind = "association", .id = assoc_id},
+                                     .summary = std::format("auto-link project_id={} → association '{}'", *project_id, p.slug)});
+        !a) {
+      return std::unexpected(a.error());
+    }
+  }
+
+  if (auto committed = tx->commit(); !committed) {
+    return std::unexpected(association_error::query_failed);
+  }
+  return {};
+}
+
+auto proposal_action_label(const proposal& p) -> std::string_view {
+  // Most-specific first: membership implies the association exists, so
+  // testing `assoc_exists` first would mislabel every existing member.
+  if (p.member_exists) {
+    return "already a member";
+  }
+  if (p.assoc_exists) {
+    return "already exists, will add";
+  }
+  return "will create";
+}
+
+auto render_detect_text(std::span<const proposal> proposals) -> std::string {
+  if (proposals.empty()) {
+    return "no proposed associations\n";
+  }
+  std::string out = "proposed associations:\n";
+  for (const auto& p : proposals) {
+    // ORACLE, byte for byte: `"  {s:<24} ({s})  [{s}]\n"`. The spacing is
+    // ASYMMETRIC and that is not a typo to tidy -- ONE space between the
+    // padded slug and `(`, TWO between `)` and `[`. Transcribed as two-and-
+    // two first; the differential run against the oracle caught it. Since
+    // the pad already supplies trailing spaces for any slug shorter than
+    // 24, the single space is invisible on short slugs and only shows up
+    // once a slug reaches the field width.
+    out += std::format("  {:<24} ({})  [{}]\n", p.slug, p.reason, proposal_action_label(p));
+  }
+  return out;
+}
+
+auto render_detect_json(std::span<const proposal> proposals) -> std::string {
+  // ORACLE: the empty case is a DIFFERENT SHAPE from the non-empty one --
+  // one object with a `proposals` key, versus newline-delimited objects
+  // that never mention that key. Reproduced, not normalized (D2).
+  if (proposals.empty()) {
+    return R"({"proposals":[]})";
+  }
+  std::string out;
+  for (std::size_t i = 0; i < proposals.size(); ++i) {
+    if (i > 0) {
+      out += "\n";
+    }
+    const auto& p = proposals[i];
+    out += std::format(R"({{"slug":{},"kind":"{}","source":"{}","reason":{},"assoc_exists":{},"member_exists":{},"action":{}}})",
+                       json_string(p.slug), association_kind_to_text(p.kind), add_member_source_to_text(p.source),
+                       json_string(p.reason), p.assoc_exists ? "true" : "false", p.member_exists ? "true" : "false",
+                       json_string(proposal_action_label(p)));
+  }
   return out;
 }
 

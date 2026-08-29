@@ -18,15 +18,12 @@
 /// `applyProposals` — is not, because `applyProposals` itself is not (see
 /// below); it lands with that surface.
 ///
-/// NOT ported (out of this task's scope — see the CMakeLists.txt file
-/// header comment): the auto-detection surface (`detectProposals`,
-/// `proposalsFromSignals`, `applyProposals`, `enrichProposals`).
-/// It is independent of the cross-scope guard's needs: the guard only
-/// ever reads association/membership rows (via `scope.cppm`'s
-/// `derive_from_cwd`/`resolve_slug`/`slug_from_ref`) and this module's
-/// `create`/`add_member`/`remove_member`/`members` exist so a test (or a
-/// future `cmd/` handler) can set up and exercise that membership state,
-/// not because the guard itself calls them.
+/// The auto-detection surface (`detectProposals`, `proposalsFromSignals`,
+/// `enrichProposals`, `applyProposals`) landed with task 6325 — see the
+/// "Auto-detection" section at the bottom of this file. Its fourth Zig
+/// `policy.audit.record` call site (the `auto-link project_id=N →
+/// association '<slug>'` row inside `applyProposals`) is ported with it,
+/// so this module's audit coverage is now complete.
 module;
 
 export module planar.engine.identity.association;
@@ -308,5 +305,219 @@ export auto render_member_list_text(std::span<const project_ref> members) -> std
 /// @return The JSON array with NO trailing newline — a fragment the caller
 /// terminates, same contract as `render_json`.
 export auto render_member_list_json(std::span<const project_ref> members) -> std::string;
+
+// ===========================================================================
+// Auto-detection (proposals, enrichment, apply) — plan 996, task 6325
+// ===========================================================================
+
+/// @brief A candidate association derived from repository signals.
+/// Mirrors zig's `Proposal`.
+///
+/// `assoc_exists` / `member_exists` are NOT filled by the producing
+/// function; `enrich_proposals` sets them, and both default false so an
+/// un-enriched proposal reads as "will create" rather than as a lie about
+/// existing state.
+export struct proposal {
+  std::string       slug;                  ///< The proposed association slug, already sanitized (e.g. `host:github.com`).
+  association_kind  kind;                  ///< The kind implied by the signal that produced it.
+  add_member_source source;                ///< The `project_associations.source` value `apply_proposals` will record.
+  std::string       reason;                ///< Human-readable provenance (e.g. `"from git remote host"`).
+  bool              assoc_exists  = false; ///< Set by `enrich_proposals`: an `associations` row with this slug already exists.
+  bool              member_exists = false; ///< Set by `enrich_proposals`: the project is already linked to it.
+};
+
+/// @brief The raw signals `proposals_from_signals` turns into proposals.
+/// Mirrors zig's `Signals`.
+///
+/// Split out from `detect_proposals` for the same reason the oracle splits
+/// it: the mapping from signals to proposals is pure, so it can be tested
+/// without a git repository, a filesystem fixture, or a subprocess.
+export struct detect_signals {
+  std::optional<std::string> git_remote;      ///< Raw `git remote get-url origin` output, already trimmed.
+  std::optional<std::string> parent_basename; ///< Basename of the cwd's PARENT directory.
+  std::optional<std::string> lang;            ///< Ecosystem tag (`go`/`rust`/`javascript`/`python`).
+};
+
+/// @brief Host and owner extracted from a git remote URL. Views borrow
+/// from the string passed to `parse_remote`. Mirrors zig's `RemoteParts`.
+export struct remote_parts {
+  std::string_view host;  ///< The remote host, or empty when unrecognized.
+  std::string_view owner; ///< The owning org/user, or empty when absent.
+};
+
+/// @brief Extract `(host, owner)` from an SSH or HTTPS git remote URL.
+/// Behavior-preserving port of zig's `parseRemote`.
+///
+/// Recognizes exactly two shapes, tried in this order:
+///   - SCP-style `git@host:owner/repo.git` (matched on the literal `git@`
+///     PREFIX, so `ssh://git@host/...` does NOT take this branch).
+///   - URL-style `scheme://[user@]host[:port]/owner/repo.git`.
+///
+/// Anything else — notably a bare local path like `/srv/git/repo.git` —
+/// yields two EMPTY fields and therefore no proposals at all. A remote is
+/// not required to be a forge URL, and the oracle declines rather than
+/// guessing; both empty-field cases were probed against the oracle.
+///
+/// The `.git` suffix is stripped from the OWNER, which only matters for
+/// the degenerate `https://host/owner.git` shape. The host keeps its port
+/// stripped but its dots intact.
+/// @param remote The raw remote URL.
+/// @return The parts; either or both may be empty views into `remote`.
+export auto parse_remote(std::string_view remote) -> remote_parts;
+
+/// @brief Turn a signal bundle into proposals. Pure: no DB, no filesystem,
+/// no subprocess. Behavior-preserving port of zig's `proposalsFromSignals`.
+///
+/// The heuristic is PRESENCE-based, not threshold-based — there is no
+/// score, no cutoff, and no minimum signal count anywhere in the oracle.
+/// Each present signal contributes its proposals unconditionally.
+///
+/// Order is the append order and is therefore fixed and reproducible:
+/// **host, org, path, lang**. It is NOT sorted and NOT derived from any
+/// hash container (the concern task 6274 raised for the routing table does
+/// not apply here — the oracle appends to a plain list), so pinning it in a
+/// test pins a real contract rather than an implementation artifact.
+///
+/// There is no dedup pass. None is needed: each of the four arms emits at
+/// most one proposal and each uses a distinct slug prefix, so two proposals
+/// can never collide. Idempotency across RUNS is `apply_proposals`'
+/// job, not this function's.
+///
+/// Two signals can be present and still contribute nothing, and both were
+/// probed:
+///   - a remote whose host or owner `parse_remote` could not find;
+///   - a `parent_basename` that sanitizes to the empty string (a directory
+///     named `+++`), which is skipped rather than emitted as a bare `path:`.
+/// `parent_basename` is additionally skipped for the literals `.` and `/`.
+/// @param sig The gathered signals.
+/// @return The proposals, in host/org/path/lang order; empty when nothing matched.
+export auto proposals_from_signals(const detect_signals& sig) -> std::vector<proposal>;
+
+/// @brief Gather signals from `dir` and return the proposals they imply.
+/// Behavior-preserving port of zig's `detectProposals`.
+///
+/// Three probes, all best-effort — a failure contributes no proposal
+/// rather than failing the call, which is why this returns a plain vector
+/// and not an `expected`:
+///   - `git -C dir remote get-url origin` (via `planar.git`'s
+///     `probe_origin_url`, whose exit-status and empty-stdout handling is
+///     already the oracle's);
+///   - the basename of `dir`'s PARENT — note the parent, not `dir` itself;
+///   - the first matching top-level ecosystem marker file.
+///
+/// This is the ONLY arm that can return empty in practice. The parent-
+/// directory signal fires for essentially every real cwd, so `detect` on a
+/// registered repository always proposes at least `path:<parent>`; the
+/// empty answer requires a directory with no parent (`/`) or one whose
+/// parent name sanitizes away. A fixture that produces no proposals makes
+/// every downstream assertion vacuous, so tests must assert non-emptiness
+/// explicitly before comparing.
+/// @param dir The directory to inspect; should be absolute.
+/// @return The proposals, possibly empty.
+export auto detect_proposals(const std::filesystem::path& dir) -> std::vector<proposal>;
+
+/// @brief Fill `assoc_exists` / `member_exists` on each proposal from the
+/// current DB state. Behavior-preserving port of zig's `enrichProposals`.
+///
+/// Read-only — this NEVER writes, which is what makes `assoc detect`
+/// without `--apply` a safe preview. An unregistered `root_path` is not an
+/// error here (unlike in `apply_proposals`): the project id resolves to
+/// zero, the membership probe is skipped, and every proposal reports
+/// `assoc_exists` alone. That asymmetry is deliberate in the oracle so the
+/// operator can preview before running `planar init`.
+///
+/// The two flags are WRITE-ONLY: this sets them and never clears them. Two
+/// paths skip the membership probe and leave whatever was already on the
+/// proposal — an unregistered `root_path`, and a proposal whose
+/// association does not exist (the loop skips it before either
+/// assignment). Re-enriching one slice against a second root therefore
+/// does NOT reset it, and stale `true`s survive. Operators never see this
+/// because the handler builds a fresh slice per invocation; anything that
+/// reuses a slice must not rely on enrichment to correct a flag downward.
+/// @param conn An open, migrated database connection.
+/// @param proposals The proposals to annotate, mutated in place.
+/// @param root_path The project root to resolve membership against.
+/// @return Success, or `association_error::query_failed`.
+export auto enrich_proposals(db::connection& conn, std::span<proposal> proposals, std::string_view root_path)
+    -> std::expected<void, association_error>;
+
+/// @brief Create the associations and membership rows the proposals name.
+/// Behavior-preserving port of zig's `applyProposals`.
+///
+/// The mutation path, and its REFUSAL is the first thing about it: the
+/// project at `root_path` must already be registered or the whole call
+/// fails with `not_found` before any row is written — including when
+/// `proposals` is empty, because the project lookup precedes the loop.
+///
+/// The association endpoint gets the opposite treatment: it is CREATED on
+/// demand via `insert or ignore`, never validated. So this verb does not
+/// belong to the "validates its link endpoints" family — it validates the
+/// project endpoint and auto-vivifies the association endpoint. Captured
+/// from the oracle, not designed here.
+///
+/// `insert or ignore` also means an association a human created earlier
+/// survives untouched: its `name` and its `auto_detected = 0` are both
+/// preserved rather than being overwritten with the slug and `1`. The
+/// MEMBERSHIP row, by contrast, upserts its `source` on conflict, so a
+/// re-run refreshes provenance to the current `auto:*` value. Both halves
+/// were probed against the oracle with a hand-created `org:` row.
+///
+/// The whole apply runs in one transaction so a mid-loop failure cannot
+/// leave an association created but unlinked.
+/// @param conn An open, migrated database connection.
+/// @param proposals The proposals to apply.
+/// @param root_path The project root; must already be a registered `projects` row.
+/// @return Success, `association_error::not_found` when no project is
+/// registered at `root_path`, `association_error::audit_write_failed`, or
+/// `association_error::query_failed`.
+export auto apply_proposals(db::connection& conn, std::span<const proposal> proposals, std::string_view root_path)
+    -> std::expected<void, association_error>;
+
+/// @brief The operator-facing verdict for one proposal.
+///
+/// Three states, tested most-specific first: `member_exists` wins over
+/// `assoc_exists`, because a proposal whose association exists AND whose
+/// membership exists is `"already a member"`, not `"already exists, will
+/// add"`. Reversing the two tests still produces a plausible-looking
+/// label for every case, which is why the order is called out.
+/// @param p The (enriched) proposal.
+/// @return `"already a member"`, `"already exists, will add"`, or `"will create"`.
+export auto proposal_action_label(const proposal& p) -> std::string_view;
+
+/// @brief Render the proposals as the operator-facing block.
+///
+/// Layout is `"  {:<24} ({})  [{}]"` under a `"proposed associations:"`
+/// header — slug padded to TWENTY-FOUR (not the twenty this file's other
+/// renderers use), then the reason parenthesized, then the action label
+/// bracketed.
+///
+/// The inter-column spacing is ASYMMETRIC: ONE space after the padded slug
+/// and TWO after the closing paren. Measuring it off sample output does not
+/// settle it, because every slug in a normal fixture is shorter than 24 and
+/// the padding hides the difference; it has to come from the oracle's
+/// format string. A two-and-two transcription survived the build and was
+/// caught only by the byte-level differential.
+/// @param proposals The enriched proposals, in `detect_proposals` order.
+/// @return The complete block INCLUDING its trailing newline, or the
+/// literal `"no proposed associations\n"` when empty — a SENTENCE, and a
+/// different one from this file's parenthesized `(no associations)`.
+export auto render_detect_text(std::span<const proposal> proposals) -> std::string;
+
+/// @brief Render the proposals as the `--json` payload.
+///
+/// The shape is INCONSISTENT between the empty and non-empty cases and the
+/// port reproduces the oracle rather than tidying it:
+///   - non-empty renders newline-delimited JSON — one object per line, NOT
+///     a JSON array, so the payload as a whole is not parseable by a single
+///     `JSON.parse`;
+///   - empty renders the single object `{"proposals":[]}`, which is a
+///     different shape entirely and mentions a key the non-empty form never
+///     emits.
+/// Both were probed directly against the oracle. Normalizing either one
+/// would be a behavior change (D2), so it is left alone and recorded here.
+/// @param proposals The enriched proposals, in `detect_proposals` order.
+/// @return The payload with NO trailing newline — a fragment the caller
+/// terminates, the same contract as this file's other JSON renderers.
+export auto render_detect_json(std::span<const proposal> proposals) -> std::string;
 
 } // namespace planar::engine::identity

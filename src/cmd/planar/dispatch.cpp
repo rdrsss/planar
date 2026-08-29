@@ -139,6 +139,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // family and shares nothing with these two.
   table.emplace("assoc list", handlers::assoc_list);
   table.emplace("assoc remove", handlers::assoc_remove);
+  table.emplace("assoc detect", handlers::assoc_detect);
   // `scope` — the WHOLE five-leaf family, landed at task 6214. Two do work
   // (`show` reads the cwd-derived read set, `suggest` the project's existing
   // memberships) and three are plan-153-M5 removal refusals that must NOT be

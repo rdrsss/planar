@@ -855,7 +855,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   synthesize     BLOCKED twice over — ~575 lines of absent `llm` /
   //                  `operatorpath` / `forwardspec`, and a `--literal` arm
   //                  delegating to the unported `import`.
-  CHECK(unported.size() == 21);
+  // 21 before task 6325 moved `assoc detect`, the last `assoc` leaf.
+  CHECK(unported.size() == 20);
   INFO("moved by task 6275: workspace routing build");
   CHECK_FALSE(unported.contains("workspace routing build"));
   // Its three family siblings stayed, and each is pinned so a later cycle
@@ -946,8 +947,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   }
   INFO("moved by task 6277 after the git-walk grouping was corrected: audit commits");
   CHECK_FALSE(unported.contains("audit commits"));
-  INFO("task 6279 deliberately left `assoc detect` — the ~680-line proposal engine");
-  CHECK(unported.contains("assoc detect"));
+  // Task 6279 deliberately LEFT this leaf; task 6325 moved it, completing
+  // the `assoc` family. Named individually per this file's own rule rather
+  // than trusted to the count dropping by one.
+  INFO("moved by task 6325, completing the `assoc` family: assoc detect");
+  CHECK_FALSE(unported.contains("assoc detect"));
   // The leaf task 6272 moved, named rather than trusted to the count. The
   // four leaves that were predicted to move WITH it must stay unported —
   // wiring any of them off the back of this cycle would claim an engine
