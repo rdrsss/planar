@@ -27,3 +27,4 @@ export import planar.engine.planning.annotation;
 export import planar.engine.planning.plan_step;
 export import planar.engine.planning.test_spec_status;
 export import planar.engine.planning.descendants;
+export import planar.engine.planning.strategy;

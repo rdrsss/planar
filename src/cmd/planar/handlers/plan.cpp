@@ -1011,4 +1011,90 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   return {};
 }
 
+namespace {
+
+/// The shared not-found refusal for the two strategy leaves.
+///
+/// Both verbs emit `plan {id} not found` at exit 1 (`not_found` maps to
+/// `exit_generic_failure`). Captured identically from both, in both `--json`
+/// and text mode -- the refusal is NOT a JSON document in either.
+auto strategy_plan_not_found(std::int64_t plan_id) -> domain_error {
+  return error_from_body(domain_error_kind::not_found, std::format("plan {} not found", plan_id));
+}
+
+auto strategy_query_failed(std::string_view verb) -> domain_error {
+  return error_from_body(domain_error_kind::generic_failure, std::format("{}: QueryFailed", verb));
+}
+
+} // namespace
+
+auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  namespace st = engine::planning::strategy;
+
+  // Both refusals are argument-shaped and come BEFORE the database is
+  // touched, matching the oracle: a bad `--closure-source` on a nonexistent
+  // plan reports the flag, not the plan.
+  auto const id = entity_id_arg(args, "plan-id", "plan");
+  if (!id) {
+    return std::unexpected(id.error());
+  }
+  auto const raw_source = cliapp::flag_string(args, "--closure-source");
+  // The flag is declared with a `declared` default, so an absent value here
+  // means the parser handed us nothing -- treat it as the default rather than
+  // refusing on an empty string the operator never typed.
+  auto const source_text = raw_source.has_value() ? *raw_source : std::string{"declared"};
+  auto const source      = st::parse_closure_source(source_text);
+  if (!source.has_value()) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input,
+                        std::format("--closure-source must be 'declared' or 'derived', got '{}'", source_text)));
+  }
+
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const rec = st::recommend_with(**conn, *id, *source);
+  if (!rec) {
+    if (rec.error() == st::strategy_error::not_found) {
+      return std::unexpected(strategy_plan_not_found(*id));
+    }
+    return std::unexpected(strategy_query_failed("recommend-strategy"));
+  }
+
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? st::render_recommendation_json(*rec, *source)
+                                                  : st::render_recommendation_text(*rec, *source));
+  return {};
+}
+
+auto plan_divergence(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  namespace st = engine::planning::strategy;
+
+  // No `--closure-source` here: the CLI tree does not declare it for this
+  // leaf, so passing it is `error: UnknownFlag` at exit 2 before the handler
+  // runs. This verb reads BOTH sources by construction.
+  auto const id = entity_id_arg(args, "plan-id", "plan");
+  if (!id) {
+    return std::unexpected(id.error());
+  }
+
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const div = st::compute_divergence(**conn, *id);
+  if (!div) {
+    if (div.error() == st::strategy_error::not_found) {
+      return std::unexpected(strategy_plan_not_found(*id));
+    }
+    return std::unexpected(strategy_query_failed("plan divergence"));
+  }
+
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? st::render_divergence_json(*id, *div)
+                                                  : st::render_divergence_text(*id, *div));
+  return {};
+}
+
 } // namespace planar::cmd::handlers

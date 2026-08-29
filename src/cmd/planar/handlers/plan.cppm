@@ -266,4 +266,42 @@ export auto plan_descendants(context& ctx, const cliapp::parsed_args& args) -> h
 /// `not_found` (exit 1) when the plan does not exist.
 export auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief `plan recommend-strategy <plan-id> [--closure-source S] [--json]`
+/// (task 6310).
+///
+/// Applies the six parallel-eligibility rules (decision 370) to the plan's
+/// open (`todo`) tasks and reports the parallel-eligible subset plus the
+/// serialized remainder with per-task exclusion reasons. READ-ONLY.
+///
+/// This verb has a consumer beyond the CLI — the orchestrator reads it when
+/// choosing a dispatch strategy — so the `summary.fan_out_available` flag and
+/// the three `recommended_note` strings are contract, not decoration.
+///
+/// `--closure-source` selects the signal rule 2's OVERLAP branch reads and
+/// defaults to `declared`. An unknown token refuses at exit 2 BEFORE the
+/// database is touched. Note the flag does NOT exist on the sibling `plan
+/// divergence`, which reads both sources by construction.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id or a bad
+/// `--closure-source`, or `not_found` (exit 1) when the plan does not exist.
+export auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `plan divergence <plan-id> [--json]` (task 6310).
+///
+/// Reports the declared-vs-derived closure divergence for a plan's open tasks
+/// (decision D4). READ-ONLY.
+///
+/// It shares its whole loader substrate with `plan recommend-strategy` and
+/// agrees with it on almost nothing else — it applies ONLY rule 2's pairwise
+/// overlap test, so no unilateral rule runs and no task is ever dropped. A
+/// task with no declared touches is excluded by rule 2 under
+/// `recommend-strategy` but merely contributes no overlap here. See
+/// strategy.cppm for the full list.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `not_found` (exit 1) when the plan does not exist.
+export auto plan_divergence(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 } // namespace planar::cmd::handlers

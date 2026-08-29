@@ -777,7 +777,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // 33 before task 6309, which moved THREE: `plan next` and `ext create`
   // (both named as blocked by task 6298's probe and both sized correctly),
   // plus `link` (task 6301, minus its `--propagate` flag). 33 - 3 = 30.
-  CHECK(unported.size() == 28);
+  // 28 before task 6310, which moved TWO — `plan divergence` and `plan
+  // recommend-strategy` — in ONE cycle, because they share ~300 lines of
+  // loader substrate in the oracle's `strategy.zig` and could not honestly
+  // be split. 28 - 2 = 26.
+  CHECK(unported.size() == 26);
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
@@ -826,9 +830,17 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   ext create   two `adapter_handle` accessors plus the `remote.zig`
   //                POST path, and ZERO of `engine_extsync`'s unported
   //                lines. See handlers/ext.cppm.
-  for (auto const& leaf : {"plan closeout", "plan divergence", "plan recommend-strategy", "task packet"}) {
+  for (auto const& leaf : {"plan closeout", "task packet"}) {
     INFO("task 6298 verified this one BLOCKED rather than assuming it: " << leaf);
     CHECK(unported.contains(leaf));
+  }
+  // Named individually rather than trusted to the count above: this file's
+  // own rule is that a multi-leaf move must assert each leaf, because a
+  // count that happens to balance hides a leaf moved by accident and a leaf
+  // left behind.
+  for (auto const& leaf : {"plan divergence", "plan recommend-strategy"}) {
+    INFO("moved TOGETHER by task 6310 (shared strategy.zig loader substrate): " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
   }
   for (auto const& leaf : {"plan next", "ext create"}) {
     INFO("moved by task 6309: " << leaf);

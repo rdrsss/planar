@@ -372,6 +372,14 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("plan link", handlers::plan_link);
   table.emplace("plan descendants", handlers::plan_descendants);
   table.emplace("plan next", handlers::plan_next);
+  // Task 6310 landed these two TOGETHER. Task 6298 measured that they share
+  // ~300 lines of loader substrate in the oracle's `strategy.zig`, so porting
+  // them in separate cycles would mean writing that loader twice or leaving
+  // one leaf reaching into the other's internals. They now share one private
+  // substrate in `planar.engine.planning.strategy` and agree on nothing else
+  // -- see strategy.cppm for the measured disagreements.
+  table.emplace("plan recommend-strategy", handlers::plan_recommend_strategy);
+  table.emplace("plan divergence", handlers::plan_divergence);
   table.emplace("task link", handlers::task_link);
   table.emplace("question link", handlers::question_link);
   table.emplace("version", handlers::version);
