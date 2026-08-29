@@ -155,6 +155,7 @@ planar_module(engine_planning
     test_spec_status.cppm
     descendants.cppm
     feedback_triage.cppm
+    strategy.cppm
     planning.cppm
   SOURCES
     transitions.cpp
@@ -169,6 +170,7 @@ planar_module(engine_planning
     test_spec_status.cpp
     descendants.cpp
     feedback_triage.cpp
+    strategy.cpp
   DEPENDS
     db
     json_text

@@ -4156,21 +4156,31 @@ auto unported_paths() -> std::span<std::string_view const> {
       // (task 6272) and the `sync` write trio (task 6294): a LEAF's
       // dependencies inferred from its MODULE's.
       "plan closeout",
-      // The four `plan` leaves below stayed at task 6298, each with a
-      // measured blocker rather than an inherited one:
-      //   closeout    `engine/planning/closeout.zig`, 913 lines, absent.
-      //   divergence  } both on `engine/planning/strategy.zig`. `divergence`
-      //   recommend-  } needs one entry point and `recommendWith` another,
-      //   strategy    } but they share ~300 lines of loader substrate
-      //               } (`loadOpenTasks`/`loadTouches`/`loadClosureTouches`),
-      //               } so they are ONE cycle, not two halves.
+      // Of the four `plan` leaves task 6298 measured, only `closeout` is
+      // left: `engine/planning/closeout.zig`, 913 lines, absent.
       //
       // `plan next` LEFT this inventory at task 6309 — it was the fourth
       // and cheapest of the group, and it went exactly as sized:
       // `agentactivity::next_work` plus handler rendering, no surprises in
-      // the engine half. The three above it stay.
-      "plan divergence",
-      "plan recommend-strategy",
+      // the engine half.
+      //
+      // `plan divergence` and `plan recommend-strategy` LEFT this inventory
+      // TOGETHER at task 6310, which is how 6298 sized them: both sit on
+      // `engine/planning/strategy.zig` and share ~300 lines of loader
+      // substrate (`loadOpenTasks`/`loadTouches`/`loadClosureTouches`), so
+      // splitting them across two cycles would have meant writing that
+      // loader twice or leaving one leaf reaching into the other's
+      // internals. One cycle, one private substrate in
+      // `planar.engine.planning.strategy`, two entry points.
+      //
+      // The pairing was right for the loader and wrong for everything else:
+      // the two verbs agree only on the candidate set and the two refusal
+      // arms. `divergence` runs NO unilateral rule (measured: a 7-task
+      // fixture where `recommend-strategy` serialized five reported
+      // `declared_overlaps:0 derived_overlaps:0 flips:0`), an empty touch
+      // set means opposite things to the two, `--closure-source` exists on
+      // only one of them, and `jaccard` renders shortest-round-trip in JSON
+      // but fixed-4-decimal in text. See strategy.cppm.
       "report",
       "spec ingest",
       // `sync pull`, `sync push` and `sync resolve` left this inventory at
