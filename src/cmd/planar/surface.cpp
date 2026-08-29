@@ -4229,11 +4229,19 @@ auto unported_paths() -> std::span<std::string_view const> {
       "workbench publish",
       "workspace init",
       "workspace regenerate",
-      "workspace routing build",
-      // `workspace routing show` left this inventory at task 6110. Its
-      // decoder + both render arms landed as
-      // `planar.engine.workspace.routing`; `routing build`, the sibling
-      // that WRITES the file it reads, stays unported above.
+      // `workspace routing show` left this inventory at task 6110 and
+      // `workspace routing build` at task 6275, closing the family's
+      // read/write loop: the decoder and both render arms, then the builder
+      // that WRITES the file they read. `build` was deferred on SIZE alone
+      // (1410 lines, no architectural blocker) and that sizing held —
+      // SQLite plus filesystem, no new dependency.
+      //
+      // The `workspace` family's other two stay, with DIFFERENT blockers:
+      // `regenerate` needs an unvendored xxh64 for its `.manifest-docs`
+      // merkle, and `init` is layer-3 blocked because it COMPOSES scan +
+      // registration + routing build + regenerate + symlink install.
+      // `init`'s blocker is now strictly smaller than it was — one of the
+      // four things it composes exists.
   };
   return k_unported;
 }

@@ -7,7 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.engine.workspace;
-import planar.cliapp.args;
+import planar.json_text;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -68,7 +68,10 @@ auto workspace_routing_show(context& ctx, const cliapp::parsed_args& args) -> ha
       // identity.cppm's "the refusal that lies".
       return std::unexpected(error_from_rendered(domain_error_kind::not_found, doctor::no_orgs_error()));
     case identity::resolve_error::ambiguous:
-      return std::unexpected(error_from_rendered(domain_error_kind::generic_failure, doctor::ambiguous_orgs_error()));
+      // `invalid_input` (exit 2), NOT `generic_failure` (exit 1). Corrected
+      // at task 6275 — the oracle dies through `error.InvalidInput` here.
+      // See this leaf's header for the side-by-side capture.
+      return std::unexpected(error_from_rendered(domain_error_kind::invalid_input, doctor::ambiguous_orgs_error()));
     case identity::resolve_error::query_failed:
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving workspace failed: QueryFailed"));
     }
@@ -108,6 +111,98 @@ auto workspace_routing_show(context& ctx, const cliapp::parsed_args& args) -> ha
   }
 
   ctx.out() << routing::render_text(*table);
+  return {};
+}
+
+auto workspace_routing_build(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto target = cliapp::positional_string(args, "workspace");
+  auto org    = identity::resolve_org(**conn, target.has_value() ? std::optional<std::string_view>{*target} : std::nullopt);
+  if (!org.has_value()) {
+    switch (org.error()) {
+    case identity::resolve_error::not_found:
+      return std::unexpected(error_from_rendered(domain_error_kind::not_found, doctor::no_orgs_error()));
+    case identity::resolve_error::ambiguous:
+      // Exit 2. Same arm, same reasoning, as the correction in `show` above.
+      return std::unexpected(error_from_rendered(domain_error_kind::invalid_input, doctor::ambiguous_orgs_error()));
+    case identity::resolve_error::query_failed:
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving workspace failed: QueryFailed"));
+    }
+  }
+
+  // `ensure_layout`, deliberately NOT `load_layout`: building CREATES the
+  // state directory. That is the difference from `show` beside it.
+  auto layout = identity::ensure_layout(ctx.env(), org->id);
+  if (!layout.has_value()) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "ensuring workspace state directory failed: NotFound"));
+  }
+
+  auto home = identity::planar_home(ctx.env());
+  if (!home.has_value()) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "resolving capability rules path failed: NotFound"));
+  }
+  auto rules = routing::load_capability_rules(*home / "templates" / "workspace-capabilities.toml");
+  if (!rules.has_value()) {
+    // TWO exit codes behind one template: `ParseFailed` at 1, `InvalidInput`
+    // at 2. Same split the overrides load and the table decode both carry.
+    const auto kind =
+        rules.error() == routing::rules_error::invalid ? domain_error_kind::invalid_input : domain_error_kind::generic_failure;
+    return std::unexpected(
+        error_from_body(kind, std::format("loading capability rules failed: {}", routing::rules_error_name(rules.error()))));
+  }
+  // An EMPTY result — an absent file, or one with no `[[rule]]` header —
+  // means "use the built-ins", NOT "match nothing". Oracle-captured on both.
+  if (rules->empty()) {
+    rules = routing::default_capability_rules();
+  }
+
+  auto loaded_overrides = routing::load_overrides(layout->dir / "routing-table-overrides.json");
+  if (!loaded_overrides.has_value()) {
+    const auto kind = loaded_overrides.error() == routing::decode_error::invalid ? domain_error_kind::invalid_input
+                                                                                 : domain_error_kind::generic_failure;
+    return std::unexpected(error_from_body(
+        kind, std::format("loading routing overrides failed: {}", routing::decode_error_name(loaded_overrides.error()))));
+  }
+
+  auto table = routing::build(**conn, org->id, org->slug, org->name, *rules);
+  if (!table.has_value()) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "building routing table failed: QueryFailed"));
+  }
+  routing::apply_overrides(*table, *loaded_overrides);
+
+  if (!routing::write_table(layout->routing_table, *table)) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "writing routing table failed: AccessDenied"));
+  }
+
+  const auto path     = layout->routing_table.string();
+  const auto projects = table->projects.size();
+  const auto edges    = table->cross.dependency_edges.size();
+
+  if (flag_bool(args, "--json")) {
+    // `enrich_enabled` and `enrich_misses` are hardcoded in the oracle too —
+    // the enrichment pass does not exist. Emitted so the shape is stable for
+    // whoever eventually implements it.
+    std::string out = "{";
+    out += "\"path\":";
+    json_text::append_json_string(out, path);
+    out += std::format(",\"projects\":{},\"dependency_edges\":{},", projects, edges);
+    out += "\"enrich_enabled\":false,\"enrich_misses\":0}\n";
+    ctx.out() << out;
+    return {};
+  }
+
+  // The warning precedes the result line and goes to STDOUT, not stderr.
+  // Both captured.
+  if (flag_bool(args, "--enrich")) {
+    ctx.out() << "warning: --enrich is not yet implemented in Zig; skipping enrichment pass\n";
+  }
+  ctx.out() << std::format("built {} ({} projects, {} cross-repo deps)\n", path, projects, edges);
   return {};
 }
 

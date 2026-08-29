@@ -264,15 +264,33 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
 
   // Deeper, to prove the key is the full path and not the leaf name.
   //
-  // This was `feedback triage list` until task 6303 ported that family, and
-  // the replacement has the same two constraints the top-level exemplar
-  // above has: it must be genuinely unported, and its positionals must all
-  // be OPTIONAL or the parser refuses at exit 2 before dispatch is reached.
-  // `task touches infer`, the only other three-level unported path, fails
-  // the second test (`task-id` is required), which leaves this one.
-  auto const deep = dispatch({"workspace", "routing", "build"});
+  // This was `feedback triage list` until task 6303 ported that family, then
+  // `workspace routing build` until task 6275 ported that one. The exemplar
+  // has two constraints: it must be genuinely unported, and its positionals
+  // must all be OPTIONAL or the parser refuses at exit 2 before dispatch is
+  // reached.
+  //
+  // With `workspace routing build` gone there is NO three-level path left
+  // that satisfies both. The inventory's only other three-level entry is
+  // `task touches infer`, whose `task-id` is required — so it fails at the
+  // parser and would assert the parser's behaviour rather than the table's.
+  // The replacement is therefore two-level rather than three, and the
+  // property under test is unaffected: `regenerate` is a leaf name that
+  // exists only under `workspace`, so answering to the full path `workspace
+  // regenerate` still proves the key is the path.
+  //
+  // Worth stating plainly so the next cycle does not go hunting: three
+  // levels is not recoverable here. It only comes back if a future cycle
+  // ports `task touches infer` (leaving nothing) or declares a new
+  // three-level family.
+  auto const deep = dispatch({"workspace", "regenerate"});
   CHECK(deep.code == 64);
-  CHECK(deep.err == "error: workspace routing build: not implemented in this build\n");
+  CHECK(deep.err == "error: workspace regenerate: not implemented in this build\n");
+
+  // And the sibling that LEFT the inventory this cycle does not answer 64,
+  // which is what makes the row above a statement about `regenerate` rather
+  // than about the `workspace` family.
+  CHECK(dispatch({"workspace", "routing", "build", "--help"}).code == 0);
 
   // Discrimination: a PORTED verb on the same binary does not answer 64,
   // so exit 64 is not simply what this binary now does.
@@ -809,7 +827,39 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // recommend-strategy` — in ONE cycle, because they share ~300 lines of
   // loader substrate in the oracle's `strategy.zig` and could not honestly
   // be split. 28 - 2 = 26.
-  CHECK(unported.size() == 23);
+  // 23 before task 6275 moved ONE leaf out of it — `workspace routing
+  // build`, the WRITE half of the routing-table family whose READ half went
+  // at task 6110. 23 - 1 = 22.
+  //
+  // One leaf, and the scope cut is the finding, exactly as it was at 6110.
+  // Task 6275 was scoped as "the four deferred workspace leaves"; three of
+  // them are blocked and only this one was not, so the honest cycle is one
+  // leaf plus the reasons the other three stayed. Those reasons were
+  // re-checked rather than inherited:
+  //   routing build  NOT blocked. 1410 lines, SQLite + filesystem, no new
+  //                  dependency and no spawn seam. Size was the whole of it,
+  //                  and the estimate held.
+  //   regenerate     BLOCKED on an unvendored xxh64 (`.manifest-docs`
+  //                  merkle) plus a hand-rolled template engine. Vendoring
+  //                  is its own change under the pinned-release-archive
+  //                  rule, so it is a prerequisite TASK, not a step of this
+  //                  one.
+  //   init           BLOCKED at layer 3, and STRICTLY LESS SO than before:
+  //                  it composes scan + registration + routing build +
+  //                  regenerate + symlinks, and one of those four now
+  //                  exists.
+  //   synthesize     BLOCKED twice over — ~575 lines of absent `llm` /
+  //                  `operatorpath` / `forwardspec`, and a `--literal` arm
+  //                  delegating to the unported `import`.
+  CHECK(unported.size() == 22);
+  INFO("moved by task 6275: workspace routing build");
+  CHECK_FALSE(unported.contains("workspace routing build"));
+  // Its three family siblings stayed, and each is pinned so a later cycle
+  // cannot wire one off the back of this one's count without saying so.
+  for (auto const& leaf : {"workspace init", "workspace regenerate", "synthesize"}) {
+    INFO("probed by task 6275 and deliberately not moved: " << leaf);
+    CHECK(unported.contains(leaf));
+  }
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));

@@ -38,17 +38,19 @@
 /// leaf: both renderers return COMPLETE payloads, so this handler writes
 /// each verbatim and appends nothing to either.
 ///
-/// ## `init`, `routing build`, `routing show`, `regenerate` are absent
+/// ## `init` and `regenerate` are still absent
 ///
-/// Four of the five `workspace` children are NOT ported, so `planar
-/// workspace --help` lists one command where the oracle lists four. That
-/// follows the precedent `workflow` already set for `run` — an unported
-/// child is OMITTED from the tree rather than half-wired — and it means
-/// this GROUP's help page is not oracle-comparable while the LEAF's is.
-/// `regenerate` and the `routing` pair are deferred at layer 2 (task
-/// 6110's own note: size, and a missing xxh64); `init` is a 615-line
-/// handler that composes scanning, enrichment and symlink installation and
-/// is a cycle of its own.
+/// Two of the five `workspace` children are NOT ported. `regenerate` is
+/// blocked on an unvendored xxh64 (its `.manifest-docs` merkle is keyed by
+/// it) plus a hand-rolled template engine; `init` is a 615-line handler
+/// that COMPOSES scan + registration + routing build + regenerate + symlink
+/// install, which decision 947 places at layer 3.
+///
+/// `routing build` left this list at task 6275, and with it went the note
+/// that the `routing` pair was "deferred at layer 2 ... size". The sizing
+/// was right and the pairing was not: `show` came out at task 6110 because
+/// it only needed a decoder, and `build` came out here because size was
+/// genuinely the only thing in its way.
 module;
 
 export module planar.cmd.planar.handlers.workspace;
@@ -76,7 +78,7 @@ export auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> h
 /// two-liner:
 ///
 ///     no org / unmatched slug   exit 1  no org associations registered; ...
-///     two orgs, none named      exit 1  multiple org associations ...
+///     two orgs, none named      exit 2  multiple org associations ...
 ///     routing-table.json absent exit 1  routing table not found at <path>;
 ///                                       run `planar workspace routing
 ///                                       build` first
@@ -89,6 +91,26 @@ export auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> h
 /// interpolated error tag, so a port that folded them together would move
 /// an exit code while keeping every message byte identical. See
 /// `planar.engine.workspace.routing`'s `decode_error`.
+///
+/// ## The AMBIGUOUS row above is a CORRECTION (task 6275)
+///
+/// It read `exit 1` until task 6275, and the oracle answers 2. `show.zig`
+/// and `build.zig` refuse through the identical
+/// `exit.die(ctx, error.InvalidInput, "multiple org associations
+/// registered; pass the workspace slug or id explicitly", .{})`, so the
+/// error is `InvalidInput` and lands in the user-input bucket.
+///
+/// Captured side by side, two orgs registered and no selector given:
+///
+///     zig/zig-out/bin/planar workspace routing show   exit 2
+///     build/debug/bin/planar workspace routing show   exit 1   <-- wrong
+///
+/// with stderr byte-identical on both. That is exactly the shape this
+/// file's own paragraph above warns about — one message, two codes — and it
+/// was missed because `resolve_error::ambiguous` was mapped to
+/// `generic_failure` while the message it pairs with was correct. Nothing
+/// that asserts on the message can see it; only an exit-code assertion can,
+/// and there now is one.
 ///
 /// ## `--json` short-circuits before any of the decode failures
 ///
@@ -108,5 +130,57 @@ export auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> h
 /// @param args The parsed arguments.
 /// @return Success, or the refusal matching one of the rows above.
 export auto workspace_routing_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar workspace routing build [workspace] [--enrich] [--json]`.
+///
+/// ## It WRITES, and it writes where the DATABASE says
+///
+/// Unlike `show`, this leaf uses `ensure_layout`: the state directory is
+/// created as a side effect of building. And both the directory and every
+/// scanned checkout come out of the database — `$PLANAR_HOME/workspaces/
+/// <org_id>/` for the output, and each member's recorded `root_path` for the
+/// input. Redirecting the working directory protects nothing; a scratch
+/// `PLANAR_DB` is the isolation that matters, exactly as for `doctor`.
+///
+/// ## Two files it reads, and the asymmetry between them
+///
+/// `$PLANAR_HOME/templates/workspace-capabilities.toml` REPLACES the
+/// built-in capability rules wholesale, and `<state-dir>/
+/// routing-table-overrides.json` merges over the built table. Both are
+/// optional. The asymmetry: an EMPTY rules file (or one whose every line
+/// precedes the first `[[rule]]` header) yields zero rules and falls back to
+/// the defaults, while empty overrides simply change nothing. Oracle-captured
+/// on both.
+///
+/// ## `--enrich` is an accepted no-op, and its warning goes to STDOUT
+///
+/// The oracle prints `warning: --enrich is not yet implemented in Zig;
+/// skipping enrichment pass` on STDOUT — not stderr — and only when `--json`
+/// is absent. `enrich_enabled` and `enrich_misses` are hardcoded `false` and
+/// `0` in the JSON arm regardless. All three captured. Reproduced as-is
+/// rather than refused: the flag parses and the build proceeds.
+///
+/// Note the warning precedes the `built ...` line, so the text arm emits TWO
+/// lines under `--enrich` and one without it.
+///
+/// ## Failure paths
+///
+///     no org / unmatched slug   exit 1  no org associations registered; ...
+///     two orgs, none named      exit 2  multiple org associations ...
+///     malformed rules TOML      exit 1  loading capability rules failed:
+///                                       ParseFailed
+///     unquoted rules scalar     exit 2  loading capability rules failed:
+///                                       InvalidInput
+///     overrides not JSON        exit 1  loading routing overrides failed:
+///                                       SyntaxError
+///     overrides not an object   exit 2  loading routing overrides failed:
+///                                       InvalidInput
+///
+/// Four of the six share two message templates across two exit codes each,
+/// for the same reason `show`'s decode failures do.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or one of the refusals above.
+export auto workspace_routing_build(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers
