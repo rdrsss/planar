@@ -311,6 +311,55 @@ TEST_CASE("jira push reports unexpected_status for anything but 204", "[extsync]
   CHECK(err(adapter.push("P-1", field_change_set{.title = "T"})) == std::optional{adapter_error::unexpected_status});
 }
 
+TEST_CASE("jira post_comment POSTs escaped ADF text to the issue comment endpoint", "[extsync][jira]") {
+  // jira.zig, "postComment POSTs escaped ADF text to the issue comment
+  // endpoint". Both the URL suffix and the escaped-quote/escaped-newline
+  // substring are pinned exactly as that test pins them.
+  recording_transport wire;
+  wire.reply_status = 201;
+  wire.reply_body   = R"({"id":1})";
+  jira_adapter const adapter("https://acme.atlassian.net", bearer("tok"), wire);
+
+  auto const result = adapter.post_comment("PROJ-1", "Decision says \"ship\"\nnow");
+  REQUIRE(result.has_value());
+  CHECK(wire.calls == 1);
+  CHECK(wire.last_verb == planar::http::method::post);
+  CHECK(wire.last_url == "https://acme.atlassian.net/rest/api/3/issue/PROJ-1/comment");
+  REQUIRE(wire.last_body.has_value());
+  CHECK(wire.last_body->contains(R"(Decision says \"ship\"\nnow)"));
+  CHECK(wire.last_body->starts_with(
+      R"({"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":)"));
+}
+
+TEST_CASE("jira post_comment refuses a malformed key before sending", "[extsync][jira]") {
+  // `validate` runs first — a malformed key never reaches the transport.
+  recording_transport wire;
+  jira_adapter const  adapter("https://x", bearer("t"), wire);
+
+  CHECK(err(adapter.post_comment("proj-1", "hello")) == std::optional{adapter_error::invalid_external_id});
+  CHECK(wire.calls == 0);
+}
+
+TEST_CASE("jira post_comment accepts 200 as well as 201", "[extsync][jira]") {
+  recording_transport wire;
+  wire.reply_status = 200;
+  jira_adapter const adapter("https://x", bearer("t"), wire);
+  CHECK(adapter.post_comment("PROJ-1", "hi").has_value());
+}
+
+TEST_CASE("jira post_comment reports unexpected_status for anything else", "[extsync][jira]") {
+  recording_transport wire;
+  wire.reply_status = 404;
+  jira_adapter const adapter("https://x", bearer("t"), wire);
+  CHECK(err(adapter.post_comment("PROJ-1", "hi")) == std::optional{adapter_error::unexpected_status});
+}
+
+TEST_CASE("jira post_comment reports transport_failed when the send fails", "[extsync][jira]") {
+  dead_transport     wire;
+  jira_adapter const adapter("https://x", bearer("t"), wire);
+  CHECK(err(adapter.post_comment("PROJ-1", "hi")) == std::optional{adapter_error::transport_failed});
+}
+
 TEST_CASE("jira render applies the default issue type and description placeholder", "[extsync][jira]") {
   // jira.zig, "render applies default issue type and description placeholder"
   // — which checks the substrings "\"name\":\"Story\"" and "(no description)".

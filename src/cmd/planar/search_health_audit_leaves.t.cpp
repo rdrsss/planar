@@ -485,56 +485,14 @@ TEST_CASE("audit session gives a non-integer id exit 2 and a missing id exit 1",
   CHECK(missing_json.out.empty());
 }
 
-TEST_CASE("the two unported audit leaves still refuse at exit 64", "[cmd][audit][unported]") {
-  auto const fx = make_fixture("auditrest");
-  seed_searchable(fx);
-
-  // Pinned as a SET so porting one without updating the inventory fails
-  // here rather than drifting. Which of the two is blocked on what is in
-  // handlers/audit.cppm.
-  //
-  // FOUR before task 6262 ported `audit trail`. Its argv is not merely
-  // deleted from the list — it moves to the cases in
-  // audit_trail_leaf.t.cpp, where the SAME `audit trail task:1` now pins
-  // the oracle's exit-2 non-integer refusal rather than an exit-64
-  // placeholder. Those two answers look alike in a summary and are not:
-  // one says "this verb does not exist yet" and the other says "that is
-  // not an entity id".
-  //
-  // THREE until task 6277 ported `audit commits`, and that one is the
-  // instructive removal. It sat here as "blocked on the git-walk seam"
-  // alongside `capture commits` and `bench harvest` — a grouping inferred
-  // from `engine.runtime.sessioncommits`'s dependencies rather than from
-  // the leaf's own 78-line handler, which spawns nothing. This case kept
-  // passing for as long as the wrong grouping stood, which is precisely
-  // what a set pinned only in one direction cannot catch: it proves the
-  // listed leaves refuse, never that they SHOULD. The both-directions
-  // count in dispatch.t.cpp is what actually holds that line.
-  //
-  // The argv differs per leaf and that is NOT incidental: `publish-decision`
-  // takes a positional and `handoff-readiness` takes none, and handing the
-  // latter a stray argument refuses at exit 2 with `ExtrasError` BEFORE
-  // dispatch ever reaches the not-implemented handler. The first draft of
-  // this case did exactly that and reported exit 2 — a refusal, but the
-  // wrong one, and one that would have kept "passing" long after those
-  // leaves were ported.
-  //
-  // TWO until task 6329 ported `audit handoff-readiness`, leaving ONE.
-  // That removal is the same shape as `audit commits`' above and is the
-  // second in this family: the leaf was recorded as "merely LARGE rather
-  // than blocked" and is in fact the family's SMALLEST at 101 zig lines,
-  // over `engine.runtime.resumecheck` alone — a module that was already in
-  // the tree when the note was written. Its argv moves to
-  // audit_handoff_readiness_leaf.t.cpp, where the bare invocation now pins
-  // the oracle's exit-1 below-threshold refusal instead of this exit-64
-  // placeholder. Same argv, different answer, and the difference is the
-  // whole point of moving it rather than deleting it.
-  std::vector<std::pair<std::string, std::vector<std::string>>> const leaves{
-      {"publish-decision", {"audit", "publish-decision", "1"}},
-  };
-  for (auto const& [verb, argv] : leaves) {
-    auto const refused = dispatch(fx, argv);
-    CHECK(refused.code == 64);
-    CHECK(refused.err == std::format("error: audit {}: not implemented in this build\n", verb));
-  }
-}
+// This file used to carry "the two unported audit leaves still refuse at
+// exit 64" here, pinning `audit publish-decision` and (earlier still)
+// `audit handoff-readiness`, `audit commits` and `audit trail` as each was
+// added and then removed from the set. `audit publish-decision` was the
+// family's last remaining entry — removed at task 6339 once `postComment`
+// landed on both adapters — so the set this case pinned is now EMPTY and
+// the case itself is gone rather than kept with nothing to assert. Its argv
+// moves to audit_publish_decision_leaf.t.cpp, where `audit publish-decision
+// 1` now pins real behaviour (the scope guard, the fixture-server request
+// log, the unconditional re-post) instead of an exit-64 placeholder. The
+// `audit` family is now fully ported and contributes nothing to this file.

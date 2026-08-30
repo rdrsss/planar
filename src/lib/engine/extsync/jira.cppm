@@ -5,14 +5,20 @@
 /// Behavior-preserving port (D2) of the four-operation core of
 /// `zig/src/engine/extsync/jira.zig`: `init`, `validate`, `pull`, `push`,
 /// `render`, and the `parseIssue` / `extractADFText` / `mapStatus` /
-/// `isValidIssueKey` helpers behind them.
+/// `isValidIssueKey` helpers behind them — PLUS `post_comment` (plan 996,
+/// task 6339), landed for `audit publish-decision`.
 ///
-/// ## What is NOT ported, and with which verb it is deferred
+/// ## `post_comment` is NOT part of the four-operation `external_adapter`
+/// interface
 ///
-///   - `postComment` — the Atlassian-Document-Format comment POST. It is not
-///     part of the four-operation adapter interface; its only caller is
-///     `ext propagate`, which is deferred (see the bucket's CMakeLists.txt).
-///     Deferred WITH that verb rather than speculatively.
+/// It is a fifth, adapter-specific method, exactly like the Zig original:
+/// `postComment` sits on `JiraAdapter` itself, not behind
+/// `extsync.LocalAdapter`'s vtable. `ext propagate`'s own caller
+/// (`parent_issue.zig`'s injected `postCommentFn`) stays deferred with that
+/// verb — this port only wires the ONE caller this cycle needs,
+/// `audit publish-decision`, which reaches the concrete adapter through
+/// `adapter_handle::post_comment` (see `ext_adapter_factory.cppm`) rather
+/// than through `external_adapter`.
 ///
 /// Everything else in jira.zig is here.
 ///
@@ -106,6 +112,20 @@ public:
   /// @return The JSON payload.
   [[nodiscard]] auto render(const adapter::local_entity& local, const adapter::create_options& opts) const
       -> std::expected<std::string, adapter::adapter_error> override;
+
+  /// @brief `POST {base}/rest/api/3/issue/{key}/comment` with `comment`
+  /// wrapped as a single-paragraph Atlassian Document Format body.
+  ///
+  /// Runs `validate` first, so a malformed key never reaches the transport.
+  /// Accepts 200 or 201; anything else (including a 404 for an issue that
+  /// does not exist) is `unexpected_status`. Always issues exactly one
+  /// request — there is no "already posted" check, matching the Zig
+  /// original: every call appends a NEW comment, unconditionally.
+  /// @param external_id The issue key.
+  /// @param comment The plain-text comment body.
+  /// @return Success, or the failure.
+  [[nodiscard]] auto post_comment(std::string_view external_id, std::string_view comment) const
+      -> std::expected<void, adapter::adapter_error>;
 };
 
 /// @brief Map a Jira status name to Planar's status vocabulary.

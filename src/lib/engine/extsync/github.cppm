@@ -18,7 +18,6 @@
 ///     `ext create` and `ext propagate`.
 ///   - `linkSubIssue` / `createSubIssue` / `linkSubIssueProbe` — the
 ///     parent/child issue hierarchy `ext propagate` builds.
-///   - `postComment` — `ext propagate`'s decision-comment surface.
 ///   - The entire ProjectsV2 GraphQL arm (`getAuthenticatedOwner`,
 ///     `createProjectV2`, `addProjectV2Item`, `setProjectV2ItemFieldValue`,
 ///     `getProjectV2Fields`, `graphqlDo`) — `ext propagate --github-strategy
@@ -47,6 +46,15 @@
 ///     string the operator sees (`open:in-progress`, `closed:wontfix`).
 ///
 /// An unrecognized local status pushes as plain `open` — it does NOT fail.
+///
+/// ## `post_comment`, landed at plan 996 task 6339
+///
+/// A fifth, adapter-specific method (not part of `external_adapter`),
+/// exactly like `jira_adapter::post_comment` — see that class's header for
+/// why. Its only ported caller is `audit publish-decision`, reached through
+/// `adapter_handle::post_comment`. Unlike `validate`, this does NOT call
+/// `validate()` as a named step — it inlines the same `parse_external_id`
+/// check the Zig original does, with the same effect.
 ///
 /// ## `push` overwrites the whole label set
 ///
@@ -122,6 +130,18 @@ public:
   /// @return The JSON payload.
   [[nodiscard]] auto render(const adapter::local_entity& local, const adapter::create_options& opts) const
       -> std::expected<std::string, adapter::adapter_error> override;
+
+  /// @brief `POST {base}/repos/{owner}/{repo}/issues/{number}/comments`.
+  ///
+  /// Parses `external_id` first (the same check `validate` runs), so a
+  /// malformed id never reaches the transport. Accepts 200 or 201; anything
+  /// else is `unexpected_status`. Always issues exactly one request — no
+  /// "already posted" check, matching the Zig original.
+  /// @param external_id The `owner/repo#number` id.
+  /// @param body The comment body.
+  /// @return Success, or the failure.
+  [[nodiscard]] auto post_comment(std::string_view external_id, std::string_view body) const
+      -> std::expected<void, adapter::adapter_error>;
 };
 
 /// @brief The `{state, labels}` pair a local status pushes as.

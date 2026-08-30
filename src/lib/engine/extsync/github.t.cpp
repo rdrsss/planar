@@ -282,6 +282,44 @@ TEST_CASE("github pull maps 404 to not_found and other statuses to unexpected_st
   CHECK(err(adapter.pull("o/r#1")) == std::optional{adapter_error::parse_failed});
 }
 
+TEST_CASE("github post_comment POSTs to the comments endpoint with the body escaped", "[extsync][github]") {
+  // github.zig, "postComment POSTs to comments endpoint with body" — pins
+  // the URL shape and the escaped-quote body.
+  recording_transport wire;
+  wire.reply_status = 201;
+  github_adapter const adapter("", bearer("tok"), wire);
+
+  auto const result = adapter.post_comment("acme/api#42", R"(Hello "world")");
+  REQUIRE(result.has_value());
+  CHECK(wire.calls == 1);
+  CHECK(wire.last_verb == planar::http::method::post);
+  CHECK(wire.last_url == "https://api.github.com/repos/acme/api/issues/42/comments");
+  REQUIRE(wire.last_body.has_value());
+  CHECK(*wire.last_body == R"({"body":"Hello \"world\""})");
+  CHECK(wire.header_value("Accept") == std::optional<std::string>{"application/vnd.github+json"});
+}
+
+TEST_CASE("github post_comment refuses a malformed external id before sending", "[extsync][github]") {
+  recording_transport  wire;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(err(adapter.post_comment("not-an-id", "hi")) == std::optional{adapter_error::invalid_external_id});
+  CHECK(wire.calls == 0);
+}
+
+TEST_CASE("github post_comment accepts 200 as well as 201", "[extsync][github]") {
+  recording_transport wire;
+  wire.reply_status = 200;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(adapter.post_comment("o/r#1", "hi").has_value());
+}
+
+TEST_CASE("github post_comment reports unexpected_status for anything else", "[extsync][github]") {
+  recording_transport wire;
+  wire.reply_status = 422;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(err(adapter.post_comment("o/r#1", "hi")) == std::optional{adapter_error::unexpected_status});
+}
+
 TEST_CASE("github render emits the label set for a doing task", "[extsync][github]") {
   // github.zig, "render emits label set for doing status".
   recording_transport  wire;

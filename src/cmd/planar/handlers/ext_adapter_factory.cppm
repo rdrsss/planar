@@ -212,6 +212,19 @@ public:
     return _token;
   }
 
+  /// @brief Post a comment to the underlying issue/ticket, dispatched to
+  /// the concrete adapter's `post_comment` by `kind()`.
+  ///
+  /// `post_comment` is NOT part of `external_adapter`'s four-operation
+  /// interface — see `jira.cppm` / `github.cppm` for why — so this cannot
+  /// go through `instance()`. Added at plan 996 task 6339 for
+  /// `audit publish-decision`, the leaf's only caller.
+  /// @param external_id The issue/ticket id, in the adapter's own format.
+  /// @param body The comment body.
+  /// @return Success, or the adapter's failure.
+  [[nodiscard]] auto post_comment(std::string_view external_id, std::string_view body) const
+      -> std::expected<void, adapter::adapter_error>;
+
 private:
   std::unique_ptr<http::transport>           _wire;    ///< Destroyed LAST — the adapter points at it.
   std::unique_ptr<adapter::external_adapter> _adapter; ///< The constructed adapter.

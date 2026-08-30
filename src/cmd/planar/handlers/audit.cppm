@@ -4,7 +4,7 @@
 ///
 /// Port of zig/src/cmd/planar/handlers/audit/session.zig.
 ///
-/// ## Two of the family's five leaves, and the other three are BLOCKED
+/// ## All five of the family's leaves are now landed
 ///
 /// `audit session` landed at task 6090; `audit trail` at task 6262. Named
 /// rather than left to be inferred from the dispatch table:
@@ -24,10 +24,6 @@
 ///     blocked. The mistake was inferring a leaf's dependencies from its
 ///     MODULE's rather than from its own handler, and it survived three
 ///     files and two tasks before task 6272 caught it.
-///   - `audit publish-decision` posts a decision body to the operational
-///     plane, so it needs an adapter INSTANCE — the auth-resolving adapter
-///     factory that `ext create` / `ext propagate` / `ext test` and the
-///     three `sync` leaves are all still waiting on.
 ///   - `audit handoff-readiness` landed at task 6329, and THE ENTRY THAT
 ///     USED TO SIT HERE — "the one that is merely LARGE rather than
 ///     blocked" — was wrong in the same direction as the `audit commits`
@@ -37,8 +33,15 @@
 ///     when the note was written. Recorded rather than deleted because
 ///     this is now the second time this file has over-stated a leaf's
 ///     cost from something other than the leaf's own handler.
-///
-///     `audit publish-decision` is the family's only remaining leaf.
+///   - `audit publish-decision` landed at task 6339, closing the family.
+///     It had been carried as needing an adapter INSTANCE — the
+///     auth-resolving factory `ext create` / `ext propagate` / `ext test`
+///     and the three `sync` leaves were all still waiting on. That
+///     factory (`ext_adapter_factory.cppm`) landed at task 6258; what
+///     remained was `postComment` on both adapters (~81 Zig lines, not
+///     part of the four-operation `external_adapter` interface — see
+///     `jira.cppm` / `github.cppm`) plus this handler. See this leaf's own
+///     doc comment below for the scope guard and the posting posture.
 ///
 /// ## `audit trail` IS TWO VERBS SHARING A NAME, AND `--link` WINS
 ///
@@ -227,5 +230,54 @@ export auto audit_trail(context& ctx, const cliapp::parsed_args& args) -> handle
 /// @param args The parsed command line.
 /// @return Success when the threshold is met, or the exit-1 refusal.
 export auto audit_handoff_readiness(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar audit publish-decision <decision-id> [--scope S]
+/// [--json]`.
+///
+/// Port target: zig/src/cmd/planar/handlers/audit/publish_decision.zig
+/// (plan 996, task 6339) — posts the decision's title/body/rationale as a
+/// comment to EVERY operational-plane target linked directly to the
+/// decision or transitively via `entity_links` FROM the decision.
+///
+/// ## The scope guard runs BEFORE anything is built or sent
+///
+/// `guard_with_membership` is checked immediately after the decision loads,
+/// ahead of the comment render, the session lookup, and every per-link
+/// adapter build — a scope mismatch means ZERO HTTP requests, not a
+/// refusal after the fact. Oracle-captured and asserted on the fixture
+/// server's request log, not just the exit code: a version that built the
+/// comment first and refused only at POST time would look identical on
+/// stdout/stderr/exit-code alone.
+///
+/// ## Every call POSTS AGAIN — there is no "already posted" de-dup
+///
+/// Unlike `ext create` (which re-POSTs a NEW remote ticket on a name
+/// collision) and `workbench publish` (which refuses outright) and
+/// `propagate-one` (which skips), this leaf implements a FOURTH posture:
+/// it always posts, unconditionally, on every invocation, because a
+/// decision comment is not an idempotent create — Jira and GitHub both
+/// treat it as a fresh comment every time. Running this leaf N times
+/// against the same decision produces N comments and N `sync_events` rows
+/// per linked target. Asserted on the fixture server's request COUNT, not
+/// on the exit code.
+///
+/// ## PER-LINK failures degrade; every LINKS READ does not
+///
+/// A failed `external_systems` lookup, adapter build, or `post_comment`
+/// call for ONE link records a `sync_events` failure row and continues to
+/// the next link — the run still exits 0 and reports how many comments
+/// actually posted. Three OTHER reads are not given that latitude and abort
+/// the whole verb instead: the `links_for_entity` read inside the DIRECT
+/// `publish_target` call (`"direct target"` in the error text), the same
+/// read inside each LINKED call (`"linked target"`), and the `entity_links`
+/// query that discovers which linked calls to make at all. All three match
+/// the oracle's bare `try` on those calls in `publishTarget` and its two
+/// call sites, versus the `catch |e| { recordResult(...); continue; }` on
+/// every per-link failure inside the loop.
+/// @param ctx The process context.
+/// @param args The parsed command line.
+/// @return Success after posting (even when zero links exist to post to),
+/// or the load/scope refusal.
+export auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

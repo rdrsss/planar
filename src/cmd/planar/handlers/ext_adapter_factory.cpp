@@ -172,6 +172,14 @@ auto build_adapter(const engine::external::system::external_system& sys, const f
   return std::make_unique<adapter_handle>(std::move(wire), std::move(made), adapter_kind::github, std::move(*token));
 }
 
+auto adapter_handle::post_comment(std::string_view external_id, std::string_view body) const
+    -> std::expected<void, adapter::adapter_error> {
+  if (_kind == adapter_kind::jira) {
+    return static_cast<const engine::extsync::jira::jira_adapter&>(*_adapter).post_comment(external_id, body);
+  }
+  return static_cast<const engine::extsync::github::github_adapter&>(*_adapter).post_comment(external_id, body);
+}
+
 auto factory_error_message(factory_error err, const engine::external::system::external_system& sys) -> domain_error {
   switch (err) {
   case factory_error::token_env_var_missing:

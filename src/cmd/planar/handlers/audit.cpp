@@ -5,14 +5,17 @@
 module planar.cmd.planar.handlers.audit;
 
 import std;
+import planar.adapter;
 import planar.cliapp.args;
 import planar.db;
 import planar.json_text;
+import planar.engine.identity;
 import planar.engine.runtime.audit_trail;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.sessioncommits;
 import planar.engine.runtime.session;
 import planar.engine.runtime.resumecheck;
+import planar.engine.planning.decision;
 import planar.engine.planning.task;
 import planar.engine.external.link;
 import planar.engine.external.system;
@@ -20,6 +23,8 @@ import planar.engine.external.sync;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.scope;
+import planar.cmd.planar.handlers.ext_adapter_factory;
 
 namespace planar::cmd::handlers {
 
@@ -978,6 +983,308 @@ auto audit_handoff_readiness(context& ctx, const cliapp::parsed_args& args) -> h
   }
   ctx.out() << std::format("FAIL: threshold not met ({:.0f}% < {}%)\n", pct, threshold);
   return below();
+}
+
+namespace {
+
+// =========================================================================
+// `audit publish-decision`
+// =========================================================================
+
+/// @brief The Zig error tag for a `system::show_by_id` failure, as
+/// `sync_events.detail` records it. Mirrors `adapter::adapter_error_name`'s
+/// role for the adapter's own failures — see that function's header.
+/// @param err The failure.
+/// @return The Zig-spelled tag.
+auto system_error_name(xsys::system_error err) -> std::string_view {
+  switch (err) {
+  case xsys::system_error::not_found:
+    return "NotFound";
+  case xsys::system_error::slug_exists:
+    return "SlugExists";
+  case xsys::system_error::query_failed:
+    return "QueryFailed";
+  }
+  return "QueryFailed";
+}
+
+/// @brief The Zig error tag for a `build_adapter` failure. Mirrors
+/// `zig/src/cmd/planar/handlers/ext/adapter_factory.zig`'s `Error` set,
+/// verbatim — these are the tags `@errorName` would have produced.
+/// @param err The failure.
+/// @return The Zig-spelled tag.
+auto factory_error_tag(factory_error err) -> std::string_view {
+  switch (err) {
+  case factory_error::unsupported_auth_method:
+    return "UnsupportedAuthMethod";
+  case factory_error::token_env_var_missing:
+    return "TokenEnvVarMissing";
+  case factory_error::gh_cli_not_found:
+    return "GhCliNotFound";
+  case factory_error::gh_cli_failed:
+    return "GhCliFailed";
+  case factory_error::gh_cli_empty_token:
+    return "GhCliEmptyToken";
+  case factory_error::unsupported_system_kind:
+    return "UnsupportedSystemKind";
+  }
+  return "UnsupportedSystemKind";
+}
+
+/// @brief Render the decision comment body. Port of `buildDecisionComment`.
+///
+/// Title and status on the first line, the body (when non-empty) as its own
+/// paragraph, and the rationale (when set and non-empty) as a trailing
+/// `_Rationale:_` line with NO training newline after it.
+/// @param d The decision.
+/// @return The rendered comment.
+auto build_decision_comment(const pt::decision& d) -> std::string {
+  std::string out = std::format("**Decision: {}** [{}]\n\n", d.title, pt::decision_status_to_text(d.status));
+  if (!d.body.empty()) {
+    out += std::format("{}\n\n", d.body);
+  }
+  if (d.rationale.has_value() && !d.rationale->empty()) {
+    out += std::format("_Rationale:_ {}", *d.rationale);
+  }
+  return out;
+}
+
+/// @brief Load `sessions.started_at` for `session_id`, or unset. Port of
+/// `loadSessionRef`; the caller falls back to the decision's own
+/// `created_at` when this returns unset, matching the Zig `catch`.
+/// @param conn An open connection.
+/// @param session_id The session id, when the decision recorded one.
+/// @return The timestamp, or unset when absent or the session vanished.
+auto load_session_ref(db::connection& conn, std::optional<std::int64_t> session_id) -> std::optional<std::string> {
+  if (!session_id.has_value()) {
+    return std::nullopt;
+  }
+  auto stmt = conn.prepare("select started_at from sessions where id = ?");
+  if (!stmt || !stmt->bind_int64(1, *session_id)) {
+    return std::nullopt;
+  }
+  auto step = stmt->step();
+  if (!step || *step != db::step_result::row) {
+    return std::nullopt;
+  }
+  return stmt->column_text(0);
+}
+
+/// @brief Best-effort record of one posting attempt. Port of
+/// `recordResult` — swallows every failure (including a failure to record
+/// the failure), matching the Zig original's unconditional `catch return`.
+/// @param conn An open connection.
+/// @param link_id The `external_links` row this attempt targeted.
+/// @param ok Whether the comment posted successfully.
+/// @param detail The Zig-spelled outcome tag, or a fixed literal on success.
+void record_result(db::connection& conn, std::int64_t link_id, bool ok, std::string_view detail) {
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return;
+  }
+  auto update = conn.prepare("update external_links set last_synced_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+                             "last_sync_status = ? where id = ?");
+  if (!update || !update->bind_text(1, ok ? "ok" : "error") || !update->bind_int64(2, link_id) || !update->step()) {
+    return;
+  }
+  auto event = conn.prepare("insert into sync_events (link_id, direction, outcome, detail) values (?, 'push', ?, ?)");
+  if (!event || !event->bind_int64(1, link_id) || !event->bind_text(2, ok ? "ok" : "error") || !event->bind_text(3, detail) ||
+      !event->step()) {
+    return;
+  }
+  (void)tx->commit();
+}
+
+/// @brief The Zig error tag for a `links_for_entity` failure, as
+/// `@errorName` would have produced it on the `try` this function's Zig
+/// twin, `publishTarget`, opens with.
+/// @param err The failure.
+/// @return The Zig-spelled tag.
+auto link_error_name(xl::link_error err) -> std::string_view {
+  switch (err) {
+  case xl::link_error::not_found:
+    return "NotFound";
+  case xl::link_error::link_exists:
+    return "LinkExists";
+  case xl::link_error::query_failed:
+    return "QueryFailed";
+  }
+  return "QueryFailed";
+}
+
+/// @brief Post `comment` to every operational-plane target linked to
+/// `(kind_text, entity_id)`. Port of `publishTarget`.
+///
+/// The `entity_links` READ that discovers the TRANSITIVE targets is done by
+/// the caller and is not this function's concern. But the `links_for_entity`
+/// READ this function opens with is exactly the Zig original's bare `try`,
+/// which PROPAGATES — both of this function's call sites (`"direct target"`
+/// and `"linked target"`) wrap it in `catch |e| exit.die(...)`, so a
+/// link-read failure aborts the WHOLE verb, not just this one target. Only
+/// the failures INSIDE the per-link loop below — system lookup, adapter
+/// build, the post itself — are caught, recorded, and looped past.
+/// @param ctx The process context, for the credential environment.
+/// @param conn An open connection.
+/// @param kind_text The entity kind, verbatim (`"decision"`, or an
+/// `entity_links.to_kind` value).
+/// @param entity_id The local row id.
+/// @param comment The rendered comment body (footer NOT yet appended).
+/// @param session_ref The session timestamp/label for the footer.
+/// @param posted Incremented once per successful post.
+/// @return Success, or the `links_for_entity` failure for the caller to
+/// abort on.
+auto publish_target(context& ctx, db::connection& conn, std::string_view kind_text, std::int64_t entity_id,
+                    std::string_view comment, std::string_view session_ref, std::int64_t& posted)
+    -> std::expected<void, xl::link_error> {
+  auto const kind = xl::external_entity_kind_from_text(kind_text);
+  if (!kind.has_value()) {
+    return {};
+  }
+  auto links = xl::links_for_entity(conn, *kind, entity_id);
+  if (!links) {
+    return std::unexpected(links.error());
+  }
+
+  for (auto const& link : *links) {
+    auto system = xsys::show_by_id(conn, link.system_id);
+    if (!system) {
+      record_result(conn, link.id, false, system_error_name(system.error()));
+      continue;
+    }
+
+    auto built = build_adapter(*system, default_deps(ctx.env()));
+    if (!built) {
+      record_result(conn, link.id, false, factory_error_tag(built.error()));
+      continue;
+    }
+
+    auto const footer =
+        std::format("— posted by planar (entity: {}:{}, session: {}, link: ext:{})", kind_text, entity_id, session_ref, link.id);
+    auto const body = std::format("{}\n\n{}", comment, footer);
+
+    auto const result = (*built)->post_comment(link.external_id, body);
+    if (!result) {
+      record_result(conn, link.id, false, adapter::adapter_error_name(result.error()));
+      continue;
+    }
+    record_result(conn, link.id, true, "decision-comment");
+    ++posted;
+  }
+  return {};
+}
+
+} // namespace
+
+auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const decision_id = entity_id_arg(args, "decision-id", "decision");
+  if (!decision_id) {
+    return std::unexpected(decision_id.error());
+  }
+
+  auto decision = pt::show_decision(**conn, *decision_id);
+  if (!decision) {
+    if (decision.error() == pt::decision_error::not_found) {
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("decision {} not found", *decision_id)));
+    }
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "audit publish-decision: loading decision: QueryFailed"));
+  }
+
+  // The scope guard runs BEFORE the comment is built, the session is
+  // looked up, or any adapter is touched — a mismatch here issues ZERO
+  // HTTP requests. See this leaf's declaration for why that ordering is
+  // asserted on the fixture server's request log.
+  //
+  // ORDER WITHIN THE GUARD IS ALSO ORACLE-CAPTURED: `resolveForWrite` runs
+  // BEFORE `slugFromRef` in publish_decision.zig, not after. Observable
+  // only when both fail — reversing them swaps which "resolving ..."
+  // message a doubly-broken invocation reports.
+  auto const scope_flag = cliapp::flag_string(args, "--scope");
+  auto const scope_view = scope_flag.has_value() ? std::optional<std::string_view>{*scope_flag} : std::nullopt;
+  auto       resolved   = resolve_write_scope(ctx, scope_view, "audit publish-decision");
+  if (!resolved) {
+    return std::unexpected(resolved.error());
+  }
+
+  auto const scope_kind = [&] {
+    switch (decision->scope_kind) {
+    case pt::decision_scope_kind::global:
+      return engine::identity::scope_kind::global;
+    case pt::decision_scope_kind::association:
+      return engine::identity::scope_kind::association;
+    case pt::decision_scope_kind::repo:
+      break;
+    }
+    return engine::identity::scope_kind::repo;
+  }();
+  auto entity_scope = engine::identity::slug_from_ref(**conn, scope_kind, decision->scope_id);
+  if (!entity_scope) {
+    return std::unexpected(map_scope_error(entity_scope.error(), "audit publish-decision: resolving decision scope"));
+  }
+
+  auto const entity_view = entity_scope->has_value() ? std::optional<std::string_view>{**entity_scope} : std::nullopt;
+  auto const write_view  = resolved->scope.has_value() ? std::optional<std::string_view>{*resolved->scope} : std::nullopt;
+  if (!guard_with_membership(**conn, entity_view, write_view)) {
+    return std::unexpected(error_from_body(domain_error_kind::scope_mismatch,
+                                           std::format("decision {} belongs to a different scope", *decision_id)));
+  }
+
+  auto const comment     = build_decision_comment(*decision);
+  auto const session_ref = load_session_ref(**conn, decision->session_id).value_or(decision->created_at);
+
+  std::int64_t posted = 0;
+  // The DIRECT target's `links_for_entity` read propagates — matching the
+  // oracle's `publishTarget(...) catch |e| exit.die(ctx, e, "audit
+  // publish-decision: direct target: {s}", ...)`. Per-link failures inside
+  // `publish_target` do NOT reach here; only a failure to even list the
+  // links does.
+  if (auto const direct = publish_target(ctx, **conn, "decision", *decision_id, comment, session_ref, posted); !direct) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure,
+                        std::format("audit publish-decision: direct target: {}", link_error_name(direct.error()))));
+  }
+
+  // The `entity_links` read for the transitive targets is NOT given the
+  // same latitude as the per-link loop inside `publish_target` — a
+  // failure here aborts the whole verb, matching the oracle's bare `try`
+  // on this one query.
+  auto stmt =
+      (*conn)->prepare("select to_kind, to_id from entity_links where from_kind = 'decision' and from_id = ? order by id");
+  if (!stmt || !stmt->bind_int64(1, *decision_id)) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "audit publish-decision: preparing targets: QueryFailed"));
+  }
+  while (true) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, "audit publish-decision: reading targets: QueryFailed"));
+    }
+    if (*step == db::step_result::done) {
+      break;
+    }
+    auto const to_kind = stmt->column_text(0);
+    auto const to_id   = stmt->column_int64(1);
+    // Same propagation as the direct call above, distinguished by the
+    // oracle's OWN wording — "linked target", not "direct target".
+    if (auto const linked = publish_target(ctx, **conn, to_kind, to_id, comment, session_ref, posted); !linked) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure,
+                          std::format("audit publish-decision: linked target: {}", link_error_name(linked.error()))));
+    }
+  }
+
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << std::format(R"({{"ok":true,"decision_id":{},"comments_posted":{}}})", *decision_id, posted) << '\n';
+    return {};
+  }
+  ctx.out() << std::format("decision {} published: {} comment(s) posted\n", *decision_id, posted);
+  return {};
 }
 
 } // namespace planar::cmd::handlers

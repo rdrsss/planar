@@ -268,6 +268,37 @@ auto jira_adapter::push(std::string_view external_id, const adapter::field_chang
   return outcome;
 }
 
+auto jira_adapter::post_comment(std::string_view external_id, std::string_view comment) const
+    -> std::expected<void, adapter_error> {
+  if (auto const ok = validate(external_id); !ok) {
+    return std::unexpected(ok.error());
+  }
+
+  std::string body = R"({"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":)";
+  json_text::append_json_string(body, comment);
+  body += "}]}]}}";
+
+  auto const auth = support::auth_header(_cred);
+  if (!auth) {
+    return std::unexpected(auth.error());
+  }
+  auto const sent = _transport->send({
+      .verb    = http::method::post,
+      .url     = std::format("{}/rest/api/3/issue/{}/comment", _base_url, external_id),
+      .headers = {{.name = "Content-Type", .value = "application/json"},
+                  {.name = "Accept", .value = "application/json"},
+                  {.name = "Authorization", .value = *auth}},
+      .body    = body,
+  });
+  if (!sent) {
+    return std::unexpected(adapter_error::transport_failed);
+  }
+  if (sent->status != 201 && sent->status != 200) {
+    return std::unexpected(adapter_error::unexpected_status);
+  }
+  return {};
+}
+
 auto jira_adapter::render(const adapter::local_entity& local, const adapter::create_options& opts) const
     -> std::expected<std::string, adapter_error> {
   auto const issue_type  = opts.issue_type.value_or(std::string("Story"));
