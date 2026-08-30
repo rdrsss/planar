@@ -108,20 +108,25 @@
 #                              next-work, claim-scope resolution, the
 #                              latest-action fold-in and its JSON writers).
 #                              Not ported.
-#   report                     needs engine.introspect AND
-#                              engine.introspection_adapters. Neither is
-#                              ported. Its OTHER reputed blocker -- that it
-#                              scans the operator's home directory for
-#                              vendor transcripts and is therefore not
-#                              hermetically testable -- does not survive a
+#   report                     LANDED at task 6352, once `engine_introspect`
+#                              (task 6121) and `engine_introspection_adapters`
+#                              (tasks 6102, 6352) were both complete AND the
+#                              layer-1 `introspection_preview` extraction
+#                              (decision 981) let the two meet through
+#                              `bundle::preview` without an `engine_* ->
+#                              engine_*` edge. Its OTHER reputed blocker --
+#                              that it scans the operator's home directory
+#                              for vendor transcripts and is therefore not
+#                              hermetically testable -- did not survive a
 #                              probe: run under this file's own pinned
 #                              arena, `report --json` reports every vendor
 #                              as {"state":"unavailable","scanned":0} and
-#                              cli_log as "disabled". The scan follows
-#                              $HOME, which run_pinned() already redirects,
-#                              so the leaf IS testable here exactly like
-#                              every other one. The unported buckets are
-#                              the whole of what blocks it.
+#                              cli_log as "disabled" (or "unavailable" when
+#                              logging is on but the DB adapter has nothing
+#                              to report). The scan follows $HOME, which
+#                              run_pinned() already redirects, so the leaf
+#                              was testable here exactly like every other
+#                              one all along. See handlers/report.cppm.
 #   spec ingest --apply        needs engine.ingestor.apply (1,616 lines)
 #                              and engine.workbench (unported entirely).
 #                              engine_ingest here is the READ side only.
@@ -476,6 +481,7 @@ planar_binary(planar
     handlers/health.cppm
     handlers/audit.cppm
     handlers/dashboard.cppm
+    handlers/report.cppm
     handlers/task.cppm
     handlers/feedback.cppm
     handlers/question.cppm
@@ -531,6 +537,7 @@ planar_binary(planar
     handlers/health.cpp
     handlers/audit.cpp
     handlers/dashboard.cpp
+    handlers/report.cpp
     handlers/task.cpp
     handlers/feedback.cpp
     handlers/question.cpp
@@ -565,6 +572,13 @@ planar_binary(planar
     engine_extsync
     engine_grouping
     engine_identity
+    # New at task 6352, for `report` (handlers/report.cpp): the DB-aggregate
+    # half (`engine_introspect`) and the filesystem-discovery half
+    # (`engine_introspection_adapters`) it composes. Both were already
+    # ported (tasks 6121, 6102) and are D15-forbidden from depending on
+    # each other; this binary is where they are legally allowed to meet.
+    engine_introspect
+    engine_introspection_adapters
     # New at task 6324, for `task packet` (handlers/task.cpp). The leaf uses
     # exactly one entry point — `packet::assemble_task` plus its two
     # renderers. It does NOT reach the spec-ingest read pipeline; see

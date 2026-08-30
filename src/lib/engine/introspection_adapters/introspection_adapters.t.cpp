@@ -1,14 +1,19 @@
 // @file introspection_adapters.t.cpp
 // @brief Unit tests for `planar.engine.introspection_adapters` (plan 996,
-// task 6102).
+// tasks 6102 and 6352).
 //
-// Ported from the in-memory-collector subset of
-// zig/src/engine/introspection_adapters.zig's colocated `test` blocks (the
-// disk-discovery tests are out of scope here — see the module header).
-// Fixtures for the "current vendor" cases are transcribed inline from
+// Ported from zig/src/engine/introspection_adapters.zig's colocated `test`
+// blocks. The in-memory-collector cases (task 6102) transcribe their
+// fixtures inline from
 // zig/integration_tests/fixtures/introspection_transcripts/*.jsonl rather
-// than read from disk, so these tests have no filesystem dependency and no
-// working-directory assumption.
+// than reading from disk, so THOSE tests have no filesystem dependency and
+// no working-directory assumption. The discovery-half cases (task 6352,
+// below the `--- discovery half ---` marker) necessarily DO touch a real
+// filesystem — that is the surface under test — but every path they touch
+// is constructed under `std::filesystem::temp_directory_path()` with a
+// clock-keyed scratch directory removed on scope exit (`scratch_dir`,
+// the same pattern `planar.engine.workbench.fsutil.t.cpp` uses). None of
+// them read `$HOME` or any other environment variable.
 //
 // What is pinned:
 //
@@ -430,4 +435,286 @@ TEST_CASE("current vendor fixture union distinguishes irrelevant and malformed e
                                "PRIVATE_ENTITY_TEXT_SENTINEL", "/private/raw/path/sentinel"}) {
     CHECK_FALSE(preview_leaks(preview, sentinel));
   }
+}
+
+// ============================================================================
+// --- discovery half --- (task 6352): collect_preview_from_paths,
+// collect_vendor_path, the fault-injection seam, CliLogAdapter.
+// ============================================================================
+
+namespace {
+
+/// @brief A scratch directory removed on scope exit. Same pattern as
+/// `planar.engine.workbench.fsutil.t.cpp`'s `scratch_dir`.
+struct scratch_dir {
+  std::filesystem::path path_;
+
+  scratch_dir()
+      : path_(std::filesystem::temp_directory_path() / std::format("planar_ia_discovery_{}_{}",
+                                                                   std::chrono::steady_clock::now().time_since_epoch().count(),
+                                                                   reinterpret_cast<std::uintptr_t>(this))) {
+    std::error_code ec;
+    std::filesystem::create_directories(path_, ec);
+  }
+  scratch_dir(const scratch_dir&)            = delete;
+  scratch_dir& operator=(const scratch_dir&) = delete;
+  ~scratch_dir() {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+};
+
+auto write(const std::filesystem::path& path, std::string_view content) -> void {
+  if (path.has_parent_path()) {
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+  }
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  file << content;
+}
+
+auto coverage_for(const ia::preview& p, ia::vendor v) -> const ia::coverage_row* {
+  for (auto const& c : p.coverage) {
+    if (c.v == v) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("collect_preview_from_paths: a disabled vendor reports coverage disabled, no filesystem touch",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir                 scratch;
+  ia::transcript_config const config{.home_dir = scratch.path_.string(), .claude_enabled = false};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->state == ia::coverage_state::disabled);
+  CHECK(claude->scanned == 0);
+  CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::disabled));
+}
+
+TEST_CASE("collect_preview_from_paths: a missing built-in directory reports unavailable, not a crash",
+          "[engine][introspection_adapters][discovery]") {
+  // No .claude/projects under this scratch home at all — the built-in the
+  // oracle's own `report --json` sees on a fresh scratch $HOME (verified
+  // against the built zig oracle in a pinned arena).
+  scratch_dir                 scratch;
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
+
+  for (auto const v : {ia::vendor::claude, ia::vendor::codex, ia::vendor::copilot}) {
+    auto const* cov = coverage_for(preview, v);
+    REQUIRE(cov != nullptr);
+    CHECK(cov->state == ia::coverage_state::unavailable);
+    CHECK(cov->scanned == 0);
+  }
+  // No CLI adapter supplied at all -> cli_log reports unavailable too,
+  // mirroring collectPreviewFromPathsWithFs's `else` arm (zig:275).
+  auto const* cli_log = coverage_for(preview, ia::vendor::cli_log);
+  REQUIRE(cli_log != nullptr);
+  CHECK(cli_log->state == ia::coverage_state::unavailable);
+}
+
+TEST_CASE("collect_preview_from_paths: a real directory of transcripts is scanned and normalized",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir scratch;
+  auto const  claude_dir = scratch.path_ / ".claude" / "projects";
+  write(claude_dir / "session1.jsonl",
+        "{\"schema\":1,\"kind\":\"cli_invocation\",\"verb_path\":\"planar task show\",\"exit_code\":1,"
+        "\"error_category\":\"not_found\",\"recorded_at\":\"2026-07-12T12:00:01Z\"}\n"
+        "not json at all\n");
+  // A non-.jsonl file must be SKIPPED for claude (jsonl_only == true).
+  write(claude_dir / "notes.txt", "irrelevant");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->state == ia::coverage_state::observed);
+  // Two lines scanned: the malformed non-json line is counted, and the
+  // legacy cli_invocation-shaped record parses as JSON but is not a
+  // recognized Claude envelope (no "version"/"type": tool_result/
+  // assistant/user) — malformed too, under extract_claude's own rules.
+  CHECK(claude->scanned == 2);
+  CHECK(coverage_accounted(*claude));
+}
+
+TEST_CASE("collect_preview_from_paths: an override directory with the documented /**/*.jsonl suffix resolves to its parent",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir scratch;
+  auto const  override_dir = scratch.path_ / "custom_claude_logs";
+  write(override_dir / "a.jsonl", "not json\n");
+
+  ia::transcript_config const config{.home_dir    = scratch.path_.string(),
+                                     .claude_path = (override_dir / "**" / "*.jsonl").string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->state == ia::coverage_state::observed);
+  CHECK(claude->scanned == 1);
+  CHECK(claude->malformed == 1);
+}
+
+TEST_CASE("collect_preview_from_paths: copilot is NOT jsonl_only — a non-.jsonl file still counts",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir scratch;
+  auto const  copilot_dir = scratch.path_ / ".copilot" / "session-state";
+  write(copilot_dir / "session.log", "not json\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
+
+  auto const* copilot = coverage_for(preview, ia::vendor::copilot);
+  REQUIRE(copilot != nullptr);
+  CHECK(copilot->state == ia::coverage_state::observed);
+  CHECK(copilot->scanned == 1);
+}
+
+TEST_CASE("collect_preview_from_paths: fault injection on selected_stat marks the vendor unavailable with no warning",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "not json\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::fs_fault const          fault = [](ia::vendor v, ia::fs_operation op, std::string_view) {
+    return v == ia::vendor::claude && op == ia::fs_operation::selected_stat;
+  };
+  auto const preview = ia::collect_preview_from_paths(config, std::nullopt, {}, fault);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->state == ia::coverage_state::unavailable);
+  CHECK(claude->scanned == 0);
+  // `collect_preview`'s OWN post-processing loop (unchanged since task
+  // 6102) raises exactly one `unavailable` warning for ANY unavailable
+  // coverage row, regardless of what marked it that way — so this DOES
+  // carry a warning, unlike `collect_vendor_path`'s own early-return arm
+  // (mirroring the oracle's `stat := ... catch { return owned.append(...)
+  // }`, zig:322-324) which pushes NO warning of its own. The net count is
+  // what distinguishes the two paths: exactly one warning here, versus two
+  // (one from `collect_vendor_path`'s explicit push, one from
+  // `collect_preview`'s generic loop) for `directory_open`/
+  // `directory_walk` below — matches the oracle's own `report --json`
+  // against a scratch $HOME with NO `.claude/projects` at all, which
+  // reports exactly one `{"vendor":"claude","kind":"unavailable",
+  // "count":1}`, not two.
+  auto const unavailable_count = std::ranges::count_if(preview.warnings, [](ia::warning_row const& w) {
+    return w.v == ia::vendor::claude && w.kind == ia::warning_kind::unavailable;
+  });
+  CHECK(unavailable_count == 1);
+
+  // A fault targeting a DIFFERENT vendor leaves this one untouched — the
+  // seam discriminates by vendor, not just by operation.
+  CHECK(coverage_for(preview, ia::vendor::codex)->state == ia::coverage_state::unavailable);
+}
+
+TEST_CASE("collect_preview_from_paths: fault injection on directory_walk raises a warning and marks unavailable",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir scratch;
+  std::filesystem::create_directories(scratch.path_ / ".claude" / "projects");
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "not json\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::fs_fault const          fault = [](ia::vendor v, ia::fs_operation op, std::string_view) {
+    return v == ia::vendor::claude && op == ia::fs_operation::directory_walk;
+  };
+  auto const preview = ia::collect_preview_from_paths(config, std::nullopt, {}, fault);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->state == ia::coverage_state::unavailable);
+  // TWO `unavailable` warnings this time — `collect_vendor_path`'s own
+  // explicit push (zig:337-339's `try warnings.append(...)` before the
+  // early return) PLUS `collect_preview`'s generic one, unlike
+  // `selected_stat` above which contributes only the latter. See that
+  // test's comment for the full account.
+  auto const unavailable_count = std::ranges::count_if(preview.warnings, [](ia::warning_row const& w) {
+    return w.v == ia::vendor::claude && w.kind == ia::warning_kind::unavailable;
+  });
+  CHECK(unavailable_count == 2);
+}
+
+TEST_CASE("collect_preview_from_paths: the file cap stops scanning and raises file_cap, not a crash",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "not json\n");
+  write(scratch.path_ / ".claude" / "projects" / "b.jsonl", "also not json\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_files = 1};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  // Exactly one of the two files was scanned before the cap fired.
+  CHECK(claude->scanned == 1);
+  CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::file_cap));
+}
+
+TEST_CASE("collect_preview_from_paths: the CLI adapter feeds an authoritative cli_log source",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir scratch;
+
+  ia::transcript_config const config{
+      .home_dir = scratch.path_.string(), .claude_enabled = false, .codex_enabled = false, .copilot_enabled = false};
+  ia::cli_log_adapter const adapter{
+      .enabled = true,
+      .read    = [](std::size_t) -> ia::cli_read_result {
+        return ia::cli_read_result{
+            .status = ia::cli_read_status::ok,
+            .bytes  = "{\"schema\":1,\"kind\":\"cli_invocation\",\"verb_path\":\"planar plan show\","
+                      "\"exit_code\":0,\"error_category\":null,\"recorded_at\":\"2026-07-12T12:00:01Z\"}\n",
+        };
+      },
+  };
+  auto const preview = ia::collect_preview_from_paths(config, adapter);
+
+  auto const* cli_log = coverage_for(preview, ia::vendor::cli_log);
+  REQUIRE(cli_log != nullptr);
+  CHECK(cli_log->state == ia::coverage_state::observed);
+  CHECK(cli_log->scanned == 1);
+  // exit_code 0, no retry/abandon/gap evidence -> ignored, not a signal.
+  CHECK(cli_log->ignored == 1);
+}
+
+TEST_CASE("collect_preview_from_paths: an adapter read failure raises cli_adapter_failed, an empty read does not",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir                 scratch;
+  ia::transcript_config const config{
+      .home_dir = scratch.path_.string(), .claude_enabled = false, .codex_enabled = false, .copilot_enabled = false};
+
+  ia::cli_log_adapter const failing{
+      .enabled = true,
+      .read    = [](std::size_t) -> ia::cli_read_result { return ia::cli_read_result{.status = ia::cli_read_status::failed}; },
+  };
+  auto const failed_preview = ia::collect_preview_from_paths(config, failing);
+  CHECK(has_warning(failed_preview.warnings, ia::vendor::cli_log, ia::warning_kind::cli_adapter_failed));
+  CHECK(coverage_for(failed_preview, ia::vendor::cli_log)->state == ia::coverage_state::unavailable);
+
+  ia::cli_log_adapter const unavailable{
+      .enabled = true,
+      .read    = [](std::size_t) -> ia::cli_read_result { return ia::cli_read_result{}; }, // default: unavailable, no error
+  };
+  auto const unavailable_preview = ia::collect_preview_from_paths(config, unavailable);
+  CHECK_FALSE(has_warning(unavailable_preview.warnings, ia::vendor::cli_log, ia::warning_kind::cli_adapter_failed));
+  CHECK(coverage_for(unavailable_preview, ia::vendor::cli_log)->state == ia::coverage_state::unavailable);
+}
+
+TEST_CASE("collect_preview_from_paths: a disabled CLI adapter reports coverage disabled",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir                 scratch;
+  ia::transcript_config const config{
+      .home_dir = scratch.path_.string(), .claude_enabled = false, .codex_enabled = false, .copilot_enabled = false};
+  ia::cli_log_adapter const adapter{.enabled = false, .read = {}};
+  auto const                preview = ia::collect_preview_from_paths(config, adapter);
+
+  auto const* cli_log = coverage_for(preview, ia::vendor::cli_log);
+  REQUIRE(cli_log != nullptr);
+  CHECK(cli_log->state == ia::coverage_state::disabled);
 }

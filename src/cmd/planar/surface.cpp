@@ -4164,6 +4164,12 @@ auto unported_paths() -> std::span<std::string_view const> {
       // the whole of what blocked them.
       "health",
       "import",
+      // `report` left this inventory at task 6352, once `engine_introspect`
+      // (task 6121, DB aggregates) and `engine_introspection_adapters`
+      // (tasks 6102 and 6352, filesystem discovery) were both complete and
+      // decision 981's layer-1 `introspection_preview` extraction let
+      // `bundle::preview` reach across the D15-forbidden `engine_* ->
+      // engine_*` gap between them. See src/cmd/planar/handlers/report.cppm.
       // `link` left this inventory at task 6301. It was never engine-blocked:
       // `external::link::create`, `external::system::show_by_slug` and the
       // three `*_from_text` enums were all present, and the belief that it
@@ -4263,7 +4269,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       // set means opposite things to the two, `--closure-source` exists on
       // only one of them, and `jaccard` renders shortest-round-trip in JSON
       // but fixed-4-decimal in text. See strategy.cppm.
-      "report",
       "spec ingest",
       // `sync pull`, `sync push` and `sync resolve` left this inventory at
       // task 6294. All three were briefed as blocked on the unported

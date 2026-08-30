@@ -11,10 +11,12 @@ import std;
 import planar.db;
 import planar.db.migrate;
 import planar.engine.introspect;
+import planar.introspection_preview;
 
 namespace {
 
 namespace intro = planar::engine::introspect;
+namespace ip    = planar::introspection_preview;
 
 struct scratch_db_path {
   std::filesystem::path path_;
@@ -499,14 +501,106 @@ TEST_CASE("render_json: empty windows emit empty arrays, never nulls", "[engine]
   CHECK(json.ends_with("}\n"));
 }
 
-TEST_CASE("render_text: introspection preview renders 'unavailable' — bundle carries no preview field (D15)",
+TEST_CASE("render_text: introspection preview renders 'unavailable' when build() leaves it unset",
           "[engine][introspect][render]") {
+  // `bundle` HAS carried a `preview` field since task 6352 (decision 981) —
+  // this test's title used to say otherwise, citing D15 as a permanent
+  // reason the field could not exist at all. D15 only forbade this
+  // module reaching `engine_introspection_adapters` directly; decision
+  // 981's layer-1 extraction closed that gap. What is still true, and
+  // what this test actually pins, is that `build()` (DB-only) never
+  // POPULATES the field — only the `report` handler does, by calling
+  // `introspection_adapters::collect_preview_from_paths` separately. A
+  // bare `build()` call therefore always renders "unavailable" here.
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
   auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
   REQUIRE(b.has_value());
+  REQUIRE_FALSE(b->preview.has_value());
 
   auto const text = intro::render_text(*b);
   CHECK(text.find("[introspection preview] unavailable\n") != std::string::npos);
+}
+
+TEST_CASE("render_text: a preview with no coverage rows renders 'empty', distinct from unset ('unavailable')",
+          "[engine][introspect][render][preview]") {
+  // The oracle distinguishes THREE preview render states, not two: unset
+  // (`bundle.preview == null`, "unavailable"), present-but-no-coverage-rows
+  // ("empty" — reachable only if a caller constructs an empty `preview` by
+  // hand; `collect_preview_from_paths` always emits at least four coverage
+  // rows in production), and populated (rendered in full, next test). This
+  // pins the middle state so a future edit cannot silently collapse it
+  // into either of the other two.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+  b->preview = ip::preview{};
+  REQUIRE(b->preview->coverage.empty());
+
+  auto const text = intro::render_text(*b);
+  CHECK(text.find("[introspection preview] empty\n") != std::string::npos);
+  CHECK(text.find("unavailable") == std::string::npos);
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find(R"("introspection_preview":{"signals":[],"coverage":[],"warnings":[]})") != std::string::npos);
+}
+
+TEST_CASE("build+render: a populated preview renders every coverage/signal/warning row, in order, both formats",
+          "[engine][introspect][render][preview]") {
+  // No prior test exercised `render_text`/`render_json`'s POPULATED preview
+  // branch at all (only "unset" and, above, "empty") — this closes that
+  // gap and pins the exact oracle-captured shapes (zig:872-909,
+  // 1013-1040): one coverage line per row, then one signal line, then one
+  // warning line (text); one flat array per field, vendor/category/state/
+  // kind rendered as their bare tag names, never numeric (JSON).
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+  b->preview = ip::preview{
+      .signals =
+          {
+              ip::signal_row{
+                  .v          = ip::vendor::claude,
+                  .verb_path  = "planar task show",
+                  .cat        = ip::category::failure,
+                  .count      = 3,
+                  .first_seen = "2026-07-12T12:00:00Z",
+                  .last_seen  = "2026-07-12T12:05:00Z",
+              },
+          },
+      .coverage =
+          {
+              ip::coverage_row{
+                  .v          = ip::vendor::claude,
+                  .state      = ip::coverage_state::observed,
+                  .scanned    = 10,
+                  .malformed  = 1,
+                  .normalized = 3,
+                  .ignored    = 6,
+                  .capped     = 0,
+              },
+          },
+      .warnings =
+          {
+              ip::warning_row{.v = ip::vendor::claude, .kind = ip::warning_kind::malformed, .count = 1},
+          },
+  };
+
+  auto const text = intro::render_text(*b);
+  CHECK(text.find("[introspection preview]\n"
+                  "  claude: state=observed scanned=10 normalized=3 ignored=6 malformed=1 capped=0\n"
+                  "  signal claude/planar task show/failure: count=3 first=2026-07-12T12:00:00Z last=2026-07-12T12:05:00Z\n"
+                  "  warning claude/malformed: count=1\n") != std::string::npos);
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find(R"("introspection_preview":{"signals":[{"vendor":"claude","verb_path":"planar task show",)"
+                  R"("category":"failure","count":3,"first_seen":"2026-07-12T12:00:00Z",)"
+                  R"("last_seen":"2026-07-12T12:05:00Z"}],"coverage":[{"vendor":"claude","state":"observed",)"
+                  R"("scanned":10,"malformed":1,"normalized":3,"capped":0,"ignored":6}],)"
+                  R"("warnings":[{"vendor":"claude","kind":"malformed","count":1}]}})") != std::string::npos);
 }

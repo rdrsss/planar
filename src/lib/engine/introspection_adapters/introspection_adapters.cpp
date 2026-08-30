@@ -1,6 +1,6 @@
 /// @file introspection_adapters.cpp
 /// @brief Implementation of `planar.engine.introspection_adapters` (plan
-/// 996, task 6102). See introspection_adapters.cppm for scope.
+/// 996, tasks 6102 and 6352). See introspection_adapters.cppm for scope.
 
 module;
 
@@ -10,6 +10,7 @@ module planar.engine.introspection_adapters;
 
 import std;
 import planar.json_dom;
+import planar.introspection_preview;
 
 namespace planar::engine::introspection_adapters {
 
@@ -842,6 +843,270 @@ auto discover(bool enabled, std::string_view override_path, std::string_view bui
     return std::nullopt;
   }
   return override_path.empty() ? builtin : override_path;
+}
+
+// ===========================================================================
+// Discovery half (task 6352): collect_preview_from_paths and
+// collect_vendor_path. See introspection_adapters.cppm for the exported
+// vocabulary this section builds on.
+// ===========================================================================
+
+namespace {
+
+/// @brief Count non-blank lines in `bytes`. Mirrors the oracle's
+/// `countRecords` (zig:423): the same JSONL "one record per non-blank
+/// line" convention `collect_preview`'s own line-splitting loop uses.
+auto count_records(std::string_view bytes) -> std::size_t {
+  std::size_t count = 0;
+  std::size_t start = 0;
+  bool        more  = true;
+  while (more) {
+    auto const nl   = bytes.find('\n', start);
+    auto const line = nl == std::string_view::npos ? bytes.substr(start) : bytes.substr(start, nl - start);
+    if (nl == std::string_view::npos) {
+      more = false;
+    } else {
+      start = nl + 1;
+    }
+    std::string_view trimmed = line;
+    while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t' || trimmed.front() == '\r')) {
+      trimmed.remove_prefix(1);
+    }
+    while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t' || trimmed.back() == '\r')) {
+      trimmed.remove_suffix(1);
+    }
+    if (!trimmed.empty()) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+/// @brief Whether the fault seam wants `operation` to fail. An empty
+/// (default-constructed) `fault` never fails anything.
+auto fs_should_fail(const fs_fault& fault, vendor v, fs_operation operation, std::string_view path) -> bool {
+  return static_cast<bool>(fault) && fault(v, operation, path);
+}
+
+/// @brief Discover and read one vendor's transcript source, applying the
+/// shared file/byte/record caps, and append exactly one `raw_source` to
+/// `owned`. Mirrors the oracle's `collectVendorPath` (zig:307-416).
+///
+/// TRANSLATION NOTE on the fault-injection seam: the oracle's Zig I/O layer
+/// exposes `opendir` and `walk` as two distinct fallible steps
+/// (`FsOperation.directory_open`/`.directory_walk`), which this port
+/// preserves as two separate `fs_should_fail` checks even though
+/// `std::filesystem` does not expose an "open a directory handle" step
+/// distinct from iterating it — `directory_open`'s real operation below is
+/// a non-recursive probe `directory_iterator`, `directory_walk`'s is the
+/// actual `recursive_directory_iterator`. Both fault kinds fire on real I/O
+/// failure either way; the seam split matters only to a test choosing
+/// which of the two to inject, not to any oracle-observable behavior (the
+/// caller never sees WHICH `FsOperation` failed — only the resulting
+/// `warning_kind::unavailable`).
+/// @param owned Sources collected so far; one row is appended.
+/// @param warnings Extra warnings raised outside `collect_preview`'s own
+/// coverage-driven set (file/byte/record caps, directory-open failures).
+/// @param v Which vendor this call is for.
+/// @param enabled Whether the vendor's adapter is configured on.
+/// @param override_path The operator override path, or empty for the built-in.
+/// @param home The operator's home directory.
+/// @param builtin_rel The built-in path, relative to `home`.
+/// @param jsonl_only When true (Claude, Codex), only `.jsonl`-suffixed
+/// files count inside a directory; Copilot (`false`) takes every file.
+/// @param files_left Remaining file budget, shared across all three vendors.
+/// @param bytes_left Remaining byte budget, shared across all three vendors.
+/// @param records_left Remaining record budget, shared across all three vendors.
+/// @param fault The fault-injection seam (tests only).
+auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row>& warnings, vendor v, bool enabled,
+                         std::string_view override_path, std::string_view home, std::string_view builtin_rel, bool jsonl_only,
+                         std::size_t& files_left, std::size_t& bytes_left, std::size_t& records_left, const fs_fault& fault)
+    -> void {
+  if (!enabled) {
+    owned.push_back(raw_source{.v = v, .enabled = false});
+    return;
+  }
+
+  std::filesystem::path const builtin      = std::filesystem::path{std::string{home}} / builtin_rel;
+  std::string                 selected_str = override_path.empty() ? builtin.string() : std::string{override_path};
+  constexpr std::string_view  suffix{"/**/*.jsonl"};
+  if (selected_str.size() >= suffix.size() && std::string_view{selected_str}.ends_with(suffix)) {
+    selected_str.resize(selected_str.size() - suffix.size());
+  }
+  std::filesystem::path const selected{selected_str};
+
+  if (fs_should_fail(fault, v, fs_operation::selected_stat, selected_str)) {
+    owned.push_back(raw_source{.v = v, .available = false});
+    return;
+  }
+  std::error_code status_ec;
+  auto const      status = std::filesystem::status(selected, status_ec);
+  if (status_ec) {
+    owned.push_back(raw_source{.v = v, .available = false});
+    return;
+  }
+
+  std::vector<std::string> paths;
+  if (status.type() == std::filesystem::file_type::regular) {
+    paths.push_back(selected_str);
+  } else if (status.type() == std::filesystem::file_type::directory) {
+    if (fs_should_fail(fault, v, fs_operation::directory_open, selected_str)) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+      owned.push_back(raw_source{.v = v, .available = false});
+      return;
+    }
+    std::error_code                           open_ec;
+    std::filesystem::directory_iterator const probe(selected, open_ec);
+    if (open_ec) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+      owned.push_back(raw_source{.v = v, .available = false});
+      return;
+    }
+    if (fs_should_fail(fault, v, fs_operation::directory_walk, selected_str)) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+      owned.push_back(raw_source{.v = v, .available = false});
+      return;
+    }
+    std::error_code                               walk_ec;
+    std::filesystem::recursive_directory_iterator it(selected, std::filesystem::directory_options::skip_permission_denied,
+                                                     walk_ec);
+    if (walk_ec) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+      owned.push_back(raw_source{.v = v, .available = false});
+      return;
+    }
+    std::filesystem::recursive_directory_iterator const end;
+    while (it != end) {
+      std::error_code entry_ec;
+      bool const      is_file = it->is_regular_file(entry_ec);
+      if (entry_ec) {
+        warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+        break;
+      }
+      if (is_file && (!jsonl_only || it->path().extension() == ".jsonl")) {
+        paths.push_back(it->path().string());
+      }
+      it.increment(entry_ec);
+      if (entry_ec) {
+        warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+        break;
+      }
+    }
+  } else {
+    owned.push_back(raw_source{.v = v, .available = false});
+    return;
+  }
+
+  std::ranges::sort(paths);
+
+  std::string combined;
+  std::size_t scanned_files = 0;
+  std::size_t io_failures   = 0;
+  for (auto const& path : paths) {
+    if (files_left == 0) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::file_cap});
+      break;
+    }
+    if (fs_should_fail(fault, v, fs_operation::file_stat, path)) {
+      ++io_failures;
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+      continue;
+    }
+    std::error_code size_ec;
+    auto const      size = std::filesystem::file_size(path, size_ec);
+    if (size_ec) {
+      ++io_failures;
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+      continue;
+    }
+    if (size > bytes_left) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::byte_cap});
+      break;
+    }
+    if (fs_should_fail(fault, v, fs_operation::file_read, path)) {
+      ++io_failures;
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+      continue;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+      ++io_failures;
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
+      continue;
+    }
+    std::string const bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    auto const        record_count = count_records(bytes);
+    if (record_count > records_left) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::record_cap});
+      break;
+    }
+    combined += bytes;
+    combined += '\n';
+    files_left -= 1;
+    bytes_left -= bytes.size();
+    records_left -= record_count;
+    ++scanned_files;
+  }
+
+  if (scanned_files == 0 && io_failures != 0) {
+    owned.push_back(raw_source{.v = v, .available = false});
+  } else {
+    owned.push_back(raw_source{.v = v, .jsonl = std::move(combined)});
+  }
+}
+
+} // namespace
+
+auto collect_preview_from_paths(const transcript_config& config, const std::optional<cli_log_adapter>& cli,
+                                const collector_limits& limits, const fs_fault& fault) -> preview {
+  std::vector<raw_source>  owned;
+  std::vector<warning_row> extra_warnings;
+  std::size_t              files_left   = limits.max_files;
+  std::size_t              bytes_left   = limits.max_bytes;
+  std::size_t              records_left = limits.max_records;
+
+  collect_vendor_path(owned, extra_warnings, vendor::claude, config.claude_enabled, config.claude_path, config.home_dir,
+                      ".claude/projects", true, files_left, bytes_left, records_left, fault);
+  collect_vendor_path(owned, extra_warnings, vendor::codex, config.codex_enabled, config.codex_path, config.home_dir,
+                      ".codex/sessions", true, files_left, bytes_left, records_left, fault);
+  collect_vendor_path(owned, extra_warnings, vendor::copilot, config.copilot_enabled, config.copilot_path, config.home_dir,
+                      ".copilot/session-state", false, files_left, bytes_left, records_left, fault);
+
+  if (cli.has_value()) {
+    if (!cli->enabled) {
+      owned.push_back(raw_source{.v = vendor::cli_log, .enabled = false});
+    } else {
+      auto const result = cli->read ? cli->read(bytes_left) : cli_read_result{};
+      if (result.status == cli_read_status::ok) {
+        auto const records = count_records(result.bytes);
+        if (result.bytes.size() > bytes_left) {
+          owned.push_back(raw_source{.v = vendor::cli_log});
+          extra_warnings.push_back(warning_row{.v = vendor::cli_log, .kind = warning_kind::byte_cap});
+        } else if (records > records_left) {
+          owned.push_back(raw_source{.v = vendor::cli_log});
+          extra_warnings.push_back(warning_row{.v = vendor::cli_log, .kind = warning_kind::record_cap});
+        } else {
+          bytes_left -= result.bytes.size();
+          records_left -= records;
+          owned.push_back(raw_source{.v = vendor::cli_log, .jsonl = std::move(result.bytes)});
+        }
+      } else {
+        owned.push_back(raw_source{.v = vendor::cli_log, .available = false});
+        if (result.status == cli_read_status::failed) {
+          extra_warnings.push_back(warning_row{.v = vendor::cli_log, .kind = warning_kind::cli_adapter_failed});
+        }
+      }
+    }
+  } else {
+    owned.push_back(raw_source{.v = vendor::cli_log, .available = false});
+  }
+
+  auto result = collect_preview(owned);
+  if (!extra_warnings.empty()) {
+    result.warnings.insert(result.warnings.end(), std::make_move_iterator(extra_warnings.begin()),
+                           std::make_move_iterator(extra_warnings.end()));
+  }
+  return result;
 }
 
 } // namespace planar::engine::introspection_adapters

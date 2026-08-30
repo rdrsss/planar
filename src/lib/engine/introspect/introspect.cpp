@@ -1,18 +1,87 @@
 /// @file introspect.cpp
-/// @brief Implementation of `planar.engine.introspect` (plan 996, task 6121).
-/// See introspect.cppm for scope and omissions.
+/// @brief Implementation of `planar.engine.introspect` (plan 996, tasks
+/// 6121 and 6352). See introspect.cppm for scope and omissions.
 
 module planar.engine.introspect;
 
 import std;
 import planar.db;
 import planar.json_text;
+import planar.introspection_preview;
 
 namespace planar::engine::introspect {
+
+namespace ip = planar::introspection_preview;
 
 namespace {
 
 using json_text::append_json_string;
+
+/// @brief `@tagName` equivalents for the four preview enums, so
+/// `render_text`/`render_json` can spell them the way the oracle's
+/// `@tagName(...)` does — plain lowercase identifiers, no quoting logic
+/// duplicated per call site.
+auto tag_name(ip::vendor v) -> std::string_view {
+  switch (v) {
+  case ip::vendor::claude:
+    return "claude";
+  case ip::vendor::codex:
+    return "codex";
+  case ip::vendor::copilot:
+    return "copilot";
+  case ip::vendor::cli_log:
+    return "cli_log";
+  }
+  return "unknown";
+}
+
+auto tag_name(ip::category c) -> std::string_view {
+  switch (c) {
+  case ip::category::failure:
+    return "failure";
+  case ip::category::retry:
+    return "retry";
+  case ip::category::abandonment:
+    return "abandonment";
+  case ip::category::gap:
+    return "gap";
+  }
+  return "unknown";
+}
+
+auto tag_name(ip::coverage_state s) -> std::string_view {
+  switch (s) {
+  case ip::coverage_state::observed:
+    return "observed";
+  case ip::coverage_state::unavailable:
+    return "unavailable";
+  case ip::coverage_state::disabled:
+    return "disabled";
+  }
+  return "unknown";
+}
+
+auto tag_name(ip::warning_kind k) -> std::string_view {
+  switch (k) {
+  case ip::warning_kind::unavailable:
+    return "unavailable";
+  case ip::warning_kind::disabled:
+    return "disabled";
+  case ip::warning_kind::malformed:
+    return "malformed";
+  case ip::warning_kind::file_cap:
+    return "file_cap";
+  case ip::warning_kind::byte_cap:
+    return "byte_cap";
+  case ip::warning_kind::record_cap:
+    return "record_cap";
+  case ip::warning_kind::evidence_cap:
+    return "evidence_cap";
+  case ip::warning_kind::cli_adapter_failed:
+    return "cli_adapter_failed";
+  }
+  return "unknown";
+}
 
 /// @brief `-{window_days} days`, the SQLite `datetime()` modifier bound at
 /// every windowed query below (a bind parameter, not string-formatted SQL —
@@ -312,23 +381,86 @@ auto query_reopen_count(db::connection& conn, std::int64_t window_days) -> std::
   return count_query(conn, "select count(*) from task_reopens where created_at >= datetime('now', ?)", window_days, 0);
 }
 
-/// @brief The `render_text` preview block, hoisted to its own function so
-/// the future preview-rewiring cycle (see introspect.cppm's header, D15)
-/// is a two-function change instead of reconstructing the oracle's
-/// conditional branch structure (zig:872-909) from scratch a milestone on.
-/// Currently always the "unavailable" literal — no `bundle::preview` field
-/// exists yet to branch on.
-auto preview_text_block() -> std::string_view {
-  return "[introspection preview] unavailable\n";
+/// @brief The `render_text` preview block. Mirrors the oracle's
+/// `renderText` preview section (zig:872-909) in full, now that `bundle`
+/// carries a real `preview` field (decision 981, task 6352): `unset`
+/// renders `" unavailable\n"`, present-but-empty-coverage renders
+/// `" empty\n"`, and a populated preview renders one line per coverage
+/// row, then one per signal, then one per warning — in that order, the
+/// order `preview`'s three vectors are already sorted/collected in.
+auto preview_text_block(const std::optional<ip::preview>& preview) -> std::string {
+  std::string out = "[introspection preview]";
+  if (!preview.has_value()) {
+    out += " unavailable\n";
+    return out;
+  }
+  if (preview->coverage.empty()) {
+    out += " empty\n";
+    return out;
+  }
+  out += "\n";
+  for (auto const& coverage : preview->coverage) {
+    out += std::format("  {}: state={} scanned={} normalized={} ignored={} malformed={} capped={}\n", tag_name(coverage.v),
+                       tag_name(coverage.state), coverage.scanned, coverage.normalized, coverage.ignored, coverage.malformed,
+                       coverage.capped);
+  }
+  for (auto const& signal : preview->signals) {
+    out += std::format("  signal {}/{}/{}: count={} first={} last={}\n", tag_name(signal.v), signal.verb_path,
+                       tag_name(signal.cat), signal.count, signal.first_seen, signal.last_seen);
+  }
+  for (auto const& warning : preview->warnings) {
+    out += std::format("  warning {}/{}: count={}\n", tag_name(warning.v), tag_name(warning.kind), warning.count);
+  }
+  return out;
 }
 
-/// @brief The `render_json` `"introspection_preview"` block, hoisted for
-/// the same reason as `preview_text_block`. Mirrors the oracle's
-/// `renderJson` preview object shape (zig:1013-1040) with all three arrays
-/// empty — the only reachable shape while `bundle` carries no preview
-/// field.
-auto preview_json_block() -> std::string_view {
-  return R"(,"introspection_preview":{"signals":[],"coverage":[],"warnings":[]})";
+/// @brief The `render_json` `"introspection_preview"` block. Mirrors the
+/// oracle's `renderJson` preview object shape (zig:1013-1040): `signals`,
+/// `coverage`, `warnings`, each empty when `preview` is unset (the
+/// oracle's `if (bundle.preview) |preview| { ... }` per-array guard, which
+/// leaves every array `[]` rather than omitting the key).
+auto preview_json_block(const std::optional<ip::preview>& preview) -> std::string {
+  std::string out = R"(,"introspection_preview":{"signals":[)";
+  if (preview.has_value()) {
+    for (std::size_t i = 0; i < preview->signals.size(); ++i) {
+      auto const& signal = preview->signals[i];
+      if (i > 0) {
+        out += ',';
+      }
+      out += std::format(R"({{"vendor":"{}","verb_path":)", tag_name(signal.v));
+      append_json_string(out, signal.verb_path);
+      out += std::format(R"(,"category":"{}","count":{},"first_seen":)", tag_name(signal.cat), signal.count);
+      append_json_string(out, signal.first_seen);
+      out += R"(,"last_seen":)";
+      append_json_string(out, signal.last_seen);
+      out += '}';
+    }
+  }
+  out += R"(],"coverage":[)";
+  if (preview.has_value()) {
+    for (std::size_t i = 0; i < preview->coverage.size(); ++i) {
+      auto const& coverage = preview->coverage[i];
+      if (i > 0) {
+        out += ',';
+      }
+      out += std::format(R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{}}})",
+                         tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.malformed,
+                         coverage.normalized, coverage.capped, coverage.ignored);
+    }
+  }
+  out += R"(],"warnings":[)";
+  if (preview.has_value()) {
+    for (std::size_t i = 0; i < preview->warnings.size(); ++i) {
+      auto const& warning = preview->warnings[i];
+      if (i > 0) {
+        out += ',';
+      }
+      out +=
+          std::format(R"({{"vendor":"{}","kind":"{}","count":{}}})", tag_name(warning.v), tag_name(warning.kind), warning.count);
+    }
+  }
+  out += "]}";
+  return out;
 }
 
 } // namespace
@@ -480,7 +612,7 @@ auto render_text(const bundle& b) -> std::string {
   out += std::format("[handoffs]      stale={} never_consumed={}\n", b.handoffs.stale_handoffs, b.handoffs.never_consumed);
   out += std::format("[reopens]       {}\n\n", b.reopens);
 
-  out += preview_text_block();
+  out += preview_text_block(b.preview);
   out += "\n";
 
   if (!b.logging_enabled) {
@@ -579,7 +711,7 @@ auto render_json(const bundle& b) -> std::string {
                      b.handoffs.never_consumed);
   out += std::format(",\"reopens\":{}", b.reopens);
 
-  out += preview_json_block();
+  out += preview_json_block(b.preview);
 
   out += "}\n";
   return out;
