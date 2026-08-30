@@ -1132,6 +1132,15 @@ TEST_CASE("models resolve validates role, task, plan and fallback-tier before to
   CHECK(bad_role.code == 2);
   CHECK(bad_role.err == "error: unknown role 'nosuch'\n");
 
+  // A >64-byte role name is a DISTINCT refusal from "unknown role" — the
+  // oracle copies `--role` into a fixed 64-byte buffer and refuses before
+  // ever attempting the lookup (zig/src/cmd/planar/handlers/models.zig:548).
+  // Oracle-verified directly (not copied from the review): 65 bytes ->
+  // exit 2, stderr "error: role name too long\n", stdout empty.
+  auto const long_role = dispatch(fx, {"models", "resolve", "--role", std::string(65, 'x')});
+  CHECK(long_role.code == 2);
+  CHECK(long_role.err == "error: role name too long\n");
+
   // Task-bound role, no --task: refuses BEFORE the database would matter,
   // naming the role it was given verbatim (not its normalized spelling).
   auto const no_task = dispatch(fx, {"models", "resolve", "--role", "coder"});
