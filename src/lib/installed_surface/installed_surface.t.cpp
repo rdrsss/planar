@@ -257,6 +257,41 @@ TEST_CASE("a symlink install_kind row with the wrong link target is stale", "[in
   CHECK(result->projections[0].reason == "managed link target differs from the install manifest");
 }
 
+TEST_CASE("a symlink install_kind row whose link target matches the manifest is fresh", "[installed_surface]") {
+  // The symmetric direction of the case above: until this iteration, no
+  // fixture exercised a CORRECT `link` row, so a mutation that made this
+  // branch over-eager (always `stale` regardless of match) would have
+  // survived — the suite only ever proved "wrong target -> stale", never
+  // "right target -> fresh".
+  scratch_root home;
+  const auto   staged        = home.planar_home() / "codex-skills" / "pl-a" / "SKILL.md";
+  const auto   installed_dir = home.codex_home() / "skills" / "pl-a";
+  const auto   installed     = installed_dir / "SKILL.md";
+  home.write(staged, "content\n");
+  std::filesystem::create_directories(installed_dir);
+  std::error_code ec;
+  std::filesystem::create_symlink(staged, installed, ec);
+  REQUIRE_FALSE(ec);
+
+  const auto manifest =
+      std::format("{{\"version\":1,\"build_id\":\"t\",\"install_mode\":\"link\",\"vendors\":[\"codex\"],\"projections\":"
+                  "[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+                  "\"install_kind\":\"link\",\"source_digest\":\"\",\"projection_digest\":\"\"}}]}}",
+                  staged.string(), installed.string());
+  home.write(home.planar_home() / "install-manifest.json", manifest);
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+  REQUIRE(result.has_value());
+  REQUIRE(result->projections.size() == 1);
+  CHECK(result->projections[0].status == is_::state::fresh);
+  CHECK(result->projections[0].reason == "staged projection and installed projection agree");
+  CHECK(result->summary.fresh == 1);
+  CHECK_FALSE(result->projections[0].repair_command.has_value());
+}
+
 TEST_CASE("an invalid manifest structure (duplicate vendor) is rejected", "[installed_surface]") {
   scratch_root home;
   home.write(home.planar_home() / "install-manifest.json",
@@ -307,4 +342,66 @@ TEST_CASE("an unselected vendor's destination is never walked for unmanaged entr
   REQUIRE(result.has_value());
   CHECK(result->projections.empty());
   CHECK(result->summary.unmanaged == 0);
+}
+
+// ---- iteration-2 review findings: the PERMISSIVE direction of a check is
+// its dangerous direction, and the original fixture set only asserted the
+// restrictive one for these two. See installed_surface.cpp's classify_row
+// (byte comparison) and only_keys (unknown-field rejection). ----
+
+TEST_CASE("a copy row whose installed bytes differ from staged is stale, never silently fresh", "[installed_surface]") {
+  // The safety-critical direction: `planar health` exists to catch exactly
+  // this — a managed install that has drifted from its staged source. A
+  // classifier that reports this row `fresh` is a health check that lies
+  // about a stale surface being healthy.
+  scratch_root home;
+  const auto   staged    = home.planar_home() / "codex-skills" / "pl-a" / "SKILL.md";
+  const auto   installed = home.codex_home() / "skills" / "pl-a" / "SKILL.md";
+  home.write(staged, "staged content\n");
+  home.write(installed, "DIFFERENT installed content\n");
+
+  const auto manifest =
+      std::format("{{\"version\":1,\"build_id\":\"t\",\"install_mode\":\"copy\",\"vendors\":[\"codex\"],\"projections\":"
+                  "[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+                  "\"install_kind\":\"copy\",\"source_digest\":\"\",\"projection_digest\":\"\"}}]}}",
+                  staged.string(), installed.string());
+  home.write(home.planar_home() / "install-manifest.json", manifest);
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+  REQUIRE(result.has_value());
+  REQUIRE(result->projections.size() == 1);
+  CHECK(result->projections[0].status == is_::state::stale);
+  CHECK(result->projections[0].reason == "managed installed bytes differ from the staged projection");
+  CHECK(result->summary.stale == 1);
+  CHECK(result->summary.fresh == 0);
+  REQUIRE(result->projections[0].repair_command.has_value());
+}
+
+TEST_CASE("a projection row with an unrecognized key is rejected as an invalid manifest", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":"","unexpected_field":"surprise"}]})");
+
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+  CHECK(result->projections.empty());
+}
+
+TEST_CASE("a top-level manifest object with an unrecognized key is rejected as invalid", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":[],"projections":[],)"
+             R"("unexpected_top_level_field":true})");
+
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
 }

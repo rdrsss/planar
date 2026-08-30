@@ -454,6 +454,49 @@ TEST_CASE("with_projection_freshness degrades overall on a legacy manifest state
   CHECK(*degraded.projection_freshness.evidence == "legacy ownership stamp exists but the versioned install manifest is missing");
 }
 
+// The `manifest_degraded` predicate is a three-way OR (legacy / invalid /
+// unsupported), and only `legacy` had engine-level coverage until this
+// iteration's review — a mutation dropping `invalid` or `unsupported` from
+// that OR-chain survived the whole suite (iteration 2 review finding,
+// "generalize the permissive-mutation lens"). Each manifest state that
+// SHOULD degrade now gets its own case.
+
+TEST_CASE("with_projection_freshness degrades overall on an invalid manifest state", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result invalid_status{
+      .manifest_status = is_::manifest_state::invalid,
+      .manifest_path   = "/tmp/nope/install-manifest.json",
+      .reason          = "install manifest is invalid",
+  };
+  invalid_status.summary.unselected_vendors = is_::supported_vendors.size();
+
+  auto degraded = he::with_projection_freshness(*base, invalid_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+}
+
+TEST_CASE("with_projection_freshness degrades overall on an unsupported manifest state", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result unsupported_status{
+      .manifest_status = is_::manifest_state::unsupported,
+      .manifest_path   = "/tmp/nope/install-manifest.json",
+      .reason          = "install manifest version is unsupported",
+  };
+  unsupported_status.summary.unselected_vendors = is_::supported_vendors.size();
+
+  auto degraded = he::with_projection_freshness(*base, unsupported_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+}
+
 TEST_CASE("with_projection_freshness never un-degrades an already-degraded report", "[engine_health]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
