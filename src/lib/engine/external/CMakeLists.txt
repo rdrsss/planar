@@ -74,12 +74,14 @@ planar_module(engine_external
     link.cppm
     system.cppm
     sync.cppm
+    parent_issue.cppm
     external.cppm
   SOURCES
     link.cpp
     system.cpp
     sync.cpp
-  DEPENDS db adapter json_text)
+    parent_issue.cpp
+  DEPENDS db adapter json_text json_dom)
 
 target_link_libraries(planar_engine_external PRIVATE glaze::glaze)
 

@@ -4148,6 +4148,40 @@ auto unported_paths() -> std::span<std::string_view const> {
       // wants the bulk — `selectStrategy`, `walkTree`, all of `strategy.zig`,
       // and both GitHub-specific files.
       //
+      // Task 6353 landed ONE of those two GitHub-specific files in full:
+      // `parent_issue.zig`'s entire orchestration (~1037 oracle
+      // implementation lines, brace-balanced rather than whole-file
+      // `wc -l` — the SAME 27% over-count task 6111 had already measured
+      // for this pair) is now `planar.engine.external.parent_issue`, NOT a
+      // new corner of `engine_extsync` — see that module's header for why:
+      // the file is majority SQL and `engine_extsync` carries no `db`
+      // edge, the same reason `record_mirror_link`/`load_existing_mirror`
+      // live in `engine_external` rather than here. `projects_v2.zig`
+      // (~1050 oracle implementation lines by the same brace-balanced
+      // count) is UNTOUCHED — it is not a re-export of `parent_issue.zig`;
+      // it duplicates that file's `entityForCreate` under its own name
+      // (`parent_issue_entityForCreate`) and adds the ProjectsV2 GraphQL
+      // surface (`getAuthenticatedOwner`, `createProjectV2`,
+      // `getProjectV2Fields`, `addProjectV2Item`,
+      // `setProjectV2ItemFieldValue`) on top.
+      //
+      // `ext propagate` STILL stays, for three independent reasons, only
+      // one of which task 6353 touched:
+      //   1. `projects_v2.zig` — untouched, per above.
+      //   2. `selectStrategy` / `strategy.zig` (578 lines) — the ADR-0006
+      //      repo-count bucketing that picks which of the two GitHub
+      //      strategies (or the Jira one) applies. Untouched.
+      //   3. NO PRODUCTION `gh_client` exists to drive
+      //      `parent_issue::propagate_parent_issue_with_repo` with:
+      //      `github_adapter` (engine_extsync/github.cppm) has not grown
+      //      `createIssue`/`linkSubIssue`/`linkSubIssueProbe`/
+      //      `postComment` — every one of them is still listed as
+      //      deferred-with-`ext-propagate` in that bucket's own
+      //      CMakeLists.txt, unchanged by this task. The CLI handler
+      //      wiring itself (`ext.cpp`'s dispatch, matching
+      //      `zig/src/cmd/planar/handlers/ext/propagate.zig`'s ~380-line
+      //      `runParentIssueStrategy` bridge) is also not started.
+      //
       // Worth reading before touching either creation path: `propagate-one`
       // is the IDEMPOTENT one, structurally — `load_existing_mirror` runs
       // before the template is loaded and before any adapter exists, and a
