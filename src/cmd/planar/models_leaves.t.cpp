@@ -1,7 +1,7 @@
 // @file models_leaves.t.cpp
-// @brief In-process tests for the thirteen `models` leaves wired by plan
-// 996, task 6149 — the ten `models registry` leaves plus `evals`,
-// `experiments` and `outcomes`.
+// @brief In-process tests for all fourteen `models` leaves — the ten
+// `models registry` leaves plus `evals`, `experiments` and `outcomes`,
+// wired by plan 996 task 6149, and `resolve`, wired by task 6343.
 //
 // ## EVERY MUTATING CASE ASSERTS DATABASE ROWS
 //
@@ -387,6 +387,99 @@ auto evals(const fixture& fx, std::vector<std::string> extra) -> invocation {
   args.insert(args.end(), cohort.begin(), cohort.end());
   args.insert(args.end(), extra.begin(), extra.end());
   return dispatch(fx, args);
+}
+
+// --- Ready task-100 fixture, for `models resolve`'s task-bound branch -----
+//
+// Reviewer finding (task 6343 iteration 2, BLOCKING 1): `complexity_tag`,
+// `to_profile_facts`, `prof::compile`, `resolve_task_packet` and the
+// packet-backed `--json`/text arms were unreachable from every case in this
+// file — only the planning arm and the pre-packet refusals were covered.
+// This is `engine/ingest/packet.t.cpp`'s own `seed()` (task 100, `pkt-ready`)
+// replicated here byte-for-byte, because `complexity_tag` lives in an
+// anonymous namespace in the HANDLER translation unit and cannot be pinned
+// from `engine_ingest`'s own tests. The digest constants are copied verbatim
+// from that file — same preimages, same task id, same body — so the SAME
+// stored digests are current here. One extra fact is appended,
+// `risk.explicit`, which `profile.cpp:233-234` reads directly to force
+// `complexity::high_risk` — the ONE band that differs from
+// `ranking::complexity_to_text`'s spelling, so it is the only band that can
+// actually kill a `complexity_tag` -> `complexity_to_text` substitution.
+
+/// preimage: `task \0 100 \0 body#acceptance-criteria \0 The packet compiles with zero readiness reasons.`
+constexpr std::string_view d_acceptance = "c36d26ffec18cdac6ce40994f45fcbf6728bd65a160f0c4b9c6f29bd53c1b4d3";
+/// preimage: `task \0 100 \0 next_action \0 Port compileTask and assert both readiness arms.`
+constexpr std::string_view d_next_action = "a735b836c075edb69bf4ebf0fec21139638ae4cb8f5cc093540080da737a7a29";
+/// preimage: `artifact \0 10 \0 artifact:10#Overview \0 Spec section body for product_spec.`
+constexpr std::string_view d_product = "7294d414ca5de50586d1bbe24cff9820566fc37dae93a6f75a5005b3948b8b27";
+/// preimage: `artifact \0 11 \0 artifact:11#Overview \0 Spec section body for tech_spec.`
+constexpr std::string_view d_tech = "ec43ff315eae393c7b9a6aa5cdb1e83b8c958c5917f3d3b12cec1bc5d6aac294";
+/// preimage: `artifact \0 12 \0 artifact:12#Overview \0 Spec section body for roadmap.`
+constexpr std::string_view d_roadmap = "fdd2302595324aaeaee4ecd136fbb2030178781f341d9bf9d88a8b560da197ad";
+/// preimage: `artifact \0 13 \0 artifact:13#Overview \0 Spec section body for test_spec.`
+constexpr std::string_view d_test_spec = "6fbf86941cd9618fbbd981162cad4e957b3e735e08a82ff465f6de627940368f";
+
+/// @brief Seed a READY task 100 on plan 1, plus a `risk.explicit` fact that
+/// forces `complexity::high_risk`. `seed_project(fx)` must run first — it is
+/// what creates project id 1 that `init` registers for the fixture's cwd; a
+/// second `projects` row is neither needed nor safe to insert (every entity
+/// below is `scope_kind='global'`, so nothing here carries an FK to it).
+/// @param fx The fixture.
+auto seed_ready_task(const fixture& fx) -> void {
+  auto conn = open_db(fx);
+  exec(conn, "insert into plans (id, scope_kind, scope_id, title, slug, summary, status) "
+             "values (1, 'global', null, 'Packet plan', 'packet-plan', 'Summary.', 'active')");
+  exec(conn, "insert into tasks (id, scope_kind, scope_id, plan_id, title, body, status, priority, next_action, slug) "
+             "values (100, 'global', null, 1, 'Compile the routing packet',"
+             "'Implement the packet compiler.\n"
+             "\n"
+             "## Acceptance Criteria\n"
+             "The packet compiles with zero readiness reasons.\n"
+             "\n"
+             "## Required validation\n"
+             "cmake --build build/debug\n"
+             "', 'doing', 100, 'Port compileTask and assert both readiness arms.', 'pkt-ready')");
+  exec(conn, "insert into tasks (id, scope_kind, scope_id, plan_id, title, body, status, priority, slug) "
+             "values (101, 'global', null, 1, 'Dependency', 'Body.', 'done', 100, 'pkt-dep')");
+  exec(conn, "insert into artifacts (id, scope_kind, scope_id, kind, title, body, status) values "
+             "(10, 'global', null, 'product_spec', 'Product', '## Overview\nSpec section body for product_spec.\n', 'active'),"
+             "(11, 'global', null, 'tech_spec', 'Tech', '## Overview\nSpec section body for tech_spec.\n', 'active'),"
+             "(12, 'global', null, 'roadmap', 'Roadmap', '## Overview\nSpec section body for roadmap.\n', 'active'),"
+             "(13, 'global', null, 'test_spec', 'Tests', '## Overview\nSpec section body for test_spec.\n', 'active')");
+  exec(conn, "insert into decisions (id, scope_kind, scope_id, title, body, status, slug) "
+             "values (20, 'global', null, 'Locked', 'Decision body.', 'accepted', 'pkt-dec')");
+  exec(conn, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status, slug) "
+             "values (30, 'global', null, 'Scenario', 'Scenario body.', 'ready', 'pkt-scn')");
+  exec(conn, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values "
+             "('task', 100, 'artifact', 10, 'cites'),"
+             "('task', 100, 'artifact', 11, 'cites'),"
+             "('task', 100, 'artifact', 12, 'cites'),"
+             "('task', 100, 'artifact', 13, 'cites'),"
+             "('task', 100, 'decision', 20, 'cites'),"
+             "('task', 100, 'task', 101, 'depends-on'),"
+             "('test_scenario', 30, 'task', 100, 'verifies'),"
+             "('test_scenario', 30, 'plan', 1, 'derives-from')");
+  exec(conn, "insert into task_touch_paths (task_id, repo_id, path) "
+             "values (100, 1, 'src/lib/engine/ingest/packet.cpp')");
+  exec(conn, std::format("insert into routing_task_facts (task_id, fact_kind, value_type, value_bool, value_text, "
+                         "source_entity_kind, source_entity_id, source_locator, source_digest, materializer_version) values "
+                         "(100,'acceptance_complete','bool',1,null,'task',100,'body#acceptance-criteria','{}','spec-ingest-v1'),"
+                         "(100,'next_action_exact','bool',1,null,'task',100,'next_action','{}','spec-ingest-v1'),"
+                         "(100,'cited_artifact_section','text',null,'Spec section body for product_spec.','artifact',10,"
+                         "'artifact:10#Overview','{}','spec-ingest-v1'),"
+                         "(100,'cited_artifact_section','text',null,'Spec section body for tech_spec.','artifact',11,"
+                         "'artifact:11#Overview','{}','spec-ingest-v1'),"
+                         "(100,'cited_artifact_section','text',null,'Spec section body for roadmap.','artifact',12,"
+                         "'artifact:12#Overview','{}','spec-ingest-v1'),"
+                         "(100,'cited_artifact_section','text',null,'Spec section body for test_spec.','artifact',13,"
+                         "'artifact:13#Overview','{}','spec-ingest-v1'),"
+                         // The forcing fact. Reuses `next_action`'s locator/digest —
+                         // `source_digest` is a hash of (source_kind, source_id,
+                         // locator, semantic-text), which does not depend on
+                         // `fact_kind` at all, so `d_next_action` is exactly the
+                         // digest a live re-derivation of THIS row also produces.
+                         "(100,'risk.explicit','bool',1,null,'task',100,'next_action','{}','spec-ingest-v1')",
+                         d_acceptance, d_next_action, d_product, d_tech, d_roadmap, d_test_spec, d_next_action));
 }
 
 } // namespace
@@ -1031,13 +1124,131 @@ TEST_CASE("models outcomes --limit EXCLUDES, and the excluded rows survive", "[c
         std::string::npos);
 }
 
-TEST_CASE("models resolve stays a LOUD exit-64 refusal", "[cmd][models]") {
-  auto const fx = make_fixture("resolve");
+TEST_CASE("models resolve validates role, task, plan and fallback-tier before touching a packet", "[cmd][models]") {
+  auto const fx = make_fixture("resolve_validate");
   seed_project(fx);
-  auto const refused = dispatch(fx, {"models", "resolve", "--role", "coder"});
-  // The fourteenth leaf, deferred WITH its dependency (roles + profile +
-  // packet, 2,725 unported lines). It refuses by name rather than exiting 0
-  // having resolved nothing.
-  CHECK(refused.code == 64);
-  CHECK(refused.err == "error: models resolve: not implemented in this build\n");
+
+  auto const bad_role = dispatch(fx, {"models", "resolve", "--role", "nosuch"});
+  CHECK(bad_role.code == 2);
+  CHECK(bad_role.err == "error: unknown role 'nosuch'\n");
+
+  // A >64-byte role name is a DISTINCT refusal from "unknown role" — the
+  // oracle copies `--role` into a fixed 64-byte buffer and refuses before
+  // ever attempting the lookup (zig/src/cmd/planar/handlers/models.zig:548).
+  // Oracle-verified directly (not copied from the review): 65 bytes ->
+  // exit 2, stderr "error: role name too long\n", stdout empty.
+  auto const long_role = dispatch(fx, {"models", "resolve", "--role", std::string(65, 'x')});
+  CHECK(long_role.code == 2);
+  CHECK(long_role.err == "error: role name too long\n");
+
+  // Task-bound role, no --task: refuses BEFORE the database would matter,
+  // naming the role it was given verbatim (not its normalized spelling).
+  auto const no_task = dispatch(fx, {"models", "resolve", "--role", "coder"});
+  CHECK(no_task.code == 2);
+  CHECK(no_task.err == "error: --task is required for task-bound role 'coder'\n");
+
+  auto const bad_task = dispatch(fx, {"models", "resolve", "--role", "coder", "--task", "abc"});
+  CHECK(bad_task.code == 2);
+  CHECK(bad_task.err == "error: invalid --task 'abc'\n");
+
+  auto const bad_plan = dispatch(fx, {"models", "resolve", "--role", "planner", "--plan", "abc"});
+  CHECK(bad_plan.code == 2);
+  CHECK(bad_plan.err == "error: invalid --plan 'abc'\n");
+
+  auto const bad_fallback = dispatch(fx, {"models", "resolve", "--role", "coder", "--task", "1", "--fallback-tier", "huge"});
+  CHECK(bad_fallback.code == 2);
+  CHECK(bad_fallback.err == "error: invalid --fallback-tier 'huge'\n");
+
+  auto const no_task_row = dispatch(fx, {"models", "resolve", "--role", "coder", "--task", "999999"});
+  CHECK(no_task_row.code == 1);
+  CHECK(no_task_row.err == "error: no task with id 999999\n");
+
+  auto const no_plan_row = dispatch(fx, {"models", "resolve", "--role", "planner", "--plan", "999999"});
+  CHECK(no_plan_row.code == 1);
+  CHECK(no_plan_row.err == "error: assembling planning packet: PlanNotFound\n");
+}
+
+TEST_CASE("models resolve --role spec_reviewer (underscored) is an undocumented alias for spec-reviewer", "[cmd][models]") {
+  // roles.cppm's header: the oracle's hyphen-to-underscore map is a no-op on
+  // an already-underscored name, so BOTH spellings resolve. `--help` and
+  // `--role` documents only the hyphenated form.
+  auto const fx = make_fixture("resolve_alias");
+  seed_project(fx);
+  auto const hyphen     = dispatch(fx, {"models", "resolve", "--role", "spec-reviewer", "--json"});
+  auto const underscore = dispatch(fx, {"models", "resolve", "--role", "spec_reviewer", "--json"});
+  CHECK(hyphen.code == 0);
+  CHECK(underscore.code == 0);
+  CHECK(hyphen.out == underscore.out);
+  CHECK(hyphen.out.find(R"("role":"spec_reviewer")") != std::string::npos);
+}
+
+TEST_CASE("models resolve without --plan reports no_packet; a not-ready plan reports packet_not_ready", "[cmd][models]") {
+  auto const fx = make_fixture("resolve_planning");
+  seed_project(fx);
+
+  auto const no_packet = dispatch(fx, {"models", "resolve", "--role", "planner", "--json"});
+  CHECK(no_packet.code == 0);
+  CHECK(no_packet.out == "{\"resolution_version\":\"routing-roles-v1\",\"role\":\"planner\",\"packet_class\":\"planning\","
+                         "\"source\":\"static_fallback\",\"packet_backed\":false,\"tier\":\"medium\",\"work_type\":null,"
+                         "\"complexity\":null,\"fallback_reason\":\"no_packet\",\"first_readiness_reason\":null,"
+                         "\"rule_version\":null}\n");
+
+  // A real plan with no linked artifacts: `planner` is NOT ready
+  // (`missing_source_artifacts`), so this is the `packet_not_ready` arm
+  // rather than `no_packet` — a different reason for a different absence.
+  REQUIRE(dispatch(fx, {"plan", "create", "Resolve fixture plan", "--summary", "A goal.", "--scope", "global", "--json"}).code ==
+          0);
+  auto const not_ready = dispatch(fx, {"models", "resolve", "--role", "planner", "--plan", "1", "--json"});
+  CHECK(not_ready.code == 0);
+  CHECK(not_ready.out.find(R"("fallback_reason":"packet_not_ready")") != std::string::npos);
+  CHECK(not_ready.out.find(R"("first_readiness_reason":"missing_source_artifacts")") != std::string::npos);
+  CHECK(not_ready.out.find(R"("packet_backed":false)") != std::string::npos);
+
+  // `orchestrator` needs only scope facts — the same plan resolves READY,
+  // packet-backed, proving the wiring rather than only the refusal paths.
+  auto const ready = dispatch(fx, {"models", "resolve", "--role", "orchestrator", "--plan", "1", "--json"});
+  CHECK(ready.code == 0);
+  CHECK(ready.out == "{\"resolution_version\":\"routing-roles-v1\",\"role\":\"orchestrator\",\"packet_class\":\"planning\","
+                     "\"source\":\"packet\",\"packet_backed\":true,\"tier\":\"medium\",\"work_type\":null,\"complexity\":null,"
+                     "\"fallback_reason\":null,\"first_readiness_reason\":null,\"rule_version\":\"routing-packet-v1\"}\n");
+
+  auto const ready_text = dispatch(fx, {"models", "resolve", "--role", "orchestrator", "--plan", "1"});
+  CHECK(ready_text.code == 0);
+  CHECK(ready_text.out == "role   : orchestrator (planning packet)\ntier   : medium\nsource : packet (routing-packet-v1)\n");
+}
+
+TEST_CASE("models resolve on a READY high-risk task packet reaches complexity_tag, not complexity_to_text", "[cmd][models]") {
+  // BLOCKING 1 from task 6343 iteration 2's review: this is the ONLY case in
+  // this file that drives `models resolve`'s task-bound branch all the way
+  // through a READY packet -- `to_profile_facts`, `prof::compile`,
+  // `resolve_task_packet`, and both packet-backed render arms were
+  // previously reachable from nothing here. `complexity` is forced to
+  // `high_risk` specifically: it is the one band whose `@tagName` spelling
+  // (`high_risk`) diverges from `ranking::complexity_to_text`'s schema
+  // spelling (`high-risk`), so it is the only band a
+  // `complexity_tag` -> `complexity_to_text` substitution would actually
+  // kill. `bounded` and `standard` render identically either way and would
+  // prove nothing.
+  auto const fx = make_fixture("resolve_task_ready");
+  seed_project(fx);
+  seed_ready_task(fx);
+
+  auto const json = dispatch(fx, {"models", "resolve", "--role", "coder", "--task", "100", "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out == "{\"resolution_version\":\"routing-roles-v1\",\"role\":\"coder\",\"packet_class\":\"task\","
+                    "\"source\":\"packet\",\"packet_backed\":true,\"tier\":\"large\",\"work_type\":\"feature\","
+                    "\"complexity\":\"high_risk\",\"fallback_reason\":null,\"first_readiness_reason\":null,"
+                    "\"rule_version\":\"routing-profile-v1\"}\n");
+  // The trap, spelled out: the underscored form appears and the hyphenated
+  // schema spelling does not.
+  CHECK(json.out.find(R"("complexity":"high_risk")") != std::string::npos);
+  CHECK(json.out.find("high-risk") == std::string::npos);
+
+  auto const text = dispatch(fx, {"models", "resolve", "--role", "coder", "--task", "100"});
+  CHECK(text.code == 0);
+  CHECK(text.out == "role   : coder (task packet)\n"
+                    "tier   : large\n"
+                    "source : packet (routing-profile-v1)\n"
+                    "work   : feature\n"
+                    "risk   : high_risk\n");
 }

@@ -198,6 +198,110 @@ auto append_reason(std::vector<readiness_reason>& reasons, readiness_reason valu
   }
 }
 
+/// @brief Same contract as the overload above, for `planning_reason`.
+auto append_reason(std::vector<planning_reason>& reasons, planning_reason value) -> void {
+  if (std::ranges::find(reasons, value) == reasons.end()) {
+    reasons.push_back(value);
+  }
+}
+
+// =========================================================================
+// Planning predicates
+// =========================================================================
+
+/// @brief Whether every REQUIRED artifact is current and in a draft/active
+/// status. An artifact this module never loaded (e.g. no `derives-from`
+/// link) is simply absent from `values` and cannot trip this check.
+[[nodiscard]] auto planning_artifacts_current(const std::vector<evidence>& values) -> bool {
+  static constexpr std::string_view accepted[] = {"draft", "active"};
+  for (const auto& value : values) {
+    if (value.required && (!evidence_current(value) || !status_in(value.status, accepted))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// @brief Whether every REQUIRED decision is current and `accepted`.
+[[nodiscard]] auto planning_decisions_accepted(const std::vector<evidence>& values) -> bool {
+  for (const auto& value : values) {
+    if (value.required && (!evidence_current(value) || value.status != "accepted")) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// @brief Whether every REQUIRED coverage row is current, covered, and
+/// `complete` — and there is at least one row to say so.
+[[nodiscard]] auto planning_coverage_complete(const std::vector<evidence>& values) -> bool {
+  for (const auto& value : values) {
+    if (value.required && (!evidence_current(value) || !value.covered || value.status != "complete")) {
+      return false;
+    }
+  }
+  return !values.empty();
+}
+
+/// @brief Whether a gate (strict-preview or apply-boundary) row set has at
+/// least one REQUIRED row and every required row is current and accepted.
+[[nodiscard]] auto planning_gate_accepted(const std::vector<evidence>& values) -> bool {
+  if (values.empty()) {
+    return false;
+  }
+  static constexpr std::string_view accepted[]     = {"accepted", "applied", "ready"};
+  std::size_t                       required_count = 0;
+  for (const auto& value : values) {
+    if (!value.required) {
+      continue;
+    }
+    ++required_count;
+    if (!evidence_current(value) || !status_in(value.status, accepted)) {
+      return false;
+    }
+  }
+  return required_count > 0;
+}
+
+/// @brief Whether a current row of each of the four spec kinds is present, in
+/// a draft/active status.
+[[nodiscard]] auto has_four_current_artifacts(const std::vector<evidence>& values) -> bool {
+  static constexpr std::string_view kinds[]    = {"product_spec", "tech_spec", "roadmap", "test_spec"};
+  static constexpr std::string_view accepted[] = {"draft", "active"};
+  for (const auto kind : kinds) {
+    bool found = false;
+    for (const auto& value : values) {
+      if (value.kind == kind && evidence_current(value) && status_in(value.status, accepted)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// @brief Whether a current row of each of the four spec kinds is present AND
+/// `active` — the REVIEWED bar, stricter than `has_four_current_artifacts`.
+[[nodiscard]] auto has_four_reviewed_artifacts(const std::vector<evidence>& values) -> bool {
+  static constexpr std::string_view kinds[] = {"product_spec", "tech_spec", "roadmap", "test_spec"};
+  for (const auto kind : kinds) {
+    bool found = false;
+    for (const auto& value : values) {
+      if (value.kind == kind && evidence_current(value) && value.status == "active") {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // =========================================================================
 // Canonical rendering
 // =========================================================================
@@ -323,6 +427,31 @@ auto append_evidence_field(std::string& out, std::string_view name, const std::v
   append_evidence_field(out, "claims", input.claims, include_display_labels);
   append_evidence_field(out, "validation_gates", input.validation_gates, include_display_labels);
   append_evidence_field(out, "facts", input.facts, include_display_labels);
+  out.push_back('}');
+  return out;
+}
+
+/// @brief The canonical body for a planning packet. Same include/exclude
+/// contract as `canonical_task`.
+[[nodiscard]] auto canonical_planning(const planning_input& input, bool include_display_labels) -> std::string {
+  std::string out;
+  out.append("{\"policy\":");
+  append_json_string(out, policy_version);
+  out.append(",\"role\":");
+  append_json_string(out, planning_role_name(input.role));
+  out.append(",\"goal\":");
+  append_json_string(out, input.goal);
+  append_evidence_field(out, "scope_facts", input.scope_facts, include_display_labels);
+  append_evidence_field(out, "artifacts", input.artifacts, include_display_labels);
+  append_evidence_field(out, "questions", input.questions, include_display_labels);
+  append_evidence_field(out, "constraints", input.constraints, include_display_labels);
+  append_evidence_field(out, "required_outputs", input.required_outputs, include_display_labels);
+  append_evidence_field(out, "strict_preview", input.strict_preview, include_display_labels);
+  append_evidence_field(out, "coverage", input.coverage, include_display_labels);
+  append_evidence_field(out, "decisions", input.decisions, include_display_labels);
+  out.append(",\"review_rubric_version\":");
+  append_json_string(out, input.review_rubric_version);
+  append_evidence_field(out, "apply_boundary", input.apply_boundary, include_display_labels);
   out.push_back('}');
   return out;
 }
@@ -982,6 +1111,189 @@ order by s.id)");
   return out;
 }
 
+// =========================================================================
+// Planning loaders
+// =========================================================================
+
+/// @brief Evidence for every entity linked TO the plan by `relationship
+/// = 'derives-from'` — the reverse direction from `linked_evidence`, which
+/// walks edges FROM a task.
+[[nodiscard]] auto plan_linked_evidence(db::connection& conn, std::int64_t plan_id, std::string_view kind,
+                                        std::string_view entity_sql) -> std::expected<std::vector<evidence>, packet_error> {
+  auto ids = conn.prepare("select from_id from entity_links where from_kind=? and to_kind='plan' and to_id=? "
+                          "and relationship='derives-from' order by from_id");
+  if (!ids) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (!ids->bind_text(1, kind) || !ids->bind_int64(2, plan_id)) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  std::vector<std::int64_t> targets;
+  while (true) {
+    auto step = ids->step();
+    if (!step) {
+      return std::unexpected(packet_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      break;
+    }
+    targets.push_back(ids->column_int64(0));
+  }
+  std::vector<evidence> out;
+  for (const auto target : targets) {
+    auto row = one_row_evidence(conn, entity_sql, target);
+    if (!row) {
+      return std::unexpected(row.error());
+    }
+    if (row->has_value()) {
+      out.push_back(std::move(**row));
+    }
+  }
+  return out;
+}
+
+/// @brief The four fixed `required_output` rows every planning packet
+/// declares — always present, always current by construction.
+[[nodiscard]] auto fixed_outputs() -> std::vector<evidence> {
+  static constexpr std::string_view names[] = {"product_spec", "tech_spec", "roadmap", "test_spec"};
+  std::vector<evidence>             out;
+  out.reserve(std::size(names));
+  for (std::size_t index = 0; index < std::size(names); ++index) {
+    const auto current = digest(names[index]);
+    evidence   item;
+    item.kind           = "required_output";
+    item.id             = static_cast<std::int64_t>(index + 1);
+    item.locator        = std::string{names[index]};
+    item.text           = std::string{names[index]};
+    item.source_digest  = current;
+    item.current_digest = current;
+    item.provenance     = "routing-packet-policy";
+    out.push_back(std::move(item));
+  }
+  return out;
+}
+
+/// @brief `total_tasks`: every task belonging to the anchor plan or one of
+/// its `plan -> plan derives-from` milestones.
+///
+/// DUPLICATED from `test_spec_status::compute`'s step-1/step-4 walk rather
+/// than called — see packet.cppm's header. This is the single-query
+/// reproduction of that walk's `total_tasks` aggregate.
+[[nodiscard]] auto milestone_task_count(db::connection& conn, std::int64_t plan_id) -> std::expected<std::int64_t, packet_error> {
+  auto stmt = conn.prepare("select count(*) from tasks where plan_id=? or plan_id in ("
+                           "select from_id from entity_links where from_kind='plan' and to_kind='plan' "
+                           "and to_id=? and relationship='derives-from')");
+  if (!stmt) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (!stmt->bind_int64(1, plan_id) || !stmt->bind_int64(2, plan_id)) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (*step != db::step_result::row) {
+    return std::int64_t{0};
+  }
+  return stmt->column_int64(0);
+}
+
+/// @brief `total_scenarios`: every scenario the anchor plan's own
+/// `derives-from` edges reach (milestone plans are NOT walked for this one —
+/// matching the oracle, which scopes scenarios to the anchor alone).
+[[nodiscard]] auto milestone_scenario_count(db::connection& conn, std::int64_t plan_id)
+    -> std::expected<std::int64_t, packet_error> {
+  auto stmt = conn.prepare("select count(*) from test_scenarios where id in ("
+                           "select from_id from entity_links where from_kind='test_scenario' and to_kind='plan' "
+                           "and to_id=? and relationship='derives-from')");
+  if (!stmt) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (!stmt->bind_int64(1, plan_id)) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (*step != db::step_result::row) {
+    return std::int64_t{0};
+  }
+  return stmt->column_int64(0);
+}
+
+/// @brief `tasks_covered`: the distinct count of milestone tasks (same set as
+/// `milestone_task_count`) that some anchor-attached scenario `verifies`.
+///
+/// A task belongs to exactly one plan, so `count(distinct t.id)` reproduces
+/// the oracle's per-milestone tally summed across milestones without
+/// double-counting.
+[[nodiscard]] auto milestone_tasks_covered_count(db::connection& conn, std::int64_t plan_id)
+    -> std::expected<std::int64_t, packet_error> {
+  auto stmt = conn.prepare(
+      "select count(distinct t.id) from tasks t "
+      "where (t.plan_id=? or t.plan_id in ("
+      "  select from_id from entity_links where from_kind='plan' and to_kind='plan' and to_id=? and relationship='derives-from'"
+      ")) and t.id in ("
+      "  select el.to_id from entity_links el where el.from_kind='test_scenario' and el.to_kind='task' "
+      "  and el.relationship='verifies' and el.from_id in ("
+      "    select from_id from entity_links where from_kind='test_scenario' and to_kind='plan' and to_id=? "
+      "    and relationship='derives-from'"
+      "  )"
+      ")");
+  if (!stmt) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (!stmt->bind_int64(1, plan_id) || !stmt->bind_int64(2, plan_id) || !stmt->bind_int64(3, plan_id)) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (*step != db::step_result::row) {
+    return std::int64_t{0};
+  }
+  return stmt->column_int64(0);
+}
+
+/// @brief The single `coverage` evidence row, from the three duplicated
+/// counting queries above. Complete iff there is at least one task, every
+/// milestone task is covered, and at least one scenario exists — the same
+/// three-way AND `assemble_planning`'s oracle applies inline.
+[[nodiscard]] auto planning_coverage_evidence(db::connection& conn, std::int64_t plan_id)
+    -> std::expected<std::vector<evidence>, packet_error> {
+  auto total_tasks = milestone_task_count(conn, plan_id);
+  if (!total_tasks) {
+    return std::unexpected(total_tasks.error());
+  }
+  auto tasks_covered = milestone_tasks_covered_count(conn, plan_id);
+  if (!tasks_covered) {
+    return std::unexpected(tasks_covered.error());
+  }
+  auto total_scenarios = milestone_scenario_count(conn, plan_id);
+  if (!total_scenarios) {
+    return std::unexpected(total_scenarios.error());
+  }
+
+  const bool complete = *total_tasks > 0 && *tasks_covered == *total_tasks && *total_scenarios > 0;
+  const auto text     = std::format("tasks:{};covered:{};scenarios:{}", *total_tasks, *tasks_covered, *total_scenarios);
+  const auto current  = digest(text);
+
+  evidence item;
+  item.kind           = "coverage";
+  item.id             = plan_id;
+  item.locator        = "plan:test-scenario-coverage";
+  item.text           = text;
+  item.source_digest  = current;
+  item.current_digest = current;
+  item.covered        = complete;
+  item.status         = complete ? "complete" : "incomplete";
+  item.provenance     = std::format("plan:{}", plan_id);
+  return std::vector<evidence>{std::move(item)};
+}
+
 } // namespace
 
 // ===========================================================================
@@ -1285,6 +1597,227 @@ auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<
                    .validation_gates    = gate_evidence(task_id, body),
                    .facts               = std::move(*facts)};
   return compile_task(input);
+}
+
+auto planning_role_name(planning_role value) -> std::string_view {
+  switch (value) {
+  case planning_role::planner:
+    return "planner";
+  case planning_role::spec_reviewer:
+    return "spec_reviewer";
+  case planning_role::ingestor:
+    return "ingestor";
+  case planning_role::orchestrator:
+    return "orchestrator";
+  }
+  return "unknown";
+}
+
+auto planning_reason_name(planning_reason reason) -> std::string_view {
+  using r = planning_reason;
+  switch (reason) {
+  case r::missing_goal:
+    return "missing_goal";
+  case r::missing_scope_facts:
+    return "missing_scope_facts";
+  case r::missing_source_artifacts:
+    return "missing_source_artifacts";
+  case r::missing_required_outputs:
+    return "missing_required_outputs";
+  case r::missing_artifact_digests:
+    return "missing_artifact_digests";
+  case r::non_current_artifacts:
+    return "non_current_artifacts";
+  case r::missing_reviewed_artifacts:
+    return "missing_reviewed_artifacts";
+  case r::missing_strict_preview:
+    return "missing_strict_preview";
+  case r::invalid_strict_preview:
+    return "invalid_strict_preview";
+  case r::missing_review_rubric:
+    return "missing_review_rubric";
+  case r::missing_coverage:
+    return "missing_coverage";
+  case r::incomplete_coverage:
+    return "incomplete_coverage";
+  case r::missing_locked_decisions:
+    return "missing_locked_decisions";
+  case r::invalid_locked_decisions:
+    return "invalid_locked_decisions";
+  case r::missing_apply_boundary:
+    return "missing_apply_boundary";
+  case r::invalid_apply_boundary:
+    return "invalid_apply_boundary";
+  }
+  return "unknown";
+}
+
+auto compile_planning(const planning_input& input) -> planning_packet {
+  using r = planning_reason;
+  std::vector<planning_reason> reasons;
+
+  // Same discipline as `compile_task`: this sequence IS the emission order.
+  if (trim(input.goal).empty()) {
+    append_reason(reasons, r::missing_goal);
+  }
+  if (!input.artifacts.empty() && !planning_artifacts_current(input.artifacts)) {
+    append_reason(reasons, r::non_current_artifacts);
+  }
+  if (!input.decisions.empty() && !planning_decisions_accepted(input.decisions)) {
+    append_reason(reasons, r::invalid_locked_decisions);
+  }
+
+  switch (input.role) {
+  case planning_role::planner:
+    if (input.scope_facts.empty()) {
+      append_reason(reasons, r::missing_scope_facts);
+    }
+    if (input.artifacts.empty()) {
+      append_reason(reasons, r::missing_source_artifacts);
+    }
+    if (input.required_outputs.empty()) {
+      append_reason(reasons, r::missing_required_outputs);
+    }
+    break;
+  case planning_role::spec_reviewer:
+    if (!has_four_current_artifacts(input.artifacts)) {
+      append_reason(reasons, r::missing_artifact_digests);
+    }
+    if (input.strict_preview.empty()) {
+      append_reason(reasons, r::missing_strict_preview);
+    }
+    if (!input.strict_preview.empty() && !planning_gate_accepted(input.strict_preview)) {
+      append_reason(reasons, r::invalid_strict_preview);
+    }
+    if (trim(input.review_rubric_version).empty()) {
+      append_reason(reasons, r::missing_review_rubric);
+    }
+    break;
+  case planning_role::ingestor:
+    if (!has_four_current_artifacts(input.artifacts)) {
+      append_reason(reasons, r::missing_artifact_digests);
+    }
+    if (!has_four_reviewed_artifacts(input.artifacts)) {
+      append_reason(reasons, r::missing_reviewed_artifacts);
+    }
+    if (input.strict_preview.empty()) {
+      append_reason(reasons, r::missing_strict_preview);
+    }
+    if (!input.strict_preview.empty() && !planning_gate_accepted(input.strict_preview)) {
+      append_reason(reasons, r::invalid_strict_preview);
+    }
+    if (input.coverage.empty()) {
+      append_reason(reasons, r::missing_coverage);
+    }
+    if (!input.coverage.empty() && !planning_coverage_complete(input.coverage)) {
+      append_reason(reasons, r::incomplete_coverage);
+    }
+    if (input.decisions.empty()) {
+      append_reason(reasons, r::missing_locked_decisions);
+    }
+    if (input.apply_boundary.empty()) {
+      append_reason(reasons, r::missing_apply_boundary);
+    }
+    if (!input.apply_boundary.empty() && !planning_gate_accepted(input.apply_boundary)) {
+      append_reason(reasons, r::invalid_apply_boundary);
+    }
+    break;
+  case planning_role::orchestrator:
+    if (input.scope_facts.empty()) {
+      append_reason(reasons, r::missing_scope_facts);
+    }
+    break;
+  }
+
+  return {.input     = input,
+          .canonical = canonical_planning(input, true),
+          .digest    = digest(canonical_planning(input, false)),
+          .reasons   = std::move(reasons)};
+}
+
+auto assemble_planning(db::connection& conn, planning_role role, std::int64_t anchor_plan_id)
+    -> std::expected<planning_packet, packet_error> {
+  auto plan = conn.prepare("select title,coalesce(summary,''),scope_kind,coalesce(scope_id,0) from plans where id=?");
+  if (!plan) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (!plan->bind_int64(1, anchor_plan_id)) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  auto step = plan->step();
+  if (!step) {
+    return std::unexpected(packet_error::query_failed);
+  }
+  if (*step != db::step_result::row) {
+    return std::unexpected(packet_error::plan_not_found);
+  }
+  const auto title      = plan->column_text(0);
+  const auto goal       = plan->column_text(1);
+  const auto scope_kind = plan->column_text(2);
+  const auto scope_id   = plan->column_int64(3);
+
+  std::vector<evidence> scope_facts;
+  {
+    const auto scope_text   = std::format("{}:{}", scope_kind, scope_id);
+    const auto scope_digest = digest(scope_text);
+    evidence   item;
+    item.kind           = "scope";
+    item.id             = scope_id;
+    item.locator        = "plan:scope";
+    item.text           = scope_text;
+    item.display_label  = title;
+    item.source_digest  = scope_digest;
+    item.current_digest = scope_digest;
+    item.status         = "ready";
+    item.provenance     = std::format("plan:{}", anchor_plan_id);
+    scope_facts.push_back(std::move(item));
+  }
+
+  auto artifacts =
+      plan_linked_evidence(conn, anchor_plan_id, "artifact",
+                           "select kind,id,coalesce(source_path,'artifact:'||id),coalesce(body,''),status,'artifact:'||id,title "
+                           "from artifacts where id=?");
+  if (!artifacts) {
+    return std::unexpected(artifacts.error());
+  }
+  auto questions = plan_linked_evidence(conn, anchor_plan_id, "question",
+                                        "select 'question',id,'question:'||id,coalesce(answer_body,body,title),status,"
+                                        "'question:'||id,title from questions where id=?");
+  if (!questions) {
+    return std::unexpected(questions.error());
+  }
+  auto decisions =
+      plan_linked_evidence(conn, anchor_plan_id, "decision",
+                           "select 'decision',id,'decision:'||id,body,status,'decision:'||id,title from decisions where id=?");
+  if (!decisions) {
+    return std::unexpected(decisions.error());
+  }
+
+  auto coverage = planning_coverage_evidence(conn, anchor_plan_id);
+  if (!coverage) {
+    return std::unexpected(coverage.error());
+  }
+
+  // `constraints` and `decisions` are the SAME rows, matching the oracle's
+  // `PlanningInput{.constraints = decisions, ..., .decisions = decisions}` —
+  // an arena slice reused twice. This tree copies once (`constraints`, which
+  // is evaluated first in field-declaration order) then moves the original
+  // into `decisions` last.
+  planning_input input{
+      .role                  = role,
+      .goal                  = goal,
+      .scope_facts           = std::move(scope_facts),
+      .artifacts             = std::move(*artifacts),
+      .questions             = std::move(*questions),
+      .constraints           = *decisions,
+      .required_outputs      = fixed_outputs(),
+      .strict_preview        = {},
+      .coverage              = std::move(*coverage),
+      .decisions             = std::move(*decisions),
+      .review_rubric_version = "spec-review-v1",
+      .apply_boundary        = {},
+  };
+  return compile_planning(input);
 }
 
 auto render_text(const task_packet& packet) -> std::string {

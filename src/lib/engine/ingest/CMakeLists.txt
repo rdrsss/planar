@@ -72,10 +72,25 @@
 # A configure-time wall between two functions that are one contract would be
 # the worse outcome.
 #
-# The PLANNING half of `packet.zig` is NOT here: it serves `models resolve`
-# (already deferred by `engine/models/CMakeLists.txt`) and depends on
-# `test_spec_status`, an `engine_planning` module, so it meets this same wall
-# from the other side. Whoever takes `models resolve` inherits that decision.
+# The PLANNING half of `packet.zig` (`assemble_planning`, `compile_planning`)
+# IS here — landed at plan 996 task 6343, serving `models resolve`. It needs
+# `test_spec_status`'s summary (`total_tasks`, `tasks_covered`,
+# `total_scenarios`) but meets the SAME wall from the other side: that module
+# is `engine_planning`, a layer-2 peer, so `DEPENDS engine_planning` on THIS
+# module's production target would FATAL exactly like the reverse edge would.
+# The three counting queries are DUPLICATED in `packet.cpp`'s
+# `planning_coverage_evidence` instead, the way `engine_grouping` duplicates
+# its `closures` read rather than reaching into `engine_closure`.
+#
+# `TEST_DEPENDS engine_planning` below is NOT the same edge under a different
+# name — it links `engine_planning` into `planar_engine_ingest_tests` ALONE
+# (module.cmake's own contract: "Entries here are linked into `<name>_tests`
+# alone"), never into the production `planar_engine_ingest` target the D15/
+# D18 walk polices. It exists so `packet.t.cpp` can assert the DUPLICATED
+# counting queries agree with `test_spec_status::compute`'s summary on the
+# same fixture — the one assertion that actually forbids the two copies from
+# drifting apart, rather than pinning each independently (task 6343
+# iteration 2, review finding BLOCKING 2).
 #
 # This module added ONE export to `materialize.cppm`: `sha256_hex`, which
 # `packet` digests whole evidence texts with. See its doc comment for the
@@ -100,4 +115,6 @@ planar_module(engine_ingest
     packet.cpp
   DEPENDS
     db
-    json_text)
+    json_text
+  TEST_DEPENDS
+    engine_planning)

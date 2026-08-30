@@ -1,15 +1,16 @@
 /// @file models.cppm
-/// @brief `planar.cmd.planar.handlers.models` — the thirteen wired `models`
-/// leaves (plan 996, task 6149).
+/// @brief `planar.cmd.planar.handlers.models` — all fourteen `models` leaves
+/// (plan 996, tasks 6149 and 6343).
 ///
-/// The ten `models registry` leaves plus `evals`, `experiments` and
-/// `outcomes`. The fourteenth, `models resolve`, is NOT wired and stays a
-/// declared exit-64 refusal: its engine half was deferred WITH its
-/// dependency in task 6096 (`zig/src/engine/routing/{roles,profile,packet}
-/// .zig`, 2,725 lines of role classification, rule compilation and live
-/// packet assembly), and there is nothing at layer 2 for a handler to call.
-/// Its refusal surface is captured in `src/lib/engine/models/CMakeLists.txt`
-/// for the cycle that takes it.
+/// The ten `models registry` leaves plus `evals`, `experiments`, `outcomes`
+/// and `resolve`. `resolve` is the family's last leaf, wired at task 6343
+/// once `engine_ingest`'s planning half (`assemble_planning`,
+/// `compile_planning`) landed alongside `engine_models`'s `profile` and
+/// `roles` (task 6111). See `models_resolve`'s own doc comment for the
+/// two-branch shape (task-bound vs. planning) and the adapter it owns:
+/// `engine::ingest::packet::evidence` -> `engine::models::profile::fact`,
+/// which is this handler's job per `src/lib/engine/models/CMakeLists.txt`'s
+/// note on where that seam belongs.
 ///
 /// ## `models evals` is TWO verbs sharing a name, and `--vendor` picks
 ///
@@ -192,5 +193,18 @@ export auto models_experiments(context& ctx, const cliapp::parsed_args& args) ->
 /// @param args The parsed arguments.
 /// @return Success, or the refusal.
 export auto models_outcomes(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar models resolve` — resolve one role's routing tier from its
+/// authoritative packet, or report the configured static fallback and why.
+///
+/// Task-bound roles (`coder`, `test-coder`, `reviewer`, `research`,
+/// `janitor`) resolve from `--task`'s compiled task packet; pre-task roles
+/// (`planner`, `spec-reviewer`, `ingestor`, `orchestrator`) resolve from
+/// `--plan`'s compiled planning packet, or from no packet at all when
+/// `--plan` is omitted.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto models_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers
