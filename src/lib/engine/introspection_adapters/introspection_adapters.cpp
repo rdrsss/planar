@@ -2,6 +2,10 @@
 /// @brief Implementation of `planar.engine.introspection_adapters` (plan
 /// 996, task 6102). See introspection_adapters.cppm for scope.
 
+module;
+
+#include <cassert>
+
 module planar.engine.introspection_adapters;
 
 import std;
@@ -51,6 +55,18 @@ auto optional_bool_value(const jd::json_value* v, bool default_value) -> std::op
     return std::nullopt;
   }
   return v->boolean;
+}
+
+/// @brief Add `delta` to `*value`, SATURATING at `std::uint32_t`'s max
+/// rather than wrapping. Mirrors the oracle's `+|=` saturating-add, used
+/// throughout `collectPreview` for every coverage tally and `signal.count`
+/// (zig:132, 140-146, 716; verified against zig:148's
+/// `std.debug.assert(coverageIsAccounted(cov))`, which a wrapped counter
+/// would silently fail rather than plateau against). Practically
+/// unreachable at current traffic volumes — the fix is here so the
+/// divergence from the oracle is reproduced rather than merely documented.
+auto saturating_add(std::uint32_t& value, std::uint32_t delta = 1) -> void {
+  value = value > std::numeric_limits<std::uint32_t>::max() - delta ? std::numeric_limits<std::uint32_t>::max() : value + delta;
 }
 
 auto object_value(const jd::json_value* v) -> const jd::json_value* {
@@ -341,12 +357,6 @@ struct extract_state {
   std::vector<pending_claude_tool> claude_tools;
 };
 
-/// @brief Cap on pending (unconsumed) Claude tool_use entries tracked per
-/// source, matching the Zig original's `default_max_records`. This is a
-/// distinct bound from `k_max_evidence_buckets` — it limits in-flight
-/// pairing state, not aggregated signal buckets.
-constexpr std::size_t k_max_pending_claude_tools = 50'000;
-
 auto find_claude_tool(std::vector<pending_claude_tool>& tools, std::string_view id) -> pending_claude_tool* {
   for (auto& tool : tools) {
     if (tool.id == id) {
@@ -459,7 +469,7 @@ auto extract_claude(extract_state& state, const jd::json_value& obj) -> extract_
       if (find_claude_tool(state.claude_tools, id) != nullptr) {
         continue;
       }
-      if (state.claude_tools.size() == k_max_pending_claude_tools) {
+      if (state.claude_tools.size() == k_default_max_records) {
         continue;
       }
       state.claude_tools.push_back(pending_claude_tool{std::string{id}, std::string{*verb_path}, false});
@@ -658,7 +668,7 @@ auto add_aggregate(std::vector<signal_row>& signals, vendor v, const extracted& 
   for (auto& signal : signals) {
     if (signal.v == v && signal.cat == item.cat && signal.verb_path == item.verb_path &&
         time_bucket(signal.first_seen) == bucket) {
-      signal.count += 1;
+      saturating_add(signal.count);
       if (item.timestamp < signal.first_seen) {
         signal.first_seen = std::string{item.timestamp};
       }
@@ -715,6 +725,17 @@ auto coverage_less_than(const coverage_row& a, const coverage_row& b) -> bool {
   return static_cast<std::uint8_t>(a.v) < static_cast<std::uint8_t>(b.v);
 }
 
+/// @brief Whether a coverage row's tallies are internally consistent:
+/// every scanned line landed in exactly one of normalized/ignored/
+/// malformed/capped. Mirrors the oracle's `coverageIsAccounted` (zig:832),
+/// asserted immediately before every non-early-exit coverage row is
+/// appended (zig:148).
+auto coverage_accounted(const coverage_row& cov) -> bool {
+  return static_cast<std::uint64_t>(cov.scanned) ==
+         static_cast<std::uint64_t>(cov.normalized) + static_cast<std::uint64_t>(cov.ignored) +
+             static_cast<std::uint64_t>(cov.malformed) + static_cast<std::uint64_t>(cov.capped);
+}
+
 } // namespace
 
 auto collect_preview(std::span<const raw_source> sources) -> preview {
@@ -756,29 +777,30 @@ auto collect_preview(std::span<const raw_source> sources) -> preview {
       if (trimmed.empty()) {
         continue;
       }
-      cov.scanned += 1;
+      saturating_add(cov.scanned);
       auto parsed = jd::parse_json(trimmed);
       if (!parsed.has_value()) {
-        cov.malformed += 1;
+        saturating_add(cov.malformed);
         continue;
       }
       auto const result = extract(state, source.v, *parsed);
       switch (result.kind) {
       case extract_kind::normalized:
         if (add_aggregate(signals, source.v, result.value)) {
-          cov.normalized += 1;
+          saturating_add(cov.normalized);
         } else {
-          cov.capped += 1;
+          saturating_add(cov.capped);
         }
         break;
       case extract_kind::ignored:
-        cov.ignored += 1;
+        saturating_add(cov.ignored);
         break;
       case extract_kind::malformed:
-        cov.malformed += 1;
+        saturating_add(cov.malformed);
         break;
       }
     }
+    assert(coverage_accounted(cov));
     coverage.push_back(cov);
   }
 
@@ -787,6 +809,12 @@ auto collect_preview(std::span<const raw_source> sources) -> preview {
   // sources, one disabled and one unavailable) must keep their relative
   // input order — `coverageLessThan`/`signalLessThan` only ever compare a
   // PREFIX of the full key, so an unstable sort could silently swap ties.
+  // Correct fidelity call (the "raw vendor fixtures..." test's two `cli_log`
+  // rows exercise exactly this tie and pin the resulting order), but no
+  // test here flips `stable_sort` back to `sort` and re-asserts — so a
+  // future regression to an unstable sort is not itself pinned, only this
+  // one tie's OUTCOME is. Do not read the passing test as coverage for the
+  // stability guarantee in general.
   std::ranges::stable_sort(signals, signal_less_than);
   std::ranges::stable_sort(coverage, coverage_less_than);
 

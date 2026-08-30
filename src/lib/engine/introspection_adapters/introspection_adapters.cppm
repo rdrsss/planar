@@ -15,18 +15,22 @@
 ///
 /// The Zig original's OTHER half —
 /// `collectPreviewFromPaths`/`collectVendorPath`/the `FsSeam` fault-
-/// injection seam/`TranscriptConfig`/`CliLogAdapter`/`collectConfiguredPreview`
-/// (roughly 280 of the file's ~836 implementation lines) — walks
-/// `~/.claude/projects`, `~/.codex/sessions`, `~/.copilot/session-state`,
-/// and a caller-supplied CLI-log reader, applies file/byte/record caps, and
-/// hands the result to `collectPreview`. It is disk-discovery PLUMBING for
-/// the `report` handler, not part of the collector's own contract, and
-/// `report` is not wired this cycle (it also needs
-/// `engine/introspect.zig`'s DB-aggregate half, ~1040 implementation
-/// lines, entirely unstarted). Porting the discovery layer now would add a
-/// filesystem-fault-injection seam with no caller to exercise it against.
-/// Left as the named follow-up alongside `engine/introspect.zig` and the
-/// handler wiring itself — see task 6102's tracking row.
+/// injection seam/`TranscriptConfig`/`CliLogAdapter`/`collectConfiguredPreview`/
+/// `CollectorLimits` (zig:178) and its three `pub const default_max_*`
+/// values (zig:11-13: `default_max_files`, `default_max_bytes`, and
+/// `default_max_records` — the last of which THIS half already needs, see
+/// `k_default_max_records` below) — (roughly 280 of the file's ~836
+/// implementation lines) — walks `~/.claude/projects`, `~/.codex/sessions`,
+/// `~/.copilot/session-state`, and a caller-supplied CLI-log reader,
+/// applies file/byte/record caps, and hands the result to
+/// `collectPreview`. It is disk-discovery PLUMBING for the `report`
+/// handler, not part of the collector's own contract, and `report` is not
+/// wired this cycle (it also needs `engine/introspect.zig`'s DB-aggregate
+/// half, ~1040 implementation lines, entirely unstarted). Porting the
+/// discovery layer now would add a filesystem-fault-injection seam with no
+/// caller to exercise it against. Left as the named follow-up alongside
+/// `engine/introspect.zig` and the handler wiring itself — see task 6102's
+/// tracking row.
 ///
 /// ## Why this is a self-contained layer-2 bucket
 ///
@@ -45,6 +49,17 @@ namespace planar::engine::introspection_adapters {
 
 /// @brief A preview cannot carry more distinct evidence buckets than this.
 export inline constexpr std::size_t k_max_evidence_buckets = 1024;
+
+/// @brief The oracle's `default_max_records` (zig:13, `pub`). SHARED
+/// across two call sites there: `extractClaude`'s pending tool_use pairing
+/// cap (zig:526, what THIS half uses it for) and `collectVendorPath`'s
+/// per-source record cap (zig:307, the deferred discovery half's job —
+/// see this file's header). Exported and named after the oracle constant
+/// rather than kept private specifically so a future discovery-half port
+/// reaches for THIS symbol instead of re-declaring a same-valued private
+/// one under a different name, which would silently decouple the two caps
+/// the oracle keeps coupled.
+export inline constexpr std::size_t k_default_max_records = 50'000;
 
 /// @brief The four recognized transcript/log sources.
 export enum class vendor : std::uint8_t { claude, codex, copilot, cli_log };

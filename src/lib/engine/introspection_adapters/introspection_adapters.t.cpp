@@ -15,10 +15,16 @@
 //   * A source past enabled/available contributes a coverage row and
 //     nothing else — no signals, no scanned count.
 //   * Every seeded PRIVATE_*_SENTINEL / secret / private-argument value is
-//     asserted ABSENT from every signal's verb_path/first_seen/last_seen —
-//     the redaction invariant is checked directly, not via a would-be JSON
-//     encode (this module does not own JSON rendering; introspect.zig's
-//     port does).
+//     checked absent from every signal's verb_path/first_seen/last_seen via
+//     `preview_leaks` — the redaction invariant is checked directly, not
+//     via a would-be JSON encode (this module does not own JSON rendering;
+//     introspect.zig's port does). `preview_leaks` only DISCRIMINATES at
+//     call sites where `preview.signals` is non-empty (the "current Claude
+//     fixture pairs tool use..." and "malformed recognized envelope..."
+//     cases); at the several sites where the same fixtures also drive
+//     `signals.empty()` to true (e.g. the "current vendor fixture union"
+//     case), the leak-check is vacuously satisfied and documents intent
+//     rather than proving it.
 //   * `cli_log` is authoritative: a transcript-vendor signal that collides
 //     on (verb_path, category, hour bucket) with a `cli_log` signal is
 //     removed, never the other way around.
@@ -142,6 +148,24 @@ TEST_CASE("ordinary success is observed without becoming gap while explicit usag
   CHECK(coverage_accounted(preview.coverage[0]));
   REQUIRE(preview.signals.size() == 1);
   CHECK(preview.signals[0].cat == ia::category::gap);
+  CHECK(preview.signals[0].verb_path == "planar task add");
+}
+
+TEST_CASE("abandonment takes precedence over gap when both are present in the same legacy record",
+          "[engine][introspection_adapters]") {
+  // category_from_evidence checks abandoned BEFORE gap (zig:701-703): a
+  // copilot legacy record with status:"abandoned" AND invalid_flag true
+  // sets both booleans, and the oracle's precedence must win as
+  // `abandonment`, never `gap`. Swapping the two checks leaves every other
+  // fixture in this file passing, so this is the one case that pins the
+  // order rather than just the individual outcomes.
+  std::string const           jsonl = R"({"version":"1","kind":"shell_result","time":"2026-07-12T15:00:00Z",)"
+                                      R"("command":{"name":"planar task add"},"exit_code":0,"retry":false,)"
+                                      R"("status":"abandoned","invalid_flag":true})";
+  std::vector<ia::raw_source> sources{ia::raw_source{.v = ia::vendor::copilot, .jsonl = jsonl}};
+  auto const                  preview = ia::collect_preview(sources);
+  REQUIRE(preview.signals.size() == 1);
+  CHECK(preview.signals[0].cat == ia::category::abandonment);
   CHECK(preview.signals[0].verb_path == "planar task add");
 }
 
