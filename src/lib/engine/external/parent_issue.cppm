@@ -75,40 +75,46 @@ export enum class op : std::uint8_t {
 
 /// @brief One row in a `report`'s `results`.
 export struct entity_result {
-  std::string entity_kind;   ///< `"plan"` or `"task"`.
-  std::int64_t entity_id = 0;
-  std::string title;
-  op          operation  = op::created;
-  std::string external_id;   ///< `"owner/repo#N"`, or empty on `failed`.
-  std::string external_url;  ///< Empty on `skipped`/`failed`.
-  std::string error_name;    ///< Empty unless `operation == op::failed`.
+  std::string  entity_kind;             ///< `"plan"` or `"task"`.
+  std::int64_t entity_id = 0;           ///< The local row id.
+  std::string  title;                   ///< The entity's title at propagate time.
+  op           operation = op::created; ///< What this run did with the entity.
+  std::string  external_id;             ///< `"owner/repo#N"`, or empty on `failed`.
+  /// @brief The provider URL. Empty on `failed`. On `skipped`, this is the
+  /// EXISTING link's URL — matches the oracle's `EntityResult.external_url`
+  /// (`parent_issue.zig:486`, reading `loadExistingMirror`'s second
+  /// column). `link::load_existing_mirror` (task 6335) itself returns only
+  /// `external_id`, so this module reads the url column separately; see
+  /// `load_existing_mirror_url` below.
+  std::string external_url;
+  std::string error_name; ///< Empty unless `operation == op::failed`.
 };
 
 /// @brief The propagate summary plus per-entity rows.
 export struct report {
-  std::size_t created = 0;
-  std::size_t skipped = 0;
-  std::size_t failed  = 0;
+  std::size_t created = 0; ///< Count of `entity_result` rows with `operation == op::created`.
+  std::size_t skipped = 0; ///< Count of rows with `operation == op::skipped`.
+  std::size_t failed  = 0; ///< Count of rows with `operation == op::failed`.
   /// @brief Effective strategy after fallback resolution. Always
   /// `"github-parent-issue"` for this module — the CLI layer decides
   /// whether a probe failure should fall back to a different strategy.
-  std::string strategy = "github-parent-issue";
-  std::vector<entity_result> results;
+  std::string                strategy = "github-parent-issue";
+  std::vector<entity_result> results; ///< One row per entity this run touched, in the order it was processed.
 };
 
 /// @brief The subset of the oracle's `PropagateOpts` the parent-issue path
 /// needs.
 export struct opts {
-  std::int64_t    sys_id = 0;
-  std::string_view sys_slug;
-  bool            dry_run = false;
-  link::sync_direction sync_direction_ = link::sync_direction::two_way;
+  std::int64_t         sys_id = 0;              ///< The registered system's row id.
+  std::string_view     sys_slug;                ///< The registered system's slug, for diagnostics only.
+  bool                 dry_run         = false; ///< When true, no `gh_client` method is called and no row is written.
+  link::sync_direction sync_direction_ = link::sync_direction::two_way; ///< Recorded on every newly-created mirror link.
 };
 
 /// @brief The wire result of a single REST issue create.
 export struct created_issue {
-  std::int64_t number = 0;
-  std::string  node_id;
+  std::int64_t number = 0; ///< The issue number within its repo.
+  std::string  node_id;    ///< The GraphQL node id, needed by the ProjectsV2 surface; may be empty.
 };
 
 /// @brief Why a `gh_client` call failed.
@@ -120,6 +126,21 @@ export struct created_issue {
 /// oracle behavior, not a bug this port introduces). Every other call site
 /// (`create_issue`, `link_sub_issue`, `post_comment`) treats every error
 /// the same regardless of which member it is.
+///
+/// **RECORDED FOLLOW-UP, not fixed this cycle**: the oracle's `GhClient`
+/// callbacks return `anyerror`, and `createOrSkipGithubIssue`'s failure
+/// path reports `@errorName(e)` verbatim — a distinct string per concrete
+/// failure (`HttpError`, `RateLimited`, whatever the real adapter raised).
+/// This two-member enum cannot reproduce that: `create_or_skip_github_issue`
+/// (parent_issue.cpp) reports the literal `"gh_client_error"` for every
+/// `other`-classified failure. Once a real `gh_client` implementation is
+/// wired to `github_adapter` (still unwired — see this module's header),
+/// every half-failed propagation will report the same opaque string in
+/// that field, which is exactly the field an operator reads to tell
+/// failures apart. Widening `gh_client_error` to carry the underlying
+/// error name (or switching `create_issue`/`link_sub_issue`/`post_comment`
+/// to return `std::expected<T, std::string>`) is follow-up work for
+/// whichever task wires the production client.
 export enum class gh_client_error : std::uint8_t {
   not_found,
   other,
@@ -180,8 +201,8 @@ export enum class parent_issue_error : std::uint8_t {
 
 /// @brief One repo's GitHub coordinates.
 export struct repo_coords {
-  std::string owner;
-  std::string repo;
+  std::string owner; ///< The repo owner (user or org login).
+  std::string repo;  ///< The repo name, without the owner prefix.
 };
 
 /// @brief Extract `(owner, repo)` from a GitHub git-remote URL.
@@ -234,6 +255,14 @@ export auto resolve_target_repo(db::connection& conn, std::int64_t anchor_plan_i
 /// (the very first call, before `propagate_parent_issue_with_repo` has
 /// written one), the write is a silent no-op — the first `create` call
 /// establishes the row and its `config_json` in the same pass.
+///
+/// **This means the cache takes THREE propagate calls to ever hit, not
+/// two** — see task 6354 (`oracle-subissue-cache-three-runs`) for the
+/// full run-by-run trace. Short version: run 1's cache write no-ops
+/// because the row does not exist yet (it's created later in the SAME
+/// call); run 2's write lands, but only after ANOTHER probe, because run
+/// 1 never wrote the key the run-2 read is looking for; run 3 is the
+/// first actual cache hit. Reproduced deliberately, not a port defect.
 /// @param conn An open, migrated connection.
 /// @param client The GitHub client to probe with.
 /// @param owner The repo owner.
@@ -252,9 +281,15 @@ export auto detect_parent_issue_support(db::connection& conn, gh_client& client,
 /// issue, each child plan as a sub-issue of the parent, each task under a
 /// child plan as a sub-issue of that child, each task attached directly
 /// to the anchor as a sub-issue of the parent, and — best-effort, only on
-/// a real (non-dry-run) run whose parent issue was actually created or
-/// already existed — every decision linked to the anchor as a comment on
-/// the parent issue.
+/// a real (non-dry-run) run whose parent issue was ACTUALLY CREATED THIS
+/// RUN (never on a run that skipped it as already-linked) — every
+/// decision linked to the anchor as a comment on the parent issue. The
+/// gate is `!dry_run && !parent.external_id.empty()`, and the skip path
+/// always returns an empty `external_id` (see `create_or_skip_github_issue`
+/// below), so decisions are commented exactly ONCE, on the run that first
+/// creates the anchor issue, never again on any later re-run. Oracle
+/// behavior (`parent_issue.zig`'s own gate is the same
+/// `parent.external_id.len > 0` check) — not a port omission.
 ///
 /// **Already-exists behavior**: `create_or_skip_github_issue` checks
 /// `link::load_existing_mirror` BEFORE calling any `gh_client` method. A

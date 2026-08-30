@@ -83,6 +83,44 @@ auto insert_task_under_plan(planar::db::connection& conn, std::string_view title
   return stmt->column_int64(0);
 }
 
+/// @brief `entity_links(from_kind='task', to_kind='repo', relationship='touches')`
+/// — the edge `distinct_repos_in_feature_ids`'s second CTE union arm reads.
+/// Raw SQL rather than through `planar.engine.entitylink`: that bucket is a
+/// layer-2 peer of `engine_external` and D18 forbids the edge (same
+/// constraint `scratch_db.hpp`'s own `insert_task` documents).
+auto insert_touches_edge(planar::db::connection& conn, std::int64_t task_id, std::int64_t project_id) -> void {
+  auto stmt = conn.prepare("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                           "values ('task', ?, 'repo', ?, 'touches')");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_int64(1, task_id).has_value());
+  REQUIRE(stmt->bind_int64(2, project_id).has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+}
+
+/// @brief A decision `-derives-from-> plan_id`, the edge
+/// `post_decision_comments` reads.
+auto insert_decision_derives_from(planar::db::connection& conn, std::int64_t plan_id, std::string_view title,
+                                  std::string_view body) -> std::int64_t {
+  auto stmt = conn.prepare("insert into decisions (scope_kind, title, body, status) "
+                           "values ('global', ?, ?, 'proposed') returning id");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, title).has_value());
+  REQUIRE(stmt->bind_text(2, body).has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  REQUIRE(*step == planar::db::step_result::row);
+  auto const decision_id = stmt->column_int64(0);
+
+  auto link_stmt = conn.prepare("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                                "values ('decision', ?, 'plan', ?, 'derives-from')");
+  REQUIRE(link_stmt.has_value());
+  REQUIRE(link_stmt->bind_int64(1, decision_id).has_value());
+  REQUIRE(link_stmt->bind_int64(2, plan_id).has_value());
+  REQUIRE(link_stmt->step().has_value());
+  return decision_id;
+}
+
 auto insert_project(planar::db::connection& conn, std::string_view slug, std::string_view git_remote = "") -> std::int64_t {
   auto stmt = conn.prepare("insert into projects (slug, name, git_remote) values (?, ?, ?) returning id");
   REQUIRE(stmt.has_value());
@@ -104,12 +142,20 @@ auto insert_project(planar::db::connection& conn, std::string_view slug, std::st
 /// counters ARE this test file's request log.
 class fake_client final : public parent_issue::gh_client {
 public:
-  std::int64_t issue_counter_ = 0;
-  std::size_t  creates_       = 0;
-  std::size_t  links_         = 0;
-  std::size_t  comments_      = 0;
-  std::size_t  probes_        = 0;
+  std::int64_t issue_counter_   = 0;
+  std::size_t  creates_         = 0;
+  std::size_t  links_           = 0;
+  std::size_t  comments_        = 0;
+  std::size_t  probes_          = 0;
   bool         probe_supported_ = true;
+  /// @brief One entry per `create_issue` call, in call order — the
+  /// title/body actually sent, so tests can pin `entity_for_create`'s
+  /// output (M6: which column each entity kind reads, and the empty-body
+  /// default) without a real HTTP request to inspect.
+  std::vector<std::string> created_titles_;
+  std::vector<std::string> created_bodies_;
+  /// @brief The `external_id` every `post_comment` call targeted.
+  std::vector<std::string> commented_on_;
 
   auto probe(std::string_view, std::string_view) -> std::expected<void, parent_issue::gh_client_error> override {
     ++probes_;
@@ -119,10 +165,13 @@ public:
     return {};
   }
 
-  auto create_issue(std::string_view, std::string_view, std::string_view, std::string_view, std::span<const std::string>)
+  auto create_issue(std::string_view, std::string_view, std::string_view title, std::string_view body,
+                    std::span<const std::string>)
       -> std::expected<parent_issue::created_issue, parent_issue::gh_client_error> override {
     ++issue_counter_;
     ++creates_;
+    created_titles_.emplace_back(title);
+    created_bodies_.emplace_back(body);
     return parent_issue::created_issue{.number = issue_counter_, .node_id = std::format("N{}", issue_counter_)};
   }
 
@@ -132,8 +181,10 @@ public:
     return {};
   }
 
-  auto post_comment(std::string_view, std::string_view) -> std::expected<void, parent_issue::gh_client_error> override {
+  auto post_comment(std::string_view external_id, std::string_view)
+      -> std::expected<void, parent_issue::gh_client_error> override {
     ++comments_;
+    commented_on_.emplace_back(external_id);
     return {};
   }
 };
@@ -189,7 +240,7 @@ TEST_CASE("project_github_coords prefers git_remote, falls back to slug", "[engi
 }
 
 TEST_CASE("propagate_parent_issue_with_repo creates anchor + child + tasks, second run skips all",
-         "[engine][external][parent_issue]") {
+          "[engine][external][parent_issue]") {
   scratch_db_path scratch;
   auto            conn      = open_migrated(scratch);
   auto const      system_id = insert_system(conn, "gh");
@@ -200,9 +251,8 @@ TEST_CASE("propagate_parent_issue_with_repo creates anchor + child + tasks, seco
   insert_task_under_plan(conn, "t2", child_id);
 
   fake_client fake;
-  auto        rep = parent_issue::propagate_parent_issue_with_repo(
-      conn, fake, anchor_id, "acme", "checkout",
-      parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
+  auto        rep = parent_issue::propagate_parent_issue_with_repo(conn, fake, anchor_id, "acme", "checkout",
+                                                                   parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
   REQUIRE_FALSE(err(rep).has_value());
 
   CHECK(rep->created == 4);
@@ -240,9 +290,8 @@ TEST_CASE("propagate_parent_issue_with_repo creates anchor + child + tasks, seco
   // an already-linked entity, the same shape `ext propagate-one`
   // implements (see this file's header).
   fake_client fake2;
-  auto        rep2 = parent_issue::propagate_parent_issue_with_repo(
-      conn, fake2, anchor_id, "acme", "checkout",
-      parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
+  auto        rep2 = parent_issue::propagate_parent_issue_with_repo(conn, fake2, anchor_id, "acme", "checkout",
+                                                                    parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
   REQUIRE_FALSE(err(rep2).has_value());
   CHECK(rep2->created == 0);
   CHECK(rep2->skipped == 4);
@@ -251,7 +300,7 @@ TEST_CASE("propagate_parent_issue_with_repo creates anchor + child + tasks, seco
 }
 
 TEST_CASE("propagate_parent_issue_with_repo dry_run does not contact remote and creates no links",
-         "[engine][external][parent_issue]") {
+          "[engine][external][parent_issue]") {
   scratch_db_path scratch;
   auto            conn      = open_migrated(scratch);
   auto const      system_id = insert_system(conn, "gh");
@@ -261,8 +310,7 @@ TEST_CASE("propagate_parent_issue_with_repo dry_run does not contact remote and 
 
   fake_client fake;
   auto        rep = parent_issue::propagate_parent_issue_with_repo(
-      conn, fake, anchor_id, "acme", "x",
-      parent_issue::opts{.sys_id = system_id, .sys_slug = "gh", .dry_run = true});
+      conn, fake, anchor_id, "acme", "x", parent_issue::opts{.sys_id = system_id, .sys_slug = "gh", .dry_run = true});
   REQUIRE_FALSE(err(rep).has_value());
   CHECK(fake.creates_ == 0);
   CHECK(rep->created == 2);
@@ -273,8 +321,7 @@ TEST_CASE("propagate_parent_issue_with_repo dry_run does not contact remote and 
   CHECK(stmt->column_int64(0) == 0);
 }
 
-TEST_CASE("propagate_parent_issue_with_repo returns sub_issue_unsupported when probe 404s",
-         "[engine][external][parent_issue]") {
+TEST_CASE("propagate_parent_issue_with_repo returns sub_issue_unsupported when probe 404s", "[engine][external][parent_issue]") {
   scratch_db_path scratch;
   auto            conn      = open_migrated(scratch);
   auto const      system_id = insert_system(conn, "gh");
@@ -283,7 +330,7 @@ TEST_CASE("propagate_parent_issue_with_repo returns sub_issue_unsupported when p
   fake_client fake;
   fake.probe_supported_ = false;
   auto rep = parent_issue::propagate_parent_issue_with_repo(conn, fake, anchor_id, "o", "r",
-                                                             parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
+                                                            parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
   REQUIRE(err(rep).has_value());
   CHECK(*err(rep) == parent_issue::parent_issue_error::sub_issue_unsupported);
 }
@@ -307,8 +354,8 @@ TEST_CASE("propagate_zero_repo rejects empty and malformed lead_repo", "[engine]
 }
 
 TEST_CASE("detect_parent_issue_support's cache write is a no-op until the anchor link row exists, "
-         "so it takes THREE propagate calls to observe a cache hit",
-         "[engine][external][parent_issue]") {
+          "so it takes THREE propagate calls to observe a cache hit",
+          "[engine][external][parent_issue]") {
   // This is oracle-derived, not the intuitive two-call shape (see this
   // file's header and CLAUDE.md's "derive from the oracle" warning).
   // `write_sub_issue_support_cache` is a no-op when the anchor has no
@@ -348,8 +395,186 @@ TEST_CASE("detect_parent_issue_support's cache write is a no-op until the anchor
   // runs at all.
   fake_client fake3;
   fake3.probe_supported_ = false;
-  auto rep3 = parent_issue::propagate_parent_issue_with_repo(conn, fake3, anchor_id, "acme", "checkout", opts_val);
+  auto rep3              = parent_issue::propagate_parent_issue_with_repo(conn, fake3, anchor_id, "acme", "checkout", opts_val);
   REQUIRE_FALSE(err(rep3).has_value());
   CHECK(fake3.probes_ == 0);
   CHECK(rep3->skipped == 1);
+
+  // M8: write_sub_issue_support_cache's merge must not CLOBBER the
+  // strategy fields run 1 wrote — it is a MERGE, keyed on preserving
+  // every other object member while only touching `sub_issue_supported`.
+  // A mutation that dropped the `merged.object.emplace_back(key, val)`
+  // preserve-arm would still leave every run above green (none of them
+  // reads `config_json` after run 2's write), so this is the one
+  // assertion that actually exercises the preserve path.
+  {
+    auto stmt = conn.prepare("select config_json from external_links where entity_kind='plan' and entity_id=?");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_int64(1, anchor_id).has_value());
+    REQUIRE(stmt->step().has_value());
+    auto const cfg = stmt->column_text(0);
+    CHECK(cfg.find(R"("strategy":"github-parent-issue")") != std::string::npos);
+    CHECK(cfg.find(R"("parent_issue_repo":"acme/checkout")") != std::string::npos);
+    CHECK(cfg.find(R"("sub_issue_supported":true)") != std::string::npos);
+  }
+}
+
+TEST_CASE("resolve_target_repo and propagate_parent_issue reach a repo ONLY through recursion "
+          "into a grandchild plan AND the touches-edge CTE arm",
+          "[engine][external][parent_issue]") {
+  // Neither `resolve_target_repo` nor `propagate_parent_issue` (the
+  // repo-RESOLVING entry point, as opposed to `..._with_repo`) had any
+  // test coverage before this case — every other test in this file drives
+  // `..._with_repo` directly with a hand-supplied owner/repo, so
+  // `distinct_repos_in_feature_ids`'s 28-line recursive CTE (M1/M2) had
+  // zero callers anywhere in this suite.
+  //
+  // The fixture is built so BOTH of the following are load-bearing, not
+  // incidental:
+  //   - the touched task lives on a GRANDCHILD plan (anchor -> child ->
+  //     grandchild), so the CTE's `plan_tree` recursion must run at
+  //     least twice. A mutation that truncates the recursion to
+  //     `select ?` (M2) finds only the anchor id and misses the task
+  //     entirely.
+  //   - the task reaches the repo via a `-touches->` entity_links edge,
+  //     NOT via `scope_kind='repo'` — it is `scope_kind='global'`. A
+  //     mutation that deletes the touches-edge CTE union arm (M1) finds
+  //     no repo at all for this task.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto const project_id = insert_project(conn, "acme/checkout", "https://github.com/acme/checkout.git");
+
+  auto const anchor_id     = insert_plan(conn, "anchor", "a");
+  auto const child_id      = insert_plan(conn, "child", "c", anchor_id);
+  auto const grandchild_id = insert_plan(conn, "grandchild", "g", child_id);
+  auto const task_id       = insert_task_under_plan(conn, "touches the repo", grandchild_id);
+  insert_touches_edge(conn, task_id, project_id);
+
+  {
+    auto coords = parent_issue::resolve_target_repo(conn, anchor_id);
+    REQUIRE_FALSE(err(coords).has_value());
+    CHECK(coords->owner == "acme");
+    CHECK(coords->repo == "checkout");
+  }
+
+  auto const  system_id = insert_system(conn, "gh");
+  fake_client fake;
+  auto        rep =
+      parent_issue::propagate_parent_issue(conn, fake, anchor_id, parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
+  REQUIRE_FALSE(err(rep).has_value());
+  // `propagate_parent_issue_with_repo`'s entity-creation walk (step 2) is
+  // NOT the same recursion as the repo-resolution CTE above: it only
+  // visits DIRECT children of the anchor and THEIR direct tasks
+  // (`child_plans_of` / `tasks_under_plan`, both one level), so the
+  // grandchild plan and its task are never turned into issues even
+  // though they ARE what the repo resolution found. anchor + child = 2
+  // created issues; this assertion is deliberately about the repo
+  // resolution succeeding at all (proven above), not about walk depth.
+  CHECK(rep->created == 2);
+  CHECK(fake.creates_ == 2);
+}
+
+TEST_CASE("resolve_target_repo returns no_touched_repos when the anchor touches nothing", "[engine][external][parent_issue]") {
+  // The absence case for the M1/M2 fixture above: without a repo-scoped
+  // task or a touches edge anywhere in the tree, resolution must fail
+  // rather than silently pick something. Pairs the presence assertion
+  // with the CLAUDE.md rule that an absence check alone can pass for the
+  // wrong reason.
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      anchor_id = insert_plan(conn, "anchor", "a");
+  insert_plan(conn, "child", "c", anchor_id);
+
+  auto coords = parent_issue::resolve_target_repo(conn, anchor_id);
+  REQUIRE(err(coords).has_value());
+  CHECK(*err(coords) == parent_issue::parent_issue_error::no_touched_repos);
+}
+
+TEST_CASE("propagate_parent_issue_with_repo: direct-anchor tasks, plan summary as issue body, "
+          "the empty-body default, and decision comments on the creating run",
+          "[engine][external][parent_issue]") {
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      system_id = insert_system(conn, "gh");
+
+  auto const anchor_id = insert_plan(conn, "anchor", "a");
+  {
+    // `insert_plan` never sets `summary`; set it directly here so the
+    // anchor's issue body can be pinned against a NON-empty value (M6:
+    // `entity_for_create`'s plan arm reads `summary`, never `body` — the
+    // `plans` table has no `body` column at all, so a mutation that swaps
+    // to it fails the query outright rather than silently substituting
+    // the wrong text).
+    auto stmt = conn.prepare("update plans set summary = ? where id = ?");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_text(1, "ANCHOR SUMMARY TEXT").has_value());
+    REQUIRE(stmt->bind_int64(2, anchor_id).has_value());
+    REQUIRE(stmt->step().has_value());
+  }
+  // M5: a task attached DIRECTLY to the anchor (plan_id = anchor_id, no
+  // intervening child plan) — every other test in this file only exercises
+  // tasks reached through a child plan, so the step-3 direct-anchor-tasks
+  // loop had zero coverage.
+  auto const direct_task_id = insert_task_under_plan(conn, "direct anchor task", anchor_id);
+  static_cast<void>(direct_task_id);
+
+  // M3: a decision `-derives-from-> anchor`, the edge `post_decision_comments` reads.
+  insert_decision_derives_from(conn, anchor_id, "Use parent-issue strategy", "Because it is simplest for a single repo.");
+
+  fake_client fake;
+  auto        rep = parent_issue::propagate_parent_issue_with_repo(conn, fake, anchor_id, "acme", "checkout",
+                                                                   parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
+  REQUIRE_FALSE(err(rep).has_value());
+
+  // anchor + direct task = 2 created issues (no child plans in this fixture).
+  CHECK(rep->created == 2);
+  REQUIRE(fake.created_titles_.size() == 2);
+  REQUIRE(fake.created_bodies_.size() == 2);
+
+  // The anchor is always create_or_skip_github_issue's FIRST call.
+  CHECK(fake.created_titles_[0] == "anchor");
+  CHECK(fake.created_bodies_[0] == "ANCHOR SUMMARY TEXT");
+
+  // The direct task's title is what was inserted; its body is EMPTY
+  // (tasks.body was never set), so it must fall back to the default
+  // placeholder rather than sending an empty string.
+  CHECK(fake.created_titles_[1] == "direct anchor task");
+  CHECK(fake.created_bodies_[1] == "_No description provided._");
+
+  // M3: exactly one comment, posted on the anchor's OWN external_id
+  // (`"acme/checkout#1"`, since the anchor is always issue #1 in a
+  // fresh fixture) — this run CREATED the anchor, so the
+  // `!parent->external_id.empty()` gate in
+  // `propagate_parent_issue_with_repo` passes.
+  CHECK(fake.comments_ == 1);
+  REQUIRE(fake.commented_on_.size() == 1);
+  CHECK(fake.commented_on_[0] == "acme/checkout#1");
+}
+
+TEST_CASE("propagate_parent_issue_with_repo does NOT re-comment decisions on a re-run that skips the anchor",
+          "[engine][external][parent_issue]") {
+  // Companion to the case above, pinning the OTHER half of F5's fixed
+  // doc comment: decisions are commented on the run that CREATES the
+  // anchor issue, never again on a later run that finds it already
+  // linked. Every earlier test's `comments_` was 0 because none of them
+  // seeded a decision at all; this is the first assertion that a
+  // re-run's `comments_` STAYS 0 rather than merely starting there.
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      system_id = insert_system(conn, "gh");
+  auto const      anchor_id = insert_plan(conn, "anchor", "a");
+  insert_decision_derives_from(conn, anchor_id, "A decision", "Body text.");
+  auto const opts_val = parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"};
+
+  fake_client fake1;
+  auto        rep1 = parent_issue::propagate_parent_issue_with_repo(conn, fake1, anchor_id, "acme", "checkout", opts_val);
+  REQUIRE_FALSE(err(rep1).has_value());
+  CHECK(fake1.comments_ == 1);
+
+  fake_client fake2;
+  auto        rep2 = parent_issue::propagate_parent_issue_with_repo(conn, fake2, anchor_id, "acme", "checkout", opts_val);
+  REQUIRE_FALSE(err(rep2).has_value());
+  CHECK(rep2->skipped == 1);
+  CHECK(fake2.comments_ == 0);
 }

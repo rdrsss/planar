@@ -29,7 +29,8 @@ struct task_row {
 };
 
 /// @brief `childPlansOf` — direct children of the anchor, in id order.
-auto child_plans_of(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<std::vector<plan_row>, parent_issue_error> {
+auto child_plans_of(db::connection& conn, std::int64_t anchor_plan_id)
+    -> std::expected<std::vector<plan_row>, parent_issue_error> {
   auto stmt = conn.prepare("select id, coalesce(title,'') from plans where parent_plan_id = ? order by id");
   if (!stmt || !stmt->bind_int64(1, anchor_plan_id)) {
     return std::unexpected(parent_issue_error::query_failed);
@@ -79,7 +80,8 @@ auto tasks_under_plan(db::connection& conn, std::int64_t plan_id) -> std::expect
 
 /// @brief `directTasksOf` — the oracle spells this as a second name for
 /// `tasksUnderPlan` called on the anchor itself; this port does the same.
-auto direct_tasks_of(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<std::vector<task_row>, parent_issue_error> {
+auto direct_tasks_of(db::connection& conn, std::int64_t anchor_plan_id)
+    -> std::expected<std::vector<task_row>, parent_issue_error> {
   return tasks_under_plan(conn, anchor_plan_id);
 }
 
@@ -137,15 +139,42 @@ auto entity_title_opt(db::connection& conn, std::string_view entity_kind, std::i
   return stmt->column_text(0);
 }
 
+/// @brief The `external_url` half of an existing mirror link, read
+/// separately from `link::load_existing_mirror` (which returns only
+/// `external_id` — task 6335's port needed nothing more at the time). The
+/// oracle's own `loadExistingMirror` (`parent_issue.zig:582-601`) reads
+/// both columns in one query; this is the narrower, second-read
+/// alternative the reviewer named rather than widening the shared helper's
+/// signature for every other caller.
+/// @param conn An open, migrated connection.
+/// @param entity_kind The entity kind TEXT, as stored.
+/// @param entity_id The entity id.
+/// @param system_id The registered system.
+/// @return The URL, or the empty string when there is no mirror row or the
+/// URL column is SQL NULL.
+auto load_existing_mirror_url(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t system_id)
+    -> std::string {
+  auto stmt = conn.prepare("select coalesce(external_url, '') from external_links "
+                           "where entity_kind = ? and entity_id = ? and system_id = ? and link_role = 'mirror' limit 1");
+  if (!stmt || !stmt->bind_text(1, entity_kind) || !stmt->bind_int64(2, entity_id) || !stmt->bind_int64(3, system_id)) {
+    return {};
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped == db::step_result::done) {
+    return {};
+  }
+  return stmt->column_text(0);
+}
+
 /// @brief `parseIssueNumberFromExternalID` — the number after the last `#`.
 auto parse_issue_number_from_external_id(std::string_view external_id) -> std::optional<std::int64_t> {
   auto const hash = external_id.rfind('#');
   if (hash == std::string_view::npos || hash + 1 >= external_id.size()) {
     return std::nullopt;
   }
-  std::int64_t value    = 0;
-  auto const   digits   = external_id.substr(hash + 1);
-  auto const [ptr, ec]  = std::from_chars(digits.data(), digits.data() + digits.size(), value);
+  std::int64_t value   = 0;
+  auto const   digits  = external_id.substr(hash + 1);
+  auto const [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), value);
   if (ec != std::errc{} || ptr != digits.data() + digits.size()) {
     return std::nullopt;
   }
@@ -162,6 +191,19 @@ auto parse_issue_number_from_external_id(std::string_view external_id) -> std::o
 /// in a single TEXT column would be a cosmetic parity break against the
 /// oracle's `std.json.Stringify` default (compact) output with no
 /// observable benefit.
+///
+/// **RECORDED FOLLOW-UP, not fixed this cycle**: this is a complete
+/// second `json_dom::json_value` writer, TU-local to this file, with only
+/// M8's indirect survival check exercising it. It duplicates
+/// `stringify_indent2`'s node walk (`src/lib/json_dom/json_dom.cpp`) with
+/// a different separator strategy. Moving it into `json_dom` itself as
+/// `stringify_compact`, sharing one walk with `stringify_indent2` via a
+/// whitespace-mode parameter, is the right home — `json_dom` is a
+/// layer-1 base library every layer-2 bucket can already reach, and a
+/// second bucket needing compact output (any future `config_json` writer)
+/// would otherwise be a THIRD copy. Left local for this cycle to keep the
+/// diff to `parent_issue.zig`'s own port; promoting it is follow-up work
+/// for whichever task next needs compact JSON output outside this file.
 auto write_compact(const json_dom::json_value& value, std::string& out) -> void {
   switch (value.kind) {
   case json_dom::json_kind::null_:
@@ -243,6 +285,10 @@ auto read_sub_issue_support_cache(db::connection& conn, std::int64_t anchor_plan
 /// preserving every other key already present. A no-op (not an error) when
 /// the row does not exist yet — the very first `create_or_skip_github_issue`
 /// call on the anchor writes the strategy cache that establishes it.
+///
+/// See `detect_parent_issue_support`'s doc comment (parent_issue.cppm) and
+/// task 6354 for why this no-op means the cache needs THREE propagate
+/// calls, not two, before it ever short-circuits a probe.
 auto write_sub_issue_support_cache(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id, bool supported)
     -> void {
   auto stmt = conn.prepare("select coalesce(config_json, '{}') from external_links "
@@ -257,7 +303,7 @@ auto write_sub_issue_support_cache(db::connection& conn, std::int64_t anchor_pla
   auto const existing = stmt->column_text(0);
 
   json_dom::json_value merged;
-  merged.kind         = json_dom::json_kind::object;
+  merged.kind          = json_dom::json_kind::object;
   bool wrote_supported = false;
 
   auto parsed = json_dom::parse_json(existing);
@@ -285,7 +331,7 @@ auto write_sub_issue_support_cache(db::connection& conn, std::int64_t anchor_pla
   write_compact(merged, encoded);
 
   auto write = conn.prepare("update external_links set config_json = ? "
-                            "where entity_kind = 'plan' and entity_id = ? and system_id = ?");
+                            "where entity_kind = 'plan' and entity_id = ? and system_id = ? and link_role = 'mirror'");
   if (!write || !write->bind_text(1, encoded) || !write->bind_int64(2, anchor_plan_id) || !write->bind_int64(3, system_id)) {
     return;
   }
@@ -304,8 +350,9 @@ struct per_entity_result {
 /// @brief `createOrSkipGithubIssue` — create or skip a regular/sub-issue for
 /// `entity_kind:entity_id`, appending exactly one row to `results`.
 auto create_or_skip_github_issue(db::connection& conn, gh_client& client, const opts& options, std::string_view entity_kind,
-                                 std::int64_t entity_id, std::int64_t parent_number, std::string_view owner, std::string_view repo,
-                                 std::vector<entity_result>& results) -> std::expected<per_entity_result, parent_issue_error> {
+                                 std::int64_t entity_id, std::int64_t parent_number, std::string_view owner,
+                                 std::string_view repo, std::vector<entity_result>& results)
+    -> std::expected<per_entity_result, parent_issue_error> {
   // Skip if already linked.
   auto existing = link::load_existing_mirror(conn, entity_kind, entity_id, options.sys_id);
   if (!existing) {
@@ -313,13 +360,14 @@ auto create_or_skip_github_issue(db::connection& conn, gh_client& client, const 
   }
   if (!existing->empty()) {
     auto const title = entity_title_opt(conn, entity_kind, entity_id);
+    auto const url   = load_existing_mirror_url(conn, entity_kind, entity_id, options.sys_id);
     results.push_back({
         .entity_kind  = std::string{entity_kind},
         .entity_id    = entity_id,
         .title        = title,
         .operation    = op::skipped,
         .external_id  = *existing,
-        .external_url = {},
+        .external_url = url,
         .error_name   = {},
     });
     auto const num = parse_issue_number_from_external_id(*existing);
@@ -334,7 +382,9 @@ auto create_or_skip_github_issue(db::connection& conn, gh_client& client, const 
         .title       = {},
         .operation   = op::failed,
         .external_id = {},
-        .error_name  = "query_failed",
+        // "QueryFailed" (PascalCase), matching the oracle's `@errorName`
+        // for this path: `entityForCreate` returns only `Error.QueryFailed`.
+        .error_name = "QueryFailed",
     });
     return std::unexpected(parent_issue_error::query_failed);
   }
@@ -354,7 +404,7 @@ auto create_or_skip_github_issue(db::connection& conn, gh_client& client, const 
 
   std::string_view const body_or_default = local->body.empty() ? std::string_view{"_No description provided._"} : local->body;
   std::array<std::string, 0> const no_labels{};
-  auto created = client.create_issue(owner, repo, local->title, body_or_default, no_labels);
+  auto                             created = client.create_issue(owner, repo, local->title, body_or_default, no_labels);
   if (!created) {
     results.push_back({
         .entity_kind = std::string{entity_kind},
@@ -376,8 +426,8 @@ auto create_or_skip_github_issue(db::connection& conn, gh_client& client, const 
   auto const external_id  = std::format("{}/{}#{}", owner, repo, created->number);
   auto const external_url = std::format("https://github.com/{}/{}/issues/{}", owner, repo, created->number);
 
-  auto recorded = link::record_mirror_link(conn, entity_kind, entity_id, options.sys_id, external_id, external_url,
-                                           options.sync_direction_);
+  auto recorded =
+      link::record_mirror_link(conn, entity_kind, entity_id, options.sys_id, external_id, external_url, options.sync_direction_);
   if (!recorded) {
     return std::unexpected(parent_issue_error::query_failed);
   }
@@ -584,7 +634,7 @@ auto detect_parent_issue_support(db::connection& conn, gh_client& client, std::s
 auto propagate_parent_issue_with_repo(db::connection& conn, gh_client& client, std::int64_t anchor_plan_id,
                                       std::string_view owner, std::string_view repo, const opts& options)
     -> std::expected<report, parent_issue_error> {
-  report rep;
+  report                     rep;
   std::vector<entity_result> results;
 
   if (!options.dry_run) {
@@ -604,10 +654,10 @@ auto propagate_parent_issue_with_repo(db::connection& conn, gh_client& client, s
   }
 
   if (!options.dry_run && !parent->external_id.empty()) {
-    auto const cfg = std::format(R"({{"strategy":"github-parent-issue","parent_issue_repo":"{}/{}","parent_issue_num":{}}})",
-                                 owner, repo, parent->number);
-    auto stmt = conn.prepare("update external_links set config_json = ? "
-                             "where entity_kind = 'plan' and entity_id = ? and system_id = ? and link_role = 'mirror'");
+    auto const cfg  = std::format(R"({{"strategy":"github-parent-issue","parent_issue_repo":"{}/{}","parent_issue_num":{}}})",
+                                  owner, repo, parent->number);
+    auto       stmt = conn.prepare("update external_links set config_json = ? "
+                                   "where entity_kind = 'plan' and entity_id = ? and system_id = ? and link_role = 'mirror'");
     if (!stmt || !stmt->bind_text(1, cfg) || !stmt->bind_int64(2, anchor_plan_id) || !stmt->bind_int64(3, options.sys_id) ||
         !stmt->step()) {
       return std::unexpected(parent_issue_error::query_failed);
