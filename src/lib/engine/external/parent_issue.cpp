@@ -146,6 +146,17 @@ auto entity_title_opt(db::connection& conn, std::string_view entity_kind, std::i
 /// both columns in one query; this is the narrower, second-read
 /// alternative the reviewer named rather than widening the shared helper's
 /// signature for every other caller.
+///
+/// This split is NOT atomic the way the oracle's single query is: two
+/// `limit 1` reads with no `order by`, against a table with no unique
+/// constraint on `(entity_kind, entity_id, system_id, link_role)` (the
+/// three indexes on it are non-unique), could in principle pick two
+/// DIFFERENT rows if duplicates existed. Nothing in this ported tree ever
+/// creates a duplicate mirror row, and SQLite's own row order over an
+/// unindexed-by-uniqueness match is stable within one connection, so the
+/// two reads agree in every reachable case — reproduced deliberately, not
+/// tightened, per the same "don't reshape a shared helper" reasoning
+/// above.
 /// @param conn An open, migrated connection.
 /// @param entity_kind The entity kind TEXT, as stored.
 /// @param entity_id The entity id.

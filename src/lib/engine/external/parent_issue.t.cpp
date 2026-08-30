@@ -98,6 +98,35 @@ auto insert_touches_edge(planar::db::connection& conn, std::int64_t task_id, std
   REQUIRE(step.has_value());
 }
 
+/// @brief `entity_links(from_kind='task', to_kind='plan', relationship='derives-from')`
+/// — the edge `tasks_under_plan`'s SECOND CTE union arm reads. Same D18
+/// rationale as `insert_touches_edge` above for going through raw SQL.
+auto insert_task_derives_from_plan(planar::db::connection& conn, std::int64_t task_id, std::int64_t plan_id) -> void {
+  auto stmt = conn.prepare("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                           "values ('task', ?, 'plan', ?, 'derives-from')");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_int64(1, task_id).has_value());
+  REQUIRE(stmt->bind_int64(2, plan_id).has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+}
+
+/// @brief A task reachable ONLY via a `-derives-from-> plan_id` edge —
+/// `plan_id` is left SQL NULL (`scope_kind='global'` requires it), so the
+/// first CTE union arm (`tasks.plan_id = ?`) cannot find it. Only the
+/// second arm, joining through `entity_links`, can.
+auto insert_task_derives_from_only(planar::db::connection& conn, std::string_view title, std::int64_t plan_id) -> std::int64_t {
+  auto stmt = conn.prepare("insert into tasks (scope_kind, title, plan_id) values ('global', ?, NULL) returning id");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, title).has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  REQUIRE(*step == planar::db::step_result::row);
+  auto const task_id = stmt->column_int64(0);
+  insert_task_derives_from_plan(conn, task_id, plan_id);
+  return task_id;
+}
+
 /// @brief A decision `-derives-from-> plan_id`, the edge
 /// `post_decision_comments` reads.
 auto insert_decision_derives_from(planar::db::connection& conn, std::int64_t plan_id, std::string_view title,
@@ -156,6 +185,13 @@ public:
   std::vector<std::string> created_bodies_;
   /// @brief The `external_id` every `post_comment` call targeted.
   std::vector<std::string> commented_on_;
+  /// @brief The rendered comment BODY every `post_comment` call sent, in
+  /// call order — pins `post_decision_comments`'s
+  /// `"**Decision: {title}**\n\n{body}"` column ORDER (title first, then
+  /// body), which nothing checked before R2: `commented_on_` alone only
+  /// proves a comment landed on the right issue, not that its two halves
+  /// were not swapped.
+  std::vector<std::string> comment_bodies_;
 
   auto probe(std::string_view, std::string_view) -> std::expected<void, parent_issue::gh_client_error> override {
     ++probes_;
@@ -181,10 +217,11 @@ public:
     return {};
   }
 
-  auto post_comment(std::string_view external_id, std::string_view)
+  auto post_comment(std::string_view external_id, std::string_view body)
       -> std::expected<void, parent_issue::gh_client_error> override {
     ++comments_;
     commented_on_.emplace_back(external_id);
+    comment_bodies_.emplace_back(body);
     return {};
   }
 };
@@ -550,6 +587,14 @@ TEST_CASE("propagate_parent_issue_with_repo: direct-anchor tasks, plan summary a
   CHECK(fake.comments_ == 1);
   REQUIRE(fake.commented_on_.size() == 1);
   CHECK(fake.commented_on_[0] == "acme/checkout#1");
+
+  // R2: the exact rendered comment, title THEN body — pins
+  // `post_decision_comments`' column order against the oracle's
+  // `"**Decision: {s}**\n\n{s}"` (parent_issue.zig:938). The two seeded
+  // strings are distinct enough that a title/body column swap changes
+  // this string rather than leaving it accidentally equal.
+  REQUIRE(fake.comment_bodies_.size() == 1);
+  CHECK(fake.comment_bodies_[0] == "**Decision: Use parent-issue strategy**\n\nBecause it is simplest for a single repo.");
 }
 
 TEST_CASE("propagate_parent_issue_with_repo does NOT re-comment decisions on a re-run that skips the anchor",
@@ -577,4 +622,68 @@ TEST_CASE("propagate_parent_issue_with_repo does NOT re-comment decisions on a r
   REQUIRE_FALSE(err(rep2).has_value());
   CHECK(rep2->skipped == 1);
   CHECK(fake2.comments_ == 0);
+}
+
+TEST_CASE("tasks_under_plan reaches a task via a derives-from edge ALONE, and dedups a task reachable BOTH ways",
+          "[engine][external][parent_issue]") {
+  // R1: `tasks_under_plan`'s SECOND CTE union arm (the `entity_links`
+  // join, oracle-mandated per `parent_issue.zig:694-696` — "tasksUnderPlan
+  // returns tasks attached to plan_id via either tasks.plan_id or
+  // entity_links(task->plan, derives-from)") had NO coverage anywhere in
+  // this suite before this case: `insert_task_under_plan` always sets
+  // `plan_id` directly, so every earlier test only ever exercised the
+  // FIRST arm. `task -derives-from-> plan` is what `spec ingest` writes
+  // in production, so this is a live attachment path `ext propagate`
+  // must reach.
+  //
+  // Three tasks, three shapes:
+  //   t1  reachable ONLY via tasks.plan_id            (the arm every
+  //       earlier test already covers)
+  //   t2  reachable ONLY via the derives-from edge     (plan_id IS NULL —
+  //       R1's fix)
+  //   t3  reachable via BOTH tasks.plan_id AND a redundant derives-from
+  //       edge to the SAME plan.
+  //
+  // t3's CREATED count alone does NOT pin `union` against `union all`:
+  // under `union all`, `tasks_under_plan` would hand t3 back TWICE, but
+  // `create_or_skip_github_issue`'s own skip-check absorbs the second
+  // occurrence (it finds t3 already linked from the first pass and
+  // reports `op::skipped`, not a second create) — so `created_titles_`
+  // reads identically either way. What DOES differ is `rep->skipped`:
+  // it stays 0 under `union`'s true dedup and becomes 1 under
+  // `union all`'s phantom second pass. That is the assertion below that
+  // actually discriminates the two, confirmed by break-probe (a first
+  // attempt at this fixture asserted only the created-count shape and
+  // SURVIVED a `union` -> `union all` mutation for exactly this reason).
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      system_id = insert_system(conn, "gh");
+
+  auto const anchor_id = insert_plan(conn, "anchor", "a");
+  auto const child_id  = insert_plan(conn, "child", "c", anchor_id);
+
+  insert_task_under_plan(conn, "via plan_id", child_id);
+  insert_task_derives_from_only(conn, "via derives-from only", child_id);
+  auto const both_id = insert_task_under_plan(conn, "via both paths", child_id);
+  insert_task_derives_from_plan(conn, both_id, child_id);
+
+  fake_client fake;
+  auto        rep = parent_issue::propagate_parent_issue_with_repo(conn, fake, anchor_id, "acme", "checkout",
+                                                                   parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"});
+  REQUIRE_FALSE(err(rep).has_value());
+
+  // anchor + child + t1 + t2 + t3 = 5, NOT 6 — t3 is not double-counted.
+  CHECK(rep->created == 5);
+  CHECK(fake.creates_ == 5);
+  REQUIRE(fake.created_titles_.size() == 5);
+  // The actual dedup assertion — see this test's header comment on t3.
+  CHECK(rep->skipped == 0);
+  CHECK(rep->results.size() == 5);
+
+  auto const count = [&](std::string_view title) {
+    return std::count(fake.created_titles_.begin(), fake.created_titles_.end(), std::string{title});
+  };
+  CHECK(count("via plan_id") == 1);
+  CHECK(count("via derives-from only") == 1);
+  CHECK(count("via both paths") == 1); // the dedup assertion.
 }
