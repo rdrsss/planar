@@ -565,6 +565,12 @@ planar_binary(planar
     process
     http
     json_text
+    # New at task 6357, for `planar health` (handlers/health.cpp): the
+    # `resolve_homes`/`is_::status` composition folds the layer-1 classifier
+    # in directly, the same shape `report` composes its two engine buckets
+    # with (see the `engine_introspect`/`engine_introspection_adapters`
+    # note below).
+    installed_surface
     engine_closure
     engine_config
     engine_entitylink

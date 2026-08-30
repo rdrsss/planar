@@ -157,12 +157,17 @@ auto handlers(const CLI::App& root) -> handler_table {
   // that needed a new layer-2 bucket built from scratch.
   table.emplace("search", handlers::search);
   table.emplace("tree", handlers::tree);
-  // `health hygiene` — the SUBCOMMAND only. The parent `planar health`
-  // stays at the exit-64 default deliberately: its handler folds
-  // `engine.installedsurface.status` (548 unported Zig lines) into every
-  // run and a projections-stubbed port would report the wrong `overall`.
-  // `health` is a DUAL node, so registering the child without the parent
-  // is well-defined here. See handlers/health.cppm.
+  // `health` and `health hygiene` — the whole family, closed at task 6357.
+  // Task 6090 landed only the SUBCOMMAND; the parent stayed at the exit-64
+  // default because its handler folds `engine.installedsurface.status`
+  // (548 unported Zig lines) into every run and a projections-stubbed port
+  // would report the wrong `overall`. Task 6357 ported that classifier
+  // straight to layer 1 (`planar.installed_surface`, decision-981-shaped,
+  // same move `report` used at task 6352) rather than adding a same-layer
+  // `engine_health -> engine_<classifier>` edge, so both leaves now share
+  // one dispatch table entry each. `health` is a DUAL node — a handler AND
+  // a subcommand — same shape as `handoff`/`resume`. See handlers/health.cppm.
+  table.emplace("health", handlers::health);
   table.emplace("health hygiene", handlers::health_hygiene);
   // `audit` — all five leaves. The note that used to stand here said
   // `commits` needed git subprocess REVISION WALKS. It does not, and never

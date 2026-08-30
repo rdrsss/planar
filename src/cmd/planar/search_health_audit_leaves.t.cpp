@@ -392,16 +392,82 @@ TEST_CASE("health hygiene refuses three ways and all three are exit 1", "[cmd][h
   CHECK(missing.err == "error: scope slug not found\n");
 }
 
-TEST_CASE("the parent health verb is still an unported refusal", "[cmd][health][unported]") {
+TEST_CASE("the parent health verb reports ok on a fresh database with no managed install", "[cmd][health]") {
+  // `health` is a DUAL node — a real handler alongside its `hygiene`
+  // subcommand, ported at task 6357. The fixture's HOME (`root/fakehome`)
+  // never exists, so this exercises the "no install manifest at all" arm
+  // hermetically — no real `$HOME`/`$PLANAR_HOME` is ever consulted (see
+  // this file's header note on `make_fixture`).
   auto const fx = make_fixture("healthparent");
-  seed_searchable(fx);
+  CHECK(dispatch(fx, {"init", "--name", "oracle", "--json"}).code == 0);
 
-  // `health` is a DUAL node — a working subcommand under an unported
-  // parent. Pinned because the failure mode is silent: a dual node that
-  // falls through to its help page exits 0, which reads as success.
   auto const parent = dispatch(fx, {"health"});
-  CHECK(parent.code == 64);
-  CHECK(parent.err == "error: health: not implemented in this build\n");
+  CHECK(parent.code == 0);
+  CHECK(parent.err.empty());
+  CHECK(parent.out.contains("overall:          ok"));
+  CHECK(parent.out.contains("projection freshness: not_installed"));
+  CHECK(parent.out.contains("projection manifest:  missing"));
+  // `with_projection_freshness` forwards the classifier's OWN reason string
+  // as evidence whenever one exists, regardless of whether the manifest
+  // state is itself degraded — a missing manifest is `not_installed`, NOT
+  // `degraded`, but it still carries a reason ("install manifest is
+  // missing"), so evidence IS present here. Oracle-confirmed: `evidence`
+  // is null only when `status.reason` is unset AND nothing is
+  // managed-degraded either. `repair_command`, by contrast, is forwarded
+  // ONLY when `degraded`, so it stays absent here even though the
+  // classifier itself always names a bootstrap command.
+  CHECK(parent.out.contains("projection evidence:  install manifest is missing"));
+  CHECK_FALSE(parent.out.contains("projection repair:"));
+}
+
+TEST_CASE("planar health --json emits the full field set with explicit nulls", "[cmd][health][json]") {
+  auto const fx = make_fixture("healthjson");
+  CHECK(dispatch(fx, {"init", "--name", "oracle", "--json"}).code == 0);
+
+  auto const json = dispatch(fx, {"health", "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out.contains("\"db_ok\":true"));
+  CHECK(json.out.contains("\"overall\":\"ok\""));
+  CHECK(json.out.contains("\"manifest_status\":\"missing\""));
+  // `evidence` carries the classifier's reason string even in this
+  // NOT-degraded arm (see the text-mode case's note above); only
+  // `repair_command` stays an explicit JSON null here.
+  CHECK(json.out.contains("\"evidence\":\"install manifest is missing\""));
+  CHECK(json.out.contains("\"repair_command\":null"));
+}
+
+TEST_CASE("planar health exits 1 and reports degraded for an unresumable doing task", "[cmd][health][degraded]") {
+  auto const fx = make_fixture("healthdegraded");
+  CHECK(dispatch(fx, {"init", "--name", "oracle", "--json"}).code == 0);
+  CHECK(dispatch(fx, {"plan", "create", "A plan", "--scope", "global", "--json"}).code == 0);
+  CHECK(dispatch(fx, {"task", "add", "A task", "--plan", "1", "--json"}).code == 0);
+  // No --next-action, so this task is in-flight but NOT resumable — the
+  // exact contributor `check()` flags.
+  CHECK(dispatch(fx, {"task", "update", "1", "--status", "doing"}).code == 0);
+
+  auto const degraded = dispatch(fx, {"health"});
+  CHECK(degraded.code == 1);
+  // The report was still written to stdout, and NOTHING extra reached
+  // stderr — the oracle's own exit(1)-after-output contract, mirrored via
+  // an EMPTY rendered stderr payload rather than an "error: " line. See
+  // handlers/health.cppm's header for why this is not an ordinary failure.
+  CHECK(degraded.err.empty());
+  CHECK(degraded.out.contains("in-flight tasks:  1 (0 resumable, 1 NOT resumable)"));
+  CHECK(degraded.out.contains("overall:          degraded"));
+}
+
+TEST_CASE("planar health --json also reports degraded and empty stderr", "[cmd][health][degraded][json]") {
+  auto const fx = make_fixture("healthdegradedjson");
+  CHECK(dispatch(fx, {"init", "--name", "oracle", "--json"}).code == 0);
+  CHECK(dispatch(fx, {"plan", "create", "A plan", "--scope", "global", "--json"}).code == 0);
+  CHECK(dispatch(fx, {"task", "add", "A task", "--plan", "1", "--json"}).code == 0);
+  CHECK(dispatch(fx, {"task", "update", "1", "--status", "doing"}).code == 0);
+
+  auto const degraded = dispatch(fx, {"health", "--json"});
+  CHECK(degraded.code == 1);
+  CHECK(degraded.err.empty());
+  CHECK(degraded.out.contains("\"not_resumable_tasks\":1"));
+  CHECK(degraded.out.contains("\"overall\":\"degraded\""));
 }
 
 TEST_CASE("audit session renders a bound, active session with padded entries", "[cmd][audit][session]") {

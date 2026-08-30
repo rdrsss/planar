@@ -1,29 +1,23 @@
 /// @file health.cppm
-/// @brief `planar.cmd.planar.handlers.health` — the `planar health
-/// hygiene` leaf (plan 996, task 6090).
+/// @brief `planar.cmd.planar.handlers.health` — the `planar health` DUAL
+/// node and its `hygiene` subcommand (plan 996, tasks 6090 and 6357).
 ///
-/// Port of zig/src/cmd/planar/handlers/health_hygiene.zig.
+/// Port of zig/src/cmd/planar/handlers/health.zig and
+/// zig/src/cmd/planar/handlers/health_hygiene.zig.
 ///
-/// ## Only the SUBCOMMAND lands here; the parent `planar health` does not
+/// ## `health` is a DUAL node
 ///
-/// `planar health` itself stays unported and keeps refusing at exit 64.
-/// Its blocker is not this layer: its handler folds
-/// `engine.installedsurface.status` into every run, and that classifier
-/// (548 Zig lines of manifest-driven filesystem inspection) has no
-/// counterpart in this tree. See `src/lib/engine/health/health.cppm` for
-/// why a `check`-without-projections port would be a leaf that compiles
-/// and reports the wrong `overall`.
+/// It has both a handler (this file's `health`) and a subcommand
+/// (`health_hygiene`), and `dispatch.cpp` registers the two independently
+/// under `"health"` / `"health hygiene"` — same shape as `handoff` and
+/// `resume`.
 ///
-/// The parent/child split is safe to land unevenly here because `health`
-/// is a DUAL node — it has both a handler and a subcommand — and
-/// `dispatch.cpp` registers the two independently.
+/// ## `health hygiene` ALWAYS exits 0 when it produces a report; `health`
+/// exits 1 on `degraded`
 ///
-/// ## This verb ALWAYS exits 0 when it produces a report
-///
-/// Findings are not failures. That is stated in the oracle's own long
-/// description and it is the opposite of its parent, which exits 1 on
-/// `degraded`. Only the three refusals below are non-zero, and all three
-/// are exit 1:
+/// Findings are not failures for the SUBCOMMAND — that is stated in the
+/// oracle's own long description. Only three refusals are non-zero for
+/// `health hygiene`, and all three are exit 1:
 ///
 ///   - a negative `--stale-doing` / `--stale-open`
 ///     (`stale thresholds must be non-negative`)
@@ -32,12 +26,27 @@
 ///     (`--scope must name one association`)
 ///   - a `--scope` that resolves to no row (`scope slug not found`)
 ///
-/// ## Absent `--scope` reports EVERY scope
+/// `health` (the PARENT) is the opposite: it always writes its report, then
+/// exits 1 whenever `report.overall == "degraded"` — mirroring the oracle's
+/// `std.process.exit(1)` after `output.emit` runs. Because this binary's
+/// handler contract is "return a value, dispatch decides the exit code" (no
+/// `noreturn` die — see `planar.cmd.planar.exit`'s header), the handler
+/// writes the report to `ctx.out()` itself and then, on `degraded`, returns
+/// `error_from_rendered(domain_error_kind::generic_failure, "")` — an EMPTY
+/// stderr payload, so dispatch's `report()` writes nothing extra, matching
+/// the oracle's exit(1) with no additional stderr text.
 ///
-/// Unlike `plan list` / `search`, this verb does NOT resolve a cwd-derived
-/// read set: no `--scope` means no scope predicate at all. Hygiene drift is
-/// a whole-database question. Oracle-confirmed, and called out because the
-/// same absent flag means the opposite on the listing verbs.
+/// A missing `$HOME` refuses at exit 1 with
+/// `health check failed: resolving install homes: HomeNotSet`, mirroring
+/// the oracle's `resolveHomes` -> `exit.die` chain (`skills/common.zig`).
+///
+/// ## Absent `--scope` reports EVERY scope (hygiene only)
+///
+/// Unlike `plan list` / `search`, `health hygiene` does NOT resolve a
+/// cwd-derived read set: no `--scope` means no scope predicate at all.
+/// Hygiene drift is a whole-database question. Oracle-confirmed, and called
+/// out because the same absent flag means the opposite on the listing
+/// verbs.
 module;
 
 export module planar.cmd.planar.handlers.health;
@@ -48,6 +57,20 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
 
 namespace planar::cmd::handlers {
+
+/// @brief Handle `planar health [--json]`.
+///
+/// The report is always written to `ctx.out()` before this returns,
+/// regardless of `overall`. A `"degraded"` report comes back as
+/// `std::unexpected(error_from_rendered(generic_failure, ""))` PURELY to
+/// drive dispatch's exit code to 1 — the empty rendered payload means
+/// dispatch's `report()` appends nothing to stderr, so the only visible
+/// effect is the exit code. A genuine refusal (schema/DB/home-resolution
+/// failure) returns the ordinary non-empty error instead.
+/// @param ctx The process context.
+/// @param args The parsed command line.
+/// @return See above.
+export auto health(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar health hygiene [--scope --stale-doing
 /// --stale-open --json]`.
