@@ -35,12 +35,22 @@
 /// fact is permanently stale. Splitting them across buckets would put a
 /// configure-time wall between two functions that are one contract.
 ///
-/// The PLANNING half of `packet.zig` (`assemble_planning`, `compile_planning`,
-/// `resolve_invocation`, `coder_brief`) is deliberately NOT ported here. It
-/// serves `models resolve`, which `engine/models/CMakeLists.txt` already
-/// defers, and it depends on `test_spec_status` — an `engine_planning` module,
-/// so it faces this same wall from the other side. Whoever takes `models
-/// resolve` inherits that decision; nothing here prejudges it.
+/// The PLANNING half of `packet.zig` (`assemble_planning`, `compile_planning`)
+/// IS ported here — see below — landed at plan 996 task 6343 together with
+/// the `models resolve` wiring. `resolve_invocation` and `coder_brief` are
+/// NOT: nothing in this tree calls either yet (`assemble_invocation` has no
+/// caller and `coder_brief` is a rendering concern of a verb that does not
+/// exist here), so porting them now would be speculative.
+///
+/// `assemble_planning` needs `test_spec_status::compute`'s summary
+/// (`total_tasks`, `tasks_covered`, `total_scenarios`) but CANNOT call it —
+/// `test_spec_status` lives in `engine_planning`, a layer-2 peer, and
+/// `cmake/architecture.cmake`'s D15/D18 same-layer prohibition FATALs on that
+/// edge just as it would for a hypothetical `engine_routing`. The three
+/// counting queries are DUPLICATED here instead, the same way
+/// `engine_grouping`'s `load.cpp` duplicates its `closures` read rather than
+/// reaching into `engine_closure`. See `planning_coverage_evidence` in
+/// packet.cpp.
 ///
 /// ## THE REASON LIST IS CONTRACT, AND ITS ORDER IS SOURCE ORDER
 ///
@@ -241,8 +251,9 @@ export struct task_packet {
 
 /// @brief Why assembly failed.
 export enum class packet_error : std::uint8_t {
-  task_not_found, ///< No `tasks` row with that id.
+  task_not_found, ///< No `tasks` row with that id (`assemble_task`).
   query_failed,   ///< SQL failure.
+  plan_not_found, ///< No `plans` row with that id (`assemble_planning`).
 };
 
 /// @brief Compile a packet from a caller-supplied input.
@@ -273,5 +284,110 @@ export [[nodiscard]] auto render_text(const task_packet& packet) -> std::string;
 /// @param packet A compiled packet.
 /// @return A COMPLETE stdout payload including its trailing newline.
 export [[nodiscard]] auto render_json(const task_packet& packet) -> std::string;
+
+// ===========================================================================
+// Planning half — pre-task packets, serving `models resolve`'s planning
+// roles. See this file's header for the layering rationale.
+// ===========================================================================
+
+/// @brief The four pre-task roles a planning packet can be assembled for.
+///
+/// A DELIBERATELY NARROWER type than `engine::models::roles::role` (nine
+/// values): this module cannot import `engine_models` (D15/D18, layer-2 to
+/// layer-2), so it names its own four-value view exactly as the oracle's
+/// `packet.zig` does with its own `PlanningRole`. The layer-3 caller maps the
+/// wider role enum onto this one for the four roles it applies to.
+export enum class planning_role : std::uint8_t { planner, spec_reviewer, ingestor, orchestrator };
+
+/// @brief The wire spelling of a planning role, matching the oracle's
+/// `@tagName` — underscored, e.g. `"spec_reviewer"`.
+/// @param value The role.
+/// @return Its snake_case name.
+export [[nodiscard]] auto planning_role_name(planning_role value) -> std::string_view;
+
+/// @brief Everything the compiler reads about one pre-task packet.
+///
+/// Field order is load-bearing: it is the key order of the canonical body.
+/// Defaults match the oracle's `PlanningInput` — every evidence list defaults
+/// empty and `review_rubric_version` defaults to the empty string.
+export struct planning_input {
+  planning_role         role = planning_role::planner; ///< Which pre-task role this packet serves.
+  std::string           goal;                          ///< The anchor plan's `summary`, coalesced to empty.
+  std::vector<evidence> scope_facts;                   ///< One synthetic row naming the plan's scope.
+  std::vector<evidence> artifacts;                     ///< Artifacts the plan `derives-from` links reach.
+  std::vector<evidence> questions;                     ///< Questions linked the same way.
+  std::vector<evidence> constraints;                   ///< The SAME rows as `decisions` — see `assemble_planning`.
+  std::vector<evidence> required_outputs;              ///< The four fixed output kinds, always present.
+  std::vector<evidence> strict_preview;                ///< No persisted entity at schema 30; always empty.
+  std::vector<evidence> coverage;                      ///< One row from the duplicated `test_spec_status` counts.
+  std::vector<evidence> decisions;                     ///< Decisions the plan `derives-from` links reach.
+  std::string           review_rubric_version;         ///< `"spec-review-v1"` once assembled from the DB.
+  std::vector<evidence> apply_boundary;                ///< No persisted entity at schema 30; always empty.
+};
+
+/// @brief Why a planning packet is not ready.
+///
+/// Enumerator order is the oracle's declaration order, matching
+/// `readiness_reason`'s convention above.
+export enum class planning_reason : std::uint8_t {
+  missing_goal,
+  missing_scope_facts,
+  missing_source_artifacts,
+  missing_required_outputs,
+  missing_artifact_digests,
+  non_current_artifacts,
+  missing_reviewed_artifacts,
+  missing_strict_preview,
+  invalid_strict_preview,
+  missing_review_rubric,
+  missing_coverage,
+  incomplete_coverage,
+  missing_locked_decisions,
+  invalid_locked_decisions,
+  missing_apply_boundary,
+  invalid_apply_boundary,
+};
+
+/// @brief The wire spelling of a planning reason, matching the oracle's
+/// `@tagName`.
+/// @param reason The reason.
+/// @return Its snake_case name.
+export [[nodiscard]] auto planning_reason_name(planning_reason reason) -> std::string_view;
+
+/// @brief A compiled pre-task packet.
+export struct planning_packet {
+  planning_input               input;     ///< The evidence the packet was compiled from.
+  std::string                  canonical; ///< Canonical body INCLUDING `display_label`.
+  std::string                  digest;    ///< 64 lowercase hex chars over the SEMANTIC body.
+  std::vector<planning_reason> reasons;   ///< Emission-ordered, deduplicated.
+
+  /// @brief Whether the packet backs a dispatch.
+  /// @return True iff there are no reasons.
+  [[nodiscard]] auto ready() const -> bool {
+    return reasons.empty();
+  }
+};
+
+/// @brief Compile a planning packet from a caller-supplied input.
+///
+/// Pure: no database, no clock. A ready planning packet carries no work type
+/// or complexity — there is no task yet to classify; readiness is the whole
+/// contribution.
+/// @param input The evidence to compile.
+/// @return The packet, always — an unready input is a packet with reasons,
+/// never an error.
+export [[nodiscard]] auto compile_planning(const planning_input& input) -> planning_packet;
+
+/// @brief Reassemble a planning packet exclusively from current Planar rows.
+///
+/// The caller supplies only the role and anchor plan identity; it cannot
+/// inject projected facts or substitute task-shaped context before a task
+/// exists.
+/// @param conn An open database connection.
+/// @param role Which pre-task role the packet serves.
+/// @param anchor_plan_id The plan to compile.
+/// @return The packet, or `plan_not_found` / `query_failed`.
+export [[nodiscard]] auto assemble_planning(db::connection& conn, planning_role role, std::int64_t anchor_plan_id)
+    -> std::expected<planning_packet, packet_error>;
 
 } // namespace planar::engine::ingest::packet

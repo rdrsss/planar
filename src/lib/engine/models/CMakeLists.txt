@@ -7,16 +7,17 @@
 #
 # Behavior-preserving port (D2) of the registry, ranking, and views halves of
 # zig/src/engine/routing/{store,ranking,views}.zig plus the rendering half of
-# zig/src/cmd/planar/handlers/models.zig -- THIRTEEN of the fourteen `models`
-# schema leaves:
+# zig/src/cmd/planar/handlers/models.zig -- ALL FOURTEEN `models` schema
+# leaves:
 #
 #   models evals (cohort branch), models experiments, models outcomes,
+#   models resolve,
 #   models registry {list,add,update,remove,bind,unbind,observe,eligibility,
 #                    verify-identity,export}
 #
-# All thirteen are WIRED as of plan 996 task 6149 (src/cmd/planar/handlers/
-# models.cpp). Wiring them surfaced TWO defects in this bucket that no
-# engine test could reach, because until then no caller could produce the
+# The first thirteen were WIRED as of plan 996 task 6149 (src/cmd/planar/
+# handlers/models.cpp). Wiring them surfaced TWO defects in this bucket that
+# no engine test could reach, because until then no caller could produce the
 # inputs:
 #
 #   - `render.cpp`'s `json_number` emitted a BARE `nan` where the oracle
@@ -30,49 +31,54 @@
 #     was added for it; without that, every verify-identity against a real
 #     candidate reported `candidate <id> not found` at exit 1.
 #
-# NOT ported, named explicitly rather than silently dropped:
+# `models resolve`, the fourteenth leaf, WIRED at plan 996 task 6343. Its two
+# PURE halves -- `profile` (the rule compiler) and `roles` (the resolution
+# table) -- landed HERE at plan 996 task 6111; see profile.cppm and
+# roles.cppm. Both are PURE -- no database, no packet dependency -- because
+# each names its own input view rather than consuming `engine_ingest`'s
+# `evidence`/`task_packet`. See profile.cppm's header for why that seam was
+# chosen over a D19 taxonomy extraction: `tier`, `work_type`, and
+# `complexity` already live in THIS bucket, so hosting the classifier here
+# removes the cross-bucket edge outright instead of relocating it.
 #
-#   - `models resolve`, the fourteenth leaf. STILL NOT WIRED, but its two
-#     PURE halves landed here in plan 996 task 6111 -- see profile.cppm and
-#     roles.cppm, and the paragraph below for what is left.
+# The leaf rested on zig/src/engine/routing/{roles,profile,packet}.zig. The
+# three file sizes (325 + 726 + 1674) OVERSTATED the remaining work by
+# including colocated Zig `test` blocks a C++ port replaces with its own
+# fixtures rather than transcribing (roles.zig is 202 implementation + 123
+# test; profile.zig is 507 + 219) -- but task 6111 had ALREADY landed both of
+# those. What task 6343 measured on the actual remainder -- the PLANNING half
+# of packet.zig, packet.zig:581-880, ~300 Zig lines including its own
+# struct/enum declarations -- UNDER-stated the C++ side by a wide margin, and
+# the ~300 estimate's own note explains the biggest reason why:
 #
-#     The leaf rests on zig/src/engine/routing/{roles,profile,packet}.zig.
-#     The three file sizes (325 + 726 + 1674) OVERSTATE the remaining work in
-#     two ways, both measured rather than assumed:
+#   - `assemble_planning` + `compile_planning` landed in `engine_ingest`
+#     (packet.cppm/.cpp), beside the task half's digest/canonical/
+#     `less_evidence` helpers they share, NOT here -- exactly as flagged.
+#   - That module CANNOT call `engine_planning`'s `test_spec_status::compute`
+#     (already ported, and exactly the summary it needs) -- layer-2-to-
+#     layer-2, which FATALs. The estimate correctly named this and correctly
+#     pointed at the `engine_grouping`/`closures` precedent, but did not size
+#     it: reproducing `total_tasks`, `tasks_covered`, and `total_scenarios`
+#     by hand -- three standalone SQL queries the oracle gets for free in
+#     three lines by calling a same-layer sibling -- runs to ~90 lines on its
+#     own. Measured total: ~450 implementation lines in packet.cpp, not ~300.
+#   - The cmd layer (`src/cmd/planar/handlers/models.cpp`) is where the
+#     packet and the classifier meet, and where the adapter from
+#     `packet::evidence` to `profile::fact` lives (`to_profile_facts`) --
+#     exactly where this note said it would.
 #
-#       * Those totals include colocated Zig `test` blocks, which a C++ port
-#         replaces with its own fixtures rather than transcribing. roles.zig
-#         is 202 implementation + 123 test; profile.zig is 507 + 219.
-#       * Only the PLANNING half of packet.zig is in play at all; the TASK
-#         half already landed as engine/ingest/packet (task 6324), and
-#         `assemble_task` is what the task-bound branch of the handler calls.
+# `profile::profile`'s `cohort` field is DELIBERATELY LEFT UNPORTED, a
+# decision made explicit rather than filled in with an invented value -- see
+# profile.cppm's own note beside `compile`. The oracle's `Cohort`
+# (zig/src/engine/routing/store.zig:644) has SEVEN fields; this tree's
+# `ranking::cohort` has EIGHT (task 6096 folded in `routing_policy_version`).
+# Nothing on the `models resolve` path constructs one.
 #
-#     Landed here: `profile` (the rule compiler) and `roles` (the resolution
-#     table). Both are PURE -- no database, no packet dependency -- because
-#     each names its own input view rather than consuming `engine_ingest`'s
-#     `evidence`/`task_packet`. See profile.cppm's header for why that seam
-#     was chosen over a D19 taxonomy extraction: `tier`, `work_type`, and
-#     `complexity` already live in THIS bucket, so hosting the classifier
-#     here removes the cross-bucket edge outright instead of relocating it.
-#
-#     Left for the cycle that finishes the leaf:
-#       * `assemble_planning` + `compile_planning` (~300 implementation lines,
-#         packet.zig:581-880). It reads the DB and shares the task half's
-#         digest/canonical/`less_evidence` helpers, so it belongs in
-#         engine/ingest beside them, NOT here.
-#       * That module CANNOT call `engine_planning`'s `test_spec_status::
-#         compute` (already ported, and exactly the summary it needs) --
-#         layer-2-to-layer-2, which FATALs. Duplicate the three counting
-#         queries the way engine_grouping duplicates its `closures` read;
-#         only `total_tasks`, `tasks_covered`, and `total_scenarios` are
-#         consumed.
-#       * The cmd layer (`src/cmd/planar/handlers/models.cpp`), which is
-#         where the packet and the classifier meet and where the adapter
-#         from `packet::evidence` to `profile::fact` belongs.
-#
-#     Oracle-captured refusal surface, re-derived by RUNNING the parity
-#     oracle against a scratch DB for this task (all four HOME variables
-#     redirected), NOT copied from the prior row:
+# Oracle-captured refusal surface, re-derived by RUNNING the parity oracle
+# against a scratch DB (all four HOME variables redirected), NOT copied from
+# the prior row -- kept here as the CANONICAL capture even though the leaf is
+# now wired, because `models_leaves.t.cpp` and `dispatch.t.cpp` pin these
+# bytes and this is where a future reader finds out WHY:
 #
 #       models resolve                      exit 2, `error: required flag
 #                                           missing: --role` on STDOUT and
@@ -90,7 +96,8 @@
 #       --role planner --plan 999999        exit 1, `error: assembling
 #                                           planning packet: PlanNotFound`
 #
-#     TWO oracle behaviors the finishing cycle must NOT normalize away:
+#     TWO oracle behaviors this port must NOT normalize away, both
+#     reproduced:
 #
 #       * `--role spec_reviewer` (UNDERSCORED) is ACCEPTED, exit 0, and
 #         reports `"role":"spec_reviewer"`. `--help` documents only the
@@ -100,7 +107,8 @@
 #       * `models resolve --json` renders complexity with `@tagName`, which
 #         emits the UNDERSCORED `high_risk` -- NOT the hyphenated `high-risk`
 #         that `ranking::complexity_to_text` returns and that every SQL CHECK
-#         requires. The handler must not reuse `complexity_to_text` here.
+#         requires. `handlers/models.cpp`'s `complexity_tag` reproduces the
+#         underscored form and does NOT reuse `complexity_to_text`.
 #
 #   (The LEGACY no-cohort-flags branch of `models evals` WAS deferred here and
 #   has since landed -- see legacy.cppm, plan 996 task 6111. It reads the

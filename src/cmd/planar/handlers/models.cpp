@@ -6,10 +6,14 @@ module planar.cmd.planar.handlers.models;
 import std;
 import planar.cliapp.args;
 import planar.db;
+import planar.json_text;
+import planar.engine.ingest.packet;
 import planar.engine.models.legacy;
+import planar.engine.models.profile;
 import planar.engine.models.ranking;
 import planar.engine.models.registry;
 import planar.engine.models.render;
+import planar.engine.models.roles;
 import planar.engine.models.views;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -22,6 +26,9 @@ namespace rank_  = engine::models::ranking;
 namespace views_ = engine::models::views;
 namespace rend   = engine::models::render;
 namespace legacy = engine::models::legacy;
+namespace prof   = engine::models::profile;
+namespace mroles = engine::models::roles;
+namespace pk     = engine::ingest::packet;
 
 namespace {
 
@@ -205,6 +212,161 @@ auto build_cohort(const cliapp::parsed_args& args) -> std::expected<std::pair<ra
 
   target.vendor = cliapp::flag_string(args, "--vendor").value_or("");
   return std::pair{std::move(target), gate_config};
+}
+
+/// @brief `models resolve`'s `@tagName`-equivalent for `complexity`.
+///
+/// TRAP (plan 996, task 6343): the oracle's JSON envelope renders complexity
+/// via Zig's `@tagName`, which emits the UNDERSCORED `high_risk`. That is a
+/// DIFFERENT string from `rank_::complexity_to_text`, which is deliberately
+/// HYPHENATED (`high-risk`) to match the schema CHECK constraint. Reusing
+/// `complexity_to_text` here would look like harmless consolidation and
+/// silently change this leaf's emitted contract.
+auto complexity_tag(rank_::complexity value) -> std::string_view {
+  switch (value) {
+  case rank_::complexity::bounded:
+    return "bounded";
+  case rank_::complexity::standard:
+    return "standard";
+  case rank_::complexity::high_risk:
+    return "high_risk";
+  }
+  return "standard";
+}
+
+/// @brief Map the nine-role `roles::role` onto `pk::planning_role`'s four
+/// pre-task values.
+///
+/// Callable only when `mroles::class_of(value) == packet_class::planning`,
+/// which is exactly the four cases below; the five task-bound cases are
+/// unreachable from the caller's branch and fall through to `planner` only to
+/// keep the switch exhaustive under `-Werror -Wswitch`.
+auto to_planning_role(mroles::role value) -> pk::planning_role {
+  switch (value) {
+  case mroles::role::planner:
+    return pk::planning_role::planner;
+  case mroles::role::spec_reviewer:
+    return pk::planning_role::spec_reviewer;
+  case mroles::role::ingestor:
+    return pk::planning_role::ingestor;
+  case mroles::role::orchestrator:
+    return pk::planning_role::orchestrator;
+  case mroles::role::coder:
+  case mroles::role::test_coder:
+  case mroles::role::reviewer:
+  case mroles::role::research:
+  case mroles::role::janitor:
+    break;
+  }
+  return pk::planning_role::planner;
+}
+
+/// @brief Adapt a task packet's `facts` evidence into `profile`'s narrower
+/// input view.
+///
+/// The mapping is one-to-one by field name — `profile.cppm`'s header
+/// documents why the classifier names its own `fact` type instead of
+/// consuming `pk::evidence` directly (this handler is the seam the two
+/// layer-2 buckets cannot share). Result strings are VIEWS into `facts`;
+/// the caller must keep `facts`'s owner alive for as long as the result.
+auto to_profile_facts(const std::vector<pk::evidence>& facts) -> std::vector<prof::fact> {
+  std::vector<prof::fact> out;
+  out.reserve(facts.size());
+  for (const auto& f : facts) {
+    out.push_back({.kind           = f.kind,
+                   .locator        = f.locator,
+                   .text           = f.text,
+                   .provenance     = f.provenance,
+                   .current_digest = f.current_digest,
+                   .id             = f.id});
+  }
+  return out;
+}
+
+/// @brief Append `"key":value` with a bare `null` for an unset optional
+/// string, matching `std.json.Stringify`'s handling of a Zig `?[]const u8`.
+auto append_optional_string(std::string& out, std::string_view key, const std::optional<std::string>& value) -> void {
+  out.push_back('"');
+  out.append(key);
+  out.append("\":");
+  if (value.has_value()) {
+    json_text::append_json_string(out, *value);
+  } else {
+    out.append("null");
+  }
+}
+
+/// @brief `models resolve --json`'s complete stdout envelope.
+///
+/// Field order and null handling mirror the oracle's `std.json.Stringify`
+/// call in `zig/src/cmd/planar/handlers/models.zig:handleResolve` exactly —
+/// see this file's header for the `complexity` trap this render must not
+/// paper over.
+auto resolve_json(const mroles::resolution& resolution, std::string_view readiness) -> std::string {
+  std::string out = "{\"resolution_version\":";
+  json_text::append_json_string(out, mroles::resolution_version);
+  out.append(",\"role\":");
+  json_text::append_json_string(out, mroles::role_to_text(resolution.role_));
+  out.append(",\"packet_class\":");
+  json_text::append_json_string(out, mroles::packet_class_to_text(resolution.class_));
+  out.append(",\"source\":");
+  json_text::append_json_string(out, mroles::source_to_text(resolution.source_));
+  out.append(std::format(",\"packet_backed\":{}", mroles::packet_backed(resolution) ? "true" : "false"));
+  out.append(",\"tier\":");
+  json_text::append_json_string(out, reg::tier_to_text(resolution.tier_));
+  out.append(",\"work_type\":");
+  if (resolution.work_type_.has_value()) {
+    json_text::append_json_string(out, rank_::work_type_to_text(*resolution.work_type_));
+  } else {
+    out.append("null");
+  }
+  out.append(",\"complexity\":");
+  if (resolution.complexity_.has_value()) {
+    json_text::append_json_string(out, complexity_tag(*resolution.complexity_));
+  } else {
+    out.append("null");
+  }
+  out.append(",\"fallback_reason\":");
+  if (resolution.fallback_reason_.has_value()) {
+    json_text::append_json_string(out, mroles::fallback_reason_to_text(*resolution.fallback_reason_));
+  } else {
+    out.append("null");
+  }
+  out.push_back(',');
+  append_optional_string(out, "first_readiness_reason",
+                         readiness.empty() ? std::optional<std::string>{} : std::string{readiness});
+  out.push_back(',');
+  append_optional_string(out, "rule_version",
+                         resolution.rule_version.has_value() ? std::optional<std::string>{std::string{*resolution.rule_version}}
+                                                             : std::optional<std::string>{});
+  out.append("}\n");
+  return out;
+}
+
+/// @brief `models resolve`'s operator-facing text form, matching the
+/// oracle's line-by-line rendering.
+auto resolve_text(const mroles::resolution& resolution, std::string_view readiness) -> std::string {
+  std::string out = std::format("role   : {} ({} packet)\n", mroles::role_to_text(resolution.role_),
+                                mroles::packet_class_to_text(resolution.class_));
+  out.append(std::format("tier   : {}\n", reg::tier_to_text(resolution.tier_)));
+  if (mroles::packet_backed(resolution)) {
+    out.append(std::format("source : packet ({})\n", resolution.rule_version.value_or("?")));
+    if (resolution.work_type_.has_value()) {
+      out.append(std::format("work   : {}\n", rank_::work_type_to_text(*resolution.work_type_)));
+    }
+    if (resolution.complexity_.has_value()) {
+      out.append(std::format("risk   : {}\n", complexity_tag(*resolution.complexity_)));
+    }
+  } else {
+    out.append(std::format("source : STATIC FALLBACK — {}\n", resolution.fallback_reason_.has_value()
+                                                                  ? mroles::fallback_reason_to_text(*resolution.fallback_reason_)
+                                                                  : "unknown"));
+    if (!readiness.empty()) {
+      out.append(std::format("because: {}\n", readiness));
+    }
+    out.append("         (no work type or complexity: nothing was derived)\n");
+  }
+  return out;
 }
 
 } // namespace
@@ -495,6 +657,91 @@ auto models_outcomes(context& ctx, const cliapp::parsed_args& args) -> handler_r
     return std::unexpected(error_from_body(kind_t::generic_failure, "models outcomes: QueryFailed"));
   }
   ctx.out() << (wants_json(args) ? rend::outcomes_json(*listed) : rend::outcomes_text(*listed));
+  return {};
+}
+
+auto models_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  // The database opens BEFORE role parsing, matching the oracle's
+  // `ensureDb()` then role-buffer decode — observable only when both would
+  // fail, but observable.
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const role_raw = cliapp::flag_string(args, "--role").value_or("");
+  auto const role_    = mroles::role_from_wire(role_raw);
+  if (!role_) {
+    return std::unexpected(error_from_body(kind_t::invalid_input, std::format("unknown role '{}'", role_raw)));
+  }
+
+  mroles::static_fallback fallback;
+  if (auto const raw = cliapp::flag_string(args, "--fallback-tier"); raw && !raw->empty()) {
+    auto const parsed = reg::tier_from_text(*raw);
+    if (!parsed) {
+      return std::unexpected(error_from_body(kind_t::invalid_input, std::format("invalid --fallback-tier '{}'", *raw)));
+    }
+    fallback.tier_ = *parsed;
+  }
+
+  mroles::resolution resolution;
+  std::string        readiness;
+
+  if (mroles::class_of(*role_) == mroles::packet_class::task) {
+    auto const raw = cliapp::flag_string(args, "--task");
+    if (!raw || raw->empty()) {
+      return std::unexpected(
+          error_from_body(kind_t::invalid_input, std::format("--task is required for task-bound role '{}'", role_raw)));
+    }
+    auto const task_id = cliapp::parse_int64_zig(*raw);
+    if (!task_id) {
+      return std::unexpected(error_from_body(kind_t::invalid_input, std::format("invalid --task '{}'", *raw)));
+    }
+
+    auto assembled = pk::assemble_task(**conn, *task_id);
+    if (!assembled) {
+      if (assembled.error() == pk::packet_error::task_not_found) {
+        return std::unexpected(error_from_body(kind_t::not_found, std::format("no task with id {}", *task_id)));
+      }
+      return std::unexpected(error_from_body(kind_t::generic_failure, "assembling packet: QueryFailed"));
+    }
+
+    if (assembled->ready()) {
+      // `facts` owns the strings `to_profile_facts`'s result views into; it
+      // must outlive `outcome` and the `resolve_task_packet` call below.
+      auto const facts   = to_profile_facts(assembled->input.facts);
+      auto       outcome = prof::compile(facts);
+      resolution         = mroles::resolve_task_packet(*role_, true, std::optional<prof::outcome>{std::move(outcome)}, fallback);
+    } else {
+      resolution = mroles::resolve_task_packet(*role_, false, std::nullopt, fallback);
+      if (!assembled->reasons.empty()) {
+        readiness = std::string{pk::reason_name(assembled->reasons[0])};
+      }
+    }
+  } else {
+    if (auto const raw = cliapp::flag_string(args, "--plan"); raw && !raw->empty()) {
+      auto const plan_id = cliapp::parse_int64_zig(*raw);
+      if (!plan_id) {
+        return std::unexpected(error_from_body(kind_t::invalid_input, std::format("invalid --plan '{}'", *raw)));
+      }
+
+      auto assembled = pk::assemble_planning(**conn, to_planning_role(*role_), *plan_id);
+      if (!assembled) {
+        if (assembled.error() == pk::packet_error::plan_not_found) {
+          return std::unexpected(error_from_body(kind_t::not_found, "assembling planning packet: PlanNotFound"));
+        }
+        return std::unexpected(error_from_body(kind_t::generic_failure, "assembling planning packet: QueryFailed"));
+      }
+      resolution = mroles::resolve_planning(*role_, assembled->ready(), fallback, pk::policy_version);
+      if (!assembled->reasons.empty()) {
+        readiness = std::string{pk::planning_reason_name(assembled->reasons[0])};
+      }
+    } else {
+      resolution = mroles::resolve_planning(*role_, std::nullopt, fallback, pk::policy_version);
+    }
+  }
+
+  ctx.out() << (wants_json(args) ? resolve_json(resolution, readiness) : resolve_text(resolution, readiness));
   return {};
 }
 

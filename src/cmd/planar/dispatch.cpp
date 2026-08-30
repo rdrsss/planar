@@ -495,9 +495,12 @@ auto handlers(const CLI::App& root) -> handler_table {
   // table. `bench harvest` is deliberately absent and stays a declared
   // exit-64 refusal; its engine half was deferred WITH its git-subprocess
   // dependency in task 6095. See `handlers/runs.cppm`.
-  // `models` — thirteen of fourteen. `models resolve` stays a declared
-  // exit-64 refusal: its engine half (roles + profile + packet, 2,725
-  // lines) is unported, so there is nothing at layer 2 to call.
+  // `models` — all fourteen leaves. `models resolve` left the unported
+  // inventory at task 6343, once `engine_ingest`'s planning half
+  // (`assemble_planning`, `compile_planning`) joined `engine_models`'s
+  // `profile` and `roles` (task 6111): the last missing piece was the
+  // `packet::evidence` -> `profile::fact` adapter, which belongs here — see
+  // `handlers/models.cppm`.
   table.emplace("models registry list", handlers::models_registry_list);
   table.emplace("models registry export", handlers::models_registry_export);
   table.emplace("models registry add", handlers::models_registry_add);
@@ -511,6 +514,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("models evals", handlers::models_evals);
   table.emplace("models experiments", handlers::models_experiments);
   table.emplace("models outcomes", handlers::models_outcomes);
+  table.emplace("models resolve", handlers::models_resolve);
   table.emplace("bench start", handlers::bench_start);
   table.emplace("bench event", handlers::bench_event);
   table.emplace("bench touch", handlers::bench_touch);

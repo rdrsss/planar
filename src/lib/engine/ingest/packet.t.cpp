@@ -788,3 +788,273 @@ TEST_CASE("render_json carries the policy version in the envelope", "[packet]") 
   CHECK(blocked_json.find(R"("ready":false)") != std::string::npos);
   CHECK(blocked_json.find(R"("reasons":["missing_body","missing_acceptance_section")") != std::string::npos);
 }
+
+// ===========================================================================
+// Planning half (plan 996, task 6343).
+// ===========================================================================
+
+namespace {
+
+/// @brief The reason names of a planning packet, in emission order.
+auto planning_reason_names(const pk::planning_packet& packet) -> std::vector<std::string> {
+  std::vector<std::string> out;
+  out.reserve(packet.reasons.size());
+  for (const auto reason : packet.reasons) {
+    out.emplace_back(pk::planning_reason_name(reason));
+  }
+  return out;
+}
+
+/// @brief One current, `draft`-status evidence row of `kind`, required.
+auto current_evidence(std::string_view kind, std::string_view status = "draft") -> pk::evidence {
+  pk::evidence item;
+  item.kind           = std::string{kind};
+  item.locator        = std::string{kind};
+  item.text           = "body";
+  item.source_digest  = "same";
+  item.current_digest = "same";
+  item.status         = std::string{status};
+  item.provenance     = std::string{kind};
+  return item;
+}
+
+/// @brief The four `required_output`-shaped kinds a planner/spec-reviewer/
+/// ingestor packet needs, all current, at `status`.
+auto four_specs(std::string_view status = "draft") -> std::vector<pk::evidence> {
+  return {current_evidence("product_spec", status), current_evidence("tech_spec", status), current_evidence("roadmap", status),
+          current_evidence("test_spec", status)};
+}
+
+} // namespace
+
+TEST_CASE("compile_planning: an empty input names every applicable reason, per role", "[packet][planning]") {
+  // Mirrors `an empty input names every applicable reason` above, one per
+  // planning role, so the switch's four arms are each pinned independently.
+  {
+    pk::planning_input input;
+    input.role = pk::planning_role::planner;
+    CHECK(planning_reason_names(pk::compile_planning(input)) == std::vector<std::string>{"missing_goal", "missing_scope_facts",
+                                                                                         "missing_source_artifacts",
+                                                                                         "missing_required_outputs"});
+  }
+  {
+    pk::planning_input input;
+    input.role = pk::planning_role::spec_reviewer;
+    CHECK(
+        planning_reason_names(pk::compile_planning(input)) ==
+        std::vector<std::string>{"missing_goal", "missing_artifact_digests", "missing_strict_preview", "missing_review_rubric"});
+  }
+  {
+    pk::planning_input input;
+    input.role = pk::planning_role::ingestor;
+    CHECK(planning_reason_names(pk::compile_planning(input)) ==
+          std::vector<std::string>{"missing_goal", "missing_artifact_digests", "missing_reviewed_artifacts",
+                                   "missing_strict_preview", "missing_coverage", "missing_locked_decisions",
+                                   "missing_apply_boundary"});
+  }
+  {
+    pk::planning_input input;
+    input.role = pk::planning_role::orchestrator;
+    CHECK(planning_reason_names(pk::compile_planning(input)) == std::vector<std::string>{"missing_goal", "missing_scope_facts"});
+  }
+}
+
+TEST_CASE("compile_planning: planner and orchestrator are ready on minimal evidence", "[packet][planning]") {
+  // The orchestrator role needs only a goal and scope facts -- no artifacts,
+  // no decisions, no coverage. This is the arm `models resolve --role
+  // orchestrator --plan <id>` reaches for any plan with a title.
+  pk::planning_input orch;
+  orch.role              = pk::planning_role::orchestrator;
+  orch.goal              = "Ship the thing.";
+  orch.scope_facts       = {current_evidence("scope")};
+  const auto orch_packet = pk::compile_planning(orch);
+  CHECK(orch_packet.ready());
+  CHECK(orch_packet.reasons.empty());
+
+  pk::planning_input planner;
+  planner.role             = pk::planning_role::planner;
+  planner.goal             = "Ship the thing.";
+  planner.scope_facts      = {current_evidence("scope")};
+  planner.artifacts        = {current_evidence("product_spec")};
+  planner.required_outputs = {current_evidence("required_output")};
+  CHECK(pk::compile_planning(planner).ready());
+}
+
+TEST_CASE("compile_planning: non_current_artifacts and invalid_locked_decisions fire ahead of the role switch",
+          "[packet][planning]") {
+  // Both checks run BEFORE the role switch and apply to every role — proven
+  // here on `orchestrator`, the role whose own arm checks neither.
+  pk::evidence stale_artifact   = current_evidence("product_spec");
+  stale_artifact.current_digest = "different";
+
+  pk::planning_input input;
+  input.role        = pk::planning_role::orchestrator;
+  input.goal        = "Ship the thing.";
+  input.scope_facts = {current_evidence("scope")};
+  input.artifacts   = {stale_artifact};
+  const auto names  = planning_reason_names(pk::compile_planning(input));
+  CHECK(std::ranges::find(names, "non_current_artifacts") != names.end());
+
+  pk::evidence rejected_decision = current_evidence("decision");
+  rejected_decision.status       = "rejected";
+  input.artifacts                = {};
+  input.decisions                = {rejected_decision};
+  const auto decision_names      = planning_reason_names(pk::compile_planning(input));
+  CHECK(std::ranges::find(decision_names, "invalid_locked_decisions") != decision_names.end());
+}
+
+TEST_CASE("compile_planning: ingestor's coverage and gate checks distinguish ABSENT from INVALID", "[packet][planning]") {
+  pk::planning_input base;
+  base.role                  = pk::planning_role::ingestor;
+  base.goal                  = "Ship the thing.";
+  base.artifacts             = four_specs("active"); // satisfies BOTH the current and reviewed bars
+  base.review_rubric_version = "spec-review-v1";
+  base.strict_preview        = {current_evidence("gate", "accepted")};
+  base.decisions             = {current_evidence("decision", "accepted")};
+  base.apply_boundary        = {current_evidence("gate", "accepted")};
+
+  // Coverage ABSENT.
+  {
+    auto       input = base;
+    const auto names = planning_reason_names(pk::compile_planning(input));
+    CHECK(std::ranges::find(names, "missing_coverage") != names.end());
+    CHECK(std::ranges::find(names, "incomplete_coverage") == names.end());
+  }
+  // Coverage PRESENT but INVALID -- a required row that is not `complete`.
+  {
+    auto input       = base;
+    input.coverage   = {current_evidence("coverage", "incomplete")};
+    const auto names = planning_reason_names(pk::compile_planning(input));
+    CHECK(std::ranges::find(names, "missing_coverage") == names.end());
+    CHECK(std::ranges::find(names, "incomplete_coverage") != names.end());
+  }
+  // Coverage PRESENT and VALID -- neither reason fires, and the packet is
+  // ready (the coverage row's `covered` flag must also be true).
+  {
+    auto input           = base;
+    auto complete_row    = current_evidence("coverage", "complete");
+    complete_row.covered = true;
+    input.coverage       = {complete_row};
+    const auto packet    = pk::compile_planning(input);
+    CHECK(packet.ready());
+  }
+}
+
+TEST_CASE("compile_planning: the strict-preview and apply-boundary gates require ready evidence", "[packet][planning]") {
+  pk::planning_input input;
+  input.role                  = pk::planning_role::spec_reviewer;
+  input.goal                  = "Ship the thing.";
+  input.artifacts             = four_specs("draft");
+  input.review_rubric_version = "spec-review-v1";
+
+  // Present but every row unaccepted -- INVALID, not missing.
+  input.strict_preview = {current_evidence("gate", "pending")};
+  const auto names     = planning_reason_names(pk::compile_planning(input));
+  CHECK(std::ranges::find(names, "missing_strict_preview") == names.end());
+  CHECK(std::ranges::find(names, "invalid_strict_preview") != names.end());
+
+  // Accepted -- both reasons clear and the packet is ready (spec-reviewer
+  // needs no coverage or decisions).
+  input.strict_preview = {current_evidence("gate", "accepted")};
+  CHECK(pk::compile_planning(input).ready());
+}
+
+TEST_CASE("assemble_planning: PlanNotFound for a missing anchor", "[packet][planning]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  const auto missing = pk::assemble_planning(conn, pk::planning_role::orchestrator, 999999);
+  REQUIRE_FALSE(missing.has_value());
+  CHECK(missing.error() == pk::packet_error::plan_not_found);
+}
+
+TEST_CASE("assemble_planning: orchestrator is ready off the plan row alone", "[packet][planning]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  auto packet = pk::assemble_planning(conn, pk::planning_role::orchestrator, plan_id);
+  REQUIRE(packet.has_value());
+  CHECK(packet->ready());
+  CHECK(packet->input.scope_facts.size() == 1);
+  CHECK(packet->input.scope_facts[0].locator == "plan:scope");
+}
+
+TEST_CASE("assemble_planning: planner is not ready without a derives-from artifact link", "[packet][planning]") {
+  // `seed()` links artifacts 10-13 to TASK 100 via `cites`, not to plan 1 via
+  // `derives-from` -- so the planning packet's `artifacts` list is empty even
+  // though the same rows exist and satisfy the TASK packet's citations.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  auto packet = pk::assemble_planning(conn, pk::planning_role::planner, plan_id);
+  REQUIRE(packet.has_value());
+  CHECK_FALSE(packet->ready());
+  const auto names = planning_reason_names(*packet);
+  CHECK(std::ranges::find(names, "missing_source_artifacts") != names.end());
+}
+
+TEST_CASE("assemble_planning: the duplicated coverage counts match the seeded arena", "[packet][planning]") {
+  // Plan 1 has three tasks (100 ready, 101 done dependency, 200 bare) and one
+  // scenario (30) attached via `derives-from`, verifying only task 100 -- so
+  // total_tasks=3, tasks_covered=1, total_scenarios=1, and the packet reports
+  // the coverage row `incomplete` (1 != 3) even though a scenario exists.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  auto packet = pk::assemble_planning(conn, pk::planning_role::ingestor, plan_id);
+  REQUIRE(packet.has_value());
+  REQUIRE(packet->input.coverage.size() == 1);
+  const auto& coverage = packet->input.coverage[0];
+  CHECK(coverage.text == "tasks:3;covered:1;scenarios:1");
+  CHECK(coverage.status == "incomplete");
+  CHECK_FALSE(coverage.covered);
+  const auto names = planning_reason_names(*packet);
+  CHECK(std::ranges::find(names, "incomplete_coverage") != names.end());
+}
+
+TEST_CASE("assemble_planning: constraints and decisions carry the SAME rows, independently", "[packet][planning]") {
+  // The oracle's `PlanningInput` reuses one arena slice for both fields; this
+  // port copies once and moves once (see packet.cpp's `assemble_planning`).
+  // Proven here rather than trusted: both fields must end up with identical
+  // content, and mutating the returned struct's copies must not alias.
+  //
+  // `seed()` links decision 20 to TASK 100 via `cites`, not to plan 1 via
+  // `derives-from` -- the planning-visible edge is added here, additively.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+  exec(conn, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values "
+             "('decision', 20, 'plan', 1, 'derives-from')");
+
+  auto packet = pk::assemble_planning(conn, pk::planning_role::ingestor, plan_id);
+  REQUIRE(packet.has_value());
+  REQUIRE(packet->input.decisions.size() == 1);
+  REQUIRE(packet->input.constraints.size() == 1);
+  CHECK(packet->input.decisions[0].id == packet->input.constraints[0].id);
+  CHECK(packet->input.decisions[0].text == packet->input.constraints[0].text);
+}
+
+TEST_CASE("compile_planning: canonical body key order and digest/canonical split", "[packet][planning]") {
+  pk::planning_input input;
+  input.role                         = pk::planning_role::orchestrator;
+  input.goal                         = "Ship the thing.";
+  input.scope_facts                  = {current_evidence("scope")};
+  input.scope_facts[0].display_label = "Renamed Plan";
+  const auto packet                  = pk::compile_planning(input);
+
+  CHECK(packet.canonical.starts_with(R"({"policy":"routing-packet-v1","role":"orchestrator","goal":"Ship the thing.")"));
+  CHECK(packet.canonical.find(R"("review_rubric_version":"")") != std::string::npos);
+  CHECK(packet.canonical.find("display_label") != std::string::npos);
+
+  // The digest is taken over the SEMANTIC form, which omits display_label --
+  // a display-only rename must not move it.
+  auto renamed                         = input;
+  renamed.scope_facts[0].display_label = "A Completely Different Name";
+  const auto renamed_packet            = pk::compile_planning(renamed);
+  CHECK(renamed_packet.digest == packet.digest);
+  CHECK(renamed_packet.canonical != packet.canonical);
+}

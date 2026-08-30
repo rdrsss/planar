@@ -998,16 +998,22 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // lines — is untouched by this move: its own caller of `postComment`
   // (`parent_issue.zig`'s injected `postCommentFn`) is a separate wiring
   // this task did not need.
-  CHECK(unported.size() == 13);
+  // 13 -> 12 at task 6343: `models resolve` moved, the `models` family's
+  // fourteenth and last leaf. See surface.cpp's entry for the sizing note
+  // (the inherited ~300-line estimate UNDER-stated it) and the two oracle
+  // behaviors this port must not normalize away.
+  CHECK(unported.size() == 12);
   INFO("moved by task 6339: audit publish-decision");
   CHECK_FALSE(unported.contains("audit publish-decision"));
   INFO("moved by task 6329: dashboard");
   CHECK_FALSE(unported.contains("dashboard"));
   INFO("moved by task 6329: audit handoff-readiness");
   CHECK_FALSE(unported.contains("audit handoff-readiness"));
+  INFO("moved by task 6343: models resolve");
+  CHECK_FALSE(unported.contains("models resolve"));
   // Probed by task 6329 and deliberately NOT moved. Pinned per leaf so a
   // later cycle cannot wire one off the back of this cycle's count.
-  for (auto const& leaf : {"report", "explore", "models resolve"}) {
+  for (auto const& leaf : {"report", "explore"}) {
     INFO("probed by task 6329 and blocked for a NAMED reason: " << leaf);
     CHECK(unported.contains(leaf));
   }
@@ -1207,7 +1213,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // description running the oracle showed to be wrong on both counts. It is
   // asserted ABSENT at the top of this test alongside the count.
   CHECK(unported.contains("bench harvest"));
-  CHECK(unported.contains("models resolve"));
+  INFO("moved by task 6343: models resolve");
+  CHECK_FALSE(unported.contains("models resolve"));
   // 92 before task 6205 ported SIXTEEN out of it in one change -- the
   // drafting quartet on all four link-anchored planning families, wired
   // together with the `editflow` port that four consecutive cycles had

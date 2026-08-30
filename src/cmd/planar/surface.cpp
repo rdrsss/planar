@@ -4171,7 +4171,29 @@ auto unported_paths() -> std::span<std::string_view const> {
       // `--propagate` "refuses with NotImplemented" — which is false; the
       // code propagates. That one FLAG is the only blocked part, and it is
       // refused at exit 64 as a recorded divergence. See handlers/link.cppm.
-      "models resolve",
+      // `models resolve` left this inventory at task 6343, the family's
+      // fourteenth and last leaf. Task 6111 had already landed its two PURE
+      // halves (`profile`, `roles`) in `engine_models`; what remained was
+      // `assemble_planning`/`compile_planning` in `engine_ingest`, plus this
+      // handler's `packet::evidence` -> `profile::fact` adapter.
+      //
+      // The inherited ~300-line estimate UNDER-STATED it, and by a wider
+      // margin than the usual colocated-Zig-test inflation runs the other
+      // way: this port measured ~450 implementation lines in packet.cpp
+      // alone. The gap is the counting-query duplication the estimate's own
+      // note anticipated but did not size — the oracle's
+      // `planningCoverageEvidence` calls `test_spec_status.compute` in three
+      // lines because Zig has no same-layer-edge prohibition; this tree's
+      // D15/D18 FATAL on that edge, so the three queries
+      // (`milestone_task_count`, `milestone_scenario_count`,
+      // `milestone_tasks_covered_count`) are reproduced by hand, in full,
+      // rather than called (~90 of the ~450 lines by itself).
+      //
+      // Landed alongside a deliberate non-decision: `profile::profile`'s
+      // `cohort` field stays unported (documented in profile.cppm) because
+      // the oracle's `Cohort` has seven fields and this tree's
+      // `ranking::cohort` has eight — constructing one here would mean
+      // inventing the eighth. Nothing on this leaf's path needs it.
       // `plan descendants` left this inventory at task 6298, and its four
       // family siblings below did NOT. It had been grouped with them and
       // with `ext propagate` as blocked on the create/propagate half of
@@ -4265,11 +4287,13 @@ auto unported_paths() -> std::span<std::string_view const> {
       // verified it BLOCKED on `engine/routing/packet.zig`'s 1674 lines and
       // was right about the size and wrong about the block: the LEAF needs
       // only that file's TASK half, and the PLANNING half it shares a file
-      // with belongs to `models resolve`, which stays deferred with
-      // `roles.zig` and `profile.zig`. It landed in `engine_ingest` rather
-      // than a new `engine_routing` bucket because its freshness computation
-      // is defined in terms of `materialize`'s digests and D15/D18 FATAL on
-      // a layer-2-to-layer-2 edge — see src/lib/engine/ingest/CMakeLists.txt.
+      // with belonged to `models resolve`, deferred at the time with
+      // `roles.zig` and `profile.zig` (the PLANNING half landed later, at
+      // task 6343, in the SAME `packet.cppm`/`.cpp` — see the `models
+      // resolve` note above). It landed in `engine_ingest` rather than a new
+      // `engine_routing` bucket because its freshness computation is defined
+      // in terms of `materialize`'s digests and D15/D18 FATAL on a
+      // layer-2-to-layer-2 edge — see src/lib/engine/ingest/CMakeLists.txt.
       // `task touches infer` left this inventory at task 6330, completing
       // the `task touches` family. Its deferral note called it "773 lines
       // of git-diff and language-aware path inference"; running the oracle

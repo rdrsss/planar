@@ -1,7 +1,7 @@
 // @file models_leaves.t.cpp
-// @brief In-process tests for the thirteen `models` leaves wired by plan
-// 996, task 6149 — the ten `models registry` leaves plus `evals`,
-// `experiments` and `outcomes`.
+// @brief In-process tests for all fourteen `models` leaves — the ten
+// `models registry` leaves plus `evals`, `experiments` and `outcomes`,
+// wired by plan 996 task 6149, and `resolve`, wired by task 6343.
 //
 // ## EVERY MUTATING CASE ASSERTS DATABASE ROWS
 //
@@ -1031,13 +1031,86 @@ TEST_CASE("models outcomes --limit EXCLUDES, and the excluded rows survive", "[c
         std::string::npos);
 }
 
-TEST_CASE("models resolve stays a LOUD exit-64 refusal", "[cmd][models]") {
-  auto const fx = make_fixture("resolve");
+TEST_CASE("models resolve validates role, task, plan and fallback-tier before touching a packet", "[cmd][models]") {
+  auto const fx = make_fixture("resolve_validate");
   seed_project(fx);
-  auto const refused = dispatch(fx, {"models", "resolve", "--role", "coder"});
-  // The fourteenth leaf, deferred WITH its dependency (roles + profile +
-  // packet, 2,725 unported lines). It refuses by name rather than exiting 0
-  // having resolved nothing.
-  CHECK(refused.code == 64);
-  CHECK(refused.err == "error: models resolve: not implemented in this build\n");
+
+  auto const bad_role = dispatch(fx, {"models", "resolve", "--role", "nosuch"});
+  CHECK(bad_role.code == 2);
+  CHECK(bad_role.err == "error: unknown role 'nosuch'\n");
+
+  // Task-bound role, no --task: refuses BEFORE the database would matter,
+  // naming the role it was given verbatim (not its normalized spelling).
+  auto const no_task = dispatch(fx, {"models", "resolve", "--role", "coder"});
+  CHECK(no_task.code == 2);
+  CHECK(no_task.err == "error: --task is required for task-bound role 'coder'\n");
+
+  auto const bad_task = dispatch(fx, {"models", "resolve", "--role", "coder", "--task", "abc"});
+  CHECK(bad_task.code == 2);
+  CHECK(bad_task.err == "error: invalid --task 'abc'\n");
+
+  auto const bad_plan = dispatch(fx, {"models", "resolve", "--role", "planner", "--plan", "abc"});
+  CHECK(bad_plan.code == 2);
+  CHECK(bad_plan.err == "error: invalid --plan 'abc'\n");
+
+  auto const bad_fallback = dispatch(fx, {"models", "resolve", "--role", "coder", "--task", "1", "--fallback-tier", "huge"});
+  CHECK(bad_fallback.code == 2);
+  CHECK(bad_fallback.err == "error: invalid --fallback-tier 'huge'\n");
+
+  auto const no_task_row = dispatch(fx, {"models", "resolve", "--role", "coder", "--task", "999999"});
+  CHECK(no_task_row.code == 1);
+  CHECK(no_task_row.err == "error: no task with id 999999\n");
+
+  auto const no_plan_row = dispatch(fx, {"models", "resolve", "--role", "planner", "--plan", "999999"});
+  CHECK(no_plan_row.code == 1);
+  CHECK(no_plan_row.err == "error: assembling planning packet: PlanNotFound\n");
+}
+
+TEST_CASE("models resolve --role spec_reviewer (underscored) is an undocumented alias for spec-reviewer", "[cmd][models]") {
+  // roles.cppm's header: the oracle's hyphen-to-underscore map is a no-op on
+  // an already-underscored name, so BOTH spellings resolve. `--help` and
+  // `--role` documents only the hyphenated form.
+  auto const fx = make_fixture("resolve_alias");
+  seed_project(fx);
+  auto const hyphen     = dispatch(fx, {"models", "resolve", "--role", "spec-reviewer", "--json"});
+  auto const underscore = dispatch(fx, {"models", "resolve", "--role", "spec_reviewer", "--json"});
+  CHECK(hyphen.code == 0);
+  CHECK(underscore.code == 0);
+  CHECK(hyphen.out == underscore.out);
+  CHECK(hyphen.out.find(R"("role":"spec_reviewer")") != std::string::npos);
+}
+
+TEST_CASE("models resolve without --plan reports no_packet; a not-ready plan reports packet_not_ready", "[cmd][models]") {
+  auto const fx = make_fixture("resolve_planning");
+  seed_project(fx);
+
+  auto const no_packet = dispatch(fx, {"models", "resolve", "--role", "planner", "--json"});
+  CHECK(no_packet.code == 0);
+  CHECK(no_packet.out == "{\"resolution_version\":\"routing-roles-v1\",\"role\":\"planner\",\"packet_class\":\"planning\","
+                         "\"source\":\"static_fallback\",\"packet_backed\":false,\"tier\":\"medium\",\"work_type\":null,"
+                         "\"complexity\":null,\"fallback_reason\":\"no_packet\",\"first_readiness_reason\":null,"
+                         "\"rule_version\":null}\n");
+
+  // A real plan with no linked artifacts: `planner` is NOT ready
+  // (`missing_source_artifacts`), so this is the `packet_not_ready` arm
+  // rather than `no_packet` — a different reason for a different absence.
+  REQUIRE(dispatch(fx, {"plan", "create", "Resolve fixture plan", "--summary", "A goal.", "--scope", "global", "--json"}).code ==
+          0);
+  auto const not_ready = dispatch(fx, {"models", "resolve", "--role", "planner", "--plan", "1", "--json"});
+  CHECK(not_ready.code == 0);
+  CHECK(not_ready.out.find(R"("fallback_reason":"packet_not_ready")") != std::string::npos);
+  CHECK(not_ready.out.find(R"("first_readiness_reason":"missing_source_artifacts")") != std::string::npos);
+  CHECK(not_ready.out.find(R"("packet_backed":false)") != std::string::npos);
+
+  // `orchestrator` needs only scope facts — the same plan resolves READY,
+  // packet-backed, proving the wiring rather than only the refusal paths.
+  auto const ready = dispatch(fx, {"models", "resolve", "--role", "orchestrator", "--plan", "1", "--json"});
+  CHECK(ready.code == 0);
+  CHECK(ready.out == "{\"resolution_version\":\"routing-roles-v1\",\"role\":\"orchestrator\",\"packet_class\":\"planning\","
+                     "\"source\":\"packet\",\"packet_backed\":true,\"tier\":\"medium\",\"work_type\":null,\"complexity\":null,"
+                     "\"fallback_reason\":null,\"first_readiness_reason\":null,\"rule_version\":\"routing-packet-v1\"}\n");
+
+  auto const ready_text = dispatch(fx, {"models", "resolve", "--role", "orchestrator", "--plan", "1"});
+  CHECK(ready_text.code == 0);
+  CHECK(ready_text.out == "role   : orchestrator (planning packet)\ntier   : medium\nsource : packet (routing-packet-v1)\n");
 }
