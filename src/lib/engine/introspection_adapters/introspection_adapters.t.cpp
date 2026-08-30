@@ -657,6 +657,124 @@ TEST_CASE("collect_preview_from_paths: the file cap stops scanning and raises fi
   CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::file_cap));
 }
 
+TEST_CASE("collect_preview_from_paths: the byte cap stops scanning and raises byte_cap, not a crash",
+          "[engine][introspection_adapters][discovery][6352][iter2]") {
+  // Reviewer finding (iteration 2): no test exercised `byte_cap` at all —
+  // a break-probe deleting the whole `if (size > bytes_left) { byte_cap;
+  // break; }` block SURVIVED every existing test. `a.jsonl` and `b.jsonl`
+  // are each exactly 10 bytes; a 10-byte budget lets `a.jsonl` (sorted
+  // first) exactly exhaust it, so `b.jsonl`'s stat sees `bytes_left == 0`
+  // and trips the cap instead of being scanned.
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "1234567890");
+  write(scratch.path_ / ".claude" / "projects" / "b.jsonl", "1234567890");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 10};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->scanned == 1);
+  CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::byte_cap));
+}
+
+TEST_CASE("collect_preview_from_paths: the record cap stops scanning and raises record_cap, not a crash",
+          "[engine][introspection_adapters][discovery][6352][iter2]") {
+  // Reviewer finding (iteration 2): no test exercised `record_cap` at
+  // all — a break-probe deleting the whole `if (record_count >
+  // records_left) { record_cap; break; }` block SURVIVED every existing
+  // test. The file holds two non-empty (record-bearing) lines; a
+  // one-record budget cannot admit it, so it is skipped rather than
+  // scanned, and the coverage row's `scanned` count stays 0.
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "not json\nalso not json\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_records = 1};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->scanned == 0);
+  CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::record_cap));
+}
+
+TEST_CASE("collect_preview_from_paths: files are scanned in sorted order, not filesystem iteration order",
+          "[engine][introspection_adapters][discovery][6352][iter2]") {
+  // Reviewer finding (iteration 2): the header advertises a determinism
+  // guarantee (`std::ranges::sort(paths)`) that no test pinned — a
+  // break-probe swapping the sort for a reverse SURVIVED. Files are
+  // created in DESCENDING name order (`z` before `a`) so a mutant that
+  // scans in filesystem/creation order instead of sorted order picks
+  // `z.jsonl` first; with `max_files == 1` only the first-scanned file's
+  // shape reaches `coverage`. `a.jsonl` is a recognized-but-irrelevant
+  // envelope (ignored, not malformed); `z.jsonl` is a bare unparseable
+  // line (malformed). Sorted order must pick `a.jsonl`.
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "z.jsonl", "not json at all\n");
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "{\"type\":\"summary\",\"other\":\"irrelevant-record-shape\"}\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_files = 1};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->scanned == 1);
+  CHECK(claude->malformed == 0);
+  CHECK(claude->ignored == 1);
+  CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::file_cap));
+}
+
+TEST_CASE("collect_preview_from_paths: the byte/record budget is SHARED across vendors, not reset per vendor",
+          "[engine][introspection_adapters][discovery][6352][iter2]") {
+  // Reviewer finding (iteration 2): every existing cap test uses a single
+  // vendor, so a break-probe neutralizing `bytes_left -=`/`records_left
+  // -=` after each accepted file SURVIVED — nothing observed that the
+  // budget crosses vendor boundaries. Claude's file exactly exhausts a
+  // 10-byte budget; Codex then sees `bytes_left == 0` for ITS file and
+  // must trip its OWN byte_cap, proving the same `bytes_left` counter
+  // carried over rather than resetting.
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "1234567890");
+  write(scratch.path_ / ".codex" / "sessions" / "b.jsonl", "1234567890");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 10};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  auto const* codex  = coverage_for(preview, ia::vendor::codex);
+  REQUIRE(claude != nullptr);
+  REQUIRE(codex != nullptr);
+  CHECK(claude->scanned == 1);
+  CHECK(codex->scanned == 0);
+  CHECK(has_warning(preview.warnings, ia::vendor::codex, ia::warning_kind::byte_cap));
+}
+
+TEST_CASE("collect_preview_from_paths: an override naming a single FILE is read directly, not treated as a directory",
+          "[engine][introspection_adapters][discovery][6352][iter2]") {
+  // Reviewer finding (iteration 2): every existing override test points
+  // at a DIRECTORY (via the `/**/*.jsonl` suffix). A break-probe forcing
+  // the `status.type() == regular` arm to fall through to the directory
+  // branch SURVIVED, because no test names a single file. `open_ec` on
+  // `directory_iterator(file_path)` fails (ENOTDIR), so the mutant reports
+  // `unavailable` where the un-mutated code reads the file directly and
+  // reports `observed`.
+  scratch_dir scratch;
+  auto const  single_file = scratch.path_ / "custom" / "one.jsonl";
+  write(single_file, "not json\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string(), .claude_path = single_file.string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->state == ia::coverage_state::observed);
+  CHECK(claude->scanned == 1);
+}
+
 TEST_CASE("collect_preview_from_paths: the CLI adapter feeds an authoritative cli_log source",
           "[engine][introspection_adapters][discovery]") {
   scratch_dir scratch;

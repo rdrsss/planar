@@ -967,9 +967,15 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
       owned.push_back(raw_source{.v = v, .available = false});
       return;
     }
+    // No `skip_permission_denied`: the oracle's `walker.next(io) catch`
+    // (introspection_adapters.zig:352) pushes one `warning_kind::unavailable`
+    // and BREAKS on a permission-denied subdirectory rather than silently
+    // continuing past it — matched below by leaving the default iterator
+    // options (`directory_options::none`) so a permission failure surfaces
+    // through `entry_ec`/`walk_ec` instead of being swallowed by the
+    // iterator itself.
     std::error_code                               walk_ec;
-    std::filesystem::recursive_directory_iterator it(selected, std::filesystem::directory_options::skip_permission_denied,
-                                                     walk_ec);
+    std::filesystem::recursive_directory_iterator it(selected, walk_ec);
     if (walk_ec) {
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
       owned.push_back(raw_source{.v = v, .available = false});
@@ -978,12 +984,24 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
     std::filesystem::recursive_directory_iterator const end;
     while (it != end) {
       std::error_code entry_ec;
-      bool const      is_file = it->is_regular_file(entry_ec);
+      // `symlink_status`, not `status`/`is_regular_file` (which follow a
+      // symlink to its target). The oracle's `dir.walk` reports a symlink
+      // entry as `.sym_link`, never `.file` (introspection_adapters.zig:352),
+      // so a symlinked `.jsonl` is skipped there; matching that here means
+      // testing the entry's OWN type, not what it points at.
+      auto const entry_status = it->symlink_status(entry_ec);
+      bool const is_file      = !entry_ec && entry_status.type() == std::filesystem::file_type::regular;
       if (entry_ec) {
         warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
         break;
       }
-      if (is_file && (!jsonl_only || it->path().extension() == ".jsonl")) {
+      // `.filename().string().ends_with(...)`, not `.extension()`: a file
+      // named exactly `.jsonl` has NO extension under
+      // `std::filesystem::path` (a leading-dot filename is treated as the
+      // stem, not an extension), while the oracle's `std.mem.endsWith`
+      // matches it. `ends_with` on the filename reproduces the oracle for
+      // that edge case.
+      if (is_file && (!jsonl_only || it->path().filename().string().ends_with(".jsonl"))) {
         paths.push_back(it->path().string());
       }
       it.increment(entry_ec);
@@ -1076,7 +1094,10 @@ auto collect_preview_from_paths(const transcript_config& config, const std::opti
     if (!cli->enabled) {
       owned.push_back(raw_source{.v = vendor::cli_log, .enabled = false});
     } else {
-      auto const result = cli->read ? cli->read(bytes_left) : cli_read_result{};
+      // Not `auto const`: `result.bytes` is moved out below
+      // (`std::move(result.bytes)`), and a `const` binding would silently
+      // defeat that move and copy the whole CLI JSONL buffer instead.
+      auto result = cli->read ? cli->read(bytes_left) : cli_read_result{};
       if (result.status == cli_read_status::ok) {
         auto const records = count_records(result.bytes);
         if (result.bytes.size() > bytes_left) {

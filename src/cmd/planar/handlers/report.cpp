@@ -24,16 +24,25 @@ namespace ia    = engine::introspection_adapters;
 namespace {
 
 /// @brief Resolve `~/.planar/config.toml` (or `$PLANAR_CONFIG_PATH`) into
-/// the typed config, fail-open on every step. Mirrors `report.zig`'s
-/// `resolveConfig`: a missing or unparseable file, or an unresolvable
-/// path, all collapse to "no config" rather than refusing the verb — the
-/// oracle's `catch return null`.
+/// the typed config. Mirrors `report.zig`'s `resolveConfig` exactly,
+/// including its caller: a missing config FILE is fail-open (no file means
+/// `content == nullopt`, which `cfg::resolve` treats as "fall through to
+/// embedded defaults" and succeeds), but an unresolvable path (no `HOME`)
+/// or an unparseable file that DOES exist both make `resolveConfig` itself
+/// return `null` — and `report.zig:98` reads that as `orelse
+/// exit.die(ctx, error.InvalidConfig, "resolving report config", .{})`,
+/// i.e. the verb refuses rather than silently treating a malformed config
+/// as "no config". This helper reproduces that refusal instead of
+/// swallowing it: on either failure it returns the domain error the
+/// caller propagates, exit 1, body "resolving report config" — verified
+/// byte-for-byte against the oracle under a scratch `$HOME` with a
+/// malformed `config.toml`.
 /// @param ctx The invocation context.
-/// @return The resolved config, or unset on any failure.
-auto resolved_config(context& ctx) -> std::optional<cfg::config> {
+/// @return The resolved config, or the refusal to propagate.
+auto resolved_config(context& ctx) -> std::expected<cfg::config, domain_error> {
   auto const path = resolve_config_path(ctx.env());
   if (!path.has_value()) {
-    return std::nullopt;
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving report config"));
   }
   std::optional<std::string> content;
   if (std::ifstream file(*path, std::ios::binary); file) {
@@ -42,7 +51,7 @@ auto resolved_config(context& ctx) -> std::optional<cfg::config> {
   auto const env = cfg::env_view::from_lookup(ctx.env());
   auto resolved = cfg::resolve(content.has_value() ? std::optional<std::string_view>{*content} : std::nullopt, env, std::nullopt);
   if (!resolved.has_value()) {
-    return std::nullopt;
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving report config"));
   }
   return resolved->cfg;
 }
@@ -67,11 +76,15 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   }
   db::connection& db_conn = **conn;
 
-  // Fail-open: an unreadable/missing/unparseable config resolves to "no
-  // config", which reads as `cli_log = false` — the embedded default —
-  // exactly like the oracle's `resolveConfig` catching every failure arm.
-  auto const cfg_result      = resolved_config(ctx);
-  bool const logging_enabled = cfg_result.has_value() && cfg_result->introspection.cli_log;
+  // Only a MISSING config file is fail-open (falls through to the embedded
+  // default, `cli_log = false`). An unresolvable path or an unparseable
+  // file that DOES exist refuses the verb — see `resolved_config`'s header
+  // for the oracle citation (`report.zig:98`'s `orelse exit.die(...)`).
+  auto cfg_result = resolved_config(ctx);
+  if (!cfg_result.has_value()) {
+    return std::unexpected(cfg_result.error());
+  }
+  bool const logging_enabled = cfg_result->introspection.cli_log;
 
   auto bundle = intro::build(db_conn, days, tail, logging_enabled, ctx.db_path().string());
   if (!bundle.has_value()) {
@@ -86,7 +99,7 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // -equivalent glue by hand rather than the module importing
   // `engine_config` itself).
   ia::transcript_config transcripts{.home_dir = home};
-  if (cfg_result.has_value()) {
+  {
     auto const& t               = cfg_result->introspection.transcripts;
     transcripts.claude_enabled  = t.claude_enabled;
     transcripts.claude_path     = t.claude_path;
