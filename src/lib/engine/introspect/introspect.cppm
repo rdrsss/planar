@@ -37,47 +37,53 @@
 /// `plans`, `projects`, `project_associations` — any column carrying entity
 /// text.
 ///
-/// ## What is NOT here, and a real architecture deviation from the oracle
+/// ## `preview`, and how it got here (decision 981, task 6352)
 ///
 /// The oracle's `Bundle.preview: ?adapters.Preview = null` embeds
 /// `introspection_adapters.Preview` directly, and `build()` never
 /// populates it — only the `report` handler does, by separately calling
 /// the DISCOVERY half of `introspection_adapters.zig`
-/// (`collectPreviewFromPaths` / `collectConfiguredPreview`), which is not
-/// ported in this tree yet (see `planar.engine.introspection_adapters`'s
-/// header — task 6121's tracking row).
+/// (`collectPreviewFromPaths` / `collectConfiguredPreview`).
 ///
 /// THIS PORT CANNOT embed `planar.engine.introspection_adapters::preview`
 /// the same way: `cmake/architecture.cmake`'s D15 forbids an
 /// `engine_* -> engine_*` dependency edge (`engine_introspect ->
 /// engine_introspection_adapters` FAILED configure with exactly that
-/// diagnostic), unlike Zig, which has no such enforced layering. The
-/// established fix for this shape elsewhere in the tree (see
-/// `planar.scope_ref`, D19) is extracting the shared type to a NEW layer-1
-/// module both engine buckets depend on — but `preview`/`vendor`/
-/// `category`/etc. are already layer-2 in the reviewer-approved
-/// `introspection_adapters.cppm` (task 6102), and that extraction is
-/// out of scope for this row.
+/// diagnostic, verified experimentally by a reviewer on task 6121), unlike
+/// Zig, which has no such enforced layering. Decision 981 settled the fix:
+/// extract `preview` and its four enums to the NEW layer-1
+/// `planar.introspection_preview` module (task 6352) both
+/// `engine_introspect` and `engine_introspection_adapters` depend on
+/// downward — the same shape `planar.scope_ref` (D19) already uses. The
+/// rejected alternative — a layer-3 handler splicing a separately-rendered
+/// preview block into `render_json`'s output via string surgery — would
+/// have split ONE WIRE FORMAT ACROSS TWO LAYERS; see decision 981's body.
 ///
-/// So `bundle` here carries NO `preview` field at all, and
-/// `render_text`/`render_json` unconditionally emit the "unavailable" /
-/// empty-arrays branch — which is honest: in the CURRENT dependency
-/// graph nothing can populate a preview, so that branch is the only
-/// reachable one. Whoever wires the `report` handler (layer 3, `cmd_planar`)
-/// needs to either (a) extract `preview` + the four enums to a layer-1
-/// module both `engine_introspect` and `engine_introspection_adapters`
-/// depend on, then re-add the field here, or (b) keep `bundle` preview-free
-/// and have the layer-3 handler splice a separately-rendered preview block
-/// into the text/JSON output itself. This is a genuine finding worth its
-/// own tracking row — not something to solve inline in this cycle.
+/// So `bundle` carries `preview` as `std::optional<preview_type>`. `build`
+/// (this module, DB-only) still never populates it — that stays the
+/// `report` handler's job, calling
+/// `introspection_adapters::collect_preview_from_paths` after `build`
+/// returns, exactly mirroring the oracle's own two-step assembly.
+/// `render_text`/`render_json` branch on whether it is set: unset renders
+/// the "unavailable" / empty-arrays shape (still the ONLY reachable
+/// output of a bare `build()` call, e.g. every test in this file that
+/// never sets `.preview` by hand), set renders the populated rows.
 module;
 
 export module planar.engine.introspect;
 
 import std;
 import planar.db;
+import planar.introspection_preview;
 
 namespace planar::engine::introspect {
+
+/// @brief Alias for the shared layer-1 preview type, so this module's
+/// public surface can say `preview` without a fully-qualified name at
+/// every use site. NOT re-exported under this bucket's own vocabulary the
+/// way `introspection_adapters` re-exports the enums (task 6102's
+/// callers): this bucket has no pre-existing callers to keep compiling.
+using preview_type = planar::introspection_preview::preview;
 
 /// @brief One verb-path invocation aggregate row.
 export struct verb_count {
@@ -154,10 +160,11 @@ export struct bundle {
   handoff_counts                            handoffs;                 ///< Always-on.
   std::int64_t                              reopens = 0;              ///< Task reopen count in the window.
   std::vector<failure_tail_row>             failure_tail;             ///< Empty when logging disabled.
-  // NOTE: no `preview` field. See this file's header — embedding
-  // `introspection_adapters::preview` here would create a D15-forbidden
-  // `engine_* -> engine_*` edge. `render_text`/`render_json` always emit
-  // the "unavailable" / empty-arrays branch as a result.
+  /// The introspection-adapters preview, or unset. `build` (this module)
+  /// never sets it; the `report` handler populates it after `build`
+  /// returns by calling `introspection_adapters::collect_preview_from_paths`
+  /// — see this file's header, "`preview`, and how it got here".
+  std::optional<preview_type> preview;
 };
 
 /// @brief Error surface for `build` / `cli_preview_jsonl`.

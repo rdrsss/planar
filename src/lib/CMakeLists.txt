@@ -156,6 +156,15 @@
 # engine/workbench/CMakeLists.txt for the full account, the filesystem-safety
 # argument, and the three deferred verbs.
 
+# `introspection_preview` (plan 996, task 6352, decision 981) is a layer-1
+# base library holding the redacted preview vocabulary (`vendor`/`category`/
+# `coverage_state`/`warning_kind` plus `preview` and its three row structs)
+# extracted out of `engine/introspection_adapters` so that BOTH
+# `engine/introspection_adapters` and `engine/introspect` can depend on it
+# downward instead of the D15-forbidden `engine_introspect ->
+# engine_introspection_adapters` edge the oracle's own `Bundle.preview`
+# field would otherwise require. Same D19 shape as `scope_ref`/`json_text`.
+# DEPENDS nothing.
 # `http` (plan 996, task 6041) is a layer-1 base library: the HTTP
 # request/response vocabulary, an abstract `transport`, and a libcurl-backed
 # `curl_transport` carrying the M7 30-second whole-request AND connect
@@ -190,6 +199,7 @@ add_subdirectory(git)
 add_subdirectory(process)
 add_subdirectory(http)
 add_subdirectory(adapter)
+add_subdirectory(introspection_preview)
 add_subdirectory(engine/identity)
 add_subdirectory(engine/config)
 add_subdirectory(engine/templates)

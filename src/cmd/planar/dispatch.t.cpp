@@ -256,23 +256,28 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // roll-up (`agentactivity`'s claim and next-work readers, `agentrender`'s
   // fragment writers) had been in the tree for milestones.
   //
-  // It is now `report`, which keeps every property the exemplar needs and
-  // is blocked for a reason that will NOT age out the way `dashboard`'s
-  // did: it needs `engine/introspect.zig` and
-  // `engine/introspection_adapters.zig`, 2649 zig lines with no C++
-  // counterpart of any kind. TOP-LEVEL rather than a family member (no
-  // sibling port can drag it along by accident) and arg-free — no
-  // positionals at all in `surface.cpp`, so the parser cannot refuse at
-  // exit 2 before dispatch is reached.
-  auto const leaf = dispatch({"report"});
+  // It was `report` until task 6352 ported it, once `engine_introspect`
+  // and `engine_introspection_adapters` were both complete and decision
+  // 981's layer-1 extraction let them meet through `bundle::preview`
+  // without an `engine_* -> engine_*` edge — see handlers/report.cppm.
+  //
+  // It is now `explore`, the most blocked leaf in the inventory: the
+  // handler is 93 lines, which is why it reads cheap, but it launches the
+  // COCKPIT, 33,452 zig lines under `cmd/planar/cockpit/` with no C++
+  // counterpart at all (see the `unported_paths` inventory test below for
+  // the full account). TOP-LEVEL rather than a family member (no sibling
+  // port can drag it along by accident) and arg-free — no positionals at
+  // all in `surface.cpp`, so the parser cannot refuse at exit 2 before
+  // dispatch is reached.
+  auto const leaf = dispatch({"explore"});
   CHECK(leaf.code == 64);
   CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: report: not implemented in this build\n");
+  CHECK(leaf.err == "error: explore: not implemented in this build\n");
 
-  // And the sibling that left the inventory this cycle answers its own
+  // And the sibling that left the inventory at task 6352 answers its own
   // verb instead of 64, which is what makes the row above a statement
-  // about `report` rather than about top-level leaves in general.
-  CHECK(dispatch({"dashboard", "--help"}).code == 0);
+  // about `explore` rather than about top-level leaves in general.
+  CHECK(dispatch({"report", "--help"}).code == 0);
 
   // Deeper, to prove the key is the full path and not the leaf name.
   //
@@ -1002,7 +1007,15 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // fourteenth and last leaf. See surface.cpp's entry for the sizing note
   // (the inherited ~300-line estimate UNDER-stated it) and the two oracle
   // behaviors this port must not normalize away.
-  CHECK(unported.size() == 12);
+  // 12 -> 11 at task 6352: `report` moved, once `engine_introspect` (task
+  // 6121) and `engine_introspection_adapters` (tasks 6102 and 6352) were
+  // both complete and decision 981's layer-1 `introspection_preview`
+  // extraction let `bundle::preview` reach across the D15-forbidden
+  // `engine_* -> engine_*` gap between them. `explore` — the OTHER leaf
+  // task 6329 probed and parked under the same stale layer-3 note `report`
+  // was — stays; it needs the COCKPIT (33,452 unported zig lines), a
+  // wholly different blocker `report`'s port did nothing to remove.
+  CHECK(unported.size() == 11);
   INFO("moved by task 6339: audit publish-decision");
   CHECK_FALSE(unported.contains("audit publish-decision"));
   INFO("moved by task 6329: dashboard");
@@ -1011,9 +1024,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("audit handoff-readiness"));
   INFO("moved by task 6343: models resolve");
   CHECK_FALSE(unported.contains("models resolve"));
+  INFO("moved by task 6352: report");
+  CHECK_FALSE(unported.contains("report"));
   // Probed by task 6329 and deliberately NOT moved. Pinned per leaf so a
   // later cycle cannot wire one off the back of this cycle's count.
-  for (auto const& leaf : {"report", "explore"}) {
+  for (auto const& leaf : {"explore"}) {
     INFO("probed by task 6329 and blocked for a NAMED reason: " << leaf);
     CHECK(unported.contains(leaf));
   }
