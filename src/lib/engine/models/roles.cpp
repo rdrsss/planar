@@ -52,8 +52,16 @@ constexpr std::array role_rows{
 
 auto role_from_wire(std::string_view text) -> std::optional<role> {
   // The oracle copies the flag into a fixed 64-byte buffer and refuses a
-  // longer name BEFORE the lookup. Reproduced so an over-long role is a
-  // distinct refusal rather than a silent miss.
+  // longer name with a DISTINCT message ("role name too long") BEFORE the
+  // lookup (zig/src/cmd/planar/handlers/models.zig:548). This function's
+  // `std::optional<role>` return type cannot carry that distinction — both
+  // an over-long name and a merely-unknown one collapse to `nullopt` here.
+  // The length check below only ensures a >64-byte name never reaches the
+  // table lookup (matching the oracle's own short-circuit); the CALLER that
+  // wants the oracle's two-message behavior must re-check the length itself
+  // before calling this function. `models_resolve`
+  // (src/cmd/planar/handlers/models.cpp) is that caller — see its own
+  // comment beside the check (plan 996, task 6343).
   if (text.size() > 64) {
     return std::nullopt;
   }

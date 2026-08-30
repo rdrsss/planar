@@ -670,7 +670,18 @@ auto models_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_re
   }
 
   auto const role_raw = cliapp::flag_string(args, "--role").value_or("");
-  auto const role_    = mroles::role_from_wire(role_raw);
+  // The oracle's `role_buf` is a fixed 64-byte array and refuses a longer
+  // name with a DISTINCT message before ever attempting the lookup
+  // (zig/src/cmd/planar/handlers/models.zig:548). `role_from_wire` itself
+  // collapses both an over-long name and a merely-unknown one into a bare
+  // `nullopt` (roles.cpp:54-56's own comment claims the divergence is
+  // reproduced, but that claim is true only inside `role_from_wire` — its
+  // caller here is the one place the oracle's two DIFFERENT refusals are
+  // observable, so the length check is repeated at this call site).
+  if (role_raw.size() > 64) {
+    return std::unexpected(error_from_body(kind_t::invalid_input, "role name too long"));
+  }
+  auto const role_ = mroles::role_from_wire(role_raw);
   if (!role_) {
     return std::unexpected(error_from_body(kind_t::invalid_input, std::format("unknown role '{}'", role_raw)));
   }
@@ -707,8 +718,11 @@ auto models_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_re
     }
 
     if (assembled->ready()) {
-      // `facts` owns the strings `to_profile_facts`'s result views into; it
-      // must outlive `outcome` and the `resolve_task_packet` call below.
+      // `facts` (a `std::vector<prof::fact>`) owns none of the six
+      // `string_view`s each `prof::fact` carries — they view into
+      // `assembled->input.facts`, which is what must outlive `outcome` and
+      // the `resolve_task_packet` call below. `assembled` stays alive for
+      // the rest of this function, so that holds.
       auto const facts   = to_profile_facts(assembled->input.facts);
       auto       outcome = prof::compile(facts);
       resolution         = mroles::resolve_task_packet(*role_, true, std::optional<prof::outcome>{std::move(outcome)}, fallback);

@@ -53,6 +53,14 @@ import std;
 import planar.db;
 import planar.db.migrate;
 import planar.engine.ingest.packet;
+// TEST-ONLY edge (`TEST_DEPENDS engine_planning` in this bucket's
+// CMakeLists.txt, never `DEPENDS`): lets ONE test assert the duplicated
+// counting queries in `packet.cpp`'s `planning_coverage_evidence` agree with
+// `test_spec_status::compute`'s summary on the same fixture, rather than
+// each being pinned independently and free to drift apart. See that
+// CMakeLists.txt's note beside `TEST_DEPENDS` (task 6343 iteration 2,
+// BLOCKING 2).
+import planar.engine.planning.test_spec_status;
 
 namespace {
 
@@ -1057,4 +1065,60 @@ TEST_CASE("compile_planning: canonical body key order and digest/canonical split
   const auto renamed_packet            = pk::compile_planning(renamed);
   CHECK(renamed_packet.digest == packet.digest);
   CHECK(renamed_packet.canonical != packet.canonical);
+}
+
+TEST_CASE("assemble_planning: the milestone-plan walk reaches a CHILD plan's tasks, and matches test_spec_status",
+          "[packet][planning]") {
+  // Review finding (task 6343 iteration 2, BLOCKING 2): `seed()` puts every
+  // task directly on the anchor plan, so `milestone_task_count`'s
+  // `or plan_id in (select ... relationship='derives-from')` branch and its
+  // twin in `milestone_tasks_covered_count` never executed under any
+  // existing case -- a mutated `derives-from` there killed nothing. This
+  // fixture adds a genuine CHILD milestone plan the anchor does not own
+  // directly, so the walk's `plan -> plan derives-from` arm is the only way
+  // to reach it.
+  namespace tss = planar::engine::planning::test_spec_status;
+
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  // Plan 2: a child milestone of anchor plan 1, with its own two tasks and
+  // its own scenario -- none of which `seed()` touches.
+  exec(conn, "insert into plans (id, scope_kind, scope_id, title, slug, summary, status) "
+             "values (2, 'global', null, 'Milestone one', 'pkt-m1', 'Milestone summary.', 'active')");
+  exec(conn, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values "
+             "('plan', 2, 'plan', 1, 'derives-from')");
+  exec(conn, "insert into tasks (id, scope_kind, scope_id, plan_id, title, status, priority, slug) values "
+             "(300, 'global', null, 2, 'Milestone task, covered', 'todo', 100, 'pkt-m1-a'),"
+             "(301, 'global', null, 2, 'Milestone task, uncovered', 'todo', 100, 'pkt-m1-b')");
+  exec(conn, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status, slug) "
+             "values (31, 'global', null, 'Milestone scenario', 'Scenario body.', 'ready', 'pkt-m1-scn')");
+  exec(conn, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values "
+             "('test_scenario', 31, 'task', 300, 'verifies'),"
+             "('test_scenario', 31, 'plan', 1, 'derives-from')");
+
+  // Expected, by hand: total_tasks = 3 (plan 1: 100/101/200) + 2 (plan 2:
+  // 300/301) = 5. tasks_covered = task 100 (scenario 30) + task 300
+  // (scenario 31) = 2 -- task 300 is reachable ONLY through the
+  // `derives-from` walk, since its own `plan_id` is 2, not the anchor.
+  // total_scenarios = scenarios attached to the ANCHOR (30, 31) = 2.
+  auto packet = pk::assemble_planning(conn, pk::planning_role::ingestor, plan_id);
+  REQUIRE(packet.has_value());
+  REQUIRE(packet->input.coverage.size() == 1);
+  const auto& coverage = packet->input.coverage[0];
+  CHECK(coverage.text == "tasks:5;covered:2;scenarios:2");
+  CHECK(coverage.status == "incomplete");
+
+  // The assertion that actually forbids the two copies from drifting apart:
+  // `test_spec_status::compute` is the ORACLE-derived original this bucket
+  // cannot call (D15/D18); its summary on the IDENTICAL fixture must agree
+  // on all three counts with the duplicated queries above.
+  auto oracle_status = tss::compute(conn, plan_id);
+  REQUIRE(oracle_status.has_value());
+  CHECK(oracle_status->summary.total_tasks == 5);
+  CHECK(oracle_status->summary.tasks_covered == 2);
+  CHECK(oracle_status->summary.total_scenarios == 2);
+  CHECK(coverage.text == std::format("tasks:{};covered:{};scenarios:{}", oracle_status->summary.total_tasks,
+                                     oracle_status->summary.tasks_covered, oracle_status->summary.total_scenarios));
 }
