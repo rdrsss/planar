@@ -58,8 +58,27 @@ auto count_query_unwindowed(db::connection& conn, std::string_view sql, std::int
 /// Lightweight re-derivation rather than importing the full `health` module
 /// (mirrors the oracle's own `healthSummary`, which does the same thing for
 /// the same reason).
+///
+/// `inflight`'s failure path is FAIL-CLOSED, unlike every other fallback in
+/// this file: the oracle's `healthSummary` (zig:334-336) reads
+/// `intQuery(...) catch return "degraded"` for this one query specifically —
+/// a query failure there reports degraded immediately, rather than falling
+/// through to the `not_resumable`/`stale_handoffs` arithmetic on a
+/// fabricated `0` (which would read as `not_resumable <= 0`, i.e. "healthy",
+/// exactly backwards for a health signal). `resumable` and `stale_handoffs`
+/// keep the oracle's `catch 0` (zig:338, zig:343/351) unchanged — their `0`
+/// fallbacks are intentional, not a second instance of this bug: both only
+/// ever subtract from or add to `inflight`'s already-verified-good count.
 auto health_summary(db::connection& conn) -> std::string {
-  auto const inflight = count_query_unwindowed(conn, "select count(*) from tasks where status in ('doing','blocked')", 0);
+  auto stmt = conn.prepare("select count(*) from tasks where status in ('doing','blocked')");
+  if (!stmt) {
+    return "degraded";
+  }
+  auto step = stmt->step();
+  if (!step || *step != db::step_result::row) {
+    return "degraded";
+  }
+  auto const inflight = stmt->column_int64(0);
 
   auto const resumable = count_query_unwindowed(conn,
                                                 "select count(*) from tasks t"
@@ -293,6 +312,25 @@ auto query_reopen_count(db::connection& conn, std::int64_t window_days) -> std::
   return count_query(conn, "select count(*) from task_reopens where created_at >= datetime('now', ?)", window_days, 0);
 }
 
+/// @brief The `render_text` preview block, hoisted to its own function so
+/// the future preview-rewiring cycle (see introspect.cppm's header, D15)
+/// is a two-function change instead of reconstructing the oracle's
+/// conditional branch structure (zig:872-909) from scratch a milestone on.
+/// Currently always the "unavailable" literal — no `bundle::preview` field
+/// exists yet to branch on.
+auto preview_text_block() -> std::string_view {
+  return "[introspection preview] unavailable\n";
+}
+
+/// @brief The `render_json` `"introspection_preview"` block, hoisted for
+/// the same reason as `preview_text_block`. Mirrors the oracle's
+/// `renderJson` preview object shape (zig:1013-1040) with all three arrays
+/// empty — the only reachable shape while `bundle` carries no preview
+/// field.
+auto preview_json_block() -> std::string_view {
+  return R"(,"introspection_preview":{"signals":[],"coverage":[],"warnings":[]})";
+}
+
 } // namespace
 
 auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled,
@@ -442,9 +480,7 @@ auto render_text(const bundle& b) -> std::string {
   out += std::format("[handoffs]      stale={} never_consumed={}\n", b.handoffs.stale_handoffs, b.handoffs.never_consumed);
   out += std::format("[reopens]       {}\n\n", b.reopens);
 
-  // No `bundle::preview` field — see introspect.cppm's header (D15). The
-  // "unavailable" branch is the only one reachable in this dependency graph.
-  out += "[introspection preview] unavailable\n";
+  out += preview_text_block();
   out += "\n";
 
   if (!b.logging_enabled) {
@@ -543,9 +579,7 @@ auto render_json(const bundle& b) -> std::string {
                      b.handoffs.never_consumed);
   out += std::format(",\"reopens\":{}", b.reopens);
 
-  // No `bundle::preview` field — see introspect.cppm's header (D15). All
-  // three arrays are unconditionally empty in this dependency graph.
-  out += ",\"introspection_preview\":{\"signals\":[],\"coverage\":[],\"warnings\":[]}";
+  out += preview_json_block();
 
   out += "}\n";
   return out;

@@ -6,17 +6,36 @@
 /// `Bundle`, `build`, `cliPreviewJsonl`, `renderText`, and `renderJson`.
 ///
 /// All queries in this module are structurally redacted BY CONSTRUCTION:
-/// they select only counts, categories, verb paths, statuses, and
-/// timestamps — never entity title/body/summary, scope slugs, or any
-/// path-bearing column. That is the load-bearing privacy decision behind
-/// `planar report`: no query here can leak entity text into the bundle
-/// even if a future caller forgets to sanitize the output.
+/// no query reads an entity-table text column (`tasks.title`,
+/// `plans.title`, `questions.title`, and so on — the full denylist is
+/// below). That IS the boundary this module actually holds, and it is
+/// real: nothing here can turn an entity's title/body/summary into report
+/// output.
+///
+/// It is NOT a guarantee that nothing rendered here is operator-authored
+/// free text. Two columns this module DOES select are themselves
+/// operator-influenced at the CAPTURE layer, outside this module's control:
+/// `cli_invocations.verb_path` and `agent_work_claims.vendor`. In
+/// particular, `verb_path` is bounded to the first `max_verb_depth = 2`
+/// non-flag tokens (`cli_log.zig:128`), which is enough to hide a
+/// SUBCOMMAND's own free-text argument (`task add "<title>"`'s token 2 is
+/// the literal `add`, not the title) — but `search` is a TOP-LEVEL verb
+/// with a REQUIRED free-text positional (`handlers/search.zig:38`), so
+/// `planar search <query>` records `verb_path = "search <query>"` and that
+/// text is selected verbatim here (`query_invocations`, `query_failure_tail`,
+/// `cli_preview_jsonl`) and rendered into `[invocations]`, `[failure tail]`,
+/// and the JSONL boundary. This IS the oracle's own behavior — `cli_log.zig`
+/// is the writer and out of scope for this module — not a defect introduced
+/// by this port; it is called out here because the paragraph above no
+/// longer claims otherwise. `introspect.t.cpp` pins the leaking case
+/// directly rather than leaving it to be discovered by a future reader.
 ///
 /// Tables read: `cli_invocations`, `agent_actions`, `sync_events`,
 /// `task_reopens`, `agent_work_claims`, `handoffs`, `schema_migrations`,
 /// `tasks` (status/next_action only), `context_snapshots` (existence only).
 /// Tables never read: `questions`, `scenarios`, `decisions`, `artifacts`,
-/// `plans`, `projects`, `associations` — any column carrying entity text.
+/// `plans`, `projects`, `project_associations` — any column carrying entity
+/// text.
 ///
 /// ## What is NOT here, and a real architecture deviation from the oracle
 ///
