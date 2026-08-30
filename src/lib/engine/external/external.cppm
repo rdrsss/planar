@@ -7,3 +7,4 @@ export module planar.engine.external;
 export import planar.engine.external.link;
 export import planar.engine.external.system;
 export import planar.engine.external.sync;
+export import planar.engine.external.parent_issue;
