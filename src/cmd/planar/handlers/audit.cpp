@@ -1095,15 +1095,34 @@ void record_result(db::connection& conn, std::int64_t link_id, bool ok, std::str
   (void)tx->commit();
 }
 
+/// @brief The Zig error tag for a `links_for_entity` failure, as
+/// `@errorName` would have produced it on the `try` this function's Zig
+/// twin, `publishTarget`, opens with.
+/// @param err The failure.
+/// @return The Zig-spelled tag.
+auto link_error_name(xl::link_error err) -> std::string_view {
+  switch (err) {
+  case xl::link_error::not_found:
+    return "NotFound";
+  case xl::link_error::link_exists:
+    return "LinkExists";
+  case xl::link_error::query_failed:
+    return "QueryFailed";
+  }
+  return "QueryFailed";
+}
+
 /// @brief Post `comment` to every operational-plane target linked to
 /// `(kind_text, entity_id)`. Port of `publishTarget`.
 ///
-/// The `entity_links` READ this needs is done by the caller (for the
-/// transitive case) or is implicit in `links_for_entity` (for the direct
-/// case); a failure THERE is not this function's problem. Every failure
-/// INSIDE the per-link loop — system lookup, adapter build, the post
-/// itself — is caught, recorded, and the loop continues. See this file's
-/// header on why this function cannot fail loudly the way its caller can.
+/// The `entity_links` READ that discovers the TRANSITIVE targets is done by
+/// the caller and is not this function's concern. But the `links_for_entity`
+/// READ this function opens with is exactly the Zig original's bare `try`,
+/// which PROPAGATES — both of this function's call sites (`"direct target"`
+/// and `"linked target"`) wrap it in `catch |e| exit.die(...)`, so a
+/// link-read failure aborts the WHOLE verb, not just this one target. Only
+/// the failures INSIDE the per-link loop below — system lookup, adapter
+/// build, the post itself — are caught, recorded, and looped past.
 /// @param ctx The process context, for the credential environment.
 /// @param conn An open connection.
 /// @param kind_text The entity kind, verbatim (`"decision"`, or an
@@ -1112,15 +1131,18 @@ void record_result(db::connection& conn, std::int64_t link_id, bool ok, std::str
 /// @param comment The rendered comment body (footer NOT yet appended).
 /// @param session_ref The session timestamp/label for the footer.
 /// @param posted Incremented once per successful post.
-void publish_target(context& ctx, db::connection& conn, std::string_view kind_text, std::int64_t entity_id,
-                    std::string_view comment, std::string_view session_ref, std::int64_t& posted) {
+/// @return Success, or the `links_for_entity` failure for the caller to
+/// abort on.
+auto publish_target(context& ctx, db::connection& conn, std::string_view kind_text, std::int64_t entity_id,
+                    std::string_view comment, std::string_view session_ref, std::int64_t& posted)
+    -> std::expected<void, xl::link_error> {
   auto const kind = xl::external_entity_kind_from_text(kind_text);
   if (!kind.has_value()) {
-    return;
+    return {};
   }
   auto links = xl::links_for_entity(conn, *kind, entity_id);
   if (!links) {
-    return;
+    return std::unexpected(links.error());
   }
 
   for (auto const& link : *links) {
@@ -1148,6 +1170,7 @@ void publish_target(context& ctx, db::connection& conn, std::string_view kind_te
     record_result(conn, link.id, true, "decision-comment");
     ++posted;
   }
+  return {};
 }
 
 } // namespace
@@ -1176,6 +1199,18 @@ auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> ha
   // looked up, or any adapter is touched — a mismatch here issues ZERO
   // HTTP requests. See this leaf's declaration for why that ordering is
   // asserted on the fixture server's request log.
+  //
+  // ORDER WITHIN THE GUARD IS ALSO ORACLE-CAPTURED: `resolveForWrite` runs
+  // BEFORE `slugFromRef` in publish_decision.zig, not after. Observable
+  // only when both fail — reversing them swaps which "resolving ..."
+  // message a doubly-broken invocation reports.
+  auto const scope_flag = cliapp::flag_string(args, "--scope");
+  auto const scope_view = scope_flag.has_value() ? std::optional<std::string_view>{*scope_flag} : std::nullopt;
+  auto       resolved   = resolve_write_scope(ctx, scope_view, "audit publish-decision");
+  if (!resolved) {
+    return std::unexpected(resolved.error());
+  }
+
   auto const scope_kind = [&] {
     switch (decision->scope_kind) {
     case pt::decision_scope_kind::global:
@@ -1192,13 +1227,6 @@ auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> ha
     return std::unexpected(map_scope_error(entity_scope.error(), "audit publish-decision: resolving decision scope"));
   }
 
-  auto const scope_flag = cliapp::flag_string(args, "--scope");
-  auto const scope_view = scope_flag.has_value() ? std::optional<std::string_view>{*scope_flag} : std::nullopt;
-  auto       resolved   = resolve_write_scope(ctx, scope_view, "audit publish-decision");
-  if (!resolved) {
-    return std::unexpected(resolved.error());
-  }
-
   auto const entity_view = entity_scope->has_value() ? std::optional<std::string_view>{**entity_scope} : std::nullopt;
   auto const write_view  = resolved->scope.has_value() ? std::optional<std::string_view>{*resolved->scope} : std::nullopt;
   if (!guard_with_membership(**conn, entity_view, write_view)) {
@@ -1210,7 +1238,16 @@ auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> ha
   auto const session_ref = load_session_ref(**conn, decision->session_id).value_or(decision->created_at);
 
   std::int64_t posted = 0;
-  publish_target(ctx, **conn, "decision", *decision_id, comment, session_ref, posted);
+  // The DIRECT target's `links_for_entity` read propagates — matching the
+  // oracle's `publishTarget(...) catch |e| exit.die(ctx, e, "audit
+  // publish-decision: direct target: {s}", ...)`. Per-link failures inside
+  // `publish_target` do NOT reach here; only a failure to even list the
+  // links does.
+  if (auto const direct = publish_target(ctx, **conn, "decision", *decision_id, comment, session_ref, posted); !direct) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure,
+                        std::format("audit publish-decision: direct target: {}", link_error_name(direct.error()))));
+  }
 
   // The `entity_links` read for the transitive targets is NOT given the
   // same latitude as the per-link loop inside `publish_target` — a
@@ -1233,7 +1270,13 @@ auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> ha
     }
     auto const to_kind = stmt->column_text(0);
     auto const to_id   = stmt->column_int64(1);
-    publish_target(ctx, **conn, to_kind, to_id, comment, session_ref, posted);
+    // Same propagation as the direct call above, distinguished by the
+    // oracle's OWN wording — "linked target", not "direct target".
+    if (auto const linked = publish_target(ctx, **conn, to_kind, to_id, comment, session_ref, posted); !linked) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure,
+                          std::format("audit publish-decision: linked target: {}", link_error_name(linked.error()))));
+    }
   }
 
   if (cliapp::flag_bool(args, "--json")) {

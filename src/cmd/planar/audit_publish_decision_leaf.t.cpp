@@ -26,7 +26,7 @@
 // pins this as the oracle's contract, not an oversight this port may
 // harmonise with its siblings.
 //
-// ## THE ONE RAW-SQL EXCEPTION, AND WHY IT IS NARROW
+// ## THE TWO RAW-SQL EXCEPTIONS, AND WHY EACH IS NARROW
 //
 // `ext register github` always writes `base_url = "https://api.github.com"`
 // — there is no `--base-url` flag on that leaf, unlike `ext register jira`.
@@ -35,6 +35,13 @@
 // else in every fixture below (`assoc`, `decision`, `ext register`, `link`)
 // goes through the CLI, matching this repo's rule against hand-built
 // fixture state where a verb already exists to build it.
+//
+// The second is `drop table external_links`, used ONLY to force
+// `links_for_entity`'s SQL to fail deterministically — there is no CLI verb
+// that can make a `select` statement fail on demand, so this is the only
+// way to reach the propagation path a review round found this leaf had
+// silently swallowed instead of propagating (see the case below named for
+// it).
 //
 // ## PROVENANCE
 //
@@ -136,6 +143,17 @@ void patch_base_url(const fixture& fx, std::string_view slug, std::string_view b
   REQUIRE(stmt->bind_text(1, base_url).has_value());
   REQUIRE(stmt->bind_text(2, slug).has_value());
   REQUIRE(stmt->step().has_value());
+}
+
+/// @brief Drop `external_links` so `links_for_entity` fails with
+/// `query_failed` on its very next call.
+///
+/// The ONE other raw-SQL exception in this file — see the file header.
+/// @param fx The fixture.
+void drop_external_links_table(const fixture& fx) {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("drop table external_links").has_value());
 }
 
 } // namespace
@@ -312,4 +330,25 @@ TEST_CASE("publish-decision succeeds at zero comments when the decision has no l
   auto const published = dispatch(fx, {"audit", "publish-decision", "1"});
   CHECK(published.code == 0);
   CHECK(published.out == "decision 1 published: 0 comment(s) posted\n");
+}
+
+TEST_CASE("publish-decision PROPAGATES a direct-target link-read failure, not swallows it", "[cmd][audit][publish-decision]") {
+  // A review round found this leaf's first draft answered `if (!links) {
+  // return; }` for the `links_for_entity` read `publish_target` opens
+  // with — silently reporting `0 comment(s) posted` at exit 0 on a SQL
+  // failure the oracle treats as fatal
+  // (zig/src/cmd/planar/handlers/audit/publish_decision.zig's bare `try`,
+  // caught at the call site with `exit.die`). This case is the fix's own
+  // regression guard: it forces that exact read to fail and asserts the
+  // verb aborts naming it, not that it degrades to a plausible-looking
+  // success.
+  auto const fx = make_fixture("linkreadfail");
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"decision", "add", "Doomed decision", "--body", "Body.", "--json"}).code == 0);
+  drop_external_links_table(fx);
+
+  auto const published = dispatch(fx, {"audit", "publish-decision", "1"});
+  CHECK(published.code == 1);
+  CHECK(published.err == "error: audit publish-decision: direct target: QueryFailed\n");
+  CHECK(published.out.empty());
 }

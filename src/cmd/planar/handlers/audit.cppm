@@ -261,15 +261,19 @@ export auto audit_handoff_readiness(context& ctx, const cliapp::parsed_args& arg
 /// per linked target. Asserted on the fixture server's request COUNT, not
 /// on the exit code.
 ///
-/// ## PER-LINK failures degrade; the entity_links READ does not
+/// ## PER-LINK failures degrade; every LINKS READ does not
 ///
 /// A failed `external_systems` lookup, adapter build, or `post_comment`
 /// call for ONE link records a `sync_events` failure row and continues to
 /// the next link — the run still exits 0 and reports how many comments
-/// actually posted. The `entity_links` query that discovers the transitive
-/// targets is not given the same latitude: a failure there aborts the
-/// whole verb, matching the oracle's `try` on that one call versus the
-/// `catch |e| { recordResult(...); continue; }` on every other.
+/// actually posted. Three OTHER reads are not given that latitude and abort
+/// the whole verb instead: the `links_for_entity` read inside the DIRECT
+/// `publish_target` call (`"direct target"` in the error text), the same
+/// read inside each LINKED call (`"linked target"`), and the `entity_links`
+/// query that discovers which linked calls to make at all. All three match
+/// the oracle's bare `try` on those calls in `publishTarget` and its two
+/// call sites, versus the `catch |e| { recordResult(...); continue; }` on
+/// every per-link failure inside the loop.
 /// @param ctx The process context.
 /// @param args The parsed command line.
 /// @return Success after posting (even when zero links exist to post to),
