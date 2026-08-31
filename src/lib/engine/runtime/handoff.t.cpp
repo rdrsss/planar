@@ -101,6 +101,26 @@ auto scalar_int(planar::db::connection& conn, std::string_view sql) -> std::int6
   return stmt->column_int64(0);
 }
 
+/// @brief Render the audit inventory in the oracle comparison order.
+auto audit_rows(planar::db::connection& conn) -> std::string {
+  auto stmt = conn.prepare("select verb, entity_kind, entity_id, summary, actor, scope from audit_log order by id");
+  REQUIRE(stmt.has_value());
+  std::string out;
+  while (true) {
+    auto step = stmt->step();
+    REQUIRE(step.has_value());
+    if (*step != planar::db::step_result::row) {
+      return out;
+    }
+    if (!out.empty()) {
+      out += ';';
+    }
+    out += std::format("{}|{}|{}|{}|{}|{}", stmt->column_text(0), stmt->column_text(1), stmt->column_int64(2),
+                       stmt->is_null(3) ? "<NULL>" : stmt->column_text(3), stmt->is_null(4) ? "<NULL>" : stmt->column_text(4),
+                       stmt->is_null(5) ? "<NULL>" : stmt->column_text(5));
+  }
+}
+
 auto new_session(planar::db::connection& conn) -> std::int64_t {
   exec(conn, "insert into sessions (vendor) values ('cli')");
   return scalar_int(conn, "select max(id) from sessions");
@@ -173,6 +193,53 @@ TEST_CASE("handoff create: worktree columns round-trip", "[engine_runtime][hando
   REQUIRE(created->repo_root == "/tmp/repo");
   REQUIRE(created->branch == "feature/x");
   REQUIRE(created->to_vendor == "codex");
+}
+
+TEST_CASE("handoff mutations write one exact audit row and refusals write none", "[engine_runtime][handoff][audit]") {
+  scratch_db_path scratch;
+  auto            conn    = open_migrated(scratch);
+  auto const      session = new_session(conn);
+  auto const      snap    = new_snapshot(conn, session, std::nullopt);
+
+  CHECK_FALSE(ho::create(conn, ho::create_args{.from_snapshot_id = 999, .from_vendor = "cli"}).has_value());
+  CHECK(audit_rows(conn).empty());
+
+  auto first = ho::create(conn, ho::create_args{.from_snapshot_id = snap, .from_vendor = "claude"});
+  REQUIRE(first.has_value());
+  CHECK(audit_rows(conn) == "create|handoff|1|create handoff snapshot=1 from=claude|<NULL>|<NULL>");
+
+  ho::transition_check refusing = [](ho::status, ho::status) { return false; };
+  CHECK_FALSE(ho::validate(conn, first->id, refusing).has_value());
+  CHECK_FALSE(ho::validate(conn, 999, real_guard()).has_value());
+  CHECK(audit_rows(conn) == "create|handoff|1|create handoff snapshot=1 from=claude|<NULL>|<NULL>");
+
+  REQUIRE(ho::validate(conn, first->id, real_guard()).has_value());
+  CHECK(audit_rows(conn) == "create|handoff|1|create handoff snapshot=1 from=claude|<NULL>|<NULL>;"
+                            "status_change|handoff|1|validate handoff id=1|<NULL>|<NULL>");
+  REQUIRE(ho::consume(conn, first->id, session, real_guard()).has_value());
+  CHECK(audit_rows(conn) == "create|handoff|1|create handoff snapshot=1 from=claude|<NULL>|<NULL>;"
+                            "status_change|handoff|1|validate handoff id=1|<NULL>|<NULL>;"
+                            "status_change|handoff|1|consume handoff id=1|<NULL>|<NULL>");
+  CHECK_FALSE(ho::validate(conn, first->id, real_guard()).has_value());
+  // Identity transitions are successful in the shared matrix, even after
+  // reaching a terminal state. The oracle therefore writes a second
+  // consume audit row; only a different outgoing transition is refused.
+  REQUIRE(ho::consume(conn, first->id, std::nullopt, real_guard()).has_value());
+  CHECK_FALSE(ho::abandon(conn, first->id, real_guard()).has_value());
+  CHECK(audit_rows(conn) == "create|handoff|1|create handoff snapshot=1 from=claude|<NULL>|<NULL>;"
+                            "status_change|handoff|1|validate handoff id=1|<NULL>|<NULL>;"
+                            "status_change|handoff|1|consume handoff id=1|<NULL>|<NULL>;"
+                            "status_change|handoff|1|consume handoff id=1|<NULL>|<NULL>");
+
+  auto second = ho::create(conn, ho::create_args{.from_snapshot_id = snap, .from_vendor = "cli"});
+  REQUIRE(second.has_value());
+  REQUIRE(ho::abandon(conn, second->id, real_guard()).has_value());
+  CHECK(audit_rows(conn) == "create|handoff|1|create handoff snapshot=1 from=claude|<NULL>|<NULL>;"
+                            "status_change|handoff|1|validate handoff id=1|<NULL>|<NULL>;"
+                            "status_change|handoff|1|consume handoff id=1|<NULL>|<NULL>;"
+                            "status_change|handoff|1|consume handoff id=1|<NULL>|<NULL>;"
+                            "create|handoff|2|create handoff snapshot=1 from=cli|<NULL>|<NULL>;"
+                            "status_change|handoff|2|abandon handoff id=2|<NULL>|<NULL>");
 }
 
 TEST_CASE("handoff show: absent id is not_found", "[engine_runtime][handoff]") {

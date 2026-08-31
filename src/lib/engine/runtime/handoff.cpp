@@ -8,8 +8,11 @@ module planar.engine.runtime.handoff;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.policy;
 
 namespace planar::engine::runtime::handoff {
+
+namespace audit = planar::policy::audit;
 
 namespace {
 
@@ -84,7 +87,8 @@ auto read_row(const db::statement& stmt) -> std::optional<handoff> {
 /// parameter: a test passes a recording probe and observes that the check
 /// happened before the UPDATE rather than after it.
 auto guarded_update(db::connection& conn, std::int64_t id, status target, const transition_check& allowed,
-                    std::string_view update_sql, std::optional<std::int64_t> extra_int) -> std::expected<handoff, handoff_error> {
+                    std::string_view update_sql, std::optional<std::int64_t> extra_int, std::string summary)
+    -> std::expected<handoff, handoff_error> {
   auto const current = show(conn, id);
   if (!current) {
     return std::unexpected(current.error());
@@ -108,6 +112,12 @@ auto guarded_update(db::connection& conn, std::int64_t id, status target, const 
     return std::unexpected(handoff_error::query_failed);
   }
   if (auto stepped = stmt->step(); !stepped) {
+    return std::unexpected(handoff_error::query_failed);
+  }
+  if (auto recorded = audit::record(
+          conn,
+          audit::record_args{.verb = audit::verb::status_change, .entity = {.kind = "handoff", .id = id}, .summary = summary});
+      !recorded) {
     return std::unexpected(handoff_error::query_failed);
   }
   return show(conn, id);
@@ -178,7 +188,15 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<hand
   if (!stepped || *stepped != db::step_result::row) {
     return std::unexpected(handoff_error::query_failed);
   }
-  return show(conn, stmt->column_int64(0));
+  const auto id = stmt->column_int64(0);
+  if (auto recorded = audit::record(conn, audit::record_args{.verb    = audit::verb::create,
+                                                             .entity  = {.kind = "handoff", .id = id},
+                                                             .summary = std::format("create handoff snapshot={} from={}",
+                                                                                    args.from_snapshot_id, args.from_vendor)});
+      !recorded) {
+    return std::unexpected(handoff_error::query_failed);
+  }
+  return show(conn, id);
 }
 
 auto show(db::connection& conn, std::int64_t id) -> std::expected<handoff, handoff_error> {
@@ -208,7 +226,7 @@ auto validate(db::connection& conn, std::int64_t id, const transition_check& all
                         "update handoffs set status = 'validated', "
                         "    validated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
                         "where id = ?",
-                        std::nullopt);
+                        std::nullopt, std::format("validate handoff id={}", id));
 }
 
 auto consume(db::connection& conn, std::int64_t id, std::optional<std::int64_t> session_id, const transition_check& allowed)
@@ -222,20 +240,20 @@ auto consume(db::connection& conn, std::int64_t id, std::optional<std::int64_t> 
                           "    to_session_id = ?, "
                           "    consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
                           "where id = ?",
-                          session_id);
+                          session_id, std::format("consume handoff id={}", id));
   }
   return guarded_update(conn, id, status::consumed, allowed,
                         "update handoffs set status = 'consumed', "
                         "    consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
                         "where id = ?",
-                        std::nullopt);
+                        std::nullopt, std::format("consume handoff id={}", id));
 }
 
 auto abandon(db::connection& conn, std::int64_t id, const transition_check& allowed) -> std::expected<handoff, handoff_error> {
   // Only `status` moves. `validated_at` survives, which the oracle's own
   // `abandon --json` on a validated handoff shows.
   return guarded_update(conn, id, status::abandoned, allowed, "update handoffs set status = 'abandoned' where id = ?",
-                        std::nullopt);
+                        std::nullopt, std::format("abandon handoff id={}", id));
 }
 
 auto list(db::connection& conn, const list_filter& filter) -> std::expected<std::vector<handoff>, handoff_error> {

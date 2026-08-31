@@ -14,16 +14,8 @@
 /// guard applies to any function here — that is the Zig original's
 /// documented position, not an omission by this port.
 ///
-/// ## Deliberate omissions
+/// ## Deliberate omission
 ///
-/// - **`policy.audit.record`.** `startSession` and `endSession` write
-///   `audit_log` rows in the oracle and still do not here. The layer-1
-///   `planar.policy` module exists as of task 6100 — this is a remaining
-///   gap, not a missing dependency, and it IS observable: running the
-///   oracle's `question add` produced
-///   `create|session|1|start session vendor=cli`, a row this build does
-///   not write. Deferred to a dedicated cycle with handoff and snapshot;
-///   see engine/runtime/CMakeLists.txt.
 /// - **`vendorFromEnv` / `vendorSessionIdFromEnv`.** Pure `$PLANAR_VENDOR`
 ///   / `$PLANAR_VENDOR_SESSION_ID` reads. Ported as
 ///   `vendor_from_env` / `vendor_session_id_from_env` below, since the

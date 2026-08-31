@@ -8,13 +8,9 @@
 ///
 /// A handoff is operator vendor-session state: per plan 144 M4 the table
 /// carries NO scope columns, so its mutations skip the cross-scope guard.
-/// The Zig original emits a `policy.audit` row per mutation (four call
-/// sites: create/validate/consume/abandon) and this tree still does not.
-/// The layer-1 `planar.policy` module DOES now exist — task 6100 landed
-/// it and wired `engine_planning`/`engine_identity` — so this is a real
-/// remaining gap rather than a missing dependency. It is one of three
-/// left in the tree; see engine/runtime/CMakeLists.txt for why this
-/// bucket wants its own cycle.
+/// The Zig original emits one `policy.audit` row after each successful
+/// mutation (create/validate/consume/abandon). The layer-1 writer keeps
+/// actor and scope SQL NULL, as the oracle does.
 ///
 /// ## The transition check is INJECTED, not imported
 ///
@@ -175,11 +171,9 @@ export auto consume(db::connection& conn, std::int64_t id, std::optional<std::in
 /// validated handoff keeps its `validated_at`, which the oracle's own
 /// `abandon --json` output shows.
 ///
-/// The `--reason` text is recorded ONLY in the audit summary the Zig
-/// original writes, and this tree has no audit table, so the reason is
-/// accepted by the caller and does not reach the database at all. That is
-/// not a regression introduced here: no column stores it in the oracle
-/// either.
+/// No column stores an abandonment reason; its oracle representation belongs
+/// only in the audit summary. This engine seam currently receives no reason
+/// argument.
 /// @param conn An open, migrated database connection.
 /// @param id The handoff to abandon.
 /// @param allowed The injected matrix guard.
