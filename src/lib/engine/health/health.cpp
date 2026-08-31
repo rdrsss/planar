@@ -6,11 +6,42 @@ module planar.engine.health;
 
 import std;
 import planar.db;
+import planar.db.migrations;
 import planar.scope_ref;
+import planar.installed_surface;
 
 namespace planar::engine::health {
 
 namespace {
+
+/// @brief Run a statement that returns a single integer.
+/// @return The value, or unset when the statement failed or produced no row.
+auto int_query(db::connection& conn, std::string_view sql) -> std::optional<std::int64_t> {
+  auto stmt = conn.prepare(sql);
+  if (!stmt) {
+    return std::nullopt;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != db::step_result::row) {
+    return std::nullopt;
+  }
+  return stmt->column_int64(0);
+}
+
+/// @brief Run `PRAGMA integrity_check` and report whether SQLite answered
+/// the single "ok" row. Any other outcome (locked DB, corruption, a prepare
+/// failure) is a fail-safe `false`.
+auto check_integrity(db::connection& conn) -> bool {
+  auto stmt = conn.prepare("PRAGMA integrity_check");
+  if (!stmt) {
+    return false;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != db::step_result::row) {
+    return false;
+  }
+  return stmt->column_text(0) == "ok";
+}
 
 /// @brief Bind a nullable association-id filter.
 ///
@@ -256,6 +287,152 @@ auto render_hygiene_text(const hygiene_report& report) -> std::string {
     out += std::format("  question {} ({}d old): \"{}\"\n", row.id, row.age_days, row.title);
     out += std::format("    suggest: {}\n", row.suggestion);
   }
+  return out;
+}
+
+auto check(db::connection& conn, std::string_view db_path) -> std::expected<report, check_error> {
+  auto schema_version = int_query(conn, "select coalesce(max(version), 0) from schema_migrations");
+  if (!schema_version) {
+    return std::unexpected(check_error::schema_table_missing);
+  }
+  auto migration_count = int_query(conn, "select count(*) from schema_migrations");
+  if (!migration_count) {
+    return std::unexpected(check_error::query_failed);
+  }
+
+  auto const         migrations    = db::migrations();
+  std::int64_t const schema_target = migrations.empty() ? 0 : static_cast<std::int64_t>(migrations.back().version_);
+
+  bool const integrity_ok = check_integrity(conn);
+
+  // In-flight tasks (status in {doing, blocked}) bucketed into resumable
+  // vs not-resumable. Resumable requires a non-empty next_action and at
+  // least one context_snapshot row.
+  std::int64_t const inflight_tasks =
+      int_query(conn, "select count(*) from tasks where status in ('doing','blocked')").value_or(0);
+  std::int64_t const resumable_tasks =
+      int_query(conn, "select count(*) from tasks t"
+                      " where t.status in ('doing','blocked')"
+                      "   and coalesce(t.next_action,'') != ''"
+                      "   and exists (select 1 from context_snapshots cs where cs.task_id = t.id)")
+          .value_or(0);
+  std::int64_t const not_resumable_tasks = inflight_tasks - resumable_tasks;
+
+  std::int64_t const pending_handoffs =
+      int_query(conn, "select count(*) from handoffs where status in ('pending', 'validated')").value_or(0);
+
+  std::int64_t const stale_handoffs = int_query(conn, std::format("select count(*) from handoffs"
+                                                                  " where status in ('pending','validated')"
+                                                                  "   and (julianday('now') - julianday(created_at)) * 24 > {}",
+                                                                  stale_handoff_threshold_hours))
+                                          .value_or(0);
+
+  bool const db_ok          = true;
+  bool const schema_current = *schema_version == schema_target;
+  bool const degraded       = !db_ok || !integrity_ok || not_resumable_tasks > 0 || stale_handoffs > 0;
+
+  return report{
+      .db_path             = std::string(db_path),
+      .db_ok               = db_ok,
+      .schema_version      = *schema_version,
+      .schema_target       = schema_target,
+      .schema_current      = schema_current,
+      .migration_count     = *migration_count,
+      .integrity_ok        = integrity_ok,
+      .inflight_tasks      = inflight_tasks,
+      .resumable_tasks     = resumable_tasks,
+      .not_resumable_tasks = not_resumable_tasks,
+      .pending_handoffs    = pending_handoffs,
+      .stale_handoffs      = stale_handoffs,
+      .projection_freshness =
+          {
+              .state              = "not_installed",
+              .manifest_status    = installed_surface::manifest_state::missing,
+              .managed            = 0,
+              .fresh              = 0,
+              .stale              = 0,
+              .missing            = 0,
+              .unmanaged          = 0,
+              .unselected_vendors = installed_surface::supported_vendors.size(),
+              .evidence           = "no managed Planar installation is recorded",
+              .repair_command     = std::nullopt,
+          },
+      .overall = degraded ? "degraded" : "ok",
+  };
+}
+
+auto with_projection_freshness(report report_in, const installed_surface::status_result& status) -> report {
+  auto              report_out        = std::move(report_in);
+  auto const        managed           = status.summary.fresh + status.summary.stale + status.summary.missing;
+  bool const        manifest_degraded = status.manifest_status == installed_surface::manifest_state::legacy ||
+                                        status.manifest_status == installed_surface::manifest_state::invalid ||
+                                        status.manifest_status == installed_surface::manifest_state::unsupported;
+  bool const        managed_degraded  = status.summary.stale > 0 || status.summary.missing > 0;
+  bool const        degraded          = manifest_degraded || managed_degraded;
+  std::string const state =
+      degraded ? "degraded" : (status.manifest_status == installed_surface::manifest_state::missing ? "not_installed" : "fresh");
+  std::optional<std::string> evidence = status.reason;
+  if (!evidence.has_value() && managed_degraded) {
+    evidence = "managed projections differ from the staged installation authority";
+  }
+
+  report_out.projection_freshness = projection_freshness{
+      .state              = state,
+      .manifest_status    = status.manifest_status,
+      .managed            = managed,
+      .fresh              = status.summary.fresh,
+      .stale              = status.summary.stale,
+      .missing            = status.summary.missing,
+      .unmanaged          = status.summary.unmanaged,
+      .unselected_vendors = status.summary.unselected_vendors,
+      .evidence           = evidence,
+      .repair_command     = degraded ? status.repair_command : std::nullopt,
+  };
+  if (degraded) {
+    report_out.overall = "degraded";
+  }
+  return report_out;
+}
+
+auto manifest_state_name(installed_surface::manifest_state value) -> std::string_view {
+  switch (value) {
+  case installed_surface::manifest_state::current:
+    return "current";
+  case installed_surface::manifest_state::missing:
+    return "missing";
+  case installed_surface::manifest_state::legacy:
+    return "legacy";
+  case installed_surface::manifest_state::invalid:
+    return "invalid";
+  case installed_surface::manifest_state::unsupported:
+    return "unsupported";
+  }
+  return "missing";
+}
+
+auto render_text(const report& report) -> std::string {
+  std::string out;
+  out += std::format("db:               {} ({})\n", report.db_ok ? "ok" : "ERROR", report.db_path);
+  out += std::format("schema:           v{} of v{} ({})\n", report.schema_version, report.schema_target,
+                     report.schema_current ? "current" : "behind");
+  out += std::format("integrity:        {}\n", report.integrity_ok ? "ok" : "FAIL");
+  out += std::format("in-flight tasks:  {} ({} resumable, {} NOT resumable)\n", report.inflight_tasks, report.resumable_tasks,
+                     report.not_resumable_tasks);
+  out += std::format("pending handoffs: {} ({} stale > {}h)\n", report.pending_handoffs, report.stale_handoffs,
+                     stale_handoff_threshold_hours);
+  out +=
+      std::format("projection freshness: {} ({} managed: {} fresh, {} stale, {} missing; {} unmanaged; {} unselected vendors)\n",
+                  report.projection_freshness.state, report.projection_freshness.managed, report.projection_freshness.fresh,
+                  report.projection_freshness.stale, report.projection_freshness.missing, report.projection_freshness.unmanaged,
+                  report.projection_freshness.unselected_vendors);
+  out += std::format("projection manifest:  {}\n", manifest_state_name(report.projection_freshness.manifest_status));
+  if (report.projection_freshness.evidence.has_value()) {
+    out += std::format("projection evidence:  {}\n", *report.projection_freshness.evidence);
+  }
+  if (report.projection_freshness.repair_command.has_value()) {
+    out += std::format("projection repair:    {}\n", *report.projection_freshness.repair_command);
+  }
+  out += std::format("overall:          {}\n", report.overall);
   return out;
 }
 

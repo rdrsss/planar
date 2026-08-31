@@ -31,10 +31,12 @@ import std;
 import planar.db;
 import planar.db.migrate;
 import planar.engine.health;
+import planar.installed_surface;
 
 namespace {
 
-namespace he = planar::engine::health;
+namespace he  = planar::engine::health;
+namespace is_ = planar::installed_surface;
 
 /// @brief The fixed clock every dated case measures from.
 constexpr std::string_view k_now = "2026-06-01T00:00:00.000Z";
@@ -344,4 +346,306 @@ TEST_CASE("render_hygiene_text names the parent plan only when there is one", "[
                                        "\n=== Stale open questions (status=open for >9 days) ===\n"
                                        "  question 3 (40d old): \"Why\"\n"
                                        "    suggest: answer it\n");
+}
+
+// ---------------------------------------------------------------------------
+// check() / with_projection_freshness() / render_text() — task 6357.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("check refuses SchemaTableMissing against a freshly-opened un-migrated DB", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  auto result = he::check(*conn, "/tmp/test.db");
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error() == he::check_error::schema_table_missing);
+}
+
+TEST_CASE("check reports the rich field set after migrations are applied", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn   = open_migrated(scratch);
+  auto            result = he::check(conn, "/tmp/test.db");
+  REQUIRE(result.has_value());
+  CHECK(result->db_ok);
+  CHECK(result->integrity_ok);
+  CHECK(result->overall == "ok");
+  CHECK(result->inflight_tasks == 0);
+  CHECK(result->not_resumable_tasks == 0);
+  CHECK(result->schema_current);
+  CHECK(result->projection_freshness.state == "not_installed");
+  CHECK(result->projection_freshness.unselected_vendors == is_::supported_vendors.size());
+}
+
+TEST_CASE("check classifies a doing task with no next_action as not-resumable + degraded", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into tasks (scope_kind, title, status, priority) values ('global', 'T', 'doing', 100)");
+  auto result = he::check(conn, "/tmp/test.db");
+  REQUIRE(result.has_value());
+  CHECK(result->inflight_tasks == 1);
+  CHECK(result->not_resumable_tasks == 1);
+  CHECK(result->overall == "degraded");
+}
+
+TEST_CASE("check classifies a doing task WITH a next_action and a snapshot as resumable", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into sessions (id, vendor) values (1, 'claude')");
+  exec(conn, "insert into tasks (id, scope_kind, title, status, priority, next_action) values (1, 'global', 'T', 'doing', 100, "
+             "'do the thing')");
+  exec(conn, "insert into context_snapshots (task_id, session_id, vendor) values (1, 1, 'claude')");
+  auto result = he::check(conn, "/tmp/test.db");
+  REQUIRE(result.has_value());
+  CHECK(result->inflight_tasks == 1);
+  CHECK(result->resumable_tasks == 1);
+  CHECK(result->not_resumable_tasks == 0);
+  CHECK(result->overall == "ok");
+}
+
+TEST_CASE("check flags a stale pending handoff as degraded", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into sessions (id, vendor) values (1, 'claude')");
+  exec(conn, "insert into context_snapshots (id, session_id, vendor) values (1, 1, 'claude')");
+  exec(conn, "insert into handoffs (status, created_at, from_snapshot_id, from_vendor) values ('pending', datetime('now', '-2 "
+             "days'), 1, "
+             "'claude')");
+  auto result = he::check(conn, "/tmp/test.db");
+  REQUIRE(result.has_value());
+  CHECK(result->pending_handoffs == 1);
+  CHECK(result->stale_handoffs == 1);
+  CHECK(result->overall == "degraded");
+}
+
+TEST_CASE("with_projection_freshness degrades only managed drift and recovery manifest states", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  auto current = is_::status(is_::options{.planar_home = "/definitely/not/a/planar/home",
+                                          .home        = "/definitely/not/a/home",
+                                          .codex_home  = "/definitely/not/a/codex/home"});
+  REQUIRE(current.has_value());
+
+  // The classifier itself always names a bootstrap repair command for a
+  // missing manifest (see installed_surface's bootstrap_result), so this is
+  // the discriminating case for the `degraded ? status.repair_command :
+  // nullopt` gate: `current->repair_command` IS set here, but this state is
+  // `not_installed`, not `degraded` — the gate must suppress it.
+  REQUIRE(current->repair_command.has_value());
+
+  auto with_fresh = he::with_projection_freshness(*base, *current);
+  CHECK(with_fresh.projection_freshness.state == "not_installed");
+  CHECK(with_fresh.overall == "ok");
+  CHECK_FALSE(with_fresh.projection_freshness.repair_command.has_value());
+}
+
+TEST_CASE("with_projection_freshness degrades overall on a legacy manifest state", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result legacy_status{
+      .manifest_status = is_::manifest_state::legacy,
+      .manifest_path   = "/tmp/nope/install-manifest.json",
+      .reason          = "legacy ownership stamp exists but the versioned install manifest is missing",
+      .repair_command  = "./install.sh --prefix '/tmp/nope'",
+  };
+  legacy_status.summary.unselected_vendors = is_::supported_vendors.size();
+
+  auto degraded = he::with_projection_freshness(*base, legacy_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+  REQUIRE(degraded.projection_freshness.evidence.has_value());
+  CHECK(*degraded.projection_freshness.evidence == "legacy ownership stamp exists but the versioned install manifest is missing");
+}
+
+// The `manifest_degraded` predicate is a three-way OR (legacy / invalid /
+// unsupported), and only `legacy` had engine-level coverage until this
+// iteration's review — a mutation dropping `invalid` or `unsupported` from
+// that OR-chain survived the whole suite (iteration 2 review finding,
+// "generalize the permissive-mutation lens"). Each manifest state that
+// SHOULD degrade now gets its own case.
+
+TEST_CASE("with_projection_freshness degrades overall on an invalid manifest state", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result invalid_status{
+      .manifest_status = is_::manifest_state::invalid,
+      .manifest_path   = "/tmp/nope/install-manifest.json",
+      .reason          = "install manifest is invalid",
+  };
+  invalid_status.summary.unselected_vendors = is_::supported_vendors.size();
+
+  auto degraded = he::with_projection_freshness(*base, invalid_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+}
+
+TEST_CASE("with_projection_freshness degrades overall on an unsupported manifest state", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result unsupported_status{
+      .manifest_status = is_::manifest_state::unsupported,
+      .manifest_path   = "/tmp/nope/install-manifest.json",
+      .reason          = "install manifest version is unsupported",
+  };
+  unsupported_status.summary.unselected_vendors = is_::supported_vendors.size();
+
+  auto degraded = he::with_projection_freshness(*base, unsupported_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+}
+
+// `managed_degraded` (`status.summary.stale > 0 || status.summary.missing >
+// 0`) is the OTHER disjunct feeding `degraded`, and it is the one
+// `planar health` exists to surface: a projection that has drifted or
+// vanished from disk with a perfectly CURRENT manifest. Until iteration 3
+// review, no fixture anywhere in the tree constructed a `status_result`
+// with `stale`/`missing` > 0 and `manifest_status = current` to prove
+// `overall` degrades on that path ALONE — every `[cmd][health]` degraded
+// case drove degradation through `not_resumable_tasks` instead, so this
+// disjunct's own on/off switch was unverified. `stale` and `missing` are
+// independent disjuncts (`||`, not `&&`), so each gets its own case rather
+// than one fixture asserting both at once.
+
+TEST_CASE("with_projection_freshness degrades overall on stale > 0 alone, with a current manifest", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result stale_status{
+      .manifest_status = is_::manifest_state::current,
+      .manifest_path   = "/tmp/planar-home/install-manifest.json",
+      .repair_command  = "./install.sh --prefix '/tmp/planar-home'",
+  };
+  stale_status.summary.stale = 1;
+
+  auto degraded = he::with_projection_freshness(*base, stale_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+  // `status.reason` is unset here, so this also exercises `evidence`'s
+  // FALLBACK arm (`managed_degraded` true, `reason` absent) — previously
+  // untested; every other evidence case in this file has `reason` set.
+  REQUIRE(degraded.projection_freshness.evidence.has_value());
+  CHECK(*degraded.projection_freshness.evidence == "managed projections differ from the staged installation authority");
+  // The `degraded ? status.repair_command : nullopt` gate: THIS is the
+  // discriminating direction (degraded=true, repair_command SET on the
+  // input) — the sibling "not_installed" case above proves the opposite
+  // direction (repair_command suppressed when not degraded).
+  REQUIRE(degraded.projection_freshness.repair_command.has_value());
+  CHECK(*degraded.projection_freshness.repair_command == "./install.sh --prefix '/tmp/planar-home'");
+}
+
+TEST_CASE("with_projection_freshness degrades overall on missing > 0 alone, with a current manifest", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result missing_status{
+      .manifest_status = is_::manifest_state::current,
+      .manifest_path   = "/tmp/planar-home/install-manifest.json",
+  };
+  missing_status.summary.missing = 1;
+
+  auto degraded = he::with_projection_freshness(*base, missing_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+}
+
+TEST_CASE("with_projection_freshness never un-degrades an already-degraded report", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into tasks (scope_kind, title, status, priority) values ('global', 'T', 'doing', 100)");
+  auto base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+  REQUIRE(base->overall == "degraded");
+
+  is_::status_result fresh_status{.manifest_status = is_::manifest_state::current, .manifest_path = "/tmp/x"};
+  fresh_status.summary = is_::summary{.fresh = 1};
+
+  auto result = he::with_projection_freshness(*base, fresh_status);
+  CHECK(result.projection_freshness.state == "fresh");
+  CHECK(result.overall == "degraded");
+}
+
+TEST_CASE("manifest_state_name spells every state exactly as the oracle's enum tag", "[engine_health]") {
+  // Only "missing" and "invalid" were ever asserted through render_text
+  // before this iteration's review — a mutation swapping any of the other
+  // three spellings survived the whole module. Each arm gets its own
+  // assertion so a single swapped pair cannot hide behind another.
+  CHECK(he::manifest_state_name(is_::manifest_state::current) == "current");
+  CHECK(he::manifest_state_name(is_::manifest_state::missing) == "missing");
+  CHECK(he::manifest_state_name(is_::manifest_state::legacy) == "legacy");
+  CHECK(he::manifest_state_name(is_::manifest_state::invalid) == "invalid");
+  CHECK(he::manifest_state_name(is_::manifest_state::unsupported) == "unsupported");
+}
+
+TEST_CASE("render_text renders every section including the optional evidence/repair lines", "[engine_health]") {
+  he::report report;
+  report.db_path              = "/tmp/test.db";
+  report.db_ok                = true;
+  report.schema_version       = 5;
+  report.schema_target        = 5;
+  report.schema_current       = true;
+  report.migration_count      = 5;
+  report.integrity_ok         = true;
+  report.inflight_tasks       = 2;
+  report.resumable_tasks      = 1;
+  report.not_resumable_tasks  = 1;
+  report.pending_handoffs     = 1;
+  report.stale_handoffs       = 1;
+  report.projection_freshness = he::projection_freshness{
+      .state              = "degraded",
+      .manifest_status    = is_::manifest_state::invalid,
+      .managed            = 3,
+      .fresh              = 1,
+      .stale              = 1,
+      .missing            = 1,
+      .unmanaged          = 2,
+      .unselected_vendors = 1,
+      .evidence           = "install manifest is invalid",
+      .repair_command     = "./install.sh --prefix '/tmp'",
+  };
+  report.overall = "degraded";
+
+  CHECK(he::render_text(report) ==
+        "db:               ok (/tmp/test.db)\n"
+        "schema:           v5 of v5 (current)\n"
+        "integrity:        ok\n"
+        "in-flight tasks:  2 (1 resumable, 1 NOT resumable)\n"
+        "pending handoffs: 1 (1 stale > 24h)\n"
+        "projection freshness: degraded (3 managed: 1 fresh, 1 stale, 1 missing; 2 unmanaged; 1 unselected vendors)\n"
+        "projection manifest:  invalid\n"
+        "projection evidence:  install manifest is invalid\n"
+        "projection repair:    ./install.sh --prefix '/tmp'\n"
+        "overall:          degraded\n");
+}
+
+TEST_CASE("render_text omits the evidence/repair lines when both are unset", "[engine_health]") {
+  he::report report;
+  report.db_path                                 = "/tmp/test.db";
+  report.schema_current                          = true;
+  report.integrity_ok                            = true;
+  report.overall                                 = "ok";
+  report.projection_freshness.state              = "not_installed";
+  report.projection_freshness.manifest_status    = is_::manifest_state::missing;
+  report.projection_freshness.unselected_vendors = is_::supported_vendors.size();
+  report.projection_freshness.evidence           = std::nullopt;
+  report.projection_freshness.repair_command     = std::nullopt;
+
+  auto const text = he::render_text(report);
+  CHECK(text.find("projection evidence:") == std::string::npos);
+  CHECK(text.find("projection repair:") == std::string::npos);
+  CHECK(text.find("projection manifest:  missing\n") != std::string::npos);
 }

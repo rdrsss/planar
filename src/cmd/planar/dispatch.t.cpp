@@ -316,34 +316,29 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   CHECK(ported.err.empty());
 }
 
-TEST_CASE("a declared-but-unported DUAL node refuses too, instead of exiting 0", "[cmd][dispatch][not-implemented]") {
-  // The hazard that makes the explicit registration load-bearing rather
-  // than decorative. `run` renders a matched node's HELP PAGE and returns
-  // exit_success whenever the node has children and the table has no entry
-  // for it. So a node that is a group AND a verb in the oracle — measured
-  // by invoking all 38 of the oracle's group nodes against a scratch
-  // arena, and there are exactly three: `resume`, `handoff`, `health` —
-  // would have exited 0 with a help page where the oracle does real work.
-  // A SILENT SUCCESS, which is the one outcome a declared-but-unported
-  // verb must never produce.
+TEST_CASE("the health DUAL node's parent and child are BOTH wired, and both matter to the same hazard",
+          "[cmd][dispatch][registration]") {
+  // The hazard the explicit table registration exists to close: `run`
+  // renders a matched node's HELP PAGE and returns exit_success whenever
+  // the node has children and the table has no entry for it. So a node
+  // that is a group AND a verb in the oracle — measured by invoking all 38
+  // of the oracle's group nodes against a scratch arena, and there are
+  // exactly three: `resume`, `handoff`, `health` — would silently exit 0
+  // with a help page where the oracle does real work, if its table entry
+  // were ever dropped.
   //
-  // `health` is the one this task declared. Oracle-captured against a
-  // pinned scratch arena: `planar health` exits 0 having printed a
-  // contributor report — it is a verb, not a group heading.
-  auto const dual = dispatch({"health"});
-  CHECK(dual.code == 64);
-  CHECK(dual.out.empty());
-  CHECK(dual.err == "error: health: not implemented in this build\n");
+  // `health` used to be the one member of that trio still declared-but-
+  // unported (exit 64), until task 6357 closed the family. Both halves of
+  // the dual node are now genuinely wired, so this case asserts the
+  // POSITIVE property directly rather than the refusal it used to pin.
+  auto const scratch_home = std::filesystem::temp_directory_path() / "planar_dispatch_health_probe_home";
+  auto const parent       = dispatch({"health"}, {{"HOME", scratch_home.string()}});
+  CHECK(parent.code == 0);
+  CHECK(parent.err.empty());
+  CHECK(parent.out.contains("overall:          ok"));
 
-  // ...and the group half of the same node still resolves its children.
-  //
-  // The child asserted here is `health hygiene`, which task 6090 PORTED —
-  // so what it proves is now the stronger half of the same property: the
-  // parent's own exit-64 refusal does NOT swallow a working child. Before
-  // 6090 this line read `child.code == 64`, and leaving it that way after
-  // the port made this case the only red test in the suite. It was
-  // RETARGETED rather than weakened: a `CHECK(child.code != 64)` would
-  // have gone green for a child that failed some other way.
+  // The child, `health hygiene`, was already ported at task 6090 — this
+  // reconfirms the parent's real work does NOT swallow it.
   auto const child = dispatch({"health", "hygiene"});
   CHECK(child.code == 0);
   CHECK(child.err.empty());
@@ -356,10 +351,11 @@ TEST_CASE("a declared-but-unported DUAL node refuses too, instead of exiting 0",
   CHECK(pure.err.empty());
   CHECK(pure.out.contains("next"));
 
-  // And the break-probe for THIS case: if `health` were merely declared
-  // and left out of the table, it would take the `pure` path above. The
-  // table entry is what separates them, so removing it must flip the
-  // behaviour.
+  // And the break-probe for the hazard itself: with `health`'s table entry
+  // removed, the SAME invocation must fall back to the `pure` group path
+  // above (a help page at exit 0) rather than doing real work — proving
+  // the table entry, not some other mechanism, is what selects the
+  // handler.
   auto const tree  = planar::cmd::root_app();
   auto       table = planar::cmd::handlers(*tree);
   REQUIRE(table.erase("health") == 1);
@@ -1015,14 +1011,25 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // task 6329 probed and parked under the same stale layer-3 note `report`
   // was — stays; it needs the COCKPIT (33,452 unported zig lines), a
   // wholly different blocker `report`'s port did nothing to remove.
-  // 11 -> 10 at task 6358: `capture commits` moved. It had been carried as
+  // 11 -> 10 at task 6357: `health` moved, closing the family (task 6090
+  // had already landed `health hygiene`). The blocker here was genuine,
+  // unlike most of this milestone's over-stated ones: the handler folds
+  // `engine.installedsurface.status` (548 Zig lines of manifest-driven
+  // filesystem classification) into every run, and what unblocked it was
+  // the SAME decision-981 shape `report` used at task 6352 — the classifier
+  // ported straight to layer 1 (`planar.installed_surface`) rather than a
+  // same-layer `engine_health -> engine_<classifier>` edge, since it holds
+  // no `db` edge of its own.
+  // 10 -> 9 at task 6358: `capture commits` moved. It had been carried as
   // blocked on 1205 lines of git-subprocess walking with "no process-spawn
   // seam in this tree" as the reason; tasks 6128/6137 had already closed
   // that seam (`planar.git`) for two OTHER consumers, and this task reached
   // it a second hop out through `sessioncommits.cppm`'s new strict git-walk
   // functions, added to the engine_runtime target `capture` already lived
   // in. See surface.cpp's entry for the full note.
-  CHECK(unported.size() == 10);
+  CHECK(unported.size() == 9);
+  INFO("moved by task 6357: health");
+  CHECK_FALSE(unported.contains("health"));
   INFO("moved by task 6358: capture commits");
   CHECK_FALSE(unported.contains("capture commits"));
   INFO("moved by task 6339: audit publish-decision");
@@ -1035,6 +1042,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("models resolve"));
   INFO("moved by task 6352: report");
   CHECK_FALSE(unported.contains("report"));
+  INFO("moved by task 6357: health");
+  CHECK_FALSE(unported.contains("health"));
   // Probed by task 6329 and deliberately NOT moved. Pinned per leaf so a
   // later cycle cannot wire one off the back of this cycle's count.
   for (auto const& leaf : {"explore"}) {
@@ -1323,9 +1332,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // ...and the fourth, from task 6189's own families. `closure show` is
   // ported; `closure compute` must stay DECLARED, never silently absent.
   CHECK(unported.contains("closure compute"));
-  // The three duals are the entries that are NOT leaves; `resume` and
-  // `handoff` have real handlers, so `health` is the only one here.
-  CHECK(unported.contains("health"));
+  // The three dual nodes (`resume`, `handoff`, `health`) ALL have real
+  // handlers now that task 6357 closed the last of them — none may appear
+  // in the inventory.
+  CHECK_FALSE(unported.contains("health"));
   CHECK_FALSE(unported.contains("resume"));
   CHECK_FALSE(unported.contains("handoff"));
   // No implemented verb may appear in the inventory.

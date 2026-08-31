@@ -9,15 +9,68 @@ import planar.cliapp.args;
 import planar.db;
 import planar.json_text;
 import planar.engine.health;
+import planar.installed_surface;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 
 namespace planar::cmd::handlers {
 
-namespace he = engine::health;
+namespace he  = engine::health;
+namespace is_ = installed_surface;
 
 namespace {
+
+/// @brief Emit an `std::optional<std::string>` field the way `render_json`
+/// does throughout this file: the escaped string, or the bare JSON literal
+/// `null` when unset. `report`'s stringification uses std.json's DEFAULT
+/// options, so nulls are always emitted, never omitted.
+auto json_opt_string(const std::optional<std::string>& value) -> std::string {
+  return value.has_value() ? json_text::json_string(*value) : "null";
+}
+
+/// @brief Render `report` as the oracle's `--json` payload for `planar
+/// health`. Key order follows the engine struct, which follows the
+/// oracle's.
+/// @param report The report.
+/// @return The complete stdout payload including its trailing newline.
+auto render_json(const he::report& report) -> std::string {
+  std::string out = std::format(
+      "{{\"db_path\":{},\"db_ok\":{},\"schema_version\":{},\"schema_target\":{},\"schema_current\":{},\"migration_count\":{},"
+      "\"integrity_ok\":{},\"inflight_tasks\":{},\"resumable_tasks\":{},\"not_resumable_tasks\":{},\"pending_handoffs\":{},"
+      "\"stale_handoffs\":{},\"projection_freshness\":{{\"state\":{},\"manifest_status\":{},\"managed\":{},\"fresh\":{},"
+      "\"stale\":{},\"missing\":{},\"unmanaged\":{},\"unselected_vendors\":{},\"evidence\":{},\"repair_command\":{}}},"
+      "\"overall\":{}}}\n",
+      json_text::json_string(report.db_path), report.db_ok ? "true" : "false", report.schema_version, report.schema_target,
+      report.schema_current ? "true" : "false", report.migration_count, report.integrity_ok ? "true" : "false",
+      report.inflight_tasks, report.resumable_tasks, report.not_resumable_tasks, report.pending_handoffs, report.stale_handoffs,
+      json_text::json_string(report.projection_freshness.state),
+      json_text::json_string(std::string(he::manifest_state_name(report.projection_freshness.manifest_status))),
+      report.projection_freshness.managed, report.projection_freshness.fresh, report.projection_freshness.stale,
+      report.projection_freshness.missing, report.projection_freshness.unmanaged, report.projection_freshness.unselected_vendors,
+      json_opt_string(report.projection_freshness.evidence), json_opt_string(report.projection_freshness.repair_command),
+      json_text::json_string(report.overall));
+  return out;
+}
+
+/// @brief Resolve `$PLANAR_HOME` / `$HOME` / `$CODEX_HOME` exactly as the
+/// oracle's `skills/common.zig::resolveHomes` does: `HOME` is required,
+/// `PLANAR_HOME` defaults to `<HOME>/.planar`, `CODEX_HOME` defaults to
+/// `<HOME>/.codex`.
+/// @param ctx The process context, consulted only through `ctx.env()`.
+/// @return The three homes, or the `HomeNotSet` refusal.
+auto resolve_homes(context& ctx) -> std::expected<is_::options, domain_error> {
+  auto const home = ctx.env()("HOME");
+  if (!home.has_value() || home->empty()) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "health check failed: resolving install homes: HomeNotSet"));
+  }
+  is_::options opts;
+  opts.home        = *home;
+  opts.planar_home = ctx.env()("PLANAR_HOME").value_or((std::filesystem::path(*home) / ".planar").string());
+  opts.codex_home  = ctx.env()("CODEX_HOME").value_or((std::filesystem::path(*home) / ".codex").string());
+  return opts;
+}
 
 /// @brief Render the report as the oracle's `--json` payload.
 ///
@@ -100,6 +153,47 @@ auto map_hygiene_error(he::hygiene_error err) -> domain_error {
 }
 
 } // namespace
+
+auto health(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto base_report = he::check(**conn, ctx.db_path().string());
+  if (!base_report) {
+    auto const message = base_report.error() == he::check_error::schema_table_missing
+                             ? std::format("health check failed: {}", "SchemaTableMissing")
+                             : std::format("health check failed: {}", "QueryFailed");
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, message));
+  }
+
+  auto homes = resolve_homes(ctx);
+  if (!homes) {
+    return std::unexpected(homes.error());
+  }
+
+  auto installed = is_::status(*homes);
+  if (!installed) {
+    auto const name = installed.error() == is_::status_error::invalid_input ? "InvalidInput" : "InvalidVendor";
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           std::format("health check failed: installed projection status: {}", name)));
+  }
+
+  auto const report = he::with_projection_freshness(std::move(*base_report), *installed);
+
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? render_json(report) : he::render_text(report));
+
+  // Mirror the oracle's exit-1-on-DEGRADED contract (Cluster
+  // C-health-content-loss, plan 351 Q235): the report is already written
+  // above regardless of outcome, and this is purely how `degraded` reaches
+  // dispatch's exit code without printing anything further — see
+  // health.cppm's header.
+  if (report.overall == "degraded") {
+    return std::unexpected(error_from_rendered(domain_error_kind::generic_failure, ""));
+  }
+  return {};
+}
 
 auto health_hygiene(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();

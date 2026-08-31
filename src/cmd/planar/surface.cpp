@@ -4207,7 +4207,21 @@ auto unported_paths() -> std::span<std::string_view const> {
       // The three `feedback triage` leaves left this inventory at task 6303,
       // together with the `engine.planning.feedback_triage` engine that was
       // the whole of what blocked them.
-      "health",
+      // `health` left this inventory at task 6357, closing the family (task
+      // 6090 had already landed `health hygiene`). The blocker was real,
+      // not over-stated this time: the handler folds
+      // `engine.installedsurface.status` (548 Zig lines of manifest-driven
+      // filesystem classification) into every run, and porting `check`
+      // without it would report a permanently-stubbed `projection_freshness`
+      // and get `overall` — the field the leaf's exit-1-on-degraded
+      // contract reads — wrong on any machine with a managed install. What
+      // unblocked it was the SAME move task 6352 used for `report`
+      // (decision 981): rather than a same-layer `engine_health ->
+      // engine_<classifier>` edge (D15/D18 FATAL on that), the classifier
+      // was ported straight to layer 1 as `planar.installed_surface`
+      // (src/lib/installed_surface) — it holds no `db` edge, so there was
+      // nothing pulling it toward `engine_health` in the first place. See
+      // handlers/health.cppm and src/lib/engine/health/health.cppm.
       "import",
       // `report` left this inventory at task 6352, once `engine_introspect`
       // (task 6121, DB aggregates) and `engine_introspection_adapters`
