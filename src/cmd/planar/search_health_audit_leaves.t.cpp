@@ -459,6 +459,27 @@ TEST_CASE("planar health refuses when HOME is unset, without ever opening a real
   CHECK(out.str().empty());
 }
 
+TEST_CASE("planar health refuses when HOME is set but empty, distinct from HOME being absent", "[cmd][health][refusal]") {
+  // Isolates `resolve_homes`'s `home->empty()` clause from `!home.has_value()`
+  // above — an explicit empty string is a DIFFERENT environment shape than
+  // an omitted key, and a permissive mutation of only this clause survived
+  // the sibling test above (which never sets the key at all).
+  auto const fx = make_fixture("healthemptyhome");
+  CHECK(dispatch(fx, {"init", "--name", "oracle", "--json"}).code == 0);
+
+  std::vector<std::string> argv{"planar", "health"};
+  std::ostringstream       out;
+  std::ostringstream       err;
+  planar::cmd::context     ctx{
+      argv, planar::cmd::map_env({{"PLANAR_DB", fx.db_path.string()}, {"HOME", ""}}), fx.root / "proj", fx.db_path, out, err};
+  auto const tree  = planar::cmd::root_app();
+  auto const table = planar::cmd::handlers(*tree);
+  int const  code  = planar::cmd::run(ctx, *tree, table);
+  CHECK(code == 1);
+  CHECK(err.str() == "error: health check failed: resolving install homes: HomeNotSet\n");
+  CHECK(out.str().empty());
+}
+
 TEST_CASE("planar health exits 1 and reports degraded for an unresumable doing task", "[cmd][health][degraded]") {
   auto const fx = make_fixture("healthdegraded");
   CHECK(dispatch(fx, {"init", "--name", "oracle", "--json"}).code == 0);

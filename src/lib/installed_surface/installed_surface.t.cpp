@@ -261,6 +261,78 @@ TEST_CASE("a symlink install_kind row with the wrong link target is stale", "[in
   CHECK(result->projections[0].reason == "managed link target differs from the install manifest");
 }
 
+TEST_CASE("a copy install_kind row whose installed path is unexpectedly a symlink is stale, even with matching bytes",
+          "[installed_surface]") {
+  // Isolates the `is_link` disjunct of `else if (is_link || *staged !=
+  // *installed)` from the byte-mismatch disjunct: the symlink's TARGET
+  // content is byte-identical to staged (so `*staged != *installed` is
+  // false), but a `copy` row that materialized as a symlink is still a
+  // shape mismatch the operator did not ask for.
+  scratch_root home;
+  const auto   staged        = home.planar_home() / "codex-skills" / "pl-a" / "SKILL.md";
+  const auto   installed_dir = home.codex_home() / "skills" / "pl-a";
+  const auto   installed     = installed_dir / "SKILL.md";
+  home.write(staged, "content\n");
+  std::filesystem::create_directories(installed_dir);
+  std::error_code ec;
+  std::filesystem::create_symlink(staged, installed, ec);
+  REQUIRE_FALSE(ec);
+
+  const auto manifest =
+      std::format("{{\"version\":1,\"build_id\":\"t\",\"install_mode\":\"copy\",\"vendors\":[\"codex\"],\"projections\":"
+                  "[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+                  "\"install_kind\":\"copy\",\"source_digest\":\"\",\"projection_digest\":\"\"}}]}}",
+                  staged.string(), installed.string());
+  home.write(home.planar_home() / "install-manifest.json", manifest);
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+  REQUIRE(result.has_value());
+  REQUIRE(result->projections.size() == 1);
+  CHECK(result->projections[0].status == is_::state::stale);
+  CHECK(result->projections[0].reason == "managed installed bytes differ from the staged projection");
+}
+
+TEST_CASE("a link install_kind row whose installed path is a plain file, not a symlink, is stale", "[installed_surface]") {
+  // Pins a real, previously-untested `link` shape (a plain file where a
+  // symlink was expected) — but does NOT isolate the `!is_link` disjunct
+  // of `if (!is_link || link_target != row.staged_path)` from its sibling.
+  // Verified (iteration 4 review, empirically): `link_target` is a
+  // default-constructed empty path whenever `is_link` is false — by
+  // construction, only the `is_symlink(...) == true` branch of the
+  // ternary that computes it can ever produce a non-empty value — so
+  // `link_target.string() != row.staged_path` is ALWAYS true whenever
+  // `!is_link` is true (an empty string can never equal a `staged_path`,
+  // which `valid_manifest` already rejects as empty). The `!is_link`
+  // disjunct is a genuine EQUIVALENT MUTANT here: no manifest can make it
+  // fire without the target-mismatch disjunct also firing. Confirmed by
+  // re-probing after this fixture landed — still SURVIVOR.
+  scratch_root home;
+  const auto   staged        = home.planar_home() / "codex-skills" / "pl-a" / "SKILL.md";
+  const auto   installed_dir = home.codex_home() / "skills" / "pl-a";
+  const auto   installed     = installed_dir / "SKILL.md";
+  home.write(staged, "content\n");
+  home.write(installed, "content\n"); // a plain copy, not a symlink
+
+  const auto manifest =
+      std::format("{{\"version\":1,\"build_id\":\"t\",\"install_mode\":\"link\",\"vendors\":[\"codex\"],\"projections\":"
+                  "[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+                  "\"install_kind\":\"link\",\"source_digest\":\"\",\"projection_digest\":\"\"}}]}}",
+                  staged.string(), installed.string());
+  home.write(home.planar_home() / "install-manifest.json", manifest);
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+  REQUIRE(result.has_value());
+  REQUIRE(result->projections.size() == 1);
+  CHECK(result->projections[0].status == is_::state::stale);
+  CHECK(result->projections[0].reason == "managed link target differs from the install manifest");
+}
+
 TEST_CASE("a symlink install_kind row whose link target matches the manifest is fresh", "[installed_surface]") {
   // The symmetric direction of the case above: until this iteration, no
   // fixture exercised a CORRECT `link` row, so a mutation that made this
@@ -367,6 +439,49 @@ TEST_CASE("a manifest whose top-level JSON is not an object is rejected as inval
   CHECK(result->manifest_status == is_::manifest_state::invalid);
 }
 
+TEST_CASE("a manifest object missing the vendors field entirely is rejected as invalid", "[installed_surface]") {
+  // `parse_manifest_doc`'s `vendors == nullptr` clause specifically —
+  // distinct from "vendors is not an array" (`vendors->kind != array`)
+  // above, which requires the KEY to be present with the wrong type. This
+  // is NOT mutation-probed: disabling this clause while "vendors" is
+  // absent leaves `vendors` a genuine null pointer, and the next line
+  // dereferences it (`vendors->array`) — an actual null-pointer read, not
+  // the safe always-empty-member fallback a wrong-TYPE value gets. Pinning
+  // the correct, unmutated contract only.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","projections":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a manifest object missing the projections field entirely is rejected as invalid", "[installed_surface]") {
+  // The `projections == nullptr` clause — same null-pointer-dereference
+  // risk as the vendors case above if mutation-probed, so left as a
+  // correct-behavior pin only.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json", R"({"version":1,"build_id":"t","install_mode":"copy","vendors":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a manifest whose projections field is not an array is rejected as invalid", "[installed_surface]") {
+  // `projections->kind != array` — safe to mutation-probe like `vendors`'s
+  // equivalent, since a wrong-TYPE `json_value`'s unused `.array` member is
+  // always a harmless empty vector, never a dereferenced null/optional.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":[],"projections":"oops"})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
 TEST_CASE("a manifest whose vendors field is not an array is rejected as invalid", "[installed_surface]") {
   // Exercises `parse_manifest_doc`'s required-field/type OR-chain — a
   // permissive mutation across the WHOLE chain survived even with a
@@ -429,10 +544,55 @@ TEST_CASE("a manifest with an install_mode outside copy/link is rejected", "[ins
   CHECK(result->manifest_status == is_::manifest_state::invalid);
 }
 
+TEST_CASE("a manifest with a negative version number is rejected as invalid, not treated as unsupported", "[installed_surface]") {
+  // `as_uint32`'s bounds clause (`value->integer < 0`): a negative JSON
+  // integer parses fine as `json_kind::integer` (json_dom's `integer` field
+  // is a signed int64), so this is genuinely reachable, not merely
+  // defensive. Distinguishing "invalid" from "unsupported" here matters —
+  // `probe_version` returning nullopt for an out-of-range value takes the
+  // SAME generic-invalid path a missing/non-numeric version does, not the
+  // more specific "unsupported" path a valid-but-wrong version (e.g. 2)
+  // takes.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json", R"({"version":-1,"build_id":"t","install_mode":"copy"})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
 TEST_CASE("a manifest whose vendors list names an unsupported vendor is rejected", "[installed_surface]") {
   scratch_root home;
   home.write(home.planar_home() / "install-manifest.json",
              R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["notavendor"],"projections":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row missing a required string field entirely is rejected as invalid", "[installed_surface]") {
+  // `parse_row`'s 8-way required-field OR-chain (`!vendor || !kind || ...`)
+  // is exercised here for the FIRST time — every existing row-shape fixture
+  // supplies all eight fields (the only_keys / structural-validity cases
+  // add or corrupt one field, never remove one). Deliberately NOT mutation-
+  // probed clause-by-clause: unlike `vendors`/`extras` (which fall through
+  // to an always-safe, always-empty `.array` member on a type mismatch),
+  // every one of these 8 clauses gates a direct `*optional<std::string>`
+  // dereference. Disabling any one clause and supplying that exact missing
+  // field makes the mutant dereference a disengaged optional — undefined
+  // behaviour, not a deterministic "wrong but observable" outcome. A
+  // "kill" under such a mutation could be a genuine proof or could be a
+  // lucky crash/coincidental garbage value, indistinguishable from outside
+  // — the same false-confidence trap iteration 4 review found in the
+  // build_id sub-clause of `parse_manifest_doc`'s OR-chain, except there is
+  // no type-mismatch escape hatch here to route around it. This case pins
+  // the NORMAL, unmutated contract instead.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""}]})"); // "vendor" key omitted
   auto result = is_::status(is_::options{
       .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
   REQUIRE(result.has_value());
@@ -511,14 +671,55 @@ TEST_CASE("a projection row with an install_kind outside copy/link is rejected",
   CHECK(result->manifest_status == is_::manifest_state::invalid);
 }
 
-TEST_CASE("a projection row with a malformed digest is rejected", "[installed_surface]") {
-  // Neither empty (the documented absence-tolerant shape) nor 64 lowercase
-  // hex chars — too short AND not hex, so it cannot pass by accident.
+TEST_CASE("a projection row with a digest that is valid hex but the wrong length is rejected", "[installed_surface]") {
+  // Isolates `is_digest`'s LENGTH clause (`value.size() != 64`) from its hex-
+  // alphabet clause: "abc123" is six characters of valid lowercase hex, so
+  // only the length check can reject it. Iteration-4 review finding: the
+  // prior single fixture here ("not-a-digest") was 12 chars AND non-hex, so
+  // disabling the length clause alone left the hex-alphabet clause to still
+  // reject it — the length branch itself had no discriminating case.
   scratch_root home;
   home.write(home.planar_home() / "install-manifest.json",
              R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
              R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
-             R"("install_kind":"copy","source_digest":"not-a-digest","projection_digest":""}]})");
+             R"("install_kind":"copy","source_digest":"abc123","projection_digest":""}]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row with a 64-character digest containing a non-hex character is rejected", "[installed_surface]") {
+  // Isolates `is_digest`'s HEX-ALPHABET clause from its length clause: this
+  // value is exactly 64 characters (built programmatically, not counted by
+  // hand, to guarantee it), so only the `all_of(isdigit || a-f)` check can
+  // reject it — a single leading 'g' (outside a-f) is the only thing wrong
+  // with it.
+  scratch_root      home;
+  const std::string bad_digest = "g" + std::string(63, 'a');
+  REQUIRE(bad_digest.size() == 64);
+  home.write(home.planar_home() / "install-manifest.json",
+             std::format(R"({{"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+                         R"([{{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
+                         R"("install_kind":"copy","source_digest":"{}","projection_digest":""}}]}})",
+                         bad_digest));
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row with a malformed projection_digest (source_digest valid) is rejected", "[installed_surface]") {
+  // Isolates the SECOND disjunct of `!is_digest(source_digest) ||
+  // !is_digest(projection_digest)` — every other digest fixture leaves
+  // `projection_digest` empty (valid), so only `source_digest` had ever
+  // been proven to reach this OR. A permissive mutation of the
+  // `projection_digest` clause alone survived until this fixture.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":"abc123"}]})");
   auto result = is_::status(is_::options{
       .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
   REQUIRE(result.has_value());
@@ -629,6 +830,11 @@ TEST_CASE("the --vendor filter excludes other vendors' projections from a multi-
   REQUIRE(result->projections.size() == 1);
   CHECK(result->projections[0].vendor == "codex");
   CHECK(result->projections[0].name == "pl-a");
+  // The SAME `--vendor` filter (`opts.vendor && *opts.vendor != vendor`)
+  // also gates the vendor-STATUS loop, a separate call site from the one
+  // that filters `projections` above — this closes that clause too.
+  REQUIRE(result->vendors.size() == 1);
+  CHECK(result->vendors[0].vendor == "codex");
 }
 
 TEST_CASE("a manifest with a duplicate top-level key is rejected like std.json", "[installed_surface]") {
