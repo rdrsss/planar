@@ -241,7 +241,16 @@ TEST_CASE("spec ingest preview preserves planning state while recording one reus
   // fixture proposes a child plan, task, and decision, so it reaches the
   // real `apply_diff` -> `session::ensure_active` path.
   CHECK(first.code == 0);
-  CHECK(first.out.contains("do-the-thing"));
+  auto const expected_text = std::format("project:proj/ingest-fixture/\n"
+                                         "  + plan       {:<36} (1 tasks)\n"
+                                         "  +   task     {:<36}\n"
+                                         "  + decision   {:<36}\n"
+                                         "\n"
+                                         "3 additions, 0 updates, 0 proposed removals.\n"
+                                         "coverage: 1 tasks (1 with slug, 0 without); 1 uncovered: do-the-thing\n"
+                                         "Run with --apply to commit; add --apply-removals to cancel proposed removals.\n",
+                                         "M1", "Implement the thing", "Use SQLite");
+  CHECK(first.out == expected_text);
 
   std::int64_t session_id = 0;
   {
@@ -311,7 +320,7 @@ TEST_CASE("spec ingest preview preserves planning state while recording one reus
   // session/start-audit row, while a second documented read entry lands.
   auto const second = dispatch(fx, {"spec", "ingest", anchor});
   CHECK(second.code == 0);
-  CHECK(second.out.contains("do-the-thing"));
+  CHECK(second.out == expected_text);
 
   auto       conn_after_second = open_db(fx);
   auto const dump_after_second = dump_planning_inventory(conn_after_second);
@@ -351,8 +360,31 @@ TEST_CASE("spec ingest preview with --json is also read-only", "[cmd][spec][inge
 
   auto const res = dispatch(fx, {"spec", "ingest", anchor, "--json"});
   CHECK(res.code == 0);
-  CHECK(res.out.contains("\"coverage\""));
-  CHECK(res.out.contains("\"slug_collisions\""));
+  constexpr std::string_view expected_json = R"json({
+  "anchor_plan_id": 1,
+  "assoc_slug": "project:proj",
+  "anchor_slug": "ingest-fixture",
+  "entities": [
+    {"op": "add", "kind": "plan", "title": "M1", "scope": "assoc:project:proj", "derives_from": "plan:1"},
+    {"op": "add", "kind": "task", "title": "Implement the thing", "scope": "assoc:project:proj", "derives_from": "plan:M1"},
+    {"op": "add", "kind": "decision", "title": "Use SQLite", "scope": "assoc:project:proj", "derives_from": "plan:1"}
+  ],
+  "summary": {
+    "additions": 3,
+    "updates": 0,
+    "removals": 0
+  },
+  "coverage": {
+    "total_tasks": 1,
+    "tasks_with_slug": 1,
+    "tasks_without_slug": 0,
+    "uncovered_task_slugs": ["do-the-thing"],
+    "orphan_scenarios": []
+  },
+  "slug_collisions": []
+}
+)json";
+  CHECK(res.out == expected_json);
 
   auto       conn_after = open_db(fx);
   auto const dump_after = dump_planning_inventory(conn_after);
@@ -488,8 +520,8 @@ TEST_CASE("spec ingest --strict refuses on an uncovered task slug", "[cmd][spec]
 
   auto const res = dispatch(fx, {"spec", "ingest", "1", "--strict"});
   CHECK(res.code != 0);
-  CHECK(res.err.contains("--strict refused"));
-  CHECK(res.err.contains("uncovered task slug"));
+  CHECK(res.err == "plan 1: --strict refused: 1 uncovered task slug(s): needs-coverage\n"
+                   "error: one or more plans failed to ingest\n");
 
   // Nothing was written; --strict refuses BEFORE apply is ever reached
   // (and no --apply flag was passed here regardless).
