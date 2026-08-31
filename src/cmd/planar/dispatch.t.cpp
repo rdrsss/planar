@@ -1041,7 +1041,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // already-ported `touch_idempotent` primitive. See
   // `src/lib/engine/runs/harvest.cppm` and surface.cpp's entry for the
   // full account.
-  // 8 -> 7 at task 6365: `spec ingest` moved. Its brief carried the
+  // 7 -> 6 at task 6365: `spec ingest` moved. Its brief carried the
   // now-familiar hypothesis that this is handler wiring over an
   // already-ported engine, true for PREVIEW mode and wrong for `--apply`:
   // `engine_ingest`'s own CMakeLists.txt documented `apply.zig` (1616 Zig
@@ -1055,8 +1055,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // for an apply; the re-entrant `planar.db` transaction seam makes each
   // composed CRUD operation a nested savepoint, preserving the oracle's
   // all-or-nothing write contract.
-  CHECK(unported.size() == 7);
-  // 8 -> 7 at task 6364: `workspace regenerate` moved. It had been carried
+  CHECK(unported.size() == 6);
+  // `workspace regenerate` had already moved at task 6364. It had been carried
   // as blocked on an unvendored xxh64 for its `.manifest-docs` merkle —
   // verified TRANSITIVELY true (the leaf's own source has no xxh64
   // reference; it reaches one hop out through `manifest.build`) rather than
@@ -1064,7 +1064,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // the new layer-1 `planar.docs_manifest` module, and the leaf's
   // hand-rolled template engine was ported alongside it. See
   // `planar.engine.workspace.regenerate`'s header for the full account.
-  CHECK(unported.size() == 7);
+  CHECK(unported.size() == 6);
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
   INFO("moved by task 6362: bench harvest");

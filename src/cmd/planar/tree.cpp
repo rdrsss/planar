@@ -515,7 +515,9 @@ auto add_spec(CLI::App& root) -> void {
   CLI::App* ingest = spec->add_subcommand("ingest", "Decompose workbench spec documents into the task graph.");
   add_bool(*ingest, "--apply");
   add_bool(*ingest, "--apply-removals");
-  add_string(*ingest, "--format");
+  // The oracle declares the default in its catalog as well as applying it
+  // at runtime; preserve both surfaces.
+  ingest->add_option("--format")->default_val("text");
   add_string(*ingest, "--scope");
   add_bool(*ingest, "--strict");
   add_json(*ingest);
