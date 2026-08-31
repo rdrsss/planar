@@ -100,8 +100,8 @@ export struct entry {
 
 /// @brief One manifest row: a file path paired with its computed `entry`.
 export struct entry_row {
-  std::string path; ///< The file's path exactly as passed to `build()`'s root, un-relativized.
-  entry       value;
+  std::string path;  ///< The file's path exactly as passed to `build()`'s root, un-relativized.
+  entry       value; ///< The file's computed digests.
 };
 
 /// @brief A built `.manifest-docs` document.
