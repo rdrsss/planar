@@ -249,11 +249,14 @@ auto consume(db::connection& conn, std::int64_t id, std::optional<std::int64_t> 
                         std::nullopt, std::format("consume handoff id={}", id));
 }
 
-auto abandon(db::connection& conn, std::int64_t id, const transition_check& allowed) -> std::expected<handoff, handoff_error> {
+auto abandon(db::connection& conn, std::int64_t id, const transition_check& allowed, std::optional<std::string_view> reason)
+    -> std::expected<handoff, handoff_error> {
   // Only `status` moves. `validated_at` survives, which the oracle's own
   // `abandon --json` on a validated handoff shows.
+  const auto summary = reason.has_value() && !reason->empty() ? std::format("abandon handoff id={} reason={}", id, *reason)
+                                                              : std::format("abandon handoff id={}", id);
   return guarded_update(conn, id, status::abandoned, allowed, "update handoffs set status = 'abandoned' where id = ?",
-                        std::nullopt, std::format("abandon handoff id={}", id));
+                        std::nullopt, summary);
 }
 
 auto list(db::connection& conn, const list_filter& filter) -> std::expected<std::vector<handoff>, handoff_error> {

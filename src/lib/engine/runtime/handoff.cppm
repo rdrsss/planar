@@ -171,15 +171,17 @@ export auto consume(db::connection& conn, std::int64_t id, std::optional<std::in
 /// validated handoff keeps its `validated_at`, which the oracle's own
 /// `abandon --json` output shows.
 ///
-/// No column stores an abandonment reason; its oracle representation belongs
-/// only in the audit summary. This engine seam currently receives no reason
-/// argument.
+/// No column stores an abandonment reason. A non-empty `reason` is retained
+/// only in the oracle-shaped audit summary; absent or empty reasons write the
+/// bare summary. The default preserves existing callers.
 /// @param conn An open, migrated database connection.
 /// @param id The handoff to abandon.
 /// @param allowed The injected matrix guard.
+/// @param reason Optional operator-supplied abandonment reason for the audit
+/// summary only.
 /// @return The updated handoff, or the failure.
-export auto abandon(db::connection& conn, std::int64_t id, const transition_check& allowed)
-    -> std::expected<handoff, handoff_error>;
+export auto abandon(db::connection& conn, std::int64_t id, const transition_check& allowed,
+                    std::optional<std::string_view> reason = std::nullopt) -> std::expected<handoff, handoff_error>;
 
 /// @brief List handoffs, newest first.
 ///

@@ -211,6 +211,7 @@ TEST_CASE("handoff mutations write one exact audit row and refusals write none",
   ho::transition_check refusing = [](ho::status, ho::status) { return false; };
   CHECK_FALSE(ho::validate(conn, first->id, refusing).has_value());
   CHECK_FALSE(ho::validate(conn, 999, real_guard()).has_value());
+  CHECK_FALSE(ho::abandon(conn, first->id, refusing, "refused reason").has_value());
   CHECK(audit_rows(conn) == "create|handoff|1|create handoff snapshot=1 from=claude|<NULL>|<NULL>");
 
   REQUIRE(ho::validate(conn, first->id, real_guard()).has_value());
@@ -233,13 +234,18 @@ TEST_CASE("handoff mutations write one exact audit row and refusals write none",
 
   auto second = ho::create(conn, ho::create_args{.from_snapshot_id = snap, .from_vendor = "cli"});
   REQUIRE(second.has_value());
-  REQUIRE(ho::abandon(conn, second->id, real_guard()).has_value());
+  REQUIRE(ho::abandon(conn, second->id, real_guard(), "operator stopped").has_value());
+  auto third = ho::create(conn, ho::create_args{.from_snapshot_id = snap, .from_vendor = "codex"});
+  REQUIRE(third.has_value());
+  REQUIRE(ho::abandon(conn, third->id, real_guard(), std::string_view{""}).has_value());
   CHECK(audit_rows(conn) == "create|handoff|1|create handoff snapshot=1 from=claude|<NULL>|<NULL>;"
                             "status_change|handoff|1|validate handoff id=1|<NULL>|<NULL>;"
                             "status_change|handoff|1|consume handoff id=1|<NULL>|<NULL>;"
                             "status_change|handoff|1|consume handoff id=1|<NULL>|<NULL>;"
                             "create|handoff|2|create handoff snapshot=1 from=cli|<NULL>|<NULL>;"
-                            "status_change|handoff|2|abandon handoff id=2|<NULL>|<NULL>");
+                            "status_change|handoff|2|abandon handoff id=2 reason=operator stopped|<NULL>|<NULL>;"
+                            "create|handoff|3|create handoff snapshot=1 from=codex|<NULL>|<NULL>;"
+                            "status_change|handoff|3|abandon handoff id=3|<NULL>|<NULL>");
 }
 
 TEST_CASE("handoff show: absent id is not_found", "[engine_runtime][handoff]") {
