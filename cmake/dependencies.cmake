@@ -67,6 +67,11 @@ endif()
 #   * libcurl          — HTTP for Jira/GitHub adapters
 #   * spdlog   1.17.0 — logging (D11) [vendored]
 #
+# Plus one dependency the tech-spec's initial set did not anticipate:
+#
+#   * xxHash   0.8.3   — `.manifest-docs` merkle digest for `workspace
+#                         regenerate` (plan 996, task 6364) [vendored]
+#
 # Adding a not-yet-vendored dependency from the list above means one
 # CPMAddPackage() block, one configure to populate vendor/, then committing
 # the new tree — that happens in the commit that first needs the library,
@@ -324,4 +329,41 @@ if(lua_ADDED)
   else()
     target_compile_definitions(lua_static PRIVATE LUA_USE_POSIX)
   endif()
+endif()
+
+# --- xxHash 0.8.3 (plan 996, task 6364 — `workspace regenerate`'s
+# `.manifest-docs` merkle) ----------------------------------------------------
+#
+# Same shape as SQLite and Lua above: xxHash publishes release archives, but
+# its CMake build lives at `cmake_unofficial/CMakeLists.txt` inside the repo
+# rather than at the archive root, and that unofficial wrapper builds the
+# `xxhsum` CLI, install rules, and a shared-library variant this tree has no
+# use for. Rather than fight `SOURCE_SUBDIR` around a build we do not want,
+# vendor the archive `DOWNLOAD_ONLY` and compile the two files this tree
+# actually needs (`xxhash.c`, plus the `xxh3.h` it internally includes)
+# ourselves, exactly as SQLite's amalgamation and Lua's interpreter sources
+# are handled above.
+#
+# Only the STABLE public API (`XXH64`) is used — `engine::docs_manifest`
+# calls nothing behind `XXH_STATIC_LINKING_ONLY`, so no experimental-API
+# define is set here.
+#
+# Pinned to the exact tag tarball via `codeload.github.com`, per CLAUDE.md's
+# vendoring rule: the friendlier `.../archive/refs/tags/v0.8.3.tar.gz` form
+# 302-redirects, which CPM's underlying `file(DOWNLOAD ...)` does not follow.
+# SHA256 computed by downloading the archive below and running
+# `shasum -a 256` on it directly (task 6364).
+CPMAddPackage(
+  NAME xxHash
+  VERSION 0.8.3
+  URL https://codeload.github.com/Cyan4973/xxHash/tar.gz/refs/tags/v0.8.3
+  URL_HASH SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80
+  DOWNLOAD_ONLY YES
+  EXCLUDE_FROM_ALL YES
+  SYSTEM YES
+)
+if(xxHash_ADDED)
+  add_library(xxhash STATIC "${xxHash_SOURCE_DIR}/xxhash.c")
+  add_library(xxHash::xxhash ALIAS xxhash)
+  target_include_directories(xxhash SYSTEM PUBLIC "${xxHash_SOURCE_DIR}")
 endif()

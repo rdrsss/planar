@@ -559,6 +559,16 @@ TEST_CASE("take_snapshot stores the row and notes it on the timeline", "[capture
   REQUIRE(entries.has_value());
   CHECK(entries->back().prefix == "note");
   CHECK(entries->back().body == std::format("snapshot created: id={}", snapshot->id));
+  CHECK(scalar_int(conn, "select count(*) from audit_log") == 2);
+  auto audit = conn.prepare("select verb, entity_kind, entity_id, summary, actor, scope from audit_log order by id desc limit 1");
+  REQUIRE(audit.has_value());
+  REQUIRE(audit->step().has_value());
+  CHECK(audit->column_text(0) == "create");
+  CHECK(audit->column_text(1) == "context_snapshot");
+  CHECK(audit->column_int64(2) == snapshot->id);
+  CHECK(audit->column_text(3) == "create snapshot session=1 vendor=cli");
+  CHECK(audit->is_null(4));
+  CHECK(audit->is_null(5));
 }
 
 TEST_CASE("an empty body or next_action is stored as SQL NULL, not ''", "[capture][snapshot]") {
@@ -590,6 +600,15 @@ TEST_CASE("snapshot show reports not_found for a missing id", "[capture][snapsho
   auto res = snap::show(conn, 999);
   REQUIRE_FALSE(res.has_value());
   CHECK(res.error() == snap::snapshot_error::not_found);
+}
+
+TEST_CASE("snapshot create with a missing session writes no audit row", "[capture][snapshot][audit]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  CHECK_FALSE(snap::create(conn, snap::create_args{.session_id = 999, .vendor = "cli", .body = "body"}).has_value());
+  CHECK(scalar_int(conn, "select count(*) from context_snapshots") == 0);
+  CHECK(scalar_int(conn, "select count(*) from audit_log") == 0);
 }
 
 TEST_CASE("get_latest_for_task returns the newest snapshot, list_for_task returns all", "[capture][snapshot]") {

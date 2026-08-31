@@ -14,14 +14,6 @@
 /// task bound so nothing to inherit from) stored `next_action` as NULL.
 /// The read side then coalesces both back to `""`, so the round-trip is
 /// lossy in exactly the way the original is.
-///
-/// `policy.audit.record` is STILL omitted, but no longer for want of a
-/// module: task 6100 landed layer-1 `planar.policy` and wired
-/// `engine_planning`/`engine_identity`. This bucket's seven call sites
-/// (session 2, handoff 4, snapshot 1) were left for a dedicated cycle —
-/// see engine/runtime/CMakeLists.txt. They ARE observable: the oracle
-/// writes `create|session|<id>|start session vendor=cli` where this build
-/// writes nothing.
 module;
 
 export module planar.engine.runtime.snapshot;

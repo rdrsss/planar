@@ -3,8 +3,8 @@
 # Layer-2 `engine_*` module (cmake/architecture.cmake): may DEPEND on
 # layer-1 modules only, never sideways onto another `engine_*` bucket
 # (D15/D18's same-layer prohibition for layers 2 and 3). This module needs
-# `db` and, since task 6358, the layer-1 `git` seam (see below); no D19
-# extraction was required for either and none was invented.
+# `db` and the layer-1 `git` and `policy` seams (see below); no D19
+# extraction was required for any of them and none was invented.
 #
 # Behavior-preserving port (D2) of zig/src/engine/runtime/{session,
 # snapshot,capture}.zig plus the body-composition and rendering halves of
@@ -44,31 +44,11 @@
 #     deliberately does NOT wire them into `capture_end`, which is a
 #     separate leaf outside this task's claimed scope. Tracked for a
 #     follow-up task rather than fixed here.
-#   - `policy.audit.record` calls in `startSession` / `endSession` /
-#     `snapshot.create`: STILL UNWIRED, and now for a real reason rather
-#     than a missing module. Task 6100 stood up the layer-1
-#     `planar.policy` module and wired `engine_planning` and
-#     `engine_identity`. This bucket has the tree's LARGEST remaining set
-#     -- seven call sites across session.zig (2), handoff.zig (4) and
-#     snapshot.zig (1) -- and its rows are the ones `planar audit trail`
-#     correlates sessions by, so it is the one that most wants its own
-#     cycle with its own oracle capture rather than a hurried pass. It IS
-#     observable, unlike the note this replaces claimed: running the
-#     oracle's `question add` produced a `create|session|1|start session
-#     vendor=cli` row this build does not write. Task 6188 WIRED `question
-#     add` and re-confirmed the divergence in a full oracle-differential
-#     run: it is now the family's ONLY remaining row difference, and it is
-#     tracked as planar task 6191. It was deliberately NOT closed there —
-#     `ensure_active` is reached by `capture` and `unlink` too, so a
-#     one-call-site fix silently changes two other verb families' audit
-#     trails while leaving five of the seven sites open. This is one of
-#     only THREE
-#     buckets left carrying an actual audit gap (the others are
-#     `engine_entitylink` and `engine_promotion`); the other eight
-#     CMakeLists that used to carry a paragraph like this were audited and
-#     have no Zig call sites at all. Row shapes and the oracle-capture
-#     method are in src/lib/policy/CMakeLists.txt; the DEPENDS line below
-#     does not name `policy`, which is the mechanical tell.
+#   - `policy.audit.record` calls in `startSession`, `endSession`,
+#     `handoff::{create,validate,consume,abandon}`, and `snapshot::create`
+#     landed in task 6191. Each is a separate statement after its primary
+#     mutation, matching the Zig oracle's ordering and preserving NULL
+#     actor/scope through the layer-1 writer.
 #
 # `runtime.cppm` is the umbrella re-export, matching
 # `lib/engine/identity/identity.cppm`.
@@ -184,10 +164,9 @@
 #     bytes to hit.
 #   - `resolveWorktreeForTask`'s git side. The worktree fields it copies
 #     come from the claim row, which IS readable here; nothing shells git.
-#   - `policy.audit.record` in create/validate/consume/abandon -- four of
-#     this bucket's seven unwired call sites. The layer-1 `planar.policy`
-#     module exists as of task 6100; these were deliberately left for a
-#     dedicated cycle, see the session/snapshot note above for why.
+#   - No `policy.audit.record` gap remains here: task 6191 wired
+#     create/validate/consume/abandon (and the session/snapshot call sites
+#     noted above) through the layer-1 `planar.policy` writer.
 
 # --- the audit READ plane (plan 996, task 6090) ----------------------------
 #
@@ -267,6 +246,7 @@ planar_module(engine_runtime
     db
     git
     json_text
+    policy
   # TEST_DEPENDS, not DEPENDS: `handoff.t.cpp` imports
   # `planar.engine.planning.transitions` to exercise `handoff`'s injected
   # guard with the REAL matrix rather than a hand-written double, which is

@@ -89,8 +89,8 @@ export struct warning_row {
 /// @brief One aggregated evidence bucket: (vendor, verb_path, category,
 /// hour bucket of `first_seen`) collapsed to a count and a seen range.
 export struct signal_row {
-  vendor      v;            ///< The source vendor.
-  std::string verb_path;    ///< The bounded verb path — redacted for the three
+  vendor        v;          ///< The source vendor.
+  std::string   verb_path;  ///< The bounded verb path — redacted for the three
                             ///< transcript vendors, but NOT for `vendor::cli_log`:
                             ///< `cli_invocations.verb_path` carries free-text
                             ///< operands verbatim (e.g. `search <query>`), and
