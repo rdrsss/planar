@@ -527,6 +527,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("bench start", handlers::bench_start);
   table.emplace("bench event", handlers::bench_event);
   table.emplace("bench touch", handlers::bench_touch);
+  table.emplace("bench harvest", handlers::bench_harvest);
   table.emplace("bench finish", handlers::bench_finish);
   table.emplace("bench show", handlers::bench_show);
   table.emplace("run start", handlers::run_start);

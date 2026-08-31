@@ -1,22 +1,21 @@
 /// @file runs.cppm
-/// @brief `planar.cmd.planar.handlers.runs` — the nine wired `bench` and
-/// `run` leaves (plan 996, task 6149).
+/// @brief `planar.cmd.planar.handlers.runs` — all TEN `bench` and `run`
+/// leaves (plan 996, tasks 6149 and 6362).
 ///
 /// One module for two families because they are one table and one engine
-/// bucket: `bench start|event|touch|finish|show` and `run start|event|
-/// finish|show` all read and write `runs` / `run_events` / `run_touches`
-/// through `planar.engine.runs.lifecycle`, and every byte they print comes
-/// from `planar.engine.runs.render`. Splitting them would duplicate the
-/// uid-resolution helper that is the only shared code either family has.
+/// bucket: `bench start|event|touch|harvest|finish|show` and `run start|
+/// event|finish|show` all read and write `runs` / `run_events` /
+/// `run_touches` through `planar.engine.runs.lifecycle`, and every byte
+/// they print comes from `planar.engine.runs.render`. Splitting them would
+/// duplicate the uid-resolution helper that is the only shared code either
+/// family has.
 ///
-/// The tenth leaf, `bench harvest`, is NOT wired and stays a declared
-/// exit-64 refusal. Its engine half was deferred WITH its dependency in
-/// task 6095 (`zig/src/engine/runs/harvest.zig` shells `git diff
-/// --name-only` through `std.process.run`, and `planar.git` exposes no
-/// diff surface); wiring a handler over an absent engine would mean
-/// inventing the behaviour, which is the one thing a behaviour-preserving
-/// port must not do. See `src/lib/engine/runs/CMakeLists.txt` for the full
-/// account.
+/// `bench harvest`, the tenth leaf and the last to wire, landed at task
+/// 6362 once `planar.engine.runs.harvest` existed to call — its own engine
+/// half was deferred WITH its git-subprocess dependency at task 6095, and
+/// the layer-1 `planar.git` seam that closed that gap (tasks 6128/6137)
+/// did not exist yet either. See `src/lib/engine/runs/CMakeLists.txt` for
+/// the full account.
 ///
 /// ## What this layer adds over the engine
 ///
@@ -41,6 +40,15 @@
 ///     bench|run finish --status X    exit 2  (invalid_input)
 ///     bench start --plan <missing>   exit 1  (an FK failure surfacing as
 ///                                    query_failed, NOT a named refusal)
+///     bench harvest --base w/o --head exit 2 (invalid_input, checked
+///                                    BEFORE the database is opened)
+///     bench harvest <missing uid>    exit 1  (not_found, same shared path
+///                                    every other uid-taking leaf uses)
+///     bench harvest <bad worktree>   exit 1  (generic_failure — the git
+///                                    seam reports "no answer" for every
+///                                    failure mode, so this is the ONLY
+///                                    bucket a `git_failed` result can map
+///                                    to; see harvest.cppm's own header)
 ///
 /// ## Three lifecycle transitions are UNGUARDED, and that is reproduced
 ///
@@ -102,6 +110,17 @@ export auto bench_event(context& ctx, const cliapp::parsed_args& args) -> handle
 /// @param args The parsed arguments.
 /// @return Success, or the refusal.
 export auto bench_touch(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar bench harvest` — diff a worktree and record the changed
+/// paths as `kind='actual'` touches for a run/task.
+///
+/// `--base` and `--head` must appear together or not at all; supplying
+/// exactly one refuses at `invalid_input` (exit 2) before the database is
+/// even opened. Prints the count of distinct paths diffed.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the refusal.
+export auto bench_harvest(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar bench finish` — set the run's terminal status.
 /// @param ctx The invocation context.

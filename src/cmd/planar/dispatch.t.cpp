@@ -1022,7 +1022,17 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // it a second hop out through `sessioncommits.cppm`'s new strict git-walk
   // functions, added to the engine_runtime target `capture` already lived
   // in. See surface.cpp's entry for the full note.
-  CHECK(unported.size() == 10);
+  // 10 -> 9 at task 6362: `bench harvest` moved, the leaf `capture commits`'
+  // note above left carried as "the other two stay". By the time this task
+  // landed, the layer-1 `planar.git` seam (tasks 6128/6137) already served
+  // four other consumers and was the ONLY thing this leaf was still
+  // missing — its own engine half is two git subcommands plus the
+  // already-ported `touch_idempotent` primitive. See
+  // `src/lib/engine/runs/harvest.cppm` and surface.cpp's entry for the
+  // full account.
+  CHECK(unported.size() == 9);
+  INFO("moved by task 6362: bench harvest");
+  CHECK_FALSE(unported.contains("bench harvest"));
   INFO("moved by task 6358: capture commits");
   CHECK_FALSE(unported.contains("capture commits"));
   INFO("moved by task 6339: audit publish-decision");
@@ -1161,14 +1171,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // corrected the grouping and 6277 ported it. `capture commits` DID
   // really need the walk — until task 6128/6137 closed the process-spawn
   // seam for two other consumers and task 6358 reached it a second hop
-  // out; see this file's own `11 -> 10` entry above. `bench harvest` is
-  // this group's last member and stays: it is genuinely blocked on
-  // functionality `sessioncommits.cppm` still does not carry (the
-  // FAIL-SOFT `walk` and the claim-window fold), not on the seam.
-  for (auto const& leaf : {"bench harvest"}) {
-    INFO("still-deferred spawn-adjacent leaf: " << leaf);
-    CHECK(unported.contains(leaf));
-  }
+  // out; see this file's own `11 -> 10` entry above. `bench harvest` was
+  // this group's last member and left it at task 6362, once the seam it
+  // was actually blocked on (not `sessioncommits.cppm`'s walk — that was
+  // `capture commits`' blocker, not this leaf's) had a fifth consumer
+  // available to reach it through.
   //
   // 76 before task 6190 ported the whole SIX-leaf `templates` family out of
   // it: `list`, `show`, `render`, `validate`, `init`, `path`. Named per
@@ -1241,7 +1248,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // as "773 lines of git-diff and language-aware path inference" — a
   // description running the oracle showed to be wrong on both counts. It is
   // asserted ABSENT at the top of this test alongside the count.
-  CHECK(unported.contains("bench harvest"));
   INFO("moved by task 6343: models resolve");
   CHECK_FALSE(unported.contains("models resolve"));
   // 92 before task 6205 ported SIXTEEN out of it in one change -- the
