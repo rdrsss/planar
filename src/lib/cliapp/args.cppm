@@ -65,8 +65,22 @@ export struct parsed_args {
   /// than as a policy choice. Add a whole-vector accessor when a repeatable
   /// flag is actually declared, not before.
   std::map<std::string, std::vector<std::string>, std::less<>> flags;
-  /// @brief Positional values keyed by declared name (`"plan-id"`).
+  /// @brief Positional values keyed by declared name (`"plan-id"`). Holds
+  /// only the LAST harvested value for a positional CLI11 collected more
+  /// than one for — see `positional_lists` for the multi-value form.
   std::map<std::string, std::string, std::less<>> positionals;
+  /// @brief Every value harvested for a positional, in argv order, keyed
+  /// by declared name.
+  ///
+  /// The multi-value counterpart to `positionals` above, for a variadic
+  /// "rest" positional — `capture commits`'s trailing SHA list is the
+  /// only one this repo declares today (plan 996, task 6358), mirroring
+  /// the oracle's etcli-zig `rest_field` mechanism. It is declared
+  /// `->group("")`-hidden (see `tree.cpp`'s `add_capture`) precisely
+  /// because `rest_field` is NOT a real positional and never appears in
+  /// the oracle's own `schema` catalog — confirmed against a live oracle
+  /// run, whose `capture commits` node reports `"positionals":[]`.
+  std::map<std::string, std::vector<std::string>, std::less<>> positional_lists;
 };
 
 /// @brief Parse a decimal integer exactly as Zig's `std.fmt.parseInt(i64,
@@ -296,7 +310,8 @@ export auto harvest(const CLI::App& root) -> parsed_args {
       auto const name = canonical_name(*opt);
       if (opt->get_positional()) {
         if (opt->count() > 0) {
-          out.positionals[name] = opt->results().back();
+          out.positionals[name]      = opt->results().back();
+          out.positional_lists[name] = opt->results();
         }
         continue;
       }
@@ -426,6 +441,23 @@ export auto positional_int(const parsed_args& args, std::string_view name) -> st
     return std::nullopt;
   }
   return parse_int64_zig(*raw);
+}
+
+/// @brief Read every value harvested for a positional, in argv order.
+///
+/// The multi-value counterpart to `positional_string`, for a variadic
+/// "rest" positional such as `capture commits`'s trailing SHA list (plan
+/// 996, task 6358) — see `parsed_args::positional_lists`.
+/// @param args The parsed result.
+/// @param name The positional's declared name.
+/// @return Every value, in argv order; empty when the positional is absent
+/// or received no values.
+export auto positional_strings(const parsed_args& args, std::string_view name) -> std::vector<std::string> {
+  auto const it = args.positional_lists.find(name);
+  if (it == args.positional_lists.end()) {
+    return {};
+  }
+  return it->second;
 }
 
 /// @brief The key a resolved command path maps to: its segments joined

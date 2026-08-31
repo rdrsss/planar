@@ -1015,7 +1015,16 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // task 6329 probed and parked under the same stale layer-3 note `report`
   // was — stays; it needs the COCKPIT (33,452 unported zig lines), a
   // wholly different blocker `report`'s port did nothing to remove.
-  CHECK(unported.size() == 11);
+  // 11 -> 10 at task 6358: `capture commits` moved. It had been carried as
+  // blocked on 1205 lines of git-subprocess walking with "no process-spawn
+  // seam in this tree" as the reason; tasks 6128/6137 had already closed
+  // that seam (`planar.git`) for two OTHER consumers, and this task reached
+  // it a second hop out through `sessioncommits.cppm`'s new strict git-walk
+  // functions, added to the engine_runtime target `capture` already lived
+  // in. See surface.cpp's entry for the full note.
+  CHECK(unported.size() == 10);
+  INFO("moved by task 6358: capture commits");
+  CHECK_FALSE(unported.contains("capture commits"));
   INFO("moved by task 6339: audit publish-decision");
   CHECK_FALSE(unported.contains("audit publish-decision"));
   INFO("moved by task 6329: dashboard");
@@ -1149,9 +1158,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // grouped with the genuinely spawn-blocked leaves on the strength of its
   // MODULE's dependencies rather than its own handler's, which calls
   // `listFiltered` + `writeJsonList` and spawns nothing. Task 6272
-  // corrected the grouping and 6277 ported it. `capture commits` stays —
-  // it really does need the walk.
-  for (auto const& leaf : {"capture commits"}) {
+  // corrected the grouping and 6277 ported it. `capture commits` DID
+  // really need the walk — until task 6128/6137 closed the process-spawn
+  // seam for two other consumers and task 6358 reached it a second hop
+  // out; see this file's own `11 -> 10` entry above. `bench harvest` is
+  // this group's last member and stays: it is genuinely blocked on
+  // functionality `sessioncommits.cppm` still does not carry (the
+  // FAIL-SOFT `walk` and the claim-window fold), not on the seam.
+  for (auto const& leaf : {"bench harvest"}) {
     INFO("still-deferred spawn-adjacent leaf: " << leaf);
     CHECK(unported.contains(leaf));
   }

@@ -325,15 +325,27 @@ auto add_workbench(CLI::App& root) -> void {
 }
 
 /// @brief The `capture` group — transcribed from
-/// zig/src/cmd/planar/handlers/capture/cmd.zig. `commits` is absent: it is
-/// deferred with its git-subprocess dependency (task 6099), so this
-/// group's own help page lists six commands where the oracle lists seven.
+/// zig/src/cmd/planar/handlers/capture/cmd.zig. All seven leaves are
+/// declared as of task 6358, which added `commits`.
 ///
 /// `end`'s `<session-id>` positional is declared as a STRING even though
 /// it names an integer. That is deliberate and load-bearing: the oracle
 /// parses it in the handler and answers `session id must be an integer,
 /// got 'x'` with exit 2, and a `zig_int_validator()` here would answer
 /// CLI11's `ValidationError` wording instead.
+///
+/// `commits`'s trailing SHA list is declared `->group("")`-HIDDEN, not as
+/// an ordinary visible positional. That is not a style choice — see
+/// `parsed_args::positional_lists`'s header for the full reasoning, but
+/// the load-bearing fact is: the oracle's own `rest_field` mechanism
+/// (etcli-zig) is NOT a real positional and never appears in the oracle's
+/// `schema` catalog (confirmed against a live oracle run: `capture
+/// commits` reports `"positionals":[]`). Declaring this as a VISIBLE
+/// positional would add a catalog entry `catalog_parity.hpp` cannot find
+/// in the oracle and fail the parity gate. `group("")` hides it from
+/// `schema`/`--help`/completion the same way CLI11 hides `--help` itself
+/// (see `walk.cppm`'s `visible`), while `harvest()` still collects it —
+/// visibility is a rendering concern, not a parsing one.
 /// @param root The root app to attach the group to.
 auto add_capture(CLI::App& root) -> void {
   CLI::App* capture = root.add_subcommand("capture", "Capture commands manage explicit session management and context\n"
@@ -350,6 +362,14 @@ auto add_capture(CLI::App& root) -> void {
   add_string(*session, "--model");
   add_int(*session, "--task");
   add_json(*session);
+
+  CLI::App* commits = capture->add_subcommand("commits", "Record explicit git commits into a session.");
+  add_int(*commits, "--session");
+  add_string(*commits, "--repo");
+  add_string(*commits, "--since");
+  add_json(*commits);
+  // Hidden variadic "rest" positional -- see this function's header.
+  commits->add_option("shas")->expected(0, -1)->group("");
 
   CLI::App* end = capture->add_subcommand("end", "End the active or specified session.");
   add_int(*end, "--session");

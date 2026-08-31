@@ -147,3 +147,20 @@ TEST_CASE("canonical_name prefers the long form and falls back to the short", "[
   // split `planar.cliapp.schema` reports as `"long"` vs `"aliases"`.
   CHECK(canonical_name(*alias) == "--primary");
 }
+
+TEST_CASE("canonical_name resolves a group(\"\")-hidden positional's name (plan 996, task 6358 regression)", "[cliapp][walk]") {
+  // `->group("")` is `tree.cpp`'s mechanism for hiding a positional from
+  // the `schema` catalog (`capture commits`'s trailing SHA list -- the
+  // oracle's own `rest_field` never appears there either). CLI11's
+  // `Option::get_name` carries an unconditional `if (get_group().empty())
+  // return {};` BEFORE the positional branch it would otherwise reach, so
+  // the old implementation (`opt.get_name(true, false)`) silently
+  // canonicalized every hidden positional to the empty string --
+  // `args.cppm`'s `harvest()` then keyed every parsed value into
+  // `positional_lists[""]`, not `positional_lists["<name>"]`, and
+  // `positional_string`/`positional_strings` came back empty no matter
+  // what the operator typed. `get_single_name()` has no such check.
+  CLI::App app{"", "tool"};
+  auto*    hidden = app.add_option("shas")->group("");
+  CHECK(canonical_name(*hidden) == "shas");
+}

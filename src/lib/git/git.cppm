@@ -59,7 +59,13 @@ namespace planar::git {
 /// @brief Run `git -C <dir> <args...>` and return its raw stdout on exit 0.
 ///
 /// The primitive every other function here is built on. Exposed because
-/// `git status --porcelain` needs the untrimmed, multi-line output.
+/// `git status --porcelain` needs the untrimmed, multi-line output, and
+/// (since plan 996 task 6358) because `sessioncommits.cppm`'s `-z`
+/// git-log/show output embeds NUL bytes as field separators. `run` is
+/// BINARY-SAFE — embedded NULs survive intact, byte for byte, exactly as
+/// they do through the oracle's `std.process.run` — not merely stdout up
+/// to the first one; see git.cpp's implementation note for the bug this
+/// closed and git.t.cpp's `-z`-labeled cases for the regression coverage.
 /// @param dir The `-C` directory.
 /// @param args The git subcommand and its arguments, in order.
 /// @return The raw stdout, or unset when git could not be spawned, exited

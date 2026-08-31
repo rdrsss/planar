@@ -1,13 +1,32 @@
 /// @file sessioncommits.cppm
-/// @brief `planar.engine.runtime.sessioncommits` — the READ half of
-/// zig/src/engine/runtime/sessioncommits.zig (plan 996, task 6262).
+/// @brief `planar.engine.runtime.sessioncommits` — the read half PLUS the
+/// git-walk write half zig/src/engine/runtime/sessioncommits.zig's
+/// `capture commits` leaf needs (plan 996, tasks 6262 and 6358).
 ///
-/// ## THIS MODULE IS DELIBERATELY A FRACTION OF ITS ORACLE, AND THE
-/// ## FRACTION IS NAMED
+/// ## WHAT TASK 6358 ADDED, AND WHAT IS STILL NOT HERE
 ///
-/// The Zig original is 1205 lines and this is a couple hundred, so a reader
-/// who sees the module name and concludes `sessioncommits` is ported would
-/// be wrong. What is here is the READ half and its renderers:
+/// The Zig original is 1205 lines; this module is still well short of that,
+/// and the gap is named rather than implied. Task 6358 added exactly the
+/// slice `capture commits` reaches, now that `planar.git` (task 6128/6137)
+/// closes the process-spawn seam this module used to be blocked on:
+///
+///   - `resolve_repo_root_strict` — port of `resolveRepoRootStrict`.
+///   - `walk_strict` — port of `walkStrict`.
+///   - `resolve_shas` — port of `resolveShas`.
+///   - `record_count` — port of `recordCount`, the WRITE half.
+///   - `commit_meta` — port of the Zig `Commit` struct these three return.
+///
+/// Still absent, because nothing this tree ports reaches them: `walk` (the
+/// FAIL-SOFT variant `close_session`'s automatic `recordSessionWindow`
+/// would use), `walkClaimWindow` and `recordClaimWindowBestEffort` (the
+/// `planar-agent` terminal-verb claim-window fold). `capture commits` is
+/// the OPERATOR path and calls only the strict functions above — see
+/// zig's `recordCommits` (capture.zig:163), which never calls `walk`.
+/// Wiring the automatic fail-soft capture into `capture end` or the
+/// terminal verbs is a SEPARATE port, not a side effect of this one; see
+/// this module's CMakeLists.txt for the tracking note.
+///
+/// The pre-existing READ half is unchanged:
 ///
 ///   - `list_for_sessions` — `select … from session_commits where
 ///     session_id in (…)`, for `audit trail`'s commits fold-in.
@@ -15,11 +34,6 @@
 ///     task predicate, the task arm joining `agent_work_claims`. Also
 ///     pure SQL.
 ///   - `render_json` / `render_json_list` — the persisted-row JSON shape.
-///
-/// Everything else in the original is a `git` subprocess walk —
-/// `walk` / `walkStrict` / `walkClaimWindow` / `recordClaimWindowBestEffort`
-/// and the ref-resolution and per-commit-metadata machinery under them,
-/// plus the `record` WRITE half that feeds them.
 ///
 /// ## THE "GIT WALK BLOCKS `audit commits`" CLAIM WAS WRONG, AND IT COST A
 /// ## MILESTONE
@@ -102,10 +116,92 @@ export struct commit_row {
   std::string                 recorded_at;    ///< When Planar recorded it.
 };
 
-/// @brief Why a read failed.
+/// @brief Why a read OR write failed. Mirrors zig's `sessioncommits.Error`
+/// union (`GitFailed`, `NotGit`, `MalformedOutput`, `QueryFailed`) — the
+/// three new members below are task 6358's, added for the git-walk write
+/// half; `query_failed` alone was sufficient while this module was
+/// read-only.
 export enum class commits_error : std::uint8_t {
-  query_failed, ///< An underlying SQL statement failed.
+  query_failed,     ///< An underlying SQL statement failed.
+  git_failed,       ///< A git subprocess could not be spawned, exited non-zero, or died on a signal.
+  not_git,          ///< `resolve_repo_root_strict`'s directory is not inside a git repository.
+  malformed_output, ///< git's `-z`-delimited stdout did not carry the expected field count.
 };
+
+/// @brief One commit's metadata as read directly from git, before it is
+/// persisted. Mirrors zig's `Commit` (sessioncommits.zig:12).
+export struct commit_meta {
+  std::string                sha;          ///< The commit sha, verbatim.
+  std::optional<std::string> repo_root;    ///< The checkout the walk ran in.
+  std::optional<std::string> branch;       ///< The branch at walk time.
+  std::optional<std::string> subject;      ///< The commit subject.
+  std::optional<std::string> author;       ///< The commit author.
+  std::optional<std::string> committed_at; ///< The commit's own timestamp, ISO 8601.
+};
+
+/// @brief Resolve `dir` to its git toplevel, strictly.
+///
+/// Port of zig's `resolveRepoRootStrict`. The Zig original converts EVERY
+/// underlying `GitFailed` into `NotGit` here — not installed, not a
+/// repository, and a genuine transient git failure all collapse to the
+/// same answer — and this preserves that collapse rather than
+/// distinguishing the causes the oracle does not distinguish either.
+/// @param dir The directory to resolve.
+/// @return The absolute toplevel path (trimmed), or `not_git` /
+/// `malformed_output` (an exit-0 answer that trims to empty — unreached in
+/// practice since `rev-parse --show-toplevel` never succeeds with blank
+/// output, kept because the oracle has the same guard).
+export auto resolve_repo_root_strict(const std::filesystem::path& dir) -> std::expected<std::string, commits_error>;
+
+/// @brief Walk `base_sha..HEAD` in `dir` and return each commit's metadata,
+/// newest first, surfacing every git/parse failure. Port of zig's
+/// `walkStrict`.
+///
+/// AN EMPTY, EXIT-0 RESULT IS SUCCESS WITH AN EMPTY VECTOR, NOT AN ERROR.
+/// `git log` on a valid range with no commits in it answers with empty
+/// stdout at exit 0 — this is the "no new commits" acceptance path, and
+/// collapsing it into `git_failed` would refuse the operator's own
+/// no-op `capture commits --since HEAD`.
+/// @param dir The `-C` directory.
+/// @param base_sha The range's exclusive lower bound.
+/// @param repo_root The value stamped onto every returned commit's
+/// `repo_root`; when unset, `dir` itself is used (mirrors the oracle's
+/// `args.repoRoot orelse args.dir`).
+/// @return The commits, newest first, or a `commits_error`.
+export auto walk_strict(const std::filesystem::path& dir, std::string_view base_sha,
+                        std::optional<std::string_view> repo_root = std::nullopt)
+    -> std::expected<std::vector<commit_meta>, commits_error>;
+
+/// @brief Resolve explicit SHAs to the same metadata shape `walk_strict`
+/// returns, in the REQUESTED order. Port of zig's `resolveShas`.
+///
+/// An empty `shas` returns an empty vector without spawning git — mirrors
+/// the oracle's own early return.
+/// @param dir The `-C` directory.
+/// @param shas The SHAs to resolve, in the order they should appear in the
+/// result.
+/// @param repo_root As `walk_strict`.
+/// @return The commits, in `shas`' order, or a `commits_error`.
+export auto resolve_shas(const std::filesystem::path& dir, std::span<const std::string_view> shas,
+                         std::optional<std::string_view> repo_root = std::nullopt)
+    -> std::expected<std::vector<commit_meta>, commits_error>;
+
+/// @brief Persist `commits` for `session_id`, returning how many rows were
+/// NEWLY inserted. Port of zig's `recordCount`.
+///
+/// The `(session_id, sha)` unique constraint (`insert or ignore`) makes
+/// re-recording idempotent by design: a duplicate row counts as zero, not
+/// a failure. `record_count` rather than a void `record` because
+/// `capture commits`' own stdout reports the new-row count.
+/// @param conn An open, migrated database connection.
+/// @param session_id The owning session.
+/// @param claim_id The claim window the commits fell under, or unset —
+/// `capture commits` always passes unset; the claim-window fold is a
+/// `planar-agent` terminal-verb concern this port does not reach.
+/// @param commits The commit metadata to persist.
+/// @return The count of newly inserted rows, or `commits_error::query_failed`.
+export auto record_count(db::connection& conn, std::int64_t session_id, std::optional<std::int64_t> claim_id,
+                         std::span<const commit_meta> commits) -> std::expected<std::size_t, commits_error>;
 
 /// @brief Every `session_commits` row for any of `session_ids`, newest
 /// RECORDED first, capped at `limit` when one is given.

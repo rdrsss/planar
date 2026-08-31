@@ -487,6 +487,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("capture command", handlers::capture_command);
   table.emplace("capture file", handlers::capture_file);
   table.emplace("capture snapshot", handlers::capture_snapshot);
+  table.emplace("capture commits", handlers::capture_commits);
   // `handoff` and `resume` are DUAL group-and-leaf nodes: each has
   // subcommands AND its own handler. Registering the parent is what makes
   // dispatch route the bare form to the handler instead of a help page.
