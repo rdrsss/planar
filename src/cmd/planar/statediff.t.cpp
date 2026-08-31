@@ -471,7 +471,7 @@ auto multiset_minus(const std::vector<row>& left, const std::vector<row>& right)
 /// @brief One divergence, keyed so it can be matched against the staged
 /// known-divergence list.
 struct finding {
-  std::string tag;     ///< The step that introduced it (`s13`).
+  std::string tag;     ///< The step that introduced it.
   std::string channel; ///< `exit`, `stdout`, `stderr` or `state:<table>`.
   std::string detail;  ///< The exact observed delta.
 };
@@ -677,51 +677,16 @@ struct known {
   std::string_view detail;  ///< The exact expected delta.
 };
 
-/// @brief The four defects this lane found on its first run, each with its
-/// own task, none of them fixed here (task 6198's scope note).
+/// @brief The staged, known-divergence allowlist for this differential.
 ///
 /// Removing an entry is how the corresponding task goes red-then-green. The
 /// list is asserted in BOTH directions — see this file's header.
 ///
-///   s13 state:audit_log  task 6199 — the C++ tree never writes the
-///                        `session` start row the oracle writes.
-///
-/// FOUR ENTRIES WERE REMOVED HERE, closing tasks 6200/6201/6202. They are
-/// described rather than deleted silently, because the removal is the
-/// assertion: this list is checked in both directions, so a re-entry would
-/// mean the fix regressed.
-///
-///   s30 stderr  \ task 6200 — `task list` / `decision list` validated
-///   s32 stderr  / `--status` BEFORE resolving the cwd-derived scope. Fixed
-///                 by reordering both handlers. The finding was real; its
-///                 stated remedy ("match their own three sibling families")
-///                 was NOT — see below.
-///   s32 exit      task 6201 — filed as "`decision list` exits 2 where the
-///                 oracle exits 1". NOT A DEFECT. Re-probed in a pinned
-///                 arena INSIDE a registered scope, `$Z decision list
-///                 --status ''` exits 2 exactly as this tree does; the
-///                 differential's zig=1 was the SCOPE error, which is what
-///                 s32 now returns on both sides once 6200's reordering
-///                 landed. This entry went away as a CONSEQUENCE of 6200
-///                 and no exit-code mapping was touched. Changing it to 1
-///                 would have broken every in-scope invocation.
-///   s37 stderr    task 6202 — `task add` dropped the oracle's inner
-///                 `task.create exec failed: StepFailed` line. Fixed at the
-///                 engine's exec seam (`engine/planning/task.cpp`'s
-///                 `exec_failed`), not in the handler: the oracle emits the
-///                 same shape from ~28 engine sites, so the handler was the
-///                 wrong altitude.
+/// Task 6191 removed the final `s13` session-start audit difference, so the
+/// list is intentionally empty. Its bidirectional assertion catches both a
+/// reintroduced difference and an accidentally stale allowance.
 const std::vector<known>& known_divergences() {
-  static const std::vector<known> staged{
-      // --- task 6199: the C++ tree never writes the session-start audit
-      // row. Note `entity_kind='session'` — this is the row `capture
-      // session` and the whole audit trail hang off, and BOTH sides wrote
-      // an identical `sessions` row, so nothing in the output lane could
-      // ever have seen it.
-      {"s13", "state:audit_log",
-       "+0 cpp-only / +1 zig-only | zig-only: id=6\\x1fverb='create'\\x1fentity_kind='session'\\x1fentity_id=1\\x1factor=NULL"
-       "\\x1fscope=NULL\\x1fsummary='start session vendor=cli'\\x1frecorded_at=<volatile>"},
-  };
+  static const std::vector<known> staged{};
   return staged;
 }
 

@@ -73,24 +73,16 @@
 //       b'linked decision:1 -> plan:1  [cites]  (link id: 1)\n'
 //       ^ DOUBLE spaces around the bracket group.
 //
-// ## The three known divergences, each deliberate
+// ## The two known divergences, each deliberate
 //
-//  1. The oracle's `decision add` writes a `create|session|N|start session
-//     vendor=cli` row into `audit_log`; this build creates the `sessions`
-//     row but not the audit row. Pre-existing in `engine_runtime`'s
-//     `start_session`, equally visible through `capture`, `unlink` and
-//     `question add`, tracked as planar task 6191. The sequence diff
-//     confirmed it is the ONLY audit divergence across all 61 steps: with
-//     the session rows removed, the two `audit_log` tables are equal.
-//     Asserted ABSENT below so it stays pinned rather than latent.
-//  2. `decision add --editor` with no `--body` prints an extra WARNING on
+//  1. `decision add --editor` with no `--body` prints an extra WARNING on
 //     stderr before the oracle's refusal. The oracle opens `$EDITOR` there
 //     — but only when stdout is a TTY; on a pipe it falls through to the
 //     same refusal, so the non-interactive bytes on stdout are identical.
 //     This build has no editflow and this `context` has no TTY probe, so
 //     the warning is what keeps an interactive operator from reading the
 //     refusal as the oracle's own answer. Deliberate, and asserted.
-//  3. The oracle's duplicate-`supersede` refusal prints TWO stderr lines,
+//  2. The oracle's duplicate-`supersede` refusal prints TWO stderr lines,
 //     the first being a `std.log.err` (`decision.supersede entity_links
 //     insert failed: StepFailed`). No engine module in this tree imports
 //     `planar.log` at all, so no port reproduces Zig's log lines; the
@@ -310,11 +302,7 @@ TEST_CASE("decision add writes a proposed row and echoes the oracle's block") {
   CHECK(decision_rows(conn) == "1|global|<NULL>|first|because|<NULL>|proposed|<NULL>|1");
   CHECK(audit_rows(conn, "decision") == "create|1|create decision 'first'|<NULL>|<NULL>");
   CHECK(edge_rows(conn).empty());
-  // The KNOWN DIVERGENCE, pinned: the oracle writes a `create|session|1|
-  // start session vendor=cli` row here and this build does not. Asserting
-  // it ABSENT means the day `start_session` starts auditing, this test
-  // fails and someone decides deliberately.
-  CHECK(audit_rows(conn, "session").empty());
+  CHECK(audit_rows(conn, "session") == "create|1|start session vendor=cli|<NULL>|<NULL>");
   // The session row itself IS written, and its id lands on the decision.
   CHECK(query_rows(conn, "select id, vendor from sessions order by id", 2) == "1|cli");
   // No live claim, so the entity-create activity hook is a silent no-op.

@@ -50,19 +50,6 @@
 // while an out-of-scope-of-the-filter row SURVIVES — an exclusion proved
 // by what is missing AND by what remains, never by a shorter list alone.
 //
-// ## The ONE known divergence, and why it is not closed here
-//
-// The oracle's `artifact add` writes a `create|session|N|start session
-// vendor=cli` row into `audit_log`; this build creates the `sessions` row
-// but not the audit row. That gap is in `engine_runtime`'s
-// `start_session`, is PRE-EXISTING and shared with `question add`,
-// `capture` and `unlink`, and is tracked as planar task 6191. It is
-// pinned ABSENT below rather than left latent, exactly as
-// `question_leaves.t.cpp` pins it — when 6191 lands, both assertions flip
-// together. Closing it here would have been a shared-module change made
-// under a per-family port, and would have silently flipped the sibling
-// pin.
-
 #include <catch2/catch_test_macros.hpp>
 
 import std;
@@ -337,13 +324,9 @@ TEST_CASE("artifact add starts a session before the engine's own refusal", "[cmd
   // would leave no row here and still pass every stdout check.
   CHECK(query_rows(conn, "select count(*), vendor from sessions", 2) == "1|cli");
 
-  // The KNOWN divergence, pinned rather than left latent: the oracle also
-  // writes `create|session|1|start session vendor=cli` here. The gap is in
-  // `engine_runtime`'s `start_session`, is shared with
-  // `question add`/`capture`/`unlink`, and is planar task 6191. When that
-  // task lands, THIS assertion and question_leaves.t.cpp's twin flip
-  // together.
-  CHECK(audit_rows(conn, "session").empty());
+  // The successful lazy session creation is an observable side effect even
+  // though the artifact create then refuses.
+  CHECK(audit_rows(conn, "session") == "create|1|start session vendor=cli|<NULL>|<NULL>");
 }
 
 TEST_CASE("artifact add --plan checks the plan and writes the edge", "[cmd][artifact][add][plan]") {
