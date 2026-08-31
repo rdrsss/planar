@@ -4337,7 +4337,28 @@ auto unported_paths() -> std::span<std::string_view const> {
       // set means opposite things to the two, `--closure-source` exists on
       // only one of them, and `jaccard` renders shortest-round-trip in JSON
       // but fixed-4-decimal in text. See strategy.cppm.
-      "spec ingest",
+      //
+      // `spec ingest` left this inventory at task 6365. Its brief carried the
+      // now-familiar hypothesis that this is handler wiring over an already-
+      // ported engine (`engine_ingest`'s parse/diff/coverage/render/
+      // materialize read side, landed task 6035) -- true for PREVIEW mode,
+      // and wrong for `--apply`: `engine_ingest`'s own CMakeLists.txt already
+      // documented `apply.zig` (1616 Zig lines) as a genuine, architectural
+      // non-port, because it composes SIX layer-2 `engine_*` peers
+      // (`engine_planning`'s plan/task/decision/question/scenario CRUD,
+      // `engine_entitylink`, `engine_runtime.session`) that D15/D18 forbid
+      // another layer-2 bucket from depending on. What THAT note got wrong
+      // was a stale premise, not the architecture: it said three of the six
+      // callees "do not exist in the C++ tree yet" (decision, question,
+      // scenario); all three had landed by this task. The fix that note
+      // already named -- land the composition at LAYER 3, the D20 shape
+      // `annotate add` and `unlink` pioneered -- is what this task did:
+      // `handlers/spec_ingest.cpp` composes `engine_planning`,
+      // `engine_entitylink` and `engine_runtime` directly, with no
+      // `engine_ingest` module touched or extended. The handler's outer
+      // `planar.db` transaction and the DB layer's nested-savepoint support
+      // reproduce the oracle's single all-or-nothing `--apply` write set;
+      // idempotency and rollback both have dedicated leaf tests.
       // `sync pull`, `sync push` and `sync resolve` left this inventory at
       // task 6294. All three were briefed as blocked on the unported
       // create/propagate half of `engine_extsync`; none of them touches it.

@@ -161,26 +161,36 @@ export enum class lock_mode {
 
 /// @brief A SQLite transaction, begun immediately on construction.
 ///
-/// Move-only. If the transaction has not been explicitly committed by the
-/// time it is destroyed, the destructor rolls it back — "rollback on scope
+/// Move-only. At SQLite's outermost level it issues `BEGIN` (or `BEGIN
+/// IMMEDIATE`); when the same connection already has a transaction in
+/// progress it instead owns a uniquely named SAVEPOINT. Thus callers may
+/// compose independently-atomic engine operations without accidentally
+/// committing or rolling back their enclosing operation. If this transaction
+/// has not been explicitly committed by the time it is destroyed, the
+/// destructor rolls back precisely its owned scope — "rollback on scope
 /// exit" is therefore automatic for every early-return or exception path.
 export class transaction {
 private:
-  sqlite3* _handle    = nullptr;
-  bool     _active    = false;
-  bool     _committed = false;
+  sqlite3*    _handle    = nullptr;
+  bool        _active    = false;
+  bool        _committed = false;
+  bool        _savepoint = false;
+  std::string _savepoint_name;
 
   friend class connection;
 
-  /// @brief Issues `BEGIN` (or `BEGIN IMMEDIATE`, per `mode`) on `handle`
-  /// and takes ownership of the resulting in-progress transaction.
+  /// @brief Issues outermost `BEGIN` (or `BEGIN IMMEDIATE`, per `mode`) or,
+  /// when `handle` is already transactional, a uniquely named SAVEPOINT;
+  /// then takes ownership of that scope.
   /// `handle` is non-owning — the originating `connection` outlives every
   /// `transaction` it produces.
   /// @param handle The connection to begin a transaction on.
-  /// @param mode The lock-acquisition mode to request. Defaults to
-  /// `lock_mode::deferred` (SQLite's own default and this type's
-  /// historical behavior); pass `lock_mode::immediate` to take the write
-  /// lock synchronously at `BEGIN` (see `lock_mode`).
+  /// @param mode The lock-acquisition mode to request for an OUTERMOST
+  /// transaction. Defaults to `lock_mode::deferred` (SQLite's own default
+  /// and this type's historical behavior); pass `lock_mode::immediate` to
+  /// take the write lock synchronously at outermost `BEGIN` (see
+  /// `lock_mode`). Nested scopes use SQLite SAVEPOINT semantics because a
+  /// second `BEGIN` is invalid.
   explicit transaction(sqlite3* handle, lock_mode mode = lock_mode::deferred) noexcept;
 
   /// @brief Rolls back the in-progress transaction, if any, ignoring the
@@ -203,8 +213,9 @@ public:
   /// @brief Rolls back the transaction if `commit()` was never called.
   ~transaction();
 
-  /// @brief Commits the transaction. After a successful call the
-  /// destructor is a no-op.
+  /// @brief Commits the transaction. After a successful call the destructor
+  /// is a no-op. A nested transaction releases only its owned SAVEPOINT;
+  /// its enclosing transaction remains active.
   ///
   /// Guarded against every degenerate call shape (M1 boundary-review
   /// finding R2): calling `commit()` on a moved-from transaction (its
@@ -294,8 +305,11 @@ public:
   auto prepare(std::string_view sql) -> std::expected<statement, db_error>;
 
   /// @brief Begins a transaction on this connection. See `transaction` for
-  /// commit/rollback-on-scope-exit semantics.
-  /// @param mode The lock-acquisition mode to request (see `lock_mode`).
+  /// commit/rollback-on-scope-exit semantics. If this connection is already
+  /// transactional, returns a nested SAVEPOINT-backed scope rather than
+  /// issuing SQLite's invalid second `BEGIN`.
+  /// @param mode The lock-acquisition mode to request for an outermost
+  /// transaction (see `lock_mode`).
   /// Defaults to `lock_mode::deferred` — pass `lock_mode::immediate` when
   /// the caller needs to serialize against other writers starting at
   /// `BEGIN` itself rather than at the first write statement (e.g.

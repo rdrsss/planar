@@ -498,6 +498,32 @@ auto add_handoff(CLI::App& root) -> void {
 /// 64 rather than silently rendering a help page. See
 /// `planar.cmd.planar.handlers.resume`.
 /// @param root The root app to attach the group to.
+/// @brief The `spec ingest` leaf (plan 996, task 6365).
+///
+/// Hand-wired, like `add_capture`'s `commits`, because CLI11's declarative
+/// surface table has no variadic-positional primitive: `spec ingest <p1>
+/// <p2> <p3>` batches every argument (`zig`'s `rest_field = "extra_plans"`),
+/// so `plan` is REQUIRED and a second, hidden `extra-plans` positional takes
+/// `expected(0, -1)` to catch the rest. See spec_ingest.cppm's header.
+auto add_spec(CLI::App& root) -> void {
+  CLI::App* spec = root.add_subcommand("spec", "Commands for the planning pipeline spec surface.\n\n"
+                                               "  'spec ingest' decomposes workbench planning documents into a\n"
+                                               "  structured task graph in the database.\n"
+                                               "  'spec draft' generates initial spec artifacts from a goal statement.");
+  spec->require_subcommand(0);
+
+  CLI::App* ingest = spec->add_subcommand("ingest", "Decompose workbench spec documents into the task graph.");
+  add_bool(*ingest, "--apply");
+  add_bool(*ingest, "--apply-removals");
+  add_string(*ingest, "--format");
+  add_string(*ingest, "--scope");
+  add_bool(*ingest, "--strict");
+  add_json(*ingest);
+  ingest->add_option("plan")->required();
+  // Hidden variadic "rest" positional -- see this function's header.
+  ingest->add_option("extra-plans")->expected(0, -1)->group("");
+}
+
 auto add_resume(CLI::App& root) -> void {
   // The oracle's LONG description, not its one-line summary. Task 6065
   // made the catalog carry both — the summary out of band, the description
@@ -544,6 +570,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_capture(*app);
   add_handoff(*app);
   add_resume(*app);
+  add_spec(*app);
   // Everything above is hand-transcribed and lands WITH its handler. This
   // fills in the rest of the oracle's surface — ~190 leaves that land no
   // behaviour — from generated data, skipping every node declared above.

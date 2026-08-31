@@ -701,7 +701,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // call them. Nothing about that was inferrable from the leaves' names;
   // it came from grepping for the SYMBOLS their oracle handlers call.
   // (`test-spec status` in particular reads as a `spec ingest` sibling and
-  // is not one: `spec ingest` stays unported below.)
+  // was not one at the time: `spec ingest` stayed unported below until
+  // task 6365 — see that task's note further down.)
   //
   // The other seven of the ten did NOT move, and the split is the cycle's
   // real product. See the per-leaf notes below.
@@ -1035,9 +1036,25 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // already-ported `touch_idempotent` primitive. See
   // `src/lib/engine/runs/harvest.cppm` and surface.cpp's entry for the
   // full account.
-  CHECK(unported.size() == 8);
+  // 8 -> 7 at task 6365: `spec ingest` moved. Its brief carried the
+  // now-familiar hypothesis that this is handler wiring over an
+  // already-ported engine, true for PREVIEW mode and wrong for `--apply`:
+  // `engine_ingest`'s own CMakeLists.txt documented `apply.zig` (1616 Zig
+  // lines) as a genuine architectural non-port, since it composes SIX
+  // layer-2 `engine_*` peers D15/D18 forbid another layer-2 bucket from
+  // reaching. What that note got wrong was a stale premise (three of the
+  // six callees "do not exist yet" — all three had since landed), not the
+  // architecture; the fix it already named — land the composition at
+  // LAYER 3, the D20 shape `annotate add` and `unlink` pioneered — is what
+  // this task did. `handlers/spec_ingest.cpp` owns one outer transaction
+  // for an apply; the re-entrant `planar.db` transaction seam makes each
+  // composed CRUD operation a nested savepoint, preserving the oracle's
+  // all-or-nothing write contract.
+  CHECK(unported.size() == 7);
   INFO("moved by task 6362: bench harvest");
   CHECK_FALSE(unported.contains("bench harvest"));
+  INFO("moved by task 6365: spec ingest");
+  CHECK_FALSE(unported.contains("spec ingest"));
   INFO("moved by task 6357: health");
   CHECK_FALSE(unported.contains("health"));
   INFO("moved by task 6358: capture commits");
