@@ -6,8 +6,11 @@ module planar.engine.runtime.snapshot;
 
 import std;
 import planar.db;
+import planar.policy;
 
 namespace planar::engine::runtime::snapshot {
+
+namespace audit = planar::policy::audit;
 
 namespace {
 
@@ -99,7 +102,15 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<snap
   if (!step || *step != db::step_result::row) {
     return std::unexpected(snapshot_error::query_failed);
   }
-  return show(conn, stmt->column_int64(0));
+  const auto id = stmt->column_int64(0);
+  if (auto recorded = audit::record(
+          conn, audit::record_args{.verb    = audit::verb::create,
+                                   .entity  = {.kind = "context_snapshot", .id = id},
+                                   .summary = std::format("create snapshot session={} vendor={}", args.session_id, args.vendor)});
+      !recorded) {
+    return std::unexpected(snapshot_error::query_failed);
+  }
+  return show(conn, id);
 }
 
 auto get_latest_for_task(db::connection& conn, std::int64_t task_id) -> std::expected<std::optional<snapshot>, snapshot_error> {
