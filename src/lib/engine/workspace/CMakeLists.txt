@@ -104,13 +104,36 @@
 #     -- which is precisely the failure mode routing.cppm's header warns
 #     about, arriving on the arm one layer up from the one it warns about.
 #
-#   - `workspace regenerate`. It renders AGENTS.md through a hand-rolled
-#     template engine (`{{range}}` / `{{if}}` / `{{else}}` / `{{end}}` /
-#     `commaJoin`) whose `-` whitespace-trim markers are PARSED AND IGNORED --
-#     `parseDirective` trims `" \t\r\n-"` off the directive NAME, so `{{if
-#     .Projects -}}` leaves its blank lines in the output. It then writes a
-#     `.manifest-docs` merkle over the state dir keyed by xxh64, and no xxhash
-#     implementation is vendored in this tree. Deferred WITH both dependencies.
+#   - ~~`workspace regenerate`.~~ PORTED (task 6364, this cycle), as
+#     `regenerate.cppm`/`.cpp`. It was carried as blocked on an unvendored
+#     xxh64 for its `.manifest-docs` merkle -- verified TRANSITIVELY true
+#     (`regenerate.zig` itself has no xxh64 reference; the dependency is one
+#     hop out, through `manifest.build` in `../docs/manifest.zig`) -- plus a
+#     hand-rolled template engine this leaf now also carries.
+#
+#     xxHash 0.8.3 is vendored at `cmake/dependencies.cmake` and wrapped by
+#     the new layer-1 `planar.docs_manifest` module
+#     (`src/lib/docs_manifest/`) -- NOT `engine_docs`, because D15/D18
+#     forbid an `engine_* -> engine_*` edge and this bucket is the only
+#     consumer. See that module's own header for the full argument, plus
+#     two oracle findings it reproduces deliberately: `generated_at` is the
+#     LITERAL STRING `"now"` in every manifest the oracle ever writes (not
+#     an actual timestamp), and manifest entry paths are the UN-relativized
+#     path passed to `build()`.
+#
+#     The hand-rolled template engine's one deliberate quirk survived the
+#     port unchanged: `parseDirective` trims `" \t\r\n-"` off the directive
+#     NAME, so the Go-template-style `-}}` / `{{-` whitespace-trim markers
+#     PARSE but trim nothing beyond the delimiters themselves -- `{{if
+#     .Projects -}}` behaves exactly like `{{if .Projects}}`, and the oracle's
+#     own rendered output carries the resulting blank lines. Captured
+#     end-to-end against a live `workspace init` run (`regenerate.cppm`'s
+#     header) and reproduced byte-for-byte, not fixed forward.
+#
+#     Digest parity: `docs_manifest.t.cpp` feeds the oracle's own captured
+#     `AGENTS.md` bytes through this port's `normalize()` + `hash_hex()` and
+#     asserts `doc_hash` / `sources_hash` / `entry_hash` match the oracle's
+#     `.manifest-docs` output exactly -- not merely "a hash is produced".
 #
 #   - `workspace init`. Architecturally blocked, not merely deferred: it
 #     composes scan + project registration + routing build + regenerate +
@@ -133,16 +156,20 @@ planar_module(engine_workspace
     identity.cppm
     doctor.cppm
     routing.cppm
+    regenerate.cppm
     workspace.cppm
   SOURCES
     identity.cpp
     doctor.cpp
     routing.cpp
     routing_build.cpp
+    regenerate.cpp
   DEPENDS
     db
     json_dom
-    json_text)
+    json_text
+    docs_manifest
+  EMBED)
 
 # Glaze (D8) parses `associations.config_json`, which is operator-written JSON
 # of no fixed shape. PRIVATE: the exported interface speaks only in this
