@@ -82,6 +82,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdio>
+
 import std;
 import cli11;
 import planar.cliapp.args;
@@ -2180,6 +2182,143 @@ TEST_CASE("capture snapshot: --note beats the positional body", "[cmd][handlers]
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().has_value());
   CHECK(stmt->column_text(0) == "flagwins");
+}
+
+// ---------------------------------------------------------------------------
+// capture commits (plan 996, task 6358)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("capture commits refuses --since combined with an explicit SHA", "[cmd][handlers][capture][commits]") {
+  auto const fx = make_fixture("capcommitsmutex");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+
+  auto const got = dispatch(fx, {"capture", "commits", "--since", "HEAD", "deadbeef"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: cannot combine --since with explicit commit SHAs\n");
+}
+
+TEST_CASE("capture commits refuses when neither --since nor a SHA is given", "[cmd][handlers][capture][commits]") {
+  auto const fx = make_fixture("capcommitsneither");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+
+  auto const got = dispatch(fx, {"capture", "commits"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: provide --since <ref> or one or more commit SHAs\n");
+}
+
+TEST_CASE("capture commits refuses with no active session", "[cmd][handlers][capture][commits]") {
+  // `commits` shares `end`'s NON-creating session resolution, not the
+  // append leaves' create-on-demand one. See handlers/capture.cppm's
+  // header.
+  auto const fx  = make_fixture("capcommitsnosess");
+  auto const got = dispatch(fx, {"capture", "commits", "--since", "HEAD"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: no active session (run `planar capture session` first)\n");
+}
+
+TEST_CASE("capture commits reports session-not-found for an explicit --session", "[cmd][handlers][capture][commits]") {
+  auto const fx = make_fixture("capcommitsnf");
+  if (!seed_git_commit(fx)) {
+    SKIP("git unavailable");
+  }
+
+  auto const got = dispatch(fx, {"capture", "commits", "--session", "9999", "--since", "HEAD"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: session 9999 not found\n");
+}
+
+TEST_CASE("capture commits reports NOT a git repository for a non-repo --repo", "[cmd][handlers][capture][commits]") {
+  auto const fx = make_fixture("capcommitsnongit");
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+  std::error_code ec;
+  std::filesystem::create_directories(fx.root / "nongit", ec);
+
+  auto const got = dispatch(fx, {"capture", "commits", "--repo", (fx.root / "nongit").string(), "--since", "HEAD"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == std::format("error: repo is not a git repository: {}\n", (fx.root / "nongit").string()));
+}
+
+TEST_CASE("capture commits reports an unresolvable --since ref", "[cmd][handlers][capture][commits]") {
+  auto const fx = make_fixture("capcommitsbadref");
+  if (!seed_git_commit(fx)) {
+    SKIP("git unavailable");
+  }
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+
+  auto const got = dispatch(fx, {"capture", "commits", "--since", "not-a-ref"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: cannot resolve ref 'not-a-ref'\n");
+}
+
+TEST_CASE("capture commits reports unresolvable SHAs distinctly from an unresolvable --since",
+          "[cmd][handlers][capture][commits]") {
+  auto const fx = make_fixture("capcommitsbadsha");
+  if (!seed_git_commit(fx)) {
+    SKIP("git unavailable");
+  }
+  REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
+
+  auto const got = dispatch(fx, {"capture", "commits", "not-a-real-sha"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: one or more commit SHAs could not be resolved\n");
+}
+
+TEST_CASE("capture commits walks --since into new rows and is idempotent on re-run", "[cmd][handlers][capture][commits]") {
+  // `--repo` is passed EXPLICITLY here rather than relying on its `.`
+  // default: `dispatch`'s `context` carries a virtual `cwd()` for
+  // DB/scope resolution, but the git subprocess this leaf shells reads
+  // the REAL OS process cwd for a relative `-C .`, which this shared test
+  // binary cannot safely repoint per test case. The `.` default itself is
+  // a one-line `flag_string(args, "--repo").value_or(".")`, oracle-pinned
+  // in capture.t.cpp's header transcript; what this case defends is the
+  // WALK, not the default.
+  auto const fx = make_fixture("capcommitswalk");
+  if (!seed_git_commit(fx)) {
+    SKIP("git unavailable");
+  }
+  REQUIRE(dispatch(fx, {"capture", "session", "--json"}).code == 0);
+
+  auto const  dir  = (fx.root / "proj").string();
+  auto const  base = std::format("git -C '{0}' rev-parse HEAD", dir);
+  std::string base_sha;
+  {
+    FILE* pipe = popen(base.c_str(), "r");
+    REQUIRE(pipe != nullptr);
+    char buf[256];
+    while (std::fgets(buf, sizeof(buf), pipe) != nullptr) {
+      base_sha += buf;
+    }
+    pclose(pipe);
+    while (!base_sha.empty() && (base_sha.back() == '\n' || base_sha.back() == '\r')) {
+      base_sha.pop_back();
+    }
+  }
+  REQUIRE_FALSE(base_sha.empty());
+
+  auto const zero = dispatch(fx, {"capture", "commits", "--repo", dir, "--since", base_sha, "--json"});
+  CHECK(zero.code == 0);
+  CHECK(zero.out.find("\"commit_count\":0") != std::string::npos);
+  CHECK(zero.out.find("\"inserted_count\":0") != std::string::npos);
+
+  REQUIRE(std::system(std::format("git -C '{}' commit -q --allow-empty -m second >/dev/null 2>&1", dir).c_str()) == 0);
+
+  auto const one = dispatch(fx, {"capture", "commits", "--repo", dir, "--since", base_sha, "--json"});
+  CHECK(one.code == 0);
+  CHECK(one.out.find("\"commit_count\":1") != std::string::npos);
+  CHECK(one.out.find("\"inserted_count\":1") != std::string::npos);
+
+  auto const text = dispatch(fx, {"capture", "commits", "--repo", dir, "--since", base_sha});
+  CHECK(text.code == 0);
+  // Re-run: idempotent, so `commit_count` stays 1 but `inserted_count`
+  // drops to zero.
+  CHECK(text.out == "session 1: processed 1 commits (0 new)\n");
 }
 
 TEST_CASE("resume validate: absent task writes NOTHING to stdout", "[cmd][handlers][resume]") {

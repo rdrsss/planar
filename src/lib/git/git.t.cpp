@@ -134,6 +134,29 @@ TEST_CASE("run_trimmed reports no answer rather than the empty string", "[lib][g
   CHECK_FALSE(git::run_trimmed(dir.get(), k_args).has_value());
 }
 
+TEST_CASE("run preserves embedded NUL bytes in -z output (plan 996, task 6358 regression)", "[lib][git]") {
+  // `run` used to accumulate stdout via `fgets` into a fixed buffer, then
+  // append it with the `const char*` overload of `std::string::append` --
+  // which stops at the first NUL, exactly like `strlen`. `git log -z`
+  // emits NUL as a field/record separator, so any caller reading `-z`
+  // output (sessioncommits.cppm's `walk_strict`/`resolve_shas`) silently
+  // lost everything after the FIRST embedded NUL. This pins the fix:
+  // three fields NUL-joined, all three bytes present past every NUL.
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_dir const dir;
+  REQUIRE(make_repo(dir.get()));
+
+  static constexpr std::array<std::string_view, 3> k_args{"log", "-z", "--format=%H%x00%s%x00tail"};
+  auto const                                       raw = git::run(dir.get(), k_args);
+  REQUIRE(raw.has_value());
+  // Three NUL-delimited fields: sha, subject ("seed"), and the literal
+  // "tail" marker. If the bug were still present, `raw` would end right
+  // after the SHA's trailing NUL and never reach "tail" at all.
+  CHECK(raw->find("\0seed\0tail", 0, 10) != std::string::npos);
+}
+
 TEST_CASE("run quotes an argument containing a space and a single quote", "[lib][git]") {
   if (!have_git()) {
     SKIP("git not on PATH");

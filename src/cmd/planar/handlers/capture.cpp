@@ -57,6 +57,15 @@ auto generic_body(std::string_view verb, cap::capture_error err) -> std::string 
   case cap::capture_error::no_active_session:
     name = "NoActiveSession";
     break;
+  case cap::capture_error::not_git:
+    name = "NotGit";
+    break;
+  case cap::capture_error::git_failed:
+    name = "GitFailed";
+    break;
+  case cap::capture_error::malformed_output:
+    name = "MalformedOutput";
+    break;
   case cap::capture_error::query_failed:
     break;
   }
@@ -323,6 +332,87 @@ auto capture_snapshot(context& ctx, const cliapp::parsed_args& args) -> handler_
     ctx.out() << cap::render_snapshot_json(*taken);
   } else {
     ctx.out() << cap::render_snapshot_text(*taken);
+  }
+  return {};
+}
+
+auto capture_commits(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const since = flag_string(args, "--since");
+  auto const shas  = positional_strings(args, "shas");
+
+  // The two validation checks the oracle's own handler runs BEFORE
+  // touching the engine (commits.zig:15-20) -- `record_commits` does not
+  // re-validate them; see capture.cppm's header.
+  if (since.has_value() && !shas.empty()) {
+    return std::unexpected(error_from_body(kind_t::invalid_input, "cannot combine --since with explicit commit SHAs"));
+  }
+  if (!since.has_value() && shas.empty()) {
+    return std::unexpected(error_from_body(kind_t::invalid_input, "provide --since <ref> or one or more commit SHAs"));
+  }
+
+  // Resolution order, from the Zig handler's `resolveTargetSessionId`:
+  // explicit `--session` wins; otherwise the vendor tuple's ACTIVE
+  // session -- NOT created on demand, unlike the four append-style
+  // leaves' `resolve_or_create_session`. See this module's header.
+  std::int64_t session_id = 0;
+  if (auto const explicit_id = flag_int(args, "--session")) {
+    session_id = *explicit_id;
+  } else {
+    auto const tuple = resolve_vendor_tuple(ctx.env());
+    auto const found = sess::active_for_vendor(**conn, tuple.vendor, as_view(tuple.vendor_session_id));
+    if (!found) {
+      return std::unexpected(error_from_body(kind_t::generic_failure, "finding active session: QueryFailed"));
+    }
+    if (!found->has_value()) {
+      return std::unexpected(error_from_body(kind_t::invalid_input, "no active session (run `planar capture session` first)"));
+    }
+    session_id = (*found)->id;
+  }
+
+  auto const repo_dir = flag_string(args, "--repo").value_or(".");
+
+  // `sha_views` must outlive `record_commits`: `record_commits_args::shas`
+  // is a non-owning span of `string_view`s viewing INTO `shas`' buffers.
+  std::vector<std::string_view> sha_views;
+  sha_views.reserve(shas.size());
+  for (auto const& sha : shas) {
+    sha_views.push_back(sha);
+  }
+
+  auto result = cap::record_commits(**conn, cap::record_commits_args{
+                                                .session_id = session_id,
+                                                .repo_dir   = repo_dir,
+                                                .since      = as_view(since),
+                                                .shas       = sha_views,
+                                            });
+  if (!result) {
+    // Special-cased exactly the way commits.zig's own `switch` special-cases
+    // them; everything else falls through to the generic body, matching the
+    // oracle's default `exit.die(ctx, e, "capture commits: {s}", ...)` arm.
+    switch (result.error()) {
+    case cap::capture_error::not_found:
+      return std::unexpected(error_from_body(kind_t::not_found, std::format("session {} not found", session_id)));
+    case cap::capture_error::not_git:
+      return std::unexpected(error_from_body(kind_t::generic_failure, std::format("repo is not a git repository: {}", repo_dir)));
+    case cap::capture_error::git_failed:
+      if (since.has_value()) {
+        return std::unexpected(error_from_body(kind_t::generic_failure, std::format("cannot resolve ref '{}'", *since)));
+      }
+      return std::unexpected(error_from_body(kind_t::generic_failure, "one or more commit SHAs could not be resolved"));
+    default:
+      return std::unexpected(error_from_body(kind_t::generic_failure, generic_body("capture commits", result.error())));
+    }
+  }
+
+  if (wants_json(args)) {
+    ctx.out() << cap::render_commits_json(*result);
+  } else {
+    ctx.out() << cap::render_commits_text(*result);
   }
   return {};
 }

@@ -1,28 +1,38 @@
 /// @file capture.cppm
 /// @brief `planar.engine.runtime.capture` — the orchestrator behind the
 /// `planar capture` verb family, plus each leaf's output envelope
-/// (plan 996, task 6094).
+/// (plan 996, tasks 6094 and 6358).
 ///
 /// Behavior-preserving port (D2) of zig/src/engine/runtime/capture.zig,
 /// plus the body-composition and rendering halves of
 /// zig/src/cmd/planar/handlers/capture/{session,end,note,command,file,
-/// snapshot,util}.zig. Six of the seven `capture` schema leaves are
-/// covered here; see the cut list below for the seventh.
+/// snapshot,commits,util}.zig. All seven `capture` schema leaves are
+/// covered here as of task 6358; see the cut list below for what is still
+/// NOT ported.
 ///
 /// Every output string below was captured by RUNNING the oracle against a
 /// scratch database — see capture.t.cpp's header for the verbatim probe
-/// session and its transcript.
+/// session and its transcript. `record_commits`'s output strings were
+/// captured the same way, against a hermetic git fixture rather than the
+/// Planar checkout — see sessioncommits.t.cpp's header for that arena.
+///
+/// ## `capture commits` landed at task 6358 — what unblocked it
+///
+/// The cut note used to read "porting it means standing up a
+/// process-spawn abstraction this tree does not have". That stopped being
+/// true at tasks 6128/6137, which stood up `planar.git` for
+/// `capture session`'s start-context probe and the worktree gate. Task
+/// 6358 reaches it a second hop out: `record_commits` below calls
+/// `sessioncommits::resolve_repo_root_strict` / `walk_strict` /
+/// `resolve_shas` / `record_count` (added to the SAME `engine_runtime`
+/// CMake target by task 6358 — see sessioncommits.cppm), which in turn
+/// call `planar.git::run` / `run_trimmed`. No new engine-to-engine edge:
+/// `sessioncommits` was already an `engine_runtime` sibling module (task
+/// 6262), so this is an intra-library call, not a D15/D18 boundary
+/// crossing.
 ///
 /// ## What is NOT ported, and why
 ///
-/// - **`capture commits` (the seventh leaf).** It rests on
-///   zig/src/engine/runtime/sessioncommits.zig (1205 lines) whose entire
-///   job is shelling `git` — `rev-parse`, revision walks, per-commit
-///   metadata extraction — through `std.process.run`. Porting it means
-///   standing up a process-spawn abstraction this tree does not have, and
-///   the resulting tests would be git-fixture tests rather than the
-///   oracle-pinned DB tests the rest of this module ships. Deferred with
-///   its dependency, as an explicitly named gap rather than a silent one.
 /// - **`open_session`'s automatic git probe.** The Zig `openSession` runs
 ///   `git rev-parse --show-toplevel` / `git rev-parse HEAD` in the process
 ///   cwd and stamps the result onto the row, best-effort, ignoring every
@@ -44,11 +54,24 @@
 ///   repository legitimately has nothing to pass), but a HANDLER that omits
 ///   it is a defect, and `handlers.t.cpp`'s `[6128]` cases assert the row
 ///   rather than the stdout precisely because nothing else can see it.
-/// - **`close_session`'s `recordSessionWindow`.** Same reason: it walks
-///   git commits between `head_sha_at_start` and HEAD. It is a no-op
-///   whenever `repo_root` or `head_sha_at_start` is NULL, which is every
-///   session this tree can currently open, so omitting it changes nothing
-///   observable here. Named in the report as part of the `commits` gap.
+/// - **`close_session`'s `recordSessionWindow`.** `capture end`'s
+///   AUTOMATIC commit capture — walks git commits between
+///   `head_sha_at_start` and HEAD and records them, distinct from the
+///   `capture commits` MANUAL leaf task 6358 ported. STILL NOT WIRED, and
+///   the justification this note used to carry — "a no-op whenever
+///   `repo_root`/`head_sha_at_start` is NULL, which is every session this
+///   tree can currently open" — is now STALE, corrected here rather than
+///   silently dropped: task 6128 landed the git probe that stamps both
+///   columns on `capture session`, so a session opened inside a
+///   repository DOES carry them, and `close_session` on it is a real,
+///   reachable divergence from the oracle (no automatic commit rows on
+///   `capture end`) rather than an unreachable one. `record_commits`
+///   below reaches the STRICT git-walk primitives `recordSessionWindow`
+///   would need; it calls the FAIL-SOFT `walk` variant, which
+///   `sessioncommits.cppm` still does not carry. Wiring it into
+///   `close_session` is a separate leaf's behavior change, outside this
+///   task's claimed scope — tracked for a follow-up task rather than
+///   fixed here.
 ///
 /// The `--session` / `$PLANAR_VENDOR` resolution the four append-style
 /// leaves share IS ported (`resolve_session_id`), because it is pure
@@ -61,6 +84,7 @@ export module planar.engine.runtime.capture;
 import std;
 import planar.db;
 import planar.engine.runtime.session;
+import planar.engine.runtime.sessioncommits;
 import planar.engine.runtime.snapshot;
 
 namespace planar::engine::runtime::capture {
@@ -73,6 +97,9 @@ export enum class capture_error : std::uint8_t {
   task_conflict,     ///< Reusing a session whose bound task differs from the caller's.
   no_active_session, ///< No active session for the vendor tuple, where one was required.
   query_failed,      ///< An underlying SQL statement failed.
+  not_git,           ///< `record_commits`'s repo could not be resolved to a git toplevel (task 6358).
+  git_failed,        ///< A git subprocess `record_commits` needed failed (task 6358).
+  malformed_output,  ///< git's `-z`-delimited stdout did not carry the expected field count (task 6358).
 };
 
 /// @brief The git context `open_session` stamps onto a fresh session row.
@@ -275,5 +302,57 @@ export auto render_end_text(std::int64_t session_id) -> std::string;
 /// @return The next action to store, or unset when neither source has one.
 export auto resolve_next_action(db::connection& conn, std::optional<std::string_view> explicit_next_action,
                                 std::optional<std::int64_t> task_id) -> std::expected<std::optional<std::string>, capture_error>;
+
+/// @brief Arguments to `record_commits`. Mirrors zig's
+/// `capture.RecordCommitsArgs` (task 6358).
+export struct record_commits_args {
+  std::int64_t                      session_id{}; ///< The session to record against.
+  std::string_view                  repo_dir;     ///< The `-C` directory `record_commits` resolves and walks.
+  std::optional<std::string_view>   since;        ///< A ref: walk `since..HEAD`. Mutually exclusive with `shas`.
+  std::span<const std::string_view> shas = {};    ///< Explicit SHAs, in requested order. Mutually exclusive with `since`.
+};
+
+/// @brief Result of `record_commits`. Mirrors zig's `RecordCommitsResult`.
+export struct record_commits_result {
+  std::int64_t session_id{};     ///< The session recorded against.
+  std::string  repo_root;        ///< The resolved git toplevel.
+  std::size_t  commit_count{};   ///< How many commits the walk/resolve returned.
+  std::size_t  inserted_count{}; ///< How many of those were NEWLY inserted (duplicates count as zero).
+};
+
+/// @brief Record an explicit set of commits into a session. The loud-fail
+/// operator path behind `planar capture commits` (task 6358). Mirrors
+/// zig's `recordCommits` (capture.zig:163).
+///
+/// Resolution order: the session must exist (`capture_error::not_found`
+/// otherwise); the repo directory is resolved to its git toplevel via
+/// `sessioncommits::resolve_repo_root_strict`; commits are gathered via
+/// `walk_strict` when `args.since` is set, else `resolve_shas`; and the
+/// whole persist step runs inside one `begin immediate` / `commit`
+/// transaction — a partial insert on a mid-batch SQL failure is rolled
+/// back, not left half-applied.
+///
+/// The caller (the CLI handler) is responsible for the mutual-exclusion
+/// and both-absent checks on `since`/`shas`: this function does not
+/// re-validate them, matching the oracle's own split between the handler
+/// (validates) and `recordCommits` (assumes a validated shape).
+/// @param conn An open, migrated database connection.
+/// @param args The session, repo directory, and commit selector.
+/// @return The recorded outcome, or a `capture_error`.
+export auto record_commits(db::connection& conn, const record_commits_args& args)
+    -> std::expected<record_commits_result, capture_error>;
+
+/// @brief Render `capture commits --json`. Oracle-captured:
+/// `{"ok":true,"session_id":1,"repo_root":"/path","commit_count":1,
+/// "inserted_count":1}`.
+/// @param result The recorded outcome.
+/// @return The complete stdout payload: the JSON object WITH its newline.
+export auto render_commits_json(const record_commits_result& result) -> std::string;
+
+/// @brief Render `capture commits`'s text line. Oracle-captured:
+/// `session 1: processed 1 commits (1 new)`.
+/// @param result The recorded outcome.
+/// @return The complete stdout payload: the text line WITH its newline.
+export auto render_commits_text(const record_commits_result& result) -> std::string;
 
 } // namespace planar::engine::runtime::capture

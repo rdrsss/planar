@@ -1,9 +1,10 @@
 /// @file capture.cppm
-/// @brief `planar.cmd.planar.handlers.capture` — six of the seven
-/// `planar capture *` leaves (plan 996, task 6040).
+/// @brief `planar.cmd.planar.handlers.capture` — all seven
+/// `planar capture *` leaves as of plan 996 task 6358, which added
+/// `commits` (the group was six of seven since task 6040).
 ///
 /// Port target: zig/src/cmd/planar/handlers/capture/{session,end,note,
-/// command,file,snapshot}.zig plus util.zig's `resolveSessionId`.
+/// command,file,snapshot,commits}.zig plus util.zig's `resolveSessionId`.
 ///
 /// This layer is genuinely THIN, and that thinness is evidence rather than
 /// a shortcut: `planar.engine.runtime.capture` already carried the
@@ -56,13 +57,21 @@
 /// oracle's own exit-2 message survives: a tree-level int validator would
 /// answer CLI11's `ExtrasError` wording instead.
 ///
-/// ## Not here: `capture commits`
+/// ## `capture commits`, landed at task 6358
 ///
-/// The seventh leaf. Deferred WITH its dependency — 1205 lines of
-/// `git`-subprocess walking in zig/src/engine/runtime/sessioncommits.zig,
-/// and no process-spawn seam in this tree. Task 6099 owns it. Omitting an
-/// unported child from a group node stays the rule, so `planar capture
-/// --help` lists six commands where the oracle lists seven.
+/// The seventh leaf. Unlike the other six, its `--session` resolution does
+/// NOT create a session when none is active — it shares `capture end`'s
+/// `active_for_vendor` lookup, not the create-on-demand
+/// `resolve_or_create_session` the append-style four use. `planar capture
+/// commits --since HEAD` on a fresh database is `error: no active session
+/// (run 'planar capture session' first)`, exit 2.
+///
+/// Its trailing SHA list is NOT a real CLI11 positional in the oracle's own
+/// terms: etcli-zig's `rest_field` mechanism captures leftover argv into a
+/// named slice without ever appearing in the `positionals` array the
+/// oracle's `schema` catalog renders (confirmed against a live oracle
+/// run). `tree.cpp`'s `add_capture` mirrors that by declaring a
+/// `->group("")`-hidden positional; see its header.
 module;
 
 export module planar.cmd.planar.handlers.capture;
@@ -114,6 +123,13 @@ export auto capture_file(context& ctx, const cliapp::parsed_args& args) -> handl
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
 export auto capture_snapshot(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief `planar capture commits [--session N] [--repo dir]
+/// (--since ref | sha...) [--json]`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure.
+export auto capture_commits(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief The vendor tuple these leaves resolve from the context's
 /// environment: `$PLANAR_VENDOR` (defaulting to `"cli"`) and

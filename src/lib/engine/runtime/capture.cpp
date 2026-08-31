@@ -9,6 +9,7 @@ import std;
 import planar.json_text;
 import planar.db;
 import planar.engine.runtime.session;
+import planar.engine.runtime.sessioncommits;
 import planar.engine.runtime.snapshot;
 
 namespace planar::engine::runtime::capture {
@@ -28,6 +29,22 @@ auto from_session_error(session::session_error e) -> capture_error {
   case session::session_error::task_conflict:
     return capture_error::task_conflict;
   case session::session_error::query_failed:
+    return capture_error::query_failed;
+  }
+  return capture_error::query_failed;
+}
+
+/// @brief Map a `sessioncommits::commits_error` onto this module's error
+/// surface. 1:1 -- see `sessioncommits.cppm` for what each member means.
+auto from_commits_error(sessioncommits::commits_error e) -> capture_error {
+  switch (e) {
+  case sessioncommits::commits_error::not_git:
+    return capture_error::not_git;
+  case sessioncommits::commits_error::git_failed:
+    return capture_error::git_failed;
+  case sessioncommits::commits_error::malformed_output:
+    return capture_error::malformed_output;
+  case sessioncommits::commits_error::query_failed:
     return capture_error::query_failed;
   }
   return capture_error::query_failed;
@@ -273,6 +290,60 @@ auto resolve_next_action(db::connection& conn, std::optional<std::string_view> e
     return std::optional<std::string>{};
   }
   return std::optional<std::string>{std::move(value)};
+}
+
+auto record_commits(db::connection& conn, const record_commits_args& args)
+    -> std::expected<record_commits_result, capture_error> {
+  auto const found = session::get_by_id(conn, args.session_id);
+  if (!found) {
+    return std::unexpected(from_session_error(found.error()));
+  }
+
+  std::filesystem::path const dir{std::string{args.repo_dir}};
+
+  auto repo_root = sessioncommits::resolve_repo_root_strict(dir);
+  if (!repo_root) {
+    return std::unexpected(from_commits_error(repo_root.error()));
+  }
+
+  auto commits = args.since.has_value() ? sessioncommits::walk_strict(dir, *args.since, std::string_view{*repo_root})
+                                        : sessioncommits::resolve_shas(dir, args.shas, std::string_view{*repo_root});
+  if (!commits) {
+    return std::unexpected(from_commits_error(commits.error()));
+  }
+
+  // The whole persist step is one transaction, mirroring the Zig
+  // original's `begin immediate` / `commit`: a mid-batch SQL failure
+  // rolls back rather than leaving a partial insert.
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return std::unexpected(capture_error::query_failed);
+  }
+  auto const inserted = sessioncommits::record_count(conn, args.session_id, std::nullopt, *commits);
+  if (!inserted) {
+    return std::unexpected(from_commits_error(inserted.error()));
+  }
+  if (auto committed = tx->commit(); !committed) {
+    return std::unexpected(capture_error::query_failed);
+  }
+
+  return record_commits_result{
+      .session_id     = args.session_id,
+      .repo_root      = std::move(*repo_root),
+      .commit_count   = commits->size(),
+      .inserted_count = *inserted,
+  };
+}
+
+auto render_commits_json(const record_commits_result& result) -> std::string {
+  return std::format(R"({{"ok":true,"session_id":{},"repo_root":{},"commit_count":{},"inserted_count":{}}})"
+                     "\n",
+                     result.session_id, json_string(result.repo_root), result.commit_count, result.inserted_count);
+}
+
+auto render_commits_text(const record_commits_result& result) -> std::string {
+  return std::format("session {}: processed {} commits ({} new)\n", result.session_id, result.commit_count,
+                     result.inserted_count);
 }
 
 } // namespace planar::engine::runtime::capture

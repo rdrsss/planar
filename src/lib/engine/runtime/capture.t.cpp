@@ -44,12 +44,46 @@
 //       1|1||cli||body here|do it
 //       2|1||cli||body 2|                   <-- next_action stored NULL
 //
-// `capture commits` is NOT covered: it is not ported (see capture.cppm's
-// cut list -- it rests on 1205 lines of git shelling). That is the one
-// `capture` leaf this cycle does not reach.
+// `capture commits` (task 6358) is covered separately, below, against a
+// HERMETIC git fixture rather than the transcript above -- oracle
+// provenance for it:
+//
+//   (arena)$ git init -q repo && cd repo
+//   (arena)$ git config user.email t@example.com; git config user.name Test
+//   (arena)$ git commit --allow-empty -q -m base   # BASE=<sha>
+//   (arena)$ Z capture session --json --vendor test-vendor
+//       -> {"ok":true,"id":1,"vendor":"test-vendor"}
+//   (arena)$ Z capture commits --session 1 --repo repo --since $BASE --json
+//       -> {"ok":true,"session_id":1,"repo_root":"<toplevel>","commit_count":0,"inserted_count":0}
+//          [BEFORE a second commit -- the NO-NEW-COMMITS path, exit 0]
+//   (arena)$ git commit --allow-empty -q -m second   # SECOND=<sha>
+//   (arena)$ Z capture commits --session 1 --repo repo --since $BASE --json
+//       -> {"ok":true,"session_id":1,"repo_root":"<toplevel>","commit_count":1,"inserted_count":1}
+//   (arena)$ Z capture commits --session 1 --repo repo --since $BASE
+//       -> session 1: processed 1 commits (0 new)   [re-run: idempotent]
+//   (arena)$ Z capture commits --session 1 --repo repo $SECOND --json
+//       -> {"ok":true,...,"commit_count":1,"inserted_count":0}   [SHA form]
+//   (arena)$ Z capture commits --session 1 --repo /nongit --since HEAD
+//       -> exit 1, error: repo is not a git repository: /nongit
+//   (arena)$ Z capture commits --session 1 --repo repo --since not-a-ref
+//       -> exit 1, error: cannot resolve ref 'not-a-ref'
+//   (arena)$ Z capture commits --session 1 --repo repo --since HEAD not-a-sha
+//       -> exit 2, error: cannot combine --since with explicit commit SHAs
+//   (arena)$ Z capture commits --session 1 --repo repo
+//       -> exit 2, error: provide --since <ref> or one or more commit SHAs
+//   (arena)$ Z capture commits --session 9999 --repo repo --since HEAD
+//       -> exit 1, error: session 9999 not found
+//   (arena)$ (fresh git init, no commits) Z capture commits --session 1 --repo emptyrepo --since HEAD
+//       -> exit 1, error: cannot resolve ref 'HEAD'   [the EMPTY-REPO path]
+//
+// Run with `PATH`/`PLANAR_DB` isolated to a scratch arena and every git
+// fixture built under a `std::filesystem::temp_directory_path()` scratch
+// dir -- never against the Planar checkout itself. See git.t.cpp's header
+// for the same hermeticity discipline this file's fixture helpers copy.
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdio>
 #include <cstdlib>
 
 import std;
@@ -64,6 +98,77 @@ namespace {
 namespace cap  = planar::engine::runtime::capture;
 namespace sess = planar::engine::runtime::session;
 namespace snap = planar::engine::runtime::snapshot;
+
+/// @brief A unique scratch directory tree, removed when the guard goes out
+/// of scope. Copied from git.t.cpp so `capture commits`'s fixture repos
+/// never touch the Planar checkout.
+struct scratch_dir {
+  std::filesystem::path path_;
+
+  scratch_dir()
+      : path_(std::filesystem::temp_directory_path() / std::format("planar_capture_commits_test_{}_{}",
+                                                                   std::chrono::steady_clock::now().time_since_epoch().count(),
+                                                                   reinterpret_cast<std::uintptr_t>(this))) {
+    std::filesystem::create_directories(path_);
+  }
+
+  scratch_dir(const scratch_dir&)            = delete;
+  scratch_dir& operator=(const scratch_dir&) = delete;
+
+  ~scratch_dir() {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+
+  [[nodiscard]] auto get() const -> const std::filesystem::path& {
+    return path_;
+  }
+};
+
+/// @brief Run a shell line inside `dir`, for FIXTURE construction only
+/// (`git init`, `git commit`) -- never for the behavior under test.
+/// @param dir The working directory.
+/// @param line The shell line.
+/// @return True when the line exited 0.
+auto fixture_sh(const std::filesystem::path& dir, std::string_view line) -> bool {
+  std::string const composed = std::format("cd '{}' && {} >/dev/null 2>&1", dir.string(), line);
+  return std::system(composed.c_str()) == 0;
+}
+
+/// @brief Is `git` runnable at all on this machine?
+auto have_git() -> bool {
+  static bool const answer = std::system("git --version >/dev/null 2>&1") == 0;
+  return answer;
+}
+
+/// @brief Build a hermetic repository at `dir` with one commit, and return
+/// that commit's sha.
+/// @param dir An existing empty directory.
+/// @return The seed commit's sha, or unset on any fixture-step failure.
+auto make_repo(const std::filesystem::path& dir) -> std::optional<std::string> {
+  if (!fixture_sh(dir, "git init -q -b main") || !fixture_sh(dir, "git config user.email planar@example.invalid") ||
+      !fixture_sh(dir, "git config user.name Planar") || !fixture_sh(dir, "git commit -q --allow-empty -m base")) {
+    return std::nullopt;
+  }
+  std::string const cmd  = std::format("cd '{}' && git rev-parse HEAD", dir.string());
+  FILE*             pipe = popen(cmd.c_str(), "r");
+  if (pipe == nullptr) {
+    return std::nullopt;
+  }
+  std::string sha;
+  char        buf[256];
+  while (std::fgets(buf, sizeof(buf), pipe) != nullptr) {
+    sha += buf;
+  }
+  pclose(pipe);
+  while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) {
+    sha.pop_back();
+  }
+  if (sha.empty()) {
+    return std::nullopt;
+  }
+  return sha;
+}
 
 struct scratch_db_path {
   std::filesystem::path path_;
@@ -578,4 +683,193 @@ TEST_CASE("the capture snapshot envelopes match the oracle byte for byte", "[cap
   snap::snapshot bound{.id = 2, .session_id = 1, .task_id = 42, .vendor = "cli"};
   CHECK(cap::render_snapshot_json(bound) == "{\"ok\":true,\"id\":2,\"session_id\":1,\"vendor\":\"cli\",\"task_id\":42}\n");
   CHECK(cap::render_snapshot_text(bound) == "snapshot 2 created (vendor: cli, task: 42)\n");
+}
+
+// ---------------------------------------------------------------------------
+// capture commits (task 6358)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("record_commits reports zero commits on the no-new-commits path", "[capture][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     repo;
+  auto const      base = make_repo(repo.get());
+  REQUIRE(base.has_value());
+
+  auto const s = sess::start_session(conn, sess::start_args{.vendor = "v"});
+  REQUIRE(s.has_value());
+
+  std::string const repo_str = repo.get().string();
+  auto              result   = cap::record_commits(conn, cap::record_commits_args{
+                                                             .session_id = s->id,
+                                                             .repo_dir   = repo_str,
+                                                             .since      = std::string_view{*base},
+                                                         });
+  REQUIRE(result.has_value());
+  CHECK(result->session_id == s->id);
+  CHECK(result->commit_count == 0);
+  CHECK(result->inserted_count == 0);
+}
+
+TEST_CASE("record_commits walks --since into new rows and is idempotent on re-run", "[capture][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     repo;
+  auto const      base = make_repo(repo.get());
+  REQUIRE(base.has_value());
+  REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m second"));
+
+  auto const s = sess::start_session(conn, sess::start_args{.vendor = "v"});
+  REQUIRE(s.has_value());
+
+  std::string const repo_str = repo.get().string();
+  auto              first    = cap::record_commits(conn, cap::record_commits_args{
+                                                             .session_id = s->id,
+                                                             .repo_dir   = repo_str,
+                                                             .since      = std::string_view{*base},
+                                                         });
+  REQUIRE(first.has_value());
+  CHECK(first->commit_count == 1);
+  CHECK(first->inserted_count == 1);
+
+  // Re-run: same range, same commit -- inserted_count drops to zero while
+  // commit_count stays 1. The `(session_id, sha)` unique constraint is
+  // what makes this idempotent, not a caller-side dedupe.
+  auto second = cap::record_commits(conn, cap::record_commits_args{
+                                              .session_id = s->id,
+                                              .repo_dir   = repo_str,
+                                              .since      = std::string_view{*base},
+                                          });
+  REQUIRE(second.has_value());
+  CHECK(second->commit_count == 1);
+  CHECK(second->inserted_count == 0);
+}
+
+TEST_CASE("record_commits resolves explicit SHAs in the requested order", "[capture][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     repo;
+  auto const      base = make_repo(repo.get());
+  REQUIRE(base.has_value());
+  REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m second"));
+
+  auto const s = sess::start_session(conn, sess::start_args{.vendor = "v"});
+  REQUIRE(s.has_value());
+
+  std::string const                     repo_str = repo.get().string();
+  std::array<std::string_view, 1> const shas{*base};
+  auto                                  result = cap::record_commits(conn, cap::record_commits_args{
+                                                                               .session_id = s->id,
+                                                                               .repo_dir   = repo_str,
+                                                                               .shas       = shas,
+                                                                           });
+  REQUIRE(result.has_value());
+  CHECK(result->commit_count == 1);
+  CHECK(result->inserted_count == 1);
+}
+
+TEST_CASE("record_commits reports not_found for a nonexistent session", "[capture][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     repo;
+  REQUIRE(make_repo(repo.get()).has_value());
+
+  std::string const repo_str = repo.get().string();
+  auto              result   = cap::record_commits(conn, cap::record_commits_args{
+                                                             .session_id = 9999,
+                                                             .repo_dir   = repo_str,
+                                                             .since      = "HEAD",
+                                                         });
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error() == cap::capture_error::not_found);
+}
+
+TEST_CASE("record_commits reports not_git for a non-repository directory", "[capture][commits]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     nongit;
+
+  auto const s = sess::start_session(conn, sess::start_args{.vendor = "v"});
+  REQUIRE(s.has_value());
+
+  std::string const nongit_str = nongit.get().string();
+  auto              result     = cap::record_commits(conn, cap::record_commits_args{
+                                                               .session_id = s->id,
+                                                               .repo_dir   = nongit_str,
+                                                               .since      = "HEAD",
+                                                           });
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error() == cap::capture_error::not_git);
+}
+
+TEST_CASE("record_commits reports git_failed for an unresolvable ref", "[capture][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     repo;
+  REQUIRE(make_repo(repo.get()).has_value());
+
+  auto const s = sess::start_session(conn, sess::start_args{.vendor = "v"});
+  REQUIRE(s.has_value());
+
+  std::string const repo_str = repo.get().string();
+  auto              result   = cap::record_commits(conn, cap::record_commits_args{
+                                                             .session_id = s->id,
+                                                             .repo_dir   = repo_str,
+                                                             .since      = "not-a-ref",
+                                                         });
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error() == cap::capture_error::git_failed);
+}
+
+TEST_CASE("record_commits reports git_failed for a repository with no commits yet, --since HEAD", "[capture][commits]") {
+  // THE EMPTY-REPO PATH. `rev-parse --show-toplevel` succeeds (it is a
+  // repository) but `HEAD` does not resolve to a commit yet, so the
+  // failure surfaces from the `--since` resolution, not the repo-root
+  // resolution -- exactly the oracle's own arm.
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     repo;
+  REQUIRE(fixture_sh(repo.get(), "git init -q -b main"));
+
+  auto const s = sess::start_session(conn, sess::start_args{.vendor = "v"});
+  REQUIRE(s.has_value());
+
+  std::string const repo_str = repo.get().string();
+  auto              result   = cap::record_commits(conn, cap::record_commits_args{
+                                                             .session_id = s->id,
+                                                             .repo_dir   = repo_str,
+                                                             .since      = "HEAD",
+                                                         });
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error() == cap::capture_error::git_failed);
+}
+
+TEST_CASE("the capture commits envelopes match the oracle byte for byte", "[capture][commits][parity]") {
+  cap::record_commits_result const zero{.session_id = 1, .repo_root = "/repo", .commit_count = 0, .inserted_count = 0};
+  CHECK(cap::render_commits_json(zero) ==
+        "{\"ok\":true,\"session_id\":1,\"repo_root\":\"/repo\",\"commit_count\":0,\"inserted_count\":0}\n");
+  CHECK(cap::render_commits_text(zero) == "session 1: processed 0 commits (0 new)\n");
+
+  cap::record_commits_result const one{.session_id = 1, .repo_root = "/repo", .commit_count = 1, .inserted_count = 1};
+  CHECK(cap::render_commits_json(one) ==
+        "{\"ok\":true,\"session_id\":1,\"repo_root\":\"/repo\",\"commit_count\":1,\"inserted_count\":1}\n");
+  CHECK(cap::render_commits_text(one) == "session 1: processed 1 commits (1 new)\n");
 }

@@ -3,30 +3,47 @@
 # Layer-2 `engine_*` module (cmake/architecture.cmake): may DEPEND on
 # layer-1 modules only, never sideways onto another `engine_*` bucket
 # (D15/D18's same-layer prohibition for layers 2 and 3). This module needs
-# only `db`, so no D19 extraction was required and none was invented.
+# `db` and, since task 6358, the layer-1 `git` seam (see below); no D19
+# extraction was required for either and none was invented.
 #
 # Behavior-preserving port (D2) of zig/src/engine/runtime/{session,
 # snapshot,capture}.zig plus the body-composition and rendering halves of
-# zig/src/cmd/planar/handlers/capture/*.zig -- six of the seven `capture`
-# schema leaves (session, end, note, command, file, snapshot).
+# zig/src/cmd/planar/handlers/capture/*.zig -- all seven `capture` schema
+# leaves (session, end, note, command, file, snapshot, commits).
+#
+# `capture commits`, the seventh leaf, landed at task 6358 once the
+# layer-1 `planar.git` seam (tasks 6128/6137) closed the process-spawn gap
+# this bucket used to be blocked on. It rests on
+# zig/src/engine/runtime/sessioncommits.zig's STRICT git-walk functions
+# (`resolveRepoRootStrict`, `walkStrict`, `resolveShas`) plus the write
+# half (`recordCount`) -- see sessioncommits.cppm's header for exactly what
+# landed and what is still deferred (the FAIL-SOFT `walk` variant and the
+# claim-window fold neither `capture commits` nor any ported verb reaches).
 #
 # NOT ported, named explicitly rather than silently dropped:
 #
-#   - `capture commits`, the seventh leaf. It rests entirely on
-#     zig/src/engine/runtime/sessioncommits.zig (1205 lines), whose whole
-#     job is shelling `git` through `std.process.run` -- revision walks,
-#     ref resolution, per-commit metadata. There is no process-spawn
-#     abstraction in this tree, and building one inside a port task would
-#     be a much larger change than the leaf it serves. Deferred WITH its
-#     dependency.
-#   - `capture.zig`'s `probeStartGitContext` and `recordSessionWindow`,
-#     for the same reason. Their DB-visible halves are preserved:
-#     `session::set_start_git_context_if_unset` is ported and tested
-#     (including its write-once semantics), and `capture::open_session`
+#   - `capture.zig`'s `probeStartGitContext`: still handler-owned, not
+#     engine-owned. `session::set_start_git_context_if_unset` is ported and
+#     tested (including its write-once semantics), and `capture::open_session`
 #     takes the probed context as an optional argument instead of probing
-#     for it. `recordSessionWindow` is a no-op whenever `repo_root` or
-#     `head_sha_at_start` is NULL, which is every session this tree can
-#     currently open, so its absence changes nothing observable here.
+#     for it; `handlers/capture.cpp`'s `capture_session` supplies it via
+#     `planar.git::probe_start_context` (task 6128).
+#   - `capture.zig`'s `recordSessionWindow` -- `capture end`'s AUTOMATIC
+#     commit capture, distinct from the `capture commits` MANUAL leaf task
+#     6358 ported. STILL UNWIRED, and the justification this paragraph
+#     used to carry ("a no-op whenever `repo_root`/`head_sha_at_start` is
+#     NULL, which is every session this tree can currently open") is now
+#     STALE and is corrected here rather than silently dropped: task 6128
+#     landed the git probe that stamps both columns on `capture session`,
+#     so a session opened inside a repository DOES carry them, and
+#     `capture end` on it is a real, reachable divergence from the oracle
+#     (no automatic commit rows) rather than an unreachable one. task 6358
+#     ports the git-walk PRIMITIVES `recordSessionWindow` would need
+#     (`walk_strict` in `sessioncommits.cppm`; `recordSessionWindow` itself
+#     calls the FAIL-SOFT `walk`, still absent -- see that header) but
+#     deliberately does NOT wire them into `capture_end`, which is a
+#     separate leaf outside this task's claimed scope. Tracked for a
+#     follow-up task rather than fixed here.
 #   - `policy.audit.record` calls in `startSession` / `endSession` /
 #     `snapshot.create`: STILL UNWIRED, and now for a real reason rather
 #     than a missing module. Task 6100 stood up the layer-1
@@ -201,21 +218,25 @@
 # stopped being true by the time the leaf was ported. Check the module
 # interfaces, not this file.
 #
-# --- the session-commit READ path (plan 996, task 6262) --------------------
+# --- the session-commit read AND strict-write path (plan 996, tasks 6262 --
+# --- and 6358) ---------------------------------------------------------- -
 #
-# `sessioncommits` is a DELIBERATE FRACTION of its 1205-line oracle: ONE
-# function, `list_for_sessions`, which is pure SQL over a table this tree
-# already migrates. It exists because `audit trail` renders a "commits:"
-# section and needed a home for that read other than handler-local SQL; the
-# oracle files the same function in the same module, so the carve-out
-# follows its layering rather than inventing one.
+# `sessioncommits` STARTED as a deliberate fraction of its 1205-line
+# oracle (task 6262: `list_for_sessions`/`list_filtered`, pure SQL). Task
+# 6358 added the STRICT git-walk slice `capture commits` needs
+# (`resolve_repo_root_strict`, `walk_strict`, `resolve_shas`,
+# `record_count`), now that `planar.git` (tasks 6128/6137) supplies the
+# process-spawn seam this bucket used to lack.
 #
-# EVERY git-subprocess function in the original is STILL DEFERRED —
-# `walk`, `walkStrict`, `walkClaimWindow`, `recordClaimWindowBestEffort`
-# and the ref-resolution machinery under them. Nothing here unblocks
-# `capture commits`, `audit commits`, `bench harvest` or the four
-# `planar-agent` terminal verbs' claim-window fold; those still wait on the
-# process-spawn seam. The module header says so at length, because the
+# STILL DEFERRED — the FAIL-SOFT `walk` (used only by `recordSessionWindow`,
+# `capture end`'s automatic capture; see the paragraph above), and
+# `walkClaimWindow` / `recordClaimWindowBestEffort` (the `planar-agent`
+# terminal verbs' claim-window fold). Nothing in this task's diff touches
+# `audit commits` or `bench harvest`; `audit commits` was already ported
+# (task 6272 corrected the earlier claim that it needed this git-walk
+# slice — it never did, see sessioncommits.cppm's header) and
+# `bench harvest` remains genuinely blocked on functionality this module
+# still does not carry. The module header says so at length, because the
 # module NAME is the thing most likely to mislead a later reader.
 
 planar_module(engine_runtime
@@ -244,6 +265,7 @@ planar_module(engine_runtime
     sessioncommits.cpp
   DEPENDS
     db
+    git
     json_text
   # TEST_DEPENDS, not DEPENDS: `handoff.t.cpp` imports
   # `planar.engine.planning.transitions` to exercise `handoff`'s injected

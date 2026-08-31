@@ -4103,7 +4103,18 @@ auto unported_paths() -> std::span<std::string_view const> {
       // interface) plus this 176-line handler. See handlers/audit.cppm.
       // `audit trail` left this inventory at task 6262.
       "bench harvest",
-      "capture commits",
+      // `capture commits` left this inventory at task 6358. It had been
+      // carried as blocked on 1205 lines of git-subprocess walking in
+      // zig/src/engine/runtime/sessioncommits.zig, with "no process-spawn
+      // seam in this tree" as the reason. Tasks 6128/6137 had already
+      // closed that seam (`planar.git`) for `capture session` and the
+      // worktree gate; this task reached it a second hop out through
+      // `sessioncommits.cppm`'s new `resolve_repo_root_strict` /
+      // `walk_strict` / `resolve_shas` / `record_count` (added to the SAME
+      // `engine_runtime` CMake target `capture` already lived in — no new
+      // engine-to-engine edge). `bench harvest` stays: it is genuinely
+      // blocked on functionality this module still does not carry (the
+      // FAIL-SOFT `walk` and the claim-window fold), not on the seam.
       "closure compute",
       // The five `config` leaves -- `show`, `edit`, `validate`, `init`,
       // `path` -- left this inventory at task 6259. Their engine half

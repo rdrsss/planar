@@ -201,11 +201,31 @@ export auto inherited_flags(const CLI::App& root, std::span<std::string const> p
 
 /// @brief The canonical long name of `opt`, e.g. `"--json"`, or its
 /// positional name when it is a positional.
+///
+/// The positional branch reads `get_single_name()`, NOT `get_name(true,
+/// false)` (plan 996, task 6358's fix). Both agree for a VISIBLE
+/// positional -- CLI11's `get_name` falls through to the identical
+/// `return pname_;` arm once `all_options` is false -- but `get_name`
+/// carries an UNCONDITIONAL early return, `if (get_group().empty()) return
+/// {};`, that fires before that arm is ever reached. A `->group("")`-hidden
+/// positional (the mechanism `tree.cpp`'s `add_capture` uses to keep
+/// `capture commits`'s trailing SHA list out of the `schema` catalog, since
+/// the oracle's own `rest_field` never appears there either) therefore
+/// canonicalized to the EMPTY STRING, and `harvest()` in `args.cppm` keyed
+/// every parsed SHA into `positional_lists[""]` instead of
+/// `positional_lists["shas"]` -- silently dropping every commit SHA the
+/// operator passed. `positional_string(args, "shas")` came back empty, the
+/// handler's `since.has_value() == shas.empty()` both-absent check fired,
+/// and `capture commits <sha>` refused with "provide --since <ref> or one
+/// or more commit SHAs" no matter what was typed. `get_single_name()` has
+/// no such group check -- it reads `pname_` directly for any positional,
+/// visible or not -- so it resolves correctly in both cases. See
+/// walk.t.cpp's hidden-positional case for the regression this closes.
 /// @param opt The option.
 /// @return The canonical name.
 export auto canonical_name(const CLI::Option& opt) -> std::string {
   if (opt.get_positional()) {
-    return opt.get_name(true, false);
+    return opt.get_single_name();
   }
   auto const& longs = opt.get_lnames();
   if (!longs.empty()) {

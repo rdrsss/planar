@@ -68,10 +68,23 @@ auto run(const std::filesystem::path& dir, std::span<const std::string_view> arg
   if (pipe == nullptr) {
     return std::nullopt;
   }
+  // `fread`, not `fgets` (plan 996, task 6358's fix): `fgets` would still
+  // faithfully READ every byte of a git subcommand whose stdout embeds a
+  // NUL -- `git log -z` / `git show -z`, `capture commits`'s log format --
+  // but the FORMER accumulation step, `output.append(buffer.data())`, used
+  // the `const char*` overload of `std::string::append`, which stops at
+  // the first NUL exactly like `strlen`. That silently truncated every
+  // multi-field or multi-commit `-z` result to whatever preceded the
+  // FIRST embedded NUL, well before this module had a caller that used
+  // `-z` to notice. `fread` reports the exact byte count read per chunk,
+  // so `output.append(buffer.data(), n)` preserves embedded NULs exactly
+  // the way the oracle's `std.process.run` does. See git.t.cpp's
+  // "-z"-labeled cases for the regression this closes.
   std::string           output;
   std::array<char, 512> buffer{};
-  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-    output.append(buffer.data());
+  std::size_t           n = 0;
+  while ((n = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0) {
+    output.append(buffer.data(), n);
   }
   int const status = ::pclose(pipe);
   // A failure to reap, a signal death, and a non-zero exit are the three
