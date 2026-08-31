@@ -162,6 +162,10 @@ TEST_CASE("status classifies managed copy and unmanaged extension", "[installed_
   CHECK(result->manifest_status == is_::manifest_state::current);
   CHECK(result->summary.fresh == 1);
   CHECK(result->summary.unmanaged == 1);
+  // Top-level `repair_command` gate: stale+missing == 0 here (the only
+  // managed row is fresh; the second row is unmanaged, which never
+  // contributes to stale/missing), so no reinstall should be suggested.
+  CHECK_FALSE(result->repair_command.has_value());
 }
 
 // ---- break-probe-driven coverage: branches the oracle's own test set does
@@ -300,6 +304,331 @@ TEST_CASE("an invalid manifest structure (duplicate vendor) is rejected", "[inst
       .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
   REQUIRE(result.has_value());
   CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+// `valid_manifest`'s per-projection identity checks (:288-296) sit AFTER
+// the per-row structural checks in the same loop and were unexercised in
+// either direction until iteration 3 review — the "duplicate vendor" case
+// above covers a DIFFERENT, earlier check (duplicate entries in the
+// manifest's own `vendors` list), which is exactly the kind of near-miss
+// that reads as coverage without being it. Each identity rule gets its own
+// case, isolated from the other by construction: the installed_path case
+// uses distinct (vendor,kind,name) so ONLY the path collides, and the
+// identity case uses distinct installed_path so ONLY (vendor,kind,name)
+// collides.
+
+TEST_CASE("two projection rows sharing the same installed_path are rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/staged/a","installed_path":"/installed/shared",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""},)"
+             R"({"vendor":"codex","kind":"agent","name":"pl-b","staged_path":"/staged/b","installed_path":"/installed/shared",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""}]})");
+
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("two projection rows sharing the same (vendor, kind, name) are rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/staged/a","installed_path":"/installed/one",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""},)"
+             R"({"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/staged/a2","installed_path":"/installed/two",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""}]})");
+
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+// ---- iteration-3 review findings: an exhaustive permissive-mutation sweep
+// of the WHOLE module (not just the two gaps named directly) surfaced
+// eighteen further checks with no fixture proving either the accept or the
+// reject side. Each gets its own case below, following the same principle
+// as the earlier fixes: isolate the ONE condition each test targets so a
+// mutation to a DIFFERENT nearby check cannot accidentally satisfy it. ----
+
+TEST_CASE("a manifest whose top-level JSON is not an object is rejected as invalid", "[installed_surface]") {
+  // `probe_version` and `parse_manifest_doc` each carry their own
+  // non-object guard; this fixes both at once since `parse_manifest_doc`'s
+  // is unreachable through `status()` unless `probe_version`'s already let
+  // a non-object document through.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json", R"([1,2,3])");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a manifest whose vendors field is not an array is rejected as invalid", "[installed_surface]") {
+  // Exercises `parse_manifest_doc`'s required-field/type OR-chain — a
+  // permissive mutation across the WHOLE chain survived even with a
+  // "missing build_id" fixture, because dereferencing the disengaged
+  // `std::optional<std::string>` that check exists to prevent is
+  // undefined behaviour, and in practice happened to coincide with the
+  // (separately, already-tested) empty-build_id rejection rather than
+  // proving THIS check. A wrong-TYPE `vendors` has no such escape hatch:
+  // `vendors->array` on a non-array `json_value` is always the SAFE empty
+  // vector (see json_dom's discriminated-value shape), so a disabled type
+  // check here would silently treat a malformed `"vendors":"oops"` as an
+  // empty, valid vendor list rather than rejecting it — observable,
+  // deterministic, no UB.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":"oops","projections":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("an extras field that is not an array at all is rejected as invalid", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":[],"extras":"oops","projections":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("an extras array containing a non-string item is rejected as invalid", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":[],"extras":[1,2],"projections":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a manifest with an empty build_id is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"","install_mode":"copy","vendors":[],"projections":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a manifest with an install_mode outside copy/link is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"symlink","vendors":[],"projections":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a manifest whose vendors list names an unsupported vendor is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["notavendor"],"projections":[]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row naming a vendor absent from the manifest's own vendors list is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"claude","kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""}]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row with an invalid kind is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"toolbox","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""}]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row with an empty name is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"","staged_path":"/x","installed_path":"/y",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""}]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row with an empty staged_path is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"","installed_path":"/y",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""}]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row with an empty installed_path is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"",)"
+             R"("install_kind":"copy","source_digest":"","projection_digest":""}]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row with an install_kind outside copy/link is rejected", "[installed_surface]") {
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
+             R"("install_kind":"symlink","source_digest":"","projection_digest":""}]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a projection row with a malformed digest is rejected", "[installed_surface]") {
+  // Neither empty (the documented absence-tolerant shape) nor 64 lowercase
+  // hex chars — too short AND not hex, so it cannot pass by accident.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":)"
+             R"([{"vendor":"codex","kind":"skill","name":"pl-a","staged_path":"/x","installed_path":"/y",)"
+             R"("install_kind":"copy","source_digest":"not-a-digest","projection_digest":""}]})");
+  auto result = is_::status(is_::options{
+      .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
+  REQUIRE(result.has_value());
+  CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("an installed path that is a directory stays stale with its own reason, never fresh or missing",
+          "[installed_surface]") {
+  scratch_root home;
+  const auto   staged        = home.planar_home() / "codex-skills" / "pl-a" / "SKILL.md";
+  const auto   installed_dir = home.codex_home() / "skills" / "pl-a" / "SKILL.md"; // a DIRECTORY at this exact path
+  home.write(staged, "content\n");
+  std::filesystem::create_directories(installed_dir);
+
+  const auto manifest =
+      std::format("{{\"version\":1,\"build_id\":\"t\",\"install_mode\":\"copy\",\"vendors\":[\"codex\"],\"projections\":"
+                  "[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+                  "\"install_kind\":\"copy\",\"source_digest\":\"\",\"projection_digest\":\"\"}}]}}",
+                  staged.string(), installed_dir.string());
+  home.write(home.planar_home() / "install-manifest.json", manifest);
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+  REQUIRE(result.has_value());
+  REQUIRE(result->projections.size() == 1);
+  CHECK(result->projections[0].status == is_::state::stale);
+  CHECK(result->projections[0].reason == "managed installed destination is a directory and cannot be replaced safely");
+}
+
+TEST_CASE("a dangling symlink at the installed path is missing, not stale", "[installed_surface]") {
+  // The installed path IS a symlink (so `symlink_status` reports neither
+  // `not_found` nor `directory`), but its target does not exist, so
+  // reading through it fails — the SECOND missing-detection arm in
+  // classify_row, reachable only through this exact shape.
+  scratch_root home;
+  const auto   staged        = home.planar_home() / "codex-skills" / "pl-a" / "SKILL.md";
+  const auto   installed_dir = home.codex_home() / "skills" / "pl-a";
+  const auto   installed     = installed_dir / "SKILL.md";
+  home.write(staged, "content\n");
+  std::filesystem::create_directories(installed_dir);
+  std::error_code ec;
+  std::filesystem::create_symlink(home.root_ / "nonexistent-target", installed, ec);
+  REQUIRE_FALSE(ec);
+
+  const auto manifest =
+      std::format("{{\"version\":1,\"build_id\":\"t\",\"install_mode\":\"copy\",\"vendors\":[\"codex\"],\"projections\":"
+                  "[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+                  "\"install_kind\":\"copy\",\"source_digest\":\"\",\"projection_digest\":\"\"}}]}}",
+                  staged.string(), installed.string());
+  home.write(home.planar_home() / "install-manifest.json", manifest);
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+  REQUIRE(result.has_value());
+  REQUIRE(result->projections.size() == 1);
+  CHECK(result->projections[0].status == is_::state::missing);
+  CHECK(result->projections[0].reason == "managed installed projection is missing");
+}
+
+TEST_CASE("a directory-shaped vendor entry with no SKILL.md is never reported unmanaged", "[installed_surface]") {
+  // `discover_unmanaged`'s directory_shape existence check: a stray empty
+  // subdirectory under a `skills/` root (codex/copilot/gemini all link the
+  // whole directory, not a flat file) must not be counted just because a
+  // directory with that name exists.
+  scratch_root home;
+  home.write(home.planar_home() / "install-manifest.json",
+             R"({"version":1,"build_id":"t","install_mode":"copy","vendors":["codex"],"projections":[]})");
+  std::filesystem::create_directories(home.codex_home() / "skills" / "empty-dir"); // no SKILL.md inside
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+  REQUIRE(result.has_value());
+  CHECK(result->projections.empty());
+  CHECK(result->summary.unmanaged == 0);
+}
+
+TEST_CASE("the --vendor filter excludes other vendors' projections from a multi-vendor manifest", "[installed_surface]") {
+  scratch_root home;
+  const auto   codex_staged     = home.planar_home() / "codex-skills" / "pl-a" / "SKILL.md";
+  const auto   codex_installed  = home.codex_home() / "skills" / "pl-a" / "SKILL.md";
+  const auto   claude_staged    = home.planar_home() / "claude-commands" / "pl-b.md";
+  const auto   claude_installed = home.root_ / ".claude" / "commands" / "pl-b.md";
+  home.write(codex_staged, "a\n");
+  home.write(codex_installed, "a\n");
+  home.write(claude_staged, "b\n");
+  home.write(claude_installed, "b\n");
+
+  const auto manifest = std::format(
+      "{{\"version\":1,\"build_id\":\"t\",\"install_mode\":\"copy\",\"vendors\":[\"codex\",\"claude\"],\"projections\":"
+      "[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+      "\"install_kind\":\"copy\",\"source_digest\":\"\",\"projection_digest\":\"\"}},"
+      "{{\"vendor\":\"claude\",\"kind\":\"skill\",\"name\":\"pl-b\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+      "\"install_kind\":\"copy\",\"source_digest\":\"\",\"projection_digest\":\"\"}}]}}",
+      codex_staged.string(), codex_installed.string(), claude_staged.string(), claude_installed.string());
+  home.write(home.planar_home() / "install-manifest.json", manifest);
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+  REQUIRE(result.has_value());
+  REQUIRE(result->projections.size() == 1);
+  CHECK(result->projections[0].vendor == "codex");
+  CHECK(result->projections[0].name == "pl-a");
 }
 
 TEST_CASE("a manifest with a duplicate top-level key is rejected like std.json", "[installed_surface]") {

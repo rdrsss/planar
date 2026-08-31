@@ -428,9 +428,17 @@ TEST_CASE("with_projection_freshness degrades only managed drift and recovery ma
                                           .codex_home  = "/definitely/not/a/codex/home"});
   REQUIRE(current.has_value());
 
+  // The classifier itself always names a bootstrap repair command for a
+  // missing manifest (see installed_surface's bootstrap_result), so this is
+  // the discriminating case for the `degraded ? status.repair_command :
+  // nullopt` gate: `current->repair_command` IS set here, but this state is
+  // `not_installed`, not `degraded` — the gate must suppress it.
+  REQUIRE(current->repair_command.has_value());
+
   auto with_fresh = he::with_projection_freshness(*base, *current);
   CHECK(with_fresh.projection_freshness.state == "not_installed");
   CHECK(with_fresh.overall == "ok");
+  CHECK_FALSE(with_fresh.projection_freshness.repair_command.has_value());
 }
 
 TEST_CASE("with_projection_freshness degrades overall on a legacy manifest state", "[engine_health]") {
@@ -497,6 +505,64 @@ TEST_CASE("with_projection_freshness degrades overall on an unsupported manifest
   CHECK(degraded.overall == "degraded");
 }
 
+// `managed_degraded` (`status.summary.stale > 0 || status.summary.missing >
+// 0`) is the OTHER disjunct feeding `degraded`, and it is the one
+// `planar health` exists to surface: a projection that has drifted or
+// vanished from disk with a perfectly CURRENT manifest. Until iteration 3
+// review, no fixture anywhere in the tree constructed a `status_result`
+// with `stale`/`missing` > 0 and `manifest_status = current` to prove
+// `overall` degrades on that path ALONE — every `[cmd][health]` degraded
+// case drove degradation through `not_resumable_tasks` instead, so this
+// disjunct's own on/off switch was unverified. `stale` and `missing` are
+// independent disjuncts (`||`, not `&&`), so each gets its own case rather
+// than one fixture asserting both at once.
+
+TEST_CASE("with_projection_freshness degrades overall on stale > 0 alone, with a current manifest", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result stale_status{
+      .manifest_status = is_::manifest_state::current,
+      .manifest_path   = "/tmp/planar-home/install-manifest.json",
+      .repair_command  = "./install.sh --prefix '/tmp/planar-home'",
+  };
+  stale_status.summary.stale = 1;
+
+  auto degraded = he::with_projection_freshness(*base, stale_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+  // `status.reason` is unset here, so this also exercises `evidence`'s
+  // FALLBACK arm (`managed_degraded` true, `reason` absent) — previously
+  // untested; every other evidence case in this file has `reason` set.
+  REQUIRE(degraded.projection_freshness.evidence.has_value());
+  CHECK(*degraded.projection_freshness.evidence == "managed projections differ from the staged installation authority");
+  // The `degraded ? status.repair_command : nullopt` gate: THIS is the
+  // discriminating direction (degraded=true, repair_command SET on the
+  // input) — the sibling "not_installed" case above proves the opposite
+  // direction (repair_command suppressed when not degraded).
+  REQUIRE(degraded.projection_freshness.repair_command.has_value());
+  CHECK(*degraded.projection_freshness.repair_command == "./install.sh --prefix '/tmp/planar-home'");
+}
+
+TEST_CASE("with_projection_freshness degrades overall on missing > 0 alone, with a current manifest", "[engine_health]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            base = he::check(conn, "/tmp/test.db");
+  REQUIRE(base.has_value());
+
+  is_::status_result missing_status{
+      .manifest_status = is_::manifest_state::current,
+      .manifest_path   = "/tmp/planar-home/install-manifest.json",
+  };
+  missing_status.summary.missing = 1;
+
+  auto degraded = he::with_projection_freshness(*base, missing_status);
+  CHECK(degraded.projection_freshness.state == "degraded");
+  CHECK(degraded.overall == "degraded");
+}
+
 TEST_CASE("with_projection_freshness never un-degrades an already-degraded report", "[engine_health]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
@@ -511,6 +577,18 @@ TEST_CASE("with_projection_freshness never un-degrades an already-degraded repor
   auto result = he::with_projection_freshness(*base, fresh_status);
   CHECK(result.projection_freshness.state == "fresh");
   CHECK(result.overall == "degraded");
+}
+
+TEST_CASE("manifest_state_name spells every state exactly as the oracle's enum tag", "[engine_health]") {
+  // Only "missing" and "invalid" were ever asserted through render_text
+  // before this iteration's review — a mutation swapping any of the other
+  // three spellings survived the whole module. Each arm gets its own
+  // assertion so a single swapped pair cannot hide behind another.
+  CHECK(he::manifest_state_name(is_::manifest_state::current) == "current");
+  CHECK(he::manifest_state_name(is_::manifest_state::missing) == "missing");
+  CHECK(he::manifest_state_name(is_::manifest_state::legacy) == "legacy");
+  CHECK(he::manifest_state_name(is_::manifest_state::invalid) == "invalid");
+  CHECK(he::manifest_state_name(is_::manifest_state::unsupported) == "unsupported");
 }
 
 TEST_CASE("render_text renders every section including the optional evidence/repair lines", "[engine_health]") {

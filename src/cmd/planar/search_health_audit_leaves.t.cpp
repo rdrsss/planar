@@ -436,6 +436,29 @@ TEST_CASE("planar health --json emits the full field set with explicit nulls", "
   CHECK(json.out.contains("\"repair_command\":null"));
 }
 
+TEST_CASE("planar health refuses when HOME is unset, without ever opening a real home", "[cmd][health][refusal]") {
+  // Iteration-3 review: an exhaustive permissive-mutation sweep found this
+  // refusal (`resolve_homes`'s `HomeNotSet` arm) had NO fixture in either
+  // direction — every other `[cmd][health]` case runs through `make_fixture`,
+  // which always sets HOME. Constructed directly here (rather than through
+  // `dispatch`/`make_fixture`) specifically so `HOME` can be OMITTED from the
+  // environment map entirely, never merely emptied.
+  auto const fx = make_fixture("healthnohome");
+  CHECK(dispatch(fx, {"init", "--name", "oracle", "--json"}).code == 0);
+
+  std::vector<std::string> argv{"planar", "health"};
+  std::ostringstream       out;
+  std::ostringstream       err;
+  planar::cmd::context ctx{argv, planar::cmd::map_env({{"PLANAR_DB", fx.db_path.string()}}), fx.root / "proj", fx.db_path, out,
+                           err};
+  auto const           tree  = planar::cmd::root_app();
+  auto const           table = planar::cmd::handlers(*tree);
+  int const            code  = planar::cmd::run(ctx, *tree, table);
+  CHECK(code == 1);
+  CHECK(err.str() == "error: health check failed: resolving install homes: HomeNotSet\n");
+  CHECK(out.str().empty());
+}
+
 TEST_CASE("planar health exits 1 and reports degraded for an unresumable doing task", "[cmd][health][degraded]") {
   auto const fx = make_fixture("healthdegraded");
   CHECK(dispatch(fx, {"init", "--name", "oracle", "--json"}).code == 0);
