@@ -78,8 +78,8 @@ export enum class error_kind {
 /// (without the `error: ` prefix or a trailing newline — the handler layer
 /// adds both, same convention as `identity::resolve_error`'s siblings).
 export struct failure {
-  error_kind  kind;
-  std::string message;
+  error_kind  kind;    ///< The oracle-derived failure bucket.
+  std::string message; ///< The exact unrendered error body.
 };
 
 /// @brief Render `AGENTS.md` for `org_id`'s workspace and write it plus its
