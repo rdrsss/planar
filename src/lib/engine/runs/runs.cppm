@@ -8,3 +8,4 @@ export module planar.engine.runs;
 
 export import planar.engine.runs.lifecycle;
 export import planar.engine.runs.render;
+export import planar.engine.runs.harvest;

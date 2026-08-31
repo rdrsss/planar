@@ -4102,7 +4102,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       // lines, not part of the four-operation `external_adapter`
       // interface) plus this 176-line handler. See handlers/audit.cppm.
       // `audit trail` left this inventory at task 6262.
-      "bench harvest",
       // `capture commits` left this inventory at task 6358. It had been
       // carried as blocked on 1205 lines of git-subprocess walking in
       // zig/src/engine/runtime/sessioncommits.zig, with "no process-spawn
@@ -4112,9 +4111,19 @@ auto unported_paths() -> std::span<std::string_view const> {
       // `sessioncommits.cppm`'s new `resolve_repo_root_strict` /
       // `walk_strict` / `resolve_shas` / `record_count` (added to the SAME
       // `engine_runtime` CMake target `capture` already lived in — no new
-      // engine-to-engine edge). `bench harvest` stays: it is genuinely
-      // blocked on functionality this module still does not carry (the
-      // FAIL-SOFT `walk` and the claim-window fold), not on the seam.
+      // engine-to-engine edge).
+      // `bench harvest` left this inventory at task 6362, the last leaf
+      // that note's "the other two stay" referred to. It had been carried
+      // as blocked on the same git-subprocess seam, and by the time this
+      // task landed the seam (`planar.git`, tasks 6128/6137, already used
+      // by four other consumers) was the ONLY thing missing — the FAIL-
+      // SOFT walk and claim-window fold the note above worried about
+      // belong to `capture commits`' different oracle module
+      // (`sessioncommits.zig`), not to `harvest.zig`, which shells exactly
+      // two git subcommands (`diff --name-only`, `ls-files --others`) and
+      // writes through the already-ported `touch_idempotent`. See
+      // `src/lib/engine/runs/harvest.cppm` for the port and
+      // `src/lib/engine/runs/CMakeLists.txt` for the closing account.
       "closure compute",
       // The five `config` leaves -- `show`, `edit`, `validate`, `init`,
       // `path` -- left this inventory at task 6259. Their engine half

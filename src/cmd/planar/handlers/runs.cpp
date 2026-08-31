@@ -8,6 +8,7 @@ import planar.cliapp.args;
 import planar.db;
 import planar.engine.runs.lifecycle;
 import planar.engine.runs.render;
+import planar.engine.runs.harvest;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -16,6 +17,7 @@ namespace planar::cmd::handlers {
 
 namespace life = engine::runs::lifecycle;
 namespace rend = engine::runs::render;
+namespace harv = engine::runs::harvest;
 
 namespace {
 
@@ -256,15 +258,58 @@ auto bench_touch(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   }
   // `touch`, NOT `touch_idempotent`: a repeat tuple must trip the UNIQUE
   // constraint and surface as an exit-1 `QueryFailed`, which is what the
-  // oracle does. The idempotent variant exists for `bench harvest` (not
-  // wired) and using it here would turn a reported failure into a silent
-  // success.
+  // oracle does. The idempotent variant is `bench harvest`'s write
+  // primitive, where a re-harvest must be a silent success rather than a
+  // reported failure.
   auto const written = life::touch(**conn, found->id, cliapp::flag_int(args, "--task").value_or(0),
                                    cliapp::flag_string(args, "--path").value_or(""), *kind);
   if (!written) {
     return std::unexpected(error_for("bench touch", uid, 0, written.error()));
   }
   ctx.out() << rend::render_bench_ok();
+  return {};
+}
+
+auto bench_harvest(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto const base = cliapp::flag_string(args, "--base");
+  auto const head = cliapp::flag_string(args, "--head");
+  // Checked BEFORE the database is opened, mirroring the oracle: this is
+  // the one refusal on this leaf the reference binary raises without
+  // touching SQLite at all.
+  if (base.has_value() != head.has_value()) {
+    return std::unexpected(error_from_body(kind_t::invalid_input, rend::render_base_head_mismatch()));
+  }
+
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const uid   = uid_of(args);
+  auto const found = resolve_run(**conn, "bench harvest", uid);
+  if (!found) {
+    return std::unexpected(found.error());
+  }
+
+  auto const            worktree = cliapp::flag_string(args, "--worktree").value_or("");
+  harv::diff_spec const spec =
+      base.has_value() ? harv::diff_spec{harv::diff_range{.base = *base, .head = *head}} : harv::diff_spec{std::nullopt};
+
+  auto const n = harv::harvest(**conn, harv::harvest_args{
+                                           .worktree = worktree,
+                                           .run_id   = found->id,
+                                           .task_id  = cliapp::flag_int(args, "--task").value_or(0),
+                                           .spec     = spec,
+                                       });
+  if (!n) {
+    // `query_failed` carries the family's generic wording — this leaf's
+    // write goes through `touch_idempotent`, so in practice only a schema-
+    // level failure (not a duplicate tuple, which that primitive silently
+    // ignores) can reach it.
+    auto const body = n.error() == harv::harvest_error::git_failed ? rend::render_harvest_git_failed(worktree)
+                                                                   : std::string{"bench harvest: QueryFailed"};
+    return std::unexpected(error_from_body(kind_t::generic_failure, body));
+  }
+  ctx.out() << std::format("{}\n", *n);
   return {};
 }
 

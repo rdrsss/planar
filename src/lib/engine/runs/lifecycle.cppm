@@ -70,14 +70,6 @@
 ///
 /// ## What is NOT ported, named rather than silently dropped
 ///
-/// - **`bench harvest`.** It rests on zig/src/engine/runs/harvest.zig, whose
-///   job is shelling `git diff --name-only` / `git rev-parse` through
-///   `std.process.run` to derive `kind='actual'` touches. There is no
-///   process-spawn seam in this tree (the same reason `capture commits` was
-///   deferred in cycle 4 — see engine/runtime/capture.cppm's cut list).
-///   Deferred WITH its dependency. Its DB-visible half IS ported and tested:
-///   `touch_idempotent` is exactly the `insert or ignore` primitive harvest
-///   writes through, so when a git seam lands, harvest is a thin wrapper.
 /// - **`policy.audit` rows.** No ported bucket writes them (see
 ///   engine/planning/CMakeLists.txt, engine/promotion, engine/runtime). No
 ///   `bench` or `run` leaf reads or emits audit rows, so no observable CLI
@@ -235,8 +227,8 @@ export auto touch(db::connection& conn, std::int64_t run_id, std::int64_t task_i
 /// @brief Insert a `run_touches` row idempotently (`insert or ignore`).
 ///
 /// Identical to `touch` except a UNIQUE conflict is a silent success. This is
-/// the primitive `bench harvest` writes through; harvest itself is not ported
-/// (see this module's cut list).
+/// the primitive `planar.engine.runs.harvest::harvest` writes through (task
+/// 6362).
 /// @param conn An open, migrated database connection.
 /// @param run_id The owning run.
 /// @param task_id The touching task.

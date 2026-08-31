@@ -85,9 +85,10 @@
 //   $Z run event <uid> --kind step  -> ..."seq":2
 //   $Z run event <uid> --kind step2 -> ..."seq":3
 //
-// `bench harvest` is NOT covered: it is not ported (see CMakeLists.txt's cut
-// list -- it rests on git subprocess work). That is the one leaf of the ten
-// this cycle does not reach.
+// `bench harvest` is covered separately, in `harvest.t.cpp` (task 6362):
+// this file exercises `touch_idempotent` (harvest's write primitive) but
+// not the git-diffing half, which needs real repository fixtures this
+// module's own tests do not build.
 
 #include <catch2/catch_test_macros.hpp>
 

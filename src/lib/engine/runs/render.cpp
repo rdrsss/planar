@@ -116,6 +116,14 @@ auto render_invalid_task_id(std::string_view raw) -> std::string {
   return std::format("bench start: --task value must be an integer, got '{}'", raw);
 }
 
+auto render_base_head_mismatch() -> std::string {
+  return "bench harvest: --base and --head must be supplied together";
+}
+
+auto render_harvest_git_failed(std::string_view worktree) -> std::string {
+  return std::format("bench harvest: git diff failed in worktree '{}'", worktree);
+}
+
 auto render_invalid_json(std::string_view leaf, std::string_view flag, std::string_view blob) -> std::string {
   return std::format("{}: {} is not valid JSON: {}", leaf, flag, blob);
 }

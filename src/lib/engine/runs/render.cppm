@@ -146,6 +146,18 @@ export auto render_invalid_touch_kind(std::string_view kind) -> std::string;
 /// @return The message body (no `error: ` prefix, no trailing newline).
 export auto render_invalid_task_id(std::string_view raw) -> std::string;
 
+/// @brief The `--base`/`--head` mutual-requirement refusal for
+/// `bench harvest`. Oracle-captured verbatim; the leaf name is baked in
+/// because only this one leaf declares the pair.
+/// @return The message body (no `error: ` prefix, no trailing newline).
+export auto render_base_head_mismatch() -> std::string;
+
+/// @brief The `git diff failed` refusal for `bench harvest`, naming the
+/// worktree that could not be diffed.
+/// @param worktree The worktree path passed to `--worktree`.
+/// @return The message body (no `error: ` prefix, no trailing newline).
+export auto render_harvest_git_failed(std::string_view worktree) -> std::string;
+
 /// @brief The invalid-JSON refusal for `--payload` / `--config-json`.
 ///
 /// Note the flag name is part of the message and the offending blob is echoed

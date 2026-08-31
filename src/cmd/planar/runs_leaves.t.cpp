@@ -1,6 +1,7 @@
 // @file runs_leaves.t.cpp
-// @brief In-process tests for the nine `bench` and `run` leaves wired by
-// plan 996, task 6149.
+// @brief In-process tests for all TEN `bench` and `run` leaves, wired by
+// plan 996, task 6149 (nine of them) and task 6362 (`bench harvest`, the
+// last).
 //
 // ## EVERY CASE ASSERTS DATABASE ROWS, NOT ONLY STDOUT
 //
@@ -79,7 +80,11 @@
 // reproduced — the call task 6135 already made for `task.create` (see
 // `handlers.t.cpp`'s task-6135 header).
 
+// Include-before-import is deliberate (see db/db.t.cpp): the `bench
+// harvest` git fixtures below need `::popen`/`::pclose` from `<cstdio>` in
+// the global module fragment.
 #include <catch2/catch_test_macros.hpp>
+#include <cstdio>
 
 import std;
 import cli11;
@@ -528,16 +533,180 @@ TEST_CASE("bench show renders both wire formats and reports a missing uid", "[cm
   }
 }
 
-TEST_CASE("bench harvest stays a LOUD exit-64 refusal", "[cmd][bench]") {
-  auto const fx = make_fixture("harvest");
+namespace {
+
+/// @brief Run a shell line inside `dir`, aborting the test on failure.
+/// FIXTURE construction only, never the behaviour under test — mirrors
+/// `lib/git/git.t.cpp`'s `fixture_sh`.
+auto harvest_fixture_sh(const std::filesystem::path& dir, std::string_view line) -> bool {
+  std::string const composed = std::format("cd '{}' && {} >/dev/null 2>&1", dir.string(), line);
+  return std::system(composed.c_str()) == 0;
+}
+
+auto harvest_init_repo(const std::filesystem::path& dir) -> bool {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  return harvest_fixture_sh(dir, "git init -q -b main") &&
+         harvest_fixture_sh(dir, "git config user.email planar@example.invalid") &&
+         harvest_fixture_sh(dir, "git config user.name Planar");
+}
+
+auto harvest_write_file(const std::filesystem::path& dir, std::string_view rel, std::string_view content) -> void {
+  std::ofstream out(dir / rel);
+  out << content;
+}
+
+auto harvest_commit_all(const std::filesystem::path& dir, std::string_view message) -> bool {
+  return harvest_fixture_sh(dir, "git add -A") && harvest_fixture_sh(dir, std::format("git commit -q -m '{}'", message));
+}
+
+auto harvest_rev_parse_head(const std::filesystem::path& dir) -> std::string {
+  std::string const cmd  = std::format("cd '{}' && git rev-parse HEAD", dir.string());
+  std::FILE*        pipe = ::popen(cmd.c_str(), "r");
+  REQUIRE(pipe != nullptr);
+  std::string           out;
+  std::array<char, 128> buf{};
+  std::size_t           n = 0;
+  while ((n = std::fread(buf.data(), 1, buf.size(), pipe)) > 0) {
+    out.append(buf.data(), n);
+  }
+  ::pclose(pipe);
+  while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
+    out.pop_back();
+  }
+  return out;
+}
+
+auto have_git() -> bool {
+  static bool const answer = std::system("git --version >/dev/null 2>&1") == 0;
+  return answer;
+}
+
+} // namespace
+
+TEST_CASE("bench harvest refuses --base without --head, and vice versa, before opening the database", "[cmd][bench]") {
+  auto const fx = make_fixture("harvest_pairing");
   seed(fx);
-  auto const refused = dispatch(fx, {"bench", "harvest", "b1", "--task", "1", "--worktree", "/tmp"});
-  // The tenth leaf. Its engine half is deferred WITH its git-subprocess
-  // dependency, so it refuses by name rather than exiting 0 having done
-  // nothing. The oracle answers exit 1 here (`run 'b1' not found`); the
-  // divergence is the DEFERRAL, declared rather than hidden.
-  CHECK(refused.code == 64);
-  CHECK(refused.err == "error: bench harvest: not implemented in this build\n");
+
+  auto const base_only = dispatch(fx, {"bench", "harvest", "b1", "--task", "1", "--worktree", "/tmp", "--base", "abc"});
+  CHECK(base_only.code == 2);
+  CHECK(base_only.err == "error: bench harvest: --base and --head must be supplied together\n");
+  CHECK_FALSE(base_only.db_open);
+
+  auto const head_only = dispatch(fx, {"bench", "harvest", "b1", "--task", "1", "--worktree", "/tmp", "--head", "def"});
+  CHECK(head_only.code == 2);
+  CHECK(head_only.err == "error: bench harvest: --base and --head must be supplied together\n");
+  CHECK_FALSE(head_only.db_open);
+}
+
+TEST_CASE("bench harvest reports a missing run", "[cmd][bench]") {
+  auto const fx = make_fixture("harvest_missing");
+  seed(fx);
+
+  auto const missing = dispatch(fx, {"bench", "harvest", "nosuch", "--task", "1", "--worktree", "/tmp"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: bench harvest: run 'nosuch' not found\n");
+}
+
+TEST_CASE("bench harvest reports git_failed for a nonexistent worktree", "[cmd][bench]") {
+  auto const fx = make_fixture("harvest_badworktree");
+  seed(fx);
+  REQUIRE(
+      dispatch(fx, {"bench", "start", "b1", "--plan", "1", "--arm", "strict", "--base-sha", "s", "--config-hash", "c"}).code ==
+      0);
+
+  auto const bad = dispatch(fx, {"bench", "harvest", "b1", "--task", "1", "--worktree", "/nonexistent/planar-harvest/xyzzy"});
+  CHECK(bad.code == 1);
+  CHECK(bad.err == "error: bench harvest: git diff failed in worktree '/nonexistent/planar-harvest/xyzzy'\n");
+}
+
+TEST_CASE("bench harvest diffs the working tree, writes DISTINCT kind='actual' rows, and prints the count", "[cmd][bench]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  auto const fx = make_fixture("harvest_worktree");
+  seed(fx);
+  REQUIRE(
+      dispatch(fx, {"bench", "start", "b1", "--plan", "1", "--arm", "strict", "--base-sha", "s", "--config-hash", "c"}).code ==
+      0);
+
+  // A repo that is NOT the fixture's own `proj` (never diff the Planar
+  // checkout itself) and NOT the real Planar checkout, per the task-6362
+  // brief's hermeticity requirement.
+  auto const repo = fx.root / "harvest-repo";
+  REQUIRE(harvest_init_repo(repo));
+  harvest_write_file(repo, "tracked.txt", "v1\n");
+  REQUIRE(harvest_commit_all(repo, "base"));
+  // One modified tracked file, one untracked (never-staged) new file --
+  // both must land as ONE row each, proving the working-tree merge picks
+  // up untracked files (task 4289's oracle fix) without duplicating.
+  harvest_write_file(repo, "tracked.txt", "v2\n");
+  harvest_write_file(repo, "untracked.txt", "brand new\n");
+
+  auto const harvested = dispatch(fx, {"bench", "harvest", "b1", "--task", "1", "--worktree", repo.string()});
+  CHECK(harvested.code == 0);
+  CHECK(harvested.out == "2\n");
+
+  auto conn = open_db(fx);
+  CHECK(touch_rows(conn) == "b1|1|tracked.txt|actual\n"
+                            "b1|1|untracked.txt|actual");
+}
+
+TEST_CASE("bench harvest diffs a base..head range across commits, no untracked-file pass", "[cmd][bench]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  auto const fx = make_fixture("harvest_range");
+  seed(fx);
+  REQUIRE(
+      dispatch(fx, {"bench", "start", "b1", "--plan", "1", "--arm", "strict", "--base-sha", "s", "--config-hash", "c"}).code ==
+      0);
+
+  auto const repo = fx.root / "harvest-range-repo";
+  REQUIRE(harvest_init_repo(repo));
+  harvest_write_file(repo, "a.txt", "a\n");
+  REQUIRE(harvest_commit_all(repo, "base"));
+  auto const base = harvest_rev_parse_head(repo);
+
+  harvest_write_file(repo, "b.txt", "b\n");
+  REQUIRE(harvest_commit_all(repo, "c1"));
+  harvest_write_file(repo, "c.txt", "c\n");
+  REQUIRE(harvest_commit_all(repo, "c2"));
+  auto const head = harvest_rev_parse_head(repo);
+
+  auto const harvested =
+      dispatch(fx, {"bench", "harvest", "b1", "--task", "2", "--worktree", repo.string(), "--base", base, "--head", head});
+  CHECK(harvested.code == 0);
+  CHECK(harvested.out == "2\n");
+
+  auto conn = open_db(fx);
+  CHECK(touch_rows(conn) == "b1|2|b.txt|actual\n"
+                            "b1|2|c.txt|actual");
+}
+
+TEST_CASE("bench harvest is idempotent: a second harvest of an unchanged diff does not duplicate rows", "[cmd][bench]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  auto const fx = make_fixture("harvest_idem");
+  seed(fx);
+  REQUIRE(
+      dispatch(fx, {"bench", "start", "b1", "--plan", "1", "--arm", "strict", "--base-sha", "s", "--config-hash", "c"}).code ==
+      0);
+
+  auto const repo = fx.root / "harvest-idem-repo";
+  REQUIRE(harvest_init_repo(repo));
+  harvest_write_file(repo, "idem.txt", "v1\n");
+  REQUIRE(harvest_commit_all(repo, "base"));
+  harvest_write_file(repo, "idem.txt", "v2\n");
+
+  CHECK(dispatch(fx, {"bench", "harvest", "b1", "--task", "1", "--worktree", repo.string()}).out == "1\n");
+  // Re-harvesting the SAME diff must not fail and must not duplicate the row
+  // -- the write goes through `touch_idempotent`, not `touch`.
+  CHECK(dispatch(fx, {"bench", "harvest", "b1", "--task", "1", "--worktree", repo.string()}).out == "1\n");
+
+  auto conn = open_db(fx);
+  CHECK(touch_rows(conn) == "b1|1|idem.txt|actual");
 }
 
 TEST_CASE("run start mints a uid and prints JSON with or without --json", "[cmd][run]") {

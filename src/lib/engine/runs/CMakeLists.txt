@@ -2,33 +2,34 @@
 #
 # Layer-2 `engine_*` module (cmake/architecture.cmake): may DEPEND on layer-1
 # modules only, never sideways onto another `engine_*` bucket (D15/D18's
-# same-layer prohibition for layers 2 and 3). This module needs only `db`, so
-# no D19 extraction was required and none was invented.
+# same-layer prohibition for layers 2 and 3). `db` and, since task 6362, the
+# layer-1 `git` seam (see below); no D19 extraction was required for either.
 #
 # Behavior-preserving port (D2) of zig/src/engine/runs/runs.zig plus the
 # validation and rendering halves of zig/src/cmd/planar/handlers/bench/*.zig
-# and zig/src/cmd/planar/handlers/run/*.zig -- nine of the ten `bench` + `run`
-# schema leaves (bench start|event|touch|finish|show, run start|event|
+# and zig/src/cmd/planar/handlers/run/*.zig -- all ten `bench` + `run` schema
+# leaves (bench start|event|touch|harvest|finish|show, run start|event|
 # finish|show).
 #
-# All nine are WIRED as of plan 996 task 6149 (src/cmd/planar/handlers/
+# Nine were WIRED as of plan 996 task 6149 (src/cmd/planar/handlers/
 # runs.cpp). That cycle added one renderer here, `render_invalid_task_id`:
 # `bench start --task` is declared `(string)` + repeatable on the tree, so
 # the integer conversion belongs to the leaf and its refusal wording is the
 # oracle's rather than the parser's. See render.cppm's note on it.
 #
+# `bench harvest`, the tenth leaf, landed at task 6362 in its own module,
+# `harvest.cppm`/`harvest.cpp`. It had been deferred WITH its dependency —
+# zig/src/engine/runs/harvest.zig shells `git diff --name-only` through
+# `std.process.run`, and this tree had no process-spawn abstraction at the
+# time. Tasks 6128/6137/6272/6358 closed that gap at layer 1
+# (`planar.git::run`) for four other consumers; this task is the fifth,
+# reached by adding `git` to this module's DEPENDS below. Its DB-visible
+# half was already ported and tested — `lifecycle::touch_idempotent` is
+# exactly the `insert or ignore` primitive harvest writes through, unchanged
+# by this task.
+#
 # NOT ported, named explicitly rather than silently dropped:
 #
-#   - `bench harvest`, the tenth leaf. It rests on
-#     zig/src/engine/runs/harvest.zig (671 lines), whose job is shelling
-#     `git diff --name-only` / `git rev-parse` through `std.process.run` to
-#     derive kind='actual' touches from a worktree. There is no process-spawn
-#     abstraction in this tree, and building one inside a port task would be a
-#     much larger change than the leaf it serves -- the same call the
-#     engine/runtime bucket made for `capture commits` in cycle 4. Deferred
-#     WITH its dependency. Its DB-visible half IS ported and tested:
-#     `lifecycle::touch_idempotent` is exactly the `insert or ignore`
-#     primitive harvest writes through.
 #   - ~~`policy.audit.record` calls.~~ NOT AN OMISSION, and never was
 #     (task 6100). The layer-1 `planar.policy` module now exists, and this
 #     bucket was audited against it: the Zig originals behind the `bench` and `run` leaves contain
@@ -58,12 +59,15 @@ planar_module(engine_runs
   INTERFACE
     lifecycle.cppm
     render.cppm
+    harvest.cppm
     runs.cppm
   SOURCES
     lifecycle.cpp
     render.cpp
+    harvest.cpp
   DEPENDS
     db
+    git
     json_text)
 
 # render.cpp validates --payload / --config-json through glz::validate_json --
