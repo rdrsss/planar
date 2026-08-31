@@ -241,8 +241,67 @@ TEST_CASE("harvest: range mode diffs base..head across commits, no ls-files pass
   REQUIRE(paths->size() == 2);
   CHECK(std::ranges::find(*paths, "b.txt") != paths->end());
   CHECK(std::ranges::find(*paths, "c.txt") != paths->end());
-  // Committed new files are visible through `diff` alone -- confirms no
-  // second ls-files query is needed (or run) for range mode.
+  // Committed new files are visible through `diff` alone. This fixture
+  // alone does NOT prove the `ls-files --others` pass is skipped in range
+  // mode -- a clean worktree can't distinguish "the pass ran and found
+  // nothing" from "the pass never ran" (see the next test, which is the
+  // one that actually discriminates).
+}
+
+TEST_CASE("harvest: range mode does NOT run the untracked-file pass, even with one dangling in the worktree", "[runs][harvest]") {
+  // The gap a same-clean-worktree fixture cannot see (review round 2 on
+  // task 6362): every OTHER range-mode fixture in this file leaves a
+  // clean working tree after its commits, so `git ls-files --others`
+  // would return nothing whether or not it were called -- the mutation
+  // `if (!spec.has_value())` -> `if (true)` at harvest.cpp:92 SURVIVED
+  // against all of them. This fixture leaves an untracked file DANGLING
+  // in the worktree at harvest time, which is exactly the coder-worktree
+  // scenario the module header's load-bearing claim
+  // ("no `ls-files` pass is needed or run" for range mode) is about: a
+  // regression that ran the untracked pass in range mode would pull
+  // `scratch.txt` into the result, polluting the harvested touch set with
+  // a path never in the committed range.
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_dir const repo;
+  REQUIRE(init_repo(repo.get()));
+  write_file(repo.get(), "a.txt", "a\n");
+  REQUIRE(commit_all(repo.get(), "base"));
+  auto const base = rev_parse_head(repo.get());
+
+  write_file(repo.get(), "b.txt", "b\n");
+  REQUIRE(commit_all(repo.get(), "committed"));
+  auto const head = rev_parse_head(repo.get());
+
+  // Dangling, untracked, unrelated to the committed range -- never staged,
+  // never committed. Present in the worktree at the moment `diff_paths` is
+  // called.
+  write_file(repo.get(), "scratch.txt", "wip\n");
+
+  auto const paths = rh::diff_paths(repo.get(), rh::diff_range{.base = base, .head = head});
+  REQUIRE(paths.has_value());
+  REQUIRE(paths->size() == 1);
+  CHECK(paths->front() == "b.txt");
+  CHECK(std::ranges::find(*paths, "scratch.txt") == paths->end());
+}
+
+TEST_CASE("harvest: range mode against a nonexistent worktree reports git_failed via the single query", "[runs][harvest]") {
+  // The other half of the same review finding: every EXISTING git_failed
+  // fixture in this file uses working-tree mode, where the untracked-file
+  // pass's OWN `!untracked_raw.has_value()` guard independently produces
+  // `git_failed` -- so a mutation that neutered the FIRST query's guard
+  // (`!raw.has_value()` at harvest.cpp:82) would survive every fixture in
+  // this file, because range mode never ran and working-tree mode's
+  // second guard masked the first. Range mode issues exactly ONE query,
+  // so this is the only path that isolates that guard.
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  auto const paths =
+      rh::diff_paths("/nonexistent/planar-harvest/range/xyzzy", rh::diff_range{.base = "deadbeef", .head = "cafef00d"});
+  REQUIRE_FALSE(paths.has_value());
+  CHECK(paths.error() == rh::harvest_error::git_failed);
 }
 
 TEST_CASE("harvest: writes one kind='actual' row per distinct path and returns the count", "[runs][harvest]") {
