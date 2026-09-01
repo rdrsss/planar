@@ -8,7 +8,7 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 ## Status
 
-Planar is a feature-complete, local-first tool built as four binaries (`planar`, `planar-agent`, `planar-watch`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has thirty-three migrations, through `migrations/00033_rename_blocks_to_depends_on.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`.
+Planar is a feature-complete, local-first tool built as four binaries (`planar`, `planar-agent`, `planar-watch`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has thirty-three migrations, through `migrations/00033_rename_blocks_to_depends_on.up.sql`; the C++ runtime embeds and applies them at startup. Vendored SQLite is compiled from its pinned amalgamation; no system SQLite library is required.
 
 **History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`; the current canonical Zig implementation lives at `github.com/rdrsss/planar.git`.
 
@@ -17,10 +17,11 @@ Planar is a feature-complete, local-first tool built as four binaries (`planar`,
 Planar shells out to a small set of external tools. On macOS, install them via Homebrew:
 
 ```bash
-brew install zig git gh jq ripgrep
+brew install cmake ninja llvm zig git gh jq ripgrep
 ```
 
-- `zig` — required to build the binary (see [Install](#install) and [Build from source](#build-from-source)). The minimum supported version is **zig 0.16.0 or later** (declared in `build.zig.zon`). The runtime statically links a vendored SQLite amalgamation compiled by `build.zig`; no system SQLite library dependency.
+- `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries. `install.sh` preflights the exact preset compilers, `/opt/homebrew/opt/llvm/bin/clang` and `/opt/homebrew/opt/llvm/bin/clang++`, before it invokes CMake. Use the repository's `debug` and `release` presets; see [toolchain parity](docs/toolchain-parity.md).
+- `zig` — retained during the port as the behavior oracle and to build the authored-surface lint utilities. It is not used by `install.sh` to build installed binaries.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
 - `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The Zig binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
@@ -30,9 +31,9 @@ brew install zig git gh jq ripgrep
   install it from `locumipsum/tabularium` when using those workflows.
 
 The full source-checkout installer also uses the base-system utilities declared
-in `install.sh`'s `BUILD_DEPS` manifest (`awk`, `basename`, `cat`, `chmod`,
+in `install.sh`'s `BUILD_DEPS` / `RUN_DEPS` manifests (`awk`, `basename`, `cat`, `chmod`, `cmp`,
 `cp`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mv`, `readlink`,
-`rm`, `rmdir`, `sed`, and `tr`). These ship with supported Unix-like systems;
+`rm`, `rmdir`, and `tr`) alongside CMake, Ninja, and the exact pinned LLVM compiler paths above. These ship with supported Unix-like systems;
 the installer preflights them before making changes.
 
 ### Optional / research tools
@@ -47,12 +48,14 @@ cargo install sqlx-cli --no-default-features --features sqlite
 
 ## Install
 
-The Zig package root IS the repo root (`build.zig` and `build.zig.zon` sit at the top level). Clone the repo, then build directly into your install prefix:
+The C++ project root is the repo root. Clone the repo, then build and install with the release preset:
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
 cd planar
-zig build --prefix "$HOME/.planar"
+cmake --preset release -DPLANAR_VERSION_META=ON
+cmake --build build/release
+cmake --install build/release --prefix "$HOME/.planar"
 ```
 
 This puts a single binary at `~/.planar/bin/planar`. The binary statically links the vendored SQLite amalgamation — no system library dependency.
@@ -71,9 +74,9 @@ This installs only the binary. The agent specs, slash commands, skills, and migr
 ```bash
 git clone https://github.com/rdrsss/planar.git
 cd planar
-zig build                         # default install (zig-out/bin/planar)
-zig build test                    # unit tests
-zig build test-integration        # integration tests (or: make test-integration)
+cmake --preset debug
+cmake --build build/debug
+ctest --test-dir build/debug --output-on-failure
 ```
 
 For ad-hoc migration work against a scratch database, install the optional sqlx CLI:
