@@ -1,23 +1,12 @@
-# Planar — Zig build/test entry points.
+# Planar — C++26 build/test entry points.
 #
-# Targets here are thin wrappers around the canonical `zig build` invocations
-# declared in CLAUDE.md. They exist to give one consistent surface for humans
-# and CI.
+# Targets here are thin wrappers around the canonical CMake presets. They
+# exist to give one consistent surface for humans and CI.
 #
-# The Zig implementation relocated to zig/ at M0 (plan 996, task
-# cpp-zig-relocation): build.zig sits at zig/build.zig, Zig modules live
-# under zig/src/, and zig/tools/, zig/integration_tests/, zig/vendor/ are
-# sibling directories under zig/. migrations/, templates/, skills/, agents/,
-# evals/, docs/, scripts/ stay at the repo root (language-agnostic) — the
-# relocated build.zig reaches them via relative (`../`) paths. This Makefile
-# stays the operator entry point at the repo root; its targets invoke zig
-# build against zig/build.zig via --build-file with an ABSOLUTE path rather
-# than `cd`-ing into zig/, so the spawned process's cwd (and therefore every
-# integration test's repo-root-relative file access, e.g. `skills/src/...`,
-# `docs/...`, `migrations/...`) stays at the repo root exactly as it did
-# before the relocation. Only `zig build`'s own path resolution (b.path())
-# is relative to zig/ (the build root), which is why build.zig's migrations/
-# templates/metrics references were rewritten with a leading `../`.
+# The C++ implementation is built with the debug/release CMake presets. The
+# relocated `zig/` tree remains the behavior oracle and provides the two
+# authored-surface lint tools, which are compiled standalone below and run
+# against the C++ binaries.
 
 BINARY        := planar
 AGENT_BINARY  := planar-agent
@@ -44,13 +33,14 @@ ZIGBUILD      := $(ZIG) build --build-file $(ZIG_BUILD_FILE)
 # lane at a different build directory.
 CPP_BIN_DIR   ?= build/debug/bin
 CPP_BIN_ABS   := $(abspath $(CPP_BIN_DIR))
+CPP_RELEASE_BIN_DIR ?= build/release/bin
 
-# Default optimize mode for production builds. Override via:
-#   make build OPTIMIZE=Debug
-#   make build OPTIMIZE=ReleaseFast
-OPTIMIZE    ?= ReleaseSafe
+CPP_BUILD_DIR ?= build/debug
+CPP_LINT_BIN_DIR ?= $(CPP_BUILD_DIR)/tools
+CLI_USAGE_LINT := $(CPP_LINT_BIN_DIR)/cli_usage_lint
+SURFACE_LINT := $(CPP_LINT_BIN_DIR)/surface_lint
 
-# Extra args forwarded to underlying zig invocations.
+# Extra args forwarded to the relevant underlying build command.
 ARGS        ?=
 
 # Share one Zig local cache between the main checkout and every git worktree
@@ -74,15 +64,18 @@ help:
 .PHONY: build
 build: ## Build the planar + planar-agent + planar-watch + planar-execute binaries into ./bin/ (at repo root)
 	@mkdir -p $(BIN_DIR)
-	$(ZIGBUILD) -Doptimize=$(OPTIMIZE) $(ARGS)
-	@cp -f $(ZIG_DIR)/zig-out/bin/$(BINARY) $(BIN)
-	@cp -f $(ZIG_DIR)/zig-out/bin/$(AGENT_BINARY) $(AGENT_BIN)
-	@cp -f $(ZIG_DIR)/zig-out/bin/$(WATCH_BINARY) $(WATCH_BIN)
-	@cp -f $(ZIG_DIR)/zig-out/bin/$(EXECUTE_BINARY) $(EXECUTE_BIN)
+	cmake --preset release -DPLANAR_VERSION_META=OFF
+	cmake --build build/release $(ARGS)
+	@cp -f $(CPP_RELEASE_BIN_DIR)/$(BINARY) $(BIN)
+	@cp -f $(CPP_RELEASE_BIN_DIR)/$(AGENT_BINARY) $(AGENT_BIN)
+	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
+	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 
 .PHONY: install
 install: ## Build and install the four Planar executables into PREFIX/bin (default: ~/.local/bin)
-	$(ZIGBUILD) -Doptimize=$(OPTIMIZE) -Dversion-meta=true --prefix $(PREFIX) $(ARGS)
+	cmake --preset release -DPLANAR_VERSION_META=ON
+	cmake --build build/release $(ARGS)
+	cmake --install build/release --prefix $(PREFIX)
 
 .PHONY: install-bin
 install-bin: install ## Compatibility alias for the binary-only install
@@ -131,7 +124,9 @@ test-install-manifest: ## Run focused installer manifest ownership/atomicity fix
 
 .PHONY: test
 test: test-install-manifest ## Run unit tests
-	$(ZIGBUILD) test $(ARGS)
+	cmake --preset debug
+	cmake --build build/debug $(ARGS)
+	ctest --test-dir build/debug --output-on-failure $(ARGS)
 
 .PHONY: test-integration
 # -Dtest-binary=true: rebuild the binary with the test-binary flag enabled.
@@ -174,7 +169,6 @@ test-integration-files: ## Run integration tests as one executable per test file
 # recipe below fails loudly with the override to set, because silently
 # linting with another release's formatter is exactly the outcome the pin
 # exists to prevent. See docs/toolchain-parity.md § clang-format.
-CPP_BUILD_DIR    ?= build/debug
 LLVM_PREFIX      ?= $(shell \
 	cxx=$$(sed -n 's|^CMAKE_CXX_COMPILER:[^=]*=||p' $(CPP_BUILD_DIR)/CMakeCache.txt 2>/dev/null); \
 	if [ -n "$$cxx" ]; then dirname "$$(dirname "$$cxx")"; \
@@ -247,11 +241,17 @@ test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binar
 
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
-	$(ZIGBUILD) cli-usage-check
+	@mkdir -p $(CPP_LINT_BIN_DIR)
+	zig build-exe zig/tools/cli_usage_lint.zig -O Debug --name cli_usage_lint -femit-bin=$(CLI_USAGE_LINT)
+	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY)
+	zig build-exe zig/tools/surface_lint.zig -O Debug --name surface_lint -femit-bin=$(SURFACE_LINT)
+	$(SURFACE_LINT) $(CURDIR)
 
 .PHONY: surface-lint
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
-	$(ZIGBUILD) surface-lint
+	@mkdir -p $(CPP_LINT_BIN_DIR)
+	zig build-exe zig/tools/surface_lint.zig -O Debug --name surface_lint -femit-bin=$(SURFACE_LINT)
+	$(SURFACE_LINT) $(CURDIR)
 
 .PHONY: coverage
 coverage: build ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt

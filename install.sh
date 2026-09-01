@@ -54,7 +54,7 @@
 #   ./install.sh --prefix /opt/planar # override ~/.planar
 #   ./install.sh --force              # overwrite existing symlinks
 #   ./install.sh --uninstall          # tear down everything install.sh created
-#   ./install.sh --optimize Debug     # zig build optimize mode (default ReleaseSafe)
+#   ./install.sh --preset debug       # CMake preset (default release)
 #   ./install.sh --with-mtkahypar     # install the optional native solver wheel
 #   ./install.sh --dry-run            # preview planned actions without changing anything
 #   ./install.sh --verbose            # per-file detail (default prints a summary)
@@ -64,7 +64,7 @@
 # Output is colorized on a TTY; set NO_COLOR=1 (or pipe stdout) for plain text.
 
 # -E (errtrace) propagates the ERR trap into subshells/functions so a failure
-# inside the `( cd … && zig build … )` subshell is reported, not swallowed.
+# inside the CMake build subshell is reported, not swallowed.
 set -eEuo pipefail
 
 # ---------- defaults ----------
@@ -76,7 +76,7 @@ MODE="copy"                   # copy | link
 FORCE=0
 UNINSTALL=0
 NO_PRUNE=0                    # set with --no-prune to skip stale-vendor-file removal
-OPTIMIZE="ReleaseSafe"        # zig optimize mode
+BUILD_PRESET="release"        # CMake preset
 VERBOSE=0                     # set with --verbose/-v for per-file detail
 DRY_RUN=0                     # set with --dry-run/-n to preview without changes
 WITH_MTKAHYPAR=0              # opt-in native wheel + Planar CLI adapter
@@ -84,12 +84,6 @@ MTKAHYPAR_VERSION="1.6.1"
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The Zig implementation relocated to zig/ at M0 (plan 996, task
-# cpp-zig-relocation): build.zig + build.zig.zon now live at
-# $REPO_ROOT/zig. Everything else the installer stages (agents/, skills/,
-# migrations/, templates/, copilot/, scripts/) stayed at $REPO_ROOT — see
-# the Makefile's relocation note for the same split.
-ZIG_DIR="$REPO_ROOT/zig"
 source "$REPO_ROOT/scripts/install-manifest.sh"
 source "$REPO_ROOT/scripts/discover-scriptorium.sh"
 
@@ -110,7 +104,7 @@ Options:
   --link             Symlink from this repo instead of copying (dev mode)
   --force            Overwrite existing symlinks / adopt a non-Planar prefix
   --no-prune         Skip removal of stale vendor files
-  --optimize MODE    Zig optimize mode: Debug|ReleaseSafe|ReleaseFast|ReleaseSmall (default: ReleaseSafe)
+  --preset NAME      CMake build preset: debug|release (default: release)
   --with-mtkahypar   Install the optional pinned Mt-KaHyPar native wheel + adapter
   --dry-run, -n      Show what would happen without making any changes
   --verbose, -v      Per-file detail (default prints a summary)
@@ -133,7 +127,7 @@ while [[ $# -gt 0 ]]; do
     --force)      FORCE=1; shift ;;
     --uninstall)  UNINSTALL=1; shift ;;
     --no-prune)   NO_PRUNE=1; shift ;;
-    --optimize)   OPTIMIZE="$2"; shift 2 ;;
+    --preset)     BUILD_PRESET="$2"; shift 2 ;;
     --with-mtkahypar) WITH_MTKAHYPAR=1; shift ;;
     --verbose|-v) VERBOSE=1; shift ;;
     --dry-run|-n) DRY_RUN=1; shift ;;
@@ -175,7 +169,7 @@ ok()    { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn()  { WARN_COUNT=$((WARN_COUNT + 1)); printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 err()   { printf '\n%sinstall.sh: %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
 
-# set -e + this ERR trap turn a raw mid-script failure (a bad `zig build`, a
+# set -e + this ERR trap turn a raw mid-script failure (a bad CMake build, a
 # failed `cp`) into a framed message naming the phase that died, instead of a
 # bare non-zero exit the user has to reverse-engineer. Explicit err() exits and
 # `cmd || …` guarded failures never reach here.
@@ -189,98 +183,8 @@ on_err() {
 }
 trap 'on_err $? $LINENO' ERR
 
-# ---------- D13 freeze gate ----------
-#
-# D13 (plan 996 decision, C++26 rewrite tech-spec): "Installed Planar
-# freezes at the fork point." During M0–M9 the OPERATOR's installed
-# surfaces stay at the pre-branch build; install.sh must NOT retarget any
-# of the operator's real, live surfaces at the relocated zig/ tree, and
-# the zig/ tree stays buildable strictly as the parity oracle for the
-# in-progress C++ rewrite, never as an install source. A prior M0 cycle
-# violated this by retargeting install.sh's checkout gate at
-# $REPO_ROOT/zig (ZIG_DIR) below — an earlier version of this gate
-# reverted that but checked only $PLANAR_HOME against the default
-# ~/.planar, which is incomplete: install.sh also symlinks/copies vendor
-# surfaces straight into $HOME/.claude, $CODEX_HOME (default
-# $HOME/.codex), $HOME/.copilot, and $HOME/.gemini (see the vendor
-# dispatch below), and --prefix redirects ONLY $PLANAR_HOME — it never
-# touches $HOME or $CODEX_HOME. So `./install.sh --prefix /somewhere-else`
-# used to pass the old gate and then run symlink_vendor / prune_stale_*
-# against the operator's real, live vendor dirs (F12: blind review,
-# task 6049). The relocated-tree shape check stays mechanical: zig/
-# present with build.zig, but no build.zig at the repo root (the
-# pre-relocation, not-yet-rewritten layout always has both at the root).
-#
-# D13 protects every operator-real surface this script can write —
-# $PLANAR_HOME AND the per-vendor roots under $HOME/$CODEX_HOME — not
-# every invocation of this script. A run is genuinely isolated, and out
-# of D13's scope, only when PLANAR_HOME, HOME, and CODEX_HOME have ALL
-# been redirected away from the operator's real account home — that's
-# what lets the integration suite exercise install.sh against its own
-# throwaway temp prefixes (installed_surface_test.zig sets HOME,
-# PLANAR_HOME, and CODEX_HOME together; scenario_agent_skill_lifecycle_
-# test.zig likewise) without weakening the freeze on the real ~/.planar,
-# ~/.claude, ~/.codex, ~/.copilot, ~/.gemini. Comparing $HOME against the
-# literal env var is not enough either: $HOME itself is spoofable by the
-# same override an attempted bypass would use, so the "real account home"
-# below is resolved independently, from the passwd database via the
-# invoking account's username (`id -un`), which an env var override
-# cannot redirect.
-#
-# The match must be EXACT against the three real surface roots, not a
-# containment/prefix test. This repo (and therefore the integration
-# harness's own throwaway temp roots, which it derives from
-# `<repo>/.zig-cache/tmp/<random>` per integration_tests/harness.zig) lives
-# under the operator's real home directory. A prefix test ("is this path
-# under $_D13_REAL_HOME at all") would refuse ANY redirect that still
-# happens to live under the operator's home tree — including the
-# harness's fully-redirected, throwaway HOME/PLANAR_HOME/CODEX_HOME — even
-# though none of those paths is one of the operator's real, live surface
-# roots. What D13 must actually protect is exactly three literal paths:
-# the real ~/.planar, the real $HOME (whose subtree carries ~/.claude,
-# ~/.codex default, ~/.copilot, ~/.gemini), and the real $CODEX_HOME. So a
-# run is refused iff:
-#   PLANAR_HOME == "$_D13_REAL_HOME/.planar"
-#   or HOME        == "$_D13_REAL_HOME"
-#   or CODEX_HOME  == "$_D13_REAL_HOME/.codex"
-# — an EXACT match on each of those three literal roots, not a prefix/
-# containment test. Guarding HOME exactly (rather than PLANAR_HOME's
-# broader default-derivation) still covers ~/.claude, ~/.copilot, and
-# ~/.gemini, because install.sh derives those vendor roots from $HOME
-# itself; CODEX_HOME is guarded separately because it has its own
-# independent override variable. This covers both the unredirected
-# default run (PLANAR_HOME and HOME both equal the real roots) and a
-# partial redirect (e.g. --prefix alone with real $HOME, F12) while
-# letting a genuinely isolated run — HOME/PLANAR_HOME/CODEX_HOME all
-# pointed at throwaway paths, even ones nested under the real home tree,
-# such as the integration harness's `.zig-cache/tmp/...` roots — proceed,
-# because none of those throwaway paths is EQUAL to a real surface root.
-# install.sh swaps to the CMake-built binaries at M9 (task cpp-eval-parity)
-# per D13 — this gate is removed then, not before.
-_planar_real_home() {
-  # Resolve the invoking account's real home directory from the passwd
-  # database, independent of $HOME (which an isolated/spoofed run
-  # legitimately overrides, and a bypass attempt could too). `eval echo
-  # ~user` resolves through NSS/Directory Services on both macOS and
-  # Linux without depending on getent (absent on macOS). Falls back to
-  # $HOME if the account lookup fails for any reason — the safer
-  # (more restrictive) default.
-  local u home
-  u="$(id -un 2>/dev/null)" || { printf '%s' "$HOME"; return 0; }
-  home="$(eval echo "~$u" 2>/dev/null)" || true
-  if [[ -n "$home" && "$home" != "~$u" ]]; then
-    printf '%s' "$home"
-  else
-    printf '%s' "$HOME"
-  fi
-}
-_D13_REAL_HOME="$(_planar_real_home)"
-if [[ -f "$REPO_ROOT/zig/build.zig" && ! -f "$REPO_ROOT/build.zig" ]]; then
-  if [[ "$PLANAR_HOME" == "$_D13_REAL_HOME/.planar" || "$HOME" == "$_D13_REAL_HOME" || "$CODEX_HOME" == "$_D13_REAL_HOME/.codex" ]]; then
-    err "installed Planar is frozen at the fork point (D13) until M9 — install.sh is disabled on the rewrite branch (PLANAR_HOME, HOME, and CODEX_HOME must ALL be redirected away from $_D13_REAL_HOME for an isolated run)"
-  fi
-fi
-
+# The D13 install freeze ended at the M9 parity gate: `install.sh` now ships
+# the CMake-built binaries while `zig/` remains available only as the oracle.
 # check_deps "<tier label>" <fatal:0|1> "cmd|brewpkg|what it's for" …
 # Checks every entry and reports ALL missing tools at once (not one-at-a-time),
 # with a `brew install …` hint built from the entries that have a Homebrew
@@ -481,7 +385,8 @@ title "Planar — install from $REPO_ROOT"
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
 BUILD_DEPS=(
-  "zig|zig|builds the four Planar binaries"
+  "cmake|cmake|configures, builds, and installs the four Planar binaries"
+  "ninja|ninja|C++26 module dependency scanning"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
@@ -489,10 +394,8 @@ BUILD_DEPS=(
   "mv||atomically replace the install manifest"
   "find||walk vendor + template source trees"
   "rmdir||remove emptied vendor skill directories"
-  "sed||parse the pinned zig version from build.zig.zon"
   "awk||read the build id from 'planar version'"
   "grep||validate the Planar package manifest"
-  "head||take the first match when parsing build.zig.zon"
   "cat||read help text + vendor ownership markers"
   "ls||detect a non-empty / foreign install prefix"
   "readlink||resolve existing vendor symlinks safely"
@@ -513,24 +416,11 @@ RUN_DEPS=(
 
 check_deps "build" 1 "${BUILD_DEPS[@]}"
 
-# Zig version gate — build.zig.zon pins a minimum; an older toolchain otherwise
-# fails deep in the build with a cryptic error. Surface it up front. Dev/build
-# suffixes (0.16.0-dev.123+abc) are treated as their base release.
-MIN_ZIG="$(sed -n 's/.*\.minimum_zig_version = "\([0-9.]*\)".*/\1/p' "$ZIG_DIR/build.zig.zon" | head -n1)"
-HAVE_ZIG="$(zig version 2>/dev/null || true)"
-HAVE_ZIG_CORE="${HAVE_ZIG%%-*}"; HAVE_ZIG_CORE="${HAVE_ZIG_CORE%%+*}"
-if [[ -n "$MIN_ZIG" && -n "$HAVE_ZIG_CORE" ]] && ! version_ge "$HAVE_ZIG_CORE" "$MIN_ZIG"; then
-  err "zig $MIN_ZIG or newer required, found $HAVE_ZIG ($(command -v zig))"
-fi
+# Check that we are in a CMake Planar source checkout.
+[[ -f "$REPO_ROOT/CMakeLists.txt" ]] || err "CMakeLists.txt not found in $REPO_ROOT (run install.sh from the Planar source repo)"
+[[ -f "$REPO_ROOT/CMakePresets.json" ]] || err "CMakePresets.json not found in $REPO_ROOT"
 
-# Check that we are in a Planar source checkout.
-# Zig code lives under zig/src/; build.zig + build.zig.zon sit at zig/
-# (relocated at M0, plan 996, task cpp-zig-relocation).
-[[ -f "$ZIG_DIR/build.zig" ]] || err "zig/build.zig not found in $REPO_ROOT (run install.sh from the Planar source repo)"
-[[ -f "$ZIG_DIR/build.zig.zon" ]] || err "zig/build.zig.zon not found in $REPO_ROOT"
-grep -q '^[[:space:]]*\.name = \.planar' "$ZIG_DIR/build.zig.zon" || err "$REPO_ROOT does not look like the Planar Zig package (zig/build.zig.zon name mismatch)"
-
-# scriptorium discovery — fatal, fail fast before the (slow) zig build below.
+# scriptorium discovery — fatal, fail fast before the CMake build below.
 # install.sh no longer renders vendor surfaces itself; it shells the
 # scriptorium binary (tech-spec.md § Architecture "How Planar shells
 # scriptorium", decision D2). Resolves $SCRIPTORIUM_BIN into a validated,
@@ -547,8 +437,7 @@ check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"
 # --path-format=absolute --git-common-dir` (docs/toolchain-parity.md's git
 # row) — below that floor, worktree detection can misclassify a primary
 # checkout nested two or more levels below the repo root as a secondary
-# worktree. This check stays live post-M9 (the D13 freeze gate above disables
-# the whole script during M0–M9, not this check's relevance).
+# worktree. This check stays live after the C++ cutover.
 MIN_GIT="2.31.0"
 if command -v git >/dev/null 2>&1; then
   HAVE_GIT="$(git --version | awk '{print $3}')"
@@ -565,7 +454,7 @@ fi
 log "PLANAR_HOME = $PLANAR_HOME"
 log "mode        = $MODE"
 log "vendors     = ${VENDORS:-(none)}"
-log "optimize    = $OPTIMIZE"
+log "preset      = $BUILD_PRESET"
 log "mtkahypar   = $([[ "$WITH_MTKAHYPAR" -eq 1 ]] && echo install || echo unchanged)"
 [[ "$DRY_RUN" -eq 1 ]] && log "dry-run     = yes (no changes will be made)"
 
@@ -598,7 +487,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   [[ -f "$REPO_ROOT/install-cleanup.txt" ]] && \
     _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$REPO_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
-  log "build 4 binaries (planar, planar-agent, planar-watch, planar-execute) → $PLANAR_HOME/bin  [optimize=$OPTIMIZE]"
+  log "build 4 binaries (planar, planar-agent, planar-watch, planar-execute) → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
@@ -621,8 +510,7 @@ fi
 title "Building the Planar binaries"
 
 mkdir -p "$PLANAR_HOME/bin"
-# `zig build --prefix <root>` installs every `installArtifact` target into
-# <root>/bin/. The build registers FOUR binaries:
+# CMake configures, builds, and installs all FOUR executable targets:
 #
 #   planar         — operator surface
 #   planar-agent   — agent-callable coordination (atomic claim ops,
@@ -633,19 +521,9 @@ mkdir -p "$PLANAR_HOME/bin"
 #                    (run <wf.lua> --phase; shells planar for state,
 #                    holds no DB handle, no model-spawn host fn)
 #
-# All four land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
-# Migrations and templates/defaults are read from the repo root at codegen
-# time; build.zig sits at $ZIG_DIR (relocated at M0) and reaches them via
-# its own `../` paths. Invoke with `--build-file` by absolute path rather
-# than `cd`-ing into $ZIG_DIR, so the spawned zig process's cwd stays at
-# $REPO_ROOT — matching the Makefile's ZIGBUILD wrapper (see its relocation
-# note) so any codegen path resolution behaves identically whether the
-# operator runs `make build` or `install.sh`.
-# -Dversion-meta=true: stamp the real git sha/date/dirty into `planar version`.
-# Dev builds default this off because embedding live git metadata invalidates
-# the whole build cache on every commit / dirty-flag flip; installs are the
-# one place the stamped metadata is worth that rebuild.
-( cd "$REPO_ROOT" && zig build --build-file "$ZIG_DIR/build.zig" -Doptimize="$OPTIMIZE" -Dversion-meta=true --prefix "$PLANAR_HOME" )
+# `PLANAR_VERSION_META=ON` stamps the install's git metadata. It stays off
+# for ordinary dev builds so commit/dirty changes do not invalidate the tree.
+( cd "$REPO_ROOT" && cmake --preset "$BUILD_PRESET" -DPLANAR_VERSION_META=ON && cmake --build "build/$BUILD_PRESET" && cmake --install "build/$BUILD_PRESET" --prefix "$PLANAR_HOME" )
 vlog "wrote $PLANAR_HOME/bin/planar"
 vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"
@@ -653,16 +531,15 @@ vlog "wrote $PLANAR_HOME/bin/planar-execute"
 
 # Smoke check — a build can succeed yet produce a binary that won't run. Confirm
 # it executes now (and capture the build id) rather than discovering it broken
-# at `planar init`. `planar version` prints `planar <sha> <ts> zig <ver>` on
-# stdout and exits 0 even when no DB exists yet.
+# at `planar init`.
 PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
   err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
 ok "built 4 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 
-# `zig build --prefix` only writes the targets it builds — it never removes
-# files a PRIOR install left behind. Iterate the cleanup manifest and delete
+# CMake install only writes the targets it builds — it never removes files a
+# PRIOR install left behind. Iterate the cleanup manifest and delete
 # any $PLANAR_HOME-relative artifact current Planar no longer ships (e.g. a
 # binary dropped in a refactor) so a re-install over an older tree is clean.
 # See install-cleanup.txt.

@@ -259,6 +259,7 @@ function(planar_binary name)
     CXX_MODULE_STD ON
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     OUTPUT_NAME "${_output_name}")
+  install(TARGETS ${_target} RUNTIME DESTINATION bin)
 
   if(PLANAR_WARNINGS_AS_ERRORS)
     target_compile_options(${_target} PRIVATE
