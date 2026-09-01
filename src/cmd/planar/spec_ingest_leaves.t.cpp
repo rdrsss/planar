@@ -469,6 +469,42 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
   CHECK(count(conn_after_second, "routing_task_facts") == facts_after_first);
 }
 
+TEST_CASE("spec ingest membership-authorized apply preserves the anchor repository scope on every descendant",
+          "[cmd][spec][ingest][apply][scope][membership]") {
+  auto const fx = make_fixture("membership_provenance");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  // The anchor belongs directly to the repository. The association scope
+  // below authorizes the write through membership, but must not become the
+  // provenance scope of the derived graph.
+  REQUIRE(dispatch(fx, {"plan", "create", "Repository anchor", "--scope", "repo:proj", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech Spec", "--kind", "tech_spec", "--plan", "1", "--body",
+                        "## Decisions\n\n### Repository decision\n\nbody\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- Repository work [slug: repository-work]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  // `project:proj` is broader authorization supplied by the association;
+  // it is deliberately different from the anchor's `repo:proj` provenance.
+  REQUIRE(dispatch(fx, {"spec", "ingest", "1", "--apply", "--scope", "project:proj"}).code == 0);
+
+  auto conn = open_db(fx);
+  auto repo_id = conn.prepare("select scope_id from plans where id = 1 and scope_kind = 'repo'");
+  REQUIRE(repo_id.has_value());
+  REQUIRE(repo_id->step().has_value());
+  auto const id = repo_id->column_int64(0);
+  for (auto const table : {"plans", "tasks", "decisions"}) {
+    auto wrong = conn.prepare(std::format("select count(*) from {} where id != 1 and (scope_kind != 'repo' or scope_id != ?)", table));
+    REQUIRE(wrong.has_value());
+    REQUIRE(wrong->bind_int64(1, id));
+    REQUIRE(wrong->step().has_value());
+    CHECK(wrong->column_int64(0) == 0);
+  }
+}
+
 TEST_CASE("spec ingest --apply rolls back every planning write after a mid-apply failure",
           "[cmd][spec][ingest][apply][atomicity]") {
   auto const fx     = make_fixture("apply_atomicity");
