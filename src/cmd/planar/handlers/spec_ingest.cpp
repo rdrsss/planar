@@ -37,6 +37,9 @@ namespace wb_root    = engine::workbench::root;
 // Error-name helpers (Zig `@errorName` spellings, for oracle-matching text)
 // ===========================================================================
 
+/// @brief Returns the Zig-parity spelling for a plan engine error.
+/// @param err Engine error to render.
+/// @return Oracle-compatible error-name spelling.
 auto name_of(pl::plan_error err) -> std::string_view {
   switch (err) {
   case pl::plan_error::not_found:
@@ -59,6 +62,9 @@ auto name_of(pl::plan_error err) -> std::string_view {
   return "Unknown";
 }
 
+/// @brief Returns the Zig-parity spelling for a task engine error.
+/// @param err Engine error to render.
+/// @return Oracle-compatible error-name spelling.
 auto name_of(pl::task_error err) -> std::string_view {
   switch (err) {
   case pl::task_error::not_found:
@@ -81,6 +87,9 @@ auto name_of(pl::task_error err) -> std::string_view {
   return "Unknown";
 }
 
+/// @brief Returns the Zig-parity spelling for a decision engine error.
+/// @param err Engine error to render.
+/// @return Oracle-compatible error-name spelling.
 auto name_of(pl::decision_error err) -> std::string_view {
   switch (err) {
   case pl::decision_error::not_found:
@@ -103,6 +112,9 @@ auto name_of(pl::decision_error err) -> std::string_view {
   return "Unknown";
 }
 
+/// @brief Returns the Zig-parity spelling for a question engine error.
+/// @param err Engine error to render.
+/// @return Oracle-compatible error-name spelling.
 auto name_of(pl::question_error err) -> std::string_view {
   switch (err) {
   case pl::question_error::not_found:
@@ -123,6 +135,9 @@ auto name_of(pl::question_error err) -> std::string_view {
   return "Unknown";
 }
 
+/// @brief Returns the Zig-parity spelling for a scenario engine error.
+/// @param err Engine error to render.
+/// @return Oracle-compatible error-name spelling.
 auto name_of(pl::scenario_error err) -> std::string_view {
   switch (err) {
   case pl::scenario_error::not_found:
@@ -143,6 +158,9 @@ auto name_of(pl::scenario_error err) -> std::string_view {
   return "Unknown";
 }
 
+/// @brief Returns the Zig-parity spelling for an entity-link engine error.
+/// @param err Engine error to render.
+/// @return Oracle-compatible error-name spelling.
 auto name_of(el::entity_link_error err) -> std::string_view {
   switch (err) {
   case el::entity_link_error::not_found:
@@ -169,6 +187,13 @@ auto name_of(el::entity_link_error err) -> std::string_view {
 
 /// @brief Adds an `entity_links` row; an existing row is a tolerated no-op.
 /// Mirrors zig's `ensureLink`.
+/// @param conn Database connection.
+/// @param from_kind Source entity kind.
+/// @param from_id Source entity id.
+/// @param to_kind Target entity kind.
+/// @param to_id Target entity id.
+/// @param rel Relationship to record.
+/// @return Success, or the oracle-compatible persistence error.
 auto ensure_link(db::connection& conn, el::entity_kind from_kind, std::int64_t from_id, el::entity_kind to_kind,
                  std::int64_t to_id, el::relationship rel) -> std::expected<void, std::string> {
   auto added =
@@ -200,6 +225,7 @@ struct anchor {
   std::string status;
 };
 
+/// @brief Shared projection for resolving an anchor's identity and scope.
 constexpr std::string_view k_anchor_sql = "select p.id, p.slug, coalesce(a.slug, ''), p.status, "
                                           " case p.scope_kind "
                                           "   when 'association' then coalesce(a.slug, '') "
@@ -210,6 +236,9 @@ constexpr std::string_view k_anchor_sql = "select p.id, p.slug, coalesce(a.slug,
                                           "left join associations a on (p.scope_kind = 'association' and a.id = p.scope_id) "
                                           "left join projects pr on (p.scope_kind = 'repo' and pr.id = p.scope_id) ";
 
+/// @brief Maps the anchor projection's current row into an `anchor` record.
+/// @param stmt Stepped query holding the anchor projection.
+/// @return Anchor values decoded from the current row.
 auto row_to_anchor(db::statement& stmt) -> anchor {
   return anchor{
       .id         = stmt.column_int64(0),
@@ -222,6 +251,9 @@ auto row_to_anchor(db::statement& stmt) -> anchor {
 
 /// @brief Resolves an anchor plan from a numeric id or a top-level plan
 /// slug. Mirrors zig's `fetchAnchor`/`fetchAnchorById`.
+/// @param conn Database connection.
+/// @param arg Numeric id or anchor slug.
+/// @return Anchor record, or lookup failure text.
 auto fetch_anchor(db::connection& conn, std::string_view arg) -> std::expected<anchor, std::string> {
   std::int64_t parsed = 0;
   auto const*  begin  = arg.data();
@@ -266,6 +298,9 @@ auto fetch_anchor(db::connection& conn, std::string_view arg) -> std::expected<a
 
 /// @brief `<external-id>` when a `plan` external_link exists, else `p<id>`.
 /// Mirrors zig's `planKey`.
+/// @param conn Database connection.
+/// @param anchor_id Anchor plan id.
+/// @return Workbench feature key for the anchor.
 auto plan_key(db::connection& conn, std::int64_t anchor_id) -> std::string {
   auto stmt = conn.prepare("select external_id from external_links where entity_kind = 'plan' and entity_id = ? limit 1");
   if (!stmt || !stmt->bind_int64(1, anchor_id)) {
@@ -285,6 +320,8 @@ auto plan_key(db::connection& conn, std::int64_t anchor_id) -> std::string {
 /// @brief `\n## Content\n` marker in `body`; returns everything after it
 /// (leading `\n` trimmed once), or `body` unchanged when the marker is
 /// absent. Mirrors zig's `extractContentSection`.
+/// @param body Workbench-rendered artifact body.
+/// @return Original artifact content without the renderer wrapper.
 auto extract_content_section(std::string_view body) -> std::string {
   constexpr std::string_view marker = "\n## Content\n";
   auto const                 pos    = body.find(marker);
@@ -301,6 +338,11 @@ auto extract_content_section(std::string_view body) -> std::string {
 /// @brief Reads the lowest-id artifact of `kind` linked to `anchor_id`,
 /// strips its front matter, and extracts the `## Content` section. Mirrors
 /// zig's `readArtifactBody`.
+/// @param conn Database connection.
+/// @param feature_dir Workbench feature directory.
+/// @param anchor_id Anchor plan id.
+/// @param kind Artifact kind to read.
+/// @return Extracted artifact body, or lookup/read failure text.
 auto read_artifact_body(db::connection& conn, std::string_view feature_dir, std::int64_t anchor_id, std::string_view kind)
     -> std::expected<std::string, std::string> {
   auto stmt = conn.prepare("select a.id, a.title from artifacts a "
@@ -342,35 +384,51 @@ auto read_artifact_body(db::connection& conn, std::string_view feature_dir, std:
 
 /// @brief Counts and state transitions produced by one successful apply.
 struct apply_result {
-  /// @brief Created and updated child-plan counts.
+  /// @brief Number of created child plans.
   std::size_t plans_created = 0;
+  /// @brief Number of updated child plans.
   std::size_t plans_updated = 0;
-  /// @brief Created, updated, and cancelled task counts.
-  std::size_t tasks_created   = 0;
-  std::size_t tasks_updated   = 0;
+  /// @brief Number of created tasks.
+  std::size_t tasks_created = 0;
+  /// @brief Number of updated tasks.
+  std::size_t tasks_updated = 0;
+  /// @brief Number of cancelled tasks.
   std::size_t tasks_cancelled = 0;
-  /// @brief Added decision and scenario counts.
-  std::size_t decisions_added     = 0;
-  std::size_t scenarios_added     = 0;
-  std::size_t questions_added     = 0;
-  std::size_t questions_answered  = 0;
-  bool        anchor_activated    = false;
+  /// @brief Number of added decisions.
+  std::size_t decisions_added = 0;
+  /// @brief Number of added test scenarios.
+  std::size_t scenarios_added = 0;
+  /// @brief Number of added questions.
+  std::size_t questions_added = 0;
+  /// @brief Number of answered questions.
+  std::size_t questions_answered = 0;
+  /// @brief Whether the draft anchor transitioned to active.
+  bool anchor_activated = false;
+  /// @brief Number of written touch-path facts.
   std::size_t touch_paths_written = 0;
-  std::size_t touches_unresolved  = 0;
-  std::size_t depends_written     = 0;
-  std::size_t depends_unresolved  = 0;
+  /// @brief Number of unresolved touch entries.
+  std::size_t touches_unresolved = 0;
+  /// @brief Number of written dependency edges.
+  std::size_t depends_written = 0;
+  /// @brief Number of unresolved dependency references.
+  std::size_t depends_unresolved = 0;
 };
 
 /// @brief What went wrong applying a diff. `message` is either a bare Zig
 /// `@errorName` spelling (`"SlugConflict"`, `"QueryFailed"`, ...) or, for
 /// `resolve_slug_failed`, already carries the fuller oracle text below.
 struct apply_error {
+  /// @brief Oracle-compatible failure spelling or detailed resolution text.
   std::string message;
   /// @brief Populated only when a `materialize::reconcile` citation failure
   /// is the cause — the handler renders one line per entry.
   std::vector<mat_ns::citation_diagnostic> citations;
 };
 
+/// @brief Looks up a repository's numeric id by its canonical slug.
+/// @param conn Database connection.
+/// @param slug Repository slug.
+/// @return Repository id when found.
 auto repo_id_by_slug(db::connection& conn, std::string_view slug) -> std::optional<std::int64_t> {
   auto stmt = conn.prepare("select id from projects where slug = ?");
   if (!stmt || !stmt->bind_text(1, slug)) {
@@ -385,6 +443,9 @@ auto repo_id_by_slug(db::connection& conn, std::string_view slug) -> std::option
 
 /// @brief The repo a bare `[touches: <path>]` path should resolve against.
 /// Mirrors zig's `soleMemberRepoId`.
+/// @param conn Database connection.
+/// @param anchor_plan_id Anchor plan id.
+/// @return Sole member repository id when unambiguous.
 auto sole_member_repo_id(db::connection& conn, std::int64_t anchor_plan_id) -> std::optional<std::int64_t> {
   auto scope_stmt = conn.prepare("select scope_kind, scope_id from plans where id = ?");
   if (!scope_stmt || !scope_stmt->bind_int64(1, anchor_plan_id)) {
@@ -422,6 +483,13 @@ auto sole_member_repo_id(db::connection& conn, std::int64_t anchor_plan_id) -> s
   return first;
 }
 
+/// @brief Persists one resolved touch-path fact and updates apply counts.
+/// @param conn Database connection.
+/// @param task_id Task receiving the path fact.
+/// @param repo_id Repository owning the path.
+/// @param path Repository-relative path.
+/// @param res Apply counters to update.
+/// @return Success, or persistence failure text.
 auto write_touch_path(db::connection& conn, std::int64_t task_id, std::int64_t repo_id, std::string_view path, apply_result& res)
     -> std::expected<void, std::string> {
   auto linked = ensure_link(conn, el::entity_kind::task, task_id, el::entity_kind::repo, repo_id, el::relationship::touches);
@@ -438,6 +506,12 @@ auto write_touch_path(db::connection& conn, std::int64_t task_id, std::int64_t r
 
 /// @brief Resolves each `[touches: …]` entry and records it. Mirrors zig's
 /// `applyTouchesLinks`.
+/// @param conn Database connection.
+/// @param task_id Task receiving touch links.
+/// @param entries Parsed touch entries.
+/// @param default_repo_id Repository used for bare paths.
+/// @param res Apply counters to update.
+/// @return Success, or resolution/persistence failure text.
 auto apply_touches_links(db::connection& conn, std::int64_t task_id, std::span<const std::string> entries,
                          std::optional<std::int64_t> default_repo_id, apply_result& res) -> std::expected<void, std::string> {
   for (auto const& entry : entries) {
@@ -478,6 +552,11 @@ auto apply_touches_links(db::connection& conn, std::int64_t task_id, std::span<c
   return {};
 }
 
+/// @brief Finds a task slug only within the anchor plan's derived tree.
+/// @param conn Database connection.
+/// @param slug Task slug to resolve.
+/// @param anchor_plan_id Anchor plan id.
+/// @return Task id when the slug belongs to the tree.
 auto task_id_by_slug_in_tree(db::connection& conn, std::string_view slug, std::int64_t anchor_plan_id)
     -> std::optional<std::int64_t> {
   if (slug.empty()) {
@@ -510,6 +589,11 @@ struct resolved_ref {
 /// @brief Maps every `task:<slug>` ref to a numeric task id, scoped to the
 /// anchor's plan tree. An unresolvable slug aborts with `ResolveSlugFailed`.
 /// Mirrors zig's `resolveSlugRefs`.
+/// @param conn Database connection.
+/// @param refs Parsed references.
+/// @param scenario_title Scenario containing the references.
+/// @param anchor_plan_id Anchor plan id.
+/// @return Resolved reference list, or resolution failure text.
 auto resolve_slug_refs(db::connection& conn, std::span<const parse_ns::task_ref> refs, std::string_view scenario_title,
                        std::int64_t anchor_plan_id) -> std::expected<std::vector<resolved_ref>, std::string> {
   std::vector<resolved_ref> out;
@@ -528,6 +612,12 @@ auto resolve_slug_refs(db::connection& conn, std::span<const parse_ns::task_ref>
   return out;
 }
 
+/// @brief Resolves a roadmap task through its child-plan and task titles.
+/// @param conn Database connection.
+/// @param anchor_plan_id Anchor plan id.
+/// @param child_plan_title Milestone title.
+/// @param task_title Roadmap task title.
+/// @return Matching active task id when present.
 auto resolve_task_from_roadmap_mapping(db::connection& conn, std::int64_t anchor_plan_id, std::string_view child_plan_title,
                                        std::string_view task_title) -> std::optional<std::int64_t> {
   auto stmt = conn.prepare("select t.id from tasks t join plans p on p.id = t.plan_id "
@@ -547,6 +637,9 @@ auto resolve_task_from_roadmap_mapping(db::connection& conn, std::int64_t anchor
 /// @brief Resolves every roadmap citation's task id, records the `cites`
 /// edges, and removes stale ones no longer produced. Mirrors zig's
 /// `reconcileRoadmapCitations`.
+/// @param conn Database connection.
+/// @param diff Parsed specification diff.
+/// @return Reconciled citations, or apply failure.
 auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff)
     -> std::expected<std::vector<mat_ns::roadmap_citation>, apply_error> {
   auto artifact_stmt = conn.prepare("select a.id from artifacts a "
@@ -615,6 +708,10 @@ auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff
   return citations;
 }
 
+/// @brief Reads a task slug, if the task still has one.
+/// @param conn Database connection.
+/// @param id Task id.
+/// @return Stored slug when present.
 auto read_task_slug(db::connection& conn, std::int64_t id) -> std::optional<std::string> {
   auto stmt = conn.prepare("select slug from tasks where id = ?");
   if (!stmt || !stmt->bind_int64(1, id)) {
@@ -630,6 +727,9 @@ auto read_task_slug(db::connection& conn, std::int64_t id) -> std::optional<std:
 /// @brief Cancels a task and clears its slug so the namespace is free for a
 /// replacement. Its caller's outer apply transaction gives it the oracle's
 /// all-or-nothing rollback boundary.
+/// @param conn Database connection.
+/// @param id Task id to retire.
+/// @return Success, or retirement failure text.
 auto retire_task_for_spec_removal(db::connection& conn, std::int64_t id) -> std::expected<void, std::string> {
   auto cancelled = pl::mark_cancelled(conn, id);
   if (!cancelled) {
@@ -645,6 +745,9 @@ auto retire_task_for_spec_removal(db::connection& conn, std::int64_t id) -> std:
 /// @brief Renames a plan's slug and force-abandons it, bypassing the
 /// operator transition matrix (engine-internal retirement, not an operator
 /// move). Mirrors zig's `retirePlanForSpecRemoval`.
+/// @param conn Database connection.
+/// @param id Plan id to retire.
+/// @return Success, or retirement failure text.
 auto retire_plan_for_spec_removal(db::connection& conn, std::int64_t id) -> std::expected<void, std::string> {
   auto current = pl::show_plan(conn, id);
   if (!current) {
@@ -665,6 +768,11 @@ auto retire_plan_for_spec_removal(db::connection& conn, std::int64_t id) -> std:
 
 /// @brief Creates a `Verify: <task title>` scenario and links it to the
 /// task. Mirrors zig's `scenarios.draftScenario`.
+/// @param conn Database connection.
+/// @param task_id Verified task id.
+/// @param task_title Verified task title.
+/// @param scope_slug Scope inherited by the scenario.
+/// @return Success, or scenario/link failure text.
 auto draft_scenario(db::connection& conn, std::int64_t task_id, std::string_view task_title,
                     std::optional<std::string_view> scope_slug) -> std::expected<void, std::string> {
   auto const title = std::format("Verify: {}", task_title);
@@ -684,6 +792,9 @@ auto draft_scenario(db::connection& conn, std::int64_t task_id, std::string_view
   return {};
 }
 
+/// @brief Records the best-effort ingestor read-session entry for preview.
+/// @param conn Database connection.
+/// @param anchor_plan_id Previewed anchor plan id.
 auto append_read_entry(db::connection& conn, std::int64_t anchor_plan_id) -> void {
   auto const summary = std::format("spec ingest preview plan:{}", anchor_plan_id);
   auto       sid     = sess::ensure_active(conn, "ingestor", std::nullopt);
@@ -693,6 +804,9 @@ auto append_read_entry(db::connection& conn, std::int64_t anchor_plan_id) -> voi
   (void)sess::append_entry(conn, *sid, "read", summary);
 }
 
+/// @brief Records the best-effort ingestor action-session entry for apply.
+/// @param conn Database connection.
+/// @param anchor_plan_id Applied anchor plan id.
 auto append_action_entry(db::connection& conn, std::int64_t anchor_plan_id) -> void {
   auto const summary = std::format("spec ingest apply plan:{}", anchor_plan_id);
   auto       sid     = sess::ensure_active(conn, "ingestor", std::nullopt);
@@ -716,6 +830,10 @@ struct apply_options {
 /// writes nothing but a best-effort read-session entry. A real apply owns one
 /// outer transaction; nested engine CRUD transactions become SAVEPOINTs, so
 /// every derived write rolls back together on failure.
+/// @param conn Database connection.
+/// @param diff Parsed specification diff.
+/// @param opts Apply mode and inherited anchor scope.
+/// @return Apply counts, or failure diagnostics.
 auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_options& opts)
     -> std::expected<apply_result, apply_error> {
   apply_result res;
@@ -1044,6 +1162,17 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
 /// @brief One plan argument, end to end: anchor lookup, cross-scope guard,
 /// artifact read, parse, diff, render, strict gate, apply. Mirrors zig's
 /// `runOnePlan`.
+/// @param ctx Invocation context.
+/// @param conn Database connection.
+/// @param plan_arg Anchor id or slug.
+/// @param apply_flag Whether to persist.
+/// @param apply_removals Whether removal operations are enabled.
+/// @param scope_flag Explicit operator write scope.
+/// @param strict Whether coverage/collision checks refuse.
+/// @param json_out Whether to render JSON.
+/// @param multi Whether this is a batch invocation.
+/// @param json_bodies Accumulator for batch JSON results.
+/// @return Success, or handler failure.
 auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg, bool apply_flag, bool apply_removals,
                   std::optional<std::string_view> scope_flag, bool strict, bool json_out, bool multi,
                   std::vector<std::string>& json_bodies) -> std::expected<void, domain_error> {
