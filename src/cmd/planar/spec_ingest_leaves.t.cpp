@@ -529,6 +529,61 @@ TEST_CASE("spec ingest --strict refuses on an uncovered task slug", "[cmd][spec]
   CHECK(count(conn, "tasks") == 0);
 }
 
+TEST_CASE("spec ingest --strict refuses on an orphan scenario", "[cmd][spec][ingest][strict]") {
+  auto const fx = make_fixture("strict_orphan");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Strict orphan fixture", "--json"}).code == 0);
+
+  constexpr std::string_view test_spec_body = "## Scenarios\n\n### Scenario: cites nothing\n\nNo task reference.\n";
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech Spec", "--kind", "tech_spec", "--plan", "1", "--body", "", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body", "## M1\n", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Test Spec", "--kind", "test_spec", "--plan", "1", "--body", std::string(test_spec_body),
+                        "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  // No roadmap task is proposed, so the orphan is the sole strict predicate
+  // that can refuse this run.
+  auto const res = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(res.code != 0);
+  CHECK(res.err == "plan 1: --strict refused: 1 orphan scenario(s): cites nothing\n"
+                   "error: one or more plans failed to ingest\n");
+
+  auto conn = open_db(fx);
+  CHECK(count(conn, "test_scenarios") == 0);
+}
+
+TEST_CASE("spec ingest --strict accepts a fully covered roadmap", "[cmd][spec][ingest][strict]") {
+  auto const fx = make_fixture("strict_covered");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Strict covered fixture", "--json"}).code == 0);
+
+  constexpr std::string_view roadmap_body = "## M1\n\n- Covered work [slug: covered-work]\n";
+  constexpr std::string_view test_spec_body =
+      "## Scenarios\n\n### Scenario: covered work\n\n**Verifies:** task:covered-work\n";
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech Spec", "--kind", "tech_spec", "--plan", "1", "--body", "", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body", std::string(roadmap_body),
+                        "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Test Spec", "--kind", "test_spec", "--plan", "1", "--body", std::string(test_spec_body),
+                        "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  auto const res = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(res.code == 0);
+  CHECK(res.err.empty());
+  CHECK(res.out.contains("coverage: 1 tasks (1 with slug, 0 without)"));
+
+  auto conn = open_db(fx);
+  CHECK(count(conn, "tasks") == 0);
+  CHECK(count(conn, "test_scenarios") == 0);
+}
+
 // ===========================================================================
 // --apply-removals requires --apply
 // ===========================================================================
