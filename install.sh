@@ -393,6 +393,7 @@ BUILD_DEPS=(
   "rm||replace prior-install artifacts"
   "mv||atomically replace the install manifest"
   "find||walk vendor + template source trees"
+  "head||take the first Mt-KaHyPar smoke result"
   "rmdir||remove emptied vendor skill directories"
   "awk||read the build id from 'planar version'"
   "grep||validate the Planar package manifest"
