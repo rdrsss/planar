@@ -6,8 +6,11 @@ module planar.engine.runtime.session;
 
 import std;
 import planar.db;
+import planar.policy;
 
 namespace planar::engine::runtime::session {
+
+namespace audit = planar::policy::audit;
 
 namespace {
 
@@ -173,7 +176,14 @@ auto start_session(db::connection& conn, const start_args& args) -> std::expecte
   if (!ins_step || *ins_step != db::step_result::row) {
     return std::unexpected(session_error::query_failed);
   }
-  return get_by_id(conn, ins->column_int64(0));
+  const auto id = ins->column_int64(0);
+  if (auto recorded = audit::record(conn, audit::record_args{.verb    = audit::verb::create,
+                                                             .entity  = {.kind = "session", .id = id},
+                                                             .summary = std::format("start session vendor={}", args.vendor)});
+      !recorded) {
+    return std::unexpected(session_error::query_failed);
+  }
+  return get_by_id(conn, id);
 }
 
 auto end_session(db::connection& conn, std::int64_t session_id, std::optional<std::string_view> summary_text)
@@ -213,6 +223,12 @@ auto end_session(db::connection& conn, std::int64_t session_id, std::optional<st
     return std::unexpected(session_error::query_failed);
   }
   if (auto s = stmt->step(); !s) {
+    return std::unexpected(session_error::query_failed);
+  }
+  if (auto recorded = audit::record(conn, audit::record_args{.verb    = audit::verb::status_change,
+                                                             .entity  = {.kind = "session", .id = session_id},
+                                                             .summary = std::format("end session id={}", session_id)});
+      !recorded) {
     return std::unexpected(session_error::query_failed);
   }
   return {};

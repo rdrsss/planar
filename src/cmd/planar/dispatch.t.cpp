@@ -292,22 +292,27 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // `task touches infer`, whose `task-id` is required — so it would have
   // failed at the parser and asserted the parser's behaviour rather than the
   // table's. The replacement is therefore two-level rather than three, and
-  // the property under test is unaffected: `regenerate` is a leaf name that
-  // exists only under `workspace`, so answering to the full path `workspace
-  // regenerate` still proves the key is the path.
+  // the property under test is unaffected: `init` is a leaf name that exists
+  // only under `workspace`, so answering to the full path `workspace init`
+  // still proves the key is the path.
   //
   // Worth stating plainly so the next cycle does not go hunting: three
   // levels is not recoverable here. Task 6330 ported `task touches infer`,
   // so the inventory now holds NO three-level path at all — it comes back
   // only if some future cycle declares a new three-level family.
-  auto const deep = dispatch({"workspace", "regenerate"});
+  //
+  // The exemplar itself moved once already: it was `workspace regenerate`
+  // until task 6364 ported that leaf (vendored xxHash, see
+  // `planar.engine.workspace.regenerate`), leaving `workspace init` as the
+  // family's one remaining unported, no-required-positional leaf.
+  auto const deep = dispatch({"workspace", "init"});
   CHECK(deep.code == 64);
-  CHECK(deep.err == "error: workspace regenerate: not implemented in this build\n");
+  CHECK(deep.err == "error: workspace init: not implemented in this build\n");
 
   // And the sibling that LEFT the inventory this cycle does not answer 64,
-  // which is what makes the row above a statement about `regenerate` rather
-  // than about the `workspace` family.
-  CHECK(dispatch({"workspace", "routing", "build", "--help"}).code == 0);
+  // which is what makes the row above a statement about `init` rather than
+  // about the `workspace` family.
+  CHECK(dispatch({"workspace", "regenerate", "--help"}).code == 0);
 
   // Discrimination: a PORTED verb on the same binary does not answer 64,
   // so exit 64 is not simply what this binary now does.
@@ -701,7 +706,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // call them. Nothing about that was inferrable from the leaves' names;
   // it came from grepping for the SYMBOLS their oracle handlers call.
   // (`test-spec status` in particular reads as a `spec ingest` sibling and
-  // is not one: `spec ingest` stays unported below.)
+  // was not one at the time: `spec ingest` stayed unported below until
+  // task 6365 — see that task's note further down.)
   //
   // The other seven of the ten did NOT move, and the split is the cycle's
   // real product. See the per-leaf notes below.
@@ -1035,9 +1041,36 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // already-ported `touch_idempotent` primitive. See
   // `src/lib/engine/runs/harvest.cppm` and surface.cpp's entry for the
   // full account.
-  CHECK(unported.size() == 8);
+  // 7 -> 6 at task 6365: `spec ingest` moved. Its brief carried the
+  // now-familiar hypothesis that this is handler wiring over an
+  // already-ported engine, true for PREVIEW mode and wrong for `--apply`:
+  // `engine_ingest`'s own CMakeLists.txt documented `apply.zig` (1616 Zig
+  // lines) as a genuine architectural non-port, since it composes SIX
+  // layer-2 `engine_*` peers D15/D18 forbid another layer-2 bucket from
+  // reaching. What that note got wrong was a stale premise (three of the
+  // six callees "do not exist yet" — all three had since landed), not the
+  // architecture; the fix it already named — land the composition at
+  // LAYER 3, the D20 shape `annotate add` and `unlink` pioneered — is what
+  // this task did. `handlers/spec_ingest.cpp` owns one outer transaction
+  // for an apply; the re-entrant `planar.db` transaction seam makes each
+  // composed CRUD operation a nested savepoint, preserving the oracle's
+  // all-or-nothing write contract.
+  CHECK(unported.size() == 6);
+  // `workspace regenerate` had already moved at task 6364. It had been carried
+  // as blocked on an unvendored xxh64 for its `.manifest-docs` merkle —
+  // verified TRANSITIVELY true (the leaf's own source has no xxh64
+  // reference; it reaches one hop out through `manifest.build`) rather than
+  // stale. xxHash 0.8.3 is now vendored (`cmake/dependencies.cmake`) behind
+  // the new layer-1 `planar.docs_manifest` module, and the leaf's
+  // hand-rolled template engine was ported alongside it. See
+  // `planar.engine.workspace.regenerate`'s header for the full account.
+  CHECK(unported.size() == 6);
+  INFO("moved by task 6364: workspace regenerate");
+  CHECK_FALSE(unported.contains("workspace regenerate"));
   INFO("moved by task 6362: bench harvest");
   CHECK_FALSE(unported.contains("bench harvest"));
+  INFO("moved by task 6365: spec ingest");
+  CHECK_FALSE(unported.contains("spec ingest"));
   INFO("moved by task 6357: health");
   CHECK_FALSE(unported.contains("health"));
   INFO("moved by task 6358: capture commits");
@@ -1066,10 +1099,12 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("workspace routing build"));
   // Its three family siblings stayed, and each is pinned so a later cycle
   // cannot wire one off the back of this one's count without saying so.
-  for (auto const& leaf : {"workspace init", "workspace regenerate", "synthesize"}) {
+  for (auto const& leaf : {"workspace init", "synthesize"}) {
     INFO("probed by task 6275 and deliberately not moved: " << leaf);
     CHECK(unported.contains(leaf));
   }
+  INFO("moved by task 6364: workspace regenerate");
+  CHECK_FALSE(unported.contains("workspace regenerate"));
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
     INFO("moved by task 6294: " << leaf);
     CHECK_FALSE(unported.contains(leaf));

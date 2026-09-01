@@ -144,6 +144,67 @@ TEST_CASE("transaction rollback-on-scope-exit discards the write", "[db][transac
   REQUIRE(stmt->column_int64(0) == 0);
 }
 
+TEST_CASE("nested transactions commit through a savepoint without committing the enclosing transaction",
+          "[db][transaction][nested]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (n integer);"));
+
+  {
+    auto outer = conn->begin_transaction();
+    REQUIRE(outer.has_value());
+    REQUIRE(conn->execute("insert into t (n) values (1);"));
+
+    {
+      auto inner = conn->begin_transaction();
+      REQUIRE(inner.has_value());
+      REQUIRE(conn->execute("insert into t (n) values (2);"));
+      REQUIRE(inner->commit());
+    }
+
+    // A nested commit must release only its savepoint. The enclosing
+    // transaction remains authoritative until this explicit commit.
+    REQUIRE(outer->commit());
+  }
+
+  auto stmt = conn->prepare("select count(*) from t;");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  CHECK(stmt->column_int64(0) == 2);
+}
+
+TEST_CASE("nested transaction rollback discards only its savepoint scope", "[db][transaction][nested]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table t (n integer);"));
+
+  {
+    auto outer = conn->begin_transaction();
+    REQUIRE(outer.has_value());
+    REQUIRE(conn->execute("insert into t (n) values (1);"));
+
+    {
+      auto inner = conn->begin_transaction();
+      REQUIRE(inner.has_value());
+      REQUIRE(conn->execute("insert into t (n) values (2);"));
+      // No inner commit: scope exit must roll back only the nested write.
+    }
+
+    REQUIRE(conn->execute("insert into t (n) values (3);"));
+    REQUIRE(outer->commit());
+  }
+
+  auto stmt = conn->prepare("select n from t order by n;");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  CHECK(stmt->column_int64(0) == 1);
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  CHECK(stmt->column_int64(0) == 3);
+  CHECK(stmt->step().value() == planar::db::step_result::done);
+}
+
 TEST_CASE("begin_transaction(lock_mode::immediate) takes the write lock synchronously at BEGIN, "
           "blocking a concurrent writer before any statement runs",
           "[db][transaction][lock-mode]") {

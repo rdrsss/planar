@@ -65,19 +65,6 @@
 //   $Z question list --touches nope  exit 1  b"error: repo 'nope' not found\n"
 //       ^ an unknown repo REFUSES; it does not list empty.
 //
-// ## The ONE known divergence, and why it is not closed here
-//
-// The oracle's `question add` writes a `create|session|N|start session
-// vendor=cli` row into `audit_log`; this build creates the `sessions` row
-// but not the audit row. That gap is in `engine_runtime`'s
-// `start_session`, is pre-existing (it is equally visible through
-// `capture` and `unlink`, both wired in earlier cycles), is documented in
-// `src/lib/engine/runtime/CMakeLists.txt`, and is tracked as planar task
-// 6191 together with the other four unwired `policy.audit.record` sites in
-// that bucket. `audit_rows(conn, "question")` filters by entity kind, so
-// these cases are exact for everything this task owns; the session row is
-// asserted ABSENT below so the divergence is pinned rather than latent.
-
 #include <catch2/catch_test_macros.hpp>
 
 import std;
@@ -352,12 +339,9 @@ TEST_CASE("question add opens a session BEFORE the create, even when the create 
   CHECK(query_rows(conn, "select count(*), vendor from sessions", 2) == "1|cli");
   CHECK(question_rows(conn).empty());
 
-  // The KNOWN divergence, pinned rather than left latent: the oracle also
-  // writes `create|session|1|start session vendor=cli` here. See this
-  // file's header — the gap is in `engine_runtime`'s `start_session`, is
-  // shared with `capture`/`unlink`, and is planar task 6191. When that task
-  // lands, THIS assertion is the one that must flip.
-  CHECK(audit_rows(conn, "session").empty());
+  // Session creation succeeds before the subsequent scope refusal, so its
+  // audit row remains even though the question row does not.
+  CHECK(audit_rows(conn, "session") == "create|1|start session vendor=cli|<NULL>|<NULL>");
 }
 
 // ===========================================================================

@@ -426,12 +426,14 @@ auto normalise(std::string_view text, const std::filesystem::path& root) -> std:
 /// @param task_count How many tasks to create.
 auto seed_arena(const std::filesystem::path& root, int task_count) -> void {
   auto const seed_root = root.string();
-  (void)run_pinned(zig_planar_bin(), {"init"}, root, "seed-init");
-  (void)run_pinned(zig_planar_bin(), {"assoc", "create", "project:proj", "--kind", "project"}, root, "seed-assoc");
-  (void)run_pinned(zig_planar_bin(), {"assoc", "add", "project:proj", (root / "proj").string()}, root, "seed-add");
-  (void)run_pinned(zig_planar_bin(), {"plan", "create", "Test plan"}, root, "seed-plan");
+  (void)run_pinned(zig_planar_bin(), std::array<std::string, 1>{"init"}, root, "seed-init");
+  (void)run_pinned(zig_planar_bin(), std::array<std::string, 5>{"assoc", "create", "project:proj", "--kind", "project"}, root,
+                   "seed-assoc");
+  (void)run_pinned(zig_planar_bin(), std::array<std::string, 4>{"assoc", "add", "project:proj", (root / "proj").string()}, root,
+                   "seed-add");
+  (void)run_pinned(zig_planar_bin(), std::array<std::string, 3>{"plan", "create", "Test plan"}, root, "seed-plan");
   for (int i = 0; i < task_count; ++i) {
-    (void)run_pinned(zig_planar_bin(), {"task", "add", std::format("task {}", i), "--plan", "1"}, root,
+    (void)run_pinned(zig_planar_bin(), std::array<std::string, 5>{"task", "add", std::format("task {}", i), "--plan", "1"}, root,
                      std::format("seed-task-{}", i));
   }
 }

@@ -37,6 +37,7 @@ import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.groups;
+import planar.cmd.planar.handlers.spec_ingest;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.feedback;
@@ -471,6 +472,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("workspace doctor", handlers::workspace_doctor);
   table.emplace("workspace routing show", handlers::workspace_routing_show);
   table.emplace("workspace routing build", handlers::workspace_routing_build);
+  table.emplace("workspace regenerate", handlers::workspace_regenerate);
   table.emplace("workbench lint", handlers::workbench_lint);
   table.emplace("workbench pull", handlers::workbench_pull);
   table.emplace("workbench push", handlers::workbench_push);
@@ -583,6 +585,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("closure show", handlers::closure_show);
   // `groups recommend` — the whole `groups` family, read-only.
   table.emplace("groups recommend", handlers::groups_recommend);
+  table.emplace("spec ingest", handlers::spec_ingest);
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64. The inventory is generated alongside the surface

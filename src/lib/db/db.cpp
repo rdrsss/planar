@@ -16,6 +16,11 @@ namespace planar::db {
 
 namespace {
 
+/// @brief Monotonic process-local suffix used to make nested transaction
+/// SAVEPOINT names unique on a connection, including when a caller supplied
+/// its own raw savepoints through `connection::execute`.
+std::atomic<std::uint64_t> next_savepoint_id{0};
+
 /// @brief Builds a `db_error` from a connection handle's current extended
 /// result code and message.
 auto make_error(sqlite3* handle) -> db_error {
@@ -172,27 +177,42 @@ auto statement::column_blob(int index) const -> std::vector<std::byte> {
 // --- transaction --------------------------------------------------------------
 
 transaction::transaction(sqlite3* handle, lock_mode mode) noexcept : _handle(handle) {
-  const char* begin_sql = mode == lock_mode::immediate ? "begin immediate;" : "begin;";
-  _active               = static_cast<bool>(exec_simple(_handle, begin_sql));
+  if (sqlite3_get_autocommit(_handle) != 0) {
+    const char* begin_sql = mode == lock_mode::immediate ? "begin immediate;" : "begin;";
+    _active               = static_cast<bool>(exec_simple(_handle, begin_sql));
+    return;
+  }
+
+  // SQLite forbids a second BEGIN while any transaction/savepoint is active.
+  // A SAVEPOINT is its native nested-transaction primitive: release commits
+  // only this scope; rollback-to followed by release discards only this scope.
+  _savepoint_name = std::format("planar_tx_{}", next_savepoint_id.fetch_add(1, std::memory_order_relaxed));
+  _active         = static_cast<bool>(exec_simple(_handle, std::format("savepoint {};", _savepoint_name).c_str()));
+  _savepoint      = _active;
 }
 
 transaction::transaction(transaction&& other) noexcept
-    : _handle(other._handle), _active(other._active), _committed(other._committed) {
+    : _handle(other._handle), _active(other._active), _committed(other._committed), _savepoint(other._savepoint),
+      _savepoint_name(std::move(other._savepoint_name)) {
   other._handle    = nullptr;
   other._active    = false;
   other._committed = true;
+  other._savepoint = false;
 }
 
 transaction& transaction::operator=(transaction&& other) noexcept {
   if (this != &other) {
     rollback_if_active();
-    _handle    = other._handle;
-    _active    = other._active;
-    _committed = other._committed;
+    _handle         = other._handle;
+    _active         = other._active;
+    _committed      = other._committed;
+    _savepoint      = other._savepoint;
+    _savepoint_name = std::move(other._savepoint_name);
 
     other._handle    = nullptr;
     other._active    = false;
     other._committed = true;
+    other._savepoint = false;
   }
   return *this;
 }
@@ -206,7 +226,12 @@ auto transaction::rollback_if_active() noexcept -> void {
     // Best-effort: a destructor cannot propagate `std::expected` failure,
     // and rollback failing is itself a signal the connection is already in
     // a bad state.
-    [[maybe_unused]] auto ignored = exec_simple(_handle, "rollback;");
+    if (_savepoint) {
+      [[maybe_unused]] auto ignored = exec_simple(
+          _handle, std::format("rollback to savepoint {}; release savepoint {};", _savepoint_name, _savepoint_name).c_str());
+    } else {
+      [[maybe_unused]] auto ignored = exec_simple(_handle, "rollback;");
+    }
   }
   _active = false;
 }
@@ -224,7 +249,8 @@ auto transaction::commit() -> std::expected<void, db_error> {
                  .message_ = "planar.db: commit() on a transaction that was never active (or already rolled back)"});
   }
 
-  auto result = exec_simple(_handle, "commit;");
+  auto result = _savepoint ? exec_simple(_handle, std::format("release savepoint {};", _savepoint_name).c_str())
+                           : exec_simple(_handle, "commit;");
   if (!result) {
     return std::unexpected(result.error());
   }

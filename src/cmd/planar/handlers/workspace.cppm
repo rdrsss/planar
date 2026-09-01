@@ -38,13 +38,14 @@
 /// leaf: both renderers return COMPLETE payloads, so this handler writes
 /// each verbatim and appends nothing to either.
 ///
-/// ## `init` and `regenerate` are still absent
+/// ## `regenerate` is now wired; `init` alone is still absent
 ///
-/// Two of the five `workspace` children are NOT ported. `regenerate` is
-/// blocked on an unvendored xxh64 (its `.manifest-docs` merkle is keyed by
-/// it) plus a hand-rolled template engine; `init` is a 615-line handler
-/// that COMPOSES scan + registration + routing build + regenerate + symlink
-/// install, which decision 947 places at layer 3.
+/// `regenerate` left the unported inventory at task 6364 — see
+/// `planar.engine.workspace.regenerate`'s header for the vendored xxh64 and
+/// the ported template engine. `init` remains a 615-line handler that
+/// COMPOSES scan + registration + routing build + regenerate + symlink
+/// install, which decision 947 places at layer 3 — one of the four things
+/// it composes now exists in this tree, but the compose itself does not.
 ///
 /// `routing build` left this list at task 6275, and with it went the note
 /// that the `routing` pair was "deferred at layer 2 ... size". The sizing
@@ -182,5 +183,30 @@ export auto workspace_routing_show(context& ctx, const cliapp::parsed_args& args
 /// @param args The parsed arguments.
 /// @return Success, or one of the refusals above.
 export auto workspace_routing_build(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Handle `planar workspace regenerate [workspace] [--json]`.
+///
+/// ## Failure paths
+///
+///     no org / unmatched slug   exit 1  no org associations registered; ...
+///     two orgs, none named      exit 2  multiple org associations ...
+///     routing table missing     exit 1  routing table not found; run
+///                                       `planar workspace routing build`
+///                                       first
+///     routing table not JSON    exit 1  regenerating AGENTS.md failed:
+///                                       <SyntaxError|UnexpectedEndOfInput|
+///                                       DuplicateField>
+///     routing table bad shape   exit 2  regenerating AGENTS.md failed:
+///                                       InvalidInput
+///
+/// The message template for the last two rows differs from `show`'s own
+/// decode-failure rows ("regenerating AGENTS.md failed: ..." rather than
+/// "decoding routing table failed: ..."), because this leaf's oracle catch
+/// arm interpolates its own format string around the identical
+/// `@errorName(e)` — see `planar.engine.workspace.regenerate`'s header.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or one of the refusals above.
+export auto workspace_regenerate(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 } // namespace planar::cmd::handlers

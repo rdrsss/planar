@@ -4337,7 +4337,28 @@ auto unported_paths() -> std::span<std::string_view const> {
       // set means opposite things to the two, `--closure-source` exists on
       // only one of them, and `jaccard` renders shortest-round-trip in JSON
       // but fixed-4-decimal in text. See strategy.cppm.
-      "spec ingest",
+      //
+      // `spec ingest` left this inventory at task 6365. Its brief carried the
+      // now-familiar hypothesis that this is handler wiring over an already-
+      // ported engine (`engine_ingest`'s parse/diff/coverage/render/
+      // materialize read side, landed task 6035) -- true for PREVIEW mode,
+      // and wrong for `--apply`: `engine_ingest`'s own CMakeLists.txt already
+      // documented `apply.zig` (1616 Zig lines) as a genuine, architectural
+      // non-port, because it composes SIX layer-2 `engine_*` peers
+      // (`engine_planning`'s plan/task/decision/question/scenario CRUD,
+      // `engine_entitylink`, `engine_runtime.session`) that D15/D18 forbid
+      // another layer-2 bucket from depending on. What THAT note got wrong
+      // was a stale premise, not the architecture: it said three of the six
+      // callees "do not exist in the C++ tree yet" (decision, question,
+      // scenario); all three had landed by this task. The fix that note
+      // already named -- land the composition at LAYER 3, the D20 shape
+      // `annotate add` and `unlink` pioneered -- is what this task did:
+      // `handlers/spec_ingest.cpp` composes `engine_planning`,
+      // `engine_entitylink` and `engine_runtime` directly, with no
+      // `engine_ingest` module touched or extended. The handler's outer
+      // `planar.db` transaction and the DB layer's nested-savepoint support
+      // reproduce the oracle's single all-or-nothing `--apply` write set;
+      // idempotency and rollback both have dedicated leaf tests.
       // `sync pull`, `sync push` and `sync resolve` left this inventory at
       // task 6294. All three were briefed as blocked on the unported
       // create/propagate half of `engine_extsync`; none of them touches it.
@@ -4407,7 +4428,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       // `create_remote` was already in this tree, TU-private to `ext.cpp`; it
       // is now shared out of `ext_adapter_factory` for its three callers.
       "workspace init",
-      "workspace regenerate",
       // `workspace routing show` left this inventory at task 6110 and
       // `workspace routing build` at task 6275, closing the family's
       // read/write loop: the decoder and both render arms, then the builder
@@ -4415,12 +4435,22 @@ auto unported_paths() -> std::span<std::string_view const> {
       // (1410 lines, no architectural blocker) and that sizing held —
       // SQLite plus filesystem, no new dependency.
       //
-      // The `workspace` family's other two stay, with DIFFERENT blockers:
-      // `regenerate` needs an unvendored xxh64 for its `.manifest-docs`
-      // merkle, and `init` is layer-3 blocked because it COMPOSES scan +
-      // registration + routing build + regenerate + symlink install.
-      // `init`'s blocker is now strictly smaller than it was — one of the
-      // four things it composes exists.
+      // `workspace regenerate` left this inventory at task 6364. It was
+      // carried as blocked on an unvendored xxh64 for its `.manifest-docs`
+      // merkle — verified TRANSITIVELY true rather than stale: `regenerate`'s
+      // own source has no xxh64 reference, but it calls `manifest.build`,
+      // which does. xxHash 0.8.3 is now vendored (`cmake/dependencies.cmake`)
+      // behind the new layer-1 `planar.docs_manifest` module — NOT
+      // `engine_docs`, since D15/D18 forbid an `engine_* -> engine_*` edge
+      // and this bucket is its only consumer. See
+      // `planar.engine.workspace.regenerate`'s header for the ported
+      // hand-rolled template engine and its one deliberate reproduced quirk.
+      //
+      // `workspace init` is the family's LAST remaining leaf, and its
+      // blocker is now strictly smaller than it was: it is layer-3 blocked
+      // because it COMPOSES scan + registration + routing build +
+      // regenerate + symlink install, and two of those four now exist in
+      // this tree (`routing build` at task 6275, `regenerate` here).
   };
   return k_unported;
 }

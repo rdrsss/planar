@@ -206,4 +206,50 @@ auto workspace_routing_build(context& ctx, const cliapp::parsed_args& args) -> h
   return {};
 }
 
+auto workspace_regenerate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto target = cliapp::positional_string(args, "workspace");
+  auto org    = identity::resolve_org(**conn, target.has_value() ? std::optional<std::string_view>{*target} : std::nullopt);
+  if (!org.has_value()) {
+    switch (org.error()) {
+    case identity::resolve_error::not_found:
+      return std::unexpected(error_from_rendered(domain_error_kind::not_found, doctor::no_orgs_error()));
+    case identity::resolve_error::ambiguous:
+      return std::unexpected(error_from_rendered(domain_error_kind::invalid_input, doctor::ambiguous_orgs_error()));
+    case identity::resolve_error::query_failed:
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving workspace failed: QueryFailed"));
+    }
+  }
+
+  auto outcome = engine::workspace::regenerate::regenerate(**conn, ctx.env(), org->id);
+  if (!outcome.has_value()) {
+    const auto kind = outcome.error().kind == engine::workspace::regenerate::error_kind::not_found ? domain_error_kind::not_found
+                      : outcome.error().kind == engine::workspace::regenerate::error_kind::invalid_input
+                          ? domain_error_kind::invalid_input
+                          : domain_error_kind::generic_failure;
+    return std::unexpected(error_from_body(kind, outcome.error().message));
+  }
+
+  if (flag_bool(args, "--json")) {
+    std::string out = "{\"agents_path\":";
+    json_text::append_json_string(out, outcome->agents_path);
+    out += ",\"manifest_path\":";
+    json_text::append_json_string(out, outcome->manifest_path);
+    out += std::format(",\"project_count\":{},\"bytes_written\":{},\"manifest_root\":", outcome->project_count,
+                       outcome->bytes_written);
+    json_text::append_json_string(out, outcome->manifest_root);
+    out += "}\n";
+    ctx.out() << out;
+    return {};
+  }
+
+  ctx.out() << std::format("regenerated AGENTS.md for org:{} ({} projects, {} bytes)\n", org->slug, outcome->project_count,
+                           outcome->bytes_written);
+  return {};
+}
+
 } // namespace planar::cmd::handlers
