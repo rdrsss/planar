@@ -1459,7 +1459,3 @@ auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 }
 
 } // namespace planar::cmd::handlers
-  /// @brief Added and answered question counts.
-  /// @brief Whether the draft anchor was transitioned to active.
-  /// @brief Written and unresolved touch-path counts.
-  /// @brief Written and unresolved dependency counts.
