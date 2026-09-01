@@ -500,6 +500,7 @@ planar_binary(planar
     handlers/config.cppm
     handlers/closure.cppm
     handlers/groups.cppm
+    handlers/spec_ingest.cppm
     verb_classification.cppm
     worktree_gate.cppm
     cli_log.cppm
@@ -556,6 +557,7 @@ planar_binary(planar
     handlers/config.cpp
     handlers/closure.cpp
     handlers/groups.cpp
+    handlers/spec_ingest.cpp
     dispatch.cpp
   DEPENDS
     adapter
