@@ -186,12 +186,18 @@ auto ensure_link(db::connection& conn, el::entity_kind from_kind, std::int64_t f
 // Anchor lookup + workbench artifact helpers
 // ===========================================================================
 
+/// @brief Stored identity and scope information for one ingest anchor plan.
 struct anchor {
+  /// @brief Numeric primary key of the anchor plan.
   std::int64_t id = 0;
-  std::string  slug;
-  std::string  assoc_slug;
-  std::string  scope_slug;
-  std::string  status;
+  /// @brief Stable, user-facing slug of the anchor plan.
+  std::string slug;
+  /// @brief Associated project slug used to locate the workbench feature.
+  std::string assoc_slug;
+  /// @brief Stored entity scope in canonical `project:` or `repo:` form.
+  std::string scope_slug;
+  /// @brief Current lifecycle status of the anchor plan.
+  std::string status;
 };
 
 constexpr std::string_view k_anchor_sql = "select p.id, p.slug, coalesce(a.slug, ''), p.status, "
@@ -334,12 +340,16 @@ auto read_artifact_body(db::connection& conn, std::string_view feature_dir, std:
 // for why this is not in `engine_ingest` and its outer transaction boundary)
 // ===========================================================================
 
+/// @brief Counts and state transitions produced by one successful apply.
 struct apply_result {
-  std::size_t plans_created       = 0;
-  std::size_t plans_updated       = 0;
-  std::size_t tasks_created       = 0;
-  std::size_t tasks_updated       = 0;
-  std::size_t tasks_cancelled     = 0;
+  /// @brief Created and updated child-plan counts.
+  std::size_t plans_created = 0;
+  std::size_t plans_updated = 0;
+  /// @brief Created, updated, and cancelled task counts.
+  std::size_t tasks_created   = 0;
+  std::size_t tasks_updated   = 0;
+  std::size_t tasks_cancelled = 0;
+  /// @brief Added decision and scenario counts.
   std::size_t decisions_added     = 0;
   std::size_t scenarios_added     = 0;
   std::size_t questions_added     = 0;
@@ -489,8 +499,11 @@ auto task_id_by_slug_in_tree(db::connection& conn, std::string_view slug, std::i
   return stmt->column_int64(0);
 }
 
+/// @brief One citation reference resolved to its persisted entity identity.
 struct resolved_ref {
-  std::string  kind;
+  /// @brief Referenced entity kind.
+  std::string kind;
+  /// @brief Resolved numeric entity id.
   std::int64_t id = 0;
 };
 
@@ -689,9 +702,13 @@ auto append_action_entry(db::connection& conn, std::int64_t anchor_plan_id) -> v
   (void)sess::append_entry(conn, *sid, "action", summary);
 }
 
+/// @brief Flags and anchor provenance supplied to one diff application.
 struct apply_options {
-  bool                            apply          = false;
-  bool                            apply_removals = false;
+  /// @brief Whether to persist the diff instead of rendering a preview.
+  bool apply = false;
+  /// @brief Whether proposed removals may be applied during persistence.
+  bool apply_removals = false;
+  /// @brief Anchor entity scope inherited by all derived planning entities.
   std::optional<std::string_view> scope;
 };
 
@@ -1313,3 +1330,7 @@ auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 }
 
 } // namespace planar::cmd::handlers
+  /// @brief Added and answered question counts.
+  /// @brief Whether the draft anchor was transitioned to active.
+  /// @brief Written and unresolved touch-path counts.
+  /// @brief Written and unresolved dependency counts.
