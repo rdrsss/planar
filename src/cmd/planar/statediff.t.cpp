@@ -105,6 +105,7 @@
 import std;
 import planar.db;
 
+#include "catalog_steps.hpp"
 #include "parity_harness.hpp"
 
 namespace {
@@ -112,6 +113,7 @@ namespace {
 using planar::cmd::parity::arena;
 using planar::cmd::parity::make_arena;
 using planar::cmd::parity::run_pinned;
+namespace state_catalog = planar::cmd::state_catalog;
 
 /// @brief Path to the built C++ binary (set by this target's CMakeLists).
 /// @return The path.
@@ -526,7 +528,7 @@ struct step {
 /// filed as an exit-code defect when the exit code was correct all along.
 /// Every finding here needs a pinned-arena probe of BOTH halves before it
 /// earns a fix.
-auto sequence() -> std::vector<step> {
+auto hand_authored_stateful_sequence() -> std::vector<step> {
   return {
       {{"init", "--skip-project", "--allow-no-repo", "--json"}},
 
@@ -637,6 +639,51 @@ auto sequence() -> std::vector<step> {
       {{"plan", "closeout", "1", "--dry-run", "--json"}},
       {{"plan", "closeout", "2", "--json"}},
   };
+}
+
+/// @brief Refusals whose deliberately incomplete argv is itself the contract.
+///
+/// They are intentionally not part of the generated inventory: catalog
+/// derivation only produces complete leaf paths.  Keep these separate from
+/// the stateful ordering above so the coverage report cannot count a parse
+/// refusal as a successful generated leaf exercise.
+auto hand_authored_malformed_argv_refusals() -> std::vector<step> {
+  return {{{"plan", "show"}}}; // `show` requires its plan id.
+}
+
+/// @brief Combine explicit dependent/refusal cases with catalog-derived leaves.
+/// @param cpp_catalog The C++ `schema` output.
+/// @param zig_catalog The Zig `schema` output.
+/// @param error Receives a fail-closed catalog diagnostic.
+/// @return The full lane sequence, or unset before a subject verb runs.
+auto sequence(std::string_view cpp_catalog, std::string_view zig_catalog, std::string& error)
+    -> std::optional<std::vector<step>> {
+  auto generated = state_catalog::generated_steps(cpp_catalog, zig_catalog, error);
+  if (!generated || !state_catalog::verify_inventory(*generated, cpp_catalog, zig_catalog, error)) {
+    return std::nullopt;
+  }
+
+  auto out = hand_authored_stateful_sequence();
+  for (auto const& item : *generated) {
+    out.push_back({item.args});
+  }
+  return out;
+}
+
+/// @brief Build a minimal schema document for catalog-conversion guards.
+/// @param paths One path-token array per leaf.
+/// @return A valid catalog containing optional-only leaf entries.
+auto catalog_fixture(std::span<const std::vector<std::string>> paths) -> std::string {
+  std::string document = R"({"commands":[)";
+  for (std::size_t i = 0; i < paths.size(); ++i) {
+    auto encoded = glz::write_json(paths[i]);
+    REQUIRE(encoded.has_value());
+    if (i != 0) {
+      document += ',';
+    }
+    document += std::format(R"({{"path":{},"subcommands":[],"positionals":[],"flags":[]}})", *encoded);
+  }
+  return document + "]}";
 }
 
 /// @brief The leaves this binary answers with exit 64 + "not implemented in
@@ -766,6 +813,117 @@ TEST_CASE("the volatile-column exact list has no stale entries", "[cmd][parity][
   CHECK_FALSE(declared.contains("checksum"));
 }
 
+TEST_CASE("state catalog: installed eligible inventory is an exact C++/Zig bijection", "[cmd][parity][state][catalog]") {
+  PLANAR_REQUIRE_ORACLE(
+      oracle_available(),
+      "zig reference binary not built (zig/zig-out/bin/planar) — run `zig build` in zig/ to enable the parity lane");
+
+  auto const space = make_arena("statediff_catalog");
+  auto const cpp   = run_pinned(cpp_bin(), std::array<std::string, 1>{"schema"}, space.cpp_root, "catalog_cpp");
+  auto const zig   = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "catalog_zig");
+  REQUIRE(cpp.code == 0);
+  REQUIRE(zig.code == 0);
+
+  std::string error;
+  auto        generated = state_catalog::generated_steps(cpp.out, zig.out, error);
+  REQUIRE(generated.has_value());
+  INFO("eligible generated leaf count: " << generated->size());
+  REQUIRE(state_catalog::verify_inventory(*generated, cpp.out, zig.out, error));
+}
+
+TEST_CASE("state catalog: invented and omitted leaves fail the inventory gate", "[cmd][parity][state][catalog]") {
+  std::vector<std::vector<std::string>> const paths{{"one"}, {"two"}};
+  auto const                                  catalog = catalog_fixture(paths);
+  std::string                                 error;
+  auto                                        generated = state_catalog::generated_steps(catalog, catalog, error);
+  REQUIRE(generated.has_value());
+  REQUIRE(generated->size() == 2);
+
+  auto invented = *generated;
+  invented.push_back({R"(["invented"])", {"invented"}});
+  CHECK_FALSE(state_catalog::verify_inventory(invented, catalog, catalog, error));
+  CHECK(error.contains("invented"));
+
+  auto omitted = *generated;
+  omitted.pop_back();
+  CHECK_FALSE(state_catalog::verify_inventory(omitted, catalog, catalog, error));
+  CHECK(error.contains("missing"));
+}
+
+TEST_CASE("state catalog: C++ and Zig eligibility disagreement fails before steps run", "[cmd][parity][state][catalog]") {
+  std::vector<std::vector<std::string>> const cpp_paths{{"one"}, {"two"}};
+  std::vector<std::vector<std::string>> const zig_paths{{"one"}};
+  std::string                                 error;
+  CHECK_FALSE(state_catalog::generated_steps(catalog_fixture(cpp_paths), catalog_fixture(zig_paths), error).has_value());
+  CHECK(error.contains("eligible catalog inventory differs"));
+}
+
+TEST_CASE("state catalog: argv boundaries remain discrete and malformed input fails closed", "[cmd][parity][state][catalog]") {
+  auto const                     arena     = make_arena("statediff_argv");
+  auto const                     evaluated = arena.cpp_root / "was-evaluated";
+  std::vector<std::string> const raw{
+      "leaf", "has space", "single'quote", "double\"quote", "", ",;|:", std::format("$(touch {})", evaluated.string())};
+  std::vector<std::vector<std::string>> const paths{raw};
+  auto const                                  catalog = catalog_fixture(paths);
+
+  std::string error;
+  auto        generated = state_catalog::generated_steps(catalog, catalog, error);
+  REQUIRE(generated.has_value());
+  REQUIRE(generated->size() == 1);
+  CHECK(generated->front().args == raw);
+
+  // `run_pinned` is the only shell boundary in this lane.  Its input is the
+  // generated vector itself, and the witness proves that every element stays
+  // one argv value while the shell metacharacters stay data, not code.
+  auto const witness = arena.cpp_root / "proj" / "argv-witness";
+  auto const script  = arena.cpp_root / "proj" / "capture-argv.sh";
+  {
+    std::ofstream out(script);
+    REQUIRE(out.good());
+    out << "#!/bin/sh\nprintf '%s\\n' \"$@\" > " << planar::cmd::parity::shell_quote(witness.string()) << "\n";
+  }
+  std::filesystem::permissions(script, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add);
+  auto const captured = run_pinned(script, generated->front().args, arena.cpp_root, "argv_boundaries");
+  REQUIRE(captured.code == 0);
+  std::string expected;
+  for (auto const& value : raw) {
+    expected += value + '\n';
+  }
+  CHECK(planar::cmd::parity::read_all(witness) == expected);
+  CHECK_FALSE(std::filesystem::exists(evaluated));
+
+  // Conversion accepts catalog bytes, not a shell command.  A parse or
+  // shape failure returns before the state lane can launch either binary.
+  CHECK_FALSE(state_catalog::generated_steps(R"({"commands":[)", catalog, error).has_value());
+  CHECK(error.contains("malformed"));
+  CHECK_FALSE(state_catalog::detail::leaves(R"({"commands":[)", error).has_value());
+  CHECK_FALSE(state_catalog::generated_steps(R"({"commands":[{"path":[1],"subcommands":[],"positionals":[],"flags":[]}]})",
+                                             catalog, error)
+                  .has_value());
+  CHECK(error.contains("non-string"));
+}
+
+TEST_CASE("state catalog: hand-authored stateful and malformed exceptions are excluded from generated coverage",
+          "[cmd][parity][state][catalog]") {
+  auto const stateful  = hand_authored_stateful_sequence();
+  auto const malformed = hand_authored_malformed_argv_refusals();
+  REQUIRE_FALSE(stateful.empty());
+  REQUIRE_FALSE(malformed.empty());
+  CHECK(malformed.front().args == std::vector<std::string>{"plan", "show"});
+
+  auto const  catalog = R"({"commands":[
+    {"path":["plan","show"],"subcommands":[],"positionals":[{"required":true}],"flags":[]},
+    {"path":["config","edit"],"subcommands":[],"positionals":[],"flags":[]},
+    {"path":["list"],"subcommands":[],"positionals":[],"flags":[]}
+  ]})";
+  std::string error;
+  auto        generated = state_catalog::generated_steps(catalog, catalog, error);
+  REQUIRE(generated.has_value());
+  CHECK(std::ranges::none_of(*generated, [&](const state_catalog::step& item) { return item.args == malformed.front().args; }));
+  CHECK(std::ranges::none_of(
+      *generated, [](const state_catalog::step& item) { return item.args == std::vector<std::string>{"config", "edit"}; }));
+}
+
 TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequence", "[cmd][parity][state]") {
   PLANAR_REQUIRE_ORACLE(
       oracle_available(),
@@ -779,9 +937,16 @@ TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequen
   std::set<std::string>      seen;            // table \x01 side \x01 row
   std::map<std::string, int> id_shift_echoes; // table -> collapsed row count
 
-  auto const steps = sequence();
-  for (std::size_t index = 0; index < steps.size(); ++index) {
-    auto const& args = steps[index].args;
+  auto const cpp_catalog = run_pinned(cpp_bin(), std::array<std::string, 1>{"schema"}, space.cpp_root, "state_catalog_cpp");
+  auto const zig_catalog = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "state_catalog_zig");
+  REQUIRE(cpp_catalog.code == 0);
+  REQUIRE(zig_catalog.code == 0);
+  std::string catalog_error;
+  auto const  steps = sequence(cpp_catalog.out, zig_catalog.out, catalog_error);
+  REQUIRE(steps.has_value());
+  INFO("catalog-derived state inventory: " << (steps->size() - hand_authored_stateful_sequence().size()) << " leaves");
+  for (std::size_t index = 0; index < steps->size(); ++index) {
+    auto const& args = (*steps)[index].args;
     auto const  tag  = std::format("s{:02}", index);
     INFO("step " << tag << ": planar " << std::format("{}", args));
 
