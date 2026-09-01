@@ -405,6 +405,7 @@ BUILD_DEPS=(
   "chmod||mark shipped scripts executable"
 )
 RUN_DEPS=(
+  "cmp||checks installed projection bytes in scripts/check-self-installed.sh"
   "git|git|repo discovery + 'planar import' (required at runtime)"
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"

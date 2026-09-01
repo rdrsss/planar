@@ -31,7 +31,7 @@ brew install cmake ninja llvm zig git gh jq ripgrep
   install it from `locumipsum/tabularium` when using those workflows.
 
 The full source-checkout installer also uses the base-system utilities declared
-in `install.sh`'s `BUILD_DEPS` manifest (`awk`, `basename`, `cat`, `chmod`,
+in `install.sh`'s `BUILD_DEPS` / `RUN_DEPS` manifests (`awk`, `basename`, `cat`, `chmod`, `cmp`,
 `cp`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mv`, `readlink`,
 `rm`, `rmdir`, and `tr`) alongside CMake and Ninja. These ship with supported Unix-like systems;
 the installer preflights them before making changes.
