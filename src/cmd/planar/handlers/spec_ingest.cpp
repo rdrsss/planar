@@ -1042,7 +1042,6 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
     entity_scope = anc.scope_slug;
   }
 
-  std::optional<std::string> resolved_write_scope;
   if (apply_flag) {
     auto resolution = resolve_write_scope(ctx, scope_flag, "spec ingest");
     if (!resolution) {
@@ -1058,9 +1057,6 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
                                anc.id, entity_scope.value_or("global"), write_view.value_or("global"),
                                entity_scope.value_or("global"));
       return std::unexpected(error_from_body(domain_error_kind::scope_mismatch, "spec ingest: cross-scope write refused"));
-    }
-    if (resolution->scope.has_value()) {
-      resolved_write_scope = *resolution->scope;
     }
   }
 
@@ -1185,7 +1181,12 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
   apply_options const opts{
       .apply          = apply_flag,
       .apply_removals = apply_removals,
-      .scope          = resolved_write_scope.has_value() ? std::optional<std::string_view>{*resolved_write_scope} : entity_scope,
+      // The resolved operator scope authorizes the write above; provenance
+      // remains the anchor's stored scope, exactly as the Zig apply options
+      // do. An association may authorize a repository anchor through
+      // membership without widening every derived descendant to association
+      // scope.
+      .scope = entity_scope,
   };
   auto result = apply_diff(conn, *diff, opts);
   if (!result) {
