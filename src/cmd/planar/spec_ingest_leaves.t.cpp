@@ -479,11 +479,16 @@ TEST_CASE("spec ingest membership-authorized apply preserves the anchor reposito
   // below authorizes the write through membership, but must not become the
   // provenance scope of the derived graph.
   REQUIRE(dispatch(fx, {"plan", "create", "Repository anchor", "--scope", "repo:proj", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"artifact", "add", "Tech Spec", "--kind", "tech_spec", "--plan", "1", "--body",
-                        "## Decisions\n\n### Repository decision\n\nbody\n", "--json"})
-              .code == 0);
+  REQUIRE(
+      dispatch(fx, {"artifact", "add", "Tech Spec", "--kind", "tech_spec", "--plan", "1", "--body",
+                    "## Decisions\n\n### Repository decision\n\nbody\n\n## Open Questions\n\n### Repository question\n\nbody\n",
+                    "--json"})
+          .code == 0);
   REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
                         "## M1\n\n- Repository work [slug: repository-work]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Test Spec", "--kind", "test_spec", "--plan", "1", "--body",
+                        "## Scenarios\n\n### Scenario: repository work\n\n**Verifies:** task:repository-work\n", "--json"})
               .code == 0);
   REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
 
@@ -491,18 +496,50 @@ TEST_CASE("spec ingest membership-authorized apply preserves the anchor reposito
   // it is deliberately different from the anchor's `repo:proj` provenance.
   REQUIRE(dispatch(fx, {"spec", "ingest", "1", "--apply", "--scope", "project:proj"}).code == 0);
 
-  auto conn = open_db(fx);
+  auto conn    = open_db(fx);
   auto repo_id = conn.prepare("select scope_id from plans where id = 1 and scope_kind = 'repo'");
   REQUIRE(repo_id.has_value());
   REQUIRE(repo_id->step().has_value());
   auto const id = repo_id->column_int64(0);
-  for (auto const table : {"plans", "tasks", "decisions"}) {
-    auto wrong = conn.prepare(std::format("select count(*) from {} where id != 1 and (scope_kind != 'repo' or scope_id != ?)", table));
+  for (auto const table : {std::string_view{"plans"}, std::string_view{"tasks"}, std::string_view{"decisions"},
+                           std::string_view{"test_scenarios"}, std::string_view{"questions"}}) {
+    // Only `plans` contains the anchor itself. Each other table's id 1 is a
+    // descendant and must be checked rather than accidentally excluded.
+    auto const descendants = table == "plans" ? "id != 1" : "1 = 1";
+    auto       total       = conn.prepare(std::format("select count(*) from {} where {}", table, descendants));
+    REQUIRE(total.has_value());
+    REQUIRE(total->step().has_value());
+    CHECK(total->column_int64(0) == 1);
+
+    auto wrong = conn.prepare(
+        std::format("select count(*) from {} where {} and (scope_kind != 'repo' or scope_id != ?)", table, descendants));
     REQUIRE(wrong.has_value());
     REQUIRE(wrong->bind_int64(1, id));
     REQUIRE(wrong->step().has_value());
     CHECK(wrong->column_int64(0) == 0);
   }
+}
+
+TEST_CASE("spec ingest direct repository-scope apply remains authorized", "[cmd][spec][ingest][apply][scope][direct]") {
+  auto const fx = make_fixture("direct_repo_provenance");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Direct repository anchor", "--scope", "repo:proj", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech Spec", "--kind", "tech_spec", "--plan", "1", "--body", "", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- Direct repository work [slug: direct-repository-work]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  REQUIRE(dispatch(fx, {"spec", "ingest", "1", "--apply", "--scope", "repo:proj"}).code == 0);
+
+  auto conn  = open_db(fx);
+  auto wrong = conn.prepare("select count(*) from tasks where scope_kind != 'repo' or scope_id != "
+                            "(select scope_id from plans where id = 1)");
+  REQUIRE(wrong.has_value());
+  REQUIRE(wrong->step().has_value());
+  CHECK(wrong->column_int64(0) == 0);
 }
 
 TEST_CASE("spec ingest --apply rolls back every planning write after a mid-apply failure",
