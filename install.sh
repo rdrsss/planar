@@ -387,6 +387,8 @@ title "Planar — install from $REPO_ROOT"
 BUILD_DEPS=(
   "cmake|cmake|configures, builds, and installs the four Planar binaries"
   "ninja|ninja|C++26 module dependency scanning"
+  "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
+  "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
