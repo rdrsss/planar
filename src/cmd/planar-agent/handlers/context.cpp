@@ -2,22 +2,155 @@ module planar.cmd.planar_agent.handlers.context;
 import std;
 import planar.cliapp.args;
 import planar.db;
+import planar.engine.runtime;
 import planar.json_text;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
-namespace planar::cmd::agent::handlers { namespace {
-auto fail(std::string body, domain_error_kind k=domain_error_kind::invalid_input)->handler_result { return std::unexpected(error_from_body(k,std::move(body))); }
-auto text(const cliapp::parsed_args&a,std::string_view n)->std::string{return cliapp::flag_string(a,n).value_or("");}
-auto integer(const cliapp::parsed_args&a,std::string_view n)->std::optional<std::int64_t>{return cliapp::flag_int(a,n);}
-auto dbfail(db::db_error const&e)->handler_result{return fail(e.message_,domain_error_kind::generic_failure);}
-auto valid_kind(std::string_view s)->bool{return s=="finding"||s=="risk"||s=="artifact"||s=="followup"||s=="summary"||s=="capsule";}
-auto valid_status(std::string_view s)->bool{return s=="active"||s=="consumed"||s=="superseded";}
-auto execute(db::connection& c,std::string_view sql,std::initializer_list<std::variant<std::int64_t,std::string,std::nullptr_t>> values)->std::expected<void,db::db_error>{auto q=c.prepare(sql);if(!q)return std::unexpected(q.error());int i=1;for(auto const&v:values){auto r=std::visit([&](auto const&x)->std::expected<void,db::db_error>{using T=std::decay_t<decltype(x)>;if constexpr(std::same_as<T,std::int64_t>)return q->bind_int64(i,x);else if constexpr(std::same_as<T,std::string>)return q->bind_text(i,x);else return q->bind_null(i);},v);if(!r)return r;++i;}auto s=q->step();if(!s)return std::unexpected(s.error());return{};}
-auto last(db::connection&c)->std::expected<std::int64_t,db::db_error>{auto q=c.prepare("select last_insert_rowid()");if(!q)return std::unexpected(q.error());auto s=q->step();if(!s)return std::unexpected(s.error());return q->column_int64(0);}
+namespace planar::cmd::agent::handlers {
+namespace {
+auto fail(std::string body, domain_error_kind k = domain_error_kind::invalid_input) -> handler_result {
+  return std::unexpected(error_from_body(k, std::move(body)));
 }
-auto context_add(context&ctx,const cliapp::parsed_args&a)->handler_result { auto c=ctx.ensure_db();if(!c)return std::unexpected(c.error()); auto kind=text(a,"--kind");if(!valid_kind(kind))return fail(std::format("invalid --kind '{}': must be one of finding|risk|artifact|followup|summary|capsule",kind)); auto q=(*c)->prepare("select id,session_id,run_id,stage from agent_work_claims where claim_token=?");if(!q)return dbfail(q.error());auto token=text(a,"--claim");if(auto r=q->bind_text(1,token);!r)return dbfail(r.error());auto s=q->step();if(!s)return dbfail(s.error());if(*s==db::step_result::done)return fail("claim lookup: NotFound",domain_error_kind::not_found);auto run=q->is_null(2)?std::optional<std::int64_t>{}:std::optional{q->column_int64(2)};if(!run)return fail(std::format("claim '{}' has no run_id: context records are run-scoped; acquire the claim with --run <id>",token));auto stage=q->is_null(3)?std::string{}:q->column_text(3);auto r=execute(**c,"insert into context_records(run_id,stage,session_id,claim_id,kind,body,status,compiled_from) values(?,?,?,?,?,?,'active',?)",{*run,stage,q->column_int64(1),q->column_int64(0),kind,text(a,"--body"),text(a,"--compiled-from").empty()?nullptr:std::variant<std::int64_t,std::string,std::nullptr_t>{text(a,"--compiled-from")}});if(!r)return dbfail(r.error());auto id=last(**c);if(!id)return dbfail(id.error());if(cliapp::flag_bool(a,"--json"))ctx.out()<<std::format("{{\"ok\":true,\"id\":{},\"record\":{{\"id\":{},\"run_id\":{},\"stage\":{},\"session_id\":{},\"claim_id\":{},\"kind\":{},\"status\":\"active\"}}}}\n",*id,*id,*run,json_text::json_string(stage),q->column_int64(1),q->column_int64(0),json_text::json_string(kind));else ctx.out()<<std::format("context:{} run:{} stage:{} kind:{} status:active\n",*id,*run,stage,kind);return{}; }
-auto context_capsule(context&ctx,const cliapp::parsed_args&a)->handler_result {auto c=ctx.ensure_db();if(!c)return std::unexpected(c.error());auto run=integer(a,"--run");if(!run)return fail(std::format("invalid --run '{}': expected integer",text(a,"--run")));auto check=(*c)->prepare("select 1 from workflow_runs where id=?");if(!check)return dbfail(check.error());if(auto r=check->bind_int64(1,*run);!r)return dbfail(r.error());auto st=check->step();if(!st)return dbfail(st.error());if(*st==db::step_result::done)return fail(std::format("workflow_run {} not found",*run),domain_error_kind::not_found);auto sid=integer(a,"--session");if(!sid){auto r=execute(**c,"insert into sessions(vendor) values('compactor')",{});if(!r)return dbfail(r.error());auto n=last(**c);if(!n)return dbfail(n.error());sid=*n;}auto cf=text(a,"--compiled-from");auto r=execute(**c,"insert into context_records(run_id,stage,session_id,claim_id,kind,body,status,compiled_from) values(?,?,?,null,'capsule',?,'active',?)",{*run,text(a,"--stage"),*sid,text(a,"--body"),cf.empty()?nullptr:std::variant<std::int64_t,std::string,std::nullptr_t>{cf}});if(!r)return dbfail(r.error());auto id=last(**c);if(!id)return dbfail(id.error());if(cliapp::flag_bool(a,"--json"))ctx.out()<<std::format("{{\"ok\":true,\"id\":{},\"record\":{{\"id\":{},\"run_id\":{},\"stage\":{},\"session_id\":{},\"claim_id\":null,\"kind\":\"capsule\",\"status\":\"active\"}}}}\n",*id,*id,*run,json_text::json_string(text(a,"--stage")),*sid);else ctx.out()<<std::format("capsule:{} run:{} stage:{} kind:capsule status:active\n",*id,*run,text(a,"--stage"));return{};}
-auto context_list(context&ctx,const cliapp::parsed_args&a)->handler_result {auto c=ctx.ensure_db();if(!c)return std::unexpected(c.error());auto run=integer(a,"--run");if(!run)return fail(std::format("invalid --run '{}': expected integer run id",text(a,"--run")));std::string sql="select id,run_id,stage,session_id,claim_id,kind,body,status,compiled_from,created_at from context_records where run_id=?";auto stage=text(a,"--stage"),status=text(a,"--status"),kind=text(a,"--kind");if(!stage.empty())sql+=" and stage=?";if(!status.empty())sql+=" and status=?";if(!kind.empty())sql+=" and kind=?";sql+=" order by id asc";auto q=(*c)->prepare(sql);if(!q)return dbfail(q.error());int n=1;if(auto r=q->bind_int64(n++,*run);!r)return dbfail(r.error());for(auto const&v:{stage,status,kind})if(!v.empty())if(auto r=q->bind_text(n++,v);!r)return dbfail(r.error());ctx.out()<<"{\"ok\":true,\"records\":[";bool first=true;while(true){auto s=q->step();if(!s)return dbfail(s.error());if(*s==db::step_result::done)break;if(!first)ctx.out()<<",";first=false;ctx.out()<<std::format("{{\"id\":{},\"run_id\":{},\"stage\":{},\"session_id\":{},\"claim_id\":{},\"kind\":{},\"body\":{},\"status\":{},\"compiled_from\":{},\"created_at\":{}}}",q->column_int64(0),q->column_int64(1),json_text::json_string(q->column_text(2)),q->column_int64(3),q->is_null(4)?"null":std::to_string(q->column_int64(4)),json_text::json_string(q->column_text(5)),json_text::json_string(q->column_text(6)),json_text::json_string(q->column_text(7)),q->is_null(8)?"null":json_text::json_string(q->column_text(8)),json_text::json_string(q->column_text(9)));}ctx.out()<<"]}\n";return{};}
-auto context_resolve(context&ctx,const cliapp::parsed_args&a)->handler_result {auto c=ctx.ensure_db();if(!c)return std::unexpected(c.error());auto target=text(a,"--status");if(target!="consumed"&&target!="superseded")return fail(std::format("invalid --status '{}': must be consumed|superseded",target));auto id=integer(a,"--id"),run=integer(a,"--run");if(id&&run)return fail("provide either --id or --run, not both");if(!id&&!run)return fail("provide either --id (single record) or --run (bulk stage sweep)");std::int64_t updated=0;if(id){auto q=(*c)->prepare("select status from context_records where id=?");if(!q)return dbfail(q.error());if(auto r=q->bind_int64(1,*id);!r)return dbfail(r.error());auto s=q->step();if(!s)return dbfail(s.error());if(*s==db::step_result::done)return fail(std::format("context_records row {} not found",*id),domain_error_kind::not_found);if(q->column_text(0)!="active")return fail(std::format("record {} is already in status '{}'; can only resolve active records",*id,q->column_text(0)));auto r=execute(**c,"update context_records set status=? where id=? and status='active'",{target,*id});if(!r)return dbfail(r.error());updated=1;}else {auto stage=text(a,"--stage");if(stage.empty())return fail("--stage is required when using --run for a bulk sweep");auto q=(*c)->prepare("select count(*) from context_records where run_id=? and stage=? and status='active'");if(!q)return dbfail(q.error());if(auto r=q->bind_int64(1,*run);!r)return dbfail(r.error());if(auto r=q->bind_text(2,stage);!r)return dbfail(r.error());auto s=q->step();if(!s)return dbfail(s.error());updated=q->column_int64(0);auto r=execute(**c,"update context_records set status=? where run_id=? and stage=? and status='active'",{target,*run,stage});if(!r)return dbfail(r.error());}if(cliapp::flag_bool(a,"--json"))ctx.out()<<std::format("{{\"ok\":true,\"updated\":{},\"status\":{}}}\n",updated,json_text::json_string(target));else ctx.out()<<std::format("updated:{} status:{}\n",updated,target);return{};}
+auto text(const cliapp::parsed_args& a, std::string_view n) -> std::string {
+  return cliapp::flag_string(a, n).value_or("");
 }
+auto integer(const cliapp::parsed_args& a, std::string_view n) -> std::optional<std::int64_t> {
+  return cliapp::flag_int(a, n);
+}
+auto dbfail(db::db_error const& e) -> handler_result {
+  return fail(e.message_, domain_error_kind::generic_failure);
+}
+auto valid_kind(std::string_view s) -> bool {
+  return s == "finding" || s == "risk" || s == "artifact" || s == "followup" || s == "summary" || s == "capsule";
+}
+} // namespace
+auto context_add(context& ctx, const cliapp::parsed_args& a) -> handler_result {
+  auto c = ctx.ensure_db();
+  if (!c)
+    return std::unexpected(c.error());
+  auto kind = text(a, "--kind"), token = text(a, "--claim"), cf = text(a, "--compiled-from");
+  if (!valid_kind(kind))
+    return fail(std::format("invalid --kind '{}': must be one of finding|risk|artifact|followup|summary|capsule", kind));
+  auto rec = engine::runtime::contextrecords::add_from_claim(
+      **c, {.token         = token,
+            .kind          = kind,
+            .body          = text(a, "--body"),
+            .compiled_from = cf.empty() ? std::nullopt : std::optional<std::string_view>{cf}});
+  if (!rec) {
+    if (rec.error().message_ == "claim not found")
+      return fail("claim lookup: NotFound", domain_error_kind::not_found);
+    if (rec.error().message_ == "claim has no run_id")
+      return fail(
+          std::format("claim '{}' has no run_id: context records are run-scoped; acquire the claim with --run <id>", token));
+    return dbfail(rec.error());
+  }
+  if (cliapp::flag_bool(a, "--json"))
+    ctx.out() << std::format("{{\"ok\":true,\"id\":{},\"record\":{{\"id\":{},\"run_id\":{},\"stage\":{},\"session_id\":{},"
+                             "\"claim_id\":{},\"kind\":{},\"status\":\"active\"}}}}\n",
+                             rec->id, rec->id, rec->run_id, json_text::json_string(rec->stage), rec->session_id, *rec->claim_id,
+                             json_text::json_string(rec->kind));
+  else
+    ctx.out() << std::format("context:{} run:{} stage:{} kind:{} status:active\n", rec->id, rec->run_id, rec->stage, rec->kind);
+  return {};
+}
+auto context_capsule(context& ctx, const cliapp::parsed_args& a) -> handler_result {
+  auto c = ctx.ensure_db();
+  if (!c)
+    return std::unexpected(c.error());
+  auto run = integer(a, "--run");
+  if (!run)
+    return fail(std::format("invalid --run '{}': expected integer", text(a, "--run")));
+  auto sid = integer(a, "--session");
+  auto cf  = text(a, "--compiled-from");
+  auto rec = engine::runtime::contextrecords::add_capsule(
+      **c, {.run_id        = *run,
+            .stage         = text(a, "--stage"),
+            .body          = text(a, "--body"),
+            .session_id    = sid,
+            .compiled_from = cf.empty() ? std::nullopt : std::optional<std::string_view>{cf}});
+  if (!rec) {
+    if (rec.error().message_ == "workflow run not found")
+      return fail(std::format("workflow_run {} not found", *run), domain_error_kind::not_found);
+    return dbfail(rec.error());
+  }
+  if (cliapp::flag_bool(a, "--json"))
+    ctx.out() << std::format("{{\"ok\":true,\"id\":{},\"record\":{{\"id\":{},\"run_id\":{},\"stage\":{},\"session_id\":{},"
+                             "\"claim_id\":null,\"kind\":\"capsule\",\"status\":\"active\"}}}}\n",
+                             rec->id, rec->id, rec->run_id, json_text::json_string(rec->stage), rec->session_id);
+  else
+    ctx.out() << std::format("capsule:{} run:{} stage:{} kind:capsule status:active\n", rec->id, rec->run_id, rec->stage);
+  return {};
+}
+auto context_list(context& ctx, const cliapp::parsed_args& a) -> handler_result {
+  auto c = ctx.ensure_db();
+  if (!c)
+    return std::unexpected(c.error());
+  auto run = integer(a, "--run");
+  if (!run)
+    return fail(std::format("invalid --run '{}': expected integer run id", text(a, "--run")));
+  auto stage = text(a, "--stage"), status = text(a, "--status"), kind = text(a, "--kind");
+  auto records =
+      engine::runtime::contextrecords::list(**c, *run, stage.empty() ? std::nullopt : std::optional<std::string_view>{stage},
+                                            status.empty() ? std::nullopt : std::optional<std::string_view>{status},
+                                            kind.empty() ? std::nullopt : std::optional<std::string_view>{kind});
+  if (!records)
+    return dbfail(records.error());
+  ctx.out() << "{\"ok\":true,\"records\":[";
+  bool first = true;
+  for (auto const& r : *records) {
+    if (!first)
+      ctx.out() << ",";
+    first = false;
+    ctx.out() << std::format(
+        "{{\"id\":{},\"run_id\":{},\"stage\":{},\"session_id\":{},\"claim_id\":{},\"kind\":{},\"body\":{},\"status\":{},"
+        "\"compiled_from\":{},\"created_at\":{}}}",
+        r.id, r.run_id, json_text::json_string(r.stage), r.session_id, r.claim_id ? std::to_string(*r.claim_id) : "null",
+        json_text::json_string(r.kind), json_text::json_string(r.body), json_text::json_string(r.status),
+        r.compiled_from ? json_text::json_string(*r.compiled_from) : "null", json_text::json_string(r.created_at));
+  }
+  ctx.out() << "]}\n";
+  return {};
+}
+auto context_resolve(context& ctx, const cliapp::parsed_args& a) -> handler_result {
+  auto c = ctx.ensure_db();
+  if (!c)
+    return std::unexpected(c.error());
+  auto target = text(a, "--status");
+  if (target != "consumed" && target != "superseded")
+    return fail(std::format("invalid --status '{}': must be consumed|superseded", target));
+  auto id = integer(a, "--id"), run = integer(a, "--run");
+  if (id && run)
+    return fail("provide either --id or --run, not both");
+  if (!id && !run)
+    return fail("provide either --id (single record) or --run (bulk stage sweep)");
+  std::int64_t updated = 0;
+  if (id) {
+    auto rec = engine::runtime::contextrecords::get(**c, *id);
+    if (!rec) {
+      if (rec.error().message_ == "context record not found")
+        return fail(std::format("context_records row {} not found", *id), domain_error_kind::not_found);
+      return dbfail(rec.error());
+    }
+    if (rec->status != "active")
+      return fail(std::format("record {} is already in status '{}'; can only resolve active records", *id, rec->status));
+    auto result = engine::runtime::contextrecords::resolve_one(**c, *id, target);
+    if (!result)
+      return dbfail(result.error());
+    updated = *result;
+  } else {
+    auto stage = text(a, "--stage");
+    if (stage.empty())
+      return fail("--stage is required when using --run for a bulk sweep");
+    auto result = engine::runtime::contextrecords::resolve_stage(**c, *run, stage, target);
+    if (!result)
+      return dbfail(result.error());
+    updated = *result;
+  }
+  if (cliapp::flag_bool(a, "--json"))
+    ctx.out() << std::format("{{\"ok\":true,\"updated\":{},\"status\":{}}}\n", updated, json_text::json_string(target));
+  else
+    ctx.out() << std::format("updated:{} status:{}\n", updated, target);
+  return {};
+}
+} // namespace planar::cmd::agent::handlers
