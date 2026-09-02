@@ -74,7 +74,8 @@ auto artifact_kind_for(const std::filesystem::path& path) -> pl::artifact_kind {
   if (name.contains("tech")) return pl::artifact_kind::tech_spec;
   return pl::artifact_kind::other;
 }
-auto reconcile_artifacts(db::connection& conn, const std::filesystem::path& root, std::int64_t anchor, std::optional<std::string> scope)
+auto reconcile_artifacts(db::connection& conn, const std::filesystem::path& root, std::int64_t anchor, std::optional<std::string> scope,
+                         bool apply_removals)
     -> std::expected<void, domain_error> {
   auto existing = pl::list_artifacts(conn, {.plan_id = anchor});
   if (!existing) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
@@ -91,9 +92,18 @@ auto reconcile_artifacts(db::connection& conn, const std::filesystem::path& root
     if (!artifact) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
   }
   if (ec) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  // Retire only source-backed artifacts that disappeared from this import
+  // root.  The status preserves the audit trail; removal never deletes rows.
+  if (apply_removals) for (auto const& row : *existing) {
+    if (!row.source_path || std::filesystem::exists(root / *row.source_path)) continue;
+    auto retired = conn.prepare("update artifacts set status='retired', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=? and status!='retired'");
+    if (!retired || !retired->bind_int64(1, row.id) || !retired->step())
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  }
   return {};
 }
-auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std::filesystem::path& root, std::int64_t anchor, std::optional<std::string> scope)
+auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std::filesystem::path& root, std::int64_t anchor, std::optional<std::string> scope,
+                     bool apply_removals, std::optional<std::string> accept_spec, bool no_forward_specs)
     -> std::expected<void, domain_error> {
   std::ifstream input(staged.cache_path, std::ios::binary);
   std::string raw{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
@@ -105,12 +115,15 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
   if (phases == nullptr || phases->kind != json_dom::json_kind::array || decisions == nullptr || decisions->kind != json_dom::json_kind::array ||
       forward_specs == nullptr || forward_specs->kind != json_dom::json_kind::array)
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
-  auto artifacts = reconcile_artifacts(conn, root, anchor, scope);
+  auto artifacts = reconcile_artifacts(conn, root, anchor, scope, apply_removals);
   if (!artifacts) return std::unexpected(artifacts.error());
+  std::set<std::int64_t> kept_plans;
+  std::set<std::int64_t> kept_tasks;
   for (auto const& phase : phases->array) {
     if (phase.kind != json_dom::json_kind::object) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
     auto plan = plan_for(conn, phase, anchor, scope);
     if (!plan) return std::unexpected(plan.error());
+    kept_plans.insert(*plan);
     auto const* tasks = phase.find("tasks");
     if (tasks == nullptr || tasks->kind != json_dom::json_kind::array) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
     for (auto const& item : tasks->array) {
@@ -119,25 +132,62 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
       auto task_status = pl::task_status_from_text(*status);
       if (!task_status) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
       auto task = pl::create_task(conn, {.title = *title, .status = *task_status, .plan_id = *plan, .slug = *slug, .no_auto_promote = true, .scope = scope});
-      if (!task && task.error() != pl::task_error::slug_conflict) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+      if (task) kept_tasks.insert(task->id);
+      else if (task.error() == pl::task_error::slug_conflict) {
+        auto found = conn.prepare("select id from tasks where plan_id=? and slug=? limit 1");
+        if (!found || !found->bind_int64(1, *plan) || !found->bind_text(2, *slug)) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+        auto stepped = found->step();
+        if (!stepped || *stepped != db::step_result::row) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+        kept_tasks.insert(found->column_int64(0));
+      } else return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     }
   }
+  if (apply_removals) {
+    auto rows = conn.prepare("select id from tasks where plan_id in (select id from plans where parent_plan_id=?) and status!='cancelled'");
+    if (!rows || !rows->bind_int64(1, anchor)) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    while (true) { auto stepped = rows->step(); if (!stepped) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed")); if (*stepped == db::step_result::done) break;
+      auto const id = rows->column_int64(0); if (kept_tasks.contains(id)) continue;
+      auto cancelled = conn.prepare("update tasks set status='cancelled', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?");
+      if (!cancelled || !cancelled->bind_int64(1, id) || !cancelled->step()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed")); }
+    auto plans = conn.prepare("select id from plans where parent_plan_id=? and status!='abandoned'");
+    if (!plans || !plans->bind_int64(1, anchor)) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    while (true) { auto stepped = plans->step(); if (!stepped) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed")); if (*stepped == db::step_result::done) break;
+      auto const id = plans->column_int64(0); if (kept_plans.contains(id)) continue;
+      auto abandoned = conn.prepare("update plans set status='abandoned', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?");
+      if (!abandoned || !abandoned->bind_int64(1, id) || !abandoned->step()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed")); }
+  }
+  std::set<std::int64_t> kept_decisions;
   for (auto const& value : decisions->array) {
     auto title = text_member(value, "title"); auto body = text_member(value, "body");
     if (!title || !body) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
     auto existing = pl::list_decisions(conn, {.plan_id = anchor});
     if (!existing) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
-    if (std::ranges::any_of(*existing, [&](auto const& row) { return row.title == *title; })) continue;
+    auto matched = std::ranges::find_if(*existing, [&](auto const& row) { return row.title == *title; });
+    if (matched != existing->end()) { kept_decisions.insert(matched->id); continue; }
     // `decision create --plan` is the canonical derives-from writer.
     auto decision = pl::create_decision(conn, {.title = *title, .body = *body, .plan_id = anchor, .scope = scope});
     if (!decision) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    kept_decisions.insert(decision->id);
   }
+  if (apply_removals) {
+    auto rows = conn.prepare("select d.id from decisions d join entity_links e on e.from_kind='decision' and e.from_id=d.id and e.to_kind='plan' and e.to_id=? and e.relationship='derives-from' where d.status in ('proposed','accepted')");
+    if (!rows || !rows->bind_int64(1, anchor)) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    while (true) { auto stepped = rows->step(); if (!stepped) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed")); if (*stepped == db::step_result::done) break;
+      auto const id = rows->column_int64(0); if (kept_decisions.contains(id)) continue;
+      auto superseded = conn.prepare("update decisions set status='superseded', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?");
+      if (!superseded || !superseded->bind_int64(1, id) || !superseded->step()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed")); }
+  }
+  if (no_forward_specs || !accept_spec) return {};
+  std::set<std::string> accepted;
+  if (*accept_spec == "all") for (auto const& value : forward_specs->array) { auto slug = text_member(value, "slug"); if (!slug) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments")); accepted.insert(*slug); }
+  else { std::string_view rest = *accept_spec; while (!rest.empty()) { auto comma = rest.find(','); auto slug = rest.substr(0, comma); if (slug.empty() || !accepted.insert(std::string{slug}).second) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments")); if (comma == std::string_view::npos) break; rest.remove_prefix(comma + 1); } }
   for (auto const& value : forward_specs->array) {
     // Forward proposals materialize as draft anchor plans in this bounded
     // slice; their seeded documents/workbench projection land separately.
     if (value.kind != json_dom::json_kind::object) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
     auto slug = text_member(value, "slug"); auto title = text_member(value, "title");
     if (!slug || !title) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+    if (!accepted.contains(*slug)) continue;
     auto created = pl::create_plan(conn, {.title = *title, .slug = *slug, .status = pl::plan_status::draft, .scope = scope});
     if (!created && created.error() != pl::plan_error::slug_conflict) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
   }
@@ -185,7 +235,8 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
       if (!anchor.has_value()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     } else anchor = created->id;
     if (flag_bool(args, "--interpret") && result->mode_ == im::outcome::mode::cache_hit) {
-      auto reconciled = reconcile_cache(**db, *result, root, *anchor, flag_string(args, "--scope"));
+      auto reconciled = reconcile_cache(**db, *result, root, *anchor, flag_string(args, "--scope"), flag_bool(args, "--apply-removals"),
+                                       flag_string(args, "--accept-spec"), flag_bool(args, "--no-forward-specs"));
       if (!reconciled) return std::unexpected(reconciled.error());
     }
     if (!txn->commit()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
