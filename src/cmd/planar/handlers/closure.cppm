@@ -4,14 +4,15 @@
 ///
 /// Port target: zig/src/cmd/planar/handlers/closure/show.zig.
 ///
-/// One of the two `closure` leaves. `closure compute` is NOT here and stays a
-/// declared exit-64 refusal: its engine half is blocked on tree-sitter (not
-/// vendored), on a filesystem-corpus-walk seam that does not exist, and on a
-/// layer-2 composition with `engine_planning` + `engine_identity`. All three
-/// blockers, and the oracle transcript for whoever lands it, are recorded in
-/// `planar.engine.closure.store`'s header. Wiring a handler over an absent
-/// extractor would mean inventing symbol names and token weights; refusing by
-/// name does not.
+/// Both `closure` leaves are here. `closure compute` was ORIGINALLY a
+/// declared exit-64 refusal — its engine half needed tree-sitter (not yet
+/// vendored), a filesystem-corpus-walk seam that did not exist, and a
+/// layer-2 composition with `engine_planning` + `engine_identity` — and this
+/// paragraph used to say so. All three blockers are gone: tree-sitter is
+/// vendored, the corpus walk landed as `planar.engine.closure.compute`, and
+/// this handler composes it with the same two peers named above (see that
+/// module's header for the full oracle transcript). `closure_compute` below
+/// is a real, wired handler, not a placeholder.
 ///
 /// ## Why this leaf is worth its own file rather than a line in another
 ///
@@ -35,6 +36,13 @@ import planar.cmd.planar.handler;
 namespace planar::cmd::handlers {
 
 /// @brief Handle `planar closure compute <task-id> [--scope S] [--json]`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success (rendered summary or `--json` envelope), an
+/// `invalid_input` (exit 2) for a non-integer positional or a task with no
+/// `task_touch_paths` seeds, a `not_found` (exit 1) for an unknown task id,
+/// a `scope_mismatch` when `--scope` disagrees with the task's own scope, or
+/// a `generic_failure` (exit 1) when the extraction query fails.
 export auto closure_compute(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 /// @brief Handle `planar closure show <task-id> [--json]`.
 /// @param ctx The invocation context.
