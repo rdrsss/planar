@@ -242,7 +242,7 @@ auto receiver_container(std::vector<receiver_binding> const& bindings, std::stri
   return result;
 }
 } // namespace
-auto run(db::connection& conn, std::int64_t task_id) -> std::expected<result, error> {
+auto extract_impl(db::connection& conn, std::int64_t task_id) -> std::expected<result, error> {
   auto seeds = conn.prepare("select t.repo_id,t.path,p.root_path from task_touch_paths t join projects p on p.id=t.repo_id where "
                             "t.task_id=? order by t.repo_id,t.path");
   if (!seeds)

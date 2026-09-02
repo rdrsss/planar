@@ -47,7 +47,7 @@ TEST_CASE("closure compute recursively indexes direct and transitive corpus symb
   sql(*c, "insert into plans(id,scope_kind,title,slug,status) values(1,'global','p','p','draft')");
   sql(*c, "insert into tasks(id,scope_kind,plan_id,title,slug,status) values(1,'global',1,'t','t','todo')");
   sql(*c, "insert into task_touch_paths(task_id,repo_id,path) values(1,1,'seed.zig')");
-  auto first = planar::engine::closure::compute::run(*c, 1);
+  auto first = planar::engine::closure::compute::extract(*c, 1);
   REQUIRE(first);
   CHECK(first->reference >= 1);
   CHECK(first->transitive >= 1);
@@ -58,7 +58,7 @@ TEST_CASE("closure compute recursively indexes direct and transitive corpus symb
   // This is intentionally referenced: indexing a dot-file would otherwise
   // look harmless because an unreferenced definition produces no row.
   CHECK(count(*c, "select count(*) from closures where symbol like 'outside.%' or symbol like 'hidden.%'") == 0);
-  auto second = planar::engine::closure::compute::run(*c, 1);
+  auto second = planar::engine::closure::compute::extract(*c, 1);
   REQUIRE(second);
   CHECK(count(*c, "select count(*) from closures where task_id=1 and extractor_version='m2-closure-0.1'") ==
         static_cast<std::int64_t>(second->rows_written));
@@ -80,7 +80,7 @@ TEST_CASE("closure compute keeps self and typed receivers in their lexical conta
   sql(*c, "insert into plans(id,scope_kind,title,slug,status) values(1,'global','p','p','draft')");
   sql(*c, "insert into tasks(id,scope_kind,plan_id,title,slug,status) values(1,'global',1,'t','t','todo')");
   sql(*c, "insert into task_touch_paths(task_id,repo_id,path) values(1,1,'seed.zig')");
-  REQUIRE(planar::engine::closure::compute::run(*c, 1));
+  REQUIRE(planar::engine::closure::compute::extract(*c, 1));
   // Removing lexical self qualification or selecting the first typed `item`
   // declaration makes at least one of these independently reachable rows fail.
   CHECK(count(*c, "select count(*) from closures where symbol='seed.One.hit' and role='reference'") == 1);
@@ -101,7 +101,7 @@ TEST_CASE("closure compute weights match Zig tokenizer comment operator and inva
   sql(*c, "insert into plans(id,scope_kind,title,slug,status) values(1,'global','p','p','draft')");
   sql(*c, "insert into tasks(id,scope_kind,plan_id,title,slug,status) values(1,'global',1,'t','t','todo')");
   sql(*c, "insert into task_touch_paths(task_id,repo_id,path) values(1,1,'seed.zig')");
-  REQUIRE(planar::engine::closure::compute::run(*c, 1));
+  REQUIRE(planar::engine::closure::compute::extract(*c, 1));
   // Captured from std.zig.Tokenizer: docs count, ordinary comments do not,
   // `>>=` and `/=` are each one tag, and the control byte is one invalid tag.
   // The 28 is a direct std.zig.Tokenizer capture for this exact span.
@@ -127,7 +127,7 @@ TEST_CASE("closure compute normalizes decorated and imported-container receivers
   sql(*c, "insert into plans(id,scope_kind,title,slug,status) values(1,'global','p','p','draft')");
   sql(*c, "insert into tasks(id,scope_kind,plan_id,title,slug,status) values(1,'global',1,'t','t','todo')");
   sql(*c, "insert into task_touch_paths(task_id,repo_id,path) values(1,1,'seed.zig')");
-  REQUIRE(planar::engine::closure::compute::run(*c, 1));
+  REQUIRE(planar::engine::closure::compute::extract(*c, 1));
   // Removing any pointer, optional, generic, or imported alias normalization
   // leaves this row absent; every receiver form above calls `hit`.
   CHECK(count(*c, "select count(*) from closures where symbol='widget.Box.hit' and role='reference'") == 1);
@@ -154,7 +154,7 @@ TEST_CASE("closure compute preserves defining repo provenance and Zig tokenizer 
   sql(*c, "insert into plans(id,scope_kind,title,slug,status) values(1,'global','p','p','draft')");
   sql(*c, "insert into tasks(id,scope_kind,plan_id,title,slug,status) values(1,'global',1,'t','t','todo')");
   sql(*c, "insert into task_touch_paths(task_id,repo_id,path) values(1,1,'seed.zig'),(1,2,'seed.zig')");
-  REQUIRE(planar::engine::closure::compute::run(*c, 1));
+  REQUIRE(planar::engine::closure::compute::extract(*c, 1));
   CHECK(count(*c, "select count(*) from closures where symbol='lib.call' and role='reference' and repo_id=1") == 1);
   CHECK(count(*c, "select count(*) from closures where symbol='lib.call' and role='reference' and repo_id=2") == 0);
   // Zig's tokenizer counts the `pub` modifier as its own token.

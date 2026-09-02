@@ -49,7 +49,7 @@ auto closure_compute(context& ctx, const cliapp::parsed_args& args) -> handler_r
                                                        "'{}'; pass --scope {} to write to that scope from here",
                                                        *id, el, wl, el)));
   }
-  auto result = engine::closure::compute::run(**conn, *id);
+  auto result = engine::closure::compute::extract(**conn, *id);
   if (!result) {
     if (result.error() == engine::closure::compute::error::no_seeds)
       return std::unexpected(error_from_body(
