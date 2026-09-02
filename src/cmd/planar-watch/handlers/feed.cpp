@@ -26,34 +26,70 @@ auto feed(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const tail = cliapp::flag_int(args, "--tail");
   if (tail.has_value() && *tail <= 0)
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "feed: --tail must be a positive integer"));
-  auto const limit = tail.value_or(cliapp::flag_int(args, "--limit").value_or(100));
-  auto       rows  = aa::list_actions(**conn, limit);
+  auto const limit  = tail.value_or(cliapp::flag_int(args, "--limit").value_or(100));
+  auto       rows   = aa::list_actions(**conn, 4096);
+  auto       claims = aa::list_claims(**conn, aa::claim_status_filter::all);
   if (!rows)
     return std::unexpected(failure(rows.error()));
-  std::reverse(rows->begin(), rows->end());
-  bool const  json = cliapp::flag_bool(args, "--json");
-  std::string out;
-  for (auto const& row : *rows) {
-    if (auto vendor = cliapp::flag_string(args, "--vendor"); vendor.has_value() && row.vendor != *vendor)
-      continue;
-    if (auto task = cliapp::flag_int(args, "--task");
-        task.has_value() &&
-        (!row.entity_id.has_value() || *row.entity_id != *task || !row.entity.has_value() || aa::to_text(*row.entity) != "task"))
-      continue;
-    auto const at = row.ended_at.value_or(row.started_at);
+  if (!claims)
+    return std::unexpected(failure(claims.error()));
+  bool const json = cliapp::flag_bool(args, "--json");
+  struct event {
+    std::string at, kind, body;
+  };
+  std::vector<event> events;
+  auto               include = [&](std::string_view at, std::string_view vendor, std::optional<std::int64_t> task) {
+    if (auto filter = cliapp::flag_string(args, "--vendor"); filter.has_value() && vendor != *filter)
+      return false;
+    if (auto filter = cliapp::flag_int(args, "--task"); filter.has_value() && task != *filter)
+      return false;
     if (auto since = cliapp::flag_string(args, "--since"); since.has_value() && at < *since)
-      continue;
+      return false;
+    return true;
+  };
+  for (auto const& row : *rows) {
+    auto task = row.entity.has_value() && aa::to_text(*row.entity) == "task" ? row.entity_id : std::nullopt;
+    auto add  = [&](std::string_view at, std::string_view kind) {
+      if (include(at, row.vendor, task)) {
+        std::string body;
+        ar::append_action(body, row);
+        events.push_back({std::string{at}, std::string{kind}, std::move(body)});
+      }
+    };
+    add(row.started_at, "action_started");
+    if (row.ended_at)
+      add(*row.ended_at, "action_ended");
+  }
+  for (auto const& claim : *claims) {
+    auto task = aa::to_text(claim.kind) == "task" ? std::optional{claim.entity_id} : std::nullopt;
+    auto add  = [&](std::string_view at, std::string_view kind) {
+      if (include(at, claim.vendor, task)) {
+        std::string body;
+        ar::append_claim_view(body, claim, {});
+        events.push_back({std::string{at}, std::string{kind}, std::move(body)});
+      }
+    };
+    add(claim.claimed_at, "claim_acquired");
+    if (claim.last_heartbeat_at != claim.claimed_at)
+      add(claim.last_heartbeat_at, "heartbeat");
+    if (claim.released_at)
+      add(*claim.released_at, aa::to_text(claim.status));
+  }
+  std::ranges::sort(events, {}, &event::at);
+  if (events.size() > static_cast<std::size_t>(limit))
+    events.erase(events.begin(), events.end() - limit);
+  std::string out;
+  for (auto const& e : events) {
     if (json) {
       out.append("{\"event\":");
-      json_text::append_json_string(out, row.ended_at.has_value() ? "action_ended" : "action_started");
+      json_text::append_json_string(out, e.kind);
       out.append(",\"at\":");
-      json_text::append_json_string(out, at);
-      out.append(",\"action\":");
-      ar::append_action(out, row);
+      json_text::append_json_string(out, e.at);
+      out.append(e.kind.starts_with("action") ? ",\"action\":" : ",\"claim\":");
+      out.append(e.body);
       out.append("}\n");
     } else
-      out.append(
-          std::format("  {}  {}  vendor:{}\n", at, row.ended_at.has_value() ? "action_ended" : "action_started", row.vendor));
+      out.append(std::format("  {}  {}\n", e.at, e.kind));
   }
   ctx.out() << out;
   return {};
