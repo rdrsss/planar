@@ -1047,7 +1047,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // for an apply; the re-entrant `planar.db` transaction seam makes each
   // composed CRUD operation a nested savepoint, preserving the oracle's
   // all-or-nothing write contract.
-  CHECK(unported.size() == 6);
+  // 6 -> 4: task 6189 (this branch) ported `workspace init` and
+  // `closure compute` without updating this count; corrected here
+  // against the live `k_unported` array rather than re-derived.
+  CHECK(unported.size() == 4);
   // `workspace regenerate` had already moved at task 6364. It had been carried
   // as blocked on an unvendored xxh64 for its `.manifest-docs` merkle —
   // verified TRANSITIVELY true (the leaf's own source has no xxh64
@@ -1056,7 +1059,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // the new layer-1 `planar.docs_manifest` module, and the leaf's
   // hand-rolled template engine was ported alongside it. See
   // `planar.engine.workspace.regenerate`'s header for the full account.
-  CHECK(unported.size() == 6);
+  // 6 -> 4: task 6189 (this branch) ported `workspace init` and
+  // `closure compute` without updating this count; corrected here
+  // against the live `k_unported` array rather than re-derived.
+  CHECK(unported.size() == 4);
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
   INFO("moved by task 6362: bench harvest");
@@ -1089,9 +1095,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("task packet"));
   INFO("moved by task 6275: workspace routing build");
   CHECK_FALSE(unported.contains("workspace routing build"));
-  // Its three family siblings stayed, and each is pinned so a later cycle
-  // cannot wire one off the back of this one's count without saying so.
-  for (auto const& leaf : {"workspace init", "synthesize"}) {
+  // Its three family siblings stayed at task 6275. `workspace init` was
+  // one of them until this branch's own task 6189 ported it (see
+  // surface.cpp's entry) — pinned individually below rather than folded
+  // back into a "deliberately not moved" loop, so its departure has to be
+  // said rather than silently absorbed into a shrinking list.
+  INFO("moved by task 6189: workspace init");
+  CHECK_FALSE(unported.contains("workspace init"));
+  for (auto const& leaf : {"synthesize"}) {
     INFO("probed by task 6275 and deliberately not moved: " << leaf);
     CHECK(unported.contains(leaf));
   }
