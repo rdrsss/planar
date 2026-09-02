@@ -37,6 +37,10 @@ auto test_name(TSNode n, std::string_view source) -> std::string_view {
 }
 // Tree-sitter omits comments and error tokens. Zig's tokenizer counts both as
 // context-window positions, so weights must be lexical rather than AST leaves.
+// A bounded port of `std.zig.Tokenizer`: comments are trivia except docs,
+// and punctuation is consumed greedily using the tokenizer's complete
+// compound-operator vocabulary.  This is deliberately lexical rather than a
+// tree-sitter leaf count because the grammar drops ordinary comments/errors.
 auto tokens(std::string_view s) -> std::int64_t {
   std::int64_t count = 0;
   for (std::size_t i = 0; i < s.size();) {
@@ -44,9 +48,20 @@ auto tokens(std::string_view s) -> std::int64_t {
       ++i;
       continue;
     }
-    ++count;
     if (s[i] == '/' && i + 1 < s.size() && s[i + 1] == '/') {
-      i = s.find('\n', i);
+      auto const doc = i + 2 < s.size() && (s[i + 2] == '/' || s[i + 2] == '!');
+      i              = s.find('\n', i + 2);
+      if (doc)
+        ++count;
+      if (i == std::string_view::npos)
+        break;
+      continue;
+    }
+    ++count;
+    if (static_cast<unsigned char>(s[i]) < 0x20 && s[i] != '\n' && s[i] != '\r' && s[i] != '\t') {
+      // Tokenizer's `.invalid` state consumes the remainder of its physical
+      // line before yielding a single invalid token.
+      i = s.find('\n', i + 1);
       if (i == std::string_view::npos)
         break;
       continue;
@@ -61,20 +76,53 @@ auto tokens(std::string_view s) -> std::int64_t {
         ++i;
       continue;
     }
-    if (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '_') {
+    if (s[i] == '@' && i + 1 < s.size() && (std::isalpha(static_cast<unsigned char>(s[i + 1])) || s[i + 1] == '_')) {
+      // `@import`/`@TypeOf` are one `.builtin` token, not punctuation plus
+      // identifier.  Keywords and identifiers both remain one token.
+      i += 2;
       while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '_'))
         ++i;
       continue;
     }
-    if (i + 1 < s.size() && std::string_view{"=!<>+-*/%&|"}.contains(s[i]) && s[i + 1] == '=') {
-      i += 2;
+    if (std::isdigit(static_cast<unsigned char>(s[i]))) {
+      // Number literals may contain a base prefix, separators, exponent and
+      // decimal point.  Stop before a range operator so `1..2` remains three
+      // tags, as it does in std.zig.Tokenizer.
+      ++i;
+      while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '_' ||
+                              (s[i] == '.' && !(i + 1 < s.size() && s[i + 1] == '.'))))
+        ++i;
       continue;
     }
+    if (std::isalpha(static_cast<unsigned char>(s[i])) || s[i] == '_') {
+      while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '_'))
+        ++i;
+      continue;
+    }
+    // Longest-match spellings from std.zig.Tokenizer.Tag.  Counting one tag
+    // per spelling is the only quantity closure weights retain.
+    static constexpr std::array<std::string_view, 39> compounds{
+        "<<|=", "<<|", "<<=", ">>=", "**%=", "*%=", "+%=", "-%=", "+|=", "-|=", "*|=", "...", ".**",
+        "==",   "=>",  "!=",  "||",  "|=",   "%=",  "^=",  "+=",  "++",  "+%",  "+|",  "-=",  "-%",
+        "-|",   "*=",  "**",  "*%",  "*|",   "->",  "&=",  "<=",  "<<",  ">=",  ">>",  "..",  ".*"};
+    bool matched = false;
+    for (auto op : compounds)
+      if (s.substr(i).starts_with(op)) {
+        i += op.size();
+        matched = true;
+        break;
+      }
+    if (matched)
+      continue;
     ++i;
   }
   return count;
 }
-auto references(TSNode node, std::string_view source, std::set<std::string>& names, TSNode parent = {}) -> void {
+struct reference {
+  std::string raw;
+  uint32_t    offset{};
+};
+auto references(TSNode node, std::string_view source, std::vector<reference>& names, TSNode parent = {}) -> void {
   auto const kind             = std::string_view{ts_node_type(node)};
   auto const parent_kind      = ts_node_is_null(parent) ? std::string_view{} : std::string_view{ts_node_type(parent)};
   auto       declaration_name = false;
@@ -88,7 +136,8 @@ auto references(TSNode node, std::string_view source, std::set<std::string>& nam
       }
     }
   if (kind == "identifier" && parent_kind != "field_expression" && !declaration_name)
-    names.emplace(source.substr(ts_node_start_byte(node), ts_node_end_byte(node) - ts_node_start_byte(node)));
+    names.push_back({std::string{source.substr(ts_node_start_byte(node), ts_node_end_byte(node) - ts_node_start_byte(node))},
+                     ts_node_start_byte(node)});
   if (kind == "field_expression") {
     std::vector<TSNode> ids;
     for (uint32_t i = 0; i < ts_node_child_count(node); ++i) {
@@ -97,15 +146,17 @@ auto references(TSNode node, std::string_view source, std::set<std::string>& nam
         ids.push_back(c);
     }
     if (ids.size() >= 2)
-      names.emplace(std::format(
-          "{}.{}",
-          source.substr(ts_node_start_byte(ids.front()), ts_node_end_byte(ids.front()) - ts_node_start_byte(ids.front())),
-          source.substr(ts_node_start_byte(ids.back()), ts_node_end_byte(ids.back()) - ts_node_start_byte(ids.back()))));
+      names.push_back(
+          {std::format(
+               "{}.{}",
+               source.substr(ts_node_start_byte(ids.front()), ts_node_end_byte(ids.front()) - ts_node_start_byte(ids.front())),
+               source.substr(ts_node_start_byte(ids.back()), ts_node_end_byte(ids.back()) - ts_node_start_byte(ids.back()))),
+           ts_node_start_byte(node)});
   }
   for (uint32_t i = 0; i < ts_node_child_count(node); ++i)
     references(ts_node_child(node, i), source, names, node);
 }
-auto self_references(TSNode node, std::string_view source, std::string_view container, std::set<std::string>& names) -> void {
+auto self_references(TSNode node, std::string_view source, std::string_view container, std::vector<reference>& names) -> void {
   if (std::string_view{ts_node_type(node)} == "field_expression") {
     std::vector<TSNode> ids;
     for (uint32_t i = 0; i < ts_node_child_count(node); ++i) {
@@ -115,9 +166,10 @@ auto self_references(TSNode node, std::string_view source, std::string_view cont
     }
     if (ids.size() >= 2 &&
         source.substr(ts_node_start_byte(ids.front()), ts_node_end_byte(ids.front()) - ts_node_start_byte(ids.front())) == "self")
-      names.emplace(std::format(
-          "{}.{}", container,
-          source.substr(ts_node_start_byte(ids.back()), ts_node_end_byte(ids.back()) - ts_node_start_byte(ids.back()))));
+      names.push_back({std::format("{}.{}", container,
+                                   source.substr(ts_node_start_byte(ids.back()),
+                                                 ts_node_end_byte(ids.back()) - ts_node_start_byte(ids.back()))),
+                       ts_node_start_byte(node)});
   }
   for (uint32_t i = 0; i < ts_node_child_count(node); ++i)
     self_references(ts_node_child(node, i), source, container, names);
@@ -153,6 +205,38 @@ auto receiver_container(std::string_view source, std::string_view receiver,
   if (auto it = imports.find(match[1].str()); it != imports.end())
     return it->second;
   return std::nullopt;
+}
+struct receiver_binding {
+  std::string name, container;
+  uint32_t    start{}, scope_end{};
+};
+auto receiver_bindings(TSNode node, std::string_view source, std::map<std::string, std::string, std::less<>> const& imports,
+                       std::vector<receiver_binding>& result, uint32_t scope_end) -> void {
+  auto const kind = std::string_view{ts_node_type(node)};
+  if (kind == "variable_declaration") {
+    if (auto name = child_identifier(node, source))
+      if (auto container = receiver_container(
+              source.substr(ts_node_start_byte(node), ts_node_end_byte(node) - ts_node_start_byte(node)), *name, imports))
+        result.push_back({std::string{*name}, std::move(*container), ts_node_start_byte(node), scope_end});
+  }
+  for (uint32_t i = 0; i < ts_node_child_count(node); ++i) {
+    auto child           = ts_node_child(node, i);
+    auto child_scope_end = scope_end;
+    if (std::string_view{ts_node_type(child)} == "block")
+      child_scope_end = ts_node_end_byte(child);
+    receiver_bindings(child, source, imports, result, child_scope_end);
+  }
+}
+auto receiver_container(std::vector<receiver_binding> const& bindings, std::string_view receiver, uint32_t offset)
+    -> std::optional<std::string> {
+  std::optional<std::string> result;
+  uint32_t                   latest = 0;
+  for (auto const& binding : bindings)
+    if (binding.name == receiver && binding.start < offset && offset < binding.scope_end && binding.start >= latest) {
+      result = binding.container;
+      latest = binding.start;
+    }
+  return result;
 }
 } // namespace
 auto run(db::connection& conn, std::int64_t task_id) -> std::expected<result, error> {
@@ -199,6 +283,8 @@ auto run(db::connection& conn, std::int64_t task_id) -> std::expected<result, er
         it.disable_recursion_pending();
         continue;
       }
+      if (p.filename().string().starts_with("."))
+        continue;
       if (p.extension() != ".zig")
         continue;
       std::ifstream f(p, std::ios::binary);
@@ -265,9 +351,10 @@ auto run(db::connection& conn, std::int64_t task_id) -> std::expected<result, er
       modifies.emplace(symbol);
       rows.push_back({s.repo, s.path, std::move(symbol), "modify", tokens(std::string_view{source}.substr(a, b - a))});
     }
-    auto                  imports  = imported_containers(source);
-    auto                  find_def = [&defs, &s](std::string_view symbol) { return defs.find(qualified_key(s.repo, symbol)); };
-    std::set<std::string> seen_ref, direct;
+    auto                   imports  = imported_containers(source);
+    auto                   find_def = [&defs, &s](std::string_view symbol) { return defs.find(qualified_key(s.repo, symbol)); };
+    std::set<std::string>  seen_ref;
+    std::vector<reference> direct;
     references(root, source, direct);
     // Resolve `self.member` in the lexical container where it occurs. The
     // generic identifier walk intentionally has no parent context, so this
@@ -287,24 +374,17 @@ auto run(db::connection& conn, std::int64_t task_id) -> std::expected<result, er
           self_references(c, source, std::format("{}.{}", st, *name), direct);
       }
     }
-    for (auto const& raw : direct) {
-      auto q = raw.contains('.') ? raw : std::format("{}.{}", st, raw);
-      auto d = find_def(q);
+    std::vector<receiver_binding> bindings;
+    receiver_bindings(root, source, imports, bindings, static_cast<uint32_t>(source.size()));
+    for (auto const& ref : direct) {
+      auto const& raw = ref.raw;
+      auto        q   = raw.contains('.') ? raw : std::format("{}.{}", st, raw);
+      auto        d   = find_def(q);
       if (d == defs.end() && raw.contains('.')) {
         auto dot  = raw.find('.');
         auto recv = raw.substr(0, dot), member = raw.substr(dot + 1);
-        if (recv == "self") {
-          // A `self` member is only valid in the receiver's own container.
-          // Prefer a matching container declared in this seed; the fallback
-          // remains deterministic for old, untyped receiver syntax.
-          for (auto const& [candidate, value] : defs)
-            if (value.repo == s.repo && candidate.ends_with(std::format(".{}", member))) {
-              q = candidate.substr(candidate.find('\x1f') + 1);
-              d = find_def(q);
-              break;
-            }
-        } else {
-          if (auto container = receiver_container(source, recv, imports)) {
+        if (recv != "self") {
+          if (auto container = receiver_container(bindings, recv, ref.offset)) {
             q = std::format("{}.{}", *container, member);
             d = find_def(q);
           }
@@ -324,16 +404,17 @@ auto run(db::connection& conn, std::int64_t task_id) -> std::expected<result, er
       auto d = find_def(q);
       if (d == defs.end())
         continue;
-      std::set<std::string> hop;
-      TSParser*             hp = ts_parser_new();
+      std::vector<reference> hop;
+      TSParser*              hp = ts_parser_new();
       ts_parser_set_language(hp, tree_sitter_zig());
       TSTree* ht =
           ts_parser_parse_string(hp, nullptr, d->second.source.data() + d->second.first, d->second.last - d->second.first);
       references(ts_tree_root_node(ht),
                  std::string_view{d->second.source}.substr(d->second.first, d->second.last - d->second.first), hop);
       auto owner = q.substr(0, q.find('.'));
-      for (auto const& raw : hop) {
-        auto hq = raw.contains('.') ? raw : std::format("{}.{}", owner, raw);
+      for (auto const& ref : hop) {
+        auto const& raw = ref.raw;
+        auto        hq  = raw.contains('.') ? raw : std::format("{}.{}", owner, raw);
         if (raw.starts_with("self."))
           hq = std::format("{}.{}", q.substr(0, q.rfind('.')), raw.substr(std::string_view{"self."}.size()));
         auto hd = find_def(hq);
