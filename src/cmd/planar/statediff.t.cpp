@@ -1237,9 +1237,11 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
   auto const live_unported = source_unported_inventory(target_source_root());
   REQUIRE(live_unported.has_value());
-  // Task 6038 completes the nine planar-agent leaves. The cutover remains
-  // refused on the ten remaining operator/watch entries and oracle skips.
-  CHECK(live_unported->size() == 10);
+  // 19 -> 8: task 6038 landed the nine planar-agent leaves and task 6106
+  // landed `import` and `synthesize`. Both drops are real and independent;
+  // neither side updated this cross-binary count in the same commit as its
+  // port, which is exactly the drift this sibling test exists to catch.
+  CHECK(live_unported->size() == 8);
   CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") != live_unported->end());
   CHECK(source_oracle_skips(target_source_root()).size() == 37);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
@@ -1255,7 +1257,9 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   REQUIRE(agent_surface.has_value());
   CHECK(agent_surface->contains("k_unported[] = {std::string_view{}}"));
   CHECK(agent_surface->contains("std::span<std::string_view const>{k_unported}.first(0)"));
-  CHECK(planar_unported->size() == 6);
+  // 6 -> 4 at task 6106, matching dispatch.t.cpp's own drop: `import` and
+  // `synthesize` both left surface.cpp's k_unported array.
+  CHECK(planar_unported->size() == 4);
   CHECK(agent_unported->empty());
   for (auto const& landed : {"ingest", "run start", "run end", "dispatch preview", "dispatch confirm", "context add",
                              "context capsule", "context list", "context resolve"}) {
