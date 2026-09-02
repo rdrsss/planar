@@ -104,7 +104,9 @@
 
 import std;
 import planar.db;
+import planar.cmd.planar.surface;
 
+#include "../oracle_retirement.hpp"
 #include "catalog_steps.hpp"
 #include "parity_harness.hpp"
 
@@ -114,6 +116,7 @@ using planar::cmd::parity::arena;
 using planar::cmd::parity::make_arena;
 using planar::cmd::parity::run_pinned;
 namespace state_catalog = planar::cmd::state_catalog;
+namespace retirement    = planar::cmd::oracle_retirement;
 
 /// @brief Path to the built C++ binary (set by this target's CMakeLists).
 /// @return The path.
@@ -131,6 +134,15 @@ auto zig_bin() -> std::filesystem::path {
 /// @return `true` if the oracle exists.
 auto oracle_available() -> bool {
   return std::filesystem::exists(zig_bin());
+}
+
+/// @brief True when the configured oracle still resides in the checked-out Zig tree.
+/// @return `true` when the Zig source tree is present beside its built binary.
+auto zig_tree_present() -> bool {
+  // CTest runs this binary from the build directory, so a relative `zig/`
+  // check would inspect the wrong directory. The configured oracle path is
+  // rooted at the source tree and remains the evidence gate's authority.
+  return std::filesystem::is_directory(zig_bin().parent_path().parent_path().parent_path());
 }
 
 // -------------------------------------------------------------------------
@@ -795,6 +807,97 @@ const std::vector<known>& known_divergences() {
   return staged;
 }
 
+/// @brief The eleven decision-982 state-lane evidence slots.
+///
+/// The state differential itself derives and verifies the concrete command
+/// inventory from both catalogs.  These slots record the separately decided
+/// eleven-leaf cutover scope: the count is a decision boundary, not a count
+/// inferred from whatever happens to be unported in one intermediate tree.
+constexpr std::array<std::string_view, retirement::in_scope_leaf_count> in_scope_state_evidence{
+    "state-leaf-01", "state-leaf-02", "state-leaf-03", "state-leaf-04", "state-leaf-05", "state-leaf-06",
+    "state-leaf-07", "state-leaf-08", "state-leaf-09", "state-leaf-10", "state-leaf-11",
+};
+
+/// @brief Every remaining generated unported leaf across the three state binaries.
+///
+/// `planar` is read directly from its generated surface.  The agent and
+/// watcher entries are explicit because their test binaries may not acquire
+/// forbidden command-to-command target edges merely to inspect another
+/// command module.  This is evidence, not a grep count: each path, binary,
+/// and disposition is carried into the report below.  Task 6045 must remove
+/// these records in the same reviewed cutover that removes their handlers.
+auto live_unported_inventory() -> std::vector<retirement::unported_leaf> {
+  std::vector<retirement::unported_leaf> out;
+  for (auto const path : planar::cmd::unported_paths()) {
+    out.push_back({.binary      = "planar",
+                   .path        = path,
+                   .disposition = path == "explore" ? retirement::deferred_by_decision980 : "pending-port"});
+  }
+  static constexpr std::array<retirement::unported_leaf, 13> other_binaries{{
+      {"planar-agent", "context add", "pending-port"},
+      {"planar-agent", "context capsule", "pending-port"},
+      {"planar-agent", "context list", "pending-port"},
+      {"planar-agent", "context resolve", "pending-port"},
+      {"planar-agent", "dispatch confirm", "pending-port"},
+      {"planar-agent", "dispatch preview", "pending-port"},
+      {"planar-agent", "ingest", "pending-port"},
+      {"planar-agent", "run end", "pending-port"},
+      {"planar-agent", "run start", "pending-port"},
+      {"planar-watch", "feed", "pending-port"},
+      {"planar-watch", "run list", "pending-port"},
+      {"planar-watch", "run show", "pending-port"},
+      {"planar-watch", "sync-events", "pending-port"},
+  }};
+  out.insert(out.end(), other_binaries.begin(), other_binaries.end());
+  return out;
+}
+
+/// @brief Every surviving condition that can turn a parity assertion into SKIP.
+///
+/// This is intentionally a named, reviewable inventory rather than a silent
+/// source-search result.  It includes `PLANAR_REQUIRE_ORACLE` call sites and
+/// the four older direct oracle SKIPs.  A zero count is mandatory at cutover;
+/// task 6045 owns deleting both these records and the conditional paths.
+constexpr std::array<std::string_view, 37> oracle_conditional_skip_inventory{{
+    "src/cmd/planar/parity.t.cpp:151",
+    "src/cmd/planar/parity.t.cpp:162",
+    "src/cmd/planar/parity.t.cpp:200",
+    "src/cmd/planar/parity.t.cpp:278",
+    "src/cmd/planar/parity.t.cpp:323",
+    "src/cmd/planar/parity.t.cpp:424",
+    "src/cmd/planar/parity.t.cpp:498",
+    "src/cmd/planar/parity.t.cpp:615",
+    "src/cmd/planar/parity.t.cpp:741",
+    "src/cmd/planar/parity.t.cpp:810",
+    "src/cmd/planar/parity.t.cpp:867",
+    "src/cmd/planar/parity.t.cpp:1157",
+    "src/cmd/planar/parity.t.cpp:1339",
+    "src/cmd/planar/parity.t.cpp:1434",
+    "src/cmd/planar/parity.t.cpp:1532",
+    "src/cmd/planar/parity.t.cpp:1753",
+    "src/cmd/planar/parity.t.cpp:1876",
+    "src/cmd/planar/statediff.t.cpp:957",
+    "src/cmd/planar/statediff.t.cpp:1246",
+    "src/cmd/planar-agent/parity.t.cpp:115",
+    "src/cmd/planar-agent/parity.t.cpp:138",
+    "src/cmd/planar-agent/parity.t.cpp:184",
+    "src/cmd/planar-agent/parity.t.cpp:301",
+    "src/cmd/planar-agent/parity.t.cpp:349",
+    "src/cmd/planar-agent/parity.t.cpp:491",
+    "src/cmd/planar-agent/parity.t.cpp:561",
+    "src/cmd/planar-watch/parity.t.cpp:135",
+    "src/cmd/planar-watch/parity.t.cpp:164",
+    "src/cmd/planar-watch/parity.t.cpp:296",
+    "src/cmd/planar-watch/parity.t.cpp:521",
+    "src/cmd/planar-watch/parity.t.cpp:556",
+    "src/cmd/planar-execute/parity.t.cpp:77",
+    "src/cmd/planar-execute/parity.t.cpp:115",
+    "src/cmd/planar-execute/parity.t.cpp:163",
+    "src/cmd/planar-execute/parity.t.cpp:234",
+    "src/lib/engine/execute/surface.t.cpp:268",
+    "src/lib/db/migrate.t.cpp:249",
+}};
+
 } // namespace
 
 TEST_CASE("the volatile-column exact list has no stale entries", "[cmd][parity][state]") {
@@ -1042,6 +1145,122 @@ TEST_CASE("state catalog: exclusions are explicit and workspace init remains eli
   CHECK(excluded->at(1).reason == "deferred-by-decision980");
   CHECK(excluded->at(2).path == std::vector<std::string>{"schema"});
   CHECK(excluded->at(2).reason == "output-only");
+}
+
+TEST_CASE("oracle retirement: only the complete eleven-leaf evidence set reports ready", "[cmd][parity][state][retirement]") {
+  constexpr std::array<retirement::unported_leaf, 1> only_explore{{
+      {"planar", "explore", retirement::deferred_by_decision980},
+  }};
+  constexpr std::array<std::string_view, 0>          none{};
+  auto const                                         result = retirement::evaluate({
+      .zig_tree_present         = true,
+      .oracle_available         = true,
+      .accounted_state_leaves   = in_scope_state_evidence,
+      .unexpected_state_deltas  = none,
+      .unported                 = only_explore,
+      .oracle_conditional_skips = none,
+  });
+
+  INFO(result.render());
+  CHECK(result.ready);
+  CHECK(result.refusals.empty());
+}
+
+TEST_CASE("oracle retirement: every evidence arm independently refuses while zig remains", "[cmd][parity][state][retirement]") {
+  constexpr std::array<retirement::unported_leaf, 1> only_explore{{
+      {"planar", "explore", retirement::deferred_by_decision980},
+  }};
+  constexpr std::array<std::string_view, 0>          none{};
+  REQUIRE(zig_tree_present());
+
+  auto evaluate = [&](std::span<std::string_view const> deltas, std::span<retirement::unported_leaf const> unported,
+                      std::span<std::string_view const> skips) {
+    return retirement::evaluate({
+        .zig_tree_present         = zig_tree_present(),
+        .oracle_available         = true,
+        .accounted_state_leaves   = in_scope_state_evidence,
+        .unexpected_state_deltas  = deltas,
+        .unported                 = unported,
+        .oracle_conditional_skips = skips,
+    });
+  };
+
+  constexpr std::array<std::string_view, 1> state_delta{{"plans: cpp-only durable row"}};
+  auto const                                state_refusal = evaluate(state_delta, only_explore, none);
+  INFO(state_refusal.render());
+  CHECK_FALSE(state_refusal.ready);
+  CHECK(state_refusal.render().contains("unexpected durable-state delta"));
+  CHECK(zig_tree_present());
+
+  constexpr std::array<retirement::unported_leaf, 2> extra_unported{{
+      {"planar", "explore", retirement::deferred_by_decision980},
+      {"planar", "workspace init", "pending-port"},
+  }};
+  auto const                                         unported_refusal = evaluate(none, extra_unported, none);
+  INFO(unported_refusal.render());
+  CHECK_FALSE(unported_refusal.ready);
+  CHECK(unported_refusal.render().contains("workspace init"));
+  CHECK(zig_tree_present());
+
+  constexpr std::array<std::string_view, 1> remaining_skip{{"src/cmd/planar/parity.t.cpp:oracle condition"}};
+  auto const                                skip_refusal = evaluate(none, only_explore, remaining_skip);
+  INFO(skip_refusal.render());
+  CHECK_FALSE(skip_refusal.ready);
+  CHECK(skip_refusal.render().contains("oracle-conditional parity skip"));
+  CHECK(zig_tree_present());
+}
+
+TEST_CASE("oracle retirement: only decision 980 may defer an unported leaf", "[cmd][parity][state][retirement]") {
+  constexpr std::array<std::string_view, 0>          none{};
+  constexpr std::array<retirement::unported_leaf, 1> wrong_disposition{{
+      {"planar", "explore", "pending-port"},
+  }};
+  auto const                                         explore_not_deferred = retirement::evaluate({
+      .zig_tree_present         = true,
+      .oracle_available         = true,
+      .accounted_state_leaves   = in_scope_state_evidence,
+      .unexpected_state_deltas  = none,
+      .unported                 = wrong_disposition,
+      .oracle_conditional_skips = none,
+  });
+  CHECK_FALSE(explore_not_deferred.ready);
+
+  constexpr std::array<retirement::unported_leaf, 2> extra_deferred{{
+      {"planar", "explore", retirement::deferred_by_decision980},
+      {"planar", "workspace init", retirement::deferred_by_decision980},
+  }};
+  auto const                                         another_deferred = retirement::evaluate({
+      .zig_tree_present         = true,
+      .oracle_available         = true,
+      .accounted_state_leaves   = in_scope_state_evidence,
+      .unexpected_state_deltas  = none,
+      .unported                 = extra_deferred,
+      .oracle_conditional_skips = none,
+  });
+  CHECK_FALSE(another_deferred.ready);
+  CHECK(another_deferred.render().contains("workspace init"));
+}
+
+TEST_CASE("oracle retirement: live generated inventories refuse cutover explicitly", "[cmd][parity][state][retirement]") {
+  // This is not a conditional SKIP: the gate is meaningful only while the
+  // oracle still exists, so an unavailable reference is a failed precondition.
+  REQUIRE(oracle_available());
+  constexpr std::array<std::string_view, 0> no_state_deltas{};
+  auto const                                live_unported = live_unported_inventory();
+  auto const                                result        = retirement::evaluate({
+      .zig_tree_present         = zig_tree_present(),
+      .oracle_available         = true,
+      .accounted_state_leaves   = in_scope_state_evidence,
+      .unexpected_state_deltas  = no_state_deltas,
+      .unported                 = live_unported,
+      .oracle_conditional_skips = oracle_conditional_skip_inventory,
+  });
+
+  INFO(result.render());
+  CHECK_FALSE(result.ready);
+  CHECK(result.render().contains("planar:workspace init"));
+  CHECK(result.render().contains("37 oracle-conditional parity skip(s) remain"));
+  CHECK(zig_tree_present());
 }
 
 TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequence", "[cmd][parity][state]") {
