@@ -1248,6 +1248,13 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
   REQUIRE(watch_unported.has_value());
+  // The generated empty inventory must retain a scanner-recognized named
+  // initializer while exposing no runtime elements. This protects the
+  // generator's zero-list branch from regressing to an ill-formed array.
+  auto const agent_surface = source_text(target_source_root() / "src/cmd/planar-agent/surface.cpp");
+  REQUIRE(agent_surface.has_value());
+  CHECK(agent_surface->contains("k_unported[] = {std::string_view{}}"));
+  CHECK(agent_surface->contains("std::span<std::string_view const>{k_unported}.first(0)"));
   CHECK(planar_unported->size() == 6);
   CHECK(agent_unported->empty());
   for (auto const& landed : {"ingest", "run start", "run end", "dispatch preview", "dispatch confirm", "context add",
