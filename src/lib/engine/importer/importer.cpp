@@ -4,6 +4,7 @@ module planar.engine.importer;
 
 import std;
 import planar.json_text;
+import planar.json_dom;
 
 namespace planar::engine::importer {
 namespace {
@@ -44,6 +45,54 @@ auto write_atomic(const std::filesystem::path& path, std::string_view body) -> b
   if (ec) { std::filesystem::remove(path, ec); ec.clear(); std::filesystem::rename(temp, path, ec); }
   return !ec;
 }
+
+// The interpretation cache is an untrusted hand-off boundary: it is written
+// by a vendor skill, not by this process.  Do the envelope validation here,
+// before a layer-3 caller is allowed to turn its contents into rows.  In
+// particular, accepting a cache for another fingerprint would silently apply
+// a result produced from a different repository snapshot.
+auto cache_anchor(std::string_view body, const request& req) -> std::optional<std::string> {
+  auto parsed = json_dom::parse_json(body);
+  if (!parsed || parsed->kind != json_dom::json_kind::object) return std::nullopt;
+  auto const* version = parsed->find("schema_version");
+  auto const* fingerprint = parsed->find("fingerprint");
+  auto const* title = parsed->find("anchor_title");
+  auto const* provenance = parsed->find("provenance");
+  auto const* phases = parsed->find("phases");
+  auto const* forward_specs = parsed->find("forward_specs");
+  if (version == nullptr || version->kind != json_dom::json_kind::integer || version->integer != 1 ||
+      fingerprint == nullptr || fingerprint->kind != json_dom::json_kind::string || fingerprint->string != req.fingerprint ||
+      title == nullptr || title->kind != json_dom::json_kind::string || title->string.empty() ||
+      provenance == nullptr || provenance->kind != json_dom::json_kind::string || provenance->string.empty() ||
+      phases == nullptr || phases->kind != json_dom::json_kind::array ||
+      forward_specs == nullptr || forward_specs->kind != json_dom::json_kind::array ||
+      forward_specs->array.size() < 3 || forward_specs->array.size() > 5) return std::nullopt;
+  // Unique, non-empty phase and forward-spec slugs are the two identity sets
+  // the reconciliation pass keys on. Reject malformed caches early instead
+  // of letting a later apply coalesce unrelated rows.
+  std::set<std::string> phase_slugs;
+  std::set<std::string> spec_slugs;
+  for (auto const& phase : phases->array) {
+    auto const* slug = phase.find("slug");
+    auto const* status = phase.find("status");
+    auto const* tasks = phase.find("tasks");
+    if (phase.kind != json_dom::json_kind::object || slug == nullptr || slug->kind != json_dom::json_kind::string || slug->string.empty() ||
+        status == nullptr || status->kind != json_dom::json_kind::string || tasks == nullptr || tasks->kind != json_dom::json_kind::array ||
+        !phase_slugs.insert(slug->string).second) return std::nullopt;
+    std::set<std::string> task_slugs;
+    for (auto const& task : tasks->array) {
+      auto const* task_slug = task.find("slug");
+      if (task.kind != json_dom::json_kind::object || task_slug == nullptr || task_slug->kind != json_dom::json_kind::string ||
+          task_slug->string.empty() || !task_slugs.insert(task_slug->string).second) return std::nullopt;
+    }
+  }
+  for (auto const& spec : forward_specs->array) {
+    auto const* slug = spec.find("slug");
+    if (spec.kind != json_dom::json_kind::object || slug == nullptr || slug->kind != json_dom::json_kind::string || slug->string.empty() ||
+        !spec_slugs.insert(slug->string).second) return std::nullopt;
+  }
+  return title->string;
+}
 } // namespace
 
 auto run(const std::filesystem::path& root, const std::filesystem::path& planar_home, bool interpret)
@@ -76,7 +125,12 @@ auto run(const std::filesystem::path& root, const std::filesystem::path& planar_
   out.cache_path = planar_home / "llm" / "import-interpretation" / req.repo_slug / (req.fingerprint + ".json");
   out.pending_path = planar_home / "llm" / "pending" / "import-interpretation" / (req.repo_slug + ".json");
   if (std::filesystem::exists(out.cache_path, ec) && !ec) {
+    std::ifstream cached(out.cache_path, std::ios::binary);
+    std::string cache_body{std::istreambuf_iterator<char>{cached}, std::istreambuf_iterator<char>{}};
+    auto anchor = cache_anchor(cache_body, req);
+    if (!anchor) return std::unexpected(error::invalid_input);
     out.mode_ = outcome::mode::cache_hit;
+    out.interpreted_anchor_title = std::move(*anchor);
     out.message = std::format("Loaded cached interpretation result: {}", out.cache_path.string());
     return out;
   }

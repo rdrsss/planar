@@ -32,3 +32,26 @@ TEST_CASE("import staging separates no-interpret preview from pending handoff", 
   CHECK(again->pending_path == staged->pending_path);
   std::filesystem::remove_all(root);
 }
+
+TEST_CASE("import rejects a malformed or mismatched interpretation cache before apply", "[engine][importer]") {
+  auto const root = std::filesystem::temp_directory_path() /
+                    std::format("planar-importer-cache-{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  auto const home = root / "home";
+  std::filesystem::create_directories(root / "repo");
+  { std::ofstream out(root / "repo" / "README.md"); out << "# Imported title\n"; }
+
+  auto staged = im::run(root / "repo", home, true);
+  REQUIRE(staged.has_value());
+  std::filesystem::create_directories(staged->cache_path.parent_path());
+  { std::ofstream out(staged->cache_path); out << "{not json}"; }
+  auto malformed = im::run(root / "repo", home, true);
+  REQUIRE_FALSE(malformed.has_value());
+  CHECK(malformed.error() == im::error::invalid_input);
+
+  { std::ofstream out(staged->cache_path);
+    out << R"({"schema_version":1,"fingerprint":"other","anchor_title":"x","provenance":"p","phases":[],"forward_specs":[{"slug":"a"},{"slug":"b"},{"slug":"c"}]})"; }
+  auto mismatched = im::run(root / "repo", home, true);
+  REQUIRE_FALSE(mismatched.has_value());
+  CHECK(mismatched.error() == im::error::invalid_input);
+  std::filesystem::remove_all(root);
+}

@@ -6,6 +6,7 @@ module;
 export module planar.engine.importer;
 
 import std;
+import planar.json_dom;
 
 namespace planar::engine::importer {
 
@@ -27,6 +28,9 @@ export struct outcome {
   std::filesystem::path cache_path;
   std::filesystem::path pending_path;
   std::string message;
+  /// Parsed cache metadata.  This is deliberately kept with the staging
+  /// result so the layer-3 handler never has to re-parse an unvalidated file.
+  std::string interpreted_anchor_title;
 };
 
 /// @brief Why filesystem staging could not proceed.

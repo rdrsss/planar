@@ -4,4 +4,4 @@
 planar_module(engine_importer
   INTERFACE importer.cppm
   SOURCES importer.cpp
-  DEPENDS json_text)
+  DEPENDS json_text json_dom)

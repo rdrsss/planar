@@ -42,6 +42,10 @@ auto json(const im::outcome& out, std::optional<std::int64_t> anchor) -> std::st
 
 auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const root = positional_string(args, "repo-root").value_or(std::string{});
+  if (flag_bool(args, "--apply-removals") && !flag_bool(args, "--apply"))
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "--apply-removals requires --apply"));
+  if (flag_bool(args, "--no-forward-specs") && flag_string(args, "--accept-spec").has_value())
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "--accept-spec and --no-forward-specs are mutually exclusive"));
   auto home = home_for(ctx);
   if (!home) return std::unexpected(home.error());
   auto result = im::run(root, *home, flag_bool(args, "--interpret"));
@@ -56,7 +60,10 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "import failed: NotFound"));
     auto db = ctx.ensure_db();
     if (!db) return std::unexpected(db.error());
-    auto created = pl::create_plan(**db, {.title = result->request_.anchor_title,
+    // A validated interpretation is authoritative for the imported anchor;
+    // deterministic staging remains the fallback when interpretation is off.
+    auto const& anchor_title = result->interpreted_anchor_title.empty() ? result->request_.anchor_title : result->interpreted_anchor_title;
+    auto created = pl::create_plan(**db, {.title = anchor_title,
                                           .slug = result->request_.repo_slug,
                                           .summary = std::string{"Imported deterministic planning transcription"},
                                           .scope = flag_string(args, "--scope")});
