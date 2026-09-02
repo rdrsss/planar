@@ -534,13 +534,6 @@ auto distinct_repos_in_feature_ids(db::connection& conn, std::int64_t anchor_pla
   return out;
 }
 
-auto distinct_repo_count_in_feature(db::connection& conn, std::int64_t anchor_plan_id)
-    -> std::expected<std::size_t, parent_issue_error> {
-  auto repos = distinct_repos_in_feature_ids(conn, anchor_plan_id);
-  if (!repos) return std::unexpected(repos.error());
-  return repos->size();
-}
-
 } // namespace
 
 auto parse_github_repo(std::string_view git_remote) -> std::optional<repo_coords> {
@@ -607,6 +600,19 @@ auto project_github_coords(db::connection& conn, std::int64_t project_id)
     }
   }
   return std::optional<repo_coords>{std::nullopt};
+}
+
+/// @brief Count distinct repositories touched anywhere in an anchor feature.
+/// Thin wrapper over the internal `distinct_repos_in_feature_ids` walk —
+/// exported (unlike that helper) because ADR-0006's GitHub strategy bucket
+/// selection needs the COUNT, not the id list.
+auto distinct_repo_count_in_feature(db::connection& conn, std::int64_t anchor_plan_id)
+    -> std::expected<std::size_t, parent_issue_error> {
+  auto repos = distinct_repos_in_feature_ids(conn, anchor_plan_id);
+  if (!repos) {
+    return std::unexpected(repos.error());
+  }
+  return repos->size();
 }
 
 auto resolve_target_repo(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<repo_coords, parent_issue_error> {
