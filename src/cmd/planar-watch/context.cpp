@@ -150,4 +150,8 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   return &*_db;
 }
 
+auto context::refresh_db() -> void {
+  _db.reset();
+}
+
 } // namespace planar::cmd::watch
