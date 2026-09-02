@@ -190,8 +190,17 @@ auto run(const std::filesystem::path& root, const std::filesystem::path& planar_
     out.message = "import: interpretation disabled; run with --interpret to stage/consume LLM artifacts.";
     return out;
   }
-  out.cache_path   = planar_home / "llm" / "import-interpretation" / req.repo_slug / (req.fingerprint + ".json");
-  out.pending_path = planar_home / "llm" / "pending" / "import-interpretation" / (req.repo_slug + ".json");
+  // Mirrors `planar.engine.llm.client.cachePath` / `pendingPath` (and this
+  // tree's own `bootstrap-synthesis` cache, wired identically in
+  // `synthesize.cpp`): both files for one repo/kind pair live in the same
+  // `<planar_home>/cache/<kind>/<repo_slug>/` directory. An earlier
+  // `llm/import-interpretation/...` + `llm/pending/import-interpretation/
+  // <slug>.json` layout diverged from the oracle on both the top-level
+  // directory name and the pending-file location, which would have made the
+  // real `pl-import` vendor-skill handoff write its result somewhere this
+  // binary never looks.
+  out.cache_path   = planar_home / "cache" / "import-interpretation" / req.repo_slug / (req.fingerprint + ".json");
+  out.pending_path = planar_home / "cache" / "import-interpretation" / req.repo_slug / "_pending.json";
   if (std::filesystem::exists(out.cache_path, ec) && !ec) {
     std::ifstream cached(out.cache_path, std::ios::binary);
     std::string   cache_body{std::istreambuf_iterator<char>{cached}, std::istreambuf_iterator<char>{}};

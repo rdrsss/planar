@@ -112,9 +112,19 @@ auto stage_cache(const fixture& fx, bool bad_task = false) -> std::filesystem::p
   REQUIRE_FALSE(preview.db_open);
   CHECK(preview.out.contains("\"mode\":\"pending\""));
   CHECK_FALSE(preview.out.contains("\"plans_created\"")); // cache has not been applied.
+  // Pin the oracle's own cache layout (`planar.engine.llm.client.cachePath`):
+  // `<planar_home>/cache/import-interpretation/<repo_slug>/<fingerprint>.json`,
+  // the same scheme `bootstrap-synthesis` uses. An earlier
+  // `llm/import-interpretation/...` layout would write the real
+  // `pl-import` vendor-skill handoff somewhere this binary never reads back.
+  CHECK(
+      preview.out.contains(std::format("\"cache_path\":\"{}", (fx.root / "home" / "cache" / "import-interpretation").string())));
   auto const fingerprint = field(preview.out, "fingerprint");
-  auto const slug        = field(preview.out, "repo_slug");
-  auto const cache       = fx.root / "home" / "llm" / "import-interpretation" / slug / (fingerprint + ".json");
+  // Read the cache path back off the JSON contract rather than
+  // reconstructing the layout by hand: the fixture must exercise wherever
+  // the handler actually looks, not a copy of that logic that can drift
+  // from it silently.
+  auto const cache = std::filesystem::path{field(preview.out, "cache_path")};
   write(cache, cache_body(fingerprint, bad_task));
   // This second preview contains a non-empty proposal cache but must still
   // perform no database write. It falsifies a handler that treats cache-hit
@@ -197,7 +207,6 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   REQUIRE(staged.code == 0);
   REQUIRE(staged.out.contains("\"mode\":\"pending\""));
   auto const next_fingerprint = field(staged.out, "fingerprint");
-  auto const next_slug        = field(staged.out, "repo_slug");
   auto       next             = cache_body(next_fingerprint);
   auto const phase_two        = next.find(R"(,{"slug":"phase-two")");
   REQUIRE(phase_two != std::string::npos);
@@ -206,7 +215,7 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   // Erase the second phase through its task/object closers, retaining only
   // the final `]` that closes the phases array.
   next.erase(phase_two, phase_end + 3 - phase_two);
-  auto const next_cache = fx.root / "home" / "llm" / "import-interpretation" / next_slug / (next_fingerprint + ".json");
+  auto const next_cache = std::filesystem::path{field(staged.out, "cache_path")};
   write(next_cache, next);
 
   auto const preview_apply = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
