@@ -101,10 +101,13 @@ auto tokens(std::string_view s) -> std::int64_t {
     }
     // Longest-match spellings from std.zig.Tokenizer.Tag.  Counting one tag
     // per spelling is the only quantity closure weights retain.
-    static constexpr std::array<std::string_view, 39> compounds{
-        "<<|=", "<<|", "<<=", ">>=", "**%=", "*%=", "+%=", "-%=", "+|=", "-|=", "*|=", "...", ".**",
-        "==",   "=>",  "!=",  "||",  "|=",   "%=",  "^=",  "+=",  "++",  "+%",  "+|",  "-=",  "-%",
-        "-|",   "*=",  "**",  "*%",  "*|",   "->",  "&=",  "<=",  "<<",  ">=",  ">>",  "..",  ".*"};
+    // Kept against every multi-byte punctuation tag in std.zig.Tokenizer.Tag:
+    // |= || == => != %= ^= ++ += +% +%= +| +|= -= -% -%= -| -|= *= **
+    // *% *%= *| *|= -> /= &= <= << <<= <<| <<|= >= >> >>= .. ... .* .**.
+    static constexpr std::array<std::string_view, 40> compounds{
+        "<<|=", "<<|", "<<=", ">>=", "**%=", "*%=", "+%=", "-%=", "+|=", "-|=", "*|=", "...", ".**", "==",
+        "=>",   "!=",  "||",  "|=",  "%=",   "^=",  "+=",  "++",  "+%",  "+|",  "-=",  "-%",  "-|",  "*=",
+        "**",   "*%",  "*|",  "->",  "/=",   "&=",  "<=",  "<<",  ">=",  ">>",  "..",  ".*"};
     bool matched = false;
     for (auto op : compounds)
       if (s.substr(i).starts_with(op)) {

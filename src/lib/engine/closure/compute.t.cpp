@@ -92,7 +92,7 @@ TEST_CASE("closure compute keeps self and typed receivers in their lexical conta
 TEST_CASE("closure compute weights match Zig tokenizer comment operator and invalid-token tags", "[closure][compute]") {
   fixture f;
   std::ofstream{f.root / "seed.zig"}
-      << "pub fn operators() void { /// doc\n var x: u8 = 8; x >>= 1; // ordinary comment\n _ = x; }\n"
+      << "pub fn operators() void { /// doc\n var x: u8 = 8; x >>= 1; x /= 2; // ordinary comment\n _ = x; }\n"
          "pub fn invalid() void { _ = \x01; }\n";
   auto c = planar::db::connection::open(f.db.string());
   REQUIRE(c);
@@ -103,8 +103,9 @@ TEST_CASE("closure compute weights match Zig tokenizer comment operator and inva
   sql(*c, "insert into task_touch_paths(task_id,repo_id,path) values(1,1,'seed.zig')");
   REQUIRE(planar::engine::closure::compute::run(*c, 1));
   // Captured from std.zig.Tokenizer: docs count, ordinary comments do not,
-  // `>>=` is one tag, and the control byte is one invalid tag.
-  CHECK(count(*c, "select token_weight from closures where symbol='seed.operators' and role='modify'") == 24);
+  // `>>=` and `/=` are each one tag, and the control byte is one invalid tag.
+  // The 28 is a direct std.zig.Tokenizer capture for this exact span.
+  CHECK(count(*c, "select token_weight from closures where symbol='seed.operators' and role='modify'") == 28);
   CHECK(count(*c, "select token_weight from closures where symbol='seed.invalid' and role='modify'") == 10);
 }
 
