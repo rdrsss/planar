@@ -217,6 +217,40 @@ TEST_CASE("planar-agent ingest atomically normalizes a Claude hook", "[cmd][agen
   CHECK(std::filesystem::file_size(fx.db_path) == before);
 }
 
+TEST_CASE("planar-agent ingest accepts Copilot's event envelope and status", "[cmd][agent][handlers][ingest]") {
+  auto const fx = make_fixture("ingest-copilot");
+  migrate_fixture(fx);
+  auto const event = fx.root / "copilot.json";
+  {
+    std::ofstream out(event);
+    out << R"({"event":"session.started","session_id":"cop-1","model":"gpt","role":"reviewer"})";
+  }
+  auto const start = dispatch(fx, {"ingest", "--vendor", "copilot", "--event", "@../copilot.json", "--json"});
+  CHECK(start.code == 0);
+  CHECK(start.out.contains("\"sessions_created\":1"));
+  {
+    std::ofstream out(event);
+    out << R"({"event":"turn.assistant","session_id":"cop-1","role":"reviewer","status":"timeout"})";
+  }
+  auto const action = dispatch(fx, {"ingest", "--vendor", "copilot", "--event", "@../copilot.json", "--json"});
+  CHECK(action.code == 0);
+  CHECK(action.out.contains("\"actions_created\":1"));
+  auto db = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(db);
+  auto stmt = db->prepare("select vendor_role, outcome from agent_actions order by id desc limit 1");
+  REQUIRE(stmt);
+  REQUIRE(stmt->step());
+  CHECK(stmt->column_text(0) == "reviewer");
+  CHECK(stmt->column_text(1) == "timeout");
+  // Inversion: Claude's field name is not accepted for a Copilot event.
+  {
+    std::ofstream out(event);
+    out << R"({"event_type":"turn.assistant","session_id":"cop-1"})";
+  }
+  auto const wrong_envelope = dispatch(fx, {"ingest", "--vendor", "copilot", "--event", "@../copilot.json"});
+  CHECK(wrong_envelope.code == 2);
+}
+
 TEST_CASE("planar-agent maps a parse failure to exit 1, not the operator binary's 2", "[cmd][agent][handlers][exitcode]") {
   auto const fx = make_fixture("parse");
 

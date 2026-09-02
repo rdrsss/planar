@@ -33,6 +33,7 @@ struct event {
   std::string                type;
   std::string                session_id;
   std::optional<std::string> model;
+  std::optional<std::string> role;
   std::optional<std::string> summary;
   aa::action_kind            kind                              = aa::action_kind::other;
   aa::outcome                result                            = aa::outcome::ok;
@@ -50,18 +51,22 @@ auto parse(std::string_view vendor, std::string_view payload) -> std::expected<e
   if (!raw || !raw->is_object())
     return std::unexpected(invalid_input_error(
         std::format("malformed event payload (vendor={}): JSON parse failed or required envelope field missing", vendor)));
-  auto type = field(*raw, "event_type");
-  auto sid  = field(*raw, "session_id");
-  if (!type || !sid)
-    return std::unexpected(invalid_input_error(
-        std::format("malformed event payload (vendor={}): JSON parse failed or required envelope field missing", vendor)));
-  event      out{.type = *type, .session_id = *sid, .model = field(*raw, "model"), .summary = field(*raw, "summary")};
   auto const claude  = vendor == "claude";
   auto const copilot = vendor == "copilot";
   if (!claude && !copilot)
     return std::unexpected(invalid_input_error(std::format("unknown vendor '{}'; supported: claude|codex|copilot", vendor)));
   if (vendor == "codex")
     return std::unexpected(invalid_input_error("vendor 'codex' adapter not wired (claude + copilot are; codex is reserved)"));
+  auto type = field(*raw, claude ? "event_type" : "event");
+  auto sid  = field(*raw, "session_id");
+  if (!type || !sid)
+    return std::unexpected(invalid_input_error(
+        std::format("malformed event payload (vendor={}): JSON parse failed or required envelope field missing", vendor)));
+  event      out{.type       = *type,
+                 .session_id = *sid,
+                 .model      = field(*raw, "model"),
+                 .role       = field(*raw, "role"),
+                 .summary    = field(*raw, "summary")};
   auto const starts = claude ? "session_start" : "session.started";
   auto const ends   = claude ? "session_end" : "session.completed";
   if (out.type == starts) {
@@ -74,20 +79,27 @@ auto parse(std::string_view vendor, std::string_view payload) -> std::expected<e
   }
   if (out.type == (claude ? "user_message" : "turn.user")) {
     out.kind = aa::action_kind::user_message;
-    return out;
-  }
-  if (out.type == (claude ? "assistant_message" : "turn.assistant")) {
+  } else if (out.type == (claude ? "assistant_message" : "turn.assistant")) {
     out.kind = aa::action_kind::assistant_message;
-    return out;
-  }
-  if (out.type == (claude ? "tool_call" : "tool.invocation")) {
+  } else if (out.type == (claude ? "tool_call" : "tool.invocation")) {
     out.kind = aa::action_kind::tool_call;
-    return out;
+  } else {
+    auto const supported = claude ? "session_start | session_end | user_message | assistant_message | tool_call"
+                                  : "session.started | session.completed | turn.user | turn.assistant | tool.invocation";
+    return std::unexpected(
+        invalid_input_error(std::format("unknown event_type in payload (vendor={}); supported: {}", vendor, supported)));
   }
-  auto const supported = claude ? "session_start | session_end | user_message | assistant_message | tool_call"
-                                : "session.started | session.completed | turn.user | turn.assistant | tool.invocation";
-  return std::unexpected(
-      invalid_input_error(std::format("unknown event_type in payload (vendor={}); supported: {}", vendor, supported)));
+  auto outcome = field(*raw, copilot ? "status" : "outcome");
+  if (copilot && !outcome)
+    outcome = field(*raw, "outcome");
+  if (outcome) {
+    auto parsed = aa::outcome_from_text(*outcome);
+    if (!parsed)
+      return std::unexpected(invalid_input_error(
+          std::format("malformed event payload (vendor={}): JSON parse failed or required envelope field missing", vendor)));
+    out.result = *parsed;
+  }
+  return out;
 }
 
 auto active_or_open(db::connection& conn, std::string_view vendor, const event& e, std::int64_t& sessions)
@@ -181,10 +193,10 @@ auto ingest(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                                   .entity           = std::nullopt,
                                   .entity_id        = std::nullopt,
                                   .vendor           = vendor,
-                                  .vendor_role      = std::nullopt,
-                                  .model    = parsed->model ? std::optional<std::string_view>{*parsed->model} : std::nullopt,
-                                  .loc      = {},
-                                  .metadata = std::nullopt});
+                                  .vendor_role = parsed->role ? std::optional<std::string_view>{*parsed->role} : std::nullopt,
+                                  .model       = parsed->model ? std::optional<std::string_view>{*parsed->model} : std::nullopt,
+                                  .loc         = {},
+                                  .metadata    = std::nullopt});
     if (!action || !aa::end_action(**conn, *action, parsed->result,
                                    parsed->summary ? std::optional<std::string_view>{*parsed->summary} : std::nullopt))
       return std::unexpected(verb_error("ingest dispatch", aa::agent_error::query_failed));

@@ -421,6 +421,19 @@ TEST_CASE("peek opens the database but writes nothing", "[cmd][agent][handlers]"
   CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
 }
 
+TEST_CASE("run start reports duplicate workflow identifiers with the oracle tag", "[cmd][agent][runs]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const first = run_verb(
+      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "same", "--pid", "1", "--repo-root", "/tmp"});
+  REQUIRE(first.code == 0);
+  auto const duplicate = run_verb(
+      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "same", "--pid", "2", "--repo-root", "/tmp"});
+  CHECK(duplicate.code == 1);
+  CHECK(duplicate.err == "error: insert workflow_runs: StepFailed\n");
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs where run_identifier = 'same'") == "1");
+}
+
 TEST_CASE("reconcile --dry-run opens the database and writes nothing", "[cmd][agent][handlers]") {
   scratch_dir scratch;
   seed(scratch, 1);
@@ -511,7 +524,7 @@ TEST_CASE("dispatch preview freezes state and confirm spends it once", "[cmd][ag
                                           "--work-type",
                                           "feature",
                                           "--complexity",
-                                          "standard",
+                                          "high-risk",
                                           "--packet-digest",
                                           "packet",
                                           "--profile-digest",
@@ -560,7 +573,7 @@ TEST_CASE("dispatch preview freezes state and confirm spends it once", "[cmd][ag
                                           "--work-type",
                                           "feature",
                                           "--complexity",
-                                          "standard",
+                                          "high-risk",
                                           "--validation-policy",
                                           "v1",
                                           "--routing-policy",
@@ -605,6 +618,41 @@ TEST_CASE("dispatch preview freezes state and confirm spends it once", "[cmd][ag
   CHECK(replay.code == 1);
   CHECK(replay.err == "error: stale_preview: already_consumed\n");
   CHECK(scalar_text(scratch, "select count(*) from routing_dispatch_snapshots") == "1");
+  // Wire spelling is hyphenated; accepting the internal enum spelling would
+  // leak an implementation detail into the public CLI contract.
+  auto const internal_spelling = run_verb(scratch, {"dispatch",
+                                                    "confirm",
+                                                    "--token",
+                                                    token,
+                                                    "--dispatch-key",
+                                                    "bad",
+                                                    "--now",
+                                                    "2026-01-01T00:00:00Z",
+                                                    "--packet-digest",
+                                                    "packet",
+                                                    "--profile-digest",
+                                                    "profile",
+                                                    "--policy-digest",
+                                                    "policy",
+                                                    "--capability-digest",
+                                                    "capability",
+                                                    "--candidate",
+                                                    "1",
+                                                    "--vendor",
+                                                    "codex",
+                                                    "--role",
+                                                    "coder",
+                                                    "--tier",
+                                                    "medium",
+                                                    "--work-type",
+                                                    "feature",
+                                                    "--complexity",
+                                                    "high_risk",
+                                                    "--validation-policy",
+                                                    "v1",
+                                                    "--routing-policy",
+                                                    "r1"});
+  CHECK(internal_spelling.code == 2);
   routing::binding replay_binding{};
   CHECK(routing::classify_stale(replay_binding, replay_binding, "2099-01-01T00:00:00Z", true, "2026-01-01T00:00:00Z") ==
         routing::stale_reason::already_consumed);

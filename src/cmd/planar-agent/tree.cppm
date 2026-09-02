@@ -22,40 +22,14 @@
 /// `templates`, `ext`, `sync`, `promote`, `demote`, `capture`,
 /// `dashboard`, `tree`, `health` may appear here, at any depth, ever.
 ///
-/// ## What this tree deliberately is NOT (yet)
+/// ## Complete declared surface
 ///
-/// The oracle registers eighteen verbs. This tree registers FOURTEEN —
-/// task 6038 landed the whole claim ritual (`pull`, `peek`, `claim`,
-/// `heartbeat`, `claim-associate`, `complete`, `fail`, `release`, `block`,
-/// `action start`/`end`, `reconcile`, `abort`) on top of `version` and
-/// `schema`. The remaining FOUR are blocked ONE LAYER DOWN, on layer-2
-/// buckets this tree has never ported:
-///
-///   ingest                 needs the vendor hook-event adapters.
-///   run start / run end    LANDED with task 6038 in
-///                          `engine.runtime.workflowruns`, deliberately
-///                          separate from `engine.runs.lifecycle`: the
-///                          latter owns the experimental `runs` table,
-///                          while this harness lifecycle owns
-///                          `workflow_runs` and its caller-supplied PID.
-///   dispatch / context     need the `routing_dispatch_*` and run-scoped
-///                          context tables. `routing_dispatch_previews`
-///                          alone carries twenty-odd bound columns and a
-///                          single-use trigger; it is its own cycle.
-///
-/// Omitting an unported child is the rule this tree inherits (task 6106:
-/// `planar workflow --help` lists two commands where the oracle lists
-/// three). The consequence, stated plainly because it is visible in
-/// output: `planar-agent --help` here lists fourteen verbs where the
-/// oracle lists eighteen, and that page is therefore still NOT
-/// oracle-comparable. LEAF pages ARE, and all fourteen are diffed
-/// byte-for-byte against the live oracle in `parity.t.cpp`.
-///
-/// The alternative — registering all eighteen and binding the unported
-/// ones to a `not_implemented` stub so the root help page matched — was
-/// considered and rejected: a registered verb that exits 64 looks like a
-/// working verb to a script, and it would make the capability-boundary
-/// tests assert a surface the binary cannot actually deliver.
+/// The oracle's eighteen top-level verbs are all declared and wired here.
+/// `ingest` normalizes the Claude and Copilot hook envelopes at layer 3,
+/// then composes the runtime session/action primitives atomically.  `run`,
+/// `dispatch`, and `context` land through their corresponding runtime and
+/// routing stores.  The generated surface remains the schema-catalog source
+/// of truth, while this tree owns the exact CLI11 declaration order.
 module;
 
 export module planar.cmd.planar_agent.tree;

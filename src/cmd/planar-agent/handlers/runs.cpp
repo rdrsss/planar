@@ -20,7 +20,7 @@ auto fail(domain_error_kind kind, std::string body) -> handler_result {
 auto from_start_error(wr::error e, std::int64_t plan) -> handler_result {
   if (e == wr::error::plan_not_found)
     return fail(domain_error_kind::not_found, std::format("plan {} not found", plan));
-  return fail(domain_error_kind::generic_failure, "insert workflow_runs: QueryFailed");
+  return fail(domain_error_kind::generic_failure, "insert workflow_runs: StepFailed");
 }
 auto from_end_error(wr::error e, std::string_view identifier, std::string_view status = {}) -> handler_result {
   if (e == wr::error::run_not_found)

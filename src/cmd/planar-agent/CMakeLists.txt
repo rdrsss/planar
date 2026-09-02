@@ -101,23 +101,16 @@
 # detection. What stays here is the locality POLICY: which three commands
 # to run and how to read their answers.
 #
-# --- NOT landed, each blocked at LAYER 2 -----------------------------------
+# --- Remaining deferred behavior -------------------------------------------
 #
-# The remaining oracle leaf is `ingest`; see `tree.cppm`'s header for its
-# layer-2 adapter dependency.
-#
-#   ingest              needs the vendor hook-event adapters. Not ported.
-#
-# Also deferred, WITH the verbs that carry it: `sessioncommits.
+# All declared agent leaves, including `ingest`, are ported.  The remaining
+# deferral is `sessioncommits.
 # recordClaimWindowBestEffort`, the git revision walk the four terminal
 # handlers run AFTER their transaction. `--no-locality-probe` is still
 # declared on all four (dropping a flag changes the --help bytes) and
 # currently gates nothing there. Same call `capture commits` and `bench
 # harvest` already made.
 #
-# The one declared-but-unimplemented leaf is explicitly registered to the
-# exit-64 refusal handler, keeping its flags visible to the surface lint.
-
 planar_binary(planar_agent
   MAIN
     main.cpp

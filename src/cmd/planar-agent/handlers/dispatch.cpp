@@ -110,7 +110,7 @@ auto dispatch_confirm(context& ctx, const cliapp::parsed_args& a) -> handler_res
   for (auto const& check :
        {choice(b->tier, {"small", "medium", "large"}, "--tier", false),
         choice(b->work_type, {"schema", "engine", "architectural", "cli", "feature", "mechanical"}, "--work-type", false),
-        choice(b->complexity, {"bounded", "standard", "high_risk"}, "--complexity", false)})
+        choice(b->complexity, {"bounded", "standard", "high-risk"}, "--complexity", false)})
     if (!check)
       return std::unexpected(check.error());
   rt::stale_reason why{};
