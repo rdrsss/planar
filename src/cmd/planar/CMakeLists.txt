@@ -130,8 +130,8 @@
 #   spec ingest --apply        needs engine.ingestor.apply (1,616 lines)
 #                              and engine.workbench (unported entirely).
 #                              engine_ingest here is the READ side only.
-#   import / synthesize        need engine.import / engine.synthesize +
-#                              engine.llm. None ported.
+#   import / synthesize        LANDED at task 6106 after the layer-2 importer
+#                              and synthesize staging engines were ported.
 #
 # Omitting an unported child from a group node stays the rule (`workflow
 # run`), so `planar workspace --help` lists one command where the oracle
@@ -501,6 +501,8 @@ planar_binary(planar
     handlers/closure.cppm
     handlers/groups.cppm
     handlers/spec_ingest.cppm
+    handlers/import.cppm
+    handlers/synthesize.cppm
     verb_classification.cppm
     worktree_gate.cppm
     cli_log.cppm
@@ -558,6 +560,8 @@ planar_binary(planar
     handlers/closure.cpp
     handlers/groups.cpp
     handlers/spec_ingest.cpp
+    handlers/import.cpp
+    handlers/synthesize.cpp
     dispatch.cpp
   DEPENDS
     adapter
@@ -593,6 +597,8 @@ planar_binary(planar
     # src/lib/engine/ingest/CMakeLists.txt for why the routing packet shares
     # that bucket instead of getting an `engine_routing` one of its own.
     engine_ingest
+    engine_importer
+    engine_synthesize
     engine_local
     engine_health
     engine_models
