@@ -29,11 +29,19 @@ export struct binding {
   std::optional<std::int64_t> experiment_id;
   std::optional<std::string>  claim, claim_status;
 };
+/// @brief The single-use preview token created before dispatch confirmation.
 export struct preview_result {
+  /// @brief Primary key of the preview row.
   std::int64_t id;
-  std::string  token;
+  /// @brief Opaque token the caller must present to `confirm`.
+  std::string token;
 };
+/// @brief The durable dispatch row created by a successful confirmation.
+///
+/// A confirmation consumes its preview and returns this identifier so the
+/// caller can bind subsequent actions to the exact authorization record.
 export struct confirm_result {
+  /// @brief Primary key of the newly inserted routing dispatch snapshot.
   std::int64_t dispatch_id;
 };
 
