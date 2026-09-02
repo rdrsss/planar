@@ -147,6 +147,7 @@ planar_binary(planar_agent
     handlers/recovery.cppm
     handlers/action.cppm
     handlers/dispatch.cppm
+    handlers/context.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -161,6 +162,7 @@ planar_binary(planar_agent
     handlers/recovery.cpp
     handlers/action.cpp
     handlers/dispatch.cpp
+    handlers/context.cpp
     dispatch.cpp
   DEPENDS
     cliapp
