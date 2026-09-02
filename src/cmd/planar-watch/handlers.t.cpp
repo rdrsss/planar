@@ -325,14 +325,14 @@ TEST_CASE("planar-watch help leads with the read-only prose block", "[cmd][watch
   // A bare invocation used to render this same page and exit 0, pinned
   // here as a declared divergence. Task 6136 removed the divergence: the
   // oracle's bare form is the `feed` verb, not the help page, so a bare
-  // invocation is now REWRITTEN to `feed` and answers exit 64 because
-  // `feed` is unported. The `--help` page above is unaffected — that is
+  // invocation is now REWRITTEN to `feed`. On an absent database the
+  // read-only open refuses rather than creating it. The `--help` page above is unaffected — that is
   // the branch `inject_default_verb` deliberately leaves alone, and the
   // pairing of the two here is what keeps a future over-broad rewrite
   // from swallowing help. See the `[defaultverb]` cases at the end of this
   // file.
   auto const bare = dispatch(fx, {});
-  CHECK(bare.code == 64);
+  CHECK(bare.code == 1);
   CHECK(bare.out.empty());
 }
 
@@ -705,10 +705,11 @@ TEST_CASE("planar-watch schema catalogs all TWELVE oracle verbs", "[cmd][watch][
   // `make cli-usage-check`.
   //
   // What keeps the catalog honest is the refusal, not the omission. Each
-  // of these exits 64 naming itself; parity.t.cpp asserts that directly on
-  // the built binary.
+  // of the still-unported ones exits 64 naming itself; parity.t.cpp
+  // asserts that directly on the built binary. `feed` is declared here
+  // too, but is no longer one of them — task 6039 landed it for real.
   for (auto const* verb : {"feed", "run", "sync-events"}) {
-    INFO("declared-but-unported verb: " << verb);
+    INFO("declared verb present in the catalog: " << verb);
     CHECK(got.out.contains(std::format("\"planar-watch {}\"", verb)));
   }
   // And the two nested `run` leaves, which no top-level loop would catch.
@@ -738,11 +739,14 @@ TEST_CASE("planar-watch schema catalogs all TWELVE oracle verbs", "[cmd][watch][
 // the oracle's does not have, and `src/cmd/catalog_parity.hpp` compares
 // the two byte for byte.
 //
-// `feed` is unported, so the two rewritten rows land on the table-miss arm
-// and exit 64. That is the CORRECT refusal and the point of the fix: what
-// they did before was render the root help page and exit 0 — a silent
-// success where the oracle streams data, which is the exact shape
-// `planar.cliapp.surface`'s header calls worse than an absent node.
+// `feed` is landed (task 6039), so the two rewritten rows now reach the
+// real handler and exit 0, matching the oracle. Before `feed` landed, the
+// rewrite target was declared-but-unported and the same rows exited 64
+// from the table-miss arm — the CORRECT refusal at the time, and still the
+// shape a future unported default verb should take: what the fix replaced
+// was rendering the root help page and exiting 0, a silent success where
+// the oracle streams data, which is the exact shape `planar.cliapp.surface`'s
+// header calls worse than an absent node.
 //
 // ## Break-probes run against these four cases
 //
@@ -756,20 +760,22 @@ TEST_CASE("planar-watch schema catalogs all TWELVE oracle verbs", "[cmd][watch][
 //     required) and the other three still pass. Restored -> green.
 
 TEST_CASE("planar-watch a bare invocation routes to the feed verb", "[cmd][watch][handlers][defaultverb]") {
-  auto const fx  = make_fixture("bareverb");
+  auto const fx = make_fixture("bareverb");
+  seed_empty_database(fx);
   auto const got = dispatch(fx, {});
-  CHECK(got.code == 64);
-  CHECK(got.err == "error: feed: not implemented in this build\n");
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
   // The regression this pins: it used to be exit 0 with the root help page.
   CHECK(got.out.empty());
 }
 
 TEST_CASE("planar-watch a leading flag routes to the feed verb", "[cmd][watch][handlers][defaultverb]") {
-  auto const fx  = make_fixture("flagverb");
+  auto const fx = make_fixture("flagverb");
+  seed_empty_database(fx);
   auto const got = dispatch(fx, {"--json"});
   // Was exit 1 `ExtrasError` — the symptom task 6136 was filed on.
-  CHECK(got.code == 64);
-  CHECK(got.err == "error: feed: not implemented in this build\n");
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
 }
 
 TEST_CASE("planar-watch a help request is not rewritten", "[cmd][watch][handlers][defaultverb]") {

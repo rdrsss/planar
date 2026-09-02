@@ -13,6 +13,7 @@ import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
 import planar.cmd.planar_watch.handlers.completion;
+import planar.cmd.planar_watch.handlers.feed;
 import planar.cmd.planar_watch.handlers.ledger;
 import planar.cmd.planar_watch.handlers.live;
 import planar.cmd.planar_watch.handlers.schema;
@@ -66,6 +67,7 @@ auto not_implemented_for(std::string_view verb) -> handler_fn {
 
 auto handlers(const CLI::App& root) -> handler_table {
   handler_table table;
+  table.emplace("feed", handlers::feed);
   // The six read verbs task 6120 landed. They take no `root`, unlike
   // `schema` and `completion` below, because they describe DATA rather than
   // the tree.

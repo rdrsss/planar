@@ -17,8 +17,10 @@ namespace {
 ///
 /// `feed`'s carries a description (`"Emit NDJSON"`) and every other verb's
 /// is bare — an asymmetry in the oracle's own declarations, transcribed
-/// rather than harmonised. `feed` is unported, so only the bare form
-/// appears here.
+/// rather than harmonised. `feed`'s node is generated (see
+/// `cliapp::apply_surface` below) rather than hand-transcribed here, so
+/// only the bare form used by the hand-transcribed verbs appears in this
+/// helper.
 /// @param app The node to declare it on.
 auto add_json(CLI::App& app) -> void {
   cliapp::add_bool_flag(app, "--json");
@@ -88,7 +90,9 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   app->require_subcommand(0);
 
   // Declaration ORDER matches the oracle's `handlers/cmd.zig` registry,
-  // minus the three unported verbs (`feed`, `run`, `sync-events`). Each
+  // minus `feed`, `run` and `sync-events`, whose nodes come from generated
+  // surface data below rather than being hand-transcribed here (`feed`'s
+  // handler is real; `run` and `sync-events` still refuse at exit 64). Each
   // description is the oracle node's LONG description transcribed verbatim
   // — `CLI::App` carries one description string, and this tree's settled
   // choice is that the longer operator-facing one survives (see the root's
@@ -217,11 +221,14 @@ auto root_app() -> std::unique_ptr<CLI::App> {
 
   app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
 
-  // Everything above is hand-transcribed and lands WITH its handler.
-  // This fills in the four leaves that land no behaviour — `feed`,
-  // `sync-events` and both `run` verbs — from generated data, skipping
-  // every node declared above. See `planar.cmd.planar_watch.surface`,
-  // including the bare-invocation divergence it does NOT close.
+  // Everything above is hand-transcribed. This fills in the remaining four
+  // leaves — `feed`, `sync-events` and both `run` verbs — from generated
+  // data, skipping every node declared above. `feed` lands real behaviour
+  // (dispatch.cpp registers its own handler ahead of the generated
+  // not-implemented table, and `emplace` on an existing key is a no-op);
+  // `sync-events` and the two `run` leaves still refuse at exit 64. See
+  // `planar.cmd.planar_watch.surface`, including the bare-invocation
+  // divergence it does NOT close.
   (void)cliapp::apply_surface(*app, surface_nodes());
 
   // Help renders the same page it rendered before every bool flag gained

@@ -78,11 +78,12 @@ TEST_CASE("planar-watch's declared verb set is exactly the oracle's", "[cmd][wat
   // The oracle registers twelve top-level verbs: feed, ps, claims,
   // actions, plans, log, tree, run, sync-events, version, completion,
   // schema. Task 6120 landed the six read verbs that rest on
-  // `engine.runtime.agentactivity`; task 6065 DECLARED the remaining four
-  // (`feed`, `sync-events`, `run list`, `run show`) so that
+  // `engine.runtime.agentactivity`; task 6065 DECLARED three more
+  // (`sync-events`, `run list`, `run show`) so that
   // `zig/tools/cli_usage_lint` can resolve them, each refusing at exit 64
-  // — proved by name in parity.t.cpp. Declaring is not implementing, and
-  // this binary keeps the difference loud.
+  // — proved by name in parity.t.cpp. Task 6039 landed `feed` for real —
+  // see handlers/feed.cppm. Declaring without landing is not implementing,
+  // and this binary keeps the difference loud for what remains unported.
   //
   // THE EXACT-SET FORM IS LOAD-BEARING, not a stylistic choice. A
   // `contains` check would let a write verb in; equality means adding ANY
@@ -121,7 +122,7 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
   for (auto const& verb : planar::cmd::watch::unported_paths()) {
     unported.emplace(verb);
   }
-  CHECK(unported == std::set<std::string, std::less<>>{"feed", "run list", "run show", "sync-events"});
+  CHECK(unported == std::set<std::string, std::less<>>{"run list", "run show", "sync-events"});
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
   CHECK(leaves.size() == 13);
@@ -129,7 +130,7 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
-  for (auto const& implemented : {"ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion"}) {
+  for (auto const& implemented : {"feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }

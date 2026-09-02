@@ -1237,11 +1237,16 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
   auto const live_unported = source_unported_inventory(target_source_root());
   REQUIRE(live_unported.has_value());
-  // 19 -> 8: task 6038 landed the nine planar-agent leaves and task 6106
-  // landed `import` and `synthesize`. Both drops are real and independent;
-  // neither side updated this cross-binary count in the same commit as its
-  // port, which is exactly the drift this sibling test exists to catch.
-  CHECK(live_unported->size() == 8);
+  // 19 -> 7. Three INDEPENDENT drops from a common base of 19, none of
+  // which subsumes another:
+  //   task 6038  -9  the planar-agent leaves
+  //   task 6106  -2  `import` and `synthesize`
+  //   task 6039  -1  planar-watch's `feed`
+  // Each side updated this cross-binary count for its own drop only, so a
+  // three-way merge sees 9 vs 8 and neither is right -- exactly the drift
+  // this sibling test exists to catch. Verified by running the test, not by
+  // arithmetic on this comment.
+  CHECK(live_unported->size() == 7);
   CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") != live_unported->end());
   CHECK(source_oracle_skips(target_source_root()).size() == 37);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
@@ -1266,7 +1271,7 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
     INFO("landed agent path remained in unported inventory: " << landed);
     CHECK(std::ranges::find(*agent_unported, landed) == agent_unported->end());
   }
-  CHECK(watch_unported->size() == 4);
+  CHECK(watch_unported->size() == 3);
   CHECK(target_zig_tree_present());
 }
 
