@@ -39,6 +39,7 @@ import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.spec_ingest;
 import planar.cmd.planar.handlers.importer;
+import planar.cmd.planar.handlers.synthesize;
 import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.feedback;
@@ -588,6 +589,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("groups recommend", handlers::groups_recommend);
   table.emplace("spec ingest", handlers::spec_ingest);
   table.emplace("import", handlers::import_repo);
+  table.emplace("synthesize", handlers::synthesize);
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64. The inventory is generated alongside the surface

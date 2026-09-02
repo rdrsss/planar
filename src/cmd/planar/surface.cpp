@@ -4378,7 +4378,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       // positional, and runs NO cross-scope guard. But its ENGINE half was
       // already complete (`sync::status` + `link::list_filter` shipped with
       // the module), so what it needed was rendering, not engine work.
-      "synthesize",
       // `task packet` left this inventory at task 6324. Task 6298 had
       // verified it BLOCKED on `engine/routing/packet.zig`'s 1674 lines and
       // was right about the size and wrong about the block: the LEAF needs

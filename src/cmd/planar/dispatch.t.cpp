@@ -605,12 +605,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //
   // 47 before task 6110 ported ONE leaf out of it — `workspace routing
   // show` — leaving 46. One leaf, and the scope cut is the finding: the
-  // `workspace` family's other three unported leaves each carry a distinct
+  // `workspace` family's other three unported leaves each carried a distinct
   // blocker (`routing build` on size, `regenerate` on an unvendored xxh64,
-  // `init` on the absent layer-3 cmd surface), and `synthesize`, the other
-  // half of this task, needs ~575 lines of shared `llm` + `operatorpath` +
-  // `forwardspec` infrastructure that does not exist here yet AND has one
-  // arm (`--literal`) blocked on the unported `import`.
+  // `init` on the absent layer-3 cmd surface). `synthesize` subsequently
+  // moved in task 6106 after its staging engine and literal import dependency
+  // landed.
   //
   // `routing show` was the one leaf in that set with NO blocker, and the
   // previous cycle's note that it should be deferred WITH `routing build`
@@ -882,9 +881,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                  it composes scan + registration + routing build +
   //                  regenerate + symlinks, and one of those four now
   //                  exists.
-  //   synthesize     BLOCKED twice over — ~575 lines of absent `llm` /
-  //                  `operatorpath` / `forwardspec`, and a `--literal` arm
-  //                  delegating to the unported `import`.
+  //   synthesize     MOVED later by task 6106 after its staging engine and
+  //                  literal import dependency landed.
   // 21 before task 6325 moved `assoc detect`, the last `assoc` leaf.
   // 21 before task 6324, which moved exactly ONE: `task packet`, the last
   // big unblocked leaf of the `task` family. Task 6298 had verified it
@@ -1097,12 +1095,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("task packet"));
   INFO("moved by task 6275: workspace routing build");
   CHECK_FALSE(unported.contains("workspace routing build"));
-  // Its three family siblings stayed, and each is pinned so a later cycle
-  // cannot wire one off the back of this one's count without saying so.
-  for (auto const& leaf : {"workspace init", "synthesize"}) {
+  // The remaining family sibling stays pinned so a later cycle cannot wire
+  // it off the back of this one's count without saying so.
+  for (auto const& leaf : {"workspace init"}) {
     INFO("probed by task 6275 and deliberately not moved: " << leaf);
     CHECK(unported.contains(leaf));
   }
+  INFO("moved by task 6106: synthesize");
+  CHECK_FALSE(unported.contains("synthesize"));
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
   for (auto const& leaf : {"sync pull", "sync push", "sync resolve"}) {
