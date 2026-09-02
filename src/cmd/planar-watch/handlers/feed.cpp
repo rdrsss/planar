@@ -8,7 +8,6 @@ import planar.engine.runtime.agentrender;
 import planar.json_text;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
-import planar.cmd.planar_watch.handlers.follow;
 namespace planar::cmd::watch::handlers {
 namespace aa = engine::runtime::agentactivity;
 namespace ar = engine::runtime::agentrender;
@@ -18,14 +17,9 @@ auto failure(aa::agent_error e) -> domain_error {
 }
 } // namespace
 auto feed(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  // Feed is unlike the other follow-capable views: its first pass is a
-  // bounded snapshot but later passes emit only rows strictly past the
-  // watermark, preserving NDJSON tail semantics without duplicates.
-  static thread_local std::optional<std::string> watermark;
-  if (cliapp::flag_bool(args, "--follow") && !follow::active()) {
-    watermark.reset();
-    return follow::snapshots(ctx, cliapp::flag_string(args, "--interval"), [&] { return feed(ctx, args); });
-  }
+  if (cliapp::flag_bool(args, "--follow"))
+    return std::unexpected(
+        error_from_body(domain_error_kind::not_implemented, "feed: --follow is not implemented in this build"));
   auto conn = ctx.ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
@@ -89,12 +83,8 @@ auto feed(context& ctx, const cliapp::parsed_args& args) -> handler_result {
       add(*claim.released_at, aa::to_text(claim.status));
   }
   std::ranges::sort(events, {}, &event::at);
-  if (follow::active() && watermark.has_value()) {
-    events.erase(std::remove_if(events.begin(), events.end(), [&](const event& value) { return value.at <= *watermark; }), events.end());
-  }
   if (events.size() > static_cast<std::size_t>(limit))
     events.erase(events.begin(), events.end() - limit);
-  if (follow::active() && !events.empty()) watermark = events.back().at;
   std::string out;
   for (auto const& e : events) {
     if (json) {

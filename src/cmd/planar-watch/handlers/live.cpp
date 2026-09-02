@@ -14,7 +14,6 @@ import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
 import planar.cmd.planar_watch.handlers.format;
-import planar.cmd.planar_watch.handlers.follow;
 
 namespace planar::cmd::watch::handlers {
 
@@ -161,8 +160,9 @@ struct grouped_row {
 } // namespace
 
 auto ps(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  if (cliapp::flag_bool(args, "--follow") && !follow::active())
-    return follow::snapshots(ctx, cliapp::flag_string(args, "--interval"), [&] { return ps(ctx, args); });
+  if (cliapp::flag_bool(args, "--follow")) {
+    return std::unexpected(follow_unsupported("ps"));
+  }
 
   auto const sort_flag = cliapp::flag_string(args, "--sort-by");
   auto const sort      = aa::parse_ps_sort(sort_flag.has_value() ? std::optional<std::string_view>{*sort_flag} : std::nullopt);
@@ -350,8 +350,9 @@ auto ps(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 }
 
 auto tree(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  if (cliapp::flag_bool(args, "--follow") && !follow::active())
-    return follow::snapshots(ctx, cliapp::flag_string(args, "--interval"), [&] { return tree(ctx, args); });
+  if (cliapp::flag_bool(args, "--follow")) {
+    return std::unexpected(follow_unsupported("tree"));
+  }
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());

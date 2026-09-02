@@ -173,10 +173,6 @@ public:
   /// @return The open read-only connection, or the failure as a
   /// `domain_error`.
   auto ensure_db() -> std::expected<db::connection*, domain_error>;
-
-  /// @brief Discard the cached read-only handle so the next query observes a
-  /// fresh SQLite snapshot after another process commits to the WAL.
-  auto refresh_db() -> void;
 };
 
 } // namespace planar::cmd::watch

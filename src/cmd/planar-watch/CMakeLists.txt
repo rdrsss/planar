@@ -102,7 +102,6 @@ planar_binary(planar_watch
     handlers/schema.cppm
     handlers/completion.cppm
     handlers/feed.cppm
-    handlers/follow.cppm
     handlers/ledger.cppm
     handlers/live.cppm
     dispatch.cppm
@@ -115,7 +114,6 @@ planar_binary(planar_watch
     handlers/schema.cpp
     handlers/completion.cpp
     handlers/feed.cpp
-    handlers/follow.cpp
     handlers/ledger.cpp
     handlers/live.cpp
     dispatch.cpp

@@ -15,7 +15,6 @@ import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
 import planar.cmd.planar_watch.handlers.format;
-import planar.cmd.planar_watch.handlers.follow;
 
 namespace planar::cmd::watch::handlers {
 
@@ -173,8 +172,9 @@ auto append_plan(std::string& out, const pl::plan& value) -> void {
 } // namespace
 
 auto claims(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  if (cliapp::flag_bool(args, "--follow") && !follow::active())
-    return follow::snapshots(ctx, cliapp::flag_string(args, "--interval"), [&] { return claims(ctx, args); });
+  if (cliapp::flag_bool(args, "--follow")) {
+    return std::unexpected(follow_unsupported("claims"));
+  }
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -228,8 +228,9 @@ auto claims(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 }
 
 auto actions(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  if (cliapp::flag_bool(args, "--follow") && !follow::active())
-    return follow::snapshots(ctx, cliapp::flag_string(args, "--interval"), [&] { return actions(ctx, args); });
+  if (cliapp::flag_bool(args, "--follow")) {
+    return std::unexpected(follow_unsupported("actions"));
+  }
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
@@ -298,8 +299,9 @@ auto actions(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 }
 
 auto plans(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  if (cliapp::flag_bool(args, "--follow") && !follow::active())
-    return follow::snapshots(ctx, cliapp::flag_string(args, "--interval"), [&] { return plans(ctx, args); });
+  if (cliapp::flag_bool(args, "--follow")) {
+    return std::unexpected(follow_unsupported("plans"));
+  }
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
