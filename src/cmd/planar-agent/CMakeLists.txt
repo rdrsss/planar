@@ -146,6 +146,7 @@ planar_binary(planar_agent
     handlers/terminal.cppm
     handlers/recovery.cppm
     handlers/action.cppm
+    handlers/dispatch.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -159,12 +160,14 @@ planar_binary(planar_agent
     handlers/terminal.cpp
     handlers/recovery.cpp
     handlers/action.cpp
+    handlers/dispatch.cpp
     dispatch.cpp
   DEPENDS
     cliapp
     db
     git
     engine_runtime
+    engine_routing
     engine_planning)
 
 # `--metadata` is validated with glz::validate_json -- the same purpose-built

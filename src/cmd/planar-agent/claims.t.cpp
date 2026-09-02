@@ -475,3 +475,132 @@ TEST_CASE("completing a CHILD plan's last task rolls the plan up to done", "[cmd
   // single-plan and never walks `parent_plan_id`.
   CHECK(scalar_text(scratch, "select status from plans where id = 1") == "active");
 }
+
+TEST_CASE("dispatch preview freezes state and confirm spends it once", "[cmd][agent][routing]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  {
+    auto conn = planar::db::connection::open(scratch.db_path().string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute("insert into projects (slug,name) values ('routing-project','Routing Project')").has_value());
+    REQUIRE(conn->execute("insert into routing_candidates (vendor,candidate_id,fallback_order) values ('codex','candidate',0)")
+                .has_value());
+  }
+  auto const preview = run_verb(scratch, {"dispatch",
+                                          "preview",
+                                          "--task",
+                                          "1",
+                                          "--work-item",
+                                          "w-1",
+                                          "--project",
+                                          "1",
+                                          "--validation-policy",
+                                          "v1",
+                                          "--routing-policy",
+                                          "r1",
+                                          "--profile-rule",
+                                          "p1",
+                                          "--vendor",
+                                          "codex",
+                                          "--role",
+                                          "coder",
+                                          "--tier",
+                                          "medium",
+                                          "--work-type",
+                                          "feature",
+                                          "--complexity",
+                                          "standard",
+                                          "--packet-digest",
+                                          "packet",
+                                          "--profile-digest",
+                                          "profile",
+                                          "--policy-digest",
+                                          "policy",
+                                          "--capability-digest",
+                                          "capability",
+                                          "--candidate",
+                                          "1",
+                                          "--host",
+                                          "host",
+                                          "--class",
+                                          "default",
+                                          "--evidence-state",
+                                          "evidential",
+                                          "--expires-at",
+                                          "2099-01-01T00:00:00Z",
+                                          "--json"});
+  REQUIRE(preview.code == 0);
+  auto const token   = scalar_text(scratch, "select preview_token from routing_dispatch_previews where id = 1");
+  auto const confirm = run_verb(scratch, {"dispatch",
+                                          "confirm",
+                                          "--token",
+                                          token,
+                                          "--dispatch-key",
+                                          "dispatch-1",
+                                          "--now",
+                                          "2026-01-01T00:00:00Z",
+                                          "--packet-digest",
+                                          "packet",
+                                          "--profile-digest",
+                                          "profile",
+                                          "--policy-digest",
+                                          "policy",
+                                          "--capability-digest",
+                                          "capability",
+                                          "--candidate",
+                                          "1",
+                                          "--vendor",
+                                          "codex",
+                                          "--role",
+                                          "coder",
+                                          "--tier",
+                                          "medium",
+                                          "--work-type",
+                                          "feature",
+                                          "--complexity",
+                                          "standard",
+                                          "--validation-policy",
+                                          "v1",
+                                          "--routing-policy",
+                                          "r1",
+                                          "--json"});
+  INFO(confirm.err);
+  REQUIRE(confirm.code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from routing_dispatch_snapshots") == "1");
+  CHECK(scalar_text(scratch, "select consumed_dispatch_id from routing_dispatch_previews where id = 1") == "1");
+  auto const replay = run_verb(scratch, {"dispatch",
+                                         "confirm",
+                                         "--token",
+                                         token,
+                                         "--dispatch-key",
+                                         "dispatch-2",
+                                         "--now",
+                                         "2026-01-01T00:00:00Z",
+                                         "--packet-digest",
+                                         "packet",
+                                         "--profile-digest",
+                                         "profile",
+                                         "--policy-digest",
+                                         "policy",
+                                         "--capability-digest",
+                                         "capability",
+                                         "--candidate",
+                                         "1",
+                                         "--vendor",
+                                         "codex",
+                                         "--role",
+                                         "coder",
+                                         "--tier",
+                                         "medium",
+                                         "--work-type",
+                                         "feature",
+                                         "--complexity",
+                                         "standard",
+                                         "--validation-policy",
+                                         "v1",
+                                         "--routing-policy",
+                                         "r1"});
+  CHECK(replay.code == 1);
+  CHECK(replay.err.contains("StalePreview (already_consumed)"));
+  CHECK(scalar_text(scratch, "select count(*) from routing_dispatch_snapshots") == "1");
+}

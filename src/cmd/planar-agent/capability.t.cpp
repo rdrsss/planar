@@ -136,7 +136,7 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
     unported.emplace(verb);
   }
   CHECK(unported == std::set<std::string, std::less<>>{"context add", "context capsule", "context list", "context resolve",
-                                                       "dispatch confirm", "dispatch preview", "ingest", "run end", "run start"});
+                                                       "ingest", "run end", "run start"});
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
   CHECK(leaves.size() == 24);
