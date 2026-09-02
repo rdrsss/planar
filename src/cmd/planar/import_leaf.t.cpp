@@ -20,21 +20,28 @@ namespace {
 
 using planar::cmd::context;
 
-struct invocation { int code; std::string out; std::string err; bool db_open; };
+struct invocation {
+  int         code;
+  std::string out;
+  std::string err;
+  bool        db_open;
+};
 struct fixture {
-  std::filesystem::path root;
+  std::filesystem::path                           root;
   std::map<std::string, std::string, std::less<>> vars;
-  std::filesystem::path db_path;
+  std::filesystem::path                           db_path;
 };
 
 auto make_fixture(std::string_view tag) -> fixture {
-  auto root = std::filesystem::temp_directory_path() /
-              std::format("planar_import_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
+  auto            root = std::filesystem::temp_directory_path() /
+                         std::format("planar_import_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
   std::error_code ec;
-  for (auto const& part : {"home", "proj", "repo", "fakehome"}) std::filesystem::create_directories(root / part, ec);
-  return {.root = root,
-          .vars = {{"PLANAR_HOME", (root / "home").string()}, {"HOME", (root / "fakehome").string()},
-                   {"PWD", (root / "proj").string()}},
+  for (auto const& part : {"home", "proj", "repo", "fakehome"})
+    std::filesystem::create_directories(root / part, ec);
+  return {.root    = root,
+          .vars    = {{"PLANAR_HOME", (root / "home").string()},
+                      {"HOME", (root / "fakehome").string()},
+                      {"PWD", (root / "proj").string()}},
           .db_path = root / "planar.db"};
 }
 
@@ -42,10 +49,10 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   std::vector<std::string> argv{"planar"};
   argv.insert(argv.end(), args.begin(), args.end());
   std::ostringstream out, err;
-  context ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto tree = planar::cmd::root_app();
-  auto table = planar::cmd::handlers(*tree);
-  int code = planar::cmd::run(ctx, *tree, table);
+  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto               tree  = planar::cmd::root_app();
+  auto               table = planar::cmd::handlers(*tree);
+  int                code  = planar::cmd::run(ctx, *tree, table);
   return {.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
 }
 
@@ -62,11 +69,11 @@ auto write(const std::filesystem::path& path, std::string_view body) -> void {
   REQUIRE(out.good());
 }
 auto field(std::string_view json, std::string_view name) -> std::string {
-  auto const key = std::format("\"{}\":\"", name);
+  auto const key   = std::format("\"{}\":\"", name);
   auto const start = json.find(key);
   REQUIRE(start != std::string_view::npos);
   auto const first = start + key.size();
-  auto const last = json.find('"', first);
+  auto const last  = json.find('"', first);
   REQUIRE(last != std::string_view::npos);
   return std::string{json.substr(first, last - first)};
 }
@@ -85,14 +92,15 @@ auto query_text(planar::db::connection& conn, std::string_view sql) -> std::stri
 auto inventory(const fixture& fx) -> std::string {
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
-  return std::format("plans={} tasks={} artifacts={} decisions={} links={}",
-                     query_count(*conn, "select count(*) from plans"), query_count(*conn, "select count(*) from tasks"),
-                     query_count(*conn, "select count(*) from artifacts"), query_count(*conn, "select count(*) from decisions"),
+  return std::format("plans={} tasks={} artifacts={} decisions={} links={}", query_count(*conn, "select count(*) from plans"),
+                     query_count(*conn, "select count(*) from tasks"), query_count(*conn, "select count(*) from artifacts"),
+                     query_count(*conn, "select count(*) from decisions"),
                      query_count(*conn, "select count(*) from entity_links"));
 }
 auto cache_body(std::string_view fingerprint, bool bad_task = false) -> std::string {
-  return std::format(R"({{"schema_version":1,"fingerprint":"{}","anchor_title":"Imported Anchor","provenance":"fixture","phases":[{{"slug":"phase-one","title":"Phase One","status":"active","tasks":[{{"slug":"task-one","title":"Task One","status":"todo"}}]}},{{"slug":"phase-two","title":"Phase Two","status":"draft","tasks":[{{"slug":"task-two","title":"Task Two","status":"{}"}}]}}],"decisions":[{{"title":"Keep transaction","body":"Every reconciliation write is atomic."}}],"forward_specs":[{{"slug":"forward-a","title":"Forward A"}},{{"slug":"forward-b","title":"Forward B"}},{{"slug":"forward-c","title":"Forward C"}}]}})",
-                     fingerprint, bad_task ? "not-a-task-status" : "doing");
+  return std::format(
+      R"({{"schema_version":1,"fingerprint":"{}","anchor_title":"Imported Anchor","provenance":"fixture","phases":[{{"slug":"phase-one","title":"Phase One","status":"active","tasks":[{{"slug":"task-one","title":"Task One","status":"todo"}}]}},{{"slug":"phase-two","title":"Phase Two","status":"draft","tasks":[{{"slug":"task-two","title":"Task Two","status":"{}"}}]}}],"decisions":[{{"title":"Keep transaction","body":"Every reconciliation write is atomic."}}],"forward_specs":[{{"slug":"forward-a","title":"Forward A"}},{{"slug":"forward-b","title":"Forward B"}},{{"slug":"forward-c","title":"Forward C"}}]}})",
+      fingerprint, bad_task ? "not-a-task-status" : "doing");
 }
 
 auto stage_cache(const fixture& fx, bool bad_task = false) -> std::filesystem::path {
@@ -105,8 +113,8 @@ auto stage_cache(const fixture& fx, bool bad_task = false) -> std::filesystem::p
   CHECK(preview.out.contains("\"mode\":\"pending\""));
   CHECK_FALSE(preview.out.contains("\"plans_created\"")); // cache has not been applied.
   auto const fingerprint = field(preview.out, "fingerprint");
-  auto const slug = field(preview.out, "repo_slug");
-  auto const cache = fx.root / "home" / "llm" / "import-interpretation" / slug / (fingerprint + ".json");
+  auto const slug        = field(preview.out, "repo_slug");
+  auto const cache       = fx.root / "home" / "llm" / "import-interpretation" / slug / (fingerprint + ".json");
   write(cache, cache_body(fingerprint, bad_task));
   // This second preview contains a non-empty proposal cache but must still
   // perform no database write. It falsifies a handler that treats cache-hit
@@ -137,8 +145,10 @@ TEST_CASE("interpreted import applies its cache atomically and is idempotent", "
   {
     auto conn = planar::db::connection::open(fx.db_path.string());
     REQUIRE(conn.has_value());
-    CHECK(query_count(*conn, "select count(*) from entity_links where relationship='derives-from' and from_kind='artifact'") == 2);
-    CHECK(query_count(*conn, "select count(*) from entity_links where relationship='derives-from' and from_kind='decision'") == 1);
+    CHECK(query_count(*conn, "select count(*) from entity_links where relationship='derives-from' and from_kind='artifact'") ==
+          2);
+    CHECK(query_count(*conn, "select count(*) from entity_links where relationship='derives-from' and from_kind='decision'") ==
+          1);
     CHECK(query_count(*conn, "select count(*) from plans where slug like 'forward-%' and status='draft'") == 3);
   }
   auto const second = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
@@ -147,7 +157,8 @@ TEST_CASE("interpreted import applies its cache atomically and is idempotent", "
   CHECK(inventory(fx) == after_first);
 }
 
-TEST_CASE("interpreted import rolls every prior write back when reconciliation fails mid-cache", "[cmd][import][transaction][rollback]") {
+TEST_CASE("interpreted import rolls every prior write back when reconciliation fails mid-cache",
+          "[cmd][import][transaction][rollback]") {
   auto const fx = make_fixture("rollback");
   static_cast<void>(stage_cache(fx, true));
   auto const rejected = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
@@ -158,7 +169,7 @@ TEST_CASE("interpreted import rolls every prior write back when reconciliation f
 }
 
 TEST_CASE("interpreted import applies proposed removals only when explicitly enabled", "[cmd][import][removals][survivors]") {
-  auto const fx = make_fixture("removals");
+  auto const fx    = make_fixture("removals");
   auto const cache = stage_cache(fx);
   REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"}).code == 0);
 
@@ -166,9 +177,9 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   // phase/task two, the second decision, and tech-spec.md are genuinely
   // absent.  This fixture falsifies both an implicit-removal implementation
   // and one that cancels every row rather than subtracting survivors.
-  auto body = read(cache);
+  auto       body   = read(cache);
   auto const needle = R"(}],"forward_specs")";
-  auto const at = body.find(needle);
+  auto const at     = body.find(needle);
   REQUIRE(at != std::string::npos);
   // `needle` starts on the retained decision's closing `}`; append inside
   // the array, after that object but before the array-closing `]`.
@@ -186,9 +197,9 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   REQUIRE(staged.code == 0);
   REQUIRE(staged.out.contains("\"mode\":\"pending\""));
   auto const next_fingerprint = field(staged.out, "fingerprint");
-  auto const next_slug = field(staged.out, "repo_slug");
-  auto next = cache_body(next_fingerprint);
-  auto const phase_two = next.find(R"(,{"slug":"phase-two")");
+  auto const next_slug        = field(staged.out, "repo_slug");
+  auto       next             = cache_body(next_fingerprint);
+  auto const phase_two        = next.find(R"(,{"slug":"phase-two")");
   REQUIRE(phase_two != std::string::npos);
   auto const phase_end = next.find(R"(}]}],"decisions")", phase_two);
   REQUIRE(phase_end != std::string::npos);
@@ -201,16 +212,19 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   auto const preview_apply = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
   REQUIRE(preview_apply.code == 0);
   {
-    auto conn = planar::db::connection::open(fx.db_path.string()); REQUIRE(conn.has_value());
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
     CHECK(query_text(*conn, "select status from tasks where slug='task-two'") == "doing");
     CHECK(query_text(*conn, "select status from plans where slug='phase-two'") == "draft");
     CHECK(query_text(*conn, "select status from artifacts where source_path='docs/tech-spec.md'") == "active");
     CHECK(query_text(*conn, "select status from decisions where title='Drop decision'") == "proposed");
     CHECK(query_text(*conn, "select status from tasks where slug='task-one'") == "todo");
   }
-  REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--apply-removals", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--apply-removals", "--json"}).code ==
+          0);
   {
-    auto conn = planar::db::connection::open(fx.db_path.string()); REQUIRE(conn.has_value());
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
     CHECK(query_text(*conn, "select status from tasks where slug='task-two'") == "cancelled");
     CHECK(query_text(*conn, "select status from plans where slug='phase-two'") == "abandoned");
     CHECK(query_text(*conn, "select status from artifacts where source_path='docs/tech-spec.md'") == "retired");
@@ -218,22 +232,34 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
     CHECK(query_text(*conn, "select status from tasks where slug='task-one'") == "todo");
   }
   auto const after = inventory(fx);
-  REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--apply-removals", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--apply-removals", "--json"}).code ==
+          0);
   CHECK(inventory(fx) == after);
 }
 
 TEST_CASE("interpreted import forward-spec selection supports all CSV and none", "[cmd][import][forward_specs][selection]") {
   auto count_forwards = [](const fixture& fx) {
-    auto conn = planar::db::connection::open(fx.db_path.string()); REQUIRE(conn.has_value());
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
     return query_count(*conn, "select count(*) from plans where slug like 'forward-%'");
   };
-  auto const all = make_fixture("forward_all"); static_cast<void>(stage_cache(all));
+  auto const all = make_fixture("forward_all");
+  static_cast<void>(stage_cache(all));
   REQUIRE(dispatch(all, {"import", (all.root / "repo").string(), "--interpret", "--apply", "--accept-spec", "all"}).code == 0);
   CHECK(count_forwards(all) == 3);
-  auto const csv = make_fixture("forward_csv"); static_cast<void>(stage_cache(csv));
-  REQUIRE(dispatch(csv, {"import", (csv.root / "repo").string(), "--interpret", "--apply", "--accept-spec", "forward-a,forward-c"}).code == 0);
+  {
+    auto conn = planar::db::connection::open(all.db_path.string());
+    REQUIRE(conn.has_value());
+    CHECK(query_count(*conn, "select count(*) from artifacts where source_path like 'pl-forward-spec://%'") == 9);
+  }
+  auto const csv = make_fixture("forward_csv");
+  static_cast<void>(stage_cache(csv));
+  REQUIRE(
+      dispatch(csv, {"import", (csv.root / "repo").string(), "--interpret", "--apply", "--accept-spec", "forward-a,forward-c"})
+          .code == 0);
   CHECK(count_forwards(csv) == 2);
-  auto const none = make_fixture("forward_none"); static_cast<void>(stage_cache(none));
+  auto const none = make_fixture("forward_none");
+  static_cast<void>(stage_cache(none));
   REQUIRE(dispatch(none, {"import", (none.root / "repo").string(), "--interpret", "--apply", "--no-forward-specs"}).code == 0);
   CHECK(count_forwards(none) == 0);
 }
