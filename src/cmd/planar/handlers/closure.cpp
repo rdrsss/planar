@@ -20,21 +20,53 @@ namespace store = engine::closure::store;
 
 auto closure_compute(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const raw = cliapp::positional_string(args, "task-id").value_or(std::string{});
-  auto const id = cliapp::parse_int64_zig(raw);
-  if (!id) return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("task id must be an integer, got '{}'",raw)));
-  auto conn = ctx.ensure_db(); if (!conn) return std::unexpected(conn.error());
-  auto task = engine::planning::show_task(**conn,*id);
-  if (!task) return std::unexpected(error_from_body(domain_error_kind::not_found,std::format("no task with id {}",*id)));
-  auto kind = task->scope_kind == engine::planning::task_scope_kind::global ? engine::identity::scope_kind::global : task->scope_kind == engine::planning::task_scope_kind::association ? engine::identity::scope_kind::association : engine::identity::scope_kind::repo;
-  auto entity = engine::identity::slug_from_ref(**conn,kind,task->scope_id);
-  if (!entity) return std::unexpected(error_from_body(domain_error_kind::generic_failure,"closure compute: looking up entity scope: QueryFailed"));
-  auto resolved = resolve_write_scope(ctx,cliapp::flag_string(args,"--scope"),"closure compute: resolving write scope"); if(!resolved)return std::unexpected(resolved.error());
-  auto e = entity->has_value()?std::optional<std::string_view>{**entity}:std::nullopt; auto w=resolved->scope.has_value()?std::optional<std::string_view>{*resolved->scope}:std::nullopt;
-  if(!engine::identity::check_scope_guard(e,w)) { auto el=entity->value_or("global"), wl=resolved->scope.value_or("global"); return std::unexpected(error_from_body(domain_error_kind::scope_mismatch,std::format("scope mismatch: task {} is in scope '{}' but operator write scope is '{}'; pass --scope {} to write to that scope from here",*id,el,wl,el))); }
-  auto result=engine::closure::compute::run(**conn,*id);
-  if(!result) { if(result.error()==engine::closure::compute::error::no_seeds)return std::unexpected(error_from_body(domain_error_kind::invalid_input,std::format("closure compute: task {} declares no path-level touches (task_touch_paths); nothing to compute",*id))); return std::unexpected(error_from_body(domain_error_kind::generic_failure,"closure compute: QueryFailed")); }
-  if(cliapp::flag_bool(args,"--json")) ctx.out()<<std::format("{{\"task_id\":{},\"seeds\":{},\"modify\":{},\"reference\":{},\"transitive\":{},\"rows_written\":{},\"extractor_version\":\"{}\"}}\n",result->task_id,result->seeds,result->modify,result->reference,result->transitive,result->rows_written,engine::closure::compute::extractor_version);
-  else ctx.out()<<std::format("closure computed for task {}: {} seed(s) -> {} rows (modify={} reference={} transitive={}); extractor={}\n",result->task_id,result->seeds,result->rows_written,result->modify,result->reference,result->transitive,engine::closure::compute::extractor_version);
+  auto const id  = cliapp::parse_int64_zig(raw);
+  if (!id)
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, std::format("task id must be an integer, got '{}'", raw)));
+  auto conn = ctx.ensure_db();
+  if (!conn)
+    return std::unexpected(conn.error());
+  auto task = engine::planning::show_task(**conn, *id);
+  if (!task)
+    return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no task with id {}", *id)));
+  auto kind   = task->scope_kind == engine::planning::task_scope_kind::global        ? engine::identity::scope_kind::global
+                : task->scope_kind == engine::planning::task_scope_kind::association ? engine::identity::scope_kind::association
+                                                                                     : engine::identity::scope_kind::repo;
+  auto entity = engine::identity::slug_from_ref(**conn, kind, task->scope_id);
+  if (!entity)
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "closure compute: looking up entity scope: QueryFailed"));
+  auto resolved = resolve_write_scope(ctx, cliapp::flag_string(args, "--scope"), "closure compute: resolving write scope");
+  if (!resolved)
+    return std::unexpected(resolved.error());
+  auto e = entity->has_value() ? std::optional<std::string_view>{**entity} : std::nullopt;
+  auto w = resolved->scope.has_value() ? std::optional<std::string_view>{*resolved->scope} : std::nullopt;
+  if (!engine::identity::check_scope_guard(e, w)) {
+    auto el = entity->value_or("global"), wl = resolved->scope.value_or("global");
+    return std::unexpected(error_from_body(domain_error_kind::scope_mismatch,
+                                           std::format("scope mismatch: task {} is in scope '{}' but operator write scope is "
+                                                       "'{}'; pass --scope {} to write to that scope from here",
+                                                       *id, el, wl, el)));
+  }
+  auto result = engine::closure::compute::run(**conn, *id);
+  if (!result) {
+    if (result.error() == engine::closure::compute::error::no_seeds)
+      return std::unexpected(error_from_body(
+          domain_error_kind::invalid_input,
+          std::format("closure compute: task {} declares no path-level touches (task_touch_paths); nothing to compute", *id)));
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "closure compute: QueryFailed"));
+  }
+  if (cliapp::flag_bool(args, "--json"))
+    ctx.out() << std::format("{{\"task_id\":{},\"seeds\":{},\"modify\":{},\"reference\":{},\"transitive\":{},\"rows_written\":{},"
+                             "\"extractor_version\":\"{}\"}}\n",
+                             result->task_id, result->seeds, result->modify, result->reference, result->transitive,
+                             result->rows_written, engine::closure::compute::extractor_version);
+  else
+    ctx.out() << std::format(
+        "closure computed for task {}: {} seed(s) -> {} rows (modify={} reference={} transitive={}); extractor={}\n",
+        result->task_id, result->seeds, result->rows_written, result->modify, result->reference, result->transitive,
+        engine::closure::compute::extractor_version);
   return {};
 }
 
