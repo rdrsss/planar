@@ -501,6 +501,7 @@ planar_binary(planar
     handlers/closure.cppm
     handlers/groups.cppm
     handlers/spec_ingest.cppm
+    handlers/import.cppm
     verb_classification.cppm
     worktree_gate.cppm
     cli_log.cppm
@@ -558,6 +559,7 @@ planar_binary(planar
     handlers/closure.cpp
     handlers/groups.cpp
     handlers/spec_ingest.cpp
+    handlers/import.cpp
     dispatch.cpp
   DEPENDS
     adapter
@@ -593,6 +595,7 @@ planar_binary(planar
     # src/lib/engine/ingest/CMakeLists.txt for why the routing packet shares
     # that bucket instead of getting an `engine_routing` one of its own.
     engine_ingest
+    engine_importer
     engine_local
     engine_health
     engine_models

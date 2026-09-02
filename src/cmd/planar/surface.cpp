@@ -4231,7 +4231,9 @@ auto unported_paths() -> std::span<std::string_view const> {
       // (src/lib/installed_surface) — it holds no `db` edge, so there was
       // nothing pulling it toward `engine_health` in the first place. See
       // handlers/health.cppm and src/lib/engine/health/health.cppm.
-      "import",
+      // `import` is wired at task 6106: its filesystem-only request/cache
+      // engine stays below the handler, while this layer composes the
+      // deterministic plan write without a D15 peer dependency.
       // `report` left this inventory at task 6352, once `engine_introspect`
       // (task 6121, DB aggregates) and `engine_introspection_adapters`
       // (tasks 6102 and 6352, filesystem discovery) were both complete and
