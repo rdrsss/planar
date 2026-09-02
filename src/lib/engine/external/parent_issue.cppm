@@ -228,6 +228,13 @@ export auto parse_github_repo(std::string_view git_remote) -> std::optional<repo
 export auto project_github_coords(db::connection& conn, std::int64_t project_id)
     -> std::expected<std::optional<repo_coords>, parent_issue_error>;
 
+/// @brief Count distinct repositories touched anywhere in an anchor feature.
+/// @param conn Open database connection.
+/// @param anchor_plan_id Feature anchor plan.
+/// @return Distinct repo count, or a query failure.
+export auto distinct_repo_count_in_feature(db::connection& conn, std::int64_t anchor_plan_id)
+    -> std::expected<std::size_t, parent_issue_error>;
+
 /// @brief Resolve the single target repo for a single-repo feature.
 ///
 /// Walks the same distinct-touched-repos set `ext propagate`'s strategy

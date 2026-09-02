@@ -534,6 +534,13 @@ auto distinct_repos_in_feature_ids(db::connection& conn, std::int64_t anchor_pla
   return out;
 }
 
+auto distinct_repo_count_in_feature(db::connection& conn, std::int64_t anchor_plan_id)
+    -> std::expected<std::size_t, parent_issue_error> {
+  auto repos = distinct_repos_in_feature_ids(conn, anchor_plan_id);
+  if (!repos) return std::unexpected(repos.error());
+  return repos->size();
+}
+
 } // namespace
 
 auto parse_github_repo(std::string_view git_remote) -> std::optional<repo_coords> {
