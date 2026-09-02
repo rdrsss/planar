@@ -177,10 +177,13 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
       auto superseded = conn.prepare("update decisions set status='superseded', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?");
       if (!superseded || !superseded->bind_int64(1, id) || !superseded->step()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed")); }
   }
-  if (no_forward_specs || !accept_spec) return {};
+  if (no_forward_specs) return {};
   std::set<std::string> accepted;
-  if (*accept_spec == "all") for (auto const& value : forward_specs->array) { auto slug = text_member(value, "slug"); if (!slug) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments")); accepted.insert(*slug); }
-  else { std::string_view rest = *accept_spec; while (!rest.empty()) { auto comma = rest.find(','); auto slug = rest.substr(0, comma); if (slug.empty() || !accepted.insert(std::string{slug}).second) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments")); if (comma == std::string_view::npos) break; rest.remove_prefix(comma + 1); } }
+  if (!accept_spec || *accept_spec == "all") {
+    for (auto const& value : forward_specs->array) { auto slug = text_member(value, "slug"); if (!slug) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments")); accepted.insert(*slug); }
+  } else {
+    std::string_view rest = *accept_spec; while (!rest.empty()) { auto comma = rest.find(','); auto slug = rest.substr(0, comma); if (slug.empty() || !accepted.insert(std::string{slug}).second) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments")); if (comma == std::string_view::npos) break; rest.remove_prefix(comma + 1); }
+  }
   for (auto const& value : forward_specs->array) {
     // Forward proposals materialize as draft anchor plans in this bounded
     // slice; their seeded documents/workbench projection land separately.
