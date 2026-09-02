@@ -1,3 +1,5 @@
+/// @file contextrecords.cpp
+/// @brief SQLite implementation of the run-scoped context-record store.
 module planar.engine.runtime.contextrecords;
 import std;
 import planar.db;

@@ -72,6 +72,14 @@ auto failure(std::string_view verb, rt::error e, const rt::stale_reason* why = n
   return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::move(body)));
 }
 } // namespace
+
+/// @brief Handle `planar-agent dispatch preview` without writing dispatch state.
+///
+/// Validates the wire-level routing fields, then delegates preview computation
+/// to the routing engine and renders its token in text or JSON form.
+/// @param ctx Command runtime context.
+/// @param a Parsed command-line arguments.
+/// @return Success after rendering a preview, or a mapped handler error.
 auto dispatch_preview(context& ctx, const cliapp::parsed_args& a) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn)
@@ -100,6 +108,14 @@ auto dispatch_preview(context& ctx, const cliapp::parsed_args& a) -> handler_res
                              b->evidence_state);
   return {};
 }
+
+/// @brief Handle `planar-agent dispatch confirm` for a previously issued preview.
+///
+/// Validates the wire-level routing fields, confirms the preview atomically in
+/// the routing engine, and renders its dispatch id in text or JSON form.
+/// @param ctx Command runtime context.
+/// @param a Parsed command-line arguments.
+/// @return Success after rendering the dispatch id, or a mapped handler error.
 auto dispatch_confirm(context& ctx, const cliapp::parsed_args& a) -> handler_result {
   auto conn = ctx.ensure_db();
   if (!conn)

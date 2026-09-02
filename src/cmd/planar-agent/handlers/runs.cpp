@@ -31,6 +31,11 @@ auto from_end_error(wr::error e, std::string_view identifier, std::string_view s
   return fail(domain_error_kind::generic_failure, "update workflow_runs: QueryFailed");
 }
 } // namespace
+
+/// @brief Handle `planar-agent run start`.
+/// @param ctx The invocation context.
+/// @param a The parsed arguments.
+/// @return Success, or the failure to report.
 auto run_start(context& ctx, const cliapp::parsed_args& a) -> handler_result {
   auto c = ctx.ensure_db();
   if (!c)
@@ -58,6 +63,11 @@ auto run_start(context& ctx, const cliapp::parsed_args& a) -> handler_result {
     ctx.out() << std::format("run:{} plan:{} workflow:{} pid:{} status:running\n", r->id, r->plan_id, r->workflow_name, r->pid);
   return {};
 }
+
+/// @brief Handle `planar-agent run end`.
+/// @param ctx The invocation context.
+/// @param a The parsed arguments.
+/// @return Success, or the failure to report.
 auto run_end(context& ctx, const cliapp::parsed_args& a) -> handler_result {
   auto c = ctx.ensure_db();
   if (!c)

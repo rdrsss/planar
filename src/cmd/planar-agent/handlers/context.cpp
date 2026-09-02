@@ -1,3 +1,5 @@
+/// @file context.cpp
+/// @brief Implementations for `planar-agent context` handlers.
 module planar.cmd.planar_agent.handlers.context;
 import std;
 import planar.cliapp.args;
@@ -25,17 +27,22 @@ auto valid_kind(std::string_view s) -> bool {
   return s == "finding" || s == "risk" || s == "artifact" || s == "followup" || s == "summary" || s == "capsule";
 }
 } // namespace
-auto context_add(context& ctx, const cliapp::parsed_args& a) -> handler_result {
+
+/// @brief Handle `planar-agent context add`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure to report.
+auto context_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto c = ctx.ensure_db();
   if (!c)
     return std::unexpected(c.error());
-  auto kind = text(a, "--kind"), token = text(a, "--claim"), cf = text(a, "--compiled-from");
+  auto kind = text(args, "--kind"), token = text(args, "--claim"), cf = text(args, "--compiled-from");
   if (!valid_kind(kind))
     return fail(std::format("invalid --kind '{}': must be one of finding|risk|artifact|followup|summary|capsule", kind));
   auto rec = engine::runtime::contextrecords::add_from_claim(
       **c, {.token         = token,
             .kind          = kind,
-            .body          = text(a, "--body"),
+            .body          = text(args, "--body"),
             .compiled_from = cf.empty() ? std::nullopt : std::optional<std::string_view>{cf}});
   if (!rec) {
     if (rec.error().message_ == "claim not found")
@@ -45,7 +52,7 @@ auto context_add(context& ctx, const cliapp::parsed_args& a) -> handler_result {
           std::format("claim '{}' has no run_id: context records are run-scoped; acquire the claim with --run <id>", token));
     return dbfail(rec.error());
   }
-  if (cliapp::flag_bool(a, "--json"))
+  if (cliapp::flag_bool(args, "--json"))
     ctx.out() << std::format("{{\"ok\":true,\"id\":{},\"record\":{{\"id\":{},\"run_id\":{},\"stage\":{},\"session_id\":{},"
                              "\"claim_id\":{},\"kind\":{},\"status\":\"active\"}}}}\n",
                              rec->id, rec->id, rec->run_id, json_text::json_string(rec->stage), rec->session_id, *rec->claim_id,
@@ -54,19 +61,24 @@ auto context_add(context& ctx, const cliapp::parsed_args& a) -> handler_result {
     ctx.out() << std::format("context:{} run:{} stage:{} kind:{} status:active\n", rec->id, rec->run_id, rec->stage, rec->kind);
   return {};
 }
-auto context_capsule(context& ctx, const cliapp::parsed_args& a) -> handler_result {
+
+/// @brief Handle `planar-agent context capsule`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure to report.
+auto context_capsule(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto c = ctx.ensure_db();
   if (!c)
     return std::unexpected(c.error());
-  auto run = integer(a, "--run");
+  auto run = integer(args, "--run");
   if (!run)
-    return fail(std::format("invalid --run '{}': expected integer", text(a, "--run")));
-  auto sid = integer(a, "--session");
-  auto cf  = text(a, "--compiled-from");
+    return fail(std::format("invalid --run '{}': expected integer", text(args, "--run")));
+  auto sid = integer(args, "--session");
+  auto cf  = text(args, "--compiled-from");
   auto rec = engine::runtime::contextrecords::add_capsule(
       **c, {.run_id        = *run,
-            .stage         = text(a, "--stage"),
-            .body          = text(a, "--body"),
+            .stage         = text(args, "--stage"),
+            .body          = text(args, "--body"),
             .session_id    = sid,
             .compiled_from = cf.empty() ? std::nullopt : std::optional<std::string_view>{cf}});
   if (!rec) {
@@ -74,7 +86,7 @@ auto context_capsule(context& ctx, const cliapp::parsed_args& a) -> handler_resu
       return fail(std::format("workflow_run {} not found", *run), domain_error_kind::not_found);
     return dbfail(rec.error());
   }
-  if (cliapp::flag_bool(a, "--json"))
+  if (cliapp::flag_bool(args, "--json"))
     ctx.out() << std::format("{{\"ok\":true,\"id\":{},\"record\":{{\"id\":{},\"run_id\":{},\"stage\":{},\"session_id\":{},"
                              "\"claim_id\":null,\"kind\":\"capsule\",\"status\":\"active\"}}}}\n",
                              rec->id, rec->id, rec->run_id, json_text::json_string(rec->stage), rec->session_id);
@@ -82,14 +94,19 @@ auto context_capsule(context& ctx, const cliapp::parsed_args& a) -> handler_resu
     ctx.out() << std::format("capsule:{} run:{} stage:{} kind:capsule status:active\n", rec->id, rec->run_id, rec->stage);
   return {};
 }
-auto context_list(context& ctx, const cliapp::parsed_args& a) -> handler_result {
+
+/// @brief Handle `planar-agent context list`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure to report.
+auto context_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto c = ctx.ensure_db();
   if (!c)
     return std::unexpected(c.error());
-  auto run = integer(a, "--run");
+  auto run = integer(args, "--run");
   if (!run)
-    return fail(std::format("invalid --run '{}': expected integer run id", text(a, "--run")));
-  auto stage = text(a, "--stage"), status = text(a, "--status"), kind = text(a, "--kind");
+    return fail(std::format("invalid --run '{}': expected integer run id", text(args, "--run")));
+  auto stage = text(args, "--stage"), status = text(args, "--status"), kind = text(args, "--kind");
   auto records =
       engine::runtime::contextrecords::list(**c, *run, stage.empty() ? std::nullopt : std::optional<std::string_view>{stage},
                                             status.empty() ? std::nullopt : std::optional<std::string_view>{status},
@@ -112,14 +129,19 @@ auto context_list(context& ctx, const cliapp::parsed_args& a) -> handler_result 
   ctx.out() << "]}\n";
   return {};
 }
-auto context_resolve(context& ctx, const cliapp::parsed_args& a) -> handler_result {
+
+/// @brief Handle `planar-agent context resolve`.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the failure to report.
+auto context_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto c = ctx.ensure_db();
   if (!c)
     return std::unexpected(c.error());
-  auto target = text(a, "--status");
+  auto target = text(args, "--status");
   if (target != "consumed" && target != "superseded")
     return fail(std::format("invalid --status '{}': must be consumed|superseded", target));
-  auto id = integer(a, "--id"), run = integer(a, "--run");
+  auto id = integer(args, "--id"), run = integer(args, "--run");
   if (id && run)
     return fail("provide either --id or --run, not both");
   if (!id && !run)
@@ -139,7 +161,7 @@ auto context_resolve(context& ctx, const cliapp::parsed_args& a) -> handler_resu
       return dbfail(result.error());
     updated = *result;
   } else {
-    auto stage = text(a, "--stage");
+    auto stage = text(args, "--stage");
     if (stage.empty())
       return fail("--stage is required when using --run for a bulk sweep");
     auto result = engine::runtime::contextrecords::resolve_stage(**c, *run, stage, target);
@@ -147,7 +169,7 @@ auto context_resolve(context& ctx, const cliapp::parsed_args& a) -> handler_resu
       return dbfail(result.error());
     updated = *result;
   }
-  if (cliapp::flag_bool(a, "--json"))
+  if (cliapp::flag_bool(args, "--json"))
     ctx.out() << std::format("{{\"ok\":true,\"updated\":{},\"status\":{}}}\n", updated, json_text::json_string(target));
   else
     ctx.out() << std::format("updated:{} status:{}\n", updated, target);
