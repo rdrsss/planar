@@ -230,6 +230,7 @@ planar_module(engine_runtime
     resumecheck.cppm
     audit_trail.cppm
     sessioncommits.cppm
+    contextrecords.cppm
     runtime.cppm
   SOURCES
     session.cpp
@@ -242,6 +243,7 @@ planar_module(engine_runtime
     resumecheck.cpp
     audit_trail.cpp
     sessioncommits.cpp
+    contextrecords.cpp
   DEPENDS
     db
     git
