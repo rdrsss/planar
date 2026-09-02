@@ -621,6 +621,7 @@ if(TARGET planar_cmd_planar_tests)
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\""
     "PLANAR_ZIG_BIN=\"${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar\""
     "PLANAR_TARGET_SOURCE_ROOT=\"${CMAKE_SOURCE_DIR}\""
+    "PLANAR_RETIREMENT_GATE=\"${CMAKE_SOURCE_DIR}/scripts/oracle-retirement-gate.sh\""
     "PLANAR_STATE_TEST_BIN=\"$<TARGET_FILE:planar_cmd_planar_tests>\"")
   add_dependencies(planar_cmd_planar_tests planar_cmd_planar)
 endif()

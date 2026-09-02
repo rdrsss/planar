@@ -845,15 +845,14 @@ auto generated_unported(const std::filesystem::path& source) -> std::optional<st
     if (comment != std::string::npos) {
       line.erase(comment);
     }
-    auto const quote = line.find('"');
-    if (quote == std::string::npos) {
-      continue;
+    for (std::size_t quote = line.find('"'); quote != std::string::npos;) {
+      auto const close = line.find('"', quote + 1);
+      if (close == std::string::npos) {
+        return std::nullopt;
+      }
+      out.push_back(line.substr(quote + 1, close - quote - 1));
+      quote = line.find('"', close + 1);
     }
-    auto const close = line.find('"', quote + 1);
-    if (close == std::string::npos) {
-      return std::nullopt;
-    }
-    out.push_back(line.substr(quote + 1, close - quote - 1));
   }
   std::ranges::sort(out);
   if (std::ranges::adjacent_find(out) != out.end()) {
@@ -921,36 +920,26 @@ struct retirement_report {
   std::vector<std::string> refusals;
 };
 
-/// @brief Run the strict real state lane and collect target-worktree evidence.
+/// @brief Invoke the consumable gate, retaining its report only for test diagnostics.
+///
+/// The shell surface is deliberately the implementation: task 6045 consumes
+/// its process status before deletion, and tests exercise that exact process
+/// rather than recreating the policy in C++.
 auto run_retirement_gate(const std::filesystem::path& root = target_source_root()) -> retirement_report {
-  retirement_report result;
-  if (!std::filesystem::is_directory(root / "zig")) {
-    result.refusals.emplace_back("target checkout has no zig/ tree");
+  retirement_report        result;
+  std::vector<std::string> args;
+  if (root != target_source_root()) {
+    args = {"--source-root", root.string()};
   }
-  if (!oracle_available()) {
-    result.refusals.emplace_back("shared Zig oracle binary is unavailable");
-  } else {
-    auto const arena = make_arena("retirement_state_lane");
-    auto const lane =
-        run_pinned(std::filesystem::path{PLANAR_STATE_TEST_BIN},
-                   std::array<std::string, 3>{"C++ and Zig agree on DATABASE STATE across an ordered planning sequence",
-                                              "--reporter", "compact"},
-                   arena.cpp_root, "real_state_lane");
-    if (lane.code != 0) {
-      result.refusals.emplace_back(std::format("real catalog-derived state differential failed (exit {})", lane.code));
+  auto const process =
+      run_pinned(std::filesystem::path{PLANAR_RETIREMENT_GATE}, args, make_arena("retirement_gate").cpp_root, "retirement_gate");
+  result.ready = process.code == 0;
+  std::istringstream lines{process.out + process.err};
+  for (std::string line; std::getline(lines, line);) {
+    if (line.starts_with("refusal: ")) {
+      result.refusals.push_back(line.substr(std::string_view{"refusal: "}.size()));
     }
   }
-  auto unported = source_unported_inventory(root);
-  if (!unported) {
-    result.refusals.emplace_back("generated unported inventory source is malformed or absent");
-  } else if (*unported != std::vector<std::string>{"planar:explore (deferred-by-decision980)"}) {
-    result.refusals.emplace_back(std::format("unported inventory is not only planar:explore: {}", *unported));
-  }
-  auto const skips = source_oracle_skips(root);
-  if (!skips.empty()) {
-    result.refusals.emplace_back(std::format("{} oracle-conditional parity skip(s) remain: {}", skips.size(), skips));
-  }
-  result.ready = result.refusals.empty();
   return result;
 }
 
@@ -1205,11 +1194,25 @@ TEST_CASE("state catalog: exclusions are explicit and workspace init remains eli
 
 TEST_CASE("oracle retirement: real state differential and live evidence refuse cutover", "[cmd][parity][state][retirement]") {
   REQUIRE(oracle_available());
+  auto const process = run_pinned(std::filesystem::path{PLANAR_RETIREMENT_GATE}, std::array<std::string, 0>{},
+                                  make_arena("retirement_process").cpp_root, "retirement_gate");
+  INFO(process.out << process.err);
+  CHECK(process.code != 0);
+  CHECK(process.out.contains("oracle-retirement: REFUSED"));
   auto const result = run_retirement_gate();
   CHECK_FALSE(result.ready);
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("workspace init"); }));
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
   CHECK(source_oracle_skips(target_source_root()).size() == 37);
+  auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
+  auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
+  auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cpp");
+  REQUIRE(planar_unported.has_value());
+  REQUIRE(agent_unported.has_value());
+  REQUIRE(watch_unported.has_value());
+  CHECK(planar_unported->size() == 6);
+  CHECK(agent_unported->size() == 9);
+  CHECK(watch_unported->size() == 4);
   CHECK(target_zig_tree_present());
 }
 
@@ -1229,6 +1232,12 @@ TEST_CASE("oracle retirement: generated inventory drift is observed for every bi
   write_surface("src/cmd/planar-agent/surface.cpp", "");
   write_surface("src/cmd/planar-watch/surface.cpp", "");
   REQUIRE(source_unported_inventory(fixture) == std::vector<std::string>{"planar:explore (deferred-by-decision980)"});
+  // Generated inventories are allowed to coalesce entries.  This control
+  // kills the former line-oriented parser which silently read only the first.
+  write_surface("src/cmd/planar-agent/surface.cpp", R"(  "first", "second", "third",)");
+  REQUIRE(generated_unported(fixture / "src/cmd/planar-agent/surface.cpp") ==
+          std::vector<std::string>{"first", "second", "third"});
+  write_surface("src/cmd/planar-agent/surface.cpp", "");
   for (auto const& [relative, expected] : std::array{
            std::pair{"src/cmd/planar/surface.cpp", "planar:extra (pending-port)"},
            std::pair{"src/cmd/planar-agent/surface.cpp", "planar-agent:extra (pending-port)"},
