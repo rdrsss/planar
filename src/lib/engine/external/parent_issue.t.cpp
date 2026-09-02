@@ -745,3 +745,30 @@ TEST_CASE("distinct_repo_count_in_feature buckets by distinct touched repo count
     CHECK(*count == 2);
   }
 }
+
+TEST_CASE("distinct_repo_count_in_feature propagates query_failed rather than silently reporting zero repos",
+          "[engine][external][parent_issue]") {
+  // The `!repos` guard in `distinct_repo_count_in_feature` (parent_issue.cpp)
+  // is the only thing standing between a genuine query failure and a
+  // silently-returned zero — and a zero here is not an inert wrong number:
+  // it feeds straight into `propagate::strategy_for_repo_count`'s ADR-0006
+  // bucketing, where a zero count selects "github-zero-repo". A dropped
+  // guard would turn "the database could not answer" into "propagate as if
+  // the feature touches nothing" — the task's own no-silent-degradation
+  // rule ("full job or loud refusal") names exactly this shape.
+  //
+  // Reached by renaming `tasks` out from under the query the same way
+  // system.t.cpp's "an unparseable enum column reads as query_failed" case
+  // reaches its failure: the SQL references a table that is no longer
+  // there, so `conn.prepare` itself fails rather than any row failing to
+  // parse.
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      anchor_id = insert_plan(conn, "anchor", "a");
+
+  REQUIRE(conn.execute("alter table tasks rename to tasks_real").has_value());
+
+  auto count = parent_issue::distinct_repo_count_in_feature(conn, anchor_id);
+  REQUIRE(err(count).has_value());
+  CHECK(*err(count) == parent_issue::parent_issue_error::query_failed);
+}
