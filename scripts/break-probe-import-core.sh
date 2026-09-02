@@ -34,3 +34,15 @@ probe --label import-idempotency \
 probe --label import-artifact-materialization \
   --test 'interpreted import applies its cache atomically and is idempotent' \
   --mutate "perl -0pi -e 's/auto artifacts = reconcile_artifacts\(conn, root, anchor, scope\);/std::expected<void, domain_error> artifacts{};/' src/cmd/planar/handlers/import.cpp"
+
+# Proposed removals are opt-in.  Forcing the first removal pass on ordinary
+# apply must kill the fixture's pre-removal state assertions.
+probe --label import-removals-opt-in \
+  --test 'interpreted import applies proposed removals only when explicitly enabled' \
+  --mutate "perl -0pi -e 's/if \(apply_removals\) \{/if (true) {/' src/cmd/planar/handlers/import.cpp"
+
+# A retained task is a real exclusion, not merely a count: cancelling it too
+# must kill the survivor assertion after the removal-enabled apply.
+probe --label import-removal-survivor \
+  --test 'interpreted import applies proposed removals only when explicitly enabled' \
+  --mutate "perl -0pi -e 's/if \(kept_tasks\.contains\(id\)\) continue;/if (false) continue;/' src/cmd/planar/handlers/import.cpp"
