@@ -141,12 +141,12 @@ TEST_CASE("interpreted import applies its cache atomically and is idempotent", "
   CHECK(first.out.contains("\"applied\":"));
 
   auto const after_first = inventory(fx);
-  CHECK(after_first == "plans=6 tasks=2 artifacts=2 decisions=1 links=3");
+  CHECK(after_first == "plans=6 tasks=2 artifacts=11 decisions=1 links=12");
   {
     auto conn = planar::db::connection::open(fx.db_path.string());
     REQUIRE(conn.has_value());
     CHECK(query_count(*conn, "select count(*) from entity_links where relationship='derives-from' and from_kind='artifact'") ==
-          2);
+          11);
     CHECK(query_count(*conn, "select count(*) from entity_links where relationship='derives-from' and from_kind='decision'") ==
           1);
     CHECK(query_count(*conn, "select count(*) from plans where slug like 'forward-%' and status='draft'") == 3);

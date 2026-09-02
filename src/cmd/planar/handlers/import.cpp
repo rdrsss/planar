@@ -9,6 +9,9 @@ import planar.json_dom;
 import planar.db;
 import planar.engine.importer;
 import planar.engine.planning;
+import planar.engine.workbench.root;
+import planar.engine.workbench.sync;
+import planar.engine.workbench.terminal;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -186,7 +189,7 @@ auto seed_forward_artifacts(db::connection& conn, std::int64_t plan, std::string
 }
 auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std::filesystem::path& root, std::int64_t anchor,
                      std::optional<std::string> scope, bool apply_removals, std::optional<std::string> accept_spec,
-                     bool no_forward_specs) -> std::expected<void, domain_error> {
+                     bool no_forward_specs, std::string_view workbench_root) -> std::expected<void, domain_error> {
   std::ifstream input(staged.cache_path, std::ios::binary);
   std::string   raw{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
   auto          result = json_dom::parse_json(raw);
@@ -373,6 +376,8 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
     auto seeded = seed_forward_artifacts(conn, plan_id, *title, *slug, goal, summary, scope);
     if (!seeded)
       return std::unexpected(seeded.error());
+    if (!engine::workbench::sync::push(conn, plan_id, workbench_root, engine::workbench::terminal::mode::failures, false))
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
   }
   return {};
 }
@@ -433,10 +438,13 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
         return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     } else
       anchor = created->id;
+    auto workbench_root = engine::workbench::root::resolve_root(ctx.env());
+    if (!workbench_root)
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     if (flag_bool(args, "--interpret") && result->mode_ == im::outcome::mode::cache_hit) {
       auto reconciled =
           reconcile_cache(**db, *result, root, *anchor, flag_string(args, "--scope"), flag_bool(args, "--apply-removals"),
-                          flag_string(args, "--accept-spec"), flag_bool(args, "--no-forward-specs"));
+                          flag_string(args, "--accept-spec"), flag_bool(args, "--no-forward-specs"), *workbench_root);
       if (!reconciled)
         return std::unexpected(reconciled.error());
     }
