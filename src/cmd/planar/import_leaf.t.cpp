@@ -76,6 +76,12 @@ auto query_count(planar::db::connection& conn, std::string_view sql) -> std::int
   REQUIRE(stmt->step().has_value());
   return stmt->column_int64(0);
 }
+auto query_text(planar::db::connection& conn, std::string_view sql) -> std::string {
+  auto stmt = conn.prepare(sql);
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  return stmt->column_text(0);
+}
 auto inventory(const fixture& fx) -> std::string {
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
@@ -149,4 +155,59 @@ TEST_CASE("interpreted import rolls every prior write back when reconciliation f
   CHECK(rejected.out.empty());
   CHECK(rejected.err == "error: invalid import arguments\n");
   CHECK(inventory(fx) == "plans=0 tasks=0 artifacts=0 decisions=0 links=0");
+}
+
+TEST_CASE("interpreted import applies proposed removals only when explicitly enabled", "[cmd][import][removals][survivors]") {
+  auto const fx = make_fixture("removals");
+  auto const cache = stage_cache(fx);
+  REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"}).code == 0);
+
+  // The second interpretation retains phase/task one and its decision, while
+  // phase/task two, the second decision, and tech-spec.md are genuinely
+  // absent.  This fixture falsifies both an implicit-removal implementation
+  // and one that cancels every row rather than subtracting survivors.
+  auto body = read(cache);
+  auto const needle = R"(}],"forward_specs")";
+  auto const at = body.find(needle);
+  REQUIRE(at != std::string::npos);
+  body.insert(at, R"(,{"title":"Drop decision","body":"removed by replacement"})");
+  write(cache, body);
+  REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"}).code == 0);
+  body = read(cache);
+  auto const phase_two = body.find(R"(,{"slug":"phase-two")");
+  REQUIRE(phase_two != std::string::npos);
+  auto const phase_end = body.find(R"(]}},"decisions")", phase_two);
+  REQUIRE(phase_end != std::string::npos);
+  body.erase(phase_two, phase_end - phase_two);
+  auto const drop = body.find(R"(,{"title":"Drop decision")");
+  REQUIRE(drop != std::string::npos);
+  auto const drop_end = body.find("}]", drop);
+  REQUIRE(drop_end != std::string::npos);
+  body.erase(drop, drop_end - drop);
+  write(cache, body);
+  std::error_code ec;
+  std::filesystem::remove(fx.root / "repo" / "docs" / "tech-spec.md", ec);
+
+  auto const preview_apply = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
+  REQUIRE(preview_apply.code == 0);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string()); REQUIRE(conn.has_value());
+    CHECK(query_text(*conn, "select status from tasks where slug='task-two'") == "doing");
+    CHECK(query_text(*conn, "select status from plans where slug='phase-two'") == "draft");
+    CHECK(query_text(*conn, "select status from artifacts where source_path='docs/tech-spec.md'") == "draft");
+    CHECK(query_text(*conn, "select status from decisions where title='Drop decision'") == "proposed");
+    CHECK(query_text(*conn, "select status from tasks where slug='task-one'") == "todo");
+  }
+  REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--apply-removals", "--json"}).code == 0);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string()); REQUIRE(conn.has_value());
+    CHECK(query_text(*conn, "select status from tasks where slug='task-two'") == "cancelled");
+    CHECK(query_text(*conn, "select status from plans where slug='phase-two'") == "abandoned");
+    CHECK(query_text(*conn, "select status from artifacts where source_path='docs/tech-spec.md'") == "retired");
+    CHECK(query_text(*conn, "select status from decisions where title='Drop decision'") == "superseded");
+    CHECK(query_text(*conn, "select status from tasks where slug='task-one'") == "todo");
+  }
+  auto const after = inventory(fx);
+  REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--apply-removals", "--json"}).code == 0);
+  CHECK(inventory(fx) == after);
 }
