@@ -4,4 +4,4 @@
 planar_module(engine_importer
   INTERFACE importer.cppm
   SOURCES importer.cpp
-  DEPENDS json_text json_dom)
+  DEPENDS json_text json_dom sha256)
