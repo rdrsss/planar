@@ -31,6 +31,8 @@ import planar.db;
 import planar.db.migrate;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
+import planar.cmd.planar_agent.dispatch;
+import planar.cmd.planar_agent.tree;
 
 namespace {
 
@@ -80,6 +82,26 @@ auto seed_migrated_db(const std::filesystem::path& path) -> void {
 }
 
 } // namespace
+
+TEST_CASE("planar-agent context leaves stamp, filter, capsule, and resolve", "[cmd][agent][context]") {
+  auto const fx = make_fixture("records");
+  seed_migrated_db(fx.db_path);
+  auto opened = planar::db::connection::open(fx.db_path.string()); REQUIRE(opened);
+  REQUIRE(opened->execute("insert into plans(scope_kind,title,slug,status) values('global','p','p-context','active');"));
+  REQUIRE(opened->execute("insert into tasks(scope_kind,title,status) values('global','t','todo');"));
+  REQUIRE(opened->execute("insert into sessions(vendor) values('test');"));
+  REQUIRE(opened->execute("insert into workflow_runs(plan_id,workflow_name,run_identifier,pid,repo_root) values(1,'wf','ctx-run',1,'/r');"));
+  REQUIRE(opened->execute("insert into agent_work_claims(claim_token,session_id,entity_kind,entity_id,claim_scope,status,vendor,lease_expires_at,run_id,stage) values('ctx-token',1,'task',1,'exclusive','active','test',strftime('%Y-%m-%dT%H:%M:%fZ','now','+600 seconds'),1,'code');"));
+  auto invoke = [&](std::vector<std::string> argv) { std::ostringstream out, err; planar::cmd::agent::context ctx{std::move(argv), planar::cmd::agent::map_env(fx.vars), fx.root / "proj", fx.db_path,out,err}; auto root=planar::cmd::agent::root_app(); auto table=planar::cmd::agent::handlers(*root); auto code=planar::cmd::agent::run(ctx,*root,table); return std::tuple{code,out.str(),err.str()}; };
+  auto [add_code, add_out, add_err] = invoke({"planar-agent","context","add","--claim","ctx-token","--kind","finding","--body","first","--json"});
+  CHECK(add_code == 0); CHECK(add_err.empty()); CHECK(add_out.contains("\"run_id\":1")); CHECK(add_out.contains("\"stage\":\"code\""));
+  auto [list_code, list_out, list_err] = invoke({"planar-agent","context","list","--run","1"});
+  CHECK(list_code == 0); CHECK(list_err.empty()); CHECK(list_out.contains("\"body\":\"first\""));
+  auto [resolve_code, resolve_out, resolve_err] = invoke({"planar-agent","context","resolve","--run","1","--stage","code","--status","consumed","--json"});
+  CHECK(resolve_code == 0); CHECK(resolve_err.empty()); CHECK(resolve_out == "{\"ok\":true,\"updated\":1,\"status\":\"consumed\"}\n");
+  auto [capsule_code, capsule_out, capsule_err] = invoke({"planar-agent","context","capsule","--run","1","--stage","code","--body","summary","--json"});
+  CHECK(capsule_code == 0); CHECK(capsule_err.empty()); CHECK(capsule_out.contains("\"claim_id\":null"));
+}
 
 TEST_CASE("planar-agent refuses a database it would have to migrate", "[cmd][agent][context]") {
   auto const         fx = make_fixture("behind");
