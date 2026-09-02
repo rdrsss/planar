@@ -178,7 +178,7 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   body = read(cache);
   auto const phase_two = body.find(R"(,{"slug":"phase-two")");
   REQUIRE(phase_two != std::string::npos);
-  auto const phase_end = body.find(R"(]}},"decisions")", phase_two);
+  auto const phase_end = body.find(R"(}]}],"decisions")", phase_two);
   REQUIRE(phase_end != std::string::npos);
   body.erase(phase_two, phase_end - phase_two);
   auto const drop = body.find(R"(,{"title":"Drop decision")");
