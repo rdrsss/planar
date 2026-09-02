@@ -48,6 +48,10 @@ auto feed(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return true;
   };
   for (auto const& row : *rows) {
+    if (auto plan = cliapp::flag_int(args, "--plan");
+        plan.has_value() &&
+        (!row.entity || !row.entity_id || !aa::action_belongs_to_plan(**conn, *row.entity, *row.entity_id, *plan)))
+      continue;
     auto task = row.entity.has_value() && aa::to_text(*row.entity) == "task" ? row.entity_id : std::nullopt;
     auto add  = [&](std::string_view at, std::string_view kind) {
       if (include(at, row.vendor, task)) {
@@ -61,6 +65,9 @@ auto feed(context& ctx, const cliapp::parsed_args& args) -> handler_result {
       add(*row.ended_at, "action_ended");
   }
   for (auto const& claim : *claims) {
+    if (auto plan = cliapp::flag_int(args, "--plan");
+        plan.has_value() && !aa::claim_belongs_to_plan(**conn, claim.kind, claim.entity_id, *plan))
+      continue;
     auto task = aa::to_text(claim.kind) == "task" ? std::optional{claim.entity_id} : std::nullopt;
     auto add  = [&](std::string_view at, std::string_view kind) {
       if (include(at, claim.vendor, task)) {
