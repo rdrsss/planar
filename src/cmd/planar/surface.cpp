@@ -4124,7 +4124,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       // writes through the already-ported `touch_idempotent`. See
       // `src/lib/engine/runs/harvest.cppm` for the port and
       // `src/lib/engine/runs/CMakeLists.txt` for the closing account.
-      "closure compute",
       // The five `config` leaves -- `show`, `edit`, `validate`, `init`,
       // `path` -- left this inventory at task 6259. Their engine half
       // (`planar.engine.config`) had been complete since commit 82820b7;

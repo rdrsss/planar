@@ -59,12 +59,15 @@
 planar_module(engine_closure
   INTERFACE
     store.cppm
+    compute.cppm
     closure.cppm
   SOURCES
     store.cpp
+    compute.cpp
   DEPENDS
     db
     json_text)
+target_link_libraries(planar_engine_closure PRIVATE tree_sitter::tree_sitter tree_sitter::zig)
 
 if(TARGET planar_engine_closure_tests)
   # The test binary opens real on-disk scratch databases through

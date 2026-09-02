@@ -34,6 +34,8 @@ import planar.cmd.planar.handler;
 
 namespace planar::cmd::handlers {
 
+/// @brief Handle `planar closure compute <task-id> [--scope S] [--json]`.
+export auto closure_compute(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 /// @brief Handle `planar closure show <task-id> [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.

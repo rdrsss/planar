@@ -367,3 +367,29 @@ if(xxHash_ADDED)
   add_library(xxHash::xxhash ALIAS xxhash)
   target_include_directories(xxhash SYSTEM PUBLIC "${xxHash_SOURCE_DIR}")
 endif()
+
+# --- tree-sitter Zig parser (task 6189 — derived closure extraction) ------
+# Both sources are pinned release tag archives.  The grammar is built as C
+# rather than through its optional Node tooling; the closure engine consumes
+# only the stable C parser API.
+CPMAddPackage(
+  NAME tree_sitter
+  URL https://codeload.github.com/tree-sitter/tree-sitter/tar.gz/refs/tags/v0.25.10
+  URL_HASH SHA256=ad5040537537012b16ef6e1210a572b927c7cdc2b99d1ee88d44a7dcdc3ff44c
+  DOWNLOAD_ONLY YES EXCLUDE_FROM_ALL YES SYSTEM YES)
+CPMAddPackage(
+  NAME tree_sitter_zig
+  URL https://codeload.github.com/tree-sitter-grammars/tree-sitter-zig/tar.gz/refs/tags/v1.1.2
+  URL_HASH SHA256=612d67059faa90ec7691e5d786d70d8f7c2c8b15b83de901b9b801122ad4cf25
+  DOWNLOAD_ONLY YES EXCLUDE_FROM_ALL YES SYSTEM YES)
+if(tree_sitter_ADDED)
+  add_library(tree_sitter_static STATIC "${tree_sitter_SOURCE_DIR}/lib/src/lib.c")
+  target_include_directories(tree_sitter_static SYSTEM PUBLIC "${tree_sitter_SOURCE_DIR}/lib/include")
+  add_library(tree_sitter::tree_sitter ALIAS tree_sitter_static)
+endif()
+if(tree_sitter_zig_ADDED)
+  add_library(tree_sitter_zig_static STATIC "${tree_sitter_zig_SOURCE_DIR}/src/parser.c")
+  target_include_directories(tree_sitter_zig_static SYSTEM PUBLIC "${tree_sitter_zig_SOURCE_DIR}/src")
+  target_link_libraries(tree_sitter_zig_static PUBLIC tree_sitter::tree_sitter)
+  add_library(tree_sitter::zig ALIAS tree_sitter_zig_static)
+endif()

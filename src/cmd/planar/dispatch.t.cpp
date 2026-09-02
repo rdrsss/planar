@@ -1364,7 +1364,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   }
   // ...and the fourth, from task 6189's own families. `closure show` is
   // ported; `closure compute` must stay DECLARED, never silently absent.
-  CHECK(unported.contains("closure compute"));
+  CHECK_FALSE(unported.contains("closure compute"));
   // The three dual nodes (`resume`, `handoff`, `health`) ALL have real
   // handlers now that task 6357 closed the last of them — none may appear
   // in the inventory.
