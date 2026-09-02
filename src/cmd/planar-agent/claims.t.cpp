@@ -601,6 +601,6 @@ TEST_CASE("dispatch preview freezes state and confirm spends it once", "[cmd][ag
                                          "--routing-policy",
                                          "r1"});
   CHECK(replay.code == 1);
-  CHECK(replay.err.contains("StalePreview (already_consumed)"));
+  CHECK(replay.err == "error: stale_preview: already_consumed\n");
   CHECK(scalar_text(scratch, "select count(*) from routing_dispatch_snapshots") == "1");
 }

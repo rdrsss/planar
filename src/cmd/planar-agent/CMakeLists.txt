@@ -168,6 +168,7 @@ planar_binary(planar_agent
     git
     engine_runtime
     engine_routing
+    json_text
     engine_planning)
 
 # `--metadata` is validated with glz::validate_json -- the same purpose-built
