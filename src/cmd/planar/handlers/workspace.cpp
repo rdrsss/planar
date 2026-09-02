@@ -59,6 +59,21 @@ auto workspace_config(const std::filesystem::path& root, bool meta) -> std::stri
   return out;
 }
 
+/// The meta-workspace root is a durable scope guard, not display metadata.
+/// `workspace_config` is produced locally, so a small quoted-field reader is
+/// sufficient here and intentionally refuses malformed/foreign blobs rather
+/// than silently accepting a cross-root reuse.
+auto recorded_workspace_root(const std::optional<std::string>& config) -> std::optional<std::string> {
+  if (!config) return std::nullopt;
+  constexpr std::string_view prefix = "\"root_path\":\"";
+  const auto begin = config->find(prefix);
+  if (begin == std::string::npos) return std::nullopt;
+  const auto value_begin = begin + prefix.size();
+  const auto value_end = config->find('"', value_begin);
+  if (value_end == std::string::npos) return std::nullopt;
+  return config->substr(value_begin, value_end - value_begin);
+}
+
 auto no_children_error(const std::filesystem::path& cwd, bool meta) -> domain_error {
   return error_from_body(domain_error_kind::invalid_input,
                          std::format("no {}directories with .git found under {}; nothing to initialize{}", meta ? "nested " : "child ",
@@ -164,6 +179,17 @@ auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
   }
   if (org->kind != assoc::association_kind::org) {
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "registering workspace failed: InvalidInput"));
+  }
+  if (meta) {
+    auto const recorded_root = recorded_workspace_root(org->config_json);
+    if (!recorded_root) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                             std::format("org:{} has invalid workspace config; repair or choose a different --slug before running `workspace init --meta-repo`", slug)));
+    }
+    if (*recorded_root != cwd.string()) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                             std::format("org:{} already exists with a different workspace root; choose a different --slug or run from the recorded root", slug)));
+    }
   }
 
   std::vector<std::filesystem::path> projects = children;

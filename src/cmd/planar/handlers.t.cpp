@@ -1039,6 +1039,33 @@ TEST_CASE("workspace init rejects incompatible flags before opening or mutating 
   CHECK_FALSE(std::filesystem::exists(fx.root / "home" / "workspaces"));
 }
 
+TEST_CASE("workspace init meta-repo refuses a reused org recorded at another root without linking either repository",
+          "[cmd][handlers][workspace-init][meta][refusal]") {
+  auto const fx = make_fixture("wsinit_meta_root");
+  std::error_code ec;
+  std::filesystem::create_directories(fx.root / "proj" / ".git", ec);
+  std::filesystem::create_directories(fx.root / "proj" / "alpha" / ".git", ec);
+  REQUIRE_FALSE(ec);
+
+  std::ostringstream out;
+  std::ostringstream err;
+  context ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto conn = ctx.ensure_db();
+  REQUIRE(conn.has_value());
+  auto const other_root = (fx.root / "elsewhere").string();
+  REQUIRE(planar::engine::identity::create(**conn,
+                                           {.slug = "acme", .name = "Acme", .kind = planar::engine::identity::association_kind::org,
+                                            .config_json = std::format(R"({{"root_path":"{}","workspace_shape":"meta-repo"}})", other_root)})
+              .has_value());
+
+  auto const got = dispatch(fx, {"workspace", "init", "--meta-repo", "--name", "Acme", "--slug", "acme"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: org:acme already exists with a different workspace root; choose a different --slug or run from the recorded root\n");
+  auto links = (*conn)->prepare("select count(*) from project_associations");
+  REQUIRE(links.has_value()); REQUIRE(links->step().has_value()); CHECK(links->column_int64(0) == 0);
+}
+
 // =========================================================================
 // task 6110 — `workspace routing show`.
 //
