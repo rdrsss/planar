@@ -65,7 +65,35 @@ auto plan_for(db::connection& conn, const json_dom::json_value& value, std::int6
   for (auto const& row : *rows) if (row.slug == *slug) return row.id;
   return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
 }
-auto reconcile_cache(db::connection& conn, const im::outcome& staged, std::int64_t anchor, std::optional<std::string> scope)
+auto artifact_kind_for(const std::filesystem::path& path) -> pl::artifact_kind {
+  auto const name = path.filename().string();
+  if (name == "README.md") return pl::artifact_kind::readme;
+  if (name.contains("roadmap")) return pl::artifact_kind::roadmap;
+  if (name.contains("adr")) return pl::artifact_kind::adr;
+  if (name.contains("test")) return pl::artifact_kind::test_spec;
+  if (name.contains("tech")) return pl::artifact_kind::tech_spec;
+  return pl::artifact_kind::other;
+}
+auto reconcile_artifacts(db::connection& conn, const std::filesystem::path& root, std::int64_t anchor, std::optional<std::string> scope)
+    -> std::expected<void, domain_error> {
+  auto existing = pl::list_artifacts(conn, {.plan_id = anchor});
+  if (!existing) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  std::error_code ec;
+  for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    if (!it->is_regular_file(ec) || it->path().extension() != ".md") continue;
+    auto relative = std::filesystem::relative(it->path(), root, ec).generic_string();
+    if (ec) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    if (std::ranges::any_of(*existing, [&](auto const& row) { return row.source_path && *row.source_path == relative; })) continue;
+    std::ifstream file(it->path(), std::ios::binary);
+    std::string body{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    auto artifact = pl::create_artifact(conn, {.title = it->path().filename().string(), .kind = artifact_kind_for(it->path()), .body = std::move(body),
+                                               .source_path = relative, .plan_id = anchor, .scope = scope});
+    if (!artifact) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  }
+  if (ec) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  return {};
+}
+auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std::filesystem::path& root, std::int64_t anchor, std::optional<std::string> scope)
     -> std::expected<void, domain_error> {
   std::ifstream input(staged.cache_path, std::ios::binary);
   std::string raw{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
@@ -77,6 +105,8 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, std::int64
   if (phases == nullptr || phases->kind != json_dom::json_kind::array || decisions == nullptr || decisions->kind != json_dom::json_kind::array ||
       forward_specs == nullptr || forward_specs->kind != json_dom::json_kind::array)
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+  auto artifacts = reconcile_artifacts(conn, root, anchor, scope);
+  if (!artifacts) return std::unexpected(artifacts.error());
   for (auto const& phase : phases->array) {
     if (phase.kind != json_dom::json_kind::object) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
     auto plan = plan_for(conn, phase, anchor, scope);
@@ -155,7 +185,7 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
       if (!anchor.has_value()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     } else anchor = created->id;
     if (flag_bool(args, "--interpret") && result->mode_ == im::outcome::mode::cache_hit) {
-      auto reconciled = reconcile_cache(**db, *result, *anchor, flag_string(args, "--scope"));
+      auto reconciled = reconcile_cache(**db, *result, root, *anchor, flag_string(args, "--scope"));
       if (!reconciled) return std::unexpected(reconciled.error());
     }
     if (!txn->commit()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
