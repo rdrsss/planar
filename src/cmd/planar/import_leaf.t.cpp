@@ -175,20 +175,28 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   body.insert(at + 1, R"(,{"title":"Drop decision","body":"removed by replacement"})");
   write(cache, body);
   REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"}).code == 0);
-  body = read(cache);
-  auto const phase_two = body.find(R"(,{"slug":"phase-two")");
-  REQUIRE(phase_two != std::string::npos);
-  auto const phase_end = body.find(R"(}]}],"decisions")", phase_two);
-  REQUIRE(phase_end != std::string::npos);
-  body.erase(phase_two, phase_end - phase_two);
-  auto const drop = body.find(R"(,{"title":"Drop decision")");
-  REQUIRE(drop != std::string::npos);
-  auto const drop_end = body.find("}]", drop);
-  REQUIRE(drop_end != std::string::npos);
-  body.erase(drop, drop_end - drop);
-  write(cache, body);
   std::error_code ec;
   std::filesystem::remove(fx.root / "repo" / "docs" / "tech-spec.md", ec);
+
+  // The source tree is an input to the cache key.  Deleting the stale
+  // artifact must therefore stage a new request and seed its *new*
+  // fingerprinted cache, rather than attempting to smuggle an old cache
+  // across the production freshness guard.
+  auto const staged = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--json"});
+  REQUIRE(staged.code == 0);
+  REQUIRE(staged.out.contains("\"mode\":\"pending\""));
+  auto const next_fingerprint = field(staged.out, "fingerprint");
+  auto const next_slug = field(staged.out, "repo_slug");
+  auto next = cache_body(next_fingerprint);
+  auto const phase_two = next.find(R"(,{"slug":"phase-two")");
+  REQUIRE(phase_two != std::string::npos);
+  auto const phase_end = next.find(R"(}]}],"decisions")", phase_two);
+  REQUIRE(phase_end != std::string::npos);
+  // Erase the second phase through its task/object closers, retaining only
+  // the final `]` that closes the phases array.
+  next.erase(phase_two, phase_end + 3 - phase_two);
+  auto const next_cache = fx.root / "home" / "llm" / "import-interpretation" / next_slug / (next_fingerprint + ".json");
+  write(next_cache, next);
 
   auto const preview_apply = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
   REQUIRE(preview_apply.code == 0);
