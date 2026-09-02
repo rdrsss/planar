@@ -301,18 +301,10 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // so the inventory now holds NO three-level path at all — it comes back
   // only if some future cycle declares a new three-level family.
   //
-  // The exemplar itself moved once already: it was `workspace regenerate`
-  // until task 6364 ported that leaf (vendored xxHash, see
-  // `planar.engine.workspace.regenerate`), leaving `workspace init` as the
-  // family's one remaining unported, no-required-positional leaf.
+  // `workspace init` is a handler now, so this optional-only leaf reaches
+  // its domain guard rather than the generated exit-64 placeholder.
   auto const deep = dispatch({"workspace", "init"});
-  CHECK(deep.code == 64);
-  CHECK(deep.err == "error: workspace init: not implemented in this build\n");
-
-  // And the sibling that LEFT the inventory this cycle does not answer 64,
-  // which is what makes the row above a statement about `init` rather than
-  // about the `workspace` family.
-  CHECK(dispatch({"workspace", "regenerate", "--help"}).code == 0);
+  CHECK(deep.code != 64);
 
   // Discrimination: a PORTED verb on the same binary does not answer 64,
   // so exit 64 is not simply what this binary now does.

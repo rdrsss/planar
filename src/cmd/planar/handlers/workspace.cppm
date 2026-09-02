@@ -71,6 +71,17 @@ namespace planar::cmd::handlers {
 /// query fails.
 export auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar workspace init [--name n] [--slug s] [--scan n]
+/// [--meta-repo] [--no-scan] [--enrich] [--json]`.
+///
+/// This is deliberately a layer-3 composition: it discovers child Git
+/// repositories, creates/reuses the org association and project memberships,
+/// builds routing state, regenerates guidance, and installs the root links.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success or the oracle-compatible refusal for an invalid workspace.
+export auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 /// @brief Handle `planar workspace routing show [workspace] [--json]`.
 ///
 /// ## Four failure paths, THREE different exit codes

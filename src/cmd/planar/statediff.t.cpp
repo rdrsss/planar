@@ -780,11 +780,10 @@ auto catalog_fixture(std::span<const std::vector<std::string>> paths) -> std::st
 /// the skip from becoming permanent: porting one of them fails this lane
 /// until its entry is removed here, which is the same red-then-green
 /// discipline `known_divergences` applies to the defects.
-/// `workspace init --json` is catalog-eligible and deliberately remains in
-/// the inventory while its C++ leaf returns the designated unimplemented
-/// refusal.  Pin its serialized *executed argv*, not a fragile sequence tag:
-/// a port removes this allowance only when it makes the step comparable.
-constexpr std::array<std::string_view, 1> expected_unported{R"(["workspace","init","--json"])"};
+/// No catalog-derived state step is currently excluded merely because its
+/// C++ implementation is absent. A future pending-port leaf must be named
+/// here deliberately rather than silently skipped.
+constexpr std::array<std::string_view, 0> expected_unported{};
 
 /// @brief One staged divergence: a real defect with its own task, listed so
 /// this lane is green while the defect stands.
@@ -1237,8 +1236,8 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
   auto const live_unported = source_unported_inventory(target_source_root());
   REQUIRE(live_unported.has_value());
-  CHECK(live_unported->size() == 19);
-  CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") != live_unported->end());
+  CHECK(live_unported->size() == 18);
+  CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") == live_unported->end());
   CHECK(source_oracle_skips(target_source_root()).size() == 37);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
   auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");

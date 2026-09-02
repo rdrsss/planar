@@ -7,6 +7,8 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.engine.workspace;
+import planar.engine.identity.association;
+import planar.engine.config.init;
 import planar.json_text;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -17,6 +19,52 @@ namespace planar::cmd::handlers {
 namespace doctor   = engine::workspace::doctor;
 namespace identity = engine::workspace::identity;
 namespace routing  = engine::workspace::routing;
+namespace assoc    = engine::identity;
+namespace cfg      = engine::config;
+
+namespace {
+
+auto git_marker_exists(const std::filesystem::path& path) -> bool {
+  std::error_code ec;
+  return std::filesystem::exists(path, ec) || std::filesystem::is_symlink(path, ec);
+}
+
+auto scan_git_children(const std::filesystem::path& root, int max_depth) -> std::vector<std::filesystem::path> {
+  std::vector<std::filesystem::path> out;
+  std::error_code ec;
+  if (max_depth < 1 || !std::filesystem::is_directory(root, ec)) return out;
+  std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+  while (!ec && it != end) {
+    const auto path = it->path();
+    const auto name = path.filename().string();
+    if (it.depth() >= max_depth || (!name.empty() && name.front() == '.') || name == "node_modules") {
+      if (it->is_directory(ec)) it.disable_recursion_pending();
+    }
+    if (!ec && it->is_directory(ec) && git_marker_exists(path / ".git")) {
+      out.push_back(path);
+      it.disable_recursion_pending();
+    }
+    it.increment(ec);
+  }
+  std::ranges::sort(out);
+  return out;
+}
+
+auto workspace_config(const std::filesystem::path& root, bool meta) -> std::string {
+  std::string out{"{\"root_path\":"};
+  json_text::append_json_string(out, root.string());
+  if (meta) out += ",\"workspace_shape\":\"meta-repo\"";
+  out += '}';
+  return out;
+}
+
+auto no_children_error(const std::filesystem::path& cwd, bool meta) -> domain_error {
+  return error_from_body(domain_error_kind::invalid_input,
+                         std::format("no {}directories with .git found under {}; nothing to initialize{}", meta ? "nested " : "child ",
+                                     cwd.string(), meta ? " as a meta workspace" : ""));
+}
+
+} // namespace
 
 auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
@@ -43,6 +91,117 @@ auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> handler_
   // nothing. They disagree on an empty database — `{"orgs":[]}\n` versus
   // zero bytes — and that disagreement is the oracle's, not a bug.
   ctx.out() << (flag_bool(args, "--json") ? doctor::doctor_json(*reports) : doctor::doctor_text(*reports));
+  return {};
+}
+
+auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  if (flag_bool(args, "--no-scan") && flag_bool(args, "--enrich")) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "cannot combine --no-scan and --enrich"));
+  }
+  const auto cwd = ctx.cwd();
+  const bool meta = flag_bool(args, "--meta-repo");
+  const bool cwd_is_git = git_marker_exists(cwd / ".git");
+  if (cwd_is_git && !meta) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                           std::format("current directory {} is a git repository; use `planar init` for single repos", cwd.string())));
+  }
+  if (!cwd_is_git && meta) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                           std::format("`--meta-repo` requires current directory {} to be a git repository", cwd.string())));
+  }
+  const auto depth = static_cast<int>(cliapp::flag_int(args, "--scan").value_or(1));
+  auto children = scan_git_children(cwd, depth > 0 ? depth : 1);
+  if (children.empty()) return std::unexpected(no_children_error(cwd, meta));
+
+  auto conn = ctx.ensure_db();
+  if (!conn) return std::unexpected(conn.error());
+  const auto slug = cliapp::flag_string(args, "--slug").value_or(cfg::derive_slug(cwd.filename().string()));
+  const auto name = cliapp::flag_string(args, "--name").value_or(cwd.filename().string());
+  auto org = assoc::show_by_slug(**conn, slug);
+  bool created = false;
+  if (!org) {
+    if (org.error() != assoc::association_error::not_found) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "registering workspace failed: QueryFailed"));
+    }
+    auto made = assoc::create(**conn, assoc::create_args{.slug = slug, .name = name, .kind = assoc::association_kind::org,
+                                                         .config_json = workspace_config(cwd, meta)});
+    if (!made) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "registering workspace failed: QueryFailed"));
+    org = std::move(made);
+    created = true;
+  }
+  if (org->kind != assoc::association_kind::org) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "registering workspace failed: InvalidInput"));
+  }
+
+  std::vector<std::filesystem::path> projects = children;
+  if (meta) projects.insert(projects.begin(), cwd);
+  for (const auto& project : projects) {
+    auto member = assoc::add_member(**conn, slug, project.string());
+    if (!member && member.error() != assoc::association_error::already_member) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "registering workspace failed: QueryFailed"));
+    }
+  }
+
+  bool pipeline_error = false;
+  std::size_t routing_projects = 0, routing_edges = 0;
+  std::int64_t agents_bytes = 0;
+  std::string strategy;
+  if (!flag_bool(args, "--no-scan")) {
+    auto layout = identity::ensure_layout(ctx.env(), org->id);
+    auto home = identity::planar_home(ctx.env());
+    if (!layout || !home) {
+      pipeline_error = true;
+    } else {
+      auto rules = routing::load_capability_rules(*home / "templates" / "workspace-capabilities.toml");
+      if (!rules) pipeline_error = true;
+      else {
+        if (rules->empty()) rules = routing::default_capability_rules();
+        auto overrides = routing::load_overrides(layout->dir / "routing-table-overrides.json");
+        if (!overrides) pipeline_error = true;
+        else {
+          auto table = routing::build(**conn, org->id, org->slug, org->name, *rules);
+          if (!table) { pipeline_error = true; }
+          else {
+            routing::apply_overrides(*table, *overrides);
+            routing_projects = table->projects.size(); routing_edges = table->cross.dependency_edges.size();
+            if (!routing::write_table(layout->routing_table, *table)) pipeline_error = true;
+            if (!pipeline_error) {
+              auto regen = engine::workspace::regenerate::regenerate(**conn, ctx.env(), org->id);
+              if (!regen) pipeline_error = true;
+              else {
+                agents_bytes = regen->bytes_written;
+                if (meta) strategy = "skipped-meta-repo";
+                else if (auto installed = identity::install_symlinks(cwd, *layout)) strategy = std::string{*installed};
+                else pipeline_error = true;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if (flag_bool(args, "--json")) {
+    std::string out = "{\"org\":{\"id\":" + std::format("{}", org->id) + ",\"slug\":";
+    json_text::append_json_string(out, org->slug); out += ",\"name\":"; json_text::append_json_string(out, org->name);
+    out += std::format(",\"created\":{}}},\"projects\":[]", created ? "true" : "false");
+    out += flag_bool(args, "--no-scan") ? ",\"pipeline\":{\"skipped\":true}}\n" :
+        std::format(",\"pipeline\":{{\"routing\":{{\"project_count\":{},\"cross_repo_deps\":{}}},\"regenerate\":{{\"bytes\":{}}},\"symlinks\":{{\"strategy\":\"{}\"}},\"error\":\"{}\"}}}}\n",
+                    routing_projects, routing_edges, agents_bytes, strategy, pipeline_error ? "QueryFailed" : "");
+    ctx.out() << out;
+    return {};
+  }
+  ctx.out() << (created ? "created" : "reused") << " org:" << slug << " (" << name << ")\n";
+  for (std::size_t i = 0; i < projects.size(); ++i) ctx.out() << "  " << (i + 1 == projects.size() ? "└─" : "├─") << " project:"
+                                                                  << cfg::derive_slug(projects[i].filename().string()) << "   ["
+                                                                  << projects[i].string() << "]   (member-of org:" << slug << ")\n";
+  ctx.out() << "\n" << projects.size() << " repos initialized as projects, all members of org:" << slug << ".\n";
+  if (flag_bool(args, "--no-scan")) ctx.out() << "Run `planar workspace routing build` and `planar workspace regenerate` to populate the state directory.\n";
+  else if (!pipeline_error) {
+    ctx.out() << "Routing table refreshed (" << routing_projects << " projects, " << routing_edges << " cross-repo deps).\n";
+    ctx.out() << "AGENTS.md regenerated (" << agents_bytes << " bytes).\n";
+    ctx.out() << "Symlinks installed: AGENTS.md, CLAUDE.md (strategy: " << strategy << ").\n";
+  }
+  ctx.out() << "Run `planar assoc tree` to view the hierarchy.\n";
   return {};
 }
 

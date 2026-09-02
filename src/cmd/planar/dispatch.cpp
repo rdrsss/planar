@@ -470,6 +470,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // help page. See that handler's header.
   table.emplace("skills", handlers::skills);
   table.emplace("workspace doctor", handlers::workspace_doctor);
+  table.emplace("workspace init", handlers::workspace_init);
   table.emplace("workspace routing show", handlers::workspace_routing_show);
   table.emplace("workspace routing build", handlers::workspace_routing_build);
   table.emplace("workspace regenerate", handlers::workspace_regenerate);
