@@ -23,11 +23,14 @@ export struct request {
 
 /// @brief A staged/cached interpretation result visible to the handler.
 export struct outcome {
-  enum class mode { skipped, pending, cache_hit } mode_ = mode::skipped;
-  request               request_;
-  std::filesystem::path cache_path;
-  std::filesystem::path pending_path;
-  std::string           message;
+  /// @brief Whether staging produced nothing, a pending request, or a
+  /// validated cache hit.
+  enum class mode { skipped, pending, cache_hit };
+  mode                  mode_ = mode::skipped; ///< Which of the three this outcome is.
+  request               request_;              ///< The staged deterministic request.
+  std::filesystem::path cache_path;            ///< Where a validated result is (or will be) read.
+  std::filesystem::path pending_path;          ///< Where the pending request was (or will be) written.
+  std::string           message;               ///< Human-readable status line for text output.
   /// Parsed cache metadata.  This is deliberately kept with the staging
   /// result so the layer-3 handler never has to re-parse an unvalidated file.
   std::string interpreted_anchor_title;
