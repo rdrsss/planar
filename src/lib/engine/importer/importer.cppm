@@ -16,18 +16,18 @@ export struct request {
   std::string repo_slug;       ///< Directory-derived stable slug.
   std::string anchor_title;    ///< First README heading, or repo slug.
   std::string fingerprint;     ///< Stable request fingerprint.
-  std::size_t docs_count = 0;  ///< Markdown files found outside guides.
+  std::size_t docs_count  = 0; ///< Markdown files found outside guides.
   std::size_t guide_count = 0; ///< AGENTS/CLAUDE guide files found.
-  std::size_t tree_count = 0;  ///< Regular filesystem entries observed.
+  std::size_t tree_count  = 0; ///< Regular filesystem entries observed.
 };
 
 /// @brief A staged/cached interpretation result visible to the handler.
 export struct outcome {
   enum class mode { skipped, pending, cache_hit } mode_ = mode::skipped;
-  request request_;
+  request               request_;
   std::filesystem::path cache_path;
   std::filesystem::path pending_path;
-  std::string message;
+  std::string           message;
   /// Parsed cache metadata.  This is deliberately kept with the staging
   /// result so the layer-3 handler never has to re-parse an unvalidated file.
   std::string interpreted_anchor_title;
