@@ -5,6 +5,8 @@ module planar.cmd.planar.handlers.importer;
 import std;
 import planar.cliapp.args;
 import planar.json_text;
+import planar.json_dom;
+import planar.db;
 import planar.engine.importer;
 import planar.engine.planning;
 import planar.cmd.planar.context;
@@ -38,6 +40,79 @@ auto json(const im::outcome& out, std::optional<std::int64_t> anchor) -> std::st
   value += "}\n";
   return value;
 }
+
+// Reconciliation belongs at layer 3: importer owns the untrusted filesystem
+// hand-off, while planning owns typed CRUD.  Keeping the composition here
+// avoids the forbidden engine_importer -> engine_planning dependency edge.
+auto text_member(const json_dom::json_value& object, std::string_view name) -> std::optional<std::string> {
+  auto const* value = object.find(name);
+  if (value == nullptr || value->kind != json_dom::json_kind::string) return std::nullopt;
+  return value->string;
+}
+auto plan_for(db::connection& conn, const json_dom::json_value& value, std::int64_t anchor, std::optional<std::string> scope)
+    -> std::expected<std::int64_t, domain_error> {
+  auto slug = text_member(value, "slug");
+  auto title = text_member(value, "title");
+  auto status = text_member(value, "status");
+  if (!slug || !title || !status) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+  auto parsed_status = pl::plan_status_from_text(*status);
+  if (!parsed_status) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+  auto created = pl::create_plan(conn, {.title = *title, .slug = *slug, .status = *parsed_status, .parent_plan_id = anchor, .scope = std::move(scope)});
+  if (created) return created->id;
+  if (created.error() != pl::plan_error::slug_conflict) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  auto rows = pl::list_plans(conn, {.statuses = {pl::plan_status::draft, pl::plan_status::active, pl::plan_status::paused, pl::plan_status::done, pl::plan_status::abandoned}, .parent_plan_id = anchor});
+  if (!rows) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  for (auto const& row : *rows) if (row.slug == *slug) return row.id;
+  return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+}
+auto reconcile_cache(db::connection& conn, const im::outcome& staged, std::int64_t anchor, std::optional<std::string> scope)
+    -> std::expected<void, domain_error> {
+  std::ifstream input(staged.cache_path, std::ios::binary);
+  std::string raw{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+  auto result = json_dom::parse_json(raw);
+  if (!result || result->kind != json_dom::json_kind::object) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+  auto const* phases = result->find("phases");
+  auto const* decisions = result->find("decisions");
+  auto const* forward_specs = result->find("forward_specs");
+  if (phases == nullptr || phases->kind != json_dom::json_kind::array || decisions == nullptr || decisions->kind != json_dom::json_kind::array ||
+      forward_specs == nullptr || forward_specs->kind != json_dom::json_kind::array)
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+  for (auto const& phase : phases->array) {
+    if (phase.kind != json_dom::json_kind::object) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+    auto plan = plan_for(conn, phase, anchor, scope);
+    if (!plan) return std::unexpected(plan.error());
+    auto const* tasks = phase.find("tasks");
+    if (tasks == nullptr || tasks->kind != json_dom::json_kind::array) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+    for (auto const& item : tasks->array) {
+      auto slug = text_member(item, "slug"); auto title = text_member(item, "title"); auto status = text_member(item, "status");
+      if (!slug || !title || !status) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+      auto task_status = pl::task_status_from_text(*status);
+      if (!task_status) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+      auto task = pl::create_task(conn, {.title = *title, .status = *task_status, .plan_id = *plan, .slug = *slug, .no_auto_promote = true, .scope = scope});
+      if (!task && task.error() != pl::task_error::slug_conflict) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    }
+  }
+  for (auto const& value : decisions->array) {
+    auto title = text_member(value, "title"); auto body = text_member(value, "body");
+    if (!title || !body) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+    auto existing = pl::list_decisions(conn, {.plan_id = anchor});
+    if (!existing) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    if (std::ranges::any_of(*existing, [&](auto const& row) { return row.title == *title; })) continue;
+    // `decision create --plan` is the canonical derives-from writer.
+    auto decision = pl::create_decision(conn, {.title = *title, .body = *body, .plan_id = anchor, .scope = scope});
+    if (!decision) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  }
+  for (auto const& value : forward_specs->array) {
+    // Forward proposals materialize as draft anchor plans in this bounded
+    // slice; their seeded documents/workbench projection land separately.
+    if (value.kind != json_dom::json_kind::object) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+    auto slug = text_member(value, "slug"); auto title = text_member(value, "title");
+    if (!slug || !title) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
+    auto created = pl::create_plan(conn, {.title = *title, .slug = *slug, .status = pl::plan_status::draft, .scope = scope});
+    if (!created && created.error() != pl::plan_error::slug_conflict) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+  }
+  return {};
+}
 } // namespace
 
 auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_result {
@@ -63,6 +138,8 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     // A validated interpretation is authoritative for the imported anchor;
     // deterministic staging remains the fallback when interpretation is off.
     auto const& anchor_title = result->interpreted_anchor_title.empty() ? result->request_.anchor_title : result->interpreted_anchor_title;
+    auto txn = (**db).begin_transaction(db::lock_mode::immediate);
+    if (!txn) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     auto created = pl::create_plan(**db, {.title = anchor_title,
                                           .slug = result->request_.repo_slug,
                                           .summary = std::string{"Imported deterministic planning transcription"},
@@ -77,6 +154,11 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
       for (auto const& row : *rows) if (row.slug == result->request_.repo_slug && !row.parent_plan_id.has_value()) { anchor = row.id; break; }
       if (!anchor.has_value()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     } else anchor = created->id;
+    if (flag_bool(args, "--interpret") && result->mode_ == im::outcome::mode::cache_hit) {
+      auto reconciled = reconcile_cache(**db, *result, *anchor, flag_string(args, "--scope"));
+      if (!reconciled) return std::unexpected(reconciled.error());
+    }
+    if (!txn->commit()) return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     result->message = std::format("applied: anchor {}; 1 plans created/0 updated, 0 tasks created/0 updated/0 cancelled", *anchor);
   }
   if (flag_bool(args, "--json")) ctx.out() << json(*result, anchor);
