@@ -1,0 +1,152 @@
+// @file import_leaf.t.cpp
+// @brief Transactional, end-to-end evidence for the interpreted `import` core.
+//
+// The cache is deliberately seeded only after the real handler has staged its
+// pending request.  That keeps the fixture tied to the production fingerprint
+// and makes the preview meaningful: it contains two phase/task proposals, an
+// imported decision, and three forward-spec proposals, yet leaves SQLite
+// unopened.  The same cache then drives apply twice (idempotency) and a
+// malformed mid-reconciliation variant (atomic rollback).
+
+#include <catch2/catch_test_macros.hpp>
+
+import std;
+import planar.db;
+import planar.cmd.planar.context;
+import planar.cmd.planar.dispatch;
+import planar.cmd.planar.tree;
+
+namespace {
+
+using planar::cmd::context;
+
+struct invocation { int code; std::string out; std::string err; bool db_open; };
+struct fixture {
+  std::filesystem::path root;
+  std::map<std::string, std::string, std::less<>> vars;
+  std::filesystem::path db_path;
+};
+
+auto make_fixture(std::string_view tag) -> fixture {
+  auto root = std::filesystem::temp_directory_path() /
+              std::format("planar_import_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
+  std::error_code ec;
+  for (auto const& part : {"home", "proj", "repo", "fakehome"}) std::filesystem::create_directories(root / part, ec);
+  return {.root = root,
+          .vars = {{"PLANAR_HOME", (root / "home").string()}, {"HOME", (root / "fakehome").string()},
+                   {"PWD", (root / "proj").string()}},
+          .db_path = root / "planar.db"};
+}
+
+auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
+  std::vector<std::string> argv{"planar"};
+  argv.insert(argv.end(), args.begin(), args.end());
+  std::ostringstream out, err;
+  context ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto tree = planar::cmd::root_app();
+  auto table = planar::cmd::handlers(*tree);
+  int code = planar::cmd::run(ctx, *tree, table);
+  return {.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+}
+
+auto read(const std::filesystem::path& path) -> std::string {
+  std::ifstream in(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
+auto write(const std::filesystem::path& path, std::string_view body) -> void {
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  REQUIRE(out.good());
+  out << body;
+  REQUIRE(out.good());
+}
+auto field(std::string_view json, std::string_view name) -> std::string {
+  auto const key = std::format("\"{}\":\"", name);
+  auto const start = json.find(key);
+  REQUIRE(start != std::string_view::npos);
+  auto const first = start + key.size();
+  auto const last = json.find('"', first);
+  REQUIRE(last != std::string_view::npos);
+  return std::string{json.substr(first, last - first)};
+}
+auto query_count(planar::db::connection& conn, std::string_view sql) -> std::int64_t {
+  auto stmt = conn.prepare(sql);
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  return stmt->column_int64(0);
+}
+auto inventory(const fixture& fx) -> std::string {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  return std::format("plans={} tasks={} artifacts={} decisions={} links={}",
+                     query_count(*conn, "select count(*) from plans"), query_count(*conn, "select count(*) from tasks"),
+                     query_count(*conn, "select count(*) from artifacts"), query_count(*conn, "select count(*) from decisions"),
+                     query_count(*conn, "select count(*) from entity_links"));
+}
+auto cache_body(std::string_view fingerprint, bool bad_task = false) -> std::string {
+  return std::format(R"({{"schema_version":1,"fingerprint":"{}","anchor_title":"Imported Anchor","provenance":"fixture","phases":[{{"slug":"phase-one","title":"Phase One","status":"active","tasks":[{{"slug":"task-one","title":"Task One","status":"todo"}}]}},{{"slug":"phase-two","title":"Phase Two","status":"draft","tasks":[{{"slug":"task-two","title":"Task Two","status":"{}"}}]}}],"decisions":[{{"title":"Keep transaction","body":"Every reconciliation write is atomic."}}],"forward_specs":[{{"slug":"forward-a","title":"Forward A"}},{{"slug":"forward-b","title":"Forward B"}},{{"slug":"forward-c","title":"Forward C"}}]}})",
+                     fingerprint, bad_task ? "not-a-task-status" : "doing");
+}
+
+auto stage_cache(const fixture& fx, bool bad_task = false) -> std::filesystem::path {
+  write(fx.root / "repo" / "README.md", "# Imported fixture\n");
+  write(fx.root / "repo" / "docs" / "tech-spec.md", "# Imported tech spec\n");
+  auto preview = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--json"});
+  REQUIRE(preview.code == 0);
+  REQUIRE(preview.err.empty());
+  REQUIRE_FALSE(preview.db_open);
+  CHECK(preview.out.contains("\"mode\":\"pending\""));
+  CHECK_FALSE(preview.out.contains("\"plans_created\"")); // cache has not been applied.
+  auto const fingerprint = field(preview.out, "fingerprint");
+  auto const slug = field(preview.out, "repo_slug");
+  auto const cache = fx.root / "home" / "llm" / "import-interpretation" / slug / (fingerprint + ".json");
+  write(cache, cache_body(fingerprint, bad_task));
+  // This second preview contains a non-empty proposal cache but must still
+  // perform no database write. It falsifies a handler that treats cache-hit
+  // as implicit apply.
+  auto cached_preview = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--json"});
+  REQUIRE(cached_preview.code == 0);
+  REQUIRE_FALSE(cached_preview.db_open);
+  CHECK(cached_preview.out.contains("\"mode\":\"cache_hit\""));
+  CHECK(read(cache).contains("phase-one"));
+  CHECK_FALSE(std::filesystem::exists(fx.db_path));
+  return cache;
+}
+
+} // namespace
+
+TEST_CASE("interpreted import applies its cache atomically and is idempotent", "[cmd][import][transaction][idempotent]") {
+  auto const fx = make_fixture("apply");
+  static_cast<void>(stage_cache(fx));
+
+  auto const first = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
+  REQUIRE(first.code == 0);
+  CHECK(first.err.empty());
+  CHECK(first.out.contains("\"mode\":\"cache_hit\""));
+  CHECK(first.out.contains("\"applied\":"));
+
+  auto const after_first = inventory(fx);
+  CHECK(after_first == "plans=6 tasks=2 artifacts=2 decisions=1 links=3");
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    CHECK(query_count(*conn, "select count(*) from entity_links where relationship='derives-from' and from_kind='artifact'") == 2);
+    CHECK(query_count(*conn, "select count(*) from entity_links where relationship='derives-from' and from_kind='decision'") == 1);
+    CHECK(query_count(*conn, "select count(*) from plans where slug like 'forward-%' and status='draft'") == 3);
+  }
+  auto const second = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
+  REQUIRE(second.code == 0);
+  CHECK(second.err.empty());
+  CHECK(inventory(fx) == after_first);
+}
+
+TEST_CASE("interpreted import rolls every prior write back when reconciliation fails mid-cache", "[cmd][import][transaction][rollback]") {
+  auto const fx = make_fixture("rollback");
+  static_cast<void>(stage_cache(fx, true));
+  auto const rejected = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
+  CHECK(rejected.code == 1);
+  CHECK(rejected.out.empty());
+  CHECK(rejected.err == "error: invalid import arguments\n");
+  CHECK(inventory(fx) == "plans=0 tasks=0 artifacts=0 decisions=0 links=0");
+}
