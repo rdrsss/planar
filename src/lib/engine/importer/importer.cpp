@@ -173,8 +173,10 @@ auto run(const std::filesystem::path& root, const std::filesystem::path& planar_
     rec(p, b);
   rec("git_log", "0");
   rec("tree_summary", std::to_string(tree.size()));
-  for (auto const& e : tree)
-    rec(e, "");
+  for (auto const& e : tree) {
+    fingerprint_input.append(e);
+    fingerprint_input.push_back('\0');
+  }
   rec("detected_artifacts", std::to_string(docs.size()));
   for (auto const& [p, b] : docs) {
     auto n    = std::filesystem::path(p).filename().string();

@@ -324,7 +324,11 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
   if (no_forward_specs)
     return {};
   std::set<std::string> accepted;
-  if (!accept_spec || *accept_spec == "all") {
+  // Zig's forward-spec selector is opt-in: absence preserves the deferred
+  // interactive phase and materializes nothing in a non-interactive call.
+  if (!accept_spec)
+    return {};
+  if (*accept_spec == "all") {
     for (auto const& value : forward_specs->array) {
       auto slug = text_member(value, "slug");
       if (!slug)
