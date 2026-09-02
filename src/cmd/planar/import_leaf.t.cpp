@@ -170,7 +170,9 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   auto const needle = R"(}],"forward_specs")";
   auto const at = body.find(needle);
   REQUIRE(at != std::string::npos);
-  body.insert(at, R"(,{"title":"Drop decision","body":"removed by replacement"})");
+  // `needle` starts on the retained decision's closing `}`; append inside
+  // the array, after that object but before the array-closing `]`.
+  body.insert(at + 1, R"(,{"title":"Drop decision","body":"removed by replacement"})");
   write(cache, body);
   REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"}).code == 0);
   body = read(cache);
@@ -210,4 +212,20 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
   auto const after = inventory(fx);
   REQUIRE(dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--apply-removals", "--json"}).code == 0);
   CHECK(inventory(fx) == after);
+}
+
+TEST_CASE("interpreted import forward-spec selection supports all CSV and none", "[cmd][import][forward_specs][selection]") {
+  auto count_forwards = [](const fixture& fx) {
+    auto conn = planar::db::connection::open(fx.db_path.string()); REQUIRE(conn.has_value());
+    return query_count(*conn, "select count(*) from plans where slug like 'forward-%'");
+  };
+  auto const all = make_fixture("forward_all"); static_cast<void>(stage_cache(all));
+  REQUIRE(dispatch(all, {"import", (all.root / "repo").string(), "--interpret", "--apply", "--accept-spec", "all"}).code == 0);
+  CHECK(count_forwards(all) == 3);
+  auto const csv = make_fixture("forward_csv"); static_cast<void>(stage_cache(csv));
+  REQUIRE(dispatch(csv, {"import", (csv.root / "repo").string(), "--interpret", "--apply", "--accept-spec", "forward-a,forward-c"}).code == 0);
+  CHECK(count_forwards(csv) == 2);
+  auto const none = make_fixture("forward_none"); static_cast<void>(stage_cache(none));
+  REQUIRE(dispatch(none, {"import", (none.root / "repo").string(), "--interpret", "--apply", "--no-forward-specs"}).code == 0);
+  CHECK(count_forwards(none) == 0);
 }
