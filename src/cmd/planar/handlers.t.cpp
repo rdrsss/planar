@@ -982,6 +982,63 @@ TEST_CASE("workspace doctor reports an unreadable config without repairing the r
   CHECK_FALSE(std::filesystem::exists(fx.root / "proj" / "AGENTS.md"));
 }
 
+TEST_CASE("workspace init creates durable org membership routing and root guidance", "[cmd][handlers][workspace-init]") {
+  // A non-empty child fixture is essential: the oracle refuses before it
+  // writes when the scan finds no nested checkout, so an empty fixture cannot
+  // falsify a handler that quietly skips discovery.
+  auto const fx = make_fixture("wsinit_fresh");
+  std::error_code ec;
+  std::filesystem::create_directories(fx.root / "proj" / "alpha" / ".git", ec);
+  REQUIRE_FALSE(ec);
+
+  auto const got = dispatch(fx, {"workspace", "init", "--name", "Acme", "--slug", "acme"});
+  INFO(got.err);
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.out.contains("created org:acme (Acme)\n"));
+  CHECK(got.out.contains("project:alpha"));
+  CHECK(got.out.contains("(auto-created, member-of org:acme)"));
+  CHECK(got.out.contains("1 repos initialized as projects, all members of org:acme.\n"));
+  CHECK(std::filesystem::exists(fx.root / "home" / "workspaces" / "1" / "routing-table.json"));
+  CHECK(std::filesystem::exists(fx.root / "home" / "workspaces" / "1" / "AGENTS.md"));
+  CHECK(std::filesystem::is_symlink(fx.root / "proj" / "AGENTS.md"));
+  CHECK(std::filesystem::is_symlink(fx.root / "proj" / "CLAUDE.md"));
+
+  std::ostringstream out;
+  std::ostringstream err;
+  context ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto conn = ctx.ensure_db();
+  REQUIRE(conn.has_value());
+  auto org_count = (*conn)->prepare("select count(*) from associations where slug='acme' and kind='org'");
+  REQUIRE(org_count.has_value()); REQUIRE(org_count->step().has_value()); CHECK(org_count->column_int64(0) == 1);
+  auto member_count = (*conn)->prepare("select count(*) from project_associations");
+  REQUIRE(member_count.has_value()); REQUIRE(member_count->step().has_value()); CHECK(member_count->column_int64(0) == 1);
+
+  // Reuse must not duplicate either durable row. The fresh fixture above has
+  // a real member, so this arm distinguishes idempotence from a no-op path.
+  auto const again = dispatch(fx, {"workspace", "init", "--name", "Acme", "--slug", "acme", "--json"});
+  CHECK(again.code == 0);
+  CHECK(again.err.empty());
+  CHECK(again.out.contains("\"org\":{\"id\":1,\"slug\":\"acme\",\"name\":\"Acme\",\"created\":false}"));
+  CHECK(again.out.contains("\"projects\":[{\"slug\":\"alpha\""));
+  CHECK(again.out.contains("\"created\":false,\"membership_created\":false}"));
+  CHECK(again.out.contains("\"routing\":{\"project_count\":1,\"cross_repo_deps\":0,\"enrich_enabled\":false,\"enrich_misses\":0}"));
+  CHECK(again.out.contains("\"symlinks\":{\"strategy\":\"symlink\",\"installed\":[\"AGENTS.md\",\"CLAUDE.md\"]}"));
+  auto member_count_after = (*conn)->prepare("select count(*) from project_associations");
+  REQUIRE(member_count_after.has_value()); REQUIRE(member_count_after->step().has_value()); CHECK(member_count_after->column_int64(0) == 1);
+}
+
+TEST_CASE("workspace init rejects incompatible flags before opening or mutating the database", "[cmd][handlers][workspace-init][refusal]") {
+  auto const fx = make_fixture("wsinit_refusal");
+  auto const got = dispatch(fx, {"workspace", "init", "--no-scan", "--enrich"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: cannot combine --no-scan and --enrich\n");
+  CHECK_FALSE(got.db_open);
+  CHECK_FALSE(std::filesystem::exists(fx.db_path));
+  CHECK_FALSE(std::filesystem::exists(fx.root / "home" / "workspaces"));
+}
+
 // =========================================================================
 // task 6110 — `workspace routing show`.
 //
