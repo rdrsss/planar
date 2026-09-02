@@ -1237,9 +1237,10 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
   auto const live_unported = source_unported_inventory(target_source_root());
   REQUIRE(live_unported.has_value());
-  // Task 6038 completes the nine planar-agent leaves. The cutover remains
-  // refused on the ten remaining operator/watch entries and oracle skips.
-  CHECK(live_unported->size() == 10);
+  // Task 6038 completes the nine planar-agent leaves; task 6039 lands
+  // planar-watch's `feed`. The cutover remains refused on the nine
+  // remaining operator/watch entries and oracle skips.
+  CHECK(live_unported->size() == 9);
   CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") != live_unported->end());
   CHECK(source_oracle_skips(target_source_root()).size() == 37);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
@@ -1262,7 +1263,7 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
     INFO("landed agent path remained in unported inventory: " << landed);
     CHECK(std::ranges::find(*agent_unported, landed) == agent_unported->end());
   }
-  CHECK(watch_unported->size() == 4);
+  CHECK(watch_unported->size() == 3);
   CHECK(target_zig_tree_present());
 }
 

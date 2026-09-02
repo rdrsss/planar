@@ -63,11 +63,11 @@
 #
 # --- NOT landed, named rather than dropped silently ------------------------
 #
-# `feed`, `run` and `sync-events`, three of the oracle's twelve verbs:
+# `feed` landed at task 6039 — it is the default verb (a bare `planar-watch`
+# renders it, matching the oracle) and its snapshot rendering lives in
+# `handlers/feed.cppm`. `run` and `sync-events`, two of the oracle's twelve
+# verbs, remain unported:
 #
-#   feed          648 lines plus follow.zig's SIGINT loop. It is the DEFAULT
-#                 verb, so its absence is also why a bare `planar-watch`
-#                 renders root help here where the oracle streams the feed.
 #   run           `run list` / `run show`, over `workflow_runs` +
 #                 `context_records`. A different bucket entirely
 #                 (`engine_runs`), not agentactivity — it was gated by this
@@ -81,12 +81,16 @@
 # declared (catalog parity compares declared flag sets), and the handler
 # returns not_implemented (exit 64) rather than emitting one snapshot and
 # exiting 0. A silent single-shot would read as a working stream to any
-# script that pipes it. The arm needs a SIGINT handler and a poll/wake loop,
-# neither of which exists anywhere in this tree.
+# script that pipes it. The arm needs a SIGINT handler and a poll/wake loop
+# reproducing the oracle's Tier-2 kqueue/inotify wake source
+# (`zig/src/cmd/planar-watch/handlers/follow.zig`), neither of which exists
+# anywhere in this tree; see `handlers.t.cpp`'s pinned refusal test.
 #
-# One consequence still visible in output, stated rather than hidden: the
-# ROOT help page lists nine verbs where the oracle lists twelve. Leaf pages
-# are pinned; the root page is not oracle-comparable.
+# The root help page now lists all twelve subcommands (CLI11's own
+# generated SUBCOMMANDS block, via `cliapp::apply_surface` for the two
+# still-unported ones), but is CLI11-formatted rather than transcribed
+# byte for byte, so leaf pages are pinned and the root page stays
+# not oracle-comparable.
 
 planar_binary(planar_watch
   MAIN

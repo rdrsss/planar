@@ -574,10 +574,9 @@ TEST_CASE("planar-watch: a declared-but-unported verb refuses at exit 64", "[cmd
     return run_pinned(cpp_bin(), args, arena.cpp_root, tag);
   };
 
-  auto const feed = run({"feed"}, "feed");
-  CHECK(feed.code == 64);
-  CHECK(feed.out.empty());
-  CHECK(feed.err == "error: feed: not implemented in this build\n");
+  // `feed` was one of these until task 6039 landed it for real (see
+  // handlers/feed.cppm and the default-verb cases in handlers.t.cpp); it
+  // is no longer declared-but-unported and does not belong in this list.
 
   auto const events = run({"sync-events"}, "syncevents");
   CHECK(events.code == 64);
