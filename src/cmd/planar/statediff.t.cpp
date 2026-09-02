@@ -133,6 +133,18 @@ auto oracle_available() -> bool {
   return std::filesystem::exists(zig_bin());
 }
 
+/// @brief Root of the checkout this test binary is authorizing.
+/// @return The configured target source root, never the shared oracle root.
+auto target_source_root() -> std::filesystem::path {
+  return std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT};
+}
+
+/// @brief Whether the target checkout still owns its Zig source tree.
+/// @return `true` only when this worktree, rather than a shared checkout, has `zig/`.
+auto target_zig_tree_present() -> bool {
+  return std::filesystem::is_directory(target_source_root() / "zig");
+}
+
 // -------------------------------------------------------------------------
 // Volatility
 // -------------------------------------------------------------------------
@@ -795,6 +807,174 @@ const std::vector<known>& known_divergences() {
   return staged;
 }
 
+/// @brief The decision-982 leaves exercised by the ordered real state lane.
+///
+/// These are command identities, not synthetic slots.  The state test below
+/// proves they occur in the catalog-derived execution before a retirement
+/// gate may consume that test's exit status.
+constexpr std::array<std::string_view, 11> in_scope_state_leaves{
+    "init",         "assoc create", "plan create",  "task add",  "question add",  "question answer",
+    "decision add", "scenario add", "annotate add", "links add", "plan closeout",
+};
+
+/// @brief Read a target-worktree source file or return an empty optional.
+auto source_text(const std::filesystem::path& path) -> std::optional<std::string> {
+  std::ifstream input(path);
+  if (!input) {
+    return std::nullopt;
+  }
+  return std::string{std::istreambuf_iterator<char>{input}, {}};
+}
+
+/// @brief Parse the generated `k_unported` initializer, ignoring comments.
+auto generated_unported(const std::filesystem::path& source) -> std::optional<std::vector<std::string>> {
+  auto text = source_text(source);
+  if (!text) {
+    return std::nullopt;
+  }
+  auto const function = text->find("auto unported_paths()");
+  auto const begin    = text->find("k_unported[] = {", function);
+  auto const end      = text->find("};", begin);
+  if (function == std::string::npos || begin == std::string::npos || end == std::string::npos) {
+    return std::nullopt;
+  }
+  std::vector<std::string> out;
+  std::istringstream       lines{text->substr(begin, end - begin)};
+  for (std::string line; std::getline(lines, line);) {
+    auto const comment = line.find("//");
+    if (comment != std::string::npos) {
+      line.erase(comment);
+    }
+    for (std::size_t quote = line.find('"'); quote != std::string::npos;) {
+      auto const close = line.find('"', quote + 1);
+      if (close == std::string::npos) {
+        return std::nullopt;
+      }
+      out.push_back(line.substr(quote + 1, close - quote - 1));
+      quote = line.find('"', close + 1);
+    }
+  }
+  std::ranges::sort(out);
+  if (std::ranges::adjacent_find(out) != out.end()) {
+    return std::nullopt;
+  }
+  return out;
+}
+
+/// @brief Derive every generated unported inventory from this worktree.
+auto source_unported_inventory(const std::filesystem::path& root) -> std::optional<std::vector<std::string>> {
+  std::vector<std::string> out;
+  for (auto const& [binary, relative] : std::array{
+           std::pair{"planar", "src/cmd/planar/surface.cpp"},
+           std::pair{"planar-agent", "src/cmd/planar-agent/surface.cpp"},
+           std::pair{"planar-watch", "src/cmd/planar-watch/surface.cpp"},
+       }) {
+    auto paths = generated_unported(root / relative);
+    if (!paths) {
+      return std::nullopt;
+    }
+    for (auto const& path : *paths) {
+      out.push_back(
+          std::format("{}:{} ({})", binary, path,
+                      std::string_view{binary} == "planar" && path == "explore" ? "deferred-by-decision980" : "pending-port"));
+    }
+  }
+  std::ranges::sort(out);
+  return out;
+}
+
+/// @brief Enumerate the oracle-gating macros in test sources, with no line pins.
+auto source_oracle_skips(const std::filesystem::path& root) -> std::vector<std::string> {
+  std::vector<std::string> out;
+  for (std::filesystem::recursive_directory_iterator it{root / "src"}, end; it != end; ++it) {
+    if (!it->is_regular_file() || it->path().extension() != ".cpp") {
+      continue;
+    }
+    auto text = source_text(it->path());
+    if (!text) {
+      continue;
+    }
+    std::istringstream lines{*text};
+    for (std::string line; std::getline(lines, line);) {
+      auto const code  = std::string_view{line}.substr(0, line.find("//"));
+      auto const first = code.find_first_not_of(" \t");
+      if (first == std::string_view::npos) {
+        continue;
+      }
+      auto const head = code.substr(first);
+      if (head.starts_with("PLANAR_REQUIRE_ORACLE(")) {
+        out.push_back(std::filesystem::relative(it->path(), root).string());
+      }
+      if (head.starts_with("SKIP(") && (code.contains("Zig oracle") || code.contains("zig reference"))) {
+        out.push_back(std::filesystem::relative(it->path(), root).string());
+      }
+    }
+  }
+  std::ranges::sort(out);
+  return out;
+}
+
+/// @brief Result of the only consumable, real oracle-retirement gate.
+struct retirement_report {
+  bool                     ready     = false;
+  int                      exit_code = -1;
+  std::vector<std::string> refusals;
+};
+
+/// @brief Invoke the consumable gate, retaining its report only for test diagnostics.
+///
+/// The shell surface is deliberately the implementation: task 6045 consumes
+/// its process status before deletion, and tests exercise that exact process
+/// rather than recreating the policy in C++.
+auto run_retirement_gate(const std::filesystem::path& root = target_source_root()) -> retirement_report {
+  retirement_report        result;
+  std::vector<std::string> args;
+  if (root != target_source_root()) {
+    args = {"--source-root", root.string()};
+  }
+  auto const process =
+      run_pinned(std::filesystem::path{PLANAR_RETIREMENT_GATE}, args, make_arena("retirement_gate").cpp_root, "retirement_gate");
+  result.exit_code = process.code;
+  result.ready     = process.code == 0;
+  std::istringstream lines{process.out + process.err};
+  for (std::string line; std::getline(lines, line);) {
+    if (line.starts_with("refusal: ")) {
+      result.refusals.push_back(line.substr(std::string_view{"refusal: "}.size()));
+    }
+  }
+  return result;
+}
+
+/// @brief Build an otherwise-ready target checkout for one gate evidence arm.
+auto clean_retirement_fixture(std::string_view name) -> std::filesystem::path {
+  auto const      fixture = std::filesystem::temp_directory_path() / std::format("planar_retirement_{}", name);
+  std::error_code discard;
+  std::filesystem::remove_all(fixture, discard);
+  std::filesystem::create_directories(fixture / "zig", discard);
+  for (auto const& [relative, paths] : std::array{
+           std::pair{"src/cmd/planar/surface.cpp", R"(  "explore",)"},
+           std::pair{"src/cmd/planar-agent/surface.cpp", ""},
+           std::pair{"src/cmd/planar-watch/surface.cpp", ""},
+       }) {
+    auto const target = fixture / relative;
+    std::filesystem::create_directories(target.parent_path(), discard);
+    std::ofstream out(target);
+    out << "auto unported_paths() {\n static constexpr std::string_view k_unported[] = {\n" << paths << "\n };\n}\n";
+  }
+  return fixture;
+}
+
+/// @brief Temporarily expose one explicit test seam to the child gate process.
+struct scoped_environment {
+  explicit scoped_environment(char const* name) : name{name} {
+    REQUIRE(::setenv(name, "1", 1) == 0);
+  }
+  ~scoped_environment() {
+    static_cast<void>(::unsetenv(name.c_str()));
+  }
+  std::string name;
+};
+
 } // namespace
 
 TEST_CASE("the volatile-column exact list has no stale entries", "[cmd][parity][state]") {
@@ -1044,6 +1224,151 @@ TEST_CASE("state catalog: exclusions are explicit and workspace init remains eli
   CHECK(excluded->at(2).reason == "output-only");
 }
 
+TEST_CASE("oracle retirement: real state differential and live evidence refuse cutover", "[cmd][parity][state][retirement]") {
+  REQUIRE(oracle_available());
+  auto const process = run_pinned(std::filesystem::path{PLANAR_RETIREMENT_GATE}, std::array<std::string, 0>{},
+                                  make_arena("retirement_process").cpp_root, "retirement_gate");
+  INFO(process.out << process.err);
+  CHECK(process.code != 0);
+  CHECK(process.out.contains("oracle-retirement: REFUSED"));
+  auto const result = run_retirement_gate();
+  CHECK_FALSE(result.ready);
+  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("unported inventory"); }));
+  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
+  auto const live_unported = source_unported_inventory(target_source_root());
+  REQUIRE(live_unported.has_value());
+  CHECK(live_unported->size() == 19);
+  CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") != live_unported->end());
+  CHECK(source_oracle_skips(target_source_root()).size() == 37);
+  auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
+  auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
+  auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cpp");
+  REQUIRE(planar_unported.has_value());
+  REQUIRE(agent_unported.has_value());
+  REQUIRE(watch_unported.has_value());
+  CHECK(planar_unported->size() == 6);
+  CHECK(agent_unported->size() == 9);
+  CHECK(watch_unported->size() == 4);
+  CHECK(target_zig_tree_present());
+}
+
+TEST_CASE("oracle retirement: generated inventory drift is observed for every binary and skip source",
+          "[cmd][parity][state][retirement]") {
+  auto const      fixture = std::filesystem::temp_directory_path() / "planar_retirement_inventory_fixture";
+  std::error_code discard;
+  std::filesystem::remove_all(fixture, discard);
+  std::filesystem::create_directories(fixture / "zig", discard);
+  auto write_surface = [&](std::string_view relative, std::string_view paths) {
+    auto const target = fixture / relative;
+    std::filesystem::create_directories(target.parent_path(), discard);
+    std::ofstream out(target);
+    out << "auto unported_paths() {\n static constexpr std::string_view k_unported[] = {\n" << paths << "\n };\n}\n";
+  };
+  write_surface("src/cmd/planar/surface.cpp", R"(  "explore",)");
+  write_surface("src/cmd/planar-agent/surface.cpp", "");
+  write_surface("src/cmd/planar-watch/surface.cpp", "");
+  REQUIRE(source_unported_inventory(fixture) == std::vector<std::string>{"planar:explore (deferred-by-decision980)"});
+  // Generated inventories are allowed to coalesce entries.  This control
+  // kills the former line-oriented parser which silently read only the first.
+  write_surface("src/cmd/planar-agent/surface.cpp", R"(  "first", "second", "third",)");
+  REQUIRE(generated_unported(fixture / "src/cmd/planar-agent/surface.cpp") ==
+          std::vector<std::string>{"first", "second", "third"});
+  write_surface("src/cmd/planar-agent/surface.cpp", "");
+  for (auto const& [relative, expected] : std::array{
+           std::pair{"src/cmd/planar/surface.cpp", "planar:extra (pending-port)"},
+           std::pair{"src/cmd/planar-agent/surface.cpp", "planar-agent:extra (pending-port)"},
+           std::pair{"src/cmd/planar-watch/surface.cpp", "planar-watch:extra (pending-port)"},
+       }) {
+    write_surface(relative, R"(  "extra",)");
+    auto inventory = source_unported_inventory(fixture);
+    REQUIRE(inventory.has_value());
+    CHECK(std::ranges::find(*inventory, expected) != inventory->end());
+    write_surface(relative, relative == std::string_view{"src/cmd/planar/surface.cpp"} ? R"(  "explore",)" : "");
+  }
+  std::ofstream skip(fixture / "src/cmd/retirement_oracle.t.cpp");
+  skip << R"(PLANAR_REQUIRE_ORACLE(true, "fixture");)" << '\n';
+  skip.close();
+  CHECK(source_oracle_skips(fixture).size() == 1);
+  std::filesystem::remove_all(fixture, discard);
+}
+
+TEST_CASE("oracle retirement: a ready report consumes the real state differential", "[cmd][parity][state][retirement]") {
+  REQUIRE(oracle_available());
+  auto const      fixture = std::filesystem::temp_directory_path() / "planar_retirement_ready_fixture";
+  std::error_code discard;
+  std::filesystem::remove_all(fixture, discard);
+  std::filesystem::create_directories(fixture / "zig", discard);
+  auto write_surface = [&](std::string_view relative, std::string_view paths) {
+    auto const target = fixture / relative;
+    std::filesystem::create_directories(target.parent_path(), discard);
+    std::ofstream out(target);
+    out << "auto unported_paths() {\n static constexpr std::string_view k_unported[] = {\n" << paths << "\n };\n}\n";
+  };
+  write_surface("src/cmd/planar/surface.cpp", R"(  "explore",)");
+  write_surface("src/cmd/planar-agent/surface.cpp", "");
+  write_surface("src/cmd/planar-watch/surface.cpp", "");
+  auto const result = run_retirement_gate(fixture);
+  INFO(std::format("{}", result.refusals));
+  CHECK(result.ready);
+  std::filesystem::remove_all(fixture, discard);
+}
+
+TEST_CASE("oracle retirement: each evidence arm independently refuses a real gate", "[cmd][parity][state][retirement]") {
+  REQUIRE(oracle_available());
+  std::error_code discard;
+
+  SECTION("a durable C++-only state delta") {
+    auto const               fixture = clean_retirement_fixture("durable_delta_fixture");
+    scoped_environment const injected_delta{"PLANAR_STATE_DIFF_INJECT_DURABLE_DELTA"};
+    auto const               result = run_retirement_gate(fixture);
+    CHECK_FALSE(result.ready);
+    CHECK(result.exit_code != 0);
+    CHECK(std::ranges::any_of(result.refusals,
+                              [](auto const& item) { return item.contains("real catalog-derived state differential failed"); }));
+    CHECK(std::filesystem::is_directory(fixture / "zig"));
+    std::filesystem::remove_all(fixture, discard);
+  }
+
+  SECTION("an extra generated unported leaf") {
+    auto const    fixture = clean_retirement_fixture("unported_delta_fixture");
+    std::ofstream out(fixture / "src/cmd/planar/surface.cpp");
+    out << "auto unported_paths() {\n static constexpr std::string_view k_unported[] = {\n"
+        << R"(  "explore", "extra",)" << "\n };\n}\n";
+    out.close();
+    auto const result = run_retirement_gate(fixture);
+    CHECK_FALSE(result.ready);
+    CHECK(result.exit_code != 0);
+    CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("unported inventory"); }));
+    CHECK(std::filesystem::is_directory(fixture / "zig"));
+    std::filesystem::remove_all(fixture, discard);
+  }
+
+  SECTION("a remaining oracle-conditional skip") {
+    auto const    fixture = clean_retirement_fixture("skip_delta_fixture");
+    std::ofstream out(fixture / "src/cmd/retirement_oracle.t.cpp");
+    out << R"(PLANAR_REQUIRE_ORACLE(true, "fixture");)" << '\n';
+    out.close();
+    auto const result = run_retirement_gate(fixture);
+    CHECK_FALSE(result.ready);
+    CHECK(result.exit_code != 0);
+    CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
+    CHECK(std::filesystem::is_directory(fixture / "zig"));
+    std::filesystem::remove_all(fixture, discard);
+  }
+}
+
+TEST_CASE("oracle retirement: target zig absence refuses even with a shared oracle", "[cmd][parity][state][retirement]") {
+  REQUIRE(oracle_available());
+  auto const      fixture = std::filesystem::temp_directory_path() / "planar_retirement_target_absent";
+  std::error_code discard;
+  std::filesystem::remove_all(fixture, discard);
+  std::filesystem::create_directories(fixture / "src/cmd", discard);
+  auto const result = run_retirement_gate(fixture);
+  CHECK_FALSE(result.ready);
+  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("target checkout has no zig/"); }));
+  std::filesystem::remove_all(fixture, discard);
+}
+
 TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequence", "[cmd][parity][state]") {
   PLANAR_REQUIRE_ORACLE(
       oracle_available(),
@@ -1065,6 +1390,21 @@ TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequen
   auto const  steps = sequence(cpp_catalog.out, zig_catalog.out, catalog_error);
   REQUIRE(steps.has_value());
   INFO("catalog-derived state inventory: " << (steps->size() - hand_authored_stateful_sequence().size()) << " leaves");
+  for (auto const identity : in_scope_state_leaves) {
+    std::istringstream       tokens{std::string{identity}};
+    std::vector<std::string> prefix;
+    for (std::string token; tokens >> token;) {
+      prefix.push_back(std::move(token));
+    }
+    auto const executed = std::ranges::any_of(*steps, [&](step const& candidate) {
+      if (candidate.args.size() < prefix.size()) {
+        return false;
+      }
+      return std::equal(prefix.begin(), prefix.end(), candidate.args.begin());
+    });
+    INFO("decision-982 leaf executed by the real state lane: " << identity);
+    REQUIRE(executed);
+  }
   for (std::size_t index = 0; index < steps->size(); ++index) {
     auto const& args = (*steps)[index].args;
     auto const  tag  = std::format("s{:02}", index);
@@ -1098,6 +1438,17 @@ TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequen
       if (mine_err != ref_err) {
         observed.push_back({tag, "stderr", std::format("cpp=[{}] zig=[{}]", escape(mine_err), escape(ref_err))});
       }
+    }
+
+    // The retirement fixture below introduces a real, durable C++-only
+    // table after a catalog-derived command.  It is intentionally an
+    // environment-gated test seam: the same dump/diff path must reject it,
+    // rather than a wrapper merely pretending that the state lane failed.
+    if (index == 0 && std::getenv("PLANAR_STATE_DIFF_INJECT_DURABLE_DELTA") != nullptr) {
+      auto probe = planar::db::connection::open((space.cpp_root / "planar.db").string());
+      REQUIRE(probe.has_value());
+      REQUIRE(probe->execute("create table oracle_retirement_probe (id integer not null)"));
+      REQUIRE(probe->execute("insert into oracle_retirement_probe (id) values (1)"));
     }
 
     auto const cpp_state = dump_database(space.cpp_root / "planar.db", roots);

@@ -132,6 +132,12 @@ test: test-install-manifest test-install-deps ## Run unit tests
 	cmake --build build/debug $(ARGS)
 	ctest --test-dir build/debug --output-on-failure $(ARGS)
 
+.PHONY: oracle-retirement-gate
+oracle-retirement-gate: ## Fail-closed evidence required before retiring zig/
+	cmake --preset debug
+	cmake --build build/debug --target planar_cmd_planar_tests $(ARGS)
+	scripts/oracle-retirement-gate.sh
+
 .PHONY: test-integration
 # -Dtest-binary=true: rebuild the binary with the test-binary flag enabled.
 # This activates the PLANAR_DISABLE_WORKTREE_GATE env-var bypass in the
