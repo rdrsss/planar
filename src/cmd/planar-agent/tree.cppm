@@ -22,47 +22,14 @@
 /// `templates`, `ext`, `sync`, `promote`, `demote`, `capture`,
 /// `dashboard`, `tree`, `health` may appear here, at any depth, ever.
 ///
-/// ## What this tree deliberately is NOT (yet)
+/// ## Complete declared surface
 ///
-/// The oracle registers eighteen verbs. This tree registers FOURTEEN —
-/// task 6038 landed the whole claim ritual (`pull`, `peek`, `claim`,
-/// `heartbeat`, `claim-associate`, `complete`, `fail`, `release`, `block`,
-/// `action start`/`end`, `reconcile`, `abort`) on top of `version` and
-/// `schema`. The remaining FOUR are blocked ONE LAYER DOWN, on layer-2
-/// buckets this tree has never ported:
-///
-///   ingest                 needs the vendor hook-event adapters.
-///   run start / run end    write `workflow_runs`. NOTE this is a
-///                          DIFFERENT table from the `runs` table
-///                          `planar.engine.runs.lifecycle` (which IS
-///                          ported) operates on — that bucket's `start`
-///                          mints a `run_uid` into `runs`, while
-///                          `planar-agent run start` inserts a caller-
-///                          supplied `run_identifier` into `workflow_runs`.
-///                          Reusing the ported bucket here would write the
-///                          wrong table; verified by reading
-///                          zig/src/cmd/planar-agent/handlers/run/start.zig's
-///                          literal INSERT. (`reconcile` DOES sweep
-///                          `workflow_runs`, so the table is reachable —
-///                          what is missing is the run LIFECYCLE surface.)
-///   dispatch / context     need the `routing_dispatch_*` and run-scoped
-///                          context tables. `routing_dispatch_previews`
-///                          alone carries twenty-odd bound columns and a
-///                          single-use trigger; it is its own cycle.
-///
-/// Omitting an unported child is the rule this tree inherits (task 6106:
-/// `planar workflow --help` lists two commands where the oracle lists
-/// three). The consequence, stated plainly because it is visible in
-/// output: `planar-agent --help` here lists fourteen verbs where the
-/// oracle lists eighteen, and that page is therefore still NOT
-/// oracle-comparable. LEAF pages ARE, and all fourteen are diffed
-/// byte-for-byte against the live oracle in `parity.t.cpp`.
-///
-/// The alternative — registering all eighteen and binding the unported
-/// ones to a `not_implemented` stub so the root help page matched — was
-/// considered and rejected: a registered verb that exits 64 looks like a
-/// working verb to a script, and it would make the capability-boundary
-/// tests assert a surface the binary cannot actually deliver.
+/// The oracle's eighteen top-level verbs are all declared and wired here.
+/// `ingest` normalizes the Claude and Copilot hook envelopes at layer 3,
+/// then composes the runtime session/action primitives atomically.  `run`,
+/// `dispatch`, and `context` land through their corresponding runtime and
+/// routing stores.  The generated surface remains the schema-catalog source
+/// of truth, while this tree owns the exact CLI11 declaration order.
 module;
 
 export module planar.cmd.planar_agent.tree;

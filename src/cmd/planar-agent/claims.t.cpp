@@ -44,6 +44,7 @@ import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
 import planar.engine.runtime.agentactivity;
+import planar.engine.routing;
 import planar.cmd.planar_agent.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.dispatch;
@@ -52,8 +53,9 @@ import planar.cmd.planar_agent.tree;
 
 namespace {
 
-namespace agent = planar::cmd::agent;
-namespace aa    = planar::engine::runtime::agentactivity;
+namespace agent   = planar::cmd::agent;
+namespace aa      = planar::engine::runtime::agentactivity;
+namespace routing = planar::engine::routing;
 
 struct scratch_dir {
   std::filesystem::path path_;
@@ -419,6 +421,19 @@ TEST_CASE("peek opens the database but writes nothing", "[cmd][agent][handlers]"
   CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
 }
 
+TEST_CASE("run start reports duplicate workflow identifiers with the oracle tag", "[cmd][agent][runs]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const first = run_verb(
+      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "same", "--pid", "1", "--repo-root", "/tmp"});
+  REQUIRE(first.code == 0);
+  auto const duplicate = run_verb(
+      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "same", "--pid", "2", "--repo-root", "/tmp"});
+  CHECK(duplicate.code == 1);
+  CHECK(duplicate.err == "error: insert workflow_runs: StepFailed\n");
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs where run_identifier = 'same'") == "1");
+}
+
 TEST_CASE("reconcile --dry-run opens the database and writes nothing", "[cmd][agent][handlers]") {
   scratch_dir scratch;
   seed(scratch, 1);
@@ -474,4 +489,243 @@ TEST_CASE("completing a CHILD plan's last task rolls the plan up to done", "[cmd
   // The anchor above it is untouched — `recompute_status` is documented as
   // single-plan and never walks `parent_plan_id`.
   CHECK(scalar_text(scratch, "select status from plans where id = 1") == "active");
+}
+
+TEST_CASE("dispatch preview freezes state and confirm spends it once", "[cmd][agent][routing]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  {
+    auto conn = planar::db::connection::open(scratch.db_path().string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute("insert into projects (slug,name) values ('routing-project','Routing Project')").has_value());
+    REQUIRE(conn->execute("insert into routing_candidates (vendor,candidate_id,fallback_order) values ('codex','candidate',0)")
+                .has_value());
+  }
+  auto const preview = run_verb(scratch, {"dispatch",
+                                          "preview",
+                                          "--task",
+                                          "1",
+                                          "--work-item",
+                                          "w-1",
+                                          "--project",
+                                          "1",
+                                          "--validation-policy",
+                                          "v1",
+                                          "--routing-policy",
+                                          "r1",
+                                          "--profile-rule",
+                                          "p1",
+                                          "--vendor",
+                                          "codex",
+                                          "--role",
+                                          "coder",
+                                          "--tier",
+                                          "medium",
+                                          "--work-type",
+                                          "feature",
+                                          "--complexity",
+                                          "high-risk",
+                                          "--packet-digest",
+                                          "packet",
+                                          "--profile-digest",
+                                          "profile",
+                                          "--policy-digest",
+                                          "policy",
+                                          "--capability-digest",
+                                          "capability",
+                                          "--candidate",
+                                          "1",
+                                          "--host",
+                                          "host",
+                                          "--class",
+                                          "default",
+                                          "--evidence-state",
+                                          "evidential",
+                                          "--expires-at",
+                                          "2099-01-01T00:00:00Z",
+                                          "--json"});
+  REQUIRE(preview.code == 0);
+  auto const token   = scalar_text(scratch, "select preview_token from routing_dispatch_previews where id = 1");
+  auto const confirm = run_verb(scratch, {"dispatch",
+                                          "confirm",
+                                          "--token",
+                                          token,
+                                          "--dispatch-key",
+                                          "dispatch-1",
+                                          "--now",
+                                          "2026-01-01T00:00:00Z",
+                                          "--packet-digest",
+                                          "packet",
+                                          "--profile-digest",
+                                          "profile",
+                                          "--policy-digest",
+                                          "policy",
+                                          "--capability-digest",
+                                          "capability",
+                                          "--candidate",
+                                          "1",
+                                          "--vendor",
+                                          "codex",
+                                          "--role",
+                                          "coder",
+                                          "--tier",
+                                          "medium",
+                                          "--work-type",
+                                          "feature",
+                                          "--complexity",
+                                          "high-risk",
+                                          "--validation-policy",
+                                          "v1",
+                                          "--routing-policy",
+                                          "r1",
+                                          "--json"});
+  INFO(confirm.err);
+  REQUIRE(confirm.code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from routing_dispatch_snapshots") == "1");
+  CHECK(scalar_text(scratch, "select consumed_dispatch_id from routing_dispatch_previews where id = 1") == "1");
+  auto const replay = run_verb(scratch, {"dispatch",
+                                         "confirm",
+                                         "--token",
+                                         token,
+                                         "--dispatch-key",
+                                         "dispatch-2",
+                                         "--now",
+                                         "2026-01-01T00:00:00Z",
+                                         "--packet-digest",
+                                         "packet",
+                                         "--profile-digest",
+                                         "profile",
+                                         "--policy-digest",
+                                         "policy",
+                                         "--capability-digest",
+                                         "capability",
+                                         "--candidate",
+                                         "1",
+                                         "--vendor",
+                                         "codex",
+                                         "--role",
+                                         "coder",
+                                         "--tier",
+                                         "medium",
+                                         "--work-type",
+                                         "feature",
+                                         "--complexity",
+                                         "standard",
+                                         "--validation-policy",
+                                         "v1",
+                                         "--routing-policy",
+                                         "r1"});
+  CHECK(replay.code == 1);
+  CHECK(replay.err == "error: stale_preview: already_consumed\n");
+  CHECK(scalar_text(scratch, "select count(*) from routing_dispatch_snapshots") == "1");
+  // Wire spelling is hyphenated; accepting the internal enum spelling would
+  // leak an implementation detail into the public CLI contract.
+  auto const internal_spelling = run_verb(scratch, {"dispatch",
+                                                    "confirm",
+                                                    "--token",
+                                                    token,
+                                                    "--dispatch-key",
+                                                    "bad",
+                                                    "--now",
+                                                    "2026-01-01T00:00:00Z",
+                                                    "--packet-digest",
+                                                    "packet",
+                                                    "--profile-digest",
+                                                    "profile",
+                                                    "--policy-digest",
+                                                    "policy",
+                                                    "--capability-digest",
+                                                    "capability",
+                                                    "--candidate",
+                                                    "1",
+                                                    "--vendor",
+                                                    "codex",
+                                                    "--role",
+                                                    "coder",
+                                                    "--tier",
+                                                    "medium",
+                                                    "--work-type",
+                                                    "feature",
+                                                    "--complexity",
+                                                    "high_risk",
+                                                    "--validation-policy",
+                                                    "v1",
+                                                    "--routing-policy",
+                                                    "r1"});
+  CHECK(internal_spelling.code == 2);
+  routing::binding replay_binding{};
+  CHECK(routing::classify_stale(replay_binding, replay_binding, "2099-01-01T00:00:00Z", true, "2026-01-01T00:00:00Z") ==
+        routing::stale_reason::already_consumed);
+}
+
+TEST_CASE("dispatch confirm names every frozen binding drift and writes nothing", "[cmd][agent][routing]") {
+  struct mutation {
+    std::string_view                                     name;
+    routing::stale_reason                                reason;
+    std::function<void(routing::binding&, std::string&)> apply;
+  };
+  std::vector<mutation> cases{
+      {"expired", routing::stale_reason::expired, [](auto&, auto& now) { now = "2100-01-01T00:00:00Z"; }},
+      {"packet", routing::stale_reason::packet_changed, [](auto& b, auto&) { b.packet_digest = "other"; }},
+      {"profile", routing::stale_reason::profile_changed, [](auto& b, auto&) { b.profile_digest = "other"; }},
+      {"policy", routing::stale_reason::policy_changed, [](auto& b, auto&) { b.policy_digest = "other"; }},
+      {"capability", routing::stale_reason::capability_changed, [](auto& b, auto&) { b.capability_digest = "other"; }},
+      {"vendor", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.vendor = "other"; }},
+      {"role", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.role = "reviewer"; }},
+      {"tier", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.tier = "large"; }},
+      {"work type", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.work_type = "engine"; }},
+      {"complexity", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.complexity = "bounded"; }},
+      {"candidate", routing::stale_reason::candidate_changed, [](auto& b, auto&) { b.candidate_id = 2; }},
+      {"claim token", routing::stale_reason::claim_changed, [](auto& b, auto&) { b.claim = "other"; }},
+      {"claim status", routing::stale_reason::claim_changed, [](auto& b, auto&) { b.claim_status = "released"; }},
+  };
+  for (auto const& item : cases) {
+    scratch_dir scratch;
+    auto        conn = planar::db::connection::open(scratch.db_path().string());
+    REQUIRE(conn);
+    REQUIRE(planar::db::apply_all(*conn));
+    REQUIRE(conn->execute("insert into projects (slug,name) values ('p','p')"));
+    REQUIRE(conn->execute(
+        "insert into routing_candidates (vendor,candidate_id,fallback_order) values ('codex','one',0),('codex','two',1)"));
+    routing::binding bound{.work_item         = "w",
+                           .validation_policy = "v",
+                           .routing_policy    = "r",
+                           .profile_rule      = "p",
+                           .vendor            = "codex",
+                           .role              = "coder",
+                           .tier              = "medium",
+                           .work_type         = "feature",
+                           .complexity        = "standard",
+                           .project_id        = 1,
+                           .candidate_id      = 1,
+                           .packet_digest     = "packet",
+                           .profile_digest    = "profile",
+                           .policy_digest     = "policy",
+                           .capability_digest = "capability",
+                           .host              = "host",
+                           .assignment_class  = "default",
+                           .evidence_state    = "evidential",
+                           .claim             = "claim",
+                           .claim_status      = "active"};
+    auto             preview = routing::preview(*conn, bound, "2099-01-01T00:00:00Z");
+    REQUIRE(preview);
+    if (item.name == "expired")
+      CHECK(routing::classify_stale(bound, bound, "2099-01-01T00:00:00Z", true, "2026-01-01T00:00:00Z") ==
+            routing::stale_reason::already_consumed);
+    auto        current = bound;
+    std::string now{"2026-01-01T00:00:00Z"};
+    item.apply(current, now);
+    routing::stale_reason why{};
+    auto confirmed = routing::confirm(*conn, preview->token, "dispatch", current, now, "required", "confirmed", &why);
+    INFO(item.name);
+    REQUIRE_FALSE(confirmed);
+    CHECK(confirmed.error() == routing::error::stale_preview);
+    CHECK(why == item.reason);
+    auto stmt = conn->prepare(
+        "select consumed_at is null, (select count(*) from routing_dispatch_snapshots) from routing_dispatch_previews");
+    REQUIRE(stmt);
+    REQUIRE(stmt->step());
+    CHECK(stmt->column_int64(0) == 1);
+    CHECK(stmt->column_int64(1) == 0);
+  }
 }

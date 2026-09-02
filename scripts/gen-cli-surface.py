@@ -115,6 +115,18 @@ def gen(binname):
     unported = sorted(set(leaves + DUAL[binname]) - impl)
     ni = "\n".join("    %s," % esc(k) for k in unported)
 
+    if unported:
+        unported_body = f'''  static constexpr std::string_view k_unported[] = {{
+{ni}
+  }};
+  return k_unported;'''
+    else:
+        # A zero-bound array cannot form a span with libc++.  Keep the
+        # named initializer (the retirement evidence scanner reads it) but
+        # return a zero-length view over a non-string sentinel.
+        unported_body = '''  static constexpr std::string_view k_unported[] = {std::string_view{}};
+  return std::span<std::string_view const>{k_unported}.first(0);'''
+
     body = f'''/// @file surface.cpp
 /// @brief Implementation of `{module}` — GENERATED, do not hand-edit.
 ///
@@ -156,10 +168,7 @@ auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_vi
 }}
 
 auto unported_paths() -> std::span<std::string_view const> {{
-  static constexpr std::string_view k_unported[] = {{
-{ni}
-  }};
-  return k_unported;
+{unported_body}
 }}
 
 }} // namespace {ns}
