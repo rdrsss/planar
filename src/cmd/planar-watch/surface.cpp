@@ -483,7 +483,6 @@ auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_vi
 
 auto unported_paths() -> std::span<std::string_view const> {
   static constexpr std::string_view k_unported[] = {
-      "feed",
       "run list",
       "run show",
       "sync-events",
