@@ -1237,13 +1237,11 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
   auto const live_unported = source_unported_inventory(target_source_root());
   REQUIRE(live_unported.has_value());
-  // 19 -> 17 at task 6106: `import` and `synthesize` both left the
-  // cross-binary inventory once the importer's deterministic staging +
-  // interpreted-cache reconciliation and the synthesis staging engine +
-  // apply workflow landed. Neither the dispatch.t.cpp local count nor this
-  // cross-binary one was updated in the same commit as the port, which is
-  // exactly the drift this sibling test exists to catch.
-  CHECK(live_unported->size() == 17);
+  // 19 -> 8: task 6038 landed the nine planar-agent leaves and task 6106
+  // landed `import` and `synthesize`. Both drops are real and independent;
+  // neither side updated this cross-binary count in the same commit as its
+  // port, which is exactly the drift this sibling test exists to catch.
+  CHECK(live_unported->size() == 8);
   CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") != live_unported->end());
   CHECK(source_oracle_skips(target_source_root()).size() == 37);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
@@ -1252,10 +1250,22 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
   REQUIRE(watch_unported.has_value());
-  // 6 -> 4 at task 6106, matching dispatch.t.cpp's own unported.size() drop:
-  // `import` and `synthesize` both left surface.cpp's k_unported array.
+  // The generated empty inventory must retain a scanner-recognized named
+  // initializer while exposing no runtime elements. This protects the
+  // generator's zero-list branch from regressing to an ill-formed array.
+  auto const agent_surface = source_text(target_source_root() / "src/cmd/planar-agent/surface.cpp");
+  REQUIRE(agent_surface.has_value());
+  CHECK(agent_surface->contains("k_unported[] = {std::string_view{}}"));
+  CHECK(agent_surface->contains("std::span<std::string_view const>{k_unported}.first(0)"));
+  // 6 -> 4 at task 6106, matching dispatch.t.cpp's own drop: `import` and
+  // `synthesize` both left surface.cpp's k_unported array.
   CHECK(planar_unported->size() == 4);
-  CHECK(agent_unported->size() == 9);
+  CHECK(agent_unported->empty());
+  for (auto const& landed : {"ingest", "run start", "run end", "dispatch preview", "dispatch confirm", "context add",
+                             "context capsule", "context list", "context resolve"}) {
+    INFO("landed agent path remained in unported inventory: " << landed);
+    CHECK(std::ranges::find(*agent_unported, landed) == agent_unported->end());
+  }
   CHECK(watch_unported->size() == 4);
   CHECK(target_zig_tree_present());
 }
@@ -1298,6 +1308,55 @@ TEST_CASE("oracle retirement: generated inventory drift is observed for every bi
   skip.close();
   CHECK(source_oracle_skips(fixture).size() == 1);
   std::filesystem::remove_all(fixture, discard);
+}
+
+TEST_CASE("cli surface generator emits safe empty inventories and preserves non-empty ones", "[cmd][generator][retirement]") {
+  auto const      root = std::filesystem::temp_directory_path() /
+                         std::format("planar_surface_generator_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::error_code discard;
+  std::filesystem::create_directories(root / "scripts", discard);
+  for (auto const& binary : {"planar", "planar-agent", "planar-watch"}) {
+    std::filesystem::create_directories(root / "src" / "cmd" / binary, discard);
+    std::ofstream dispatch(root / "src" / "cmd" / binary / "dispatch.cpp");
+    dispatch << "namespace x { void f() {} }\n";
+  }
+  REQUIRE(std::filesystem::copy_file(target_source_root() / "scripts/gen-cli-surface.py", root / "scripts/gen-cli-surface.py",
+                                     std::filesystem::copy_options::overwrite_existing, discard));
+  auto const catalog_dir = root / "catalog";
+  std::filesystem::create_directories(catalog_dir, discard);
+  auto write_catalog = [&](std::string_view binary, std::string_view command, std::string_view leaf) {
+    std::ofstream out(catalog_dir / ("oracle-" + std::string{binary} + ".json"));
+    out << "{\"commands\":[{\"command\":\"" << command
+        << "\",\"summary\":\"root\",\"description\":\"root\",\"path\":[],\"flags\":[],\"positionals\":[],\"subcommands\":[]},{"
+           "\"command\":\""
+        << command << " " << leaf << "\",\"summary\":\"leaf\",\"description\":\"leaf\",\"path\":[\"" << leaf
+        << "\"],\"flags\":[],\"positionals\":[],\"subcommands\":[]}] }";
+  };
+  write_catalog("planar", "planar", "ported");
+  write_catalog("planar-agent", "planar-agent", "ported");
+  write_catalog("planar-watch", "planar-watch", "pending");
+  // `pending` is intentionally absent from dispatch, while `ported` is
+  // registered below. This distinguishes the generator's empty and
+  // non-empty branches without any live DB or oracle binary.
+  for (auto const& binary : {"planar", "planar-agent"}) {
+    std::ofstream dispatch(root / "src" / "cmd" / binary / "dispatch.cpp", std::ios::app);
+    dispatch << "table.emplace(\"ported\", f);\n";
+  }
+  auto const command =
+      std::format("cd '{}' && python3 scripts/gen-cli-surface.py '{}' >/dev/null", root.string(), catalog_dir.string());
+  REQUIRE(std::system(command.c_str()) == 0);
+  auto const empty   = source_text(root / "src/cmd/planar-agent/surface.cpp");
+  auto const pending = source_text(root / "src/cmd/planar-watch/surface.cpp");
+  REQUIRE(empty.has_value());
+  REQUIRE(pending.has_value());
+  CHECK(empty->contains("k_unported[] = {std::string_view{}}"));
+  CHECK(empty->contains(".first(0)"));
+  CHECK(generated_unported(root / "src/cmd/planar-agent/surface.cpp") == std::vector<std::string>{});
+  CHECK(pending->contains("\"pending\""));
+  CHECK(generated_unported(root / "src/cmd/planar-watch/surface.cpp") == std::vector<std::string>{"pending"});
+  // Break probe: the prior bare `return k_unported` branch cannot emit the
+  // zero-length span string this test pins, so this case fails if restored.
+  std::filesystem::remove_all(root, discard);
 }
 
 TEST_CASE("oracle retirement: a ready report consumes the real state differential", "[cmd][parity][state][retirement]") {

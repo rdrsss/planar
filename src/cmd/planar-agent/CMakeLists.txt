@@ -101,32 +101,16 @@
 # detection. What stays here is the locality POLICY: which three commands
 # to run and how to read their answers.
 #
-# --- NOT landed, each blocked at LAYER 2 -----------------------------------
+# --- Remaining deferred behavior -------------------------------------------
 #
-# Four of the oracle's eighteen verbs. See `tree.cppm`'s header for the
-# per-verb inventory; the summary:
-#
-#   ingest              needs the vendor hook-event adapters. Not ported.
-#   run start / run end write `workflow_runs` — a DIFFERENT table from the
-#                       `runs` table the ported `engine_runs` bucket owns.
-#                       Verified by reading the Zig handler's literal
-#                       INSERT; reusing engine_runs here would write the
-#                       wrong table.
-#   dispatch / context  need the routing_dispatch_* and run-scoped context
-#                       tables. Not ported.
-#
-# Also deferred, WITH the verbs that carry it: `sessioncommits.
+# All declared agent leaves, including `ingest`, are ported.  The remaining
+# deferral is `sessioncommits.
 # recordClaimWindowBestEffort`, the git revision walk the four terminal
 # handlers run AFTER their transaction. `--no-locality-probe` is still
 # declared on all four (dropping a flag changes the --help bytes) and
 # currently gates nothing there. Same call `capture commits` and `bench
 # harvest` already made.
 #
-# Omitting an unported child from a group node stays the rule (task 6106),
-# so `planar-agent --help` lists fourteen commands where the oracle lists
-# eighteen and is not oracle-comparable; all fourteen LEAF pages are, and
-# are diffed against the live oracle in parity.t.cpp.
-
 planar_binary(planar_agent
   MAIN
     main.cpp
@@ -146,6 +130,9 @@ planar_binary(planar_agent
     handlers/terminal.cppm
     handlers/recovery.cppm
     handlers/action.cppm
+    handlers/dispatch.cppm
+    handlers/context.cppm
+    handlers/runs.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -159,12 +146,18 @@ planar_binary(planar_agent
     handlers/terminal.cpp
     handlers/recovery.cpp
     handlers/action.cpp
+    handlers/dispatch.cpp
+    handlers/context.cpp
+    handlers/ingest.cpp
+    handlers/runs.cpp
     dispatch.cpp
   DEPENDS
     cliapp
     db
     git
     engine_runtime
+    engine_routing
+    json_text
     engine_planning)
 
 # `--metadata` is validated with glz::validate_json -- the same purpose-built

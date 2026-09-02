@@ -1119,11 +1119,11 @@ auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_vi
 }
 
 auto unported_paths() -> std::span<std::string_view const> {
-  static constexpr std::string_view k_unported[] = {
-      "context add",      "context capsule", "context list", "context resolve", "dispatch confirm",
-      "dispatch preview", "ingest",          "run end",      "run start",
-  };
-  return k_unported;
+  // Keep the named initializer even when empty: the retirement evidence
+  // scanner reads this generated inventory directly rather than inferring
+  // absence from a bare span return.
+  static constexpr std::string_view k_unported[] = {std::string_view{}};
+  return std::span<std::string_view const>{k_unported}.first(0);
 }
 
 } // namespace planar::cmd::agent

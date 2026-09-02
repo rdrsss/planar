@@ -135,8 +135,7 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   for (auto const& verb : planar::cmd::agent::unported_paths()) {
     unported.emplace(verb);
   }
-  CHECK(unported == std::set<std::string, std::less<>>{"context add", "context capsule", "context list", "context resolve",
-                                                       "dispatch confirm", "dispatch preview", "ingest", "run end", "run start"});
+  CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
   CHECK(leaves.size() == 24);
@@ -146,7 +145,7 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   }
   // Non-vacuous: the inventory must not have swallowed a verb that has a
   // real handler, which is the failure mode a bulk registration invites.
-  for (auto const& implemented : {"pull", "complete", "action start", "schema", "version"}) {
+  for (auto const& implemented : {"pull", "complete", "action start", "run start", "run end", "schema", "version"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
