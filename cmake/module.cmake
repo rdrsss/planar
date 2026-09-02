@@ -37,6 +37,16 @@
 # module's CMakeLists.txt is its own directory scope (add_subdirectory does
 # not share CMAKE_MODULE_PATH sideways between siblings), so this append
 # happens fresh, locally, every call.
+#
+# EVERY test binary this file creates also compiles
+# cmake/test_support/arena_sweep_listener.cpp (plan 996, task 6311): a
+# Catch2 event listener that removes the `$TMPDIR/planar_*` scratch arenas
+# that test run created, by directory-name convention rather than by
+# touching any of the ~889 individual fixtures. See that file's header for
+# the parallelism-safety and recurrence-guard design. It is added
+# unconditionally alongside every `_test_sources` glob below so a module
+# or binary added tomorrow inherits the sweep with no per-target opt-in.
+set(_planar_arena_sweep_source "${CMAKE_CURRENT_LIST_DIR}/test_support/arena_sweep_listener.cpp")
 
 function(planar_module name)
   set(options EMBED)
@@ -115,7 +125,7 @@ function(planar_module name)
     include(Catch OPTIONAL RESULT_VARIABLE _catch_module_found)
 
     set(_test_target "planar_${name}_tests")
-    add_executable(${_test_target} ${_test_sources})
+    add_executable(${_test_target} ${_test_sources} ${_planar_arena_sweep_source})
     set_target_properties(${_test_target} PROPERTIES
       CXX_STANDARD 26
       CXX_STANDARD_REQUIRED ON
@@ -310,7 +320,7 @@ function(planar_binary name)
   include(Catch OPTIONAL RESULT_VARIABLE _catch_module_found)
 
   set(_test_target "${_target}_tests")
-  add_executable(${_test_target} ${_test_sources})
+  add_executable(${_test_target} ${_test_sources} ${_planar_arena_sweep_source})
   if(ARG_INTERFACE)
     target_sources(${_test_target}
       PUBLIC
