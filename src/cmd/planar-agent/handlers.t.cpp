@@ -46,6 +46,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.db.migrate;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.dispatch;
 import planar.cmd.planar_agent.tree;
@@ -102,6 +103,12 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   auto const         table = planar::cmd::agent::handlers(*tree);
   int const          code  = planar::cmd::agent::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+}
+
+auto migrate_fixture(const fixture& fx) -> void {
+  auto db = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(db.has_value());
+  REQUIRE(planar::db::apply_all(*db).has_value());
 }
 
 } // namespace
@@ -179,14 +186,35 @@ TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd
   CHECK(got.out.contains("\"planar-agent dispatch preview\""));
   CHECK(got.out.contains("\"planar-agent context add\""));
 
-  auto const unported = dispatch(fx, {"ingest", "--vendor", "claude", "--event", "{}"});
-  CHECK(unported.code == 64);
-  CHECK(unported.out.empty());
-  CHECK(unported.err == "error: ingest: not implemented in this build\n");
-  // Discrimination: a PORTED verb on the same binary does not exit 64, so
-  // the refusal above is about this verb rather than about this build.
-  auto const ported = dispatch(fx, {"peek", "1", "--json"});
-  CHECK(ported.code != 64);
+  // `ingest` is now a real leaf, not an exit-64 catalog placeholder.
+  auto const unsupported = dispatch(fx, {"ingest", "--vendor", "nobody", "--event", "@missing"});
+  CHECK(unsupported.code != 64);
+}
+
+TEST_CASE("planar-agent ingest atomically normalizes a Claude hook", "[cmd][agent][handlers][ingest]") {
+  auto const fx = make_fixture("ingest");
+  migrate_fixture(fx);
+  auto const event = fx.root / "event.json";
+  {
+    std::ofstream out(event);
+    out << R"({"event_type":"tool_call","session_id":"hook-1","model":"claude-test","summary":"ls"})";
+  }
+  auto const got = dispatch(fx, {"ingest", "--vendor", "claude", "--event", "@../event.json", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.out == "{\"ok\":true,\"sessions_created\":1,\"claims_created\":0,\"actions_created\":1,\"events_processed\":1}\n");
+
+  // Break probe: a malformed input is rejected before a DB transaction and
+  // therefore cannot be mistaken for a successful no-op.
+  auto const before = std::filesystem::file_size(fx.db_path);
+  {
+    std::ofstream out(event);
+    out << "{";
+  }
+  auto const bad = dispatch(fx, {"ingest", "--vendor", "claude", "--event", "@../event.json"});
+  CHECK(bad.code == 2);
+  CHECK(bad.err.contains("malformed event payload"));
+  CHECK(std::filesystem::file_size(fx.db_path) == before);
 }
 
 TEST_CASE("planar-agent maps a parse failure to exit 1, not the operator binary's 2", "[cmd][agent][handlers][exitcode]") {

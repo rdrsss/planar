@@ -97,6 +97,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("context capsule", handlers::context_capsule);
   table.emplace("context list", handlers::context_list);
   table.emplace("context resolve", handlers::context_resolve);
+  table.emplace("ingest", handlers::ingest);
   table.emplace("run start", handlers::run_start);
   table.emplace("run end", handlers::run_end);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and

@@ -155,6 +155,7 @@ planar_binary(planar_agent
     handlers/action.cpp
     handlers/dispatch.cpp
     handlers/context.cpp
+    handlers/ingest.cpp
     handlers/runs.cpp
     dispatch.cpp
   DEPENDS

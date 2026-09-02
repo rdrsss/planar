@@ -107,11 +107,7 @@ auto add_run_stage(CLI::App& app) -> void {
 
 auto root_app() -> std::unique_ptr<CLI::App> {
   // Every description below is transcribed from the Zig node. The four
-  // verbs this port has not landed — `ingest`, `run`, `dispatch`,
-  // `context` — are simply absent (an absent child beats a registered
-  // stub), so the root page lists fourteen where the oracle lists
-  // eighteen. Declaration ORDER matches the oracle's `handlers/cmd.zig`
-  // registry exactly.
+  // Declaration order matches the oracle's `handlers/cmd.zig` registry.
   auto app = std::make_unique<CLI::App>("Agent-callable coordination binary (pull / claim / complete / heartbeat / reconcile).",
                                         "planar-agent");
   app->require_subcommand(0);
