@@ -1053,7 +1053,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // for an apply; the re-entrant `planar.db` transaction seam makes each
   // composed CRUD operation a nested savepoint, preserving the oracle's
   // all-or-nothing write contract.
-  CHECK(unported.size() == 6);
+  CHECK(unported.size() == 4);
   // `workspace regenerate` had already moved at task 6364. It had been carried
   // as blocked on an unvendored xxh64 for its `.manifest-docs` merkle —
   // verified TRANSITIVELY true (the leaf's own source has no xxh64
@@ -1062,7 +1062,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // the new layer-1 `planar.docs_manifest` module, and the leaf's
   // hand-rolled template engine was ported alongside it. See
   // `planar.engine.workspace.regenerate`'s header for the full account.
-  CHECK(unported.size() == 6);
+  CHECK(unported.size() == 4);
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
   INFO("moved by task 6362: bench harvest");
