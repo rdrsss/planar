@@ -619,7 +619,9 @@ if(TARGET planar_cmd_planar_tests)
   # cli/help.t.cpp already take (D6: the zig/ tree is the oracle until M10).
   target_compile_definitions(planar_cmd_planar_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\""
-    "PLANAR_ZIG_BIN=\"${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar\"")
+    "PLANAR_ZIG_BIN=\"${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar\""
+    "PLANAR_TARGET_SOURCE_ROOT=\"${CMAKE_SOURCE_DIR}\""
+    "PLANAR_STATE_TEST_BIN=\"$<TARGET_FILE:planar_cmd_planar_tests>\"")
   add_dependencies(planar_cmd_planar_tests planar_cmd_planar)
 endif()
 

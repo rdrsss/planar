@@ -104,9 +104,7 @@
 
 import std;
 import planar.db;
-import planar.cmd.planar.surface;
 
-#include "../oracle_retirement.hpp"
 #include "catalog_steps.hpp"
 #include "parity_harness.hpp"
 
@@ -116,7 +114,6 @@ using planar::cmd::parity::arena;
 using planar::cmd::parity::make_arena;
 using planar::cmd::parity::run_pinned;
 namespace state_catalog = planar::cmd::state_catalog;
-namespace retirement    = planar::cmd::oracle_retirement;
 
 /// @brief Path to the built C++ binary (set by this target's CMakeLists).
 /// @return The path.
@@ -136,13 +133,16 @@ auto oracle_available() -> bool {
   return std::filesystem::exists(zig_bin());
 }
 
-/// @brief True when the configured oracle still resides in the checked-out Zig tree.
-/// @return `true` when the Zig source tree is present beside its built binary.
-auto zig_tree_present() -> bool {
-  // CTest runs this binary from the build directory, so a relative `zig/`
-  // check would inspect the wrong directory. The configured oracle path is
-  // rooted at the source tree and remains the evidence gate's authority.
-  return std::filesystem::is_directory(zig_bin().parent_path().parent_path().parent_path());
+/// @brief Root of the checkout this test binary is authorizing.
+/// @return The configured target source root, never the shared oracle root.
+auto target_source_root() -> std::filesystem::path {
+  return std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT};
+}
+
+/// @brief Whether the target checkout still owns its Zig source tree.
+/// @return `true` only when this worktree, rather than a shared checkout, has `zig/`.
+auto target_zig_tree_present() -> bool {
+  return std::filesystem::is_directory(target_source_root() / "zig");
 }
 
 // -------------------------------------------------------------------------
@@ -807,96 +807,152 @@ const std::vector<known>& known_divergences() {
   return staged;
 }
 
-/// @brief The eleven decision-982 state-lane evidence slots.
+/// @brief The decision-982 leaves exercised by the ordered real state lane.
 ///
-/// The state differential itself derives and verifies the concrete command
-/// inventory from both catalogs.  These slots record the separately decided
-/// eleven-leaf cutover scope: the count is a decision boundary, not a count
-/// inferred from whatever happens to be unported in one intermediate tree.
-constexpr std::array<std::string_view, retirement::in_scope_leaf_count> in_scope_state_evidence{
-    "state-leaf-01", "state-leaf-02", "state-leaf-03", "state-leaf-04", "state-leaf-05", "state-leaf-06",
-    "state-leaf-07", "state-leaf-08", "state-leaf-09", "state-leaf-10", "state-leaf-11",
+/// These are command identities, not synthetic slots.  The state test below
+/// proves they occur in the catalog-derived execution before a retirement
+/// gate may consume that test's exit status.
+constexpr std::array<std::string_view, 11> in_scope_state_leaves{
+    "init",         "assoc create", "plan create",  "task add",  "question add",  "question answer",
+    "decision add", "scenario add", "annotate add", "links add", "plan closeout",
 };
 
-/// @brief Every remaining generated unported leaf across the three state binaries.
-///
-/// `planar` is read directly from its generated surface.  The agent and
-/// watcher entries are explicit because their test binaries may not acquire
-/// forbidden command-to-command target edges merely to inspect another
-/// command module.  This is evidence, not a grep count: each path, binary,
-/// and disposition is carried into the report below.  Task 6045 must remove
-/// these records in the same reviewed cutover that removes their handlers.
-auto live_unported_inventory() -> std::vector<retirement::unported_leaf> {
-  std::vector<retirement::unported_leaf> out;
-  for (auto const path : planar::cmd::unported_paths()) {
-    out.push_back({.binary      = "planar",
-                   .path        = path,
-                   .disposition = path == "explore" ? retirement::deferred_by_decision980 : "pending-port"});
+/// @brief Read a target-worktree source file or return an empty optional.
+auto source_text(const std::filesystem::path& path) -> std::optional<std::string> {
+  std::ifstream input(path);
+  if (!input) {
+    return std::nullopt;
   }
-  static constexpr std::array<retirement::unported_leaf, 13> other_binaries{{
-      {"planar-agent", "context add", "pending-port"},
-      {"planar-agent", "context capsule", "pending-port"},
-      {"planar-agent", "context list", "pending-port"},
-      {"planar-agent", "context resolve", "pending-port"},
-      {"planar-agent", "dispatch confirm", "pending-port"},
-      {"planar-agent", "dispatch preview", "pending-port"},
-      {"planar-agent", "ingest", "pending-port"},
-      {"planar-agent", "run end", "pending-port"},
-      {"planar-agent", "run start", "pending-port"},
-      {"planar-watch", "feed", "pending-port"},
-      {"planar-watch", "run list", "pending-port"},
-      {"planar-watch", "run show", "pending-port"},
-      {"planar-watch", "sync-events", "pending-port"},
-  }};
-  out.insert(out.end(), other_binaries.begin(), other_binaries.end());
+  return std::string{std::istreambuf_iterator<char>{input}, {}};
+}
+
+/// @brief Parse the generated `k_unported` initializer, ignoring comments.
+auto generated_unported(const std::filesystem::path& source) -> std::optional<std::vector<std::string>> {
+  auto text = source_text(source);
+  if (!text) {
+    return std::nullopt;
+  }
+  auto const function = text->find("auto unported_paths()");
+  auto const begin    = text->find("k_unported[] = {", function);
+  auto const end      = text->find("};", begin);
+  if (function == std::string::npos || begin == std::string::npos || end == std::string::npos) {
+    return std::nullopt;
+  }
+  std::vector<std::string> out;
+  std::istringstream       lines{text->substr(begin, end - begin)};
+  for (std::string line; std::getline(lines, line);) {
+    auto const comment = line.find("//");
+    if (comment != std::string::npos) {
+      line.erase(comment);
+    }
+    auto const quote = line.find('"');
+    if (quote == std::string::npos) {
+      continue;
+    }
+    auto const close = line.find('"', quote + 1);
+    if (close == std::string::npos) {
+      return std::nullopt;
+    }
+    out.push_back(line.substr(quote + 1, close - quote - 1));
+  }
+  std::ranges::sort(out);
+  if (std::ranges::adjacent_find(out) != out.end()) {
+    return std::nullopt;
+  }
   return out;
 }
 
-/// @brief Every surviving condition that can turn a parity assertion into SKIP.
-///
-/// This is intentionally a named, reviewable inventory rather than a silent
-/// source-search result.  It includes `PLANAR_REQUIRE_ORACLE` call sites and
-/// the four older direct oracle SKIPs.  A zero count is mandatory at cutover;
-/// task 6045 owns deleting both these records and the conditional paths.
-constexpr std::array<std::string_view, 37> oracle_conditional_skip_inventory{{
-    "src/cmd/planar/parity.t.cpp:151",
-    "src/cmd/planar/parity.t.cpp:162",
-    "src/cmd/planar/parity.t.cpp:200",
-    "src/cmd/planar/parity.t.cpp:278",
-    "src/cmd/planar/parity.t.cpp:323",
-    "src/cmd/planar/parity.t.cpp:424",
-    "src/cmd/planar/parity.t.cpp:498",
-    "src/cmd/planar/parity.t.cpp:615",
-    "src/cmd/planar/parity.t.cpp:741",
-    "src/cmd/planar/parity.t.cpp:810",
-    "src/cmd/planar/parity.t.cpp:867",
-    "src/cmd/planar/parity.t.cpp:1157",
-    "src/cmd/planar/parity.t.cpp:1339",
-    "src/cmd/planar/parity.t.cpp:1434",
-    "src/cmd/planar/parity.t.cpp:1532",
-    "src/cmd/planar/parity.t.cpp:1753",
-    "src/cmd/planar/parity.t.cpp:1876",
-    "src/cmd/planar/statediff.t.cpp:957",
-    "src/cmd/planar/statediff.t.cpp:1246",
-    "src/cmd/planar-agent/parity.t.cpp:115",
-    "src/cmd/planar-agent/parity.t.cpp:138",
-    "src/cmd/planar-agent/parity.t.cpp:184",
-    "src/cmd/planar-agent/parity.t.cpp:301",
-    "src/cmd/planar-agent/parity.t.cpp:349",
-    "src/cmd/planar-agent/parity.t.cpp:491",
-    "src/cmd/planar-agent/parity.t.cpp:561",
-    "src/cmd/planar-watch/parity.t.cpp:135",
-    "src/cmd/planar-watch/parity.t.cpp:164",
-    "src/cmd/planar-watch/parity.t.cpp:296",
-    "src/cmd/planar-watch/parity.t.cpp:521",
-    "src/cmd/planar-watch/parity.t.cpp:556",
-    "src/cmd/planar-execute/parity.t.cpp:77",
-    "src/cmd/planar-execute/parity.t.cpp:115",
-    "src/cmd/planar-execute/parity.t.cpp:163",
-    "src/cmd/planar-execute/parity.t.cpp:234",
-    "src/lib/engine/execute/surface.t.cpp:268",
-    "src/lib/db/migrate.t.cpp:249",
-}};
+/// @brief Derive every generated unported inventory from this worktree.
+auto source_unported_inventory(const std::filesystem::path& root) -> std::optional<std::vector<std::string>> {
+  std::vector<std::string> out;
+  for (auto const& [binary, relative] : std::array{
+           std::pair{"planar", "src/cmd/planar/surface.cpp"},
+           std::pair{"planar-agent", "src/cmd/planar-agent/surface.cpp"},
+           std::pair{"planar-watch", "src/cmd/planar-watch/surface.cpp"},
+       }) {
+    auto paths = generated_unported(root / relative);
+    if (!paths) {
+      return std::nullopt;
+    }
+    for (auto const& path : *paths) {
+      out.push_back(
+          std::format("{}:{} ({})", binary, path,
+                      std::string_view{binary} == "planar" && path == "explore" ? "deferred-by-decision980" : "pending-port"));
+    }
+  }
+  std::ranges::sort(out);
+  return out;
+}
+
+/// @brief Enumerate the oracle-gating macros in test sources, with no line pins.
+auto source_oracle_skips(const std::filesystem::path& root) -> std::vector<std::string> {
+  std::vector<std::string> out;
+  for (std::filesystem::recursive_directory_iterator it{root / "src"}, end; it != end; ++it) {
+    if (!it->is_regular_file() || it->path().extension() != ".cpp") {
+      continue;
+    }
+    auto text = source_text(it->path());
+    if (!text) {
+      continue;
+    }
+    std::istringstream lines{*text};
+    for (std::string line; std::getline(lines, line);) {
+      auto const code  = std::string_view{line}.substr(0, line.find("//"));
+      auto const first = code.find_first_not_of(" \t");
+      if (first == std::string_view::npos) {
+        continue;
+      }
+      auto const head = code.substr(first);
+      if (head.starts_with("PLANAR_REQUIRE_ORACLE(")) {
+        out.push_back(std::filesystem::relative(it->path(), root).string());
+      }
+      if (head.starts_with("SKIP(") && (code.contains("Zig oracle") || code.contains("zig reference"))) {
+        out.push_back(std::filesystem::relative(it->path(), root).string());
+      }
+    }
+  }
+  std::ranges::sort(out);
+  return out;
+}
+
+/// @brief Result of the only consumable, real oracle-retirement gate.
+struct retirement_report {
+  bool                     ready = false;
+  std::vector<std::string> refusals;
+};
+
+/// @brief Run the strict real state lane and collect target-worktree evidence.
+auto run_retirement_gate(const std::filesystem::path& root = target_source_root()) -> retirement_report {
+  retirement_report result;
+  if (!std::filesystem::is_directory(root / "zig")) {
+    result.refusals.emplace_back("target checkout has no zig/ tree");
+  }
+  if (!oracle_available()) {
+    result.refusals.emplace_back("shared Zig oracle binary is unavailable");
+  } else {
+    auto const arena = make_arena("retirement_state_lane");
+    auto const lane =
+        run_pinned(std::filesystem::path{PLANAR_STATE_TEST_BIN},
+                   std::array<std::string, 3>{"C++ and Zig agree on DATABASE STATE across an ordered planning sequence",
+                                              "--reporter", "compact"},
+                   arena.cpp_root, "real_state_lane");
+    if (lane.code != 0) {
+      result.refusals.emplace_back(std::format("real catalog-derived state differential failed (exit {})", lane.code));
+    }
+  }
+  auto unported = source_unported_inventory(root);
+  if (!unported) {
+    result.refusals.emplace_back("generated unported inventory source is malformed or absent");
+  } else if (*unported != std::vector<std::string>{"planar:explore (deferred-by-decision980)"}) {
+    result.refusals.emplace_back(std::format("unported inventory is not only planar:explore: {}", *unported));
+  }
+  auto const skips = source_oracle_skips(root);
+  if (!skips.empty()) {
+    result.refusals.emplace_back(std::format("{} oracle-conditional parity skip(s) remain: {}", skips.size(), skips));
+  }
+  result.ready = result.refusals.empty();
+  return result;
+}
 
 } // namespace
 
@@ -1147,120 +1203,81 @@ TEST_CASE("state catalog: exclusions are explicit and workspace init remains eli
   CHECK(excluded->at(2).reason == "output-only");
 }
 
-TEST_CASE("oracle retirement: only the complete eleven-leaf evidence set reports ready", "[cmd][parity][state][retirement]") {
-  constexpr std::array<retirement::unported_leaf, 1> only_explore{{
-      {"planar", "explore", retirement::deferred_by_decision980},
-  }};
-  constexpr std::array<std::string_view, 0>          none{};
-  auto const                                         result = retirement::evaluate({
-      .zig_tree_present         = true,
-      .oracle_available         = true,
-      .accounted_state_leaves   = in_scope_state_evidence,
-      .unexpected_state_deltas  = none,
-      .unported                 = only_explore,
-      .oracle_conditional_skips = none,
-  });
-
-  INFO(result.render());
-  CHECK(result.ready);
-  CHECK(result.refusals.empty());
-}
-
-TEST_CASE("oracle retirement: every evidence arm independently refuses while zig remains", "[cmd][parity][state][retirement]") {
-  constexpr std::array<retirement::unported_leaf, 1> only_explore{{
-      {"planar", "explore", retirement::deferred_by_decision980},
-  }};
-  constexpr std::array<std::string_view, 0>          none{};
-  REQUIRE(zig_tree_present());
-
-  auto evaluate = [&](std::span<std::string_view const> deltas, std::span<retirement::unported_leaf const> unported,
-                      std::span<std::string_view const> skips) {
-    return retirement::evaluate({
-        .zig_tree_present         = zig_tree_present(),
-        .oracle_available         = true,
-        .accounted_state_leaves   = in_scope_state_evidence,
-        .unexpected_state_deltas  = deltas,
-        .unported                 = unported,
-        .oracle_conditional_skips = skips,
-    });
-  };
-
-  constexpr std::array<std::string_view, 1> state_delta{{"plans: cpp-only durable row"}};
-  auto const                                state_refusal = evaluate(state_delta, only_explore, none);
-  INFO(state_refusal.render());
-  CHECK_FALSE(state_refusal.ready);
-  CHECK(state_refusal.render().contains("unexpected durable-state delta"));
-  CHECK(zig_tree_present());
-
-  constexpr std::array<retirement::unported_leaf, 2> extra_unported{{
-      {"planar", "explore", retirement::deferred_by_decision980},
-      {"planar", "workspace init", "pending-port"},
-  }};
-  auto const                                         unported_refusal = evaluate(none, extra_unported, none);
-  INFO(unported_refusal.render());
-  CHECK_FALSE(unported_refusal.ready);
-  CHECK(unported_refusal.render().contains("workspace init"));
-  CHECK(zig_tree_present());
-
-  constexpr std::array<std::string_view, 1> remaining_skip{{"src/cmd/planar/parity.t.cpp:oracle condition"}};
-  auto const                                skip_refusal = evaluate(none, only_explore, remaining_skip);
-  INFO(skip_refusal.render());
-  CHECK_FALSE(skip_refusal.ready);
-  CHECK(skip_refusal.render().contains("oracle-conditional parity skip"));
-  CHECK(zig_tree_present());
-}
-
-TEST_CASE("oracle retirement: only decision 980 may defer an unported leaf", "[cmd][parity][state][retirement]") {
-  constexpr std::array<std::string_view, 0>          none{};
-  constexpr std::array<retirement::unported_leaf, 1> wrong_disposition{{
-      {"planar", "explore", "pending-port"},
-  }};
-  auto const                                         explore_not_deferred = retirement::evaluate({
-      .zig_tree_present         = true,
-      .oracle_available         = true,
-      .accounted_state_leaves   = in_scope_state_evidence,
-      .unexpected_state_deltas  = none,
-      .unported                 = wrong_disposition,
-      .oracle_conditional_skips = none,
-  });
-  CHECK_FALSE(explore_not_deferred.ready);
-
-  constexpr std::array<retirement::unported_leaf, 2> extra_deferred{{
-      {"planar", "explore", retirement::deferred_by_decision980},
-      {"planar", "workspace init", retirement::deferred_by_decision980},
-  }};
-  auto const                                         another_deferred = retirement::evaluate({
-      .zig_tree_present         = true,
-      .oracle_available         = true,
-      .accounted_state_leaves   = in_scope_state_evidence,
-      .unexpected_state_deltas  = none,
-      .unported                 = extra_deferred,
-      .oracle_conditional_skips = none,
-  });
-  CHECK_FALSE(another_deferred.ready);
-  CHECK(another_deferred.render().contains("workspace init"));
-}
-
-TEST_CASE("oracle retirement: live generated inventories refuse cutover explicitly", "[cmd][parity][state][retirement]") {
-  // This is not a conditional SKIP: the gate is meaningful only while the
-  // oracle still exists, so an unavailable reference is a failed precondition.
+TEST_CASE("oracle retirement: real state differential and live evidence refuse cutover", "[cmd][parity][state][retirement]") {
   REQUIRE(oracle_available());
-  constexpr std::array<std::string_view, 0> no_state_deltas{};
-  auto const                                live_unported = live_unported_inventory();
-  auto const                                result        = retirement::evaluate({
-      .zig_tree_present         = zig_tree_present(),
-      .oracle_available         = true,
-      .accounted_state_leaves   = in_scope_state_evidence,
-      .unexpected_state_deltas  = no_state_deltas,
-      .unported                 = live_unported,
-      .oracle_conditional_skips = oracle_conditional_skip_inventory,
-  });
-
-  INFO(result.render());
+  auto const result = run_retirement_gate();
   CHECK_FALSE(result.ready);
-  CHECK(result.render().contains("planar:workspace init"));
-  CHECK(result.render().contains("37 oracle-conditional parity skip(s) remain"));
-  CHECK(zig_tree_present());
+  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("workspace init"); }));
+  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
+  CHECK(source_oracle_skips(target_source_root()).size() == 37);
+  CHECK(target_zig_tree_present());
+}
+
+TEST_CASE("oracle retirement: generated inventory drift is observed for every binary and skip source",
+          "[cmd][parity][state][retirement]") {
+  auto const      fixture = std::filesystem::temp_directory_path() / "planar_retirement_inventory_fixture";
+  std::error_code discard;
+  std::filesystem::remove_all(fixture, discard);
+  std::filesystem::create_directories(fixture / "zig", discard);
+  auto write_surface = [&](std::string_view relative, std::string_view paths) {
+    auto const target = fixture / relative;
+    std::filesystem::create_directories(target.parent_path(), discard);
+    std::ofstream out(target);
+    out << "auto unported_paths() {\n static constexpr std::string_view k_unported[] = {\n" << paths << "\n };\n}\n";
+  };
+  write_surface("src/cmd/planar/surface.cpp", R"(  "explore",)");
+  write_surface("src/cmd/planar-agent/surface.cpp", "");
+  write_surface("src/cmd/planar-watch/surface.cpp", "");
+  REQUIRE(source_unported_inventory(fixture) == std::vector<std::string>{"planar:explore (deferred-by-decision980)"});
+  for (auto const& [relative, expected] : std::array{
+           std::pair{"src/cmd/planar/surface.cpp", "planar:extra (pending-port)"},
+           std::pair{"src/cmd/planar-agent/surface.cpp", "planar-agent:extra (pending-port)"},
+           std::pair{"src/cmd/planar-watch/surface.cpp", "planar-watch:extra (pending-port)"},
+       }) {
+    write_surface(relative, R"(  "extra",)");
+    auto inventory = source_unported_inventory(fixture);
+    REQUIRE(inventory.has_value());
+    CHECK(std::ranges::find(*inventory, expected) != inventory->end());
+    write_surface(relative, relative == std::string_view{"src/cmd/planar/surface.cpp"} ? R"(  "explore",)" : "");
+  }
+  std::ofstream skip(fixture / "src/cmd/retirement_oracle.t.cpp");
+  skip << R"(PLANAR_REQUIRE_ORACLE(true, "fixture");)" << '\n';
+  skip.close();
+  CHECK(source_oracle_skips(fixture).size() == 1);
+  std::filesystem::remove_all(fixture, discard);
+}
+
+TEST_CASE("oracle retirement: a ready report consumes the real state differential", "[cmd][parity][state][retirement]") {
+  REQUIRE(oracle_available());
+  auto const      fixture = std::filesystem::temp_directory_path() / "planar_retirement_ready_fixture";
+  std::error_code discard;
+  std::filesystem::remove_all(fixture, discard);
+  std::filesystem::create_directories(fixture / "zig", discard);
+  auto write_surface = [&](std::string_view relative, std::string_view paths) {
+    auto const target = fixture / relative;
+    std::filesystem::create_directories(target.parent_path(), discard);
+    std::ofstream out(target);
+    out << "auto unported_paths() {\n static constexpr std::string_view k_unported[] = {\n" << paths << "\n };\n}\n";
+  };
+  write_surface("src/cmd/planar/surface.cpp", R"(  "explore",)");
+  write_surface("src/cmd/planar-agent/surface.cpp", "");
+  write_surface("src/cmd/planar-watch/surface.cpp", "");
+  auto const result = run_retirement_gate(fixture);
+  INFO(std::format("{}", result.refusals));
+  CHECK(result.ready);
+  std::filesystem::remove_all(fixture, discard);
+}
+
+TEST_CASE("oracle retirement: target zig absence refuses even with a shared oracle", "[cmd][parity][state][retirement]") {
+  REQUIRE(oracle_available());
+  auto const      fixture = std::filesystem::temp_directory_path() / "planar_retirement_target_absent";
+  std::error_code discard;
+  std::filesystem::remove_all(fixture, discard);
+  std::filesystem::create_directories(fixture / "src/cmd", discard);
+  auto const result = run_retirement_gate(fixture);
+  CHECK_FALSE(result.ready);
+  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("target checkout has no zig/"); }));
+  std::filesystem::remove_all(fixture, discard);
 }
 
 TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequence", "[cmd][parity][state]") {
@@ -1284,6 +1301,21 @@ TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequen
   auto const  steps = sequence(cpp_catalog.out, zig_catalog.out, catalog_error);
   REQUIRE(steps.has_value());
   INFO("catalog-derived state inventory: " << (steps->size() - hand_authored_stateful_sequence().size()) << " leaves");
+  for (auto const identity : in_scope_state_leaves) {
+    std::istringstream       tokens{std::string{identity}};
+    std::vector<std::string> prefix;
+    for (std::string token; tokens >> token;) {
+      prefix.push_back(std::move(token));
+    }
+    auto const executed = std::ranges::any_of(*steps, [&](step const& candidate) {
+      if (candidate.args.size() < prefix.size()) {
+        return false;
+      }
+      return std::equal(prefix.begin(), prefix.end(), candidate.args.begin());
+    });
+    INFO("decision-982 leaf executed by the real state lane: " << identity);
+    REQUIRE(executed);
+  }
   for (std::size_t index = 0; index < steps->size(); ++index) {
     auto const& args = (*steps)[index].args;
     auto const  tag  = std::format("s{:02}", index);
