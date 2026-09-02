@@ -17,6 +17,7 @@ import planar.cmd.planar_agent.handler;
 import planar.cmd.planar_agent.handlers.action;
 import planar.cmd.planar_agent.handlers.claims;
 import planar.cmd.planar_agent.handlers.recovery;
+import planar.cmd.planar_agent.handlers.runs;
 import planar.cmd.planar_agent.handlers.schema;
 import planar.cmd.planar_agent.handlers.terminal;
 import planar.cmd.planar_agent.handlers.version;
@@ -96,6 +97,8 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("context capsule", handlers::context_capsule);
   table.emplace("context list", handlers::context_list);
   table.emplace("context resolve", handlers::context_resolve);
+  table.emplace("run start", handlers::run_start);
+  table.emplace("run end", handlers::run_end);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64; the inventory is generated alongside the surface
   // itself. `emplace` is a no-op on a key already present, so a stale

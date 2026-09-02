@@ -103,17 +103,10 @@
 #
 # --- NOT landed, each blocked at LAYER 2 -----------------------------------
 #
-# Four of the oracle's eighteen verbs. See `tree.cppm`'s header for the
-# per-verb inventory; the summary:
+# The remaining oracle leaf is `ingest`; see `tree.cppm`'s header for its
+# layer-2 adapter dependency.
 #
 #   ingest              needs the vendor hook-event adapters. Not ported.
-#   run start / run end write `workflow_runs` — a DIFFERENT table from the
-#                       `runs` table the ported `engine_runs` bucket owns.
-#                       Verified by reading the Zig handler's literal
-#                       INSERT; reusing engine_runs here would write the
-#                       wrong table.
-#   dispatch / context  need the routing_dispatch_* and run-scoped context
-#                       tables. Not ported.
 #
 # Also deferred, WITH the verbs that carry it: `sessioncommits.
 # recordClaimWindowBestEffort`, the git revision walk the four terminal
@@ -122,10 +115,8 @@
 # currently gates nothing there. Same call `capture commits` and `bench
 # harvest` already made.
 #
-# Omitting an unported child from a group node stays the rule (task 6106),
-# so `planar-agent --help` lists fourteen commands where the oracle lists
-# eighteen and is not oracle-comparable; all fourteen LEAF pages are, and
-# are diffed against the live oracle in parity.t.cpp.
+# The one declared-but-unimplemented leaf is explicitly registered to the
+# exit-64 refusal handler, keeping its flags visible to the surface lint.
 
 planar_binary(planar_agent
   MAIN
@@ -148,6 +139,7 @@ planar_binary(planar_agent
     handlers/action.cppm
     handlers/dispatch.cppm
     handlers/context.cppm
+    handlers/runs.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -163,6 +155,7 @@ planar_binary(planar_agent
     handlers/action.cpp
     handlers/dispatch.cpp
     handlers/context.cpp
+    handlers/runs.cpp
     dispatch.cpp
   DEPENDS
     cliapp

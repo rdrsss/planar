@@ -179,10 +179,10 @@ TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd
   CHECK(got.out.contains("\"planar-agent dispatch preview\""));
   CHECK(got.out.contains("\"planar-agent context add\""));
 
-  auto const unported = dispatch(fx, {"context", "list", "--run", "1"});
+  auto const unported = dispatch(fx, {"ingest", "--vendor", "claude", "--event", "{}"});
   CHECK(unported.code == 64);
   CHECK(unported.out.empty());
-  CHECK(unported.err == "error: context list: not implemented in this build\n");
+  CHECK(unported.err == "error: ingest: not implemented in this build\n");
   // Discrimination: a PORTED verb on the same binary does not exit 64, so
   // the refusal above is about this verb rather than about this build.
   auto const ported = dispatch(fx, {"peek", "1", "--json"});

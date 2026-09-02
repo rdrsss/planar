@@ -32,19 +32,12 @@
 /// buckets this tree has never ported:
 ///
 ///   ingest                 needs the vendor hook-event adapters.
-///   run start / run end    write `workflow_runs`. NOTE this is a
-///                          DIFFERENT table from the `runs` table
-///                          `planar.engine.runs.lifecycle` (which IS
-///                          ported) operates on — that bucket's `start`
-///                          mints a `run_uid` into `runs`, while
-///                          `planar-agent run start` inserts a caller-
-///                          supplied `run_identifier` into `workflow_runs`.
-///                          Reusing the ported bucket here would write the
-///                          wrong table; verified by reading
-///                          zig/src/cmd/planar-agent/handlers/run/start.zig's
-///                          literal INSERT. (`reconcile` DOES sweep
-///                          `workflow_runs`, so the table is reachable —
-///                          what is missing is the run LIFECYCLE surface.)
+///   run start / run end    LANDED with task 6038 in
+///                          `engine.runtime.workflowruns`, deliberately
+///                          separate from `engine.runs.lifecycle`: the
+///                          latter owns the experimental `runs` table,
+///                          while this harness lifecycle owns
+///                          `workflow_runs` and its caller-supplied PID.
 ///   dispatch / context     need the `routing_dispatch_*` and run-scoped
 ///                          context tables. `routing_dispatch_previews`
 ///                          alone carries twenty-odd bound columns and a
