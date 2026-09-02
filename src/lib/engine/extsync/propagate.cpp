@@ -21,4 +21,12 @@ auto strategy_for_system(std::string_view system_kind) -> std::optional<strategy
   return std::nullopt;
 }
 
+auto strategy_for_repo_count(std::string_view system_kind, std::size_t distinct_repos) -> std::optional<strategy> {
+  auto selected = strategy_for_system(system_kind);
+  if (!selected || system_kind != "github-issues")
+    return selected;
+  selected->kind = distinct_repos == 0 ? "github-zero-repo" : distinct_repos == 1 ? "github-parent-issue" : "github-projects-v2";
+  return selected;
+}
+
 } // namespace planar::engine::extsync::propagate
