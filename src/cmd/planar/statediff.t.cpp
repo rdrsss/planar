@@ -916,7 +916,8 @@ auto source_oracle_skips(const std::filesystem::path& root) -> std::vector<std::
 
 /// @brief Result of the only consumable, real oracle-retirement gate.
 struct retirement_report {
-  bool                     ready = false;
+  bool                     ready     = false;
+  int                      exit_code = -1;
   std::vector<std::string> refusals;
 };
 
@@ -933,7 +934,8 @@ auto run_retirement_gate(const std::filesystem::path& root = target_source_root(
   }
   auto const process =
       run_pinned(std::filesystem::path{PLANAR_RETIREMENT_GATE}, args, make_arena("retirement_gate").cpp_root, "retirement_gate");
-  result.ready = process.code == 0;
+  result.exit_code = process.code;
+  result.ready     = process.code == 0;
   std::istringstream lines{process.out + process.err};
   for (std::string line; std::getline(lines, line);) {
     if (line.starts_with("refusal: ")) {
@@ -942,6 +944,36 @@ auto run_retirement_gate(const std::filesystem::path& root = target_source_root(
   }
   return result;
 }
+
+/// @brief Build an otherwise-ready target checkout for one gate evidence arm.
+auto clean_retirement_fixture(std::string_view name) -> std::filesystem::path {
+  auto const      fixture = std::filesystem::temp_directory_path() / std::format("planar_retirement_{}", name);
+  std::error_code discard;
+  std::filesystem::remove_all(fixture, discard);
+  std::filesystem::create_directories(fixture / "zig", discard);
+  for (auto const& [relative, paths] : std::array{
+           std::pair{"src/cmd/planar/surface.cpp", R"(  "explore",)"},
+           std::pair{"src/cmd/planar-agent/surface.cpp", ""},
+           std::pair{"src/cmd/planar-watch/surface.cpp", ""},
+       }) {
+    auto const target = fixture / relative;
+    std::filesystem::create_directories(target.parent_path(), discard);
+    std::ofstream out(target);
+    out << "auto unported_paths() {\n static constexpr std::string_view k_unported[] = {\n" << paths << "\n };\n}\n";
+  }
+  return fixture;
+}
+
+/// @brief Temporarily expose one explicit test seam to the child gate process.
+struct scoped_environment {
+  explicit scoped_environment(char const* name) : name{name} {
+    REQUIRE(::setenv(name, "1", 1) == 0);
+  }
+  ~scoped_environment() {
+    static_cast<void>(::unsetenv(name.c_str()));
+  }
+  std::string name;
+};
 
 } // namespace
 
@@ -1281,6 +1313,50 @@ TEST_CASE("oracle retirement: a ready report consumes the real state differentia
   std::filesystem::remove_all(fixture, discard);
 }
 
+TEST_CASE("oracle retirement: each evidence arm independently refuses a real gate", "[cmd][parity][state][retirement]") {
+  REQUIRE(oracle_available());
+  std::error_code discard;
+
+  SECTION("a durable C++-only state delta") {
+    auto const               fixture = clean_retirement_fixture("durable_delta_fixture");
+    scoped_environment const injected_delta{"PLANAR_STATE_DIFF_INJECT_DURABLE_DELTA"};
+    auto const               result = run_retirement_gate(fixture);
+    CHECK_FALSE(result.ready);
+    CHECK(result.exit_code != 0);
+    CHECK(std::ranges::any_of(result.refusals,
+                              [](auto const& item) { return item.contains("real catalog-derived state differential failed"); }));
+    CHECK(std::filesystem::is_directory(fixture / "zig"));
+    std::filesystem::remove_all(fixture, discard);
+  }
+
+  SECTION("an extra generated unported leaf") {
+    auto const    fixture = clean_retirement_fixture("unported_delta_fixture");
+    std::ofstream out(fixture / "src/cmd/planar/surface.cpp");
+    out << "auto unported_paths() {\n static constexpr std::string_view k_unported[] = {\n"
+        << R"(  "explore", "extra",)" << "\n };\n}\n";
+    out.close();
+    auto const result = run_retirement_gate(fixture);
+    CHECK_FALSE(result.ready);
+    CHECK(result.exit_code != 0);
+    CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("unported inventory"); }));
+    CHECK(std::filesystem::is_directory(fixture / "zig"));
+    std::filesystem::remove_all(fixture, discard);
+  }
+
+  SECTION("a remaining oracle-conditional skip") {
+    auto const    fixture = clean_retirement_fixture("skip_delta_fixture");
+    std::ofstream out(fixture / "src/cmd/retirement_oracle.t.cpp");
+    out << R"(PLANAR_REQUIRE_ORACLE(true, "fixture");)" << '\n';
+    out.close();
+    auto const result = run_retirement_gate(fixture);
+    CHECK_FALSE(result.ready);
+    CHECK(result.exit_code != 0);
+    CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
+    CHECK(std::filesystem::is_directory(fixture / "zig"));
+    std::filesystem::remove_all(fixture, discard);
+  }
+}
+
 TEST_CASE("oracle retirement: target zig absence refuses even with a shared oracle", "[cmd][parity][state][retirement]") {
   REQUIRE(oracle_available());
   auto const      fixture = std::filesystem::temp_directory_path() / "planar_retirement_target_absent";
@@ -1362,6 +1438,17 @@ TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequen
       if (mine_err != ref_err) {
         observed.push_back({tag, "stderr", std::format("cpp=[{}] zig=[{}]", escape(mine_err), escape(ref_err))});
       }
+    }
+
+    // The retirement fixture below introduces a real, durable C++-only
+    // table after a catalog-derived command.  It is intentionally an
+    // environment-gated test seam: the same dump/diff path must reject it,
+    // rather than a wrapper merely pretending that the state lane failed.
+    if (index == 0 && std::getenv("PLANAR_STATE_DIFF_INJECT_DURABLE_DELTA") != nullptr) {
+      auto probe = planar::db::connection::open((space.cpp_root / "planar.db").string());
+      REQUIRE(probe.has_value());
+      REQUIRE(probe->execute("create table oracle_retirement_probe (id integer not null)"));
+      REQUIRE(probe->execute("insert into oracle_retirement_probe (id) values (1)"));
     }
 
     auto const cpp_state = dump_database(space.cpp_root / "planar.db", roots);

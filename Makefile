@@ -134,6 +134,8 @@ test: test-install-manifest test-install-deps ## Run unit tests
 
 .PHONY: oracle-retirement-gate
 oracle-retirement-gate: ## Fail-closed evidence required before retiring zig/
+	cmake --preset debug
+	cmake --build build/debug --target planar_cmd_planar_tests $(ARGS)
 	scripts/oracle-retirement-gate.sh
 
 .PHONY: test-integration
