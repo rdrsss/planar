@@ -278,11 +278,11 @@ auto root_app() -> std::unique_ptr<CLI::App> {
 
   app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
 
-  // Everything above is hand-transcribed and lands WITH its handler.
-  // This fills in the nine leaves that land no behaviour — `ingest`, both
-  // `run` verbs, both `dispatch` verbs and all four `context` verbs — from
-  // generated data, skipping every node declared above. See
-  // `planar.cmd.planar_agent.surface`.
+  // The claim ritual is hand-transcribed above. `ingest`, both `run` verbs,
+  // both `dispatch` verbs, and all four `context` verbs are declared from
+  // the generated oracle surface and wired to real handlers in dispatch.cpp.
+  // Keeping their declaration data-driven preserves the catalog while the
+  // handler table remains the single implementation inventory.
   (void)cliapp::apply_surface(*app, surface_nodes());
 
   // Help renders the same page it rendered before every bool flag gained
