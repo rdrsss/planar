@@ -204,7 +204,7 @@ TEST_CASE("interpreted import applies proposed removals only when explicitly ena
     auto conn = planar::db::connection::open(fx.db_path.string()); REQUIRE(conn.has_value());
     CHECK(query_text(*conn, "select status from tasks where slug='task-two'") == "doing");
     CHECK(query_text(*conn, "select status from plans where slug='phase-two'") == "draft");
-    CHECK(query_text(*conn, "select status from artifacts where source_path='docs/tech-spec.md'") == "draft");
+    CHECK(query_text(*conn, "select status from artifacts where source_path='docs/tech-spec.md'") == "active");
     CHECK(query_text(*conn, "select status from decisions where title='Drop decision'") == "proposed");
     CHECK(query_text(*conn, "select status from tasks where slug='task-one'") == "todo");
   }

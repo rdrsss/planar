@@ -33,7 +33,7 @@ probe --label import-idempotency \
 # the artifact/link assertions in the same end-to-end fixture.
 probe --label import-artifact-materialization \
   --test 'interpreted import applies its cache atomically and is idempotent' \
-  --mutate "perl -0pi -e 's/auto artifacts = reconcile_artifacts\(conn, root, anchor, scope\);/std::expected<void, domain_error> artifacts{};/' src/cmd/planar/handlers/import.cpp"
+  --mutate "perl -0pi -e 's/auto artifacts = reconcile_artifacts\(conn, root, anchor, scope, apply_removals\);/std::expected<void, domain_error> artifacts{};/' src/cmd/planar/handlers/import.cpp"
 
 # Proposed removals are opt-in.  Forcing the first removal pass on ordinary
 # apply must kill the fixture's pre-removal state assertions.
