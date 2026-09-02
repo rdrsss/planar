@@ -38,6 +38,8 @@ export struct confirm_result {
 };
 
 export auto valid(std::string_view value) -> bool;
+export auto classify_stale(const binding& frozen, const binding& current, std::string_view expires_at, bool consumed,
+                           std::string_view now) -> std::optional<stale_reason>;
 export auto preview(db::connection& conn, const binding& value, std::string_view expires_at)
     -> std::expected<preview_result, error>;
 export auto confirm(db::connection& conn, std::string_view token, std::string_view dispatch_key, const binding& current,

@@ -24,7 +24,8 @@ auto same_opt(const std::optional<std::string>& a, const std::optional<std::stri
 auto read_opt(const db::statement& s, int index) -> std::optional<std::string> {
   return s.is_null(index) ? std::nullopt : std::optional{s.column_text(index)};
 }
-auto stale_for(const binding& frozen, const binding& current, std::string_view expires, bool consumed, std::string_view now)
+} // namespace
+auto classify_stale(const binding& frozen, const binding& current, std::string_view expires, bool consumed, std::string_view now)
     -> std::optional<stale_reason> {
   if (consumed)
     return stale_reason::already_consumed;
@@ -48,7 +49,6 @@ auto stale_for(const binding& frozen, const binding& current, std::string_view e
     return stale_reason::claim_changed;
   return std::nullopt;
 }
-} // namespace
 auto valid(std::string_view value) -> bool {
   return !value.empty() && std::ranges::none_of(value, [](unsigned char c) { return c < 0x20 || c == 0x7f; });
 }
@@ -156,7 +156,7 @@ auto confirm(db::connection& c, std::string_view token, std::string_view key, co
                .claim             = read_opt(*s, 20),
                .claim_status      = read_opt(*s, 21)};
   auto const preview_id = s->column_int64(0);
-  if (auto why = stale_for(b, current, s->column_text(23), s->column_int64(24) != 0, now)) {
+  if (auto why = classify_stale(b, current, s->column_text(23), s->column_int64(24) != 0, now)) {
     if (stale)
       *stale = *why;
     return std::unexpected(error::stale_preview);
