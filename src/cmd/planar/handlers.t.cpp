@@ -986,7 +986,7 @@ TEST_CASE("workspace init creates durable org membership routing and root guidan
   // A non-empty child fixture is essential: the oracle refuses before it
   // writes when the scan finds no nested checkout, so an empty fixture cannot
   // falsify a handler that quietly skips discovery.
-  auto const fx = make_fixture("wsinit_fresh");
+  auto const      fx = make_fixture("wsinit_fresh");
   std::error_code ec;
   std::filesystem::create_directories(fx.root / "proj" / "alpha" / ".git", ec);
   REQUIRE_FALSE(ec);
@@ -1006,13 +1006,17 @@ TEST_CASE("workspace init creates durable org membership routing and root guidan
 
   std::ostringstream out;
   std::ostringstream err;
-  context ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto conn = ctx.ensure_db();
+  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto               conn = ctx.ensure_db();
   REQUIRE(conn.has_value());
   auto org_count = (*conn)->prepare("select count(*) from associations where slug='acme' and kind='org'");
-  REQUIRE(org_count.has_value()); REQUIRE(org_count->step().has_value()); CHECK(org_count->column_int64(0) == 1);
+  REQUIRE(org_count.has_value());
+  REQUIRE(org_count->step().has_value());
+  CHECK(org_count->column_int64(0) == 1);
   auto member_count = (*conn)->prepare("select count(*) from project_associations");
-  REQUIRE(member_count.has_value()); REQUIRE(member_count->step().has_value()); CHECK(member_count->column_int64(0) == 1);
+  REQUIRE(member_count.has_value());
+  REQUIRE(member_count->step().has_value());
+  CHECK(member_count->column_int64(0) == 1);
 
   // Reuse must not duplicate either durable row. The fresh fixture above has
   // a real member, so this arm distinguishes idempotence from a no-op path.
@@ -1022,14 +1026,18 @@ TEST_CASE("workspace init creates durable org membership routing and root guidan
   CHECK(again.out.contains("\"org\":{\"id\":1,\"slug\":\"acme\",\"name\":\"Acme\",\"created\":false}"));
   CHECK(again.out.contains("\"projects\":[{\"slug\":\"alpha\""));
   CHECK(again.out.contains("\"created\":false,\"membership_created\":false}"));
-  CHECK(again.out.contains("\"routing\":{\"project_count\":1,\"cross_repo_deps\":0,\"enrich_enabled\":false,\"enrich_misses\":0}"));
+  CHECK(
+      again.out.contains("\"routing\":{\"project_count\":1,\"cross_repo_deps\":0,\"enrich_enabled\":false,\"enrich_misses\":0}"));
   CHECK(again.out.contains("\"symlinks\":{\"strategy\":\"symlink\",\"installed\":[\"AGENTS.md\",\"CLAUDE.md\"]}"));
   auto member_count_after = (*conn)->prepare("select count(*) from project_associations");
-  REQUIRE(member_count_after.has_value()); REQUIRE(member_count_after->step().has_value()); CHECK(member_count_after->column_int64(0) == 1);
+  REQUIRE(member_count_after.has_value());
+  REQUIRE(member_count_after->step().has_value());
+  CHECK(member_count_after->column_int64(0) == 1);
 }
 
-TEST_CASE("workspace init rejects incompatible flags before opening or mutating the database", "[cmd][handlers][workspace-init][refusal]") {
-  auto const fx = make_fixture("wsinit_refusal");
+TEST_CASE("workspace init rejects incompatible flags before opening or mutating the database",
+          "[cmd][handlers][workspace-init][refusal]") {
+  auto const fx  = make_fixture("wsinit_refusal");
   auto const got = dispatch(fx, {"workspace", "init", "--no-scan", "--enrich"});
   CHECK(got.code == 2);
   CHECK(got.out.empty());
@@ -1041,7 +1049,7 @@ TEST_CASE("workspace init rejects incompatible flags before opening or mutating 
 
 TEST_CASE("workspace init meta-repo refuses a reused org recorded at another root without linking either repository",
           "[cmd][handlers][workspace-init][meta][refusal]") {
-  auto const fx = make_fixture("wsinit_meta_root");
+  auto const      fx = make_fixture("wsinit_meta_root");
   std::error_code ec;
   std::filesystem::create_directories(fx.root / "proj" / ".git", ec);
   std::filesystem::create_directories(fx.root / "proj" / "alpha" / ".git", ec);
@@ -1049,21 +1057,26 @@ TEST_CASE("workspace init meta-repo refuses a reused org recorded at another roo
 
   std::ostringstream out;
   std::ostringstream err;
-  context ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto conn = ctx.ensure_db();
+  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto               conn = ctx.ensure_db();
   REQUIRE(conn.has_value());
   auto const other_root = (fx.root / "elsewhere").string();
-  REQUIRE(planar::engine::identity::create(**conn,
-                                           {.slug = "acme", .name = "Acme", .kind = planar::engine::identity::association_kind::org,
-                                            .config_json = std::format(R"({{"root_path":"{}","workspace_shape":"meta-repo"}})", other_root)})
+  REQUIRE(planar::engine::identity::create(
+              **conn, {.slug        = "acme",
+                       .name        = "Acme",
+                       .kind        = planar::engine::identity::association_kind::org,
+                       .config_json = std::format(R"({{"root_path":"{}","workspace_shape":"meta-repo"}})", other_root)})
               .has_value());
 
   auto const got = dispatch(fx, {"workspace", "init", "--meta-repo", "--name", "Acme", "--slug", "acme"});
   CHECK(got.code == 2);
   CHECK(got.out.empty());
-  CHECK(got.err == "error: org:acme already exists with a different workspace root; choose a different --slug or run from the recorded root\n");
+  CHECK(got.err == "error: org:acme already exists with a different workspace root; choose a different --slug or run from the "
+                   "recorded root\n");
   auto links = (*conn)->prepare("select count(*) from project_associations");
-  REQUIRE(links.has_value()); REQUIRE(links->step().has_value()); CHECK(links->column_int64(0) == 0);
+  REQUIRE(links.has_value());
+  REQUIRE(links->step().has_value());
+  CHECK(links->column_int64(0) == 0);
 }
 
 // =========================================================================
