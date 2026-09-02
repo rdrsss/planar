@@ -1201,8 +1201,12 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(process.out.contains("oracle-retirement: REFUSED"));
   auto const result = run_retirement_gate();
   CHECK_FALSE(result.ready);
-  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("workspace init"); }));
+  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("unported inventory"); }));
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
+  auto const live_unported = source_unported_inventory(target_source_root());
+  REQUIRE(live_unported.has_value());
+  CHECK(live_unported->size() == 19);
+  CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") != live_unported->end());
   CHECK(source_oracle_skips(target_source_root()).size() == 37);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
   auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
