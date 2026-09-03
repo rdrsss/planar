@@ -151,6 +151,23 @@ TEST_CASE("the bullet branch splits each bullet at its first sentence", "[engine
   CHECK(got[2].source_line == 14);
 }
 
+TEST_CASE("the earliest terminator wins even when a later k_terms entry matches first in the text",
+          "[engine][workbench][questions]") {
+  // k_terms is tried in the fixed order {". ", "? ", "! "}. A bullet whose
+  // "! " occurs BEFORE its ". " forces the loop to re-run its
+  // `punct < *earliest` comparison and actually move `earliest` backward
+  // on the third iteration -- a mutant that stops updating after the
+  // first match would keep the LATER ". " split point instead.
+  constexpr std::string_view body = R"(## Open Questions
+
+- Wait! Are we sure. Let's check.
+)";
+  auto const                 got  = q::extract_questions(body);
+  REQUIRE(got.size() == 1);
+  CHECK(got[0].title == "Wait!");
+  CHECK(got[0].body == "Are we sure. Let's check.");
+}
+
 TEST_CASE("the section stops at the next H1 or H2, so later bullets are not questions", "[engine][workbench][questions]") {
   auto const got = q::extract_questions(k_bullet_body);
   REQUIRE_FALSE(got.empty());

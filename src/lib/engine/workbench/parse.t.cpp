@@ -265,6 +265,15 @@ TEST_CASE("an unbalanced opening quote is refused", "[workbench][parse][reject]"
   CHECK(bad.line == 4);
 }
 
+TEST_CASE("a lone quote character as a value is refused", "[workbench][parse][reject]") {
+  // Distinct from the unclosed-quote case above: `back() != front()` is
+  // trivially FALSE when the value is a single character (they're the same
+  // char), so this isolates the `size() < 2` half of the gate on its own.
+  auto const bad = refused("---\nentity_kind: task\nentity_id: 1\ntitle: '\nstatus: todo\n---\n");
+  CHECK(bad.reason == diagnostic_reason::malformed_yaml);
+  CHECK(bad.line == 4);
+}
+
 TEST_CASE("a line with no colon, and a line with an empty key, are both refused", "[workbench][parse][reject]") {
   auto const no_colon = refused("---\nentity_kind: task\nentity_id: 1\ngarbage line\ntitle: T\nstatus: todo\n---\n");
   CHECK(no_colon.reason == diagnostic_reason::malformed_yaml);
@@ -340,6 +349,19 @@ TEST_CASE("a ref item that is not <kind>:<positive-id> is refused", "[workbench]
   CHECK(not_a_ref.line == 7);
   // Zero is refused: the id must be strictly positive.
   CHECK(refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\ncites:\n- task:0\n---\n").reason ==
+        diagnostic_reason::invalid_entity_ref);
+  // An EMPTY kind (a bare ":5") is refused -- distinct from "notaref" above,
+  // which has no colon at all and never reaches the empty-kind check.
+  CHECK(refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\ncites:\n- :5\n---\n").reason ==
+        diagnostic_reason::invalid_entity_ref);
+  // An EMPTY id_text ("task:") is refused -- distinct from "task:0" above,
+  // which has a present-but-zero id and never reaches the empty-id_text
+  // check on its own (it fails the later `*id > 0` test instead).
+  CHECK(refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\ncites:\n- task:\n---\n").reason ==
+        diagnostic_reason::invalid_entity_ref);
+  // A non-numeric id_text is refused via `parse_int64_zig` returning
+  // nullopt, not via the `*id > 0` clause -- distinct from "task:0".
+  CHECK(refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\ncites:\n- task:abc\n---\n").reason ==
         diagnostic_reason::invalid_entity_ref);
 }
 
@@ -452,6 +474,17 @@ TEST_CASE("an unrecognized entity_kind is refused with the six accepted values",
   CHECK(bad.expected == "plan, task, artifact, scenario, decision, or question");
 }
 
+TEST_CASE("`decision` and `scenario` are accepted entity_kinds", "[workbench][parse][accept]") {
+  // Every other entity_kind is exercised as an ACCEPT fixture elsewhere in
+  // this file (task, artifact, question, plan); these two were the only
+  // ones never appearing on the accept side, so an `is_entity_kind` clause
+  // dedicated to either could regress silently.
+  CHECK(accepted("---\nentity_kind: decision\nentity_id: 1\ntitle: T\nstatus: proposed\n---\n").frontmatter.entity_kind ==
+        "decision");
+  CHECK(accepted("---\nentity_kind: scenario\nentity_id: 1\ntitle: T\nstatus: draft\n---\n").frontmatter.entity_kind ==
+        "scenario");
+}
+
 TEST_CASE("`test_scenario` is NOT an accepted entity_kind here", "[workbench][parse][reject]") {
   // Even though `terminal::kind_from_string` and the sync layer's entity
   // stream both accept it. The two layers genuinely disagree; a file must
@@ -505,6 +538,15 @@ TEST_CASE("the body is everything after the closing delimiter, minus one blank s
   CHECK(result.body == "# Body\n\ntext\n");
 }
 
+TEST_CASE("a body with NO leading blank line is kept byte-for-byte", "[workbench][parse][accept]") {
+  // Distinct from the case above: the leading-newline strip is
+  // CONDITIONAL on the body actually starting with '\n'. A body that
+  // starts directly with real content must not lose its first byte.
+  std::string const fixture = std::string{k_minimal_task} + "text\n";
+  auto const        result  = accepted(fixture);
+  CHECK(result.body == "text\n");
+}
+
 TEST_CASE("a UTF-8 body and title survive unchanged", "[workbench][parse][accept]") {
   constexpr std::string_view title   = "Héllo Wörld";
   constexpr std::string_view body    = "Ünïcödé body 🎉\n";
@@ -534,4 +576,13 @@ TEST_CASE("strip_yaml_quotes removes exactly one matching pair", "[workbench][pa
   CHECK(wp::strip_yaml_quotes("foo") == "foo");
   CHECK(wp::strip_yaml_quotes("'foo\"") == "'foo\"");
   CHECK(wp::strip_yaml_quotes("''") == "");
+  // Back is a single-quote but front is NOT -- the mirror image of
+  // "'foo\"" above, isolating the FRONT half of the single-quote match.
+  CHECK(wp::strip_yaml_quotes("abc'") == "abc'");
+  // Front is a double-quote but back is NOT -- isolates the BACK half of
+  // the double-quote match.
+  CHECK(wp::strip_yaml_quotes("\"abc") == "\"abc");
+  // Back is a double-quote but front is NOT -- isolates the FRONT half of
+  // the double-quote match.
+  CHECK(wp::strip_yaml_quotes("abc\"") == "abc\"");
 }
