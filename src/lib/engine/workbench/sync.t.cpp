@@ -453,6 +453,70 @@ TEST_CASE("a file present with NO manifest row and DIFFERENT content is fs_to_db
   CHECK(scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one)) == "Edited with no manifest row.");
 }
 
+TEST_CASE("sync_both applies BOTH directions in one call, unlike push or pull alone", "[workbench][sync][bidirectional]") {
+  // Every classification-apply gate in `run` reads
+  // `run_mode == mode::push || run_mode == mode::sync` (or the pull
+  // equivalent) -- but until now no fixture ever called `sync_both`, so a
+  // mode::sync-specific defect (a wrong enum comparison, a branch that
+  // silently only half-applies) had no test standing between it and a
+  // green suite. Two DIFFERENT entities move on DIFFERENT sides so a
+  // single-field fixture could not tell "per-entity direction routing"
+  // from "the whole call happened to go one way".
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+
+  // task_one moves on the FS side only.
+  auto const file_one = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-first-task.md", s.task_one);
+  REQUIRE(wfs::write_file_atomic(
+      file_one, std::format("---\nentity_kind: task\nentity_id: {}\nanchor_plan_id: {}\ntitle: First Task\n"
+                            "status: doing\npriority: 100\n---\n\n# Task {}: First Task\n\n"
+                            "**Status:** doing  \n\nFS side edit for sync_both.\n",
+                            s.task_one, s.plan_id, s.task_one)));
+  // task_two moves on the DB side only.
+  exec(a.conn(), std::format("update tasks set body = 'DB side edit for sync_both', "
+                             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+1 second') where id = {}",
+                             s.task_two));
+
+  auto peek = ws::status(a.conn(), s.plan_id, a.root());
+  REQUIRE(peek.has_value());
+  CHECK(class_of(*peek, "1-first-task.md") == ws::classification::fs_to_db);
+  CHECK(class_of(*peek, "2-second-task.md") == ws::classification::db_to_fs);
+  CHECK(peek->pending == 2);
+  CHECK(peek->applied == 0);
+
+  auto synced = ws::sync_both(a.conn(), s.plan_id, a.root());
+  REQUIRE(synced.has_value());
+  CHECK(synced->applied == 2);
+  CHECK(synced->pending == 0);
+  CHECK(synced->conflicts == 0);
+  // The FS edit landed in the DB...
+  CHECK(scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one)) ==
+        "FS side edit for sync_both.");
+  // ...and the DB edit landed on disk, in the SAME call.
+  auto const file_two = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-second-task.md", s.task_two);
+  CHECK(wfs::read_file(file_two)->find("DB side edit for sync_both") != std::string::npos);
+
+  auto again = ws::status(a.conn(), s.plan_id, a.root());
+  REQUIRE(again.has_value());
+  CHECK(again->pending == 0);
+  CHECK(std::ranges::all_of(again->entries, [](const ws::entry& e) { return e.value == ws::classification::no_op; }));
+}
+
+TEST_CASE("sync_both soft-deletes an FS-deleted entity, unlike push alone", "[workbench][sync][bidirectional][delete]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-first-task.md", s.task_one);
+  REQUIRE(wfs::remove_file(file));
+
+  auto synced = ws::sync_both(a.conn(), s.plan_id, a.root());
+  REQUIRE(synced.has_value());
+  CHECK(synced->applied == 1);
+  CHECK(synced->pending == 0);
+  CHECK(scalar_text(a.conn(), std::format("select status from tasks where id = {}", s.task_one)) == "cancelled");
+}
+
 TEST_CASE("resolving a conflict keeps the chosen side and settles the event", "[workbench][sync][resolve]") {
   arena      a;
   auto const s = seed(a.conn());
@@ -495,6 +559,48 @@ TEST_CASE("a deleted file soft-deletes its entity on pull, and only pending on p
   auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
   REQUIRE(pulled.has_value());
   CHECK(scalar_text(a.conn(), std::format("select status from tasks where id = {}", s.task_one)) == "cancelled");
+}
+
+TEST_CASE("an UNLINKED entity's orphaned manifest row is cleaned only on pull/sync, not push",
+          "[workbench][sync][delete][orphan]") {
+  // Distinct from the tracked-entity delete above: this entity is no longer
+  // ENUMERATED at all (its derives-from link is gone), so it never enters
+  // the main entity loop and its manifest row is only reachable through the
+  // "manifest rows the DB no longer enumerates" sweep at the tail of `run`.
+  // That sweep has its OWN pull/sync mode gate, separate from the
+  // classification switch's.
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file = feature_dir_of(a, s.plan_id) / std::format("{}-tech-spec-auth.md", s.artifact);
+  REQUIRE(wfs::path_exists(file));
+  exec(a.conn(), std::format("delete from entity_links where from_kind = 'artifact' and from_id = {} "
+                             "and to_kind = 'plan' and to_id = {} and relationship = 'derives-from'",
+                             s.artifact, s.plan_id));
+  REQUIRE(wfs::remove_file(file));
+
+  auto rows_before = wm::load(a.conn(), s.plan_id);
+  REQUIRE(rows_before.has_value());
+  auto const had_row_before =
+      std::ranges::any_of(*rows_before, [&](const wm::sync_state& r) { return r.entity_kind == "artifact" && r.entity_id == s.artifact; });
+  REQUIRE(had_row_before);
+
+  auto pushed = ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false);
+  REQUIRE(pushed.has_value());
+  CHECK(pushed->pending >= 1);
+  CHECK(scalar_text(a.conn(), std::format("select status from artifacts where id = {}", s.artifact)) == "draft");
+  auto rows_after_push = wm::load(a.conn(), s.plan_id);
+  REQUIRE(rows_after_push.has_value());
+  CHECK(std::ranges::any_of(*rows_after_push,
+                            [&](const wm::sync_state& r) { return r.entity_kind == "artifact" && r.entity_id == s.artifact; }));
+
+  auto synced = ws::sync_both(a.conn(), s.plan_id, a.root());
+  REQUIRE(synced.has_value());
+  CHECK(scalar_text(a.conn(), std::format("select status from artifacts where id = {}", s.artifact)) == "retired");
+  auto rows_after_sync = wm::load(a.conn(), s.plan_id);
+  REQUIRE(rows_after_sync.has_value());
+  CHECK_FALSE(std::ranges::any_of(*rows_after_sync,
+                                  [&](const wm::sync_state& r) { return r.entity_kind == "artifact" && r.entity_id == s.artifact; }));
 }
 
 TEST_CASE("a RENAMED entity reads as deleted_on_fs, not as a fresh write", "[workbench][sync][rename]") {
