@@ -77,9 +77,9 @@ struct scratch_db_path {
   std::filesystem::path path_;
 
   scratch_db_path()
-      : path_(std::filesystem::temp_directory_path() /
-              std::format("planar_ext_capability_test_{}_{}.db", std::chrono::steady_clock::now().time_since_epoch().count(),
-                         reinterpret_cast<std::uintptr_t>(this))) {
+      : path_(std::filesystem::temp_directory_path() / std::format("planar_ext_capability_test_{}_{}.db",
+                                                                   std::chrono::steady_clock::now().time_since_epoch().count(),
+                                                                   reinterpret_cast<std::uintptr_t>(this))) {
   }
 
   scratch_db_path(const scratch_db_path&)            = delete;
@@ -97,7 +97,7 @@ struct scratch_db_path {
 /// @brief A migrated scratch database plus a `planar-ext` context already
 /// pointed at it, ready for `ensure_db()`.
 struct fixture {
-  scratch_db_path       scratch;
+  scratch_db_path           scratch;
   planar::cmd::ext::context ctx;
 
   fixture()
@@ -139,10 +139,9 @@ TEST_CASE("planar-ext's declared verb set is exactly {version, schema} — this 
   // None of these belongs on `planar-ext` either, today or after tasks
   // 6419-6421 (which add `ext`/`sync`, not planning or claim-ritual verbs).
   static constexpr std::string_view k_forbidden[] = {
-      "pull",     "claim",     "heartbeat", "complete", "fail",      "release",   "block",     "action",
-      "ingest",   "reconcile", "abort",     "peek",     "plan",      "task",      "decision",  "question",
-      "scenario", "artifact",  "annotate",  "init",     "workbench", "doc",       "spec",      "templates",
-      "promote",  "demote",    "capture",
+      "pull",      "claim", "heartbeat", "complete", "fail", "release",   "block",    "action",   "ingest",
+      "reconcile", "abort", "peek",      "plan",     "task", "decision",  "question", "scenario", "artifact",
+      "annotate",  "init",  "workbench", "doc",      "spec", "templates", "promote",  "demote",   "capture",
   };
   for (auto const& forbidden : k_forbidden) {
     INFO("forbidden verb leaked into planar-ext's tree: " << forbidden);
@@ -212,7 +211,8 @@ TEST_CASE("ensure_db()'s write allowlist survives a table name composed by RUNTI
   // literal "update plans" (or "update tasks", ...) appears anywhere in
   // THIS translation unit for a source-text scan to find — and the
   // authorizer still denies it, because it inspects the PARSED statement.
-  for (std::string const table : {std::string{"plans"}, std::string{"tasks"}, std::string{"questions"}, std::string{"artifacts"}}) {
+  for (std::string const table :
+       {std::string{"plans"}, std::string{"tasks"}, std::string{"questions"}, std::string{"artifacts"}}) {
     auto const sql = std::format("update {} set updated_at = updated_at;", table);
     auto       upd = conn.prepare(sql);
     INFO("interpolated table: " << table);
@@ -250,7 +250,7 @@ TEST_CASE("planar-ext version opens no database — same invariant the other thr
   auto const root  = planar::cmd::ext::root_app();
   auto const table = planar::cmd::ext::handlers(*root);
 
-  fixture fx;
+  fixture    fx;
   auto const outcome = table.at("version")(fx.ctx, {});
   CHECK(outcome.has_value());
   CHECK_FALSE(fx.ctx.db_opened());

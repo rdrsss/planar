@@ -377,7 +377,7 @@ auto write_allowlist_authorizer(void* user, int action, const char* arg1, const 
   if (action != SQLITE_INSERT && action != SQLITE_UPDATE && action != SQLITE_DELETE) {
     return SQLITE_OK;
   }
-  auto const* allowed = static_cast<std::vector<std::string> const*>(user);
+  auto const*            allowed = static_cast<std::vector<std::string> const*>(user);
   std::string_view const table(arg1 != nullptr ? arg1 : "");
   for (auto const& t : *allowed) {
     if (t == table) {

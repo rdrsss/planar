@@ -134,7 +134,7 @@ TEST_CASE("restrict_writes_to denies a write against a table named only at RUNTI
   // "update forbidden" would not even find this line.
   std::string const table = "forbidden";
   auto const        sql   = std::format("update {} set n = n;", table);
-  auto               upd  = conn->prepare(sql);
+  auto              upd   = conn->prepare(sql);
   REQUIRE_FALSE(upd.has_value());
 }
 
