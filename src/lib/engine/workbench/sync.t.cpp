@@ -760,6 +760,13 @@ TEST_CASE("extract_body_text strips the generated header and nothing else", "[wo
   CHECK(ws::extract_body_text("").empty());
   CHECK(ws::extract_body_text("# Only a heading\n\n**Only:** labels\n").empty());
   CHECK(ws::extract_body_text("   \n\n  body  \n\n") == "body");
+  // A line containing ":**" that does NOT start with "**" is real prose,
+  // not a generated label, and must NOT be skipped -- isolates the
+  // `starts_with("**")` half of `is_label` from its `find(":**")` half.
+  CHECK(ws::extract_body_text("See **Notes:** here\n") == "See **Notes:** here");
+  // A line that DOES start with "**" but has no ":**" anywhere is real
+  // bold prose, not a generated label -- isolates the `find(":**")` half.
+  CHECK(ws::extract_body_text("**bold** prose\n") == "**bold** prose");
 }
 
 TEST_CASE("extract_body_text does NOT strip a `---` line", "[workbench][sync][body][double-wrap]") {
