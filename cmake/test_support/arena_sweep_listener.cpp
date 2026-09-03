@@ -47,18 +47,46 @@
 // exactly the per-fixture churn this listener exists to avoid, for a
 // contingency this tree does not currently exercise.
 //
-// Instead: an exclusive lock file (`O_CREAT|O_EXCL`) under `$TMPDIR`
-// designates ONE "sweep owner" process at a time. A test binary that loses
-// the race writes a contention marker and skips sweeping entirely for
-// itself — it leaves its own arenas for a later run to clean up, never
-// removing anything. The owner checks that marker again at the end of its
-// own run; if ANY other process started while it was running, the owner
-// ALSO skips its sweep for that run, because directories that appeared
-// during its window can no longer be safely attributed to itself alone.
-// The failure mode under detected concurrency is therefore always "sweep
-// less than usual, once", never "delete a live sibling's arena". Serial
-// ctest (today's reality) is unaffected: exactly one process ever holds
-// the lock, contention is never recorded, and the sweep runs every time.
+// Instead: an ADVISORY `flock()` (`LOCK_EX | LOCK_NB`) on a lock file under
+// `$TMPDIR` designates ONE "sweep owner" process at a time. A test binary
+// that loses the race writes a contention marker and skips sweeping
+// entirely for itself — it leaves its own arenas for a later run to clean
+// up, never removing anything. The owner checks that marker again at the
+// end of its own run; if ANY other process started while it was running,
+// the owner ALSO skips its sweep for that run, because directories that
+// appeared during its window can no longer be safely attributed to itself
+// alone. The failure mode under detected concurrency is therefore always
+// "sweep less than usual, once", never "delete a live sibling's arena".
+// Serial ctest (today's reality) is unaffected: exactly one process ever
+// holds the lock, contention is never recorded, and the sweep runs every
+// time.
+//
+// `flock()` rather than the earlier `O_CREAT|O_EXCL` sentinel-file scheme
+// (task 6311 iteration 2, a real bug an independent verification run
+// reproduced by accident): a killed/OOM'd/Ctrl-C'd process leaves an
+// `O_CREAT|O_EXCL` sentinel FILE behind forever — nothing ever deletes it
+// once the owning process is gone, so every subsequent run treats it as
+// "another run currently owns the sweep", writes its own contention
+// marker, and skips. The next run does the same. The sweep is disabled
+// PERMANENTLY, silently, with the very recurrence guard this task exists
+// to add never tripping, until an operator manually deletes the file —
+// exactly the failure mode the acceptance criteria call out. `ctest`
+// spawns one process PER TEST CASE (not once per binary), so a single
+// killed run poisons every subsequent test-binary invocation, in the same
+// run and every run after.
+//
+// An advisory `flock()` cannot orphan this way BY CONSTRUCTION: a lock
+// held via a file descriptor is released by the kernel the instant the
+// holding process's last reference to that descriptor goes away, for ANY
+// reason a process ends — normal exit, `exit()`/`_exit()`, an uncaught
+// signal including `SIGKILL`, or an OOM kill. There is no window in which
+// the lock outlives the process that held it, so no age or PID heuristic
+// is needed and no case exists where a human has to intervene to unstick
+// it. The lock FILE itself is left in place (never unlinked) precisely so
+// there is nothing to race: the next process opens the same path with
+// `O_CREAT` (creating it if genuinely absent) and attempts its own
+// `flock()`, which succeeds the instant the previous holder's lock is
+// gone — whether that holder exited cleanly or was killed.
 //
 // ## The recurrence guard
 //
@@ -76,6 +104,7 @@
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 import std;
@@ -126,10 +155,27 @@ public:
     lock_path_      = tmp / ".planar_arena_sweep.lock";
     contended_path_ = tmp / ".planar_arena_sweep.contended";
 
-    int const fd = ::open(lock_path_.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+    // O_EXCL is NOT used here (see the file header, task 6311 iteration
+    // 2): the file is a target for flock(), not itself the ownership
+    // signal, so it is fine -- expected, even -- for it to already exist
+    // from a prior run. Ownership is decided entirely by whether THIS
+    // process wins the advisory lock below.
+    int const fd = ::open(lock_path_.c_str(), O_CREAT | O_RDWR, 0600);
     if (fd < 0) {
-      // Another test binary already owns the sweep for this window.
-      // Record contention for it, and take no further part ourselves.
+      // Could not even open the lock file (e.g. an unwritable $TMPDIR).
+      // Fail safe exactly like losing the lock race: do not sweep.
+      std::cerr << "[arena-sweep] could not open the sweep lock file at "
+                << lock_path_ << " -- this run's arenas will NOT be swept "
+                   "this time\n";
+      return;
+    }
+    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+      // Another test binary currently holds the lock -- it is genuinely
+      // alive right now (the kernel releases a flock the instant its
+      // holder's process ends, by any means), so this is real contention,
+      // never a stale leftover. Record it for the owner, and take no
+      // further part ourselves.
+      ::close(fd);
       std::ofstream marker(contended_path_, std::ios::app);
       std::cerr << "[arena-sweep] a concurrent test run already owns the "
                    "sweep -- this run's arenas will NOT be swept this "
@@ -138,10 +184,10 @@ public:
                    "under parallel runs)\n";
       return;
     }
-    ::close(fd);
+    lock_fd_   = fd;
     owns_lock_ = true;
     std::error_code rm_ec;
-    fs::remove(contended_path_, rm_ec); // clear a stale marker from a crashed prior owner
+    fs::remove(contended_path_, rm_ec); // clear a marker a losing sibling left for us
     before_ = snapshot_planar_entries(tmp_root_);
   }
 
@@ -150,7 +196,6 @@ public:
       return;
     }
     std::error_code ec;
-    fs::remove(lock_path_, ec);
 
     bool const contended = fs::exists(contended_path_);
     fs::remove(contended_path_, ec);
@@ -158,6 +203,7 @@ public:
       std::cerr << "[arena-sweep] a concurrent test run overlapped this "
                    "one -- skipping the sweep so a still-live sibling "
                    "arena is never removed\n";
+      release_lock();
       return;
     }
 
@@ -191,14 +237,29 @@ public:
       std::cerr << "[arena-sweep] failing this run loudly so the leak "
                    "cannot silently resume accumulating disk -- "
                    "investigate before re-running (task 6311).\n";
+      release_lock();
       std::exit(1);
     }
+    release_lock();
   }
 
 private:
+  /// @brief Release the advisory lock and close its descriptor. The lock
+  /// FILE itself is deliberately left in place -- see the file header for
+  /// why leaving it is what makes staleness impossible rather than merely
+  /// unlikely.
+  void release_lock() {
+    if (lock_fd_ >= 0) {
+      ::flock(lock_fd_, LOCK_UN);
+      ::close(lock_fd_);
+      lock_fd_ = -1;
+    }
+  }
+
   fs::path               tmp_root_;
   fs::path               lock_path_;
   fs::path               contended_path_;
+  int                    lock_fd_   = -1;
   bool                   owns_lock_ = false;
   std::set<std::string>  before_;
 };
