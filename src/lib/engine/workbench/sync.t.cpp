@@ -392,6 +392,54 @@ TEST_CASE("both sides moving is a CONFLICT, recorded once and reused", "[workben
   CHECK(scalar_id(a.conn(), "select count(*) from sync_events where scope = 'workbench' and outcome = 'conflict'") == 1);
 }
 
+TEST_CASE("two SIMULTANEOUS conflicts dedup INDEPENDENTLY, never conflating one entity's row for another's",
+          "[workbench][sync][conflict][dedup]") {
+  // The single-conflict fixture above can't discriminate the dedup lookup's
+  // four-clause match (anchor_plan_id, entity_kind, entity_id, file_path)
+  // from a bug that reuses ANY open conflict row: with only one row to
+  // find, a wrongly-permissive clause and a correct one look identical.
+  // Two entities conflicting at once, each re-probed on a SECOND status()
+  // call, is the minimum fixture that can tell "found the right row" from
+  // "found a row".
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+
+  auto const file_one = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-first-task.md", s.task_one);
+  REQUIRE(wfs::write_file_atomic(file_one, *wfs::read_file(file_one) + "FS side extra one\n"));
+  exec(a.conn(), std::format("update tasks set body = 'DB side body one', "
+                             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+1 second') where id = {}",
+                             s.task_one));
+  auto const file_two = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-second-task.md", s.task_two);
+  REQUIRE(wfs::write_file_atomic(file_two, *wfs::read_file(file_two) + "FS side extra two\n"));
+  exec(a.conn(), std::format("update tasks set body = 'DB side body two', "
+                             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+1 second') where id = {}",
+                             s.task_two));
+
+  auto first = ws::status(a.conn(), s.plan_id, a.root());
+  REQUIRE(first.has_value());
+  CHECK(first->conflicts == 2);
+  CHECK(class_of(*first, "1-first-task.md") == ws::classification::conflict);
+  CHECK(class_of(*first, "2-second-task.md") == ws::classification::conflict);
+  auto const conflict_id_of = [&](const ws::result& value, std::string_view suffix) {
+    return std::ranges::find_if(value.entries, [&](const ws::entry& e) { return e.file_path.ends_with(suffix); })->conflict_id;
+  };
+  auto const id_one = conflict_id_of(*first, "1-first-task.md");
+  auto const id_two = conflict_id_of(*first, "2-second-task.md");
+  CHECK(id_one > 0);
+  CHECK(id_two > 0);
+  CHECK(id_one != id_two);
+
+  // Re-running must reuse EACH entity's own row -- two total, and the SAME
+  // two ids, not two new ones and not one shared one.
+  auto second = ws::status(a.conn(), s.plan_id, a.root());
+  REQUIRE(second.has_value());
+  CHECK(second->conflicts == 2);
+  CHECK(conflict_id_of(*second, "1-first-task.md") == id_one);
+  CHECK(conflict_id_of(*second, "2-second-task.md") == id_two);
+  CHECK(scalar_id(a.conn(), "select count(*) from sync_events where scope = 'workbench' and outcome = 'conflict'") == 2);
+}
+
 TEST_CASE("two sides that CONVERGED on identical bytes are no_op, not a conflict", "[workbench][sync][conflict]") {
   // Both hashes moved off the manifest, but they moved to the same place.
   // A port that stopped at "both changed -> conflict" would report a
