@@ -248,6 +248,43 @@ endif()
 # the oracle was missing AND nothing said the comparison had stopped running.
 if(EXISTS "${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar")
   message(STATUS "planar: parity oracle found at ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin")
+
+  # STALENESS CHECK (plan 996, task 6414). PLANAR_ORACLE_ROOT fixes the
+  # worktree-relative path problem above, but it introduces a second,
+  # quieter one: the oracle binary is a build artifact that nothing
+  # rebuilds automatically, and once it is resolved from the MAIN
+  # checkout it can outlive many commits to zig/ made in OTHER worktrees.
+  # A parity case run against a stale oracle does not skip and does not
+  # fail loudly — it runs, compares against a Zig reference that no
+  # longer matches the tree, and reports whatever that comparison says,
+  # which is false confidence rather than a skip. That is strictly worse
+  # than the missing-oracle case above, which is at least self-announcing.
+  #
+  # Detection: compare the oracle binary's mtime against the timestamp of
+  # the most recent COMMITTED change under zig/ (zig/zig-out/ itself is
+  # gitignored, so it cannot self-trigger this). This only sees committed
+  # history, not an uncommitted edit sitting in the main checkout's own
+  # working tree — that gap is accepted: the more common miss is "someone
+  # landed a zig/ commit on rewrite/cpp26 and nobody rebuilt the oracle
+  # afterward", which this catches.
+  execute_process(
+    COMMAND git log -1 --format=%ct -- zig/
+    WORKING_DIRECTORY "${PLANAR_ORACLE_ROOT}"
+    OUTPUT_VARIABLE _planar_zig_src_epoch
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(_planar_zig_src_epoch)
+    file(TIMESTAMP "${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar" _planar_oracle_epoch "%s")
+    if(_planar_oracle_epoch AND _planar_zig_src_epoch GREATER _planar_oracle_epoch)
+      message(WARNING
+        "planar: STALE parity oracle — zig/ has a committed change newer "
+        "than ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar. Every [parity] "
+        "case will still RUN and still report pass/fail, but against a Zig "
+        "reference that no longer matches the tree — false confidence, not "
+        "a skip. Rebuild with `make -C ${PLANAR_ORACLE_ROOT}/zig build` "
+        "(or `zig build` in ${PLANAR_ORACLE_ROOT}/zig/).")
+    endif()
+  endif()
 else()
   message(WARNING
     "planar: NO parity oracle at ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin — "
