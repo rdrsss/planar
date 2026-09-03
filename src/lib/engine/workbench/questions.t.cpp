@@ -162,7 +162,7 @@ TEST_CASE("the earliest terminator wins even when a later k_terms entry matches 
 
 - Wait! Are we sure. Let's check.
 )";
-  auto const got = q::extract_questions(body);
+  auto const                 got  = q::extract_questions(body);
   REQUIRE(got.size() == 1);
   CHECK(got[0].title == "Wait!");
   CHECK(got[0].body == "Are we sure. Let's check.");
