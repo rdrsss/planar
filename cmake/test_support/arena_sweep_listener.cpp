@@ -88,6 +88,17 @@
 // `flock()`, which succeeds the instant the previous holder's lock is
 // gone — whether that holder exited cleanly or was killed.
 //
+// TESTING THIS: exercise it through `ctest`, not by invoking a `_tests`
+// binary directly. The bug this iteration fixed was never caught by the
+// original verification pass because that pass ran one `_tests` binary
+// directly -- a single process, so the lock is acquired exactly once and
+// never contended. `ctest` (via `catch_discover_tests`) spawns ONE
+// PROCESS PER TEST CASE, so a single label like `cmd_planar_watch`
+// acquires and releases this lock dozens of times per run, and a single
+// orphaned lock file poisons every one of them. A direct binary
+// invocation cannot reproduce that, and cannot be trusted to validate a
+// change to this file -- use `ctest --test-dir build/debug -L <label>`.
+//
 // ## The recurrence guard
 //
 // `PLANAR_KEEP_ARENAS` (the opt-out `parity_harness.hpp`'s destructor
