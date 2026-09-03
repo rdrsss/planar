@@ -3,15 +3,19 @@
 #
 # `planar` (plan 996, task 6105) is the first. `planar-agent`,
 # `planar-watch` and `planar-execute` (task 6107) land beside it.
+# `planar-ext` (task 6418; task 6412, decisions 995-1000) is the fifth —
+# the external-plane extraction's skeleton step, landing no `ext`/`sync`
+# verb of its own yet.
 #
-# Four sibling directories, no shared library between them, and that is D18
+# Five sibling directories, no shared library between them, and that is D18
 # enforced rather than a missed refactor: cmake/architecture.cmake FATALs on
 # a `cmd_* -> cmd_*` edge. The vocabulary that looks shared — each binary's
 # `context`, `exit`, `handler`, `dispatch`, `tree` — is precisely what the
-# capability boundary makes DIFFERENT per binary (four distinct database
-# policies; two divergent exit-code policies). What is genuinely shared
-# already lives one layer down in `planar.cli`. The full argument is in
-# src/cmd/planar-agent/CMakeLists.txt.
+# capability boundary makes DIFFERENT per binary (five distinct database
+# policies now that `planar-ext` adds a write-capability ALLOWLIST no other
+# binary enforces at the connection level; two divergent exit-code
+# policies). What is genuinely shared already lives one layer down in
+# `planar.cli`. The full argument is in src/cmd/planar-agent/CMakeLists.txt.
 #
 # `parity_harness.hpp` beside these directories is the one deduplicated
 # piece, and it is a plain header — included, never linked — so it creates
@@ -30,3 +34,4 @@ add_subdirectory(planar)
 add_subdirectory(planar-agent)
 add_subdirectory(planar-watch)
 add_subdirectory(planar-execute)
+add_subdirectory(planar-ext)

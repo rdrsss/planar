@@ -251,6 +251,14 @@ export class connection {
 private:
   sqlite3* _handle    = nullptr;
   bool     _read_only = false;
+  /// @brief Heap-stable storage for the write-capability allowlist an
+  /// installed authorizer callback closes over via its raw `void*`
+  /// userdata pointer. Null when `restrict_writes_to` was never called
+  /// (the default, unrestricted, policy every other caller keeps). A
+  /// `unique_ptr` rather than an inline `vector` member so a move never
+  /// invalidates the address SQLite's authorizer callback was registered
+  /// against — only the pointer moves, the pointee's heap address does not.
+  std::unique_ptr<std::vector<std::string>> _write_allowlist;
 
   /// @brief Takes ownership of an already-open handle.
   /// @param handle A live, non-null `sqlite3*` returned by `sqlite3_open_v2`.
@@ -318,6 +326,29 @@ public:
   /// @return The in-progress transaction, or the SQLite failure as a
   /// `db_error`.
   auto begin_transaction(lock_mode mode = lock_mode::deferred) -> std::expected<transaction, db_error>;
+
+  /// @brief Installs a write-capability authorizer on this connection:
+  /// `INSERT`, `UPDATE`, and `DELETE` are permitted only against a table
+  /// named in `allowed`; every other write attempt is DENIED by SQLite's
+  /// own authorizer (`sqlite3_set_authorizer`) at PREPARE time, before the
+  /// statement can execute. `SELECT` and DDL are never restricted by this
+  /// call.
+  ///
+  /// This is deliberately NOT a source-text check: the authorizer callback
+  /// fires during SQLite's own statement compilation and is handed the
+  /// PARSED table name, so the restriction holds no matter how the SQL was
+  /// composed — including a table name interpolated into the query string
+  /// at runtime, which a grep over the source cannot see. Planar's own
+  /// history has exactly this defect shape (`src/lib/engine/external/
+  /// sync.cpp`'s `table_for`-composed `UPDATE`), which is the reason this
+  /// method exists rather than a lint over call sites.
+  ///
+  /// Calling this again replaces the previously installed allowlist.
+  /// Passing an empty span denies every `INSERT`/`UPDATE`/`DELETE` on this
+  /// connection. Not used by `open`/`open_read_only` themselves — a
+  /// connection carries no write restriction until a caller opts in.
+  /// @param allowed The exact set of tables this connection may write to.
+  auto restrict_writes_to(std::span<std::string const> allowed) -> void;
 };
 
 } // namespace planar::db

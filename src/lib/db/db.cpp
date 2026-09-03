@@ -264,7 +264,8 @@ auto transaction::commit() -> std::expected<void, db_error> {
 connection::connection(sqlite3* handle, bool read_only) noexcept : _handle(handle), _read_only(read_only) {
 }
 
-connection::connection(connection&& other) noexcept : _handle(other._handle), _read_only(other._read_only) {
+connection::connection(connection&& other) noexcept
+    : _handle(other._handle), _read_only(other._read_only), _write_allowlist(std::move(other._write_allowlist)) {
   other._handle = nullptr;
 }
 
@@ -273,9 +274,10 @@ connection& connection::operator=(connection&& other) noexcept {
     if (_handle != nullptr) {
       sqlite3_close(_handle);
     }
-    _handle       = other._handle;
-    _read_only    = other._read_only;
-    other._handle = nullptr;
+    _handle          = other._handle;
+    _read_only       = other._read_only;
+    _write_allowlist = std::move(other._write_allowlist);
+    other._handle    = nullptr;
   }
   return *this;
 }
@@ -358,6 +360,38 @@ auto connection::begin_transaction(lock_mode mode) -> std::expected<transaction,
     return std::unexpected(make_error(_handle));
   }
   return txn;
+}
+
+namespace {
+
+/// @brief `sqlite3_set_authorizer` callback backing `restrict_writes_to`.
+///
+/// `user` points at the connection's own `_write_allowlist` (heap-stable
+/// for the handle's lifetime). Fires during `sqlite3_prepare_v2`, once per
+/// table/column SQLite's compiler touches, with the ACTION code
+/// identifying what kind of access it is — this callback only restricts
+/// the three write actions; every other action (SELECT, PRAGMA, DDL,
+/// transaction control, function calls, ...) is allowed through
+/// unconditionally.
+auto write_allowlist_authorizer(void* user, int action, const char* arg1, const char*, const char*, const char*) -> int {
+  if (action != SQLITE_INSERT && action != SQLITE_UPDATE && action != SQLITE_DELETE) {
+    return SQLITE_OK;
+  }
+  auto const* allowed = static_cast<std::vector<std::string> const*>(user);
+  std::string_view const table(arg1 != nullptr ? arg1 : "");
+  for (auto const& t : *allowed) {
+    if (t == table) {
+      return SQLITE_OK;
+    }
+  }
+  return SQLITE_DENY;
+}
+
+} // namespace
+
+auto connection::restrict_writes_to(std::span<std::string const> allowed) -> void {
+  _write_allowlist = std::make_unique<std::vector<std::string>>(allowed.begin(), allowed.end());
+  sqlite3_set_authorizer(_handle, &write_allowlist_authorizer, _write_allowlist.get());
 }
 
 } // namespace planar::db

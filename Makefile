@@ -13,11 +13,13 @@ BINARY        := planar
 AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
 EXECUTE_BINARY := planar-execute
+EXT_BINARY    := planar-ext
 BIN_DIR       := bin
 BIN           := $(BIN_DIR)/$(BINARY)
 AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
+EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
 
 ZIG         ?= zig
 PREFIX      ?= $(HOME)/.local
@@ -252,8 +254,8 @@ test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binar
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
 	cmake --preset debug
-	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch
-	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY)
+	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext
+	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY)
 	$(SURFACE_LINT) $(CURDIR)
 
 .PHONY: surface-lint
