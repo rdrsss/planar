@@ -49,7 +49,9 @@
 // `cli_usage_lint` reads it unmodified. The `[lint-parity]` case is the
 // standing proof.
 //
-// SKIPs when the `cli_usage_lint` CMake target has not been built.
+// FAILs (not SKIPs) if either binary is missing at test time — both are
+// unconditional add_dependencies of planar_cliapp_tests, so absence means
+// this test binary's own build is stale or broken, not an environment gap.
 
 #include <catch2/catch_test_macros.hpp>
 #include <sys/wait.h> // WIFEXITED/WEXITSTATUS
@@ -424,13 +426,30 @@ TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11
           "[cliapp][schema][lint-parity]") {
   // THE SCHEMA-CATALOG VERDICT for task 6123, now run against the C++ port
   // (task 6402) rather than the zig original. See this section's header.
+  //
+  // Both binaries below are wired via an UNCONDITIONAL add_dependencies
+  // edge onto planar_cliapp_tests (src/lib/cliapp/CMakeLists.txt for the
+  // stub, top-level CMakeLists.txt for cli_usage_lint — the latter guarded
+  // by a configure-time FATAL_ERROR if the cli_usage_lint target itself is
+  // ever missing, not by an `if(TARGET ...)` that could silently skip the
+  // edge). So a normal build of this test binary guarantees both exist by
+  // the time this TEST_CASE runs. Absence here therefore means the build
+  // that produced THIS test binary did not build its own declared
+  // dependencies — a broken or stale build, not a legitimate environment
+  // gap — and FAILs rather than SKIPs: a SKIP here is exactly the vacuous-
+  // test hazard this file's header warns about, silently turning the
+  // milestone's verdict case into a no-op that ctest still reports green.
   const std::filesystem::path stub_bin{PLANAR_CLIAPP_SCHEMA_STUB_BIN};
   if (!std::filesystem::exists(stub_bin)) {
-    SKIP(std::format("schema stub binary not built at {}", stub_bin.string()));
+    FAIL("schema stub binary not built at " << stub_bin.string()
+         << " — planar_cliapp_schema_stub is an unconditional add_dependencies of planar_cliapp_tests; its absence means "
+            "this test binary's own build is stale or broken, not that the reference tool is unavailable.");
   }
   const std::filesystem::path lint_tool{PLANAR_CLI_USAGE_LINT_BIN};
   if (!std::filesystem::exists(lint_tool)) {
-    SKIP(std::format("cli_usage_lint binary not built at {} — the CMake dependency edge to it is broken", lint_tool.string()));
+    FAIL("cli_usage_lint binary not built at " << lint_tool.string()
+         << " — cli_usage_lint is an unconditional add_dependencies of planar_cliapp_tests (top-level CMakeLists.txt); "
+            "its absence means this test binary's own build is stale or broken, not that the reference tool is unavailable.");
   }
 
   // Sanity: the stub really does answer `<bin> schema` the way a real
