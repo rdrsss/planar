@@ -38,6 +38,15 @@ TEST_CASE("a colon in the association slug becomes an underscore", "[workbench][
   CHECK(wf::feature_dir("/wb", "project:demo", "p1", "demo-feature") == "/wb/project_demo/p1-demo-feature");
 }
 
+TEST_CASE("a BACKSLASH and an embedded NUL in the association slug become an underscore too",
+          "[workbench][feature][safety]") {
+  // safe_assoc_slug shares its character set with safe_path_segment
+  // (plus `:`), but is a SEPARATE function with its own copy of the
+  // check -- the colon fixture above never exercises backslash or NUL.
+  CHECK(wf::feature_dir("/wb", "a\\b", "p1", "s") == "/wb/a_b/p1-s");
+  CHECK(wf::feature_dir("/wb", std::string_view("a\0b", 3), "p1", "s") == "/wb/a_b/p1-s");
+}
+
 TEST_CASE("an EMPTY association collapses the directory level entirely", "[workbench][feature]") {
   // Global-scope plans. An empty component must vanish rather than become
   // `_`, or every global feature would live under a literal `_` directory.
@@ -60,6 +69,16 @@ TEST_CASE("traversal segments are confined to one literal directory name", "[wor
   // A `.` or `..` as the plan KEY or SLUG likewise cannot escape.
   CHECK(wf::feature_dir("/wb", "org", "..", "s") == "/wb/org/_-s");
   CHECK(wf::feature_dir("/wb", "org", "p1", "..") == "/wb/org/p1-_");
+}
+
+TEST_CASE("a BACKSLASH and an embedded NUL are sanitized like a slash", "[workbench][feature][safety]") {
+  // safe_path_segment's character check is `ch == '/' || ch == '\\' || ch
+  // == '\0'` -- a Windows-style traversal separator and an embedded NUL are
+  // just as load-bearing for this bucket's own "highest-risk" claim as `/`
+  // and `..`, but no fixture in this module ever constructed either one.
+  CHECK(wf::feature_dir("/wb", "org", "p1", "a\\b") == "/wb/org/p1-a_b");
+  CHECK(wf::feature_dir("/wb", "org", "a\\..\\b", "s") == "/wb/org/a_.._b-s");
+  CHECK(wf::feature_dir("/wb", "org", "p1", std::string_view("a\0b", 3)) == "/wb/org/p1-a_b");
 }
 
 TEST_CASE("a hierarchical external plan key stays one directory name", "[workbench][feature]") {
