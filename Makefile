@@ -3,10 +3,11 @@
 # Targets here are thin wrappers around the canonical CMake presets. They
 # exist to give one consistent surface for humans and CI.
 #
-# The C++ implementation is built with the debug/release CMake presets. The
-# relocated `zig/` tree remains the behavior oracle and provides the two
-# authored-surface lint tools, which are compiled standalone below and run
-# against the C++ binaries.
+# The C++ implementation is built with the debug/release CMake presets.
+# `cli_usage_lint` and `surface_lint` (src/tools/, plan 996 task 6402) are
+# CMake targets in the same build as every other binary — no `zig` build
+# line is invoked here any more (the M10 cutover deletes `zig/` outright and
+# a residual zig build-exe line here would fail loudly the moment it does).
 
 BINARY        := planar
 AGENT_BINARY  := planar-agent
@@ -36,9 +37,8 @@ CPP_BIN_ABS   := $(abspath $(CPP_BIN_DIR))
 CPP_RELEASE_BIN_DIR ?= build/release/bin
 
 CPP_BUILD_DIR ?= build/debug
-CPP_LINT_BIN_DIR ?= $(CPP_BUILD_DIR)/tools
-CLI_USAGE_LINT := $(CPP_LINT_BIN_DIR)/cli_usage_lint
-SURFACE_LINT := $(CPP_LINT_BIN_DIR)/surface_lint
+CLI_USAGE_LINT := $(CPP_BUILD_DIR)/src/tools/cli_usage_lint/cli_usage_lint
+SURFACE_LINT := $(CPP_BUILD_DIR)/src/tools/surface_lint/surface_lint
 
 # Extra args forwarded to the relevant underlying build command.
 ARGS        ?=
@@ -251,16 +251,15 @@ test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binar
 
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
-	@mkdir -p $(CPP_LINT_BIN_DIR)
-	zig build-exe zig/tools/cli_usage_lint.zig -O Debug --name cli_usage_lint -femit-bin=$(CLI_USAGE_LINT)
+	cmake --preset debug
+	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch
 	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY)
-	zig build-exe zig/tools/surface_lint.zig -O Debug --name surface_lint -femit-bin=$(SURFACE_LINT)
 	$(SURFACE_LINT) $(CURDIR)
 
 .PHONY: surface-lint
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
-	@mkdir -p $(CPP_LINT_BIN_DIR)
-	zig build-exe zig/tools/surface_lint.zig -O Debug --name surface_lint -femit-bin=$(SURFACE_LINT)
+	cmake --preset debug
+	cmake --build $(CPP_BUILD_DIR) --target surface_lint
 	$(SURFACE_LINT) $(CURDIR)
 
 .PHONY: coverage

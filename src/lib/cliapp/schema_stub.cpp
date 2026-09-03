@@ -1,23 +1,28 @@
 /// @file schema_stub.cpp
 /// @brief Standalone executable proving `planar.cliapp.schema::schema_json`'s
-/// output is consumable, UNMODIFIED, by `zig/tools/cli_usage_lint` (plan
-/// 996, task 6123 — relocated from src/lib/cli/schema_stub.cpp and
-/// re-pointed at the CLI11-backed emitter).
+/// output is consumable by `cli_usage_lint` (plan 996, task 6123 —
+/// relocated from src/lib/cli/schema_stub.cpp and re-pointed at the
+/// CLI11-backed emitter; task 6402 re-pointed the consumer again, from
+/// `zig/tools/cli_usage_lint.zig` to its C++ port at
+/// `src/tools/cli_usage_lint/`).
 ///
 /// `cli_usage_lint` shells `<bin_path> schema` and parses stdout as JSON
-/// (see that file's `loadSchema`) — it does not care what produced the
+/// (see that tool's `load_schema`) — it does not care what produced the
 /// binary, only that invoking it with the single argument `schema` prints
 /// a conforming catalog to stdout and exits 0. This executable answers
 /// that exact contract for the SAME task/task-add/task-done fixture tree
 /// the deleted `src/lib/cli` tests modelled, now built as a `CLI::App`, so
-/// `schema.t.cpp`'s `[lint-parity]` case can run the real, unmodified lint
-/// tool against it and assert on its exit code and stdout.
+/// `schema.t.cpp`'s `[lint-parity]` case can run the built `cli_usage_lint`
+/// binary against it and assert on its exit code and stdout.
 ///
 /// THAT CASE IS THE SCHEMA-CATALOG VERDICT. Decision 948 flagged "CLI11
 /// must expose enough structure to rebuild the schema catalog" as the
 /// standing risk of the swap; this binary plus that test case is the
-/// measurement that closes it, and it lands in this task's diff without
-/// touching a single byte under `zig/`.
+/// measurement that closes it. As of task 6402 the lint tool it runs
+/// against is itself a first-party CMake target under `src/tools/`, not a
+/// zig source compiled at test time — the "without touching zig/" framing
+/// this header used to carry no longer describes what the test does, so it
+/// is retired along with the tool it referred to.
 ///
 /// Deliberately NOT a `planar_module()` target and NOT registered under
 /// `PLANAR_MODULE_TARGETS` — same pattern as `planar.core`'s
@@ -67,7 +72,7 @@ auto build_planar_root(CLI::App& app) -> void {
 
 } // namespace
 
-/// @brief Answer `<this> schema` exactly the way `zig/tools/cli_usage_lint`
+/// @brief Answer `<this> schema` exactly the way `cli_usage_lint`
 /// expects of a real Planar binary (see this file's header comment).
 /// @param argc Argument count; must be at least 2 (`argv[1] == "schema"`).
 /// @param argv Argument vector; `argv[1]` must be the literal token

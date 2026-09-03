@@ -12,13 +12,18 @@
 //                      test vacuously (a `contains("--json")` check passes
 //                      against almost anything), so these prove the
 //                      assertions above discriminate.
-//   3. `[lint-parity]` THE VERDICT. Runs the actual, UNMODIFIED
-//                      `zig/tools/cli_usage_lint` (compiled standalone at
-//                      test time via `zig build-exe`, never through
-//                      zig/build.zig) against `planar_cliapp_schema_stub`'s
-//                      live `schema` output — on the happy path AND the
+//   3. `[lint-parity]` THE VERDICT. Runs `cli_usage_lint`
+//                      (`src/tools/cli_usage_lint/`, the C++ port of the
+//                      former `zig/tools/cli_usage_lint.zig`, plan 996 task
+//                      6402) against `planar_cliapp_schema_stub`'s live
+//                      `schema` output — on the happy path AND the
 //                      enforcement path, so a "clean" result cannot be
-//                      because the tool never parsed anything.
+//                      because the tool never parsed anything. Before task
+//                      6402 this ran the zig original, compiled standalone
+//                      at test time; a differential run over this repo
+//                      proved the port byte-identical to that oracle before
+//                      it was retired, so re-pointing this case at the port
+//                      costs the coverage nothing.
 //
 // ## What layer 3 settles
 //
@@ -29,21 +34,24 @@
 // representation." The task 6123 brief carried it forward as a verdict to
 // report with evidence, since `make cli-usage-check` is a LIVE gate.
 //
-// The measurement is in `cli_usage_lint.zig` itself. It declares the entire
-// subset of the document it reads as three structs — `SchemaJson{commands}`,
-// `CommandJson{command, subcommands, flags}`, `FlagJson{long, aliases,
-// short}`. Six keys. `deprecated` and the twelve-key `doc` blob are not
-// among them. And they were never real on the C++ side anyway: the deleted
-// `planar.cli.schema` had no `deprecated` and no per-node `doc` field on its
-// own tree type either and emitted both as hardcoded constants, which this
-// emitter reproduces verbatim.
+// The measurement is in `cli_usage_lint` itself (originally
+// `cli_usage_lint.zig`; ported byte-for-byte to `src/tools/cli_usage_lint/`
+// at task 6402). It declares the entire subset of the document it reads as
+// three structs — `SchemaJson{commands}`, `CommandJson{command,
+// subcommands, flags}`, `FlagJson{long, aliases, short}`. Six keys.
+// `deprecated` and the twelve-key `doc` blob are not among them. And they
+// were never real on the C++ side anyway: the deleted `planar.cli.schema`
+// had no `deprecated` and no per-node `doc` field on its own tree type
+// either and emitted both as hardcoded constants, which this emitter
+// reproduces verbatim.
 //
 // VERDICT: the catalog needs no separate tree representation, and
-// `cli_usage_lint` runs unmodified. The `[lint-parity]` case is the standing
-// proof, and it lands in this task's diff without touching a byte under
-// `zig/`.
+// `cli_usage_lint` reads it unmodified. The `[lint-parity]` case is the
+// standing proof.
 //
-// SKIPs when `zig` is not on PATH or the lint tool source is missing.
+// FAILs (not SKIPs) if either binary is missing at test time — both are
+// unconditional add_dependencies of planar_cliapp_tests, so absence means
+// this test binary's own build is stale or broken, not an environment gap.
 
 #include <catch2/catch_test_macros.hpp>
 #include <sys/wait.h> // WIFEXITED/WEXITSTATUS
@@ -364,28 +372,24 @@ TEST_CASE("break-probe: losing an int validator changes the reported kind", "[cl
 }
 
 // ---------------------------------------------------------------------------
-// [lint-parity] the UNMODIFIED zig/tools/cli_usage_lint tool, run live.
+// [lint-parity] `cli_usage_lint` (src/tools/, the C++ port), run live.
 // ---------------------------------------------------------------------------
+//
+// Before task 6402 this section built `zig/tools/cli_usage_lint.zig`
+// standalone at test time (`zig build-exe`) and ran THAT. The port is now a
+// CMake target in this same build (`add_dependencies(planar_cliapp_tests
+// cli_usage_lint)` below), so "is the reference tool available" collapses
+// to "does the CMake-built binary exist at the path CMake told us about" —
+// there is no separate compile-or-not outcome left to distinguish, which is
+// why the old `build_lint_tool`/`lint_tool_build_outcome` machinery (three-
+// way unavailable/broken/built classification, a scratch zig compile per
+// call) is gone. A missing binary here means the CMake dependency edge
+// itself is broken, which is a build-graph bug, not an environment gap —
+// so this SKIPs rather than FAILs only to keep the test collectible when
+// someone runs `ctest` against a stale build directory that predates this
+// target.
 
 namespace {
-
-/// @brief Distinguishes WHY `build_lint_tool` didn't hand back a usable
-/// binary.
-///
-/// Three separate situations — no `zig` on PATH, the source file missing,
-/// and a non-zero `zig build-exe` — used to collapse into one `nullopt` and
-/// one identical SKIP. That folded "the reference tool isn't available in
-/// this environment" (a legitimate SKIP) into "the reference tool IS
-/// available and its build is BROKEN" (a real regression that must FAIL).
-enum class lint_tool_build_outcome : std::uint8_t { unavailable, broken, built };
-
-/// @brief The outcome of `build_lint_tool` plus enough evidence to act on
-/// it. `log` carries `build.log` whenever a build was actually attempted.
-struct lint_tool_build_result {
-  lint_tool_build_outcome              outcome = lint_tool_build_outcome::unavailable;
-  std::optional<std::filesystem::path> bin_path;
-  std::string                          log;
-};
 
 /// @brief Run `bin arg...`, redirecting stdout+stderr to a scratch file,
 /// and return its contents plus the raw `std::system` exit status.
@@ -416,103 +420,39 @@ auto capture(std::string const& env_assignment, std::string const& bin, std::vec
   return {contents, status};
 }
 
-/// @brief Compile `src` standalone (never through zig/build.zig — this task
-/// must not touch anything under `zig/`) into a scratch binary.
-///
-/// `src` is a parameter rather than hardcoded specifically so a test can
-/// inject a deliberately-broken source file and observe `outcome == broken`
-/// without needing the real tool to be broken.
-/// @param src The zig source to compile.
-/// @return The outcome, the binary path when built, and the build log.
-auto build_lint_tool(std::filesystem::path const& src) -> lint_tool_build_result {
-  if (std::system("command -v zig > /dev/null 2>&1") != 0) {
-    return {.outcome = lint_tool_build_outcome::unavailable};
-  }
-  if (!std::filesystem::exists(src)) {
-    return {.outcome = lint_tool_build_outcome::unavailable};
-  }
-  auto const work_dir = std::filesystem::temp_directory_path() /
-                        std::format("planar_cliapp_lint_build_{}", std::chrono::steady_clock::now().time_since_epoch().count());
-  std::filesystem::create_directories(work_dir);
-  auto const        out_bin   = work_dir / "cli_usage_lint";
-  auto const        cache_dir = work_dir / ".zig-cache";
-  auto const        log_path  = work_dir / "build.log";
-  std::string const cmd_str =
-      std::format("zig build-exe '{}' -O Debug --name cli_usage_lint -femit-bin='{}' --cache-dir '{}' > '{}' 2>&1", src.string(),
-                  out_bin.string(), cache_dir.string(), log_path.string());
-  int const status = std::system(cmd_str.c_str());
-
-  std::string log_text;
-  {
-    std::ifstream in(log_path, std::ios::binary);
-    log_text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  }
-
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || !std::filesystem::exists(out_bin)) {
-    // `zig` is on PATH and the source exists — the environment IS capable
-    // of building the reference tool, so a build failure here is a real
-    // regression to fail on, not an unavailable-environment SKIP.
-    return {.outcome = lint_tool_build_outcome::broken, .bin_path = std::nullopt, .log = log_text};
-  }
-  return {.outcome = lint_tool_build_outcome::built, .bin_path = out_bin, .log = log_text};
-}
-
-/// @brief Convenience overload: builds the actual, unmodified
-/// `zig/tools/cli_usage_lint.zig`.
-/// @return The build result.
-auto build_lint_tool() -> lint_tool_build_result {
-  return build_lint_tool(std::filesystem::path{PLANAR_ZIG_CLI_USAGE_LINT_SRC});
-}
-
 } // namespace
 
-TEST_CASE("build_lint_tool: a missing source path is 'unavailable', not 'broken'", "[cliapp][schema][lint-parity][break-probe]") {
-  auto const result = build_lint_tool(std::filesystem::path{"/nonexistent/planar_cliapp_lint_does_not_exist.zig"});
-  CHECK(result.outcome == lint_tool_build_outcome::unavailable);
-  CHECK_FALSE(result.bin_path.has_value());
-}
-
-TEST_CASE("build_lint_tool: a zig source that fails to compile is 'broken', not 'unavailable' — must FAIL, not SKIP",
-          "[cliapp][schema][lint-parity][break-probe]") {
-  if (std::system("command -v zig > /dev/null 2>&1") != 0) {
-    SKIP("`zig` not on PATH — cannot exercise the broken-build path (this SKIP itself is the 'unavailable' case, covered "
-         "by the previous test)");
-  }
-  auto const scratch_dir =
-      std::filesystem::temp_directory_path() /
-      std::format("planar_cliapp_lint_broken_src_{}", std::chrono::steady_clock::now().time_since_epoch().count());
-  std::filesystem::create_directories(scratch_dir);
-  auto const broken_src = scratch_dir / "broken.zig";
-  {
-    std::ofstream out(broken_src, std::ios::trunc);
-    out << "this is not valid zig source at all {{{ syntax error\n";
-  }
-
-  auto const result = build_lint_tool(broken_src);
-  CHECK(result.outcome == lint_tool_build_outcome::broken);
-  CHECK_FALSE(result.bin_path.has_value());
-  CHECK_FALSE(result.log.empty()); // build.log was read back, not just written and discarded.
-
-  std::error_code ec;
-  std::filesystem::remove_all(scratch_dir, ec);
-}
-
-TEST_CASE("lint-parity: the unmodified zig cli_usage_lint accepts and enforces the CLI11-derived catalog",
+TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11-derived catalog",
           "[cliapp][schema][lint-parity]") {
-  // THE SCHEMA-CATALOG VERDICT for task 6123. See this file's header.
+  // THE SCHEMA-CATALOG VERDICT for task 6123, now run against the C++ port
+  // (task 6402) rather than the zig original. See this section's header.
+  //
+  // Both binaries below are wired via an UNCONDITIONAL add_dependencies
+  // edge onto planar_cliapp_tests (src/lib/cliapp/CMakeLists.txt for the
+  // stub, top-level CMakeLists.txt for cli_usage_lint — the latter guarded
+  // by a configure-time FATAL_ERROR if the cli_usage_lint target itself is
+  // ever missing, not by an `if(TARGET ...)` that could silently skip the
+  // edge). So a normal build of this test binary guarantees both exist by
+  // the time this TEST_CASE runs. Absence here therefore means the build
+  // that produced THIS test binary did not build its own declared
+  // dependencies — a broken or stale build, not a legitimate environment
+  // gap — and FAILs rather than SKIPs: a SKIP here is exactly the vacuous-
+  // test hazard this file's header warns about, silently turning the
+  // milestone's verdict case into a no-op that ctest still reports green.
   const std::filesystem::path stub_bin{PLANAR_CLIAPP_SCHEMA_STUB_BIN};
   if (!std::filesystem::exists(stub_bin)) {
-    SKIP(std::format("schema stub binary not built at {}", stub_bin.string()));
+    FAIL("schema stub binary not built at "
+         << stub_bin.string()
+         << " — planar_cliapp_schema_stub is an unconditional add_dependencies of planar_cliapp_tests; its absence means "
+            "this test binary's own build is stale or broken, not that the reference tool is unavailable.");
   }
-  auto const lint_build = build_lint_tool();
-  if (lint_build.outcome == lint_tool_build_outcome::unavailable) {
-    SKIP("`zig` not on PATH, or zig/tools/cli_usage_lint.zig is missing — cannot build the reference lint tool");
+  const std::filesystem::path lint_tool{PLANAR_CLI_USAGE_LINT_BIN};
+  if (!std::filesystem::exists(lint_tool)) {
+    FAIL("cli_usage_lint binary not built at "
+         << lint_tool.string()
+         << " — cli_usage_lint is an unconditional add_dependencies of planar_cliapp_tests (top-level CMakeLists.txt); "
+            "its absence means this test binary's own build is stale or broken, not that the reference tool is unavailable.");
   }
-  if (lint_build.outcome == lint_tool_build_outcome::broken) {
-    FAIL("zig/tools/cli_usage_lint.zig failed to build even though `zig` is on PATH and the source exists — build.log:\n"
-         << lint_build.log);
-  }
-  auto const& lint_tool = lint_build.bin_path;
 
   // Sanity: the stub really does answer `<bin> schema` the way a real
   // Planar binary would — exit 0, JSON on stdout, which is the shape the
@@ -536,7 +476,7 @@ TEST_CASE("lint-parity: the unmodified zig cli_usage_lint accepts and enforces t
 
   SECTION("clean: a doc referencing a real modeled flag passes") {
     write_doc("Run `planar task add --json` to create a task.\n");
-    auto const [out, status] = capture("", lint_tool->string(), {scratch_root.string(), stub_bin.string()});
+    auto const [out, status] = capture("", lint_tool.string(), {scratch_root.string(), stub_bin.string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);
@@ -548,7 +488,7 @@ TEST_CASE("lint-parity: the unmodified zig cli_usage_lint accepts and enforces t
     // it, a lint tool that silently failed to parse the document would
     // report "clean" too.
     write_doc("Run `planar task add --this-flag-does-not-exist` to create a task.\n");
-    auto const [out, status] = capture("", lint_tool->string(), {scratch_root.string(), stub_bin.string()});
+    auto const [out, status] = capture("", lint_tool.string(), {scratch_root.string(), stub_bin.string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 1);
@@ -572,7 +512,7 @@ TEST_CASE("lint-parity: the unmodified zig cli_usage_lint accepts and enforces t
     // caught; a reference to an UNPORTED verb is not. That is the same
     // guarantee the deleted emitter provided — the tool did not change.
     write_doc("Run `planar task nosuchsub --json` sometime.\n");
-    auto const [out, status] = capture("", lint_tool->string(), {scratch_root.string(), stub_bin.string()});
+    auto const [out, status] = capture("", lint_tool.string(), {scratch_root.string(), stub_bin.string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);

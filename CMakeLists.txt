@@ -261,6 +261,39 @@ include(module)         # planar_module() (cmake/module.cmake)
 
 add_subdirectory(src)
 
+# src/tools/ — project tooling (decision 1000). Configured after src/ so
+# planar_json_dom (cli_usage_lint's one dependency) already exists.
+add_subdirectory(src/tools)
+
+# schema.t.cpp's `[lint-parity]` case (src/lib/cliapp/schema.t.cpp) runs
+# `cli_usage_lint` against `planar_cliapp_schema_stub`'s live output. Wired
+# here, not in src/lib/cliapp/CMakeLists.txt, because `cli_usage_lint`
+# (src/tools/, just configured above) does not exist yet at the point
+# add_subdirectory(src) processes cliapp.
+#
+# `cli_usage_lint` itself is NOT conditionally guarded here: src/tools/
+# CMakeLists.txt creates it unconditionally, so its absence at this point
+# would mean the target graph is broken, not that a legitimate bootstrap
+# state is in play — FATAL rather than silently skip the wiring, so a
+# future refactor that breaks this edge fails at CONFIGURE time instead of
+# quietly turning `[lint-parity]` into a SKIP that ctest still reports
+# green (the coordinator's task 6402 finding). `planar_cliapp_tests` is
+# still guarded: cmake/module.cmake WARNs and omits a module's test binary
+# entirely when Catch2 has not been vendored for this configure (see that
+# file's header) — a legitimate bootstrap state distinct from a broken edge.
+if(NOT TARGET cli_usage_lint)
+  message(FATAL_ERROR
+    "planar: cli_usage_lint target missing after add_subdirectory(src/tools) "
+    "— src/tools/cli_usage_lint/CMakeLists.txt should create it "
+    "unconditionally. This is a broken target graph, not a legitimate "
+    "absence; fix the wiring rather than guard around it.")
+endif()
+if(TARGET planar_cliapp_tests)
+  target_compile_definitions(planar_cliapp_tests PRIVATE
+    PLANAR_CLI_USAGE_LINT_BIN="$<TARGET_FILE:cli_usage_lint>")
+  add_dependencies(planar_cliapp_tests cli_usage_lint)
+endif()
+
 # D15 enforcement over the configured target graph (cmake/architecture.cmake)
 # — run last, after every module target exists.
 include(architecture)
