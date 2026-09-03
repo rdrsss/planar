@@ -413,6 +413,46 @@ TEST_CASE("two sides that CONVERGED on identical bytes are no_op, not a conflict
   CHECK(class_of(*peek, "2-second-task.md") == ws::classification::no_op);
 }
 
+TEST_CASE("a file present with NO manifest row and matching content is no_op, not db_to_fs", "[workbench][sync][classify][no-row]") {
+  // `find_state` returns nullptr for an entity whose manifest row is gone
+  // (e.g. a GC'd or hand-deleted row) but whose FS file survived. That is a
+  // DIFFERENT starting point from "never pushed" (fs absent -> db_to_fs):
+  // here the classifier must still notice the content already matches
+  // before it re-writes anything.
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  REQUIRE(wm::delete_by_entity(a.conn(), s.plan_id, "task", s.task_one).has_value());
+
+  auto peek = ws::status(a.conn(), s.plan_id, a.root());
+  REQUIRE(peek.has_value());
+  CHECK(class_of(*peek, "1-first-task.md") == ws::classification::no_op);
+  CHECK(peek->pending == 0);
+}
+
+TEST_CASE("a file present with NO manifest row and DIFFERENT content is fs_to_db, not db_to_fs", "[workbench][sync][classify][no-row]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  REQUIRE(wm::delete_by_entity(a.conn(), s.plan_id, "task", s.task_one).has_value());
+  auto const file = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-first-task.md", s.task_one);
+  REQUIRE(
+      wfs::write_file_atomic(file, std::format("---\nentity_kind: task\nentity_id: {}\nanchor_plan_id: {}\ntitle: First Task\n"
+                                               "status: todo\npriority: 100\n---\n\n# Task {}: First Task\n\n"
+                                               "**Status:** todo  \n\nEdited with no manifest row.\n",
+                                               s.task_one, s.plan_id, s.task_one)));
+
+  auto peek = ws::status(a.conn(), s.plan_id, a.root());
+  REQUIRE(peek.has_value());
+  CHECK(class_of(*peek, "1-first-task.md") == ws::classification::fs_to_db);
+  CHECK(peek->pending == 1);
+
+  auto applied = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(applied.has_value());
+  CHECK(applied->applied == 1);
+  CHECK(scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one)) == "Edited with no manifest row.");
+}
+
 TEST_CASE("resolving a conflict keeps the chosen side and settles the event", "[workbench][sync][resolve]") {
   arena      a;
   auto const s = seed(a.conn());
