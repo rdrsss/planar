@@ -341,6 +341,19 @@ TEST_CASE("a ref item that is not <kind>:<positive-id> is refused", "[workbench]
   // Zero is refused: the id must be strictly positive.
   CHECK(refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\ncites:\n- task:0\n---\n").reason ==
         diagnostic_reason::invalid_entity_ref);
+  // An EMPTY kind (a bare ":5") is refused -- distinct from "notaref" above,
+  // which has no colon at all and never reaches the empty-kind check.
+  CHECK(refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\ncites:\n- :5\n---\n").reason ==
+        diagnostic_reason::invalid_entity_ref);
+  // An EMPTY id_text ("task:") is refused -- distinct from "task:0" above,
+  // which has a present-but-zero id and never reaches the empty-id_text
+  // check on its own (it fails the later `*id > 0` test instead).
+  CHECK(refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\ncites:\n- task:\n---\n").reason ==
+        diagnostic_reason::invalid_entity_ref);
+  // A non-numeric id_text is refused via `parse_int64_zig` returning
+  // nullopt, not via the `*id > 0` clause -- distinct from "task:0".
+  CHECK(refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\ncites:\n- task:abc\n---\n").reason ==
+        diagnostic_reason::invalid_entity_ref);
 }
 
 TEST_CASE("`touches` items are NOT validated as entity refs", "[workbench][parse][accept]") {
@@ -505,6 +518,15 @@ TEST_CASE("the body is everything after the closing delimiter, minus one blank s
   CHECK(result.body == "# Body\n\ntext\n");
 }
 
+TEST_CASE("a body with NO leading blank line is kept byte-for-byte", "[workbench][parse][accept]") {
+  // Distinct from the case above: the leading-newline strip is
+  // CONDITIONAL on the body actually starting with '\n'. A body that
+  // starts directly with real content must not lose its first byte.
+  std::string const fixture = std::string{k_minimal_task} + "text\n";
+  auto const        result  = accepted(fixture);
+  CHECK(result.body == "text\n");
+}
+
 TEST_CASE("a UTF-8 body and title survive unchanged", "[workbench][parse][accept]") {
   constexpr std::string_view title   = "Héllo Wörld";
   constexpr std::string_view body    = "Ünïcödé body 🎉\n";
@@ -534,4 +556,13 @@ TEST_CASE("strip_yaml_quotes removes exactly one matching pair", "[workbench][pa
   CHECK(wp::strip_yaml_quotes("foo") == "foo");
   CHECK(wp::strip_yaml_quotes("'foo\"") == "'foo\"");
   CHECK(wp::strip_yaml_quotes("''") == "");
+  // Back is a single-quote but front is NOT -- the mirror image of
+  // "'foo\"" above, isolating the FRONT half of the single-quote match.
+  CHECK(wp::strip_yaml_quotes("abc'") == "abc'");
+  // Front is a double-quote but back is NOT -- isolates the BACK half of
+  // the double-quote match.
+  CHECK(wp::strip_yaml_quotes("\"abc") == "\"abc");
+  // Back is a double-quote but front is NOT -- isolates the FRONT half of
+  // the double-quote match.
+  CHECK(wp::strip_yaml_quotes("abc\"") == "abc\"");
 }
