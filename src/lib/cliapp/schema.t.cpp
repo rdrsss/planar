@@ -441,13 +441,15 @@ TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11
   // milestone's verdict case into a no-op that ctest still reports green.
   const std::filesystem::path stub_bin{PLANAR_CLIAPP_SCHEMA_STUB_BIN};
   if (!std::filesystem::exists(stub_bin)) {
-    FAIL("schema stub binary not built at " << stub_bin.string()
+    FAIL("schema stub binary not built at "
+         << stub_bin.string()
          << " — planar_cliapp_schema_stub is an unconditional add_dependencies of planar_cliapp_tests; its absence means "
             "this test binary's own build is stale or broken, not that the reference tool is unavailable.");
   }
   const std::filesystem::path lint_tool{PLANAR_CLI_USAGE_LINT_BIN};
   if (!std::filesystem::exists(lint_tool)) {
-    FAIL("cli_usage_lint binary not built at " << lint_tool.string()
+    FAIL("cli_usage_lint binary not built at "
+         << lint_tool.string()
          << " — cli_usage_lint is an unconditional add_dependencies of planar_cliapp_tests (top-level CMakeLists.txt); "
             "its absence means this test binary's own build is stale or broken, not that the reference tool is unavailable.");
   }
