@@ -265,6 +265,15 @@ TEST_CASE("an unbalanced opening quote is refused", "[workbench][parse][reject]"
   CHECK(bad.line == 4);
 }
 
+TEST_CASE("a lone quote character as a value is refused", "[workbench][parse][reject]") {
+  // Distinct from the unclosed-quote case above: `back() != front()` is
+  // trivially FALSE when the value is a single character (they're the same
+  // char), so this isolates the `size() < 2` half of the gate on its own.
+  auto const bad = refused("---\nentity_kind: task\nentity_id: 1\ntitle: '\nstatus: todo\n---\n");
+  CHECK(bad.reason == diagnostic_reason::malformed_yaml);
+  CHECK(bad.line == 4);
+}
+
 TEST_CASE("a line with no colon, and a line with an empty key, are both refused", "[workbench][parse][reject]") {
   auto const no_colon = refused("---\nentity_kind: task\nentity_id: 1\ngarbage line\ntitle: T\nstatus: todo\n---\n");
   CHECK(no_colon.reason == diagnostic_reason::malformed_yaml);
@@ -463,6 +472,17 @@ TEST_CASE("an unrecognized entity_kind is refused with the six accepted values",
   CHECK(bad.err == parse_error_kind::invalid_entity_kind);
   CHECK(bad.line == 2);
   CHECK(bad.expected == "plan, task, artifact, scenario, decision, or question");
+}
+
+TEST_CASE("`decision` and `scenario` are accepted entity_kinds", "[workbench][parse][accept]") {
+  // Every other entity_kind is exercised as an ACCEPT fixture elsewhere in
+  // this file (task, artifact, question, plan); these two were the only
+  // ones never appearing on the accept side, so an `is_entity_kind` clause
+  // dedicated to either could regress silently.
+  CHECK(accepted("---\nentity_kind: decision\nentity_id: 1\ntitle: T\nstatus: proposed\n---\n").frontmatter.entity_kind ==
+        "decision");
+  CHECK(accepted("---\nentity_kind: scenario\nentity_id: 1\ntitle: T\nstatus: draft\n---\n").frontmatter.entity_kind ==
+        "scenario");
 }
 
 TEST_CASE("`test_scenario` is NOT an accepted entity_kind here", "[workbench][parse][reject]") {
