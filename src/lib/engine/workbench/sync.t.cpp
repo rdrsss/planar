@@ -461,7 +461,8 @@ TEST_CASE("two sides that CONVERGED on identical bytes are no_op, not a conflict
   CHECK(class_of(*peek, "2-second-task.md") == ws::classification::no_op);
 }
 
-TEST_CASE("a file present with NO manifest row and matching content is no_op, not db_to_fs", "[workbench][sync][classify][no-row]") {
+TEST_CASE("a file present with NO manifest row and matching content is no_op, not db_to_fs",
+          "[workbench][sync][classify][no-row]") {
   // `find_state` returns nullptr for an entity whose manifest row is gone
   // (e.g. a GC'd or hand-deleted row) but whose FS file survived. That is a
   // DIFFERENT starting point from "never pushed" (fs absent -> db_to_fs):
@@ -478,7 +479,8 @@ TEST_CASE("a file present with NO manifest row and matching content is no_op, no
   CHECK(peek->pending == 0);
 }
 
-TEST_CASE("a file present with NO manifest row and DIFFERENT content is fs_to_db, not db_to_fs", "[workbench][sync][classify][no-row]") {
+TEST_CASE("a file present with NO manifest row and DIFFERENT content is fs_to_db, not db_to_fs",
+          "[workbench][sync][classify][no-row]") {
   arena      a;
   auto const s = seed(a.conn());
   REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
@@ -516,11 +518,11 @@ TEST_CASE("sync_both applies BOTH directions in one call, unlike push or pull al
 
   // task_one moves on the FS side only.
   auto const file_one = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-first-task.md", s.task_one);
-  REQUIRE(wfs::write_file_atomic(
-      file_one, std::format("---\nentity_kind: task\nentity_id: {}\nanchor_plan_id: {}\ntitle: First Task\n"
-                            "status: doing\npriority: 100\n---\n\n# Task {}: First Task\n\n"
-                            "**Status:** doing  \n\nFS side edit for sync_both.\n",
-                            s.task_one, s.plan_id, s.task_one)));
+  REQUIRE(wfs::write_file_atomic(file_one,
+                                 std::format("---\nentity_kind: task\nentity_id: {}\nanchor_plan_id: {}\ntitle: First Task\n"
+                                             "status: doing\npriority: 100\n---\n\n# Task {}: First Task\n\n"
+                                             "**Status:** doing  \n\nFS side edit for sync_both.\n",
+                                             s.task_one, s.plan_id, s.task_one)));
   // task_two moves on the DB side only.
   exec(a.conn(), std::format("update tasks set body = 'DB side edit for sync_both', "
                              "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '+1 second') where id = {}",
@@ -539,8 +541,7 @@ TEST_CASE("sync_both applies BOTH directions in one call, unlike push or pull al
   CHECK(synced->pending == 0);
   CHECK(synced->conflicts == 0);
   // The FS edit landed in the DB...
-  CHECK(scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one)) ==
-        "FS side edit for sync_both.");
+  CHECK(scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one)) == "FS side edit for sync_both.");
   // ...and the DB edit landed on disk, in the SAME call.
   auto const file_two = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-second-task.md", s.task_two);
   CHECK(wfs::read_file(file_two)->find("DB side edit for sync_both") != std::string::npos);
@@ -629,8 +630,8 @@ TEST_CASE("an UNLINKED entity's orphaned manifest row is cleaned only on pull/sy
 
   auto rows_before = wm::load(a.conn(), s.plan_id);
   REQUIRE(rows_before.has_value());
-  auto const had_row_before =
-      std::ranges::any_of(*rows_before, [&](const wm::sync_state& r) { return r.entity_kind == "artifact" && r.entity_id == s.artifact; });
+  auto const had_row_before = std::ranges::any_of(
+      *rows_before, [&](const wm::sync_state& r) { return r.entity_kind == "artifact" && r.entity_id == s.artifact; });
   REQUIRE(had_row_before);
 
   auto pushed = ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false);
@@ -647,8 +648,8 @@ TEST_CASE("an UNLINKED entity's orphaned manifest row is cleaned only on pull/sy
   CHECK(scalar_text(a.conn(), std::format("select status from artifacts where id = {}", s.artifact)) == "retired");
   auto rows_after_sync = wm::load(a.conn(), s.plan_id);
   REQUIRE(rows_after_sync.has_value());
-  CHECK_FALSE(std::ranges::any_of(*rows_after_sync,
-                                  [&](const wm::sync_state& r) { return r.entity_kind == "artifact" && r.entity_id == s.artifact; }));
+  CHECK_FALSE(std::ranges::any_of(
+      *rows_after_sync, [&](const wm::sync_state& r) { return r.entity_kind == "artifact" && r.entity_id == s.artifact; }));
 }
 
 TEST_CASE("a RENAMED entity reads as deleted_on_fs, not as a fresh write", "[workbench][sync][rename]") {

@@ -38,8 +38,7 @@ TEST_CASE("a colon in the association slug becomes an underscore", "[workbench][
   CHECK(wf::feature_dir("/wb", "project:demo", "p1", "demo-feature") == "/wb/project_demo/p1-demo-feature");
 }
 
-TEST_CASE("a BACKSLASH and an embedded NUL in the association slug become an underscore too",
-          "[workbench][feature][safety]") {
+TEST_CASE("a BACKSLASH and an embedded NUL in the association slug become an underscore too", "[workbench][feature][safety]") {
   // safe_assoc_slug shares its character set with safe_path_segment
   // (plus `:`), but is a SEPARATE function with its own copy of the
   // check -- the colon fixture above never exercises backslash or NUL.

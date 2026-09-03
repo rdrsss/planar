@@ -196,16 +196,15 @@ TEST_CASE("line_for_key skips a line that only SHARES A PREFIX with the key", "[
   CHECK(value->issues[0].line == 5);
 }
 
-TEST_CASE("line_for_key never matches a line that does not start with the key at all",
-          "[workbench][lint][warning]") {
+TEST_CASE("line_for_key never matches a line that does not start with the key at all", "[workbench][lint][warning]") {
   // A decoy line the same LENGTH as the key plus one, with a colon at
   // EXACTLY the boundary index the real check would land on, but with
   // completely different text. Only the `starts_with` clause tells this
   // apart from the real `anchor_plan_id:` line.
   arena a;
   auto  value = wl::run(a.conn(), a.write("decoy-length.md", "---\nentity_kind: task\nentity_id: 1\n"
-                                                              "unknown_field1: something\n"
-                                                              "anchor_plan_id: 4242\ntitle: T\nstatus: todo\n---\n"));
+                                                             "unknown_field1: something\n"
+                                                             "anchor_plan_id: 4242\ntitle: T\nstatus: todo\n---\n"));
   REQUIRE(value.has_value());
   REQUIRE(value->issues.size() == 1);
   CHECK(value->issues[0].message == "anchor_plan_id 4242 does not reference an existing plan");
