@@ -246,8 +246,59 @@ endif()
 
 # Say so out loud. The failure this replaces was silent in both directions:
 # the oracle was missing AND nothing said the comparison had stopped running.
+set(PLANAR_ORACLE_STALE FALSE)
 if(EXISTS "${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar")
   message(STATUS "planar: parity oracle found at ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin")
+
+  # STALENESS CHECK (plan 996, task 6414). PLANAR_ORACLE_ROOT fixes the
+  # worktree-relative path problem above, but it introduces a second,
+  # quieter one: the oracle binary is a build artifact that nothing
+  # rebuilds automatically, and once it is resolved from the MAIN
+  # checkout it can outlive many commits to zig/ made in OTHER worktrees.
+  #
+  # A stale oracle does NOT get the SKIP treatment the missing-oracle case
+  # gets below. Absent is a normal, everyday state (nobody has run `zig
+  # build` yet) and SKIP is the right, cheap answer to it — that is what
+  # PLANAR_REQUIRE_ORACLE / PLANAR_PARITY_STRICT already do at the test
+  # call sites. Stale is a different shape of problem: the oracle IS
+  # present, the case WILL run, and it will report a pass or a fail that
+  # compares against a Zig reference that no longer matches the tree. A
+  # pass in that state is not evidence of parity — it is false confidence,
+  # manufactured rather than absent, and unlike a skip it does not
+  # announce that anything is wrong. That is worse than a failing test,
+  # so it gets the same posture task 6402 gave `schema.t.cpp`'s
+  # `[lint-parity]` case (SKIP -> FAIL, because a quiet outcome hid a
+  # broken dependency edge while ctest still reported green): every
+  # oracle-gated case FAILS, unconditionally, whenever the oracle is
+  # stale, never gated behind PLANAR_PARITY_STRICT. See
+  # PLANAR_REQUIRE_ORACLE in src/cmd/parity_strict.hpp.
+  #
+  # Detection: compare the oracle binary's mtime against the timestamp of
+  # the most recent COMMITTED change under zig/ (zig/zig-out/ itself is
+  # gitignored, so it cannot self-trigger this). This only sees committed
+  # history, not an uncommitted edit sitting in the main checkout's own
+  # working tree — that gap is accepted: the more common miss is "someone
+  # landed a zig/ commit on rewrite/cpp26 and nobody rebuilt the oracle
+  # afterward", which this catches.
+  execute_process(
+    COMMAND git log -1 --format=%ct -- zig/
+    WORKING_DIRECTORY "${PLANAR_ORACLE_ROOT}"
+    OUTPUT_VARIABLE _planar_zig_src_epoch
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(_planar_zig_src_epoch)
+    file(TIMESTAMP "${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar" _planar_oracle_epoch "%s")
+    if(_planar_oracle_epoch AND _planar_zig_src_epoch GREATER _planar_oracle_epoch)
+      set(PLANAR_ORACLE_STALE TRUE)
+      message(WARNING
+        "planar: STALE parity oracle — zig/ has a committed change newer "
+        "than ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar. Every [parity] "
+        "case will FAIL (not skip — a stale oracle manufactures false "
+        "confidence, so it does not get the SKIP a missing one gets) until "
+        "it is rebuilt. Rebuild with `make -C ${PLANAR_ORACLE_ROOT}/zig "
+        "build` (or `zig build` in ${PLANAR_ORACLE_ROOT}/zig/).")
+    endif()
+  endif()
 else()
   message(WARNING
     "planar: NO parity oracle at ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin — "
@@ -255,6 +306,13 @@ else()
     "Build it with `make -C zig build` (or `zig build` in zig/), or set "
     "PLANAR_PARITY_STRICT=1 to make the absence fail instead of skip.")
 endif()
+
+# PLANAR_ORACLE_STALE is a build-wide posture (like PLANAR_TEST_BINARY
+# above), not a per-target property — every oracle-gated test target
+# reads the same fact, so a single global compile definition is simpler
+# and less error-prone than repeating this at each of the six
+# `target_compile_definitions(... PLANAR_ZIG_BIN=...)` call sites.
+add_compile_definitions(PLANAR_ORACLE_STALE=$<BOOL:${PLANAR_ORACLE_STALE}>)
 
 include(dependencies)   # CPM + vendored packages (cmake/dependencies.cmake)
 include(module)         # planar_module() (cmake/module.cmake)

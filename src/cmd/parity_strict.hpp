@@ -59,16 +59,48 @@ namespace planar::parity {
   return !value.empty() && value != "0";
 }
 
+/// @brief Whether the oracle binary is present but STALE — built before
+/// the most recent committed change under `zig/` (plan 996, task 6414).
+///
+/// Set once at CMake configure time as a global compile definition (see
+/// the root `CMakeLists.txt`'s `PLANAR_ORACLE_STALE` block) rather than
+/// probed here at runtime: staleness is a fact about the CHECKOUT this
+/// build was configured against, and the same reasoning that resolves
+/// `PLANAR_ORACLE_ROOT` at configure time applies here too.
+/// @return `true` when the oracle is stale.
+[[nodiscard]] inline auto oracle_stale() -> bool {
+#if defined(PLANAR_ORACLE_STALE)
+  return PLANAR_ORACLE_STALE != 0;
+#else
+  return false;
+#endif
+}
+
 } // namespace planar::parity
 
 /// @brief Skip — or, under `PLANAR_PARITY_STRICT`, FAIL — when the oracle
-/// is unavailable.
+/// is unavailable. FAIL, unconditionally and never gated behind
+/// `PLANAR_PARITY_STRICT`, when the oracle is present but STALE.
+///
+/// Absent and stale are deliberately NOT the same failure. Absent is a
+/// normal, everyday bootstrap state (nobody has run `zig build` yet) and
+/// SKIP is the proportionate answer, same as always. Stale means the case
+/// WILL run and WILL report a pass or a fail — against a Zig reference
+/// that no longer matches the tree, which manufactures false confidence
+/// rather than skipping honestly. That is worse than a failing test, so
+/// it always fails, the same posture task 6402 gave `schema.t.cpp`'s
+/// `[lint-parity]` case (SKIP -> FAIL) for the same reason: a quiet
+/// outcome hid a broken dependency edge while ctest still reported green.
 ///
 /// A statement macro rather than a function because Catch2's `SKIP` and
 /// `FAIL` both have to expand inside the test body to register against the
 /// running case.
 #define PLANAR_REQUIRE_ORACLE(available, reason)                                                                                 \
   do {                                                                                                                           \
+    if (::planar::parity::oracle_stale()) {                                                                                      \
+      FAIL("parity oracle is STALE — zig/ has a committed change newer than the built zig-out binary; rebuild it with "          \
+           "`zig build` in zig/ before trusting this comparison");                                                               \
+    }                                                                                                                            \
     if (!(available)) {                                                                                                          \
       if (::planar::parity::strict_mode()) {                                                                                     \
         FAIL("PLANAR_PARITY_STRICT is set and the oracle is unavailable: " << (reason));                                         \
