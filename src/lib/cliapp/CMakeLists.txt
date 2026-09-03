@@ -157,7 +157,13 @@ target_link_libraries(planar_cliapp_schema_stub PRIVATE planar_cliapp CLI11::CLI
 
 if(TARGET planar_cliapp_tests)
   target_compile_definitions(planar_cliapp_tests PRIVATE
-    PLANAR_ZIG_CLI_USAGE_LINT_SRC="${CMAKE_SOURCE_DIR}/zig/tools/cli_usage_lint.zig"
     PLANAR_CLIAPP_SCHEMA_STUB_BIN="$<TARGET_FILE:planar_cliapp_schema_stub>")
   add_dependencies(planar_cliapp_tests planar_cliapp_schema_stub)
 endif()
+
+# The PLANAR_CLI_USAGE_LINT_BIN definition and its add_dependencies edge
+# live in the top-level CMakeLists.txt, not here: `cli_usage_lint`
+# (src/tools/cli_usage_lint/) is configured by add_subdirectory(src/tools),
+# which runs AFTER add_subdirectory(src) — so the target does not exist yet
+# at this point in the configure walk. See that file's comment beside
+# add_subdirectory(src/tools).

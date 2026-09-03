@@ -261,6 +261,21 @@ include(module)         # planar_module() (cmake/module.cmake)
 
 add_subdirectory(src)
 
+# src/tools/ — project tooling (decision 1000). Configured after src/ so
+# planar_json_dom (cli_usage_lint's one dependency) already exists.
+add_subdirectory(src/tools)
+
+# schema.t.cpp's `[lint-parity]` case (src/lib/cliapp/schema.t.cpp) runs
+# `cli_usage_lint` against `planar_cliapp_schema_stub`'s live output. Wired
+# here, not in src/lib/cliapp/CMakeLists.txt, because `cli_usage_lint`
+# (src/tools/, just configured above) does not exist yet at the point
+# add_subdirectory(src) processes cliapp.
+if(TARGET planar_cliapp_tests AND TARGET cli_usage_lint)
+  target_compile_definitions(planar_cliapp_tests PRIVATE
+    PLANAR_CLI_USAGE_LINT_BIN="$<TARGET_FILE:cli_usage_lint>")
+  add_dependencies(planar_cliapp_tests cli_usage_lint)
+endif()
+
 # D15 enforcement over the configured target graph (cmake/architecture.cmake)
 # — run last, after every module target exists.
 include(architecture)
