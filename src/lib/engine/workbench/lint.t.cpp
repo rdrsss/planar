@@ -180,6 +180,38 @@ TEST_CASE("a DANGLING anchor_plan_id warns with the id and its REAL line", "[wor
   CHECK(value->issues[0].line == 4);
 }
 
+TEST_CASE("line_for_key skips a line that only SHARES A PREFIX with the key", "[workbench][lint][warning]") {
+  // `line_for_key`'s match is `starts_with(key) && size() > key.size() &&
+  // line[key.size()] == ':'`. A decoy line ("anchor_plan_id_note: ...")
+  // satisfies the prefix clause but is a DIFFERENT key entirely -- the
+  // colon-boundary clause is what tells them apart. Without it, the decoy
+  // (line 4) would be reported instead of the real key (line 5).
+  arena a;
+  auto  value = wl::run(a.conn(), a.write("decoy-prefix.md", "---\nentity_kind: task\nentity_id: 1\n"
+                                                             "anchor_plan_id_note: unrelated\n"
+                                                             "anchor_plan_id: 4242\ntitle: T\nstatus: todo\n---\n"));
+  REQUIRE(value.has_value());
+  REQUIRE(value->issues.size() == 1);
+  CHECK(value->issues[0].message == "anchor_plan_id 4242 does not reference an existing plan");
+  CHECK(value->issues[0].line == 5);
+}
+
+TEST_CASE("line_for_key never matches a line that does not start with the key at all",
+          "[workbench][lint][warning]") {
+  // A decoy line the same LENGTH as the key plus one, with a colon at
+  // EXACTLY the boundary index the real check would land on, but with
+  // completely different text. Only the `starts_with` clause tells this
+  // apart from the real `anchor_plan_id:` line.
+  arena a;
+  auto  value = wl::run(a.conn(), a.write("decoy-length.md", "---\nentity_kind: task\nentity_id: 1\n"
+                                                              "unknown_field1: something\n"
+                                                              "anchor_plan_id: 4242\ntitle: T\nstatus: todo\n---\n"));
+  REQUIRE(value.has_value());
+  REQUIRE(value->issues.size() == 1);
+  CHECK(value->issues[0].message == "anchor_plan_id 4242 does not reference an existing plan");
+  CHECK(value->issues[0].line == 5);
+}
+
 TEST_CASE("a file that does NOT parse never reaches the anchor check", "[workbench][lint]") {
   // One issue per file, error-first: the syntax rejection short-circuits.
   arena a;
