@@ -27,6 +27,7 @@
 
 - Treat this file as this repo's true agent guide, not a template for other repos.
 - Keep `AGENTS.md` equivalent to this file (symlink or byte-for-byte copy).
+- **All project tooling lives under `src/tools/<tool-name>/`** — one directory per tool (decision 1000). This is the standing home for every tool this project builds, not only the current ones. Pre-existing Zig tooling under `zig/tools/` is not retrofitted: `gen_migrations` and `gen_templates` are already superseded by configure-time CMake codegen (`cmake/generate_migrations.cmake`), and `vendor_sync` is Zig-only because the C++ build vendors via CPM.
 - Put installable Planar agents under top-level `agents/`. Do not scaffold them under vendor dot directories.
 - Put unified skill source files under `skills/src/`. Do not author generated vendor surfaces directly.
 - The per-vendor skill surfaces (`commands/claude/`, `skills/codex/`, `skills/copilot/`) are **not checked into the repo** — they are rendered at install time by scriptorium, invoked by `install.sh` after the binary is built (this replaced the retired in-tree renderer verb at plan 918 M5; see `scriptorium.yaml`). Source-of-truth lives under `skills/src/` only. `.gitignore` blocks the rendered dirs from re-entering the tree. The Tier Table for agent-role model routing is hand-maintained in `agents/models.md`; Planar does not generate it.
