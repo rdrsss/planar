@@ -72,3 +72,13 @@ TEST_CASE("a returned strategy outlives the call", "[engine][extsync][propagate]
   CHECK(held.kind == "jira-epic");
   CHECK(held.task_kind == "sub-task");
 }
+
+TEST_CASE("ADR-0006 buckets GitHub by distinct repo count while Jira ignores it", "[engine][extsync][propagate]") {
+  CHECK(prop::strategy_for_repo_count("github-issues", 0)->kind == "github-zero-repo");
+  CHECK(prop::strategy_for_repo_count("github-issues", 1)->kind == "github-parent-issue");
+  CHECK(prop::strategy_for_repo_count("github-issues", 2)->kind == "github-projects-v2");
+  CHECK(prop::strategy_for_repo_count("github-issues", 99)->kind == "github-projects-v2");
+  CHECK(prop::strategy_for_repo_count("jira", 0)->kind == "jira-epic");
+  CHECK(prop::strategy_for_repo_count("jira", 2)->kind == "jira-epic");
+  CHECK_FALSE(prop::strategy_for_repo_count("gitlab", 2).has_value());
+}

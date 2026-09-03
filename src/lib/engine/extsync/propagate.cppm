@@ -78,4 +78,10 @@ export struct strategy {
 /// oracle's `error.UnsupportedSystemKind`.
 export auto strategy_for_system(std::string_view system_kind) -> std::optional<strategy>;
 
+/// @brief Apply ADR-0006's GitHub bucket after the caller counted feature repos.
+/// @param system_kind Registered external-system kind.
+/// @param distinct_repos Distinct repositories touched by the feature.
+/// @return The selected strategy, or unset for an unsupported system.
+export auto strategy_for_repo_count(std::string_view system_kind, std::size_t distinct_repos) -> std::optional<strategy>;
+
 } // namespace planar::engine::extsync::propagate

@@ -1,6 +1,6 @@
 // @file closure_groups_leaves.t.cpp
-// @brief In-process tests for `closure show` and `groups recommend`, the two
-// read-only leaves wired by plan 996, task 6189.
+// @brief In-process tests for the `closure` and `groups` leaves wired by plan
+// 996, task 6189.
 //
 // ## THESE TWO LEAVES WRITE NOTHING, SO THE ROW ASSERTIONS RUN THE OTHER WAY
 //
@@ -187,9 +187,8 @@ auto query(planar::db::connection& conn, std::string_view sql, int columns) -> s
 /// @brief Create the database and one association-scoped plan with tasks.
 ///
 /// Seeded through the CLI so the same code paths an operator would take
-/// establish the scope, then extended with direct SQL for the rows no ported
-/// verb can write yet (`closures` has no ported writer — `closure compute`
-/// is the unported half of this very family).
+/// establish the scope. The read-only renderer cases extend it with direct
+/// SQL; the dedicated compute case exercises the real writer end-to-end.
 /// @param fx The fixture.
 auto seed_plan(const fixture& fx) -> void {
   REQUIRE(dispatch(fx, {"init", "--json", "--allow-no-repo"}).code == 0);
@@ -215,6 +214,34 @@ auto add_closure(planar::db::connection& conn, int task_id, std::string_view pat
 }
 
 } // namespace
+
+TEST_CASE("closure compute is wired end-to-end and preserves its Zig JSON contract", "[cmd][closure][compute]") {
+  auto const fx = make_fixture("clocompute");
+  seed_plan(fx);
+  REQUIRE(dispatch(fx, {"task", "add", "T1", "--plan", "1", "--editor=false", "--json"}).code == 0);
+  std::ofstream{fx.root / "proj" / "seed.zig"} << "fn run() void {}\n";
+  {
+    auto conn = open_db(fx);
+    exec(conn, "insert into task_touch_paths(task_id,repo_id,path) values(1,1,'seed.zig')");
+  }
+  auto const computed = dispatch(fx, {"closure", "compute", "1", "--json"});
+  CHECK(computed.code == 0);
+  CHECK(computed.err.empty());
+  CHECK(computed.out ==
+        R"({"task_id":1,"seeds":1,"modify":1,"reference":0,"transitive":0,"rows_written":1,"extractor_version":"m2-closure-0.1"})"
+        "\n");
+  {
+    auto conn = open_db(fx);
+    CHECK(query(conn, "select repo_id,path,symbol,role,token_weight from closures", 5) == "1|seed.zig|seed.run|modify|7");
+  }
+
+  auto const no_seeds = dispatch(fx, {"task", "add", "T2", "--plan", "1", "--editor=false", "--json"});
+  REQUIRE(no_seeds.code == 0);
+  auto const refusal = dispatch(fx, {"closure", "compute", "2", "--json"});
+  CHECK(refusal.code == 2);
+  CHECK(refusal.out.empty());
+  CHECK(refusal.err == "error: closure compute: task 2 declares no path-level touches (task_touch_paths); nothing to compute\n");
+}
 
 TEST_CASE("closure show orders by role, then PATH, then symbol", "[cmd][closure][show]") {
   auto const fx = make_fixture("closorder");

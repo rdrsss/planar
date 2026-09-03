@@ -472,6 +472,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // help page. See that handler's header.
   table.emplace("skills", handlers::skills);
   table.emplace("workspace doctor", handlers::workspace_doctor);
+  table.emplace("workspace init", handlers::workspace_init);
   table.emplace("workspace routing show", handlers::workspace_routing_show);
   table.emplace("workspace routing build", handlers::workspace_routing_build);
   table.emplace("workspace regenerate", handlers::workspace_regenerate);
@@ -581,9 +582,9 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("config validate", handlers::config_validate);
   table.emplace("config init", handlers::config_init);
   table.emplace("config path", handlers::config_path);
-  // `closure show` — the read side only. `closure compute` stays a declared
-  // exit-64 refusal: its extractor needs tree-sitter, which is not vendored
-  // here. See `handlers/closure.cppm`.
+  // Derived closure extraction is AST-backed through the pinned tree-sitter
+  // Zig grammar; its cross-bucket composition belongs at this cmd layer.
+  table.emplace("closure compute", handlers::closure_compute);
   table.emplace("closure show", handlers::closure_show);
   // `groups recommend` — the whole `groups` family, read-only.
   table.emplace("groups recommend", handlers::groups_recommend);

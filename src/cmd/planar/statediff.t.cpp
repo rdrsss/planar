@@ -780,11 +780,10 @@ auto catalog_fixture(std::span<const std::vector<std::string>> paths) -> std::st
 /// the skip from becoming permanent: porting one of them fails this lane
 /// until its entry is removed here, which is the same red-then-green
 /// discipline `known_divergences` applies to the defects.
-/// `workspace init --json` is catalog-eligible and deliberately remains in
-/// the inventory while its C++ leaf returns the designated unimplemented
-/// refusal.  Pin its serialized *executed argv*, not a fragile sequence tag:
-/// a port removes this allowance only when it makes the step comparable.
-constexpr std::array<std::string_view, 1> expected_unported{R"(["workspace","init","--json"])"};
+/// No catalog-derived state step is currently excluded merely because its
+/// C++ implementation is absent. A future pending-port leaf must be named
+/// here deliberately rather than silently skipped.
+constexpr std::array<std::string_view, 0> expected_unported{};
 
 /// @brief One staged divergence: a real defect with its own task, listed so
 /// this lane is green while the defect stands.
@@ -1237,17 +1236,19 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
   auto const live_unported = source_unported_inventory(target_source_root());
   REQUIRE(live_unported.has_value());
-  // 19 -> 7. Three INDEPENDENT drops from a common base of 19, none of
-  // which subsumes another:
+
+  // 19 -> 5. FOUR independent drops from a common base of 19, none of which
+  // subsumes another:
   //   task 6038  -9  the planar-agent leaves
   //   task 6106  -2  `import` and `synthesize`
   //   task 6039  -1  planar-watch's `feed`
-  // Each side updated this cross-binary count for its own drop only, so a
-  // three-way merge sees 9 vs 8 and neither is right -- exactly the drift
-  // this sibling test exists to catch. Verified by running the test, not by
-  // arithmetic on this comment.
-  CHECK(live_unported->size() == 7);
-  CHECK(std::ranges::find(*live_unported, "planar:workspace init (pending-port)") != live_unported->end());
+  //   task 6189  -2  `closure compute` and `workspace init`
+  // Each side updated this cross-binary count for its own drop only, so the
+  // three-way merge offered 7 vs 17 and neither is right -- exactly the
+  // drift this sibling test exists to catch. Verified by running the test,
+  // not by arithmetic on this comment.
+  CHECK(live_unported->size() == 5);
+
   CHECK(source_oracle_skips(target_source_root()).size() == 37);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
   auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
@@ -1255,6 +1256,7 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
   REQUIRE(watch_unported.has_value());
+
   // The generated empty inventory must retain a scanner-recognized named
   // initializer while exposing no runtime elements. This protects the
   // generator's zero-list branch from regressing to an ill-formed array.
@@ -1264,7 +1266,10 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(agent_surface->contains("std::span<std::string_view const>{k_unported}.first(0)"));
   // 6 -> 4 at task 6106, matching dispatch.t.cpp's own drop: `import` and
   // `synthesize` both left surface.cpp's k_unported array.
-  CHECK(planar_unported->size() == 4);
+  // 4 -> 2 at task 6189: `closure compute` and `workspace init` both
+  // left surface.cpp's k_unported array, leaving only `explore` and
+  // `ext propagate`.
+  CHECK(planar_unported->size() == 2);
   CHECK(agent_unported->empty());
   for (auto const& landed : {"ingest", "run start", "run end", "dispatch preview", "dispatch confirm", "context add",
                              "context capsule", "context list", "context resolve"}) {
@@ -1272,6 +1277,7 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
     CHECK(std::ranges::find(*agent_unported, landed) == agent_unported->end());
   }
   CHECK(watch_unported->size() == 3);
+
   CHECK(target_zig_tree_present());
 }
 

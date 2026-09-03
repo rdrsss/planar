@@ -4124,7 +4124,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       // writes through the already-ported `touch_idempotent`. See
       // `src/lib/engine/runs/harvest.cppm` for the port and
       // `src/lib/engine/runs/CMakeLists.txt` for the closing account.
-      "closure compute",
       // The five `config` leaves -- `show`, `edit`, `validate`, `init`,
       // `path` -- left this inventory at task 6259. Their engine half
       // (`planar.engine.config`) had been complete since commit 82820b7;
@@ -4428,7 +4427,6 @@ auto unported_paths() -> std::span<std::string_view const> {
       // with different arguments: it writes the `sync_events` audit row too.
       // `create_remote` was already in this tree, TU-private to `ext.cpp`; it
       // is now shared out of `ext_adapter_factory` for its three callers.
-      "workspace init",
       // `workspace routing show` left this inventory at task 6110 and
       // `workspace routing build` at task 6275, closing the family's
       // read/write loop: the decoder and both render arms, then the builder

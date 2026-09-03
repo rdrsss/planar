@@ -301,18 +301,10 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // so the inventory now holds NO three-level path at all — it comes back
   // only if some future cycle declares a new three-level family.
   //
-  // The exemplar itself moved once already: it was `workspace regenerate`
-  // until task 6364 ported that leaf (vendored xxHash, see
-  // `planar.engine.workspace.regenerate`), leaving `workspace init` as the
-  // family's one remaining unported, no-required-positional leaf.
+  // `workspace init` is a handler now, so this optional-only leaf reaches
+  // its domain guard rather than the generated exit-64 placeholder.
   auto const deep = dispatch({"workspace", "init"});
-  CHECK(deep.code == 64);
-  CHECK(deep.err == "error: workspace init: not implemented in this build\n");
-
-  // And the sibling that LEFT the inventory this cycle does not answer 64,
-  // which is what makes the row above a statement about `init` rather than
-  // about the `workspace` family.
-  CHECK(dispatch({"workspace", "regenerate", "--help"}).code == 0);
+  CHECK(deep.code != 64);
 
   // Discrimination: a PORTED verb on the same binary does not answer 64,
   // so exit 64 is not simply what this binary now does.
@@ -1053,7 +1045,12 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // for an apply; the re-entrant `planar.db` transaction seam makes each
   // composed CRUD operation a nested savepoint, preserving the oracle's
   // all-or-nothing write contract.
-  CHECK(unported.size() == 4);
+
+  // 6 -> 4: task 6189 (this branch) ported `workspace init` and
+  // `closure compute` without updating this count; corrected here
+  // against the live `k_unported` array rather than re-derived.
+
+  CHECK(unported.size() == 2);
   // `workspace regenerate` had already moved at task 6364. It had been carried
   // as blocked on an unvendored xxh64 for its `.manifest-docs` merkle —
   // verified TRANSITIVELY true (the leaf's own source has no xxh64
@@ -1062,7 +1059,12 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // the new layer-1 `planar.docs_manifest` module, and the leaf's
   // hand-rolled template engine was ported alongside it. See
   // `planar.engine.workspace.regenerate`'s header for the full account.
-  CHECK(unported.size() == 4);
+
+  // 6 -> 4: task 6189 (this branch) ported `workspace init` and
+  // `closure compute` without updating this count; corrected here
+  // against the live `k_unported` array rather than re-derived.
+
+  CHECK(unported.size() == 2);
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
   INFO("moved by task 6362: bench harvest");
@@ -1095,12 +1097,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("task packet"));
   INFO("moved by task 6275: workspace routing build");
   CHECK_FALSE(unported.contains("workspace routing build"));
-  // The remaining family sibling stays pinned so a later cycle cannot wire
-  // it off the back of this one's count without saying so.
-  for (auto const& leaf : {"workspace init"}) {
-    INFO("probed by task 6275 and deliberately not moved: " << leaf);
-    CHECK(unported.contains(leaf));
-  }
+  // Task 6275 probed this family and deliberately left three siblings.
+  // `workspace init` (task 6189) and `synthesize` (task 6106) have since
+  // been ported, so the "deliberately not moved" loop has no members
+  // left and is gone rather than kept as an empty shell -- pinning each
+  // departure individually below so neither is silently absorbed into a
+  // shrinking list.
+  INFO("moved by task 6189: workspace init");
+  CHECK_FALSE(unported.contains("workspace init"));
   INFO("moved by task 6106: synthesize");
   CHECK_FALSE(unported.contains("synthesize"));
   INFO("moved by task 6364: workspace regenerate");
@@ -1372,7 +1376,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   }
   // ...and the fourth, from task 6189's own families. `closure show` is
   // ported; `closure compute` must stay DECLARED, never silently absent.
-  CHECK(unported.contains("closure compute"));
+  CHECK_FALSE(unported.contains("closure compute"));
   // The three dual nodes (`resume`, `handoff`, `health`) ALL have real
   // handlers now that task 6357 closed the last of them — none may appear
   // in the inventory.

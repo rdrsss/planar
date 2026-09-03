@@ -8,3 +8,4 @@ module;
 export module planar.engine.closure;
 
 export import planar.engine.closure.store;
+export import planar.engine.closure.compute;

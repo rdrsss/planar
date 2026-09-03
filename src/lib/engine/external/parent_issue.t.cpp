@@ -687,3 +687,88 @@ TEST_CASE("tasks_under_plan reaches a task via a derives-from edge ALONE, and de
   CHECK(count("via derives-from only") == 1);
   CHECK(count("via both paths") == 1); // the dedup assertion.
 }
+
+TEST_CASE("distinct_repo_count_in_feature buckets by distinct touched repo count, deduping both CTE arms",
+          "[engine][external][parent_issue]") {
+  // The ADR-0006 GitHub strategy bucket (`propagate::strategy_for_repo_count`)
+  // is selected by exactly this count, so its boundaries (0 / 1 / >=2) and
+  // its dedup behavior across BOTH ways a task reaches a repo — a
+  // `scope_kind='repo'` task and a `-touches-> repo` entity_links edge — are
+  // load-bearing, not incidental. `distinct_repos_in_feature_ids` already has
+  // dedicated recursion coverage above; this pins the COUNTING wrapper
+  // specifically, including the case that coverage never exercises: two
+  // DISTINCT repos in the same feature.
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      anchor_id = insert_plan(conn, "anchor", "a");
+
+  // Zero repos: an anchor with a plain task and nothing touching a repo.
+  {
+    insert_task_under_plan(conn, "touches nothing", anchor_id);
+    auto count = parent_issue::distinct_repo_count_in_feature(conn, anchor_id);
+    REQUIRE_FALSE(err(count).has_value());
+    CHECK(*count == 0);
+  }
+
+  auto const project1 = insert_project(conn, "acme/api", "https://github.com/acme/api.git");
+  auto const t1       = insert_task_under_plan(conn, "touches project1 first time", anchor_id);
+  insert_touches_edge(conn, t1, project1);
+
+  // One repo, reached once.
+  {
+    auto count = parent_issue::distinct_repo_count_in_feature(conn, anchor_id);
+    REQUIRE_FALSE(err(count).has_value());
+    CHECK(*count == 1);
+  }
+
+  // A SECOND task touching the SAME repo must not inflate the count — this
+  // is the dedup assertion an out-of-scope-surviving-row check needs: a
+  // mutation from `union`/`distinct` to a naive concatenation would report
+  // 2 here even though only one repo is actually touched.
+  auto const t2 = insert_task_under_plan(conn, "touches project1 again", anchor_id);
+  insert_touches_edge(conn, t2, project1);
+  {
+    auto count = parent_issue::distinct_repo_count_in_feature(conn, anchor_id);
+    REQUIRE_FALSE(err(count).has_value());
+    CHECK(*count == 1);
+  }
+
+  // A distinct SECOND repo pushes the count to 2, which is where
+  // `strategy_for_repo_count` crosses from "github-parent-issue" into
+  // "github-projects-v2" — the boundary this whole helper exists to feed.
+  auto const project2 = insert_project(conn, "acme/web", "https://github.com/acme/web.git");
+  auto const t3       = insert_task_under_plan(conn, "touches project2", anchor_id);
+  insert_touches_edge(conn, t3, project2);
+  {
+    auto count = parent_issue::distinct_repo_count_in_feature(conn, anchor_id);
+    REQUIRE_FALSE(err(count).has_value());
+    CHECK(*count == 2);
+  }
+}
+
+TEST_CASE("distinct_repo_count_in_feature propagates query_failed rather than silently reporting zero repos",
+          "[engine][external][parent_issue]") {
+  // The `!repos` guard in `distinct_repo_count_in_feature` (parent_issue.cpp)
+  // is the only thing standing between a genuine query failure and a
+  // silently-returned zero — and a zero here is not an inert wrong number:
+  // it feeds straight into `propagate::strategy_for_repo_count`'s ADR-0006
+  // bucketing, where a zero count selects "github-zero-repo". A dropped
+  // guard would turn "the database could not answer" into "propagate as if
+  // the feature touches nothing" — the task's own no-silent-degradation
+  // rule ("full job or loud refusal") names exactly this shape.
+  //
+  // Reached by renaming `tasks` out from under the query the same way
+  // system.t.cpp's "an unparseable enum column reads as query_failed" case
+  // reaches its failure: the SQL references a table that is no longer
+  // there, so `conn.prepare` itself fails rather than any row failing to
+  // parse.
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      anchor_id = insert_plan(conn, "anchor", "a");
+
+  REQUIRE(conn.execute("alter table tasks rename to tasks_real").has_value());
+
+  auto count = parent_issue::distinct_repo_count_in_feature(conn, anchor_id);
+  REQUIRE(err(count).has_value());
+  CHECK(*err(count) == parent_issue::parent_issue_error::query_failed);
+}
