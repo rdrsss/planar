@@ -40,6 +40,8 @@
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.db;
+import planar.db.migrate;
 import planar.cmd.planar_ext.context;
 import planar.cmd.planar_ext.dispatch;
 import planar.cmd.planar_ext.tree;
@@ -82,6 +84,19 @@ auto make_fixture(std::string_view tag) -> fixture {
   };
 }
 
+/// @brief Migrate the fixture database directly.
+///
+/// `planar-ext` has no `init` verb — that verb, and migration, stay on
+/// `planar` (`planar.cmd.planar_ext.context`'s header). So this test binary
+/// cannot bootstrap the schema through `dispatch`; it applies the full
+/// migration chain the same way `capability.t.cpp` does.
+/// @param fx The fixture whose `db_path` gets migrated.
+void migrate_fixture(const fixture& fx) {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn));
+}
+
 /// @brief Dispatch `args` against the real tree and table.
 /// @param fx The fixture.
 /// @param args The argv tail.
@@ -117,7 +132,7 @@ auto dispatch(const fixture& fx, std::vector<std::string> args, std::map<std::st
 /// this to a whole scope-resolver suite (task 6256).
 /// @param fx The fixture.
 void seed(const fixture& fx) {
-  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  migrate_fixture(fx);
   REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", "https://example.invalid", "--project", "DEMO",
                         "--auth-env", "DEMO_TOKEN"})
               .code == 0);
@@ -191,4 +206,59 @@ TEST_CASE("an empty DEMO_TOKEN wires an adapter through the real dispatch path",
   auto const wired = dispatch(fx, {"ext", "test", "jira-demo"}, {{"DEMO_TOKEN", ""}});
   CHECK(wired.code == 0);
   CHECK(wired.out == "jira-demo: ok  (adapter wired)\n");
+}
+
+TEST_CASE("ext list --json OMITS a null base_url and default_project entirely", "[cmd][ext][list][parity][terminator]") {
+  // Moved from `planar`'s `handlers.t.cpp` at plan 996, task 6419 — `ext
+  // list` now lives here.
+  //
+  // Not reachable through `ext register`: both register helpers always set
+  // both columns, so this branch never fires under the CLI and a break-probe
+  // that replaced it with `value_or("")` survived the whole parity suite. The
+  // branch is still real — `system::register_system` takes both as optionals,
+  // and a future `linear` / `gitlab-issues` registration need not set a base
+  // URL — and the Zig renderer branches on the optional rather than
+  // serializing it, so a `"base_url":null` would be a divergence the moment
+  // such a row exists. Seeded here with raw SQL, which is the only way in —
+  // and the SAME row was seeded into a scratch database and read back through
+  // the ORACLE, so both expectations below are CAPTURED bytes:
+  //
+  //   $Z ext list --json
+  //     b'{"id":1,"kind":"linear","slug":"lin","auth_method":"token-env",
+  //       "created_at":"..."}\n'
+  //   $Z ext list
+  //     b'slug                  kind              base-url
+  //       project\nlin                   linear
+  //                       \n'
+  //
+  // Note the TEXT form's TRAILING WHITESPACE. The empty project column is
+  // last and unpadded, but the empty base-url column before it is padded to
+  // 36, so the line ends in spaces. Trimming it would be a divergence.
+  auto const fx = make_fixture("extnull");
+  migrate_fixture(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute("insert into external_systems (kind, slug, base_url, default_project, auth_method, auth_ref) "
+                          "values ('linear', 'lin', null, null, 'token-env', 'TOK')")
+                .has_value());
+  }
+
+  auto const got = dispatch(fx, {"ext", "list", "--json"});
+  CHECK(got.code == 0);
+  // Neither key appears at all, and the key ORDER around the gap is
+  // unchanged: id, kind, slug, [base_url], [default_project], auth_method,
+  // created_at.
+  CHECK(got.out.find("base_url") == std::string::npos);
+  CHECK(got.out.find("default_project") == std::string::npos);
+  CHECK(got.out.find("null") == std::string::npos);
+  CHECK(got.out.starts_with(R"({"id":1,"kind":"linear","slug":"lin","auth_method":"token-env","created_at":")"));
+  CHECK(got.out.ends_with("\"}\n"));
+
+  // And the TEXT renderer prints an empty cell rather than the word `null`,
+  // padded to the same width.
+  auto const text = dispatch(fx, {"ext", "list"});
+  CHECK(text.code == 0);
+  CHECK(text.out == "slug                  kind              base-url                              project\n"
+                    "lin                   linear                                                  \n");
 }

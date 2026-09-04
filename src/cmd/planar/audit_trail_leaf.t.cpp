@@ -87,6 +87,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.engine.external;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
@@ -180,10 +181,11 @@ void seed_trail(const fixture& fx) {
   CHECK(dispatch(fx, {"task", "add", "Trail task one", "--plan", "1", "--body", "trail task body", "--json"}).code == 0);
   CHECK(dispatch(fx, {"decision", "add", "Trail decision", "--body", "trail decision body", "--json"}).code == 0);
   CHECK(dispatch(fx, {"links", "add", "task:1", "decision:1", "--relationship", "cites", "--json"}).code == 0);
-  CHECK(dispatch(fx, {"ext", "register", "github", "gh", "--project", "acme/widgets", "--json"}).code == 0);
-
+  // `ext register` moved to `planar-ext` at plan 996, task 6419; seeded
+  // directly through the engine here, same as `sync.t.cpp`'s `rig` fixture.
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
+  REQUIRE(planar::engine::external::system::register_github(*conn, {.slug = "gh", .project = "acme/widgets"}).has_value());
 
   // GUARD (a): the CLI seeding actually wrote something. Without this the
   // pin below would happily install its rows over an empty database and the

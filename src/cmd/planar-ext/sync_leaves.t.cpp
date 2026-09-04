@@ -53,6 +53,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.db.migrate;
 import planar.cmd.planar_ext.context;
 import planar.cmd.planar_ext.dispatch;
 import planar.cmd.planar_ext.tree;
@@ -94,6 +95,16 @@ auto make_fixture(std::string_view tag) -> fixture {
                   {"PWD", (root / "proj").string()}},
       .db_path = root / "planar.db",
   };
+}
+
+/// @brief Migrate the fixture database directly — `planar-ext` has no
+/// `init` verb. See `ext_leaves.t.cpp`'s `migrate_fixture` for the full
+/// account.
+/// @param fx The fixture whose `db_path` gets migrated.
+void migrate_fixture(const fixture& fx) {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn));
 }
 
 /// @brief Dispatch `args` against the real tree and table.
@@ -153,18 +164,20 @@ auto count(planar::db::connection& conn, std::string_view table) -> std::int64_t
 /// @param fx The fixture.
 /// @param base_url The registered system's base URL.
 void seed(const fixture& fx, std::string_view base_url) {
-  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  migrate_fixture(fx);
   REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", std::string(base_url), "--project", "DEMO",
                         "--auth-env", "DEMO_TOKEN"})
               .code == 0);
-  REQUIRE(dispatch(fx, {"task", "add", "Demo task", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"plan", "create", "Demo plan", "--json"}).code == 0);
-
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
-  // `link` and `ext create` are both unported, so there is no CLI path to an
-  // `external_links` row. See this file's header for why the read-back below
-  // is load-bearing rather than tidy.
+  // `task add` / `plan create` / `link` / `ext create` are all verbs that
+  // live on `planar`, not `planar-ext` (task and plan planning verbs never
+  // moved; `link`/`ext create` are unported). So there is no CLI path to
+  // any of these rows from this binary — every one is seeded directly. See
+  // this file's header for why the read-back below is load-bearing rather
+  // than tidy.
+  exec(*conn, "insert into tasks (id, scope_kind, title) values (1, 'global', 'Demo task')");
+  exec(*conn, "insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Demo plan', 'demo-plan')");
   exec(*conn, "insert into external_links (id, entity_kind, entity_id, system_id, external_id, link_role, "
               "sync_direction, created_at) values "
               "(1, 'task', 1, 1, 'DEMO-1', 'mirror', 'two-way', '2026-07-01T00:00:00.000Z'), "
@@ -499,7 +512,15 @@ TEST_CASE("an adapter-build failure is the RAW Zig tag at exit 1 on all three ve
   CHECK(via_ext_test.err == "error: token env var 'DEMO_TOKEN' is not set\n");
 }
 
-TEST_CASE("a real HTTP round trip pulls, applies and then conflicts", "[cmd][sync][pull][http]") {
+TEST_CASE("a real HTTP round trip pulls, EMITS instead of applying, and still conflicts", "[cmd][sync][pull][http]") {
+  // Decision 996 (plan 996, task 6419): step 2 below used to WRITE the
+  // remote's title onto the task and report "ok — title". It now leaves
+  // the task alone and EMITS the remote's value in the rendered line
+  // instead — see `render_result_text`'s header. Step 3 simulates the
+  // operator's own local edit with a raw SQL update rather than `task
+  // update` (a `planar` verb this binary does not have), and the
+  // resulting three-way conflict shape is UNCHANGED by decision 996: the
+  // conflict arm never wrote the entity either, before or after.
   // The remote's summary and version live here so the "remote changed" step
   // is a variable assignment rather than a second server.
   std::mutex  guard;
@@ -552,13 +573,21 @@ TEST_CASE("a real HTTP round trip pulls, applies and then conflicts", "[cmd][syn
   }
   auto const applied = dispatch(fx, {"sync", "pull", "1"}, {{"DEMO_TOKEN", "tok-abc"}});
   CHECK(applied.code == 0);
-  CHECK(applied.out == "  link 1: ok — title\n");
+  CHECK(applied.out == R"(  link 1: ok — title — remote: title="Renamed remotely")"
+                      "\n");
 
   // 3. Both sides changed since the last successful sync: the CONFLICT arm,
   //    which is the ONLY path in either verb that reaches exit 3. It carries
   //    a field list AND a detail, so this is also the only case that pins
-  //    both em-dash separators in one line.
-  REQUIRE(dispatch(fx, {"task", "update", "1", "--title", "Renamed locally"}).code == 0);
+  //    both em-dash separators in one line. The local edit is seeded with
+  //    raw SQL — `task update` lives on `planar`, and step 2 above never
+  //    actually wrote "Renamed remotely" onto the task (decision 996), so
+  //    the task still reads "Demo task" here.
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "update tasks set title = 'Renamed locally' where id = 1");
+  }
   {
     std::scoped_lock const lock{guard};
     summary = "Renamed remotely again";

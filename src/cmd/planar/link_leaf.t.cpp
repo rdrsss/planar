@@ -59,6 +59,7 @@
 
 import std;
 import planar.db;
+import planar.engine.external;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
@@ -143,9 +144,15 @@ auto scalar(const fixture& fx, std::string_view sql) -> std::int64_t {
 /// @param fx The fixture.
 void seed(const fixture& fx) {
   REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", "http://127.0.0.1:9", "--project", "DEMO",
-                        "--auth-env", "DEMO_TOKEN"})
-              .code == 0);
+  // `ext register` moved to `planar-ext` at plan 996, task 6419; seeded
+  // directly through the engine here, same as `sync.t.cpp`'s `rig` fixture.
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::engine::external::system::register_jira(
+                *conn, {.slug = "jira-demo", .base_url = "http://127.0.0.1:9", .project = "DEMO", .auth_env = "DEMO_TOKEN"})
+                .has_value());
+  }
   REQUIRE(dispatch(fx, {"plan", "create", "Anchor plan", "--json"}).code == 0);
   REQUIRE(dispatch(fx, {"task", "add", "Demo task", "--plan", "1", "--json"}).code == 0);
   REQUIRE(dispatch(fx, {"question", "add", "Demo question", "--json"}).code == 0);

@@ -1,11 +1,16 @@
 // @file plan_descendants_sync_status_leaves.t.cpp
-// @brief In-process tests for the two leaves plan 996 task 6298 landed:
-// `plan descendants` and `sync status`.
+// @brief In-process tests for `plan descendants` (plan 996, task 6298).
 //
-// They share a file because they share nothing else — one walks the plan
-// tree, one lists external links — and neither is large enough to earn its
-// own, on the same judgement `plan_task_remainder_leaves.t.cpp` made when it
-// put the `plan step` family beside the `task touches` family.
+// `sync status`'s three cases — the other half of this file through task
+// 6419 — moved to `src/cmd/planar-ext/sync_status_leaves.t.cpp` at plan
+// 996, task 6419 (the `ext`/`sync` family's move to `planar-ext`), each
+// with its own COPY of `seed_links` (that binary cannot dispatch `plan
+// create`/`task add` to build the tree the fixture-verification case below
+// checks, and `sync status` never needed that tree in the first place —
+// see the moved file's header). `seed_links` stays here too, since this
+// file's own fixture-verification case still calls it alongside
+// `seed_tree` to pin the shared arrangement both families were seeded
+// from.
 //
 // ## THE FIRST CASE IN THIS FILE ASSERTS THE FIXTURE, AND IT ALREADY PAID
 //
@@ -446,146 +451,4 @@ TEST_CASE("plan descendants renders a childless anchor and refuses bad input", "
   CHECK(bad.code == 2);
   CHECK(bad.out.empty());
   CHECK(bad.err == "error: plan id must be an integer, got 'abc'\n");
-}
-
-TEST_CASE("sync status lists every link when unfiltered", "[cmd][6298][sync-status]") {
-  auto const fx = make_fixture("list");
-  seed_tree(fx);
-  seed_links(fx);
-
-  auto const text = dispatch(fx, {"sync", "status"});
-  CHECK(text.code == 0);
-  CHECK(text.err.empty());
-  // The `question:1` row MISALIGNS, and that is the oracle's. Only the id
-  // carries the column width, so a five-character kind pushes the rest of
-  // the line right. Straightening it here would be a silent divergence.
-  CHECK(text.out == "link    entity          external-id         system    last-sync                 status\n"
-                    "1       task:1            PROJ-11             1         2026-01-02T03:04:05.678Z  ok\n"
-                    "2       task:2            o/r#7               2         never                     never\n"
-                    "3       plan:1            PROJ-12             1         2026-02-03T04:05:06.789Z  conflict\n"
-                    "4       question:1            o/r#8               2         never                     error\n");
-
-  // Line-delimited objects, NOT an array. And `last_synced_at` is OMITTED
-  // when NULL rather than rendered as `null`, so the key set varies row to
-  // row — links 2 and 4 carry six keys where 1 and 3 carry seven.
-  auto const json = dispatch(fx, {"sync", "status", "--json"});
-  CHECK(json.code == 0);
-  CHECK(
-      json.out ==
-      R"({"link_id":1,"entity_kind":"task","entity_id":1,"external_id":"PROJ-11","system_id":1,"last_synced_at":"2026-01-02T03:04:05.678Z","last_sync_status":"ok"})"
-      "\n"
-      R"({"link_id":2,"entity_kind":"task","entity_id":2,"external_id":"o/r#7","system_id":2,"last_sync_status":"never"})"
-      "\n"
-      R"({"link_id":3,"entity_kind":"plan","entity_id":1,"external_id":"PROJ-12","system_id":1,"last_synced_at":"2026-02-03T04:05:06.789Z","last_sync_status":"conflict"})"
-      "\n"
-      R"({"link_id":4,"entity_kind":"question","entity_id":1,"external_id":"o/r#8","system_id":2,"last_sync_status":"error"})"
-      "\n");
-  CHECK(json.out.find("null") == std::string::npos);
-  CHECK(json.out.front() != '[');
-}
-
-TEST_CASE("sync status filters by system and by entity, and excludes by a survivor", "[cmd][6298][sync-status]") {
-  auto const fx = make_fixture("filter");
-  seed_tree(fx);
-  seed_links(fx);
-
-  // --system keeps 1 and 3 and drops 2 and 4.
-  auto const jira = dispatch(fx, {"sync", "status", "--system", "jira-a", "--json"});
-  CHECK(jira.code == 0);
-  CHECK(jira.out.find(R"("link_id":1)") != std::string::npos);
-  CHECK(jira.out.find(R"("link_id":3)") != std::string::npos);
-  CHECK(jira.out.find(R"("link_id":2)") == std::string::npos);
-  CHECK(jira.out.find(R"("link_id":4)") == std::string::npos);
-
-  // The complementary system returns the OTHER two. An inert filter would
-  // return all four here and to the query above; a uniformly-broken one
-  // would return none to both. Only a working filter splits them.
-  auto const gh = dispatch(fx, {"sync", "status", "--system", "gh-b", "--json"});
-  CHECK(gh.code == 0);
-  CHECK(gh.out.find(R"("link_id":2)") != std::string::npos);
-  CHECK(gh.out.find(R"("link_id":4)") != std::string::npos);
-  CHECK(gh.out.find(R"("link_id":1)") == std::string::npos);
-  CHECK(gh.out.find(R"("link_id":3)") == std::string::npos);
-
-  // --entity discriminates on BOTH halves of the ref. `task:1` and `plan:1`
-  // share an id and differ only by kind; `task:1` and `task:2` share a kind
-  // and differ only by id. One case each would leave half the predicate
-  // untested.
-  auto const task1 = dispatch(fx, {"sync", "status", "--entity", "task:1", "--json"});
-  CHECK(task1.code == 0);
-  CHECK(task1.out.find(R"("link_id":1)") != std::string::npos);
-  CHECK(task1.out.find(R"("link_id":3)") == std::string::npos);
-
-  auto const plan1 = dispatch(fx, {"sync", "status", "--entity", "plan:1", "--json"});
-  CHECK(plan1.code == 0);
-  CHECK(plan1.out.find(R"("link_id":3)") != std::string::npos);
-  CHECK(plan1.out.find(R"("link_id":1)") == std::string::npos);
-
-  auto const task2 = dispatch(fx, {"sync", "status", "--entity", "task:2", "--json"});
-  CHECK(task2.code == 0);
-  CHECK(task2.out.find(R"("link_id":2)") != std::string::npos);
-  CHECK(task2.out.find(R"("link_id":1)") == std::string::npos);
-
-  // The two filters COMPOSE rather than one overriding the other: task:1 is
-  // on jira-a, so pairing it with gh-b must return nothing even though each
-  // half alone matches something.
-  auto const both_hit = dispatch(fx, {"sync", "status", "--entity", "task:1", "--system", "jira-a", "--json"});
-  CHECK(both_hit.code == 0);
-  CHECK(both_hit.out.find(R"("link_id":1)") != std::string::npos);
-  auto const both_miss = dispatch(fx, {"sync", "status", "--entity", "task:1", "--system", "gh-b", "--json"});
-  CHECK(both_miss.code == 0);
-  CHECK(both_miss.out.empty());
-
-  // THE SURVIVOR CHECK: every excluded row is still in the table. A read
-  // filter that had become a blast radius would satisfy every assertion
-  // above and fail this one.
-  auto conn = planar::db::connection::open(fx.db_path.string());
-  REQUIRE(conn.has_value());
-  CHECK(count(*conn, "external_links") == 4);
-  CHECK(count(*conn, "external_systems") == 2);
-}
-
-TEST_CASE("sync status treats an unknown system as empty and a bad entity as an error", "[cmd][6298][sync-status]") {
-  auto const fx = make_fixture("empty");
-  seed_tree(fx);
-  seed_links(fx);
-
-  // An unknown SYSTEM is a normal empty result. Note this runs against a
-  // fixture with four links, so "empty" here is the filter's doing and not
-  // an empty database — the same assertion on a bare fixture would pass
-  // against a handler that never queried anything.
-  auto const unknown_text = dispatch(fx, {"sync", "status", "--system", "nope"});
-  CHECK(unknown_text.code == 0);
-  CHECK(unknown_text.err.empty());
-  CHECK(unknown_text.out == "no external links\n");
-
-  // Under --json the same case emits ZERO BYTES. Not `[]`, which is what a
-  // reasonable-looking port would produce and what a JSON-parsing assertion
-  // would fail to distinguish.
-  auto const unknown_json = dispatch(fx, {"sync", "status", "--system", "nope", "--json"});
-  CHECK(unknown_json.code == 0);
-  CHECK(unknown_json.out.empty());
-  CHECK(unknown_json.err.empty());
-
-  // An unparseable ENTITY refuses at exit 2 instead. The asymmetry with
-  // `--system` above is the oracle's and is the point of pairing them here.
-  for (auto const& bad : {"bogus", "task:xyz", "", ":task:1"}) {
-    INFO("malformed --entity: '" << bad << "'");
-    auto const refused = dispatch(fx, {"sync", "status", "--entity", bad});
-    CHECK(refused.code == 2);
-    CHECK(refused.out.empty());
-    CHECK(refused.err == std::format("error: invalid --entity value '{}'; expected <kind>:<integer-id>\n", bad));
-  }
-
-  // A well-formed ref naming a kind that exists but a row that does not is
-  // NOT an error — it is an empty result, like the unknown system.
-  auto const no_such_row = dispatch(fx, {"sync", "status", "--entity", "task:999", "--json"});
-  CHECK(no_such_row.code == 0);
-  CHECK(no_such_row.out.empty());
-
-  // An empty --system, unlike an empty --entity, is accepted and matches
-  // nothing. Two empty strings, two different meanings, one verb.
-  auto const empty_system = dispatch(fx, {"sync", "status", "--system", ""});
-  CHECK(empty_system.code == 0);
-  CHECK(empty_system.out == "no external links\n");
 }

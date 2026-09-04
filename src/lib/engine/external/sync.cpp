@@ -313,12 +313,17 @@ auto latest_event_id(db::connection& conn, std::int64_t link_id) -> std::expecte
 ///     computed. False means "the remote did not change this field since the
 ///     baseline", and writing it anyway would clobber a local-only edit.
 ///
-/// @brief What `local_diff` found: which fields differ, and the remote's
-/// value for each one that does.
+/// @brief What `local_diff` found: which fields differ, the remote's value
+/// for each one that does, and the entity state the caller would now hold
+/// HAD it applied — used to advance the baseline exactly as the removed
+/// write would have, without performing the write.
 struct diff_result {
-  std::vector<std::string>   fields; ///< Field names that differ, in `title, status` order.
-  std::optional<std::string> title;  ///< The remote's title, when `title` is in `fields`.
-  std::optional<std::string> status; ///< The remote's status, when `status` is in `fields`.
+  std::vector<std::string>   fields;          ///< Field names that differ, in `title, status` order.
+  std::optional<std::string> title;           ///< The remote's title, when `title` is in `fields`.
+  std::optional<std::string> status;          ///< The remote's status, when `status` is in `fields`.
+  std::string                baseline_title;  ///< `remote.title` if `title` differs, else the CURRENT local title.
+  std::string                baseline_status; ///< `remote.status` if `status` differs, else the CURRENT local status.
+  bool                       local_present = false; ///< Whether a local row was actually read (false: missing/unsupported).
 };
 
 /// @brief Compare the remote state against the local entity and report
@@ -364,6 +369,9 @@ auto local_diff(db::connection& conn, const link::ext_link& row, const adapter::
       (skip_empty_remote_status ? (!remote.status.empty() && local->status != remote.status) : (local->status != remote.status));
 
   diff_result out;
+  out.local_present   = true;
+  out.baseline_title  = title_changed ? remote.title : local->title;
+  out.baseline_status = status_changed ? remote.status : local->status;
   if (title_changed) {
     out.fields.emplace_back("title");
     out.title = remote.title;
@@ -549,14 +557,24 @@ auto pull_link(db::connection& conn, const link::ext_link& row, const adapter::e
       result.remote_title   = diff->title;
       result.remote_status  = diff->status;
 
-      // The baseline is DELIBERATELY left untouched (decision 996): nothing
-      // was written locally, so there is nothing to re-read, and moving the
-      // baseline to the remote's values here — without the local entity
-      // actually holding them — would make the NEXT pull's conflict check
-      // compare the local entity against a baseline it never matched. See
-      // `pull_link`'s header for why this does not strand the diff: once an
-      // agent applies `remote_title`/`remote_status` through `planar`,
-      // `local_entity_fields` picks up the change directly on the next run.
+      // The baseline STILL advances exactly as it did when this block wrote
+      // the entity (decision 996 changes WHAT gets written, not the
+      // baseline formula): `diff->baseline_title`/`baseline_status` are what
+      // the entity would now hold HAD it been applied — remote's value for
+      // a changed field, the CURRENT local value otherwise — the same pair
+      // `local_entity_fields` used to return from its post-apply re-read.
+      // This is load-bearing, not cosmetic: D1's first noop pull must still
+      // record a baseline (nothing to detect conflicts against otherwise),
+      // and `allow_title`/`allow_status` being false means "the remote
+      // didn't move since the old baseline", so THAT field keeps the OLD
+      // baseline value — a local-only edit must never leak into it (D3).
+      if (diff->local_present) {
+        auto const baseline_title  = (allow_title || !base->present()) ? diff->baseline_title : *base->title;
+        auto const baseline_status = (allow_status || !base->present()) ? diff->baseline_status : *base->status;
+        if (auto const stored = link::store_baseline(conn, row.id, baseline_title, baseline_status); !stored) {
+          return std::unexpected(from_link_error(stored.error()));
+        }
+      }
     }
   }
 

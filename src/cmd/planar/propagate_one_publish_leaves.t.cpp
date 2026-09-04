@@ -1,6 +1,14 @@
 // @file propagate_one_publish_leaves.t.cpp
-// @brief In-process tests for `planar ext propagate-one` and `planar
-// workbench publish` (plan 996, task 6335).
+// @brief In-process tests for `planar workbench publish` (plan 996, task
+// 6335).
+//
+// `ext propagate-one` — the other half of this file through task 6419 —
+// moved to `src/cmd/planar-ext/ext_propagate_one_leaf.t.cpp` at plan 996,
+// task 6419 (the `ext`/`sync` family's move to `planar-ext`). Its systems
+// are now seeded directly through the engine rather than through
+// `planar::cmd::dispatch`, the same way `audit_publish_decision_leaf.t.cpp`
+// seeds `jira-demo`/`gh-demo` — `ext register` no longer lives on this
+// binary's dispatch table.
 //
 // ## THE FIRST CASE ASSERTS THE FIXTURE
 //
@@ -13,59 +21,32 @@
 // EMPTY link table before any comparison runs. Same discipline as
 // `ext_create_leaf.t.cpp` and the `tree` cycle before it.
 //
-// ## WHAT THIS CYCLE ACTUALLY MEASURED
+// ## WHAT THE ORIGINAL CYCLE (TASK 6335) ACTUALLY MEASURED
 //
-// Both leaves were carried in the unported inventory under "the create /
-// propagate half of `engine_extsync`" — 3665 lines across five files. Read
-// by SYMBOL rather than by file name:
+// `workbench publish` was carried in the unported inventory under "the
+// create/propagate half of `engine_extsync`" — 3665 lines across five
+// files. Read by SYMBOL rather than by file name, it reaches 1 function, 36
+// lines (`recordLink`). That is the same correction already recorded for
+// `audit commits` (6272), the `sync` trio (6294) and `plan descendants`
+// (6298).
 //
-//   ext propagate-one   2 functions, ~40 lines (`strategyForSystem`,
-//                       `loadExistingMirror`). Reaches NOTHING in
-//                       `parent_issue.zig` or `projects_v2.zig`.
-//   workbench publish   1 function, 36 lines (`recordLink`).
+// ## THE THIRD ANSWER TO "IT ALREADY EXISTS"
 //
-// That is the same correction already recorded for `audit commits` (6272),
-// the `sync` trio (6294) and `plan descendants` (6298).
-//
-// ## THREE VERBS, THREE DIFFERENT ANSWERS TO "IT ALREADY EXISTS"
-//
-// This is the finding most worth not generalising, and the cases below pin
-// all three from the SERVER'S side, because none of them is visible in
-// stdout, stderr or the exit code:
-//
-//   ext create          POSTs a SECOND ticket, then refuses on the
-//                       duplicate link (defect 6313). Also POSTs before
-//                       validating `--role` (defect 6312). Both reproduced
-//                       under D2, pinned in ext_create_leaf.t.cpp.
-//   ext propagate-one   SKIPS. `load_existing_mirror` runs FIRST — before
-//                       the template is loaded and before an adapter
-//                       exists — so a repeat sends ZERO requests and
-//                       returns `op:"skipped"` carrying the existing id.
-//   workbench publish   REFUSES on the existing link, before rendering.
-//
-// `propagate-one` is therefore the correct shape already present in this
-// tree, and is what 6312/6313 should be made to look like when they are
-// deliberately fixed.
+// `ext create` (moved to `planar-ext`) POSTs a SECOND ticket, then refuses
+// on the duplicate link (defect 6313); `ext propagate-one` (also moved)
+// SKIPS and sends nothing. `workbench publish` is the third shape again:
+// it REFUSES on the existing link, before rendering.
 //
 // ## ORACLE PROVENANCE
 //
-// The idempotency ordering was read out of
-// `zig/src/cmd/planar/handlers/ext/propagate_one.zig` directly:
-// `loadExistingMirror` at line 70 precedes `buildTaskContext` at 89, the
-// adapter build at 288 and `createRemote` at 121, and every argument
-// refusal (lines 203-233) precedes all four. The oracle's `--strategy`
-// refusal wording and the three-arm accept/refuse split are at lines
-// 216-228. `templateKindForEntity` discarding `strategy_kind` for GitHub is
-// at line 375 (`_ = strategy_kind;`).
-//
 // The payload is indent-2 JSON, not compact: `render.zig:52-57`'s `toJson`
-// passes `.whitespace = .indent_2`. That is what the provider receives, so
-// it is asserted on the captured request body rather than assumed.
+// passes `.whitespace = .indent_2`.
 
 #include <catch2/catch_test_macros.hpp>
 
 import std;
 import planar.db;
+import planar.engine.external;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
@@ -164,19 +145,23 @@ auto respond(const planar::http::fixture::captured_request& req) -> planar::http
 }
 
 /// @brief Register both providers against `base` and seed a plan and a task.
+///
+/// `ext register` moved to `planar-ext` at plan 996, task 6419 — seeded
+/// directly through the engine here, same as `audit_publish_decision_leaf
+/// .t.cpp`'s `seed_jira_demo`/`seed_github_demo`.
 void seed(const fixture& fx, std::string_view base) {
   REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", std::string{base}, "--project", "DEMO",
-                        "--auth-env", "DEMO_TOKEN"})
-              .code == 0);
-  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-demo", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"}).code ==
-          0);
-  // `ext register github` takes no `--base-url`, so the row it writes points
-  // at the real api.github.com. Redirecting it is what keeps this suite OFF
-  // the network.
   {
     auto conn = planar::db::connection::open(fx.db_path.string());
     REQUIRE(conn.has_value());
+    REQUIRE(planar::engine::external::system::register_jira(
+                *conn, {.slug = "jira-demo", .base_url = base, .project = "DEMO", .auth_env = "DEMO_TOKEN"})
+                .has_value());
+    REQUIRE(planar::engine::external::system::register_github(
+                *conn, {.slug = "gh-demo", .project = "acme/widgets", .auth_env = "DEMO_TOKEN"})
+                .has_value());
+    // `register_github` always points at the real api.github.com; redirect
+    // it here, which is what keeps this suite OFF the network.
     REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-demo'", base)).has_value());
   }
   REQUIRE(dispatch(fx, {"plan", "create", "Anchor plan", "--json"}).code == 0);
@@ -184,178 +169,6 @@ void seed(const fixture& fx, std::string_view base) {
 }
 
 } // namespace
-
-TEST_CASE("the propagate-one fixture points BOTH systems at the local server", "[cmd][ext][propagate-one][fixture]") {
-  planar::http::fixture::server remote(respond);
-  auto const                    fx = make_fixture("fixture");
-  seed(fx, remote.base_url());
-
-  CHECK(scalar(fx, "select count(*) from external_systems") == 2);
-  CHECK(text(fx, "select base_url from external_systems where slug = 'jira-demo'") == remote.base_url());
-  CHECK(text(fx, "select base_url from external_systems where slug = 'gh-demo'") == remote.base_url());
-  // The PRESENT case for the entities, so a later "no link was written"
-  // assertion cannot pass because the entity was missing all along.
-  CHECK(scalar(fx, "select count(*) from plans") == 1);
-  CHECK(scalar(fx, "select count(*) from tasks") == 1);
-  CHECK(scalar(fx, "select count(*) from external_links") == 0);
-  // Nothing has been sent yet, which is the baseline every request-count
-  // assertion below is measured against.
-  CHECK(remote.request_count() == 0);
-}
-
-TEST_CASE("propagate-one creates a Jira counterpart and records the mirror link", "[cmd][ext][propagate-one][jira]") {
-  planar::http::fixture::server remote(respond);
-  auto const                    fx = make_fixture("jira");
-  seed(fx, remote.base_url());
-
-  auto const ran = dispatch(fx, {"ext", "propagate-one", "jira-demo", "--from", "task:1", "--json"});
-  CHECK(ran.code == 0);
-  CHECK(ran.err.empty());
-  CHECK(ran.out.contains(R"("op":"created")"));
-  CHECK(ran.out.contains(R"("external_id":"DEMO-77")"));
-  CHECK(ran.out.contains(R"("entity_kind":"task")"));
-  // Jira resolves to `jira-epic` even though the RENDERED template kind for a
-  // task is `sub-task`: the strategy names the family, not the template.
-  CHECK(ran.out.contains(R"("strategy":"jira-epic")"));
-
-  CHECK(scalar(fx, "select count(*) from external_links") == 1);
-  CHECK(text(fx, "select external_id from external_links where id = 1") == "DEMO-77");
-  CHECK(text(fx, "select link_role from external_links where id = 1") == "mirror");
-  // `read-only` is this verb's default, NOT `ext create`'s `two-way`. Two
-  // creation verbs on one table with different default directions.
-  CHECK(text(fx, "select sync_direction from external_links where id = 1") == "read-only");
-  // A TASK is not the anchor, so no strategy cache is written.
-  CHECK(text(fx, "select coalesce(config_json,'<null>') from external_links where id = 1") == "<null>");
-  CHECK(remote.request_count() == 1);
-}
-
-TEST_CASE("propagate-one caches the strategy on the ANCHOR plan only", "[cmd][ext][propagate-one][anchor]") {
-  planar::http::fixture::server remote(respond);
-  auto const                    fx = make_fixture("anchor");
-  seed(fx, remote.base_url());
-
-  auto const ran = dispatch(fx, {"ext", "propagate-one", "jira-demo", "--from", "plan:1", "--json"});
-  CHECK(ran.code == 0);
-  CHECK(ran.out.contains(R"("op":"created")"));
-  // Plan 1 has no parent, so it is the anchor and DOES carry the cache. This
-  // is the present case for the assertion the task-case above makes in the
-  // negative.
-  CHECK(text(fx, "select config_json from external_links where id = 1") == R"({"strategy":"jira-epic"})");
-}
-
-TEST_CASE("a repeated propagate-one SKIPS and sends nothing", "[cmd][ext][propagate-one][idempotent]") {
-  planar::http::fixture::server remote(respond);
-  auto const                    fx = make_fixture("idem");
-  seed(fx, remote.base_url());
-
-  auto const first = dispatch(fx, {"ext", "propagate-one", "jira-demo", "--from", "task:1", "--json"});
-  REQUIRE(first.code == 0);
-  REQUIRE(first.out.contains(R"("op":"created")"));
-  REQUIRE(remote.request_count() == 1);
-
-  auto const again = dispatch(fx, {"ext", "propagate-one", "jira-demo", "--from", "task:1", "--json"});
-  CHECK(again.code == 0);
-  CHECK(again.err.empty());
-  // `skipped`, carrying the EXISTING id rather than a new one.
-  CHECK(again.out.contains(R"("op":"skipped")"));
-  CHECK(again.out.contains(R"("external_id":"DEMO-77")"));
-
-  // THE ASSERTION THIS CASE EXISTS FOR, and it is invisible in the output
-  // above: the repeat sent NOTHING. `ext create` in the same situation POSTs
-  // a second ticket (defect 6313). Still 1, not 2.
-  CHECK(remote.request_count() == 1);
-  CHECK(scalar(fx, "select count(*) from external_links") == 1);
-}
-
-TEST_CASE("propagate-one refuses every bad argument BEFORE contacting the remote",
-          "[cmd][ext][propagate-one][refusal][ordering]") {
-  planar::http::fixture::server remote(respond);
-  auto const                    fx = make_fixture("refuse");
-  seed(fx, remote.base_url());
-
-  // `parent-issue` and `projects-v2` are recognised ONLY to refuse them with
-  // the redirect to `ext propagate --github-strategy`.
-  auto const parent = dispatch(fx, {"ext", "propagate-one", "gh-demo", "--from", "task:1", "--strategy", "parent-issue"});
-  CHECK(parent.code == 2);
-  CHECK(parent.err.contains("is not supported by propagate-one"));
-  CHECK(parent.err.contains("ext propagate --github-strategy parent-issue"));
-
-  auto const projects = dispatch(fx, {"ext", "propagate-one", "gh-demo", "--from", "task:1", "--strategy", "projects-v2"});
-  CHECK(projects.code == 2);
-  CHECK(projects.err.contains("is not supported by propagate-one"));
-
-  // Anything else is the generic invalid-value refusal, naming the ONE
-  // accepted value.
-  auto const bogus = dispatch(fx, {"ext", "propagate-one", "gh-demo", "--from", "task:1", "--strategy", "nonsense"});
-  CHECK(bogus.code == 2);
-  CHECK(bogus.err.contains("accepted: tracking-issue"));
-
-  auto const bad_sync = dispatch(fx, {"ext", "propagate-one", "gh-demo", "--from", "task:1", "--sync", "sideways"});
-  CHECK(bad_sync.code == 2);
-  CHECK(bad_sync.err.contains("read-only, write-back, two-way"));
-
-  auto const bad_ref = dispatch(fx, {"ext", "propagate-one", "gh-demo", "--from", "notacolon"});
-  CHECK(bad_ref.code == 2);
-  CHECK(bad_ref.err.contains("expected kind:integer-id"));
-
-  auto const bad_kind = dispatch(fx, {"ext", "propagate-one", "gh-demo", "--from", "decision:1"});
-  CHECK(bad_kind.code == 2);
-  CHECK(bad_kind.err.contains("accepted: plan, task"));
-
-  auto const missing = dispatch(fx, {"ext", "propagate-one", "gh-demo", "--from", "task:999"});
-  CHECK(missing.code == 1);
-  CHECK(missing.err.contains("task:999 not found"));
-
-  // THE POINT OF THE CASE: seven refusals, ZERO requests. `ext create`
-  // POSTs before validating `--role` (defect 6312); this verb does not.
-  CHECK(remote.request_count() == 0);
-  CHECK(scalar(fx, "select count(*) from external_links") == 0);
-}
-
-TEST_CASE("a propagate-one dry run renders but builds no adapter and sends nothing", "[cmd][ext][propagate-one][dry-run]") {
-  planar::http::fixture::server remote(respond);
-  auto const                    fx = make_fixture("dry");
-  seed(fx, remote.base_url());
-
-  auto const ran = dispatch(fx, {"ext", "propagate-one", "jira-demo", "--from", "task:1", "--dry-run", "--json"});
-  CHECK(ran.code == 0);
-  CHECK(ran.out.contains(R"("op":"planned")"));
-  // The placeholder is the TEMPLATE KIND in angle brackets — `sub-task` for a
-  // task on Jira, which is also what proves the template mapping ran.
-  CHECK(ran.out.contains(R"("external_id":"<sub-task>")"));
-  CHECK(remote.request_count() == 0);
-  CHECK(scalar(fx, "select count(*) from external_links") == 0);
-}
-
-TEST_CASE("the propagate-one request carries the bearer token and an indent-2 body", "[cmd][ext][propagate-one][http][headers]") {
-  std::vector<planar::http::fixture::captured_request> seen;
-  std::mutex                                           guard;
-  planar::http::fixture::server                        remote([&](const planar::http::fixture::captured_request& req) {
-    {
-      std::scoped_lock const lock(guard);
-      seen.push_back(req);
-    }
-    return respond(req);
-  });
-  auto const                                           fx = make_fixture("headers");
-  seed(fx, remote.base_url());
-
-  REQUIRE(dispatch(fx, {"ext", "propagate-one", "jira-demo", "--from", "task:1", "--json"}).code == 0);
-
-  std::scoped_lock const lock(guard);
-  REQUIRE(seen.size() == 1);
-  CHECK(seen[0].verb == "POST");
-  CHECK(seen[0].target.contains("/rest/api/3/issue"));
-  CHECK(seen[0].header_value("authorization") == "Bearer tok-abc");
-  CHECK(seen[0].header_value("content-type") == "application/json");
-  // Jira's Accept, not GitHub's — the two differ and the discrimination is
-  // part of what `create_remote` is responsible for.
-  CHECK(seen[0].header_value("accept") == "application/json");
-  // INDENT-2, not compact: the oracle's `toJson` passes `.indent_2` and the
-  // provider receives these exact bytes. A compact serializer would still
-  // parse and still create the ticket, so nothing else here would catch it.
-  CHECK(seen[0].body.contains("\n  "));
-}
 
 TEST_CASE("workbench publish records a mirror link AND its sync event", "[cmd][workbench][publish]") {
   planar::http::fixture::server remote(respond);

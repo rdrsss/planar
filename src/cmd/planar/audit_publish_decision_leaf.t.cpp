@@ -58,6 +58,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.engine.external;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
@@ -156,6 +157,34 @@ void drop_external_links_table(const fixture& fx) {
   REQUIRE(conn->execute("drop table external_links").has_value());
 }
 
+/// @brief Register `jira-demo` directly through the engine.
+///
+/// `ext register` moved to `planar-ext` at plan 996, task 6419; this file
+/// exercises `audit publish-decision`, which stayed on `planar` and did
+/// not move. Going through `planar::cmd::dispatch` for this setup step is
+/// no longer possible from here, so this seeds the row the same way
+/// `sync.t.cpp`'s `rig` fixture does — a direct engine call — rather than
+/// spawning `planar-ext` as a subprocess.
+/// @param fx The fixture.
+/// @param base_url The fixture HTTP server's base URL.
+void seed_jira_demo(const fixture& fx, std::string_view base_url) {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto const registered = planar::engine::external::system::register_jira(
+      *conn, {.slug = "jira-demo", .base_url = base_url, .project = "DEMO", .auth_env = k_token_env});
+  REQUIRE(registered.has_value());
+}
+
+/// @brief Register `gh-demo` directly through the engine. See `seed_jira_demo`.
+/// @param fx The fixture.
+void seed_github_demo(const fixture& fx) {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto const registered = planar::engine::external::system::register_github(
+      *conn, {.slug = "gh-demo", .project = "acme/api", .auth_env = k_token_env});
+  REQUIRE(registered.has_value());
+}
+
 } // namespace
 
 TEST_CASE("publish-decision posts to a jira link and a github link, once each", "[cmd][audit][publish-decision][http]") {
@@ -171,11 +200,8 @@ TEST_CASE("publish-decision posts to a jira link and a github link, once each", 
   auto const fx = make_fixture("dual");
   REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
   REQUIRE(dispatch(fx, {"decision", "add", "Use Postgres", "--body", "Because reasons.", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
-                        "--auth-env", std::string(k_token_env)})
-              .code == 0);
-  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-demo", "--project", "acme/api", "--auth-env", std::string(k_token_env)})
-              .code == 0);
+  seed_jira_demo(fx, remote.base_url());
+  seed_github_demo(fx);
   patch_base_url(fx, "gh-demo", remote.base_url());
   REQUIRE(dispatch(fx, {"link", "decision:1", "--to", "jira-demo:PROJ-1"}).code == 0);
   REQUIRE(dispatch(fx, {"link", "decision:1", "--to", "gh-demo:acme/api#42"}).code == 0);
@@ -228,9 +254,7 @@ TEST_CASE("publish-decision refuses a cross-scope decision BEFORE any request is
   std::filesystem::create_directories(fx.root / "other", ec);
   REQUIRE(dispatch(fx, {"assoc", "add", "acme", (fx.root / "other").string()}).code == 0);
   REQUIRE(dispatch(fx, {"decision", "add", "Scoped decision", "--body", "Body.", "--scope", "acme", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
-                        "--auth-env", std::string(k_token_env)})
-              .code == 0);
+  seed_jira_demo(fx, remote.base_url());
   REQUIRE(dispatch(fx, {"link", "decision:1", "--to", "jira-demo:PROJ-1"}).code == 0);
 
   auto const refused = dispatch(fx, {"audit", "publish-decision", "1"}, {{std::string(k_token_env), "tok-abc"}});
@@ -258,9 +282,7 @@ TEST_CASE("publish-decision re-posts on every invocation; there is no de-dup", "
   auto const fx = make_fixture("repost");
   REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
   REQUIRE(dispatch(fx, {"decision", "add", "Repostable", "--body", "Body.", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
-                        "--auth-env", std::string(k_token_env)})
-              .code == 0);
+  seed_jira_demo(fx, remote.base_url());
   REQUIRE(dispatch(fx, {"link", "decision:1", "--to", "jira-demo:PROJ-1"}).code == 0);
 
   auto const first = dispatch(fx, {"audit", "publish-decision", "1", "--json"}, {{std::string(k_token_env), "tok-abc"}});
@@ -297,9 +319,7 @@ TEST_CASE("publish-decision posts to a target reached only via entity_links", "[
   // this edge even though the task carries no direct external link of the
   // decision's own kind.
   REQUIRE(dispatch(fx, {"links", "add", "decision:1", "task:1", "--relationship", "cites"}).code == 0);
-  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
-                        "--auth-env", std::string(k_token_env)})
-              .code == 0);
+  seed_jira_demo(fx, remote.base_url());
   // The link sits on the TASK, not the decision.
   REQUIRE(dispatch(fx, {"link", "task:1", "--to", "jira-demo:PROJ-1"}).code == 0);
 

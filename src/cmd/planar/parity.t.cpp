@@ -99,6 +99,89 @@ auto oracle_available() -> bool {
   return std::filesystem::exists(zig_bin());
 }
 
+/// @brief Remove one command object from a compact `planar schema` catalog
+/// document, by its exact `path` array.
+///
+/// Plan 996, task 6419: `ext`/`sync` moved to `planar-ext`, so the oracle's
+/// `schema` document still declares 10 leaves this binary's own no longer
+/// does (decision 999 — this move owes no oracle parity). Byte-identity
+/// between the two is only recoverable by excising exactly those 10
+/// objects from the ORACLE side first. `schema.cpp`'s `render_command`
+/// composes each command as `{"path":[...` and joins the array with plain
+/// commas, so the object is found by that exact prefix and removed with
+/// its ONE separating comma — whichever side of it exists (the first
+/// command in the array has none before it).
+/// @param catalog The full `planar schema` JSON document.
+/// @param path The command's path segments, e.g. `{"ext","register","jira"}`.
+/// @return The document with that one command object removed.
+auto strip_command(std::string catalog, std::initializer_list<std::string_view> path) -> std::string {
+  // The oracle's own command objects open `{"name":...` — `"path"` is a
+  // LATER key, not the first — so the anchor is the `"path":[...]` array
+  // itself, and the object's opening `{` is found by scanning BACKWARD to
+  // the nearest one, string-aware in both directions the same way the
+  // forward close-scan below is: JSON does not require escaping `{`/`}`
+  // inside a string, and command descriptions do contain literal braces
+  // (JSON examples in prose), so a scan that does not track string
+  // boundaries can close on the wrong byte.
+  std::string needle = R"("path":[)";
+  for (auto const& segment : path) {
+    if (&segment != path.begin()) {
+      needle += ",";
+    }
+    needle += "\"" + std::string{segment} + "\"";
+  }
+  needle += "]";
+
+  auto const anchor = catalog.find(needle);
+  REQUIRE(anchor != std::string::npos);
+
+  auto const start = catalog.rfind("{\"name\"", anchor);
+  REQUIRE(start != std::string::npos);
+
+  int         depth      = 0;
+  bool        in_string  = false;
+  bool        escaped    = false;
+  std::size_t end        = std::string::npos;
+  for (std::size_t i = start; i < catalog.size(); ++i) {
+    char const c = catalog[i];
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_string = true;
+    } else if (c == '{') {
+      ++depth;
+    } else if (c == '}') {
+      --depth;
+      if (depth == 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  REQUIRE(end != std::string::npos);
+
+  if (start > 0 && catalog[start - 1] == ',') {
+    catalog.erase(start - 1, end - (start - 1) + 1);
+  } else {
+    // The first command in the array: no leading comma, but a trailing one
+    // if it is not also the LAST command.
+    auto erase_end = end + 1;
+    if (erase_end < catalog.size() && catalog[erase_end] == ',') {
+      ++erase_end;
+    }
+    catalog.erase(start, erase_end - start);
+  }
+  return catalog;
+}
+
 } // namespace
 
 TEST_CASE("the pinned environment actually reaches the child process", "[cmd][parity][safety]") {
@@ -319,106 +402,12 @@ TEST_CASE("C++ and Zig agree byte-for-byte on the task-6106 no-fixture leaves", 
   }
 }
 
-TEST_CASE("C++ and Zig agree byte-for-byte on the three ported ext leaves", "[cmd][parity][oracle]") {
-  PLANAR_REQUIRE_ORACLE(
-      oracle_available(),
-      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+// "C++ and Zig agree byte-for-byte on the three ported ext leaves" removed
+// at plan 996, task 6419 (decision 999): `ext register`/`ext list` moved to
+// `planar-ext`, which has no Zig oracle counterpart to diff against. See
+// `src/cmd/planar-ext/ext_leaves.t.cpp` and `ext_create_leaf.t.cpp` for their
+// C++-only coverage now.
 
-  // `created_at` is the only wall-clock field these renderers emit and it
-  // cannot agree across two processes, so it is elided from BOTH sides. The
-  // elision is deliberately narrow: it replaces the VALUE and keeps the key,
-  // the comma and the surrounding punctuation, so a renderer that dropped the
-  // field entirely, renamed it, or moved it in the key order still fails.
-  auto const mask_created_at = [](std::string_view text) {
-    std::string out;
-    std::size_t at = 0;
-    while (true) {
-      auto const key = text.find(R"("created_at":")", at);
-      if (key == std::string_view::npos) {
-        out += text.substr(at);
-        return out;
-      }
-      auto const value_start = key + std::string_view{R"("created_at":")"}.size();
-      auto const value_end   = text.find('"', value_start);
-      if (value_end == std::string_view::npos) {
-        out += text.substr(at);
-        return out;
-      }
-      out += text.substr(at, value_start - at);
-      out += "<ts>";
-      at = value_end;
-    }
-  };
-
-  struct step {
-    std::string_view         tag;  ///< Case discriminator.
-    std::vector<std::string> args; ///< The argv tail.
-  };
-  // Ordered against ONE database per binary, because most of what is being
-  // pinned is state-dependent: `list` on an EMPTY database is a completely
-  // different renderer branch from `list` on a populated one (the text form
-  // says "no external systems registered" while the JSON form emits nothing
-  // at all), and the duplicate-slug refusal only exists because the
-  // registration two steps earlier succeeded.
-  std::vector<step> const steps{
-      {"xl0", {"ext", "list"}},
-      {"xl0j", {"ext", "list", "--json"}},
-      {"xrj",
-       {"ext", "register", "jira", "sync-jira", "--base-url", "http://127.0.0.1:18041", "--project", "SYNC", "--auth-env",
-        "PLANAR_SYNC_TOKEN", "--json"}},
-      // No --auth-env: the gh-cli arm, whose auth_ref the JSON list below is
-      // what actually reveals.
-      {"xrg", {"ext", "register", "github", "gh-demo", "--project", "acme/demo"}},
-      {"xrgj", {"ext", "register", "github", "gh2", "--project", "o/r", "--auth-env", "TOK", "--json"}},
-      // A base URL WITH a trailing slash, stored verbatim — neither side
-      // normalizes it at registration time (the adapter trims it at use).
-      {"xrj2",
-       {"ext", "register", "jira", "j2", "--base-url", "https://acme.atlassian.net/", "--project", "P", "--auth-env", "E"}},
-      {"xl1", {"ext", "list"}},
-      {"xl1j", {"ext", "list", "--json"}},
-      {"xdup", {"ext", "register", "github", "gh-demo", "--project", "x/y"}},
-  };
-  // A MISSING REQUIRED FLAG is deliberately NOT in that list. It is a PARSER
-  // refusal, and task 6123 re-baselined parser wording onto CLI11's when
-  // `src/lib/cli` was deleted: the oracle says
-  // `error: required flag missing: --base-url` / `error: MissingRequired`
-  // while CLI11 says `error: --base-url is required` / `error: RequiredError`
-  // (verified by running both). The SHAPE — formatted message to stdout,
-  // CamelCase tag to stderr, exit 2 — is the operator contract and is
-  // preserved; see `planar.cmd.planar.dispatch`'s header. It is asserted
-  // directly below, the same way `workflow show` and `unlink` already assert
-  // their own missing-positional refusals in this file, rather than diffed
-  // against an oracle it is known and sanctioned to differ from.
-
-  auto const space = make_arena("extleaves");
-  for (auto const& [tag, args] : steps) {
-    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
-    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
-
-    INFO("step: " << tag);
-    CHECK(mine.code == ref.code);
-    CHECK(mask_created_at(mine.out) == mask_created_at(ref.out));
-    CHECK(mine.err == ref.err);
-  }
-
-  // The re-baselined parser refusals, and the EXIT CODE the oracle still
-  // agrees on. `--auth-env` is required on `register jira` and optional on
-  // `register github`, so both arms are checked: a tree that marked the
-  // github one required would refuse a legitimate gh-cli registration.
-  auto const missing_flag = run_pinned(cpp_bin(), std::array<std::string, 6>{"ext", "register", "jira", "j3", "--project", "P"},
-                                       space.cpp_root, "xmiss");
-  CHECK(missing_flag.code == 2);
-  CHECK(missing_flag.err == "error: RequiredError\n");
-
-  auto const oracle_missing_flag = run_pinned(
-      zig_bin(), std::array<std::string, 6>{"ext", "register", "jira", "j3", "--project", "P"}, space.zig_root, "xmissz");
-  // Same code, different wording — the sanctioned half of the divergence.
-  CHECK(missing_flag.code == oracle_missing_flag.code);
-
-  auto const github_without_auth_env = run_pinned(
-      cpp_bin(), std::array<std::string, 6>{"ext", "register", "github", "gh3", "--project", "o/r"}, space.cpp_root, "xnoauth");
-  CHECK(github_without_auth_env.code == 0);
-}
 
 TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][parity][oracle]") {
   PLANAR_REQUIRE_ORACLE(
@@ -494,122 +483,13 @@ TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][pari
                         "cli|action|unlink: removed external link 2\n");
 }
 
-TEST_CASE("C++ and Zig agree on the three sync write leaves over seeded links", "[cmd][parity][oracle]") {
-  PLANAR_REQUIRE_ORACLE(
-      oracle_available(),
-      "zig reference binary not built (zig/zig-out/bin/planar) — run `make build` in zig/ to enable the parity lane");
+// "C++ and Zig agree on the three sync write leaves over seeded links"
+// removed at plan 996, task 6419 (decisions 996, 999): `sync pull`/`push`/
+// `resolve` moved to `planar-ext`, and decision 996 makes `sync pull` a
+// deliberate, recorded divergence from the oracle (it no longer applies the
+// remote to local planning tables) -- there is no longer a byte-identical
+// oracle shape to pin here. See `src/cmd/planar-ext/sync_leaves.t.cpp`.
 
-  // Same posture as the `unlink` case above: `init`, `ext register` and
-  // `link` are unported, so the ORACLE seeds BOTH arenas and the two
-  // databases start identical by construction.
-  //
-  // The registered base URL is `127.0.0.1:9` (the `discard` port, bound on
-  // neither a stock macOS nor Linux host), so every adapter call is REFUSED
-  // immediately. That is deliberate on two counts: it reaches no network,
-  // and it makes the transport-failure arm deterministic without a fixture
-  // server inside the parity lane. The SUCCESS and CONFLICT arms are covered
-  // over a real in-process server in `sync_leaves.t.cpp`.
-  auto const                                  space = make_arena("syncseed");
-  std::vector<std::vector<std::string>> const seed{
-      {"init", "--skip-project", "--allow-no-repo", "--json"},
-      // `--auth-env HOME`, not a dedicated variable: `run_pinned` builds a
-      // FIXED environment with no extension point, so a name it does not set
-      // would make the factory refuse and every case below would take the
-      // adapter-build path instead of the result-stream path. That is not
-      // hypothetical — this case was written with `DEMO_TOKEN` first and all
-      // twenty-two result-stream comparisons ran against the refusal
-      // (which is how the port's `factory_error_message`-instead-of-raw-tag
-      // bug was found). `HOME` is always set by the harness and is not a
-      // credential; the fixture never reads the token's value.
-      {"ext", "register", "jira", "jira-demo", "--base-url", "http://127.0.0.1:9", "--project", "DEMO", "--auth-env", "HOME"},
-      {"task", "add", "Demo task", "--json"},
-      {"plan", "create", "Demo plan", "--json"},
-      // One `two-way` link and one `read-only` one: `--all` selects both for
-      // pull and only the first for push, so a transposed pair of engine
-      // queries is visible in the row COUNT rather than only in a message.
-      {"link", "task:1", "--to", "jira-demo:DEMO-1", "--role", "mirror", "--sync", "two-way", "--json"},
-      {"link", "plan:1", "--to", "jira-demo:DEMO-2", "--role", "mirror", "--sync", "read-only", "--json"},
-  };
-  for (std::size_t i = 0; i < seed.size(); ++i) {
-    auto const tag = std::format("sseed{}", i);
-    auto const a   = run_pinned(zig_bin(), seed[i], space.cpp_root, tag);
-    auto const b   = run_pinned(zig_bin(), seed[i], space.zig_root, tag);
-    INFO("seed step: " << tag);
-    REQUIRE(a.code == 0);
-    REQUIRE(b.code == 0);
-  }
-
-  struct step {
-    std::string_view         tag;  ///< Case discriminator.
-    std::vector<std::string> args; ///< The argv tail.
-  };
-  std::vector<step> const steps{
-      // Refusals: the four malformed-target shapes, the well-formed missing
-      // one, the empty entity match, and the unknown `--system`.
-      {"noargs", {"sync", "pull"}},
-      {"noargsp", {"sync", "push"}},
-      {"badref", {"sync", "pull", "not-a-ref"}},
-      {"nokind", {"sync", "pull", ":5"}},
-      {"unkkind", {"sync", "pull", "nosuch:5"}},
-      {"widekind", {"sync", "pull", "plan_step:5"}},
-      {"missing", {"sync", "pull", "999"}},
-      {"nolinks", {"sync", "pull", "task:99"}},
-      {"nolinksj", {"sync", "pull", "task:99", "--json"}},
-      {"unksys", {"sync", "pull", "--all", "--system", "nope"}},
-      // Result streams, in both render modes.
-      {"pull1", {"sync", "pull", "1"}},
-      {"pull1j", {"sync", "pull", "1", "--json"}},
-      {"pullall", {"sync", "pull", "--all"}},
-      {"pullallj", {"sync", "pull", "--all", "--json"}},
-      {"pushro", {"sync", "push", "2"}},
-      {"pushroj", {"sync", "push", "2", "--json"}},
-      {"pushall", {"sync", "push", "--all"}},
-      {"pushallj", {"sync", "push", "--all", "--json"}},
-      {"pullent", {"sync", "pull", "task:1"}},
-      {"pullsys", {"sync", "pull", "--all", "--system", "jira-demo"}},
-      // Resolve refusals across all three exit buckets.
-      {"resid", {"sync", "resolve", "abc", "--keep", "local", "--evidence-token", "t", "--expected-local-updated-at", "v"}},
-      {"reskeep", {"sync", "resolve", "1", "--keep", "sideways", "--evidence-token", "t", "--expected-local-updated-at", "v"}},
-      {"resmiss", {"sync", "resolve", "4242", "--keep", "local", "--evidence-token", "t", "--expected-local-updated-at", "v"}},
-      {"resev", {"sync", "resolve", "1", "--keep", "local", "--evidence-token", "t", "--expected-local-updated-at", "v"}},
-      {"resevj",
-       {"sync", "resolve", "1", "--keep", "remote", "--evidence-token", "t", "--expected-local-updated-at", "v", "--json"}},
-  };
-  for (auto const& [tag, args] : steps) {
-    auto const mine = run_pinned(cpp_bin(), args, space.cpp_root, tag);
-    auto const ref  = run_pinned(zig_bin(), args, space.zig_root, tag);
-    INFO("step: " << tag);
-    CHECK(mine.code == ref.code);
-    CHECK(mine.out == ref.out);
-    CHECK(mine.err == ref.err);
-  }
-
-  // `sync_events` is written by every pull and push and is invisible in
-  // stdout. Without this, a port that rendered the right lines but never
-  // recorded the attempt would pass every assertion above.
-  auto const events = [](const std::filesystem::path& root) {
-    auto conn = planar::db::connection::open((root / "planar.db").string());
-    REQUIRE(conn.has_value());
-    auto stmt = conn->prepare("select link_id, direction, outcome, coalesce(detail,'') from sync_events order by id");
-    REQUIRE(stmt.has_value());
-    std::string rendered;
-    for (;;) {
-      auto stepped = stmt->step();
-      REQUIRE(stepped.has_value());
-      if (*stepped == planar::db::step_result::done) {
-        break;
-      }
-      rendered +=
-          std::format("{}|{}|{}|{}\n", stmt->column_int64(0), stmt->column_text(1), stmt->column_text(2), stmt->column_text(3));
-    }
-    return rendered;
-  };
-  auto const mine_events = events(space.cpp_root);
-  CHECK(mine_events == events(space.zig_root));
-  // Non-empty, so the diff above cannot be two empty strings agreeing.
-  CHECK_FALSE(mine_events.empty());
-  CHECK(mine_events.contains("TransportFailed"));
-}
 
 TEST_CASE("C++ and Zig agree on promote, demote and test-spec status", "[cmd][parity][oracle]") {
   PLANAR_REQUIRE_ORACLE(
@@ -835,14 +715,35 @@ TEST_CASE("every ported command declares what the oracle declares", "[cmd][parit
 
   auto const mine = planar::cmd::parity::parse_catalog(actual.out);
   REQUIRE(mine.has_value());
-  auto const theirs = planar::cmd::parity::parse_catalog(ref.out);
+  auto theirs = planar::cmd::parity::parse_catalog(ref.out);
   REQUIRE(theirs.has_value());
+
+  // Plan 996, task 6419: the oracle still declares the `ext`/`sync` family
+  // (14 catalog entries — 2 group nodes `ext`/`sync`, the `ext register`
+  // sub-group, and 11 leaves including the still-unimplemented `ext
+  // propagate`), which moved to `planar-ext` and has no oracle counterpart
+  // (decision 999). Removed from the ORACLE side, root's own subcommand
+  // list included, before either comparison below runs.
+  for (auto const& moved : {"planar ext", "planar ext create", "planar ext list", "planar ext propagate",
+                            "planar ext propagate-one", "planar ext register", "planar ext register github",
+                            "planar ext register jira", "planar ext test", "planar sync", "planar sync pull",
+                            "planar sync push", "planar sync resolve", "planar sync status"}) {
+    theirs->erase(moved);
+  }
+  auto& oracle_root_subcommands = theirs->at("planar").subcommands;
+  std::erase(oracle_root_subcommands, "ext");
+  std::erase(oracle_root_subcommands, "sync");
 
   // Non-vacuous: an empty left-hand side would pass trivially, and the
   // named entries below are the ones whose declarations this task most
   // easily could have got wrong.
-  CHECK(mine->size() == 261);
-  CHECK(theirs->size() == 261);
+  //
+  // 261 -> 247 on BOTH sides at plan 996, task 6419: `mine` never declared
+  // the 14 `ext`/`sync` entries in the first place (they moved to
+  // `planar-ext`), and `theirs` had them stripped just above so the
+  // comparison below is exact-set equal again, not merely non-empty.
+  CHECK(mine->size() == 247);
+  CHECK(theirs->size() == 247);
   CHECK(mine->contains("planar workbench gc"));
   CHECK(mine->contains("planar workbench archive"));
   CHECK(mine->contains("planar annotate add"));
@@ -853,11 +754,24 @@ TEST_CASE("every ported command declares what the oracle declares", "[cmd][parit
   CHECK(mine->contains("planar health"));
   CHECK(mine->contains("planar schema"));
   CHECK(mine->contains("planar completion"));
+  // The 10 moved LEAVES (not counting the 4 group/deferred entries above)
+  // are GENUINELY gone from `mine` — asserted explicitly rather than left
+  // to the strip loop above alone, so a typo there reads as a wrong
+  // exact-set assertion rather than a silently-passing missing check.
+  for (auto const& moved : {"planar ext register jira", "planar ext register github", "planar ext list", "planar ext test",
+                            "planar ext create", "planar ext propagate-one", "planar sync pull", "planar sync push",
+                            "planar sync status", "planar sync resolve"}) {
+    INFO("moved to planar-ext at task 6419: " << moved);
+    CHECK_FALSE(mine->contains(moved));
+  }
 
   auto const problems = planar::cmd::parity::diff_against_oracle(*mine, *theirs);
   INFO("declaration mismatches:\n" << std::format("{}", problems));
   CHECK(problems.empty());
 
+  // Empty again now that `theirs` no longer carries the 14 moved/deferred
+  // entries: any NEW divergence here is a real regression, not an
+  // expected one.
   auto const missing = planar::cmd::parity::oracle_only_commands(*mine, *theirs);
   INFO("declared by the oracle and NOT by this binary:\n" << std::format("{}", missing));
   CHECK(missing.empty());
@@ -891,7 +805,35 @@ TEST_CASE("all three catalogs are byte-identical to the oracle's", "[cmd][parity
   REQUIRE(actual.code == 0);
   REQUIRE(ref.out.size() > 300000); // Not two empty strings.
 
-  CHECK(ref.out == actual.out);
+  // Plan 996, task 6419: the oracle's document still declares the whole
+  // `ext`/`sync` family — the two group nodes, the `ext register`
+  // sub-group, the still-unimplemented `ext propagate`, and the 10 moved
+  // leaves — which moved to `planar-ext` (decision 999 — this binary owes
+  // them no parity). Excised from the ORACLE side before the byte
+  // comparison, one command object at a time, so a stray divergence
+  // beyond this exact set still fails loudly instead of being swallowed
+  // by a looser check. Root's OWN `"subcommands"` array also names `ext`
+  // and `sync`, which `strip_command` does not touch (it only removes
+  // each leaf's own object) — pulled out separately by the same two
+  // exact, order-preserving neighbour anchors `parse_catalog`'s own
+  // subcommand-order pin (`"the CLI surface is CLI11's now, and pinned"`,
+  // below) confirms are stable.
+  auto stripped = ref.out;
+  for (auto const& path : std::initializer_list<std::initializer_list<std::string_view>>{
+           {"ext", "register", "jira"}, {"ext", "register", "github"}, {"ext", "register"}, {"ext", "list"}, {"ext", "test"},
+           {"ext", "create"}, {"ext", "propagate-one"}, {"ext", "propagate"}, {"ext"}, {"sync", "pull"}, {"sync", "push"},
+           {"sync", "status"}, {"sync", "resolve"}, {"sync"}}) {
+    stripped = strip_command(std::move(stripped), path);
+  }
+  {
+    auto const before_ext = stripped.find(R"("workspace","ext","link")");
+    REQUIRE(before_ext != std::string::npos);
+    stripped.replace(before_ext, std::string_view{R"("workspace","ext","link")"}.size(), R"("workspace","link")");
+    auto const before_sync = stripped.find(R"("links","sync","resume")");
+    REQUIRE(before_sync != std::string::npos);
+    stripped.replace(before_sync, std::string_view{R"("links","sync","resume")"}.size(), R"("links","resume")");
+  }
+  CHECK(stripped == actual.out);
   // Non-vacuity for the 6130 half specifically: the four empty-string
   // defaults are PRESENT rather than absent from both sides.
   CHECK(actual.out.contains(R"("default":"",)"));

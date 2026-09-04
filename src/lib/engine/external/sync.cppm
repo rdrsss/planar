@@ -210,16 +210,17 @@ export auto events_for_link(db::connection& conn, std::int64_t link_id) -> std::
 /// `pull_result`'s header for what `remote_title`/`remote_status` carry.
 /// Conflict detection is unchanged: it still reads the baseline and the
 /// local entity to decide `ok` vs. `conflict` vs. `noop`. What changed is
-/// the non-conflict arm — it used to call `apply_remote_to_local` and then
-/// re-read the entity to store a fresh baseline; it now does neither, so
-/// the baseline is left exactly as it was. That is intentional, not an
-/// oversight: once an agent applies the emitted values through `planar`,
-/// the NEXT pull's `local_entity_fields` read reflects the new local state
-/// directly, which is what clears the diff — a moved baseline was never
-/// required for that to work, only for the two-way CONFLICT check, and that
-/// check still runs unchanged. Writes exactly one `sync_events` row and
-/// always updates the link's sync state (both allowed under the
-/// `external_links`/`sync_events` write surface).
+/// the non-conflict arm's WRITE TARGET, not its baseline formula: it used
+/// to call `apply_remote_to_local` (writing `tasks`/`plans`/…) and then
+/// re-read the entity to store a fresh baseline in `external_links`; it now
+/// skips the entity write and computes the SAME would-be baseline directly
+/// (see `local_diff`'s `diff_result`), storing it in `external_links` —
+/// the one table this write was always in, and the one decision 995 keeps
+/// allowing. The baseline still advances on every non-conflict pull,
+/// including a first noop pull with nothing to report, exactly as before;
+/// only `tasks`/`plans`/`questions`/`artifacts` stopped being written.
+/// Writes exactly one `sync_events` row and always updates the link's sync
+/// state.
 /// @param conn An open, migrated database connection.
 /// @param row The link to pull.
 /// @param provider The adapter to read through.

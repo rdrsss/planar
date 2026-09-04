@@ -826,9 +826,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // The flag's blocker is still present, which is what makes the divergence
   // a deferral rather than a gap: both propagate leaves stay unported.
   // `link --propagate` calls the `ext propagate` handler specifically, NOT
-  // `propagate-one`, so the divergence survives task 6335 moving the latter.
-  INFO("`link --propagate` waits on this: ext propagate");
-  CHECK(unported.contains("ext propagate"));
+  // `propagate-one`. Through task 6335 this divergence survived that move;
+  // task 6419 moved the WHOLE `ext`/`sync` family off this binary, taking
+  // `ext propagate` out of THIS inventory with it (it is not yet wired on
+  // `planar-ext` either — see `unported_paths`'s header) — so `link
+  // --propagate`'s own blocker note now names an absent verb rather than
+  // an unported one. Recorded here, not silently dropped.
+  INFO("`link --propagate` waited on this through task 6335; task 6419 moved it off this binary entirely: ext propagate");
+  CHECK_FALSE(unported.contains("ext propagate"));
   INFO("moved by task 6335, and NOT what `link --propagate` calls: ext propagate-one");
   CHECK_FALSE(unported.contains("ext propagate-one"));
   // 36 after task 6298 moved TWO of the eight leaves it was handed:
@@ -1290,11 +1295,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // file is not the same as needing it, and the whole `ext` family's sizing
   // rested on the conflation. MOVED at task 6335.
   CHECK_FALSE(unported.contains("ext propagate-one"));
-  // `ext propagate` is the one leaf of the four that genuinely wants the
+  // `ext propagate` was the one leaf of the four that genuinely wanted the
   // bulk: `selectStrategy`, `walkTree`, all of `strategy.zig`, and both
-  // GitHub-specific files.
-  INFO("still-deferred ext leaf: ext propagate");
-  CHECK(unported.contains("ext propagate"));
+  // GitHub-specific files. Task 6419 moved the rest of the `ext` family off
+  // this binary and took this leaf's PLACEHOLDER with it — it is still not
+  // wired anywhere (not on `planar-ext` either), so it is simply absent
+  // from this inventory now rather than declared-and-unported here.
+  INFO("moved off this binary (still nowhere wired) by task 6419: ext propagate");
+  CHECK_FALSE(unported.contains("ext propagate"));
   // The deliberately-deferred leaves from otherwise-ported families. They
   // must remain DECLARED (exit 64), never silently absent.
   //
@@ -1434,8 +1442,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
     CHECK_FALSE(unported.contains(implemented));
   }
 
+  // 223 -> 212 at task 6419: the whole `ext`/`sync` family (`ext register
+  // jira`, `ext register github`, `ext list`, `ext test`, `ext create`,
+  // `ext propagate-one`, `sync pull`, `sync push`, `sync status`, `sync
+  // resolve`) moved off this binary's tree entirely, and the now-childless
+  // `ext`/`sync` GROUP nodes left with them. Verified by running this test
+  // against the live tree, not by arithmetic on this comment.
   auto const leaves = planar::cliapp::leaf_keys(*tree);
-  CHECK(leaves.size() == 223);
+  CHECK(leaves.size() == 212);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
