@@ -152,6 +152,20 @@ TEST_CASE("verbose prints a header and one line per non-no_op entry", "[workbenc
         "  deleted: a/z.md -> task 3 cancelled\n"
         "  new entity: a/n.md -> task 4\n"
         "  MALFORMED: a/m.md (MalformedFrontmatter)\n");
+  // Under SYNC: both directions are WRITTEN, unlike push/pull which each
+  // only write one side. Closes a break-probe SURVIVOR (task 6423): a
+  // mutant that dropped the `|| run_mode == sync::mode::sync` half of
+  // EITHER `writes_fs` or `writes_db` passed every existing fixture here,
+  // because push and pull each only ever probed their OWN clause -- neither
+  // exercised `mode::sync` at all (mirroring task 6416's headline find that
+  // `mode::sync` had zero coverage in sync.cpp's own core).
+  CHECK(rc::render_sync_result_text(1, "s", ws::mode::sync, "sync", value, true) ==
+        "workbench sync: plan 1 (s)\n"
+        "  applied DB->FS: a/x.md\n"
+        "  applied FS->DB: a/y.md\n"
+        "  deleted: a/z.md -> task 3 cancelled\n"
+        "  new entity: a/n.md -> task 4\n"
+        "  MALFORMED: a/m.md (MalformedFrontmatter)\n");
 }
 
 TEST_CASE("verbose SUPPRESSES the pre-existing-terminal line", "[workbench][render_cli][verbose]") {
