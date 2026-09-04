@@ -487,7 +487,7 @@ guidance.
 
 When a feature is complete, `planar workbench archive <plan>` removes the on-disk tree. The database retains every entity row. `planar workbench restore <plan>` recreates the tree byte-identically from the DB.
 
-`planar workbench publish <plan> --system <slug>` renders the workbench files for a plan and pushes the rendered content to a registered external operational system via the adapter layer. For full plan-subtree counterpart creation in an external system, `planar ext propagate <plan> --system <slug>` is the verb of record.
+`planar workbench publish <plan> --system <slug>` renders the workbench files for a plan and pushes the rendered content to a registered external operational system via the adapter layer. For full plan-subtree counterpart creation in an external system, `planar-ext ext propagate <plan> --system <slug>` is the intended verb of record (not yet implemented — see `docs/cli-reference.md`); `planar-ext ext propagate-one <system> --from <kind:id>` is the live single-entity equivalent today.
 
 ---
 
@@ -583,13 +583,7 @@ Per-vendor logic stays behind the dispatch boundary; the sync engine and the ext
 
 ### Strategy selection
 
-For GitHub Issues, the propagation strategy is selected once at first propagation per feature and cached on `external_links.config_json` of the anchor plan:
-
-| Condition | Strategy |
-|-----------|---------|
-| 0 repos touched by descendant tasks | `github-zero-repo` — parent issue in `github_lead_repo` |
-| 1 repo touched | `github-parent-issue` — parent issue in the touched repo |
-| 2+ repos touched | `github-projects-v2` — GitHub Projects v2, issues in their respective repos |
+For GitHub Issues, the propagation strategy is selected once at first propagation per feature and cached on `external_links.config_json` of the anchor plan. Today there is a single GitHub strategy: `github-parent-issue`, used regardless of how many repos the feature's descendant tasks touch. The multi-repo `github-projects-v2` strategy (a GitHub Projects board mirroring the feature tree) is permanently cut — decision 1001 — and will not be built.
 
 The strategy is sticky: subsequent re-propagations use the cached value. `--restrategize` forces fresh detection.
 

@@ -71,9 +71,11 @@ in `docs/lessons-learned-rust-to-go.md` (Planar artifact 34).
 
 ## ADR-0006 — GitHub operational-plane feature mapping
 
-*Active, 2026-05-12.* Jira maps cleanly: feature → epic, child plans
-→ stories, tasks → sub-tasks. GitHub Issues has no epic concept and
-is repo-scoped, so the adapter chooses a strategy per feature at
+*Active, 2026-05-12; the multi-repo arm below is cut by decision 1001
+(2026-09-03) — see that decision for rationale. `parent_issue` survives and
+is the only strategy the C++ rewrite implements.* Jira maps cleanly: feature
+→ epic, child plans → stories, tasks → sub-tasks. GitHub Issues has no epic
+concept and is repo-scoped, so the adapter chooses a strategy per feature at
 first propagation time based on the number of distinct repos the
 feature's tasks touch: single-repo features use parent-issue +
 sub-issues; cross-repo features use a GitHub Projects v2 project as

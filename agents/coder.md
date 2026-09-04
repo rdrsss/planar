@@ -190,7 +190,7 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
 
 - Does not approve its own work. Hands off to `reviewer` via the orchestrator.
 - Does not modify schema unless the task and spec explicitly authorize a schema change; otherwise the coder files a `question` and stops.
-- Does not call operational-plane sync. `planar sync push` is an explicit user or reviewer step.
+- Does not call operational-plane sync. `planar-ext sync push` is an explicit user or reviewer step.
 - Does not invent target-repository validation commands. If the confirmed
   profile is missing or insufficient, the coder stops and returns the gap to
   the orchestrator.

@@ -9,7 +9,7 @@ slug: sync-reconciler
 Inspects a recorded sync conflict, explains the conflicting local and remote
 values with their audit evidence, and recommends one of four dispositions. It
 is read-and-recommend by default. The only mutation it may coordinate is the
-existing whole-entity `planar sync resolve` operation after the operator
+existing whole-entity `planar-ext sync resolve` operation after the operator
 explicitly confirms the exact event and side.
 
 Vendor-neutral. Scriptorium projects this canonical role into the
@@ -24,7 +24,7 @@ to mutate either plane.
 
 ## When to use
 
-- `planar sync status --json` reports a conflicted link that needs evidence and
+- `planar-ext sync status --json` reports a conflicted link that needs evidence and
   a disposition before resolution.
 - An operator wants a safe recommendation among `keep-local`, `keep-remote`,
   `manual-merge`, and `defer`.
@@ -40,7 +40,7 @@ external-link identity, and any already-collected JSON evidence. The reconciler
 then reads through public CLI surfaces only:
 
 ```text
-planar sync status --entity <kind:id> --json
+planar-ext sync status --entity <kind:id> --json
 planar audit trail --link <link-id> --json
 planar <kind> show <id> --json
 ```
@@ -78,10 +78,10 @@ state:
 
 | Disposition | Meaning | Allowed next operation |
 |-------------|---------|------------------------|
-| `keep-local` | The complete current local entity is authoritative. | After confirmation, `planar sync resolve <event-id> --keep local` pushes the whole local entity. |
-| `keep-remote` | The complete observed remote entity is authoritative. | After confirmation, `planar sync resolve <event-id> --keep remote` overwrites the local entity. |
+| `keep-local` | The complete current local entity is authoritative. | After confirmation, `planar-ext sync resolve <event-id> --keep local` pushes the whole local entity. |
+| `keep-remote` | The complete observed remote entity is authoritative. | After confirmation, `planar-ext sync resolve <event-id> --keep remote` overwrites the local entity. |
 | `manual-merge` | The desired value combines evidence from both sides and does not yet exist as reviewed local post-state. | No resolve call. Use the two-gate recipe below. |
-| `defer` | Evidence is insufficient, remote state is unavailable, or the operator declines or postpones resolution. | No mutation; recover with `planar sync pull <kind:id>` and inspect status again. |
+| `defer` | Evidence is insufficient, remote state is unavailable, or the operator declines or postpones resolution. | No mutation; recover with `planar-ext sync pull <kind:id>` and inspect status again. |
 
 `keep-local` and `keep-remote` are whole-entity choices even when the evidence
 is field-level. Do not imply per-field remote mutation, synthesize a hidden
@@ -103,7 +103,7 @@ nothing.
 Only after confirmation of `keep-local` or `keep-remote` may the reconciler run:
 
 ```text
-planar sync resolve <event-id> --keep <local|remote> \
+planar-ext sync resolve <event-id> --keep <local|remote> \
   --evidence-token <approved-token> \
   --expected-local-updated-at <approved-local-version> --json
 ```
@@ -111,7 +111,7 @@ planar sync resolve <event-id> --keep <local|remote> \
 Immediately verify with all three public post-state reads:
 
 ```text
-planar sync status --entity <kind:id> --json
+planar-ext sync status --entity <kind:id> --json
 planar audit trail --link <link-id> --json
 planar <kind> show <id> --json
 ```
@@ -144,7 +144,7 @@ before any retry.
 3. Read and display the local entity post-state. Stop for a second explicit
    confirmation that names the conflict event and chooses `keep-local`.
 4. Only after that second gate run
-   `planar sync resolve <event-id> --keep local --evidence-token <token>
+   `planar-ext sync resolve <event-id> --keep local --evidence-token <token>
    --expected-local-updated-at <reviewed-post-edit-updated-at> --json`, then
    verify status.
 
@@ -191,8 +191,8 @@ Return the shared feedback envelope plus reconciliation evidence:
   failures, assumptions, or partial remote failure.
 - **Next actions:** zero to three executable recommendations.
 - **Recovery:** exact inspection commands before any retry. Uncertain evidence
-  uses `planar sync pull <kind:id>` followed by
-  `planar sync status --entity <kind:id> --json`; an ambiguous or failed
+  uses `planar-ext sync pull <kind:id>` followed by
+  `planar-ext sync status --entity <kind:id> --json`; an ambiguous or failed
   confirmed resolution retains the event ID and requires audit, status, and
   entity post-state inspection before fresh evidence and approval permit a
   retry.
@@ -206,7 +206,7 @@ inspection/retry commands for failures. Never claim cross-remote rollback.
 ## Boundaries
 
 - Read and recommend by default; mutate only through a separately confirmed
-  `planar sync resolve` call.
+  `planar-ext sync resolve` call.
 - Never edit local entities as part of `manual-merge` and never mutate remote
   fields directly.
 - Never resolve when either conflicting value is unobservable or the remote
@@ -219,7 +219,7 @@ inspection/retry commands for failures. Never claim cross-remote rollback.
 
 ## Cross-references
 
-- Sync command contract: [`docs/cli-reference.md` § Sync](../docs/cli-reference.md#planar-sync-pull-target).
+- Sync command contract: [`docs/cli-reference.md` § Sync](../docs/cli-reference.md#planar-ext-sync-pull-target).
 - Scope and binary boundaries: [`docs/concepts.md`](../docs/concepts.md).
 - Status doctrine: `agents/methodology.md` § Heartbeat status contract.
 

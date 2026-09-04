@@ -220,18 +220,22 @@ planar tree
 ## 7. External-system sync
 
 Planar's operational plane integrates with Jira and GitHub Issues
-via adapters. To propagate your plan to GitHub Issues:
+via adapters. `ext`/`sync` live on the `planar-ext` binary. To create
+a GitHub Issues counterpart for your plan:
 
 ```sh
-planar ext list                            # check registered systems
-planar ext create github --from plan:<login-flow-id> --type Epic
-planar ext propagate login-flow --system github
+planar-ext ext list                            # check registered systems
+planar-ext ext create github --from plan:<login-flow-id> --type Epic
+planar-ext ext propagate-one github --from plan:<login-flow-id>
 ```
 
-`ext propagate` walks the plan tree and creates one issue per task,
-linking the local task row to the GitHub issue via `external_links`.
-Local changes flow out with `planar sync push`; remote changes
-flow in with `planar sync pull`.
+`ext propagate-one` creates a single external counterpart per call. The
+whole-tree walk (`ext propagate <plan>`, one issue per task, linked via
+`external_links`) is not yet implemented on either binary — see
+`docs/cli-reference.md`. Local changes flow out with `planar-ext sync push`.
+`planar-ext sync pull` fetches remote state and reports it — it does not
+write local fields (decision 996); use it to see whether the remote drifted,
+then update the local entity yourself if warranted.
 
 ## 8. Docs as a first-class repo concern
 
@@ -276,7 +280,7 @@ regenerate-candidate on the next `tabularium diff`[^doc_tech_spec].
 | `init`: "git remote not found" | No `origin` remote | `git remote add origin <url>` and re-run |
 | `task add`: scope-mismatch error | cwd not equal to stack top | Pass `--scope` or `cd` into the right repo |
 | Workbench files reappear after deletion | Sync round-tripped from DB | Delete the artifact with `planar artifact rm` |
-| `ext propagate`: no adapter registered | Adapter not yet created | `planar ext create <kind>` first |
+| `ext propagate-one`: no adapter registered | Adapter not yet created | `planar-ext ext create <kind>` first |
 
 [^founding_tech_spec]:
 [^doc_tech_spec]:

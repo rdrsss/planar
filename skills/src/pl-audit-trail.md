@@ -78,7 +78,7 @@ Do not warn merely because an optional audit leg is empty.
 ## Next actions
 
 Give zero to three executable follow-up reads, such as `planar audit commits
---session <session-id> --json` or `planar sync status --entity <kind:id> --json`.
+--session <session-id> --json` or `planar-ext sync status --entity <kind:id> --json`.
 
 ## Recovery
 

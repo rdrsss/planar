@@ -317,6 +317,12 @@ For the canonical contract see `agents/methodology.md` § Barrel modes; for the 
 
 ## Recipe 3 — Propagate to GitHub Issues
 
+> **Not yet implemented (plan 996).** The whole-feature walk (`ext propagate`)
+> this recipe describes is not yet available on `planar-ext` — it is tracked
+> separately (task 6421, in progress at time of writing). For a single plan
+> or task today, use `planar-ext ext propagate-one <system> --from <kind:id>`
+> directly instead of the recipe below.
+
 Use this after tasks are done (or any time you want external counterparts created).
 
 **What happens:** The ext-sync agent walks the feature tree top-down. It creates external counterparts for every entity not yet linked and records `external_links(link_role='mirror')` rows and `sync_events(outcome='ok')` rows.
@@ -324,7 +330,7 @@ Use this after tasks are done (or any time you want external counterparts create
 ### Register the external system (once per system)
 
 ```
-planar ext register github my-gh --project myorg/myrepo
+planar-ext ext register github my-gh --project myorg/myrepo
 ```
 
 ### Propagate
@@ -335,11 +341,13 @@ planar ext register github my-gh --project myorg/myrepo
 
 On first propagation, the strategy is selected automatically:
 
-- 0 touched repos → `github-zero-repo` (parent issue in `github_lead_repo` from config)
-- 1 touched repo → `github-parent-issue`
-- 2+ touched repos → `github-projects-v2`
+- Jira → `jira-epic` (always)
+- GitHub Issues → `github-parent-issue` (always)
 
-The selected strategy is cached and reused on subsequent propagation runs. To force re-detection:
+There is no repo-count-based selection: the multi-repo `github-projects-v2`
+strategy is permanently cut (decision 1001) and does not exist. The selected
+strategy is cached and reused on subsequent propagation runs. To force
+re-detection:
 
 ```
 /pl-ext-propagate 42 --system my-gh --restrategize
@@ -365,7 +373,7 @@ Prints what would be created without contacting the remote.
 ### Verify existing counterparts
 
 ```
-planar ext propagate 42 --system my-gh --verify-counterparts
+planar-ext ext propagate 42 --system my-gh --verify-counterparts
 ```
 
 Probes the remote to confirm every already-linked entity still exists. Missing counterparts are written as `sync_events(outcome='counterpart-missing')` rows. Use `--unlink` to remove stale links or `--recreate` to recreate them immediately.
@@ -384,8 +392,8 @@ Capture what the CLI can expose before deleting anything:
 
 ```sh
 planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
-planar sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
-planar ext propagate <plan-id> --system <system-slug> --dry-run \
+planar-ext sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
+planar-ext ext propagate <plan-id> --system <system-slug> --dry-run \
   --sync <read-only|write-back|two-way>
 ```
 
@@ -396,9 +404,9 @@ propagation-owned mirror, continue with:
 
 ```sh
 planar unlink <link-id>
-planar ext propagate <plan-id> --system <system-slug> --dry-run \
+planar-ext ext propagate <plan-id> --system <system-slug> --dry-run \
   --sync <read-only|write-back|two-way>
-planar ext propagate <plan-id> --system <system-slug> \
+planar-ext ext propagate <plan-id> --system <system-slug> \
   --sync <read-only|write-back|two-way>
 ```
 
@@ -460,9 +468,8 @@ It assembles these into a structured prompt that the new agent session reads at 
 ## Recipe 5 — Publish a Feature to an External System
 
 Use this when you want to push the rendered workbench content for a
-feature to an external operational system (Jira, GitHub Issues,
-GitHub Projects) so non-Planar collaborators can read or comment on
-it.
+feature to an external operational system (Jira, GitHub Issues) so
+non-Planar collaborators can read or comment on it.
 
 **What happens:** `workbench publish` renders the workbench files
 for a plan and pushes them to a registered external system via the
@@ -477,7 +484,7 @@ planar workbench publish 42 --system github
 ```
 
 The `--system` flag names a registered external system slug (see
-`planar ext list`). For richer per-entity counterpart creation
+`planar-ext ext list`). For richer per-entity counterpart creation
 (epics, issues, sub-issues with parent/child links) use `planar ext
 propagate <plan-id> --system <slug>` instead — `propagate` walks the
 full plan tree and creates one external counterpart per entity, while
@@ -1402,16 +1409,16 @@ Reports schema version, open sessions, unresolved sync conflicts, and handoff re
 ### Sync local changes to the remote
 
 ```
-planar sync push --system my-jira
+planar-ext sync push --system my-jira
 ```
 
 Pushes local mutations (status changes, field updates) to the external system for all entities that have an `external_links(link_role='mirror')` row.
 
 ```
-planar sync pull --system my-jira
+planar-ext sync pull --system my-jira
 ```
 
-Pulls remote changes into `sync_events` rows. Conflicts (both sides changed) are surfaced as `sync_events(outcome='conflict')` and require explicit resolution via `planar sync resolve`.
+Pulls remote changes into `sync_events` rows. Conflicts (both sides changed) are surfaced as `sync_events(outcome='conflict')` and require explicit resolution via `planar-ext sync resolve`.
 
 Inspect a conflict through `planar audit trail --link <link-id> --json`. The
 conflict event's `evidence` object carries exact local/remote values,
@@ -1419,7 +1426,7 @@ provenance, observation time, a token, and the local entity's `updated_at`.
 After approving one whole-entity disposition, pass both compare guards:
 
 ```text
-planar sync resolve <event-id> --keep local \
+planar-ext sync resolve <event-id> --keep local \
   --evidence-token <approved-token> \
   --expected-local-updated-at <reviewed-updated-at> --json
 ```
@@ -2728,9 +2735,9 @@ Pick the finding id you want to surface upstream (e.g. `question:42`).
 **3. Ensure a GitHub system is registered (once per database).**
 
 ```bash
-planar ext list
+planar-ext ext list
 # If planar-upstream is absent:
-planar ext register github planar-upstream --project rdrsss/planar
+planar-ext ext register github planar-upstream --project rdrsss/planar
 ```
 
 This writes a local row only — no network contact, no auth required at

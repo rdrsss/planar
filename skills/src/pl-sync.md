@@ -23,6 +23,19 @@ sync state, and coordinates evidence-based conflict reconciliation. Sync is
 always on demand. The workflow uses the operator-plane CLI for every mutation;
 it never opens SQLite, reads credentials, or invokes Jira or GitHub directly.
 
+**A plain `sync pull` does not write to planning entities (decision 996).**
+`planar-ext` fetches remote state and emits it; it never applies a remote
+title or status onto a task, plan, question, or artifact. When a pulled
+field differs from the local value, the result row for that link carries it
+as `remote_title` / `remote_status` — evidence for this skill (the agent) to
+read, not a change already made. Only two paths ever change local field
+values: `sync resolve --keep remote` on a recorded conflict (Workflow §5,
+below — an explicit, evidence-gated write against a specific event), or the
+agent itself calling a `planar <kind> update` command after presenting the
+emitted diff and getting the operator's confirmation. Never tell an operator
+that pulling "updated" or "synced" their task — report what was emitted and,
+outside conflict resolution, what write (if any) was separately made.
+
 ## Context
 
 Resolve and retain the cwd-derived scope, requested operation, target or
@@ -47,14 +60,14 @@ verify durable post-state.
 Construct commands only from the shipped surfaces:
 
 ```text
-planar sync pull <link-id|kind:id> [--system <slug>] [--scope <slug>] --json
-planar sync pull --all [--system <slug>] --json
-planar sync push <link-id|kind:id> [--system <slug>] [--scope <slug>] --json
-planar sync push --all [--system <slug>] --json
-planar sync status [--entity <kind:id>] [--system <slug>] --json
+planar-ext sync pull <link-id|kind:id> [--system <slug>] [--scope <slug>] --json
+planar-ext sync pull --all [--system <slug>] --json
+planar-ext sync push <link-id|kind:id> [--system <slug>] [--scope <slug>] --json
+planar-ext sync push --all [--system <slug>] --json
+planar-ext sync status [--entity <kind:id>] [--system <slug>] --json
 planar audit trail --link <link-id> --json
 planar <kind> show <id> --json
-planar sync resolve <event-id> --keep <local|remote>
+planar-ext sync resolve <event-id> --keep <local|remote>
   --evidence-token <token> --expected-local-updated-at <timestamp>
   [--scope <slug>] --json
 ```
@@ -68,14 +81,23 @@ For each conflicting link, use `audit trail --link ... --json` to read its
 `fields_changed`, detail, and timestamp. Do not invent a `sync conflicts` or
 `sync events` subcommand.
 
+`sync pull --json` returns one result row per link. Each row carries
+`remote_title` and/or `remote_status` only when that field's remote value
+differs from the local value at pull time; an unpopulated field means no
+drift was observed, not that the field wasn't checked. These are emitted
+values, never applied — see the note above.
+
 ## Workflow
 
 ### 1. Run the requested operation
 
 - `status`: read the requested entity/system view and make no mutation.
-- `pull`: run the exact target form. Treat `ok` and `noop` rows normally and
-  retain every `conflict` row for reconciliation. A malformed row or adapter
-  error remains a failure.
+- `pull`: run the exact target form. `pull` never writes planning entities —
+  it emits `remote_title`/`remote_status` on rows where the remote value
+  differs from local. Treat `ok` and `noop` rows normally, retain every
+  `conflict` row for reconciliation, and surface any emitted `remote_title`/
+  `remote_status` to the operator as observed drift rather than as an
+  applied change. A malformed row or adapter error remains a failure.
 - `push`: run the exact target form and retain per-link successes and failures.
 - `resolve <event-id>`: do not call `sync resolve` immediately. Locate the
   event through the conflicting link's audit trail and enter the reconciliation
@@ -124,7 +146,7 @@ An absent or empty provider version in the approved event or fresh adapter read
 is insufficient even when the field values match; it always forces `defer`.
 The only permitted disposition is `defer`; do not infer a remote value from a
 baseline, title, earlier event, or likely intent. Recovery is a fresh
-`planar sync pull <kind:id> --json` followed by status and audit inspection.
+`planar-ext sync pull <kind:id> --json` followed by status and audit inspection.
 
 ### 4. Dispatch sync-reconciler for conflicts
 
@@ -174,8 +196,8 @@ one approval to the remaining set.
 
 | Confirmed disposition | Allowed effect |
 |---|---|
-| `keep-local` | Run only `planar sync resolve <event-id> --keep local ... --json`; this pushes the complete current local entity. |
-| `keep-remote` | Run only `planar sync resolve <event-id> --keep remote ... --json`; this pulls the complete observed remote entity into local state. |
+| `keep-local` | Run only `planar-ext sync resolve <event-id> --keep local ... --json`; this pushes the complete current local entity. |
+| `keep-remote` | Run only `planar-ext sync resolve <event-id> --keep remote ... --json`; this pulls the complete observed remote entity into local state. |
 | `manual-merge` | Run no resolve command yet; follow the separate two-gate recipe below. |
 | `defer`, decline, or postpone | Write nothing and retain the evidence plus recovery command. |
 
@@ -208,7 +230,7 @@ check, not a promise of provider-side atomicity.
 4. Stop for gate two: require a new confirmation naming the event ID and
    `keep-local`, after reviewing that post-state.
 5. Revalidate current conflict evidence, then run only
-   `planar sync resolve <event-id> --keep local ... --json` and verify it.
+   `planar-ext sync resolve <event-id> --keep local ... --json` and verify it.
 
 Approval of merge text is not approval to edit. Approval of the local edit is
 not approval to push. Without the second gate, return a pending manual merge or
@@ -221,7 +243,7 @@ to report `ok=true`, the approved `event_id`, the chosen `keep`, and a
 `new_event_id`. Then re-run:
 
 ```text
-planar sync status --entity <kind:id> --json
+planar-ext sync status --entity <kind:id> --json
 planar audit trail --link <link-id> --json
 planar <kind> show <id> --json
 ```
@@ -277,9 +299,9 @@ Give zero to three executable recommendations. Prefer the narrowest relevant
 read first:
 
 ```text
-planar sync status --entity <kind:id> --json
+planar-ext sync status --entity <kind:id> --json
 planar audit trail --link <link-id> --json
-planar sync pull <kind:id> --json
+planar-ext sync pull <kind:id> --json
 ```
 
 When approval is pending, name the exact event ID and disposition needed rather
