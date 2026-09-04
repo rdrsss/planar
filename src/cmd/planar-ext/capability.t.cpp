@@ -118,7 +118,7 @@ struct fixture {
 
 } // namespace
 
-TEST_CASE("planar-ext's declared verb set is exactly {version, schema, ext..., sync...} after task 6419's move",
+TEST_CASE("planar-ext's declared verb set is exactly {version, schema, ext..., sync...} after task 6421's ext propagate",
           "[cmd][ext][capability]") {
   auto const root = planar::cmd::ext::root_app();
   CHECK(root->get_name() == "planar-ext");
@@ -132,12 +132,11 @@ TEST_CASE("planar-ext's declared verb set is exactly {version, schema, ext..., s
   }
   // Every node NAME in the tree, group nodes and bare leaves alike — NOT
   // full paths, so "list"/"push"/"status"/"pull" here are `ext list` /
-  // `sync push` / `sync status` / `sync pull` (task 6419 landed exactly
-  // this set; `ext propagate` is not among them — see `tree.cpp`'s
-  // `add_ext`), not a claim-ritual or planning-entity verb of the same
-  // bare name.
+  // `sync push` / `sync status` / `sync pull`. `propagate` joined at task
+  // 6421 (the github-parent-issue arm only — see `handlers/propagate.cppm`).
   CHECK(names == std::set<std::string, std::less<>>{"version", "schema", "ext", "register", "jira", "github", "list", "test",
-                                                    "create", "propagate-one", "sync", "pull", "push", "status", "resolve"});
+                                                    "create", "propagate-one", "propagate", "sync", "pull", "push", "status",
+                                                    "resolve"});
 
   // The forbidden set: every write verb the OTHER agent-callable binary
   // carries, and every planning-entity verb the operator binary carries —
