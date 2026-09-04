@@ -125,9 +125,9 @@ fn runInstaller(gpa: std.mem.Allocator, repo_root: []const u8, home: []const u8,
     try env.put("PATH", path);
     try env.put("NO_COLOR", "1");
     const argv: []const []const u8 = if (link)
-        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--link", "--optimize", "Debug" }
+        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--link", "--preset", "debug" }
     else
-        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--optimize", "Debug" };
+        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--preset", "debug" };
     return std.process.run(gpa, std.testing.io, .{ .argv = argv, .environ_map = &env });
 }
 

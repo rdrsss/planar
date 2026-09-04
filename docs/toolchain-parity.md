@@ -14,26 +14,38 @@ scripts are committed at `scripts/toolchain-probes/`.
 
 | Component | Pinned version | Notes |
 |---|---|---|
-| LLVM/clang | **22.1.8** (Homebrew formula `llvm`, keg-only, `/opt/homebrew/opt/llvm`) | See "Why 22, not 23" below. |
+| LLVM/clang | **23.1.0** (Homebrew formula `llvm`, keg-only, `/opt/homebrew/opt/llvm`) | See "Why 23, and the 22 interim" below. |
 | CMake | **4.4.2** | `import std;`'s experimental gate is a UUID keyed to the CMake feature release; verified against the actually-installed 4.4.2 (see below). |
 | Ninja | **1.13.2** | Required for C++ module dependency scanning (dyndep); no other CMake generator supports it. |
 | git | **2.50.1** (floor: **≥ 2.31**) | The floor was discovered in the M0 zig/-relocation cycle (commit `6423d9b`): `detectWorktree`'s git-common-dir fallback needs `git rev-parse --path-format=absolute --git-common-dir`, a flag introduced in git 2.31. `--path-format=absolute` must precede `--git-common-dir` (it is a mode flag that governs how the path options after it are printed). Below that floor the path resolves incorrectly against the wrong base and a primary checkout gets misclassified as a secondary worktree. |
 | Doxygen | **1.18.0** (Homebrew formula `doxygen`) — not version-pinned, tracked as-installed | The `doxygen Doxyfile.lint` gate (`make cpp-lint`) is live (plan 996, task `cpp-lint-doxygen-sigbus`). 1.18.0 has a nondeterministic upstream defect: it dies with SIGBUS (exit 138) on a clean, unchanged tree, unrelated to load, config, or content. Measured by the orchestrator on 2026-08-22: 6 standalone runs against an idle machine produced exits `0,138,0,0,138,0` — roughly a **25-50% crash rate**. `scripts/cpp-lint-doxygen.sh` retries doxygen up to 3 attempts total, but ONLY on a signal-death exit (`>= 128`); a genuine lint failure (e.g. `WARN_AS_ERROR=YES` on an undocumented export, exit 1) fails immediately on the first attempt with no retry, so the gate stays honest under the flake. Each retry prints a visible message so a rising crash rate remains observable. Re-evaluate this row (and reconsider pinning a fixed Doxygen release) the next time Doxygen is upgraded — compare the new version's crash rate against this 25-50% baseline before assuming the upstream bug is fixed. |
 
-### Why 22, not 23
+### Why 23, and the 22 interim
 
-D10 targets "latest LLVM (23+)". Verified against the upstream release feed
-(`https://api.github.com/repos/llvm/llvm-project/releases`) on 2026-08-21:
-the newest tag is `llvmorg-23.1.0-rc3` — LLVM 23 is still a release
-candidate, not a stable release, and Homebrew's `llvm` formula (which always
-tracks the latest **stable** major) is at `22.1.8`, identical to the
-`llvm@22` versioned formula. There is no installable LLVM 23 on this
-platform today. The pin is therefore **LLVM 22.1.8**, the actual latest
-stable major, matching (coincidentally — each project derives its own pin
-per D10) both `tabula`'s and `centurion`'s current pins. **Re-pin to LLVM 23
-as soon as it reaches a stable release and Homebrew ships it**; re-run the
-probes in `scripts/toolchain-probes/` against the new toolchain before
-updating this table.
+D10 targets "latest LLVM (23+)". As of 2026-08-21, LLVM 23 was still a
+release candidate (`llvmorg-23.1.0-rc3` against the upstream release feed)
+and Homebrew's `llvm` formula tracked `22.1.8` — the pin was recorded as
+**LLVM 22.1.8** at that time, matching (coincidentally — each project
+derives its own pin per D10) both `tabula`'s and `centurion`'s pins of the
+day.
+
+Re-verified 2026-09-04: Homebrew's `llvm` formula (aliased `llvm@23`) now
+ships **23.1.0 stable** (`brew info llvm` reports `stable 23.1.0
+(bottled)`, no `HEAD`/RC qualifier), and `/opt/homebrew/opt/llvm` resolves
+to it. The pin moves to **LLVM 23.1.0** accordingly — this is the first
+stable major matching D10's "latest LLVM (23+)" target. `CMakePresets.json`
+pins the compiler by **path**, not by version string
+(`/opt/homebrew/opt/llvm/bin/clang++`), so the keg swap from 22.1.8 to
+23.1.0 required no preset change; the debug/release builds configure and
+build clean against it. Every probe in `scripts/toolchain-probes/` was
+re-run against 23.1.0 and reproduced identical behavior to the 22.1.8
+findings recorded below, including the `-Wc23-extensions` diagnostic on
+`#embed` — LLVM has not yet reclassified `#embed` as core C++26 syntax in
+23.1.0 either, so the `-Wno-c23-extensions` suppression documented under
+"`-std=c++2c` and the C++26 subset" remains necessary unchanged.
+`llvm@22` (22.1.8) is still installed alongside it on this machine but is
+no longer the pin; re-run the probes again before trusting a future major
+bump.
 
 ## Platform prefixes
 
@@ -89,7 +101,8 @@ not silently falling back.
 
 `#embed` (D5's mechanism for embedding `migrations/` and
 `templates/defaults/`) compiles and runs correctly under `-std=c++2c`, but
-clang 22.1.8 emits `-Wc23-extensions` ("#embed is a Clang extension") in
+clang 23.1.0 (re-verified; identical under the earlier 22.1.8 pin) emits
+`-Wc23-extensions` ("#embed is a Clang extension") in
 C++ mode — it has not yet reclassified `#embed` as core C++26 syntax
 internally, even though WG21 adopted `#embed` for C++26 (P1967). Under the
 tech-spec's "warnings-as-errors on first-party targets" convention this
@@ -113,7 +126,7 @@ toolchain's own binary**, never a `PATH`-resolved `clang-format` that may
 belong to a different LLVM release (two LLVM releases can disagree under an
 identical `.clang-format`, per tabula's README). On this machine that is
 `/opt/homebrew/opt/llvm/bin/clang-format`, verified at
-`Homebrew clang-format version 22.1.8` — matching the pinned compiler major
+`Homebrew clang-format version 23.1.0` — matching the pinned compiler major
 and patch exactly, as it must (same Homebrew keg). CMake tooling and any
 pre-commit/format-check script must reference this path explicitly (e.g. via
 `CMAKE_CXX_COMPILER`-relative derivation, the same pattern the
@@ -189,7 +202,9 @@ dumps no sections, so the discriminator cannot silently match nothing.
 ## Validation evidence
 
 All commands below ran in the foreground on this machine (macOS, Apple
-Silicon, Homebrew) on 2026-08-21. Probe sources are committed at
+Silicon, Homebrew) on 2026-08-21 against the then-pinned LLVM 22.1.8, and
+were re-run and reproduced identically on 2026-09-04 against the now-pinned
+LLVM 23.1.0 (see "Why 23, and the 22 interim" above). Probe sources are committed at
 `scripts/toolchain-probes/probe_cxx2c.cpp` and
 `scripts/toolchain-probes/probe_embed.cpp` (plus its embedded fixture
 `probe_embed_data.txt`); the `import std;` probe is a throwaway scratch

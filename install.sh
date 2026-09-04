@@ -12,6 +12,10 @@
 #     bin/planar-execute              # deterministic spawn-free Lua workflow
 #                                     # engine (run <wf.lua> --phase; shells
 #                                     #  planar for state, holds no DB handle)
+#     bin/planar-ext                  # operational-plane binary (Jira, GitHub
+#                                     # Issues adapters; read-only on planning
+#                                     # tables, read-write on external_links /
+#                                     # external_systems / sync_events)
 #     bin/mtkahypar                   # optional wheel-backed solver adapter
 #     opt/mtkahypar/1.6.1/venv/       # optional native PyPI wheel environment
 #     planar.db                       # created on first `planar init`
@@ -491,7 +495,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   [[ -f "$REPO_ROOT/install-cleanup.txt" ]] && \
     _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$REPO_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
-  log "build 4 binaries (planar, planar-agent, planar-watch, planar-execute) → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
+  log "build 5 binaries (planar, planar-agent, planar-watch, planar-execute, planar-ext) → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
@@ -514,7 +518,7 @@ fi
 title "Building the Planar binaries"
 
 mkdir -p "$PLANAR_HOME/bin"
-# CMake configures, builds, and installs all FOUR executable targets:
+# CMake configures, builds, and installs all FIVE executable targets:
 #
 #   planar         — operator surface
 #   planar-agent   — agent-callable coordination (atomic claim ops,
@@ -524,6 +528,9 @@ mkdir -p "$PLANAR_HOME/bin"
 #   planar-execute — deterministic spawn-free Lua workflow engine
 #                    (run <wf.lua> --phase; shells planar for state,
 #                    holds no DB handle, no model-spawn host fn)
+#   planar-ext     — operational-plane binary (Jira, GitHub Issues adapters;
+#                    read-only on planning tables, read-write on exactly
+#                    external_links / external_systems / sync_events)
 #
 # `PLANAR_VERSION_META=ON` stamps the install's git metadata. It stays off
 # for ordinary dev builds so commit/dirty changes do not invalidate the tree.
@@ -532,6 +539,7 @@ vlog "wrote $PLANAR_HOME/bin/planar"
 vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"
 vlog "wrote $PLANAR_HOME/bin/planar-execute"
+vlog "wrote $PLANAR_HOME/bin/planar-ext"
 
 # Smoke check — a build can succeed yet produce a binary that won't run. Confirm
 # it executes now (and capture the build id) rather than discovering it broken
@@ -1240,7 +1248,7 @@ skills_n="$(count_glob "$PLANAR_HOME"/commands/claude/pl-*.md)"
 agents_n="$(count_glob "$PLANAR_HOME"/agents/claude/*.md)"
 
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
-log "binaries:   planar, planar-agent, planar-watch, planar-execute"
+log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
 if [[ "$MTKAHYPAR_PRESENT" -eq 1 ]]; then
   if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
     log "extra:      mtkahypar $MTKAHYPAR_VERSION (native wheel adapter, live-tested)"

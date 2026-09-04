@@ -10,7 +10,7 @@
       "name": "base",
       "hidden": true,
       "displayName": "Base (pinned LLVM)",
-      "description": "Shared settings: pinned Homebrew LLVM 22.1.8, Ninja, compile_commands.json, out-of-source build. See docs/toolchain-parity.md.",
+      "description": "Shared settings: pinned Homebrew LLVM 23.1.0, Ninja, compile_commands.json, out-of-source build. See docs/toolchain-parity.md.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
