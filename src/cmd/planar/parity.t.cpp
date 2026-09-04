@@ -138,10 +138,10 @@ auto strip_command(std::string catalog, std::initializer_list<std::string_view> 
   auto const start = catalog.rfind("{\"name\"", anchor);
   REQUIRE(start != std::string::npos);
 
-  int         depth      = 0;
-  bool        in_string  = false;
-  bool        escaped    = false;
-  std::size_t end        = std::string::npos;
+  int         depth     = 0;
+  bool        in_string = false;
+  bool        escaped   = false;
+  std::size_t end       = std::string::npos;
   for (std::size_t i = start; i < catalog.size(); ++i) {
     char const c = catalog[i];
     if (in_string) {
@@ -408,7 +408,6 @@ TEST_CASE("C++ and Zig agree byte-for-byte on the task-6106 no-fixture leaves", 
 // `src/cmd/planar-ext/ext_leaves.t.cpp` and `ext_create_leaf.t.cpp` for their
 // C++-only coverage now.
 
-
 TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][parity][oracle]") {
   PLANAR_REQUIRE_ORACLE(
       oracle_available(),
@@ -489,7 +488,6 @@ TEST_CASE("C++ and Zig agree on unlink over a seeded external link", "[cmd][pari
 // deliberate, recorded divergence from the oracle (it no longer applies the
 // remote to local planning tables) -- there is no longer a byte-identical
 // oracle shape to pin here. See `src/cmd/planar-ext/sync_leaves.t.cpp`.
-
 
 TEST_CASE("C++ and Zig agree on promote, demote and test-spec status", "[cmd][parity][oracle]") {
   PLANAR_REQUIRE_ORACLE(
@@ -724,10 +722,10 @@ TEST_CASE("every ported command declares what the oracle declares", "[cmd][parit
   // propagate`), which moved to `planar-ext` and has no oracle counterpart
   // (decision 999). Removed from the ORACLE side, root's own subcommand
   // list included, before either comparison below runs.
-  for (auto const& moved : {"planar ext", "planar ext create", "planar ext list", "planar ext propagate",
-                            "planar ext propagate-one", "planar ext register", "planar ext register github",
-                            "planar ext register jira", "planar ext test", "planar sync", "planar sync pull",
-                            "planar sync push", "planar sync resolve", "planar sync status"}) {
+  for (auto const& moved :
+       {"planar ext", "planar ext create", "planar ext list", "planar ext propagate", "planar ext propagate-one",
+        "planar ext register", "planar ext register github", "planar ext register jira", "planar ext test", "planar sync",
+        "planar sync pull", "planar sync push", "planar sync resolve", "planar sync status"}) {
     theirs->erase(moved);
   }
   auto& oracle_root_subcommands = theirs->at("planar").subcommands;
@@ -758,9 +756,9 @@ TEST_CASE("every ported command declares what the oracle declares", "[cmd][parit
   // are GENUINELY gone from `mine` — asserted explicitly rather than left
   // to the strip loop above alone, so a typo there reads as a wrong
   // exact-set assertion rather than a silently-passing missing check.
-  for (auto const& moved : {"planar ext register jira", "planar ext register github", "planar ext list", "planar ext test",
-                            "planar ext create", "planar ext propagate-one", "planar sync pull", "planar sync push",
-                            "planar sync status", "planar sync resolve"}) {
+  for (auto const& moved :
+       {"planar ext register jira", "planar ext register github", "planar ext list", "planar ext test", "planar ext create",
+        "planar ext propagate-one", "planar sync pull", "planar sync push", "planar sync status", "planar sync resolve"}) {
     INFO("moved to planar-ext at task 6419: " << moved);
     CHECK_FALSE(mine->contains(moved));
   }
@@ -819,10 +817,20 @@ TEST_CASE("all three catalogs are byte-identical to the oracle's", "[cmd][parity
   // subcommand-order pin (`"the CLI surface is CLI11's now, and pinned"`,
   // below) confirms are stable.
   auto stripped = ref.out;
-  for (auto const& path : std::initializer_list<std::initializer_list<std::string_view>>{
-           {"ext", "register", "jira"}, {"ext", "register", "github"}, {"ext", "register"}, {"ext", "list"}, {"ext", "test"},
-           {"ext", "create"}, {"ext", "propagate-one"}, {"ext", "propagate"}, {"ext"}, {"sync", "pull"}, {"sync", "push"},
-           {"sync", "status"}, {"sync", "resolve"}, {"sync"}}) {
+  for (auto const& path : std::initializer_list<std::initializer_list<std::string_view>>{{"ext", "register", "jira"},
+                                                                                         {"ext", "register", "github"},
+                                                                                         {"ext", "register"},
+                                                                                         {"ext", "list"},
+                                                                                         {"ext", "test"},
+                                                                                         {"ext", "create"},
+                                                                                         {"ext", "propagate-one"},
+                                                                                         {"ext", "propagate"},
+                                                                                         {"ext"},
+                                                                                         {"sync", "pull"},
+                                                                                         {"sync", "push"},
+                                                                                         {"sync", "status"},
+                                                                                         {"sync", "resolve"},
+                                                                                         {"sync"}}) {
     stripped = strip_command(std::move(stripped), path);
   }
   {

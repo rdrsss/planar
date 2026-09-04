@@ -224,11 +224,9 @@ void seed(const fixture& fx, std::string_view base) {
     REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-demo'", base)).has_value());
     // `plan create` / `task add` / `decision add` all live on `planar`, not
     // this binary — seeded directly, same as the systems above.
-    REQUIRE(
-        conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
-            .has_value());
-    REQUIRE(conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (1, 'global', 1, 'Demo task')")
+    REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
                 .has_value());
+    REQUIRE(conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (1, 'global', 1, 'Demo task')").has_value());
     REQUIRE(conn->execute("insert into decisions (id, scope_kind, title, body) values (1, 'global', 'Demo decision', 'because')")
                 .has_value());
   }

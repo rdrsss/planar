@@ -197,9 +197,16 @@ auto strip_command(std::string catalog, std::initializer_list<std::string_view> 
 /// @param zig_catalog The oracle's full `planar schema` JSON document.
 /// @return The document with all 10 moved leaves removed.
 auto strip_moved_ext_sync_leaves(std::string zig_catalog) -> std::string {
-  for (auto const& path : std::initializer_list<std::initializer_list<std::string_view>>{
-           {"ext", "register", "jira"}, {"ext", "register", "github"}, {"ext", "list"}, {"ext", "test"}, {"ext", "create"},
-           {"ext", "propagate-one"}, {"sync", "pull"}, {"sync", "push"}, {"sync", "status"}, {"sync", "resolve"}}) {
+  for (auto const& path : std::initializer_list<std::initializer_list<std::string_view>>{{"ext", "register", "jira"},
+                                                                                         {"ext", "register", "github"},
+                                                                                         {"ext", "list"},
+                                                                                         {"ext", "test"},
+                                                                                         {"ext", "create"},
+                                                                                         {"ext", "propagate-one"},
+                                                                                         {"sync", "pull"},
+                                                                                         {"sync", "push"},
+                                                                                         {"sync", "status"},
+                                                                                         {"sync", "resolve"}}) {
     zig_catalog = strip_command(std::move(zig_catalog), path);
   }
   return zig_catalog;
@@ -1576,7 +1583,7 @@ TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequen
   // Plan 996, task 6419: strip the 10 moved `ext`/`sync` leaves from the
   // ORACLE'S catalog before deriving the sequence — see
   // `strip_moved_ext_sync_leaves`'s header.
-  auto const zig_catalog_out = strip_moved_ext_sync_leaves(zig_catalog.out);
+  auto const  zig_catalog_out = strip_moved_ext_sync_leaves(zig_catalog.out);
   std::string catalog_error;
   auto const  steps = sequence(cpp_catalog.out, zig_catalog_out, catalog_error);
   REQUIRE(steps.has_value());

@@ -131,10 +131,10 @@ export auto resolve_keep_to_text(resolve_keep keep) -> std::string_view;
 /// is the caller's job, through `planar`, informed by these two fields. Set
 /// only when the corresponding name appears in `fields_changed`.
 export struct pull_result {
-  std::int64_t              link_id = 0;             ///< The link.
-  outcome                   result  = outcome::noop; ///< What happened.
-  std::vector<std::string>  fields_changed;          ///< Which fields differ, or (on conflict) which CONFLICTED.
-  std::string               detail;                  ///< Free text; the adapter error tag on `error`.
+  std::int64_t               link_id = 0;             ///< The link.
+  outcome                    result  = outcome::noop; ///< What happened.
+  std::vector<std::string>   fields_changed;          ///< Which fields differ, or (on conflict) which CONFLICTED.
+  std::string                detail;                  ///< Free text; the adapter error tag on `error`.
   std::optional<std::string> remote_title;            ///< The remote's title, when `title` is in `fields_changed`.
   std::optional<std::string> remote_status;           ///< The remote's status, when `status` is in `fields_changed`.
 };

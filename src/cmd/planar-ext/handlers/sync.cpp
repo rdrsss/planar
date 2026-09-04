@@ -183,12 +183,12 @@ auto scope_kind_from_column(std::string_view text) -> std::optional<engine::iden
 /// types — they stay distinct there for the reason that module's header
 /// gives.
 struct rendered_result {
-  std::int64_t                link_id = 0;                      ///< The link.
-  sync_ns::outcome            result  = sync_ns::outcome::noop; ///< What happened.
-  std::vector<std::string>    fields_changed;                   ///< Which fields differ.
-  std::string                 detail;                           ///< Free text, or the error name.
-  std::optional<std::string>  remote_title;  ///< EMITTED remote title (pull only; decision 996). Never written locally.
-  std::optional<std::string>  remote_status; ///< EMITTED remote status (pull only; decision 996). Never written locally.
+  std::int64_t               link_id = 0;                      ///< The link.
+  sync_ns::outcome           result  = sync_ns::outcome::noop; ///< What happened.
+  std::vector<std::string>   fields_changed;                   ///< Which fields differ.
+  std::string                detail;                           ///< Free text, or the error name.
+  std::optional<std::string> remote_title;  ///< EMITTED remote title (pull only; decision 996). Never written locally.
+  std::optional<std::string> remote_status; ///< EMITTED remote status (pull only; decision 996). Never written locally.
 };
 
 /// @brief Render one result as the oracle's JSON line.

@@ -125,4 +125,4 @@ export auto map_scope_failure(const engine::identity::write_scope_failure& failu
 /// `domain_error` (exit 1 for both the empty set and a SQL failure).
 export auto resolve_read_scope_slugs(context& ctx) -> std::expected<std::vector<std::string>, domain_error>;
 
-} // namespace planar::cmd
+} // namespace planar::cmd::ext

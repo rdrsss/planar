@@ -162,4 +162,4 @@ auto resolve_read_scope_slugs(context& ctx) -> std::expected<std::vector<std::st
   return *slugs;
 }
 
-} // namespace planar::cmd
+} // namespace planar::cmd::ext

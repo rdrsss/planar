@@ -137,7 +137,7 @@ TEST_CASE("planar-ext's declared verb set is exactly {version, schema, ext..., s
   // `add_ext`), not a claim-ritual or planning-entity verb of the same
   // bare name.
   CHECK(names == std::set<std::string, std::less<>>{"version", "schema", "ext", "register", "jira", "github", "list", "test",
-                                                     "create", "propagate-one", "sync", "pull", "push", "status", "resolve"});
+                                                    "create", "propagate-one", "sync", "pull", "push", "status", "resolve"});
 
   // The forbidden set: every write verb the OTHER agent-callable binary
   // carries, and every planning-entity verb the operator binary carries —
@@ -149,9 +149,9 @@ TEST_CASE("planar-ext's declared verb set is exactly {version, schema, ext..., s
   // tell the two apart, so keeping `pull` forbidden would make the exact-set
   // assertion above and this refusal check permanently disagree.
   static constexpr std::string_view k_forbidden[] = {
-      "claim", "heartbeat", "complete", "fail",     "release",  "block",   "action",  "ingest",   "reconcile",
-      "abort", "peek",      "plan",     "task",     "decision", "question", "scenario", "artifact", "annotate",
-      "init",  "workbench", "doc",      "spec",     "templates", "promote", "demote",   "capture",
+      "claim", "heartbeat", "complete", "fail", "release",   "block",    "action",   "ingest",   "reconcile",
+      "abort", "peek",      "plan",     "task", "decision",  "question", "scenario", "artifact", "annotate",
+      "init",  "workbench", "doc",      "spec", "templates", "promote",  "demote",   "capture",
   };
   for (auto const& forbidden : k_forbidden) {
     INFO("forbidden verb leaked into planar-ext's tree: " << forbidden);

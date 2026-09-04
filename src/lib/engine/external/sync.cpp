@@ -318,11 +318,11 @@ auto latest_event_id(db::connection& conn, std::int64_t link_id) -> std::expecte
 /// HAD it applied — used to advance the baseline exactly as the removed
 /// write would have, without performing the write.
 struct diff_result {
-  std::vector<std::string>   fields;          ///< Field names that differ, in `title, status` order.
-  std::optional<std::string> title;           ///< The remote's title, when `title` is in `fields`.
-  std::optional<std::string> status;          ///< The remote's status, when `status` is in `fields`.
-  std::string                baseline_title;  ///< `remote.title` if `title` differs, else the CURRENT local title.
-  std::string                baseline_status; ///< `remote.status` if `status` differs, else the CURRENT local status.
+  std::vector<std::string>   fields;                ///< Field names that differ, in `title, status` order.
+  std::optional<std::string> title;                 ///< The remote's title, when `title` is in `fields`.
+  std::optional<std::string> status;                ///< The remote's status, when `status` is in `fields`.
+  std::string                baseline_title;        ///< `remote.title` if `title` differs, else the CURRENT local title.
+  std::string                baseline_status;       ///< `remote.status` if `status` differs, else the CURRENT local status.
   bool                       local_present = false; ///< Whether a local row was actually read (false: missing/unsupported).
 };
 

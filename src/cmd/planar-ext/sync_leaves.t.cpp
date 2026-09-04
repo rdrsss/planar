@@ -574,7 +574,7 @@ TEST_CASE("a real HTTP round trip pulls, EMITS instead of applying, and still co
   auto const applied = dispatch(fx, {"sync", "pull", "1"}, {{"DEMO_TOKEN", "tok-abc"}});
   CHECK(applied.code == 0);
   CHECK(applied.out == R"(  link 1: ok — title — remote: title="Renamed remotely")"
-                      "\n");
+                       "\n");
 
   // 3. Both sides changed since the last successful sync: the CONFLICT arm,
   //    which is the ONLY path in either verb that reaches exit 3. It carries

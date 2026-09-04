@@ -295,7 +295,7 @@ TEST_CASE("D1: the first pull on a fresh link is noop and records a baseline", "
 }
 
 TEST_CASE("D2: a remote-only change EMITS both fields and still moves the baseline; decision 996 does not apply the task",
-         "[engine][external][sync]") {
+          "[engine][external][sync]") {
   // D2 divergence (decision 996, plan 996 task 6419): the oracle writes the
   // remote's title/status onto the task. This binary instead reports them
   // on the result (`remote_title`/`remote_status`) and leaves the task
@@ -506,7 +506,7 @@ TEST_CASE("D11b: a read-only link refuses a push before anything is sent", "[eng
 }
 
 TEST_CASE("D11c: a read-only link diffs the remote against a locally-edited task with NO conflict check",
-         "[engine][external][sync]") {
+          "[engine][external][sync]") {
   // Captured: a read-only pull over a locally-edited task overwrote it,
   // fields_changed ["title","status"], no conflict. Conflict detection is
   // gated on `two-way` and this is the case that proves the gate is real —
@@ -702,7 +702,7 @@ TEST_CASE("D6: resolve --keep local re-reads, pushes, and records a push event",
 }
 
 TEST_CASE("D7: resolve --keep remote sends NOTHING and, per decision 996, no longer rewrites the entity",
-         "[engine][external][sync]") {
+          "[engine][external][sync]") {
   // D2-shaped divergence (decision 996, plan 996 task 6419): the oracle
   // writes the remote's title/status onto the task here. This binary
   // clears the conflict (`sync_status::ok`, baseline reset to the
