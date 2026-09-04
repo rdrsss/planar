@@ -188,6 +188,35 @@ TEST_CASE("upsert then load round-trips a row", "[workbench][manifest][db]") {
   CHECK((*rows)[0].fs_mtime.empty());
 }
 
+TEST_CASE("upsert binds fs_mtime as an EMPTY STRING, not SQL NULL", "[workbench][manifest][db]") {
+  // `sync_state::fs_mtime` round-trips through `column_text`, which collapses
+  // both SQL NULL and the empty string to "" -- so `CHECK(fs_mtime.empty())`
+  // above cannot tell "bound as ''" apart from "never bound". The column
+  // itself is nullable (see migrations/00007_workbench.up.sql), so a
+  // constraint violation cannot catch a dropped bind either: only a raw
+  // `typeof()` probe distinguishes the two. Written to close a break-probe
+  // SURVIVOR against the `bind_text(6, row.fs_mtime)` clause of `upsert`'s
+  // bind chain (task 6423): a mutant that skipped that bind call left every
+  // existing fixture green because both branches read back as "".
+  scratch_db_path scratch;
+  auto            conn    = open_migrated(scratch);
+  auto const      plan_id = insert_plan(conn, "p");
+  REQUIRE(wm::upsert(conn, wm::sync_state{.anchor_plan_id = plan_id,
+                                          .entity_kind    = "plan",
+                                          .entity_id      = plan_id,
+                                          .file_path      = "a/b/README.md",
+                                          .content_hash   = "hash1",
+                                          .db_updated_at  = "2026-01-01T00:00:00.000Z"})
+              .has_value());
+  auto stmt = conn.prepare("select typeof(fs_mtime) from workbench_sync_state where file_path = ?");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, "a/b/README.md").has_value());
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+  REQUIRE(*stepped == planar::db::step_result::row);
+  CHECK(stmt->column_text(0) == "text");
+}
+
 TEST_CASE("upsert on the same file_path REPLACES rather than duplicating", "[workbench][manifest][db]") {
   scratch_db_path scratch;
   auto            conn    = open_migrated(scratch);
