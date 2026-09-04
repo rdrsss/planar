@@ -64,7 +64,7 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the planar + planar-agent + planar-watch + planar-execute binaries into ./bin/ (at repo root)
+build: ## Build the planar + planar-agent + planar-watch + planar-execute + planar-ext binaries into ./bin/ (at repo root)
 	@mkdir -p $(BIN_DIR)
 	cmake --preset release -DPLANAR_VERSION_META=OFF
 	cmake --build build/release $(ARGS)
@@ -72,9 +72,10 @@ build: ## Build the planar + planar-agent + planar-watch + planar-execute binari
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(AGENT_BINARY) $(AGENT_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
+	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
 
 .PHONY: install
-install: ## Build and install the four Planar executables into PREFIX/bin (default: ~/.local/bin)
+install: ## Build and install the five Planar executables into PREFIX/bin (default: ~/.local/bin)
 	cmake --preset release -DPLANAR_VERSION_META=ON
 	cmake --build build/release $(ARGS)
 	cmake --install build/release --prefix $(PREFIX)
@@ -87,11 +88,12 @@ install-full: ## Legacy full install: binaries plus skills, agents, workflows, a
 	./install.sh $(INSTALL_FLAGS)
 
 .PHONY: uninstall
-uninstall: ## Remove the four Planar executables from PREFIX/bin
+uninstall: ## Remove the five Planar executables from PREFIX/bin
 	rm -f $(PREFIX)/bin/$(BINARY)
 	rm -f $(PREFIX)/bin/$(AGENT_BINARY)
 	rm -f $(PREFIX)/bin/$(WATCH_BINARY)
 	rm -f $(PREFIX)/bin/$(EXECUTE_BINARY)
+	rm -f $(PREFIX)/bin/$(EXT_BINARY)
 
 .PHONY: uninstall-full
 uninstall-full: ## Remove the legacy full install (preserves ~/.planar/planar.db)
