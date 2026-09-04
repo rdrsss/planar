@@ -385,7 +385,7 @@ title "Planar — install from $REPO_ROOT"
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
 BUILD_DEPS=(
-  "cmake|cmake|configures, builds, and installs the four Planar binaries"
+  "cmake|cmake|configures, builds, and installs the five Planar binaries"
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
@@ -540,7 +540,7 @@ PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
   err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
-ok "built 4 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+ok "built 5 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 
 # CMake install only writes the targets it builds — it never removes files a
 # PRIOR install left behind. Iterate the cleanup manifest and delete
@@ -632,9 +632,9 @@ else
 fi
 log "rendered via scriptorium: commands/claude, skills/codex, skills/copilot, skills/gemini, agents/{claude,codex,copilot,gemini}"
 
-# Migrations live at repo root in sqlx-cli format and are read by the Zig
-# build via codegen. We also stage them under $PLANAR_HOME for ad-hoc
-# tooling (e.g. operators running `sqlx migrate` against scratch DBs).
+# Migrations live at repo root in sqlx-cli format and are read by the CMake
+# build via configure-time codegen. We also stage them under $PLANAR_HOME for
+# ad-hoc tooling (e.g. operators running `sqlx migrate` against scratch DBs).
 if [[ -d "$REPO_ROOT/migrations" ]]; then
   rm -rf "$PLANAR_HOME/migrations"
   place "$REPO_ROOT/migrations" "$PLANAR_HOME/migrations"

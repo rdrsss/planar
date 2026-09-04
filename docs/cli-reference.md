@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00023_claims_run_stage.up.sql`. Every "schema effects" section below cites real columns from those migrations. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00033_rename_blocks_to_depends_on.up.sql`. Every "schema effects" section below cites real columns from those migrations. As of this milestone the CLI surface is served by C++26 binaries built via CMake (see [docs/architecture.md](architecture.md) and [docs/toolchain-parity.md](toolchain-parity.md)); the Zig implementation under `zig/` remains buildable only as the port's parity oracle. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -3321,13 +3321,20 @@ link id: 7  (two-way mirror)
 
 ### `planar-ext ext propagate <plan>`
 
-> **Not yet implemented (plan 996).** The `ext`/`sync` verb family moved to
-> `planar-ext` at task 6419, but the whole-feature tree walk documented below
-> has not landed on either binary — it is tracked separately (task 6421, in
-> progress at time of writing). The entity-level primitive that IS live
-> today is [`planar-ext ext propagate-one`](#planar-ext-ext-propagate-one-system---from-kindid);
-> use it directly for a single plan or task. The section below documents the
-> intended surface once `ext propagate` lands.
+> **GitHub parent-issue only (task 6421, done).** The `ext`/`sync` verb
+> family moved to `planar-ext` at task 6419, and the whole-feature tree walk
+> documented below now runs there — but task 6421 deliberately scoped its
+> implementation to the single-repo `github-parent-issue` strategy only.
+> Calling this verb against a **Jira** system, or a GitHub feature that
+> resolves to any strategy other than `github-parent-issue`, refuses with
+> exit `1` and a message naming the unimplemented strategy (`github-projects-v2`
+> refuses with a decision-1001-specific message; any other non-`github-parent-issue`
+> strategy — including `jira-epic` — refuses with a generic "not yet
+> implemented in planar-ext" message). There is no tracked follow-up task for
+> Jira-epic support in this whole-tree verb at time of writing (see task 6046
+> for where this was found). For Jira, or for a GitHub feature that isn't
+> single-repo, use [`planar-ext ext propagate-one`](#planar-ext-ext-propagate-one-system---from-kindid)
+> entity-by-entity instead.
 
 **Synopsis:**
 ```
@@ -3336,7 +3343,7 @@ planar-ext ext propagate <plan> [--system <slug>] [--dry-run] [--restrategize [-
                             [--scope <slug>] [--sync <direction>] [--json]
 ```
 
-**Description:** Push a feature tree to the operational plane. Creates external counterparts (Epic/Story/Sub-task on Jira; parent-issue/sub-issues on GitHub) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): Jira always uses the epic hierarchy; GitHub always uses the single-repo parent-issue strategy. The multi-repo `projects-v2` strategy is permanently cut (decision 1001) and will not exist.
+**Description:** Push a feature tree to the operational plane. For a GitHub system whose feature touches exactly one repo, creates external counterparts (parent-issue/sub-issues) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): Jira always uses the epic hierarchy (not yet implemented in this whole-tree verb — see the note above); GitHub always uses the single-repo parent-issue strategy when the feature is single-repo. The multi-repo `projects-v2` strategy is permanently cut (decision 1001) and will not exist; a multi-repo GitHub feature refuses with a message pointing at that cut rather than attempting it.
 
 **Strategy stickiness (Phase C):** The chosen strategy is cached on `external_links.config_json` of the anchor plan at first propagation. Subsequent reruns honor the cached strategy even if the repo count later changes. Strategy is not re-evaluated automatically; use `--restrategize` to rebuild.
 
@@ -3368,9 +3375,9 @@ After propagation, run `planar workbench push <plan>` separately to update workb
 
 **Output (human):**
 ```
-propagate plan:7 → my-jira (jira-epic): 9 created, 0 skipped, 0 failed
-  created   plan:7 "Add Checkout RPC" → MOCK-1
-  created   plan:8 "Protos Changes" → MOCK-2
+propagate plan:7 → my-gh (github-parent-issue): 9 created, 0 skipped, 0 failed
+  created   plan:7 "Add Checkout RPC" → acme/checkout#1
+  created   plan:8 "Protos Changes" → acme/checkout#2
   ...
 ```
 
@@ -3383,7 +3390,7 @@ propagate plan:7 → my-gh (github-parent-issue): 0 created, 9 skipped, 0 failed
 
 **Output (`--json`):**
 ```json
-{"ok":true,"plan_id":7,"system":"my-jira","strategy":"jira-epic","created":9,"skipped":0,"failed":0}
+{"ok":true,"plan_id":7,"system":"my-gh","strategy":"github-parent-issue","created":9,"skipped":0,"failed":0}
 ```
 
 The JSON shape gains `verified`, `abandoned`, `partial`, `missing`, and `warnings` fields (all zero/empty on a clean propagation).
@@ -5950,7 +5957,7 @@ writes to `agent_work_claims`, `agent_actions`, `workflow_runs`, and
 `context_records`, plus the bounded `tasks.status` transitions performed by
 atomic terminal operations. Operator-recovery verbs (`reconcile`, `abort`) live
 here because the capability boundary tracks write ownership, not audience. See
-[Four-binary architecture](architecture.md#four-binary-architecture) for the
+[Five-binary architecture](architecture.md#five-binary-architecture) for the
 binary split.
 
 Schema-version handshake: `planar-agent` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum. The remediation pointer ("run `planar init`") is printed to stderr.
@@ -6141,7 +6148,7 @@ bounded planning-state blast radius.
 
 ## Binary: `planar-watch`
 
-`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third binary in the four-binary architecture (plan 85 M8). See `docs/architecture.md` § "Four-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit is `planar explore` (bare `planar` on a TTY) — see [Domain: `explore`](#domain-explore).
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third of Planar's now-five binaries to be added (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit is `planar explore` in the Zig oracle (bare `planar` on a TTY) — it is registered but not yet implemented in the C++ tree (decision 980; see [docs/architecture.md § Interactive cockpit](architecture.md#interactive-cockpit--embedded-in-planar-zig-oracle-only-not-yet-ported)) — see [Domain: `explore`](#domain-explore).
 
 Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
 
@@ -6412,21 +6419,25 @@ Each `--follow` verb installs a SIGINT handler that flips an atomic flag. The po
 
 ---
 
-## Introspection: `schema` (all binaries)
+## Introspection: `schema` (all planning-state binaries)
 
-Every Planar planning-state binary — `planar`, `planar-agent`, and
-`planar-watch` — exposes a `schema` verb that prints a deterministic flat JSON
+Every Planar planning-state binary — `planar`, `planar-agent`,
+`planar-watch`, and `planar-ext` (decision 998, added when `planar-ext` was
+extracted) — exposes a `schema` verb that prints a deterministic flat JSON
 catalog of its entire command tree: each command's full path, subcommands,
 aliases, positionals, and flags (with inherited flags merged in). Output is
-always JSON.
+always JSON. `planar-execute` is deliberately excluded — it has no comparable
+command-tree catalog, and its frozen Lua host-function manifest is covered by
+unit tests instead.
 
 ```sh
 planar schema
 planar-agent schema
 planar-watch schema
+planar-ext schema
 ```
 
-The catalog is built at comptime from the command tree, so the verb is a pure write with no DB access. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented in `tools/cli_usage_lint.zig`). The same target then runs the semantic authored-surface validator (`tools/surface_lint.zig`); use `make surface-lint` to run that semantic pass alone.
+The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig oracle's `tools/cli_usage_lint.zig` at task 6402). The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone.
 
 ---
 
@@ -6672,6 +6683,16 @@ planar report --days 14 --json
 ---
 
 ## Domain: `explore`
+
+> **Not yet implemented in the C++ tree.** `explore` is registered in the
+> C++ `planar` binary's command surface but its handler is a stub — decision
+> 980 records the cockpit as a rewrite candidate, not a straight port (its
+> screen output has no byte-level contract for the parity harness / state
+> differential / break-probes this milestone's verification relies on), and
+> decision 982 excludes it from the zig-deletion gate for that reason. The
+> section below documents the Zig oracle's live cockpit (`zig/`); it does
+> not describe current behavior when `planar` is built from this repo's
+> CMake project.
 
 ### `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`
 

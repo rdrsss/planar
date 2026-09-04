@@ -16,15 +16,16 @@ flowchart TD
         S2["/pl-spec-draft · /pl-spec-ingest · /pl-ext-propagate · …"]
     end
 
-    subgraph Binaries["Planar CLI (three planning-state surfaces + one DB-handle-free engine)"]
+    subgraph Binaries["Planar CLI (four planning-state surfaces + one DB-handle-free engine)"]
         direction LR
         B1["<b>planar</b><br/>operator RW<br/>planning entities + cockpit TUI"]
         B2["<b>planar-agent</b><br/>agent RW<br/>agent_actions + claims"]
         B3["<b>planar-watch</b><br/>read-only viewer<br/>file:?mode=ro"]
         B4["<b>planar-execute</b><br/>spawn-free Lua engine<br/>no DB handle · shells planar"]
+        B5["<b>planar-ext</b><br/>operational-plane RW<br/>external_links/systems/sync_events only"]
     end
 
-    DB[("SQLite database<br/>~/.planar/planar.db<br/>29 migrations · embedded at build time")]
+    DB[("SQLite database<br/>~/.planar/planar.db<br/>33 migrations · embedded at build time")]
 
     Surface -->|invoke| Binaries
     B1 -->|read / write| DB
@@ -33,11 +34,12 @@ flowchart TD
     B4 -->|shells| B1
     B4 -->|shells| B2
     B4 -->|shells| B3
+    B5 -->|read planning / write its 3 tables| DB
 ```
 
 Two layers are touched by users and agents:
 
-1. **The Planar binaries** — four Zig executables. Three share the SQLite engine/runtime graph: `planar` is the operator surface and hosts the interactive cockpit, `planar-agent` owns coordination writes, and `planar-watch` is a driver-enforced read-only viewer. `planar-execute` links the vendored Lua runtime and reaches state only through an exact allowlist of sibling Planar commands. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Four-binary architecture](#four-binary-architecture) below.
+1. **The Planar binaries** — five C++26 executables. Four share the SQLite engine/runtime graph: `planar` is the operator surface and hosts the interactive cockpit, `planar-agent` owns coordination writes, `planar-watch` is a driver-enforced read-only viewer, and `planar-ext` (decisions 995–1001) owns the operational-plane adapters (Jira, GitHub Issues) with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, enforced by a `sqlite3_set_authorizer` allowlist. `planar-execute` links the vendored Lua runtime and reaches state only through an exact allowlist of sibling Planar commands — it holds no SQLite handle at all. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Five-binary architecture](#five-binary-architecture) below. The Zig implementation these binaries were ported from remains buildable under `zig/` strictly as the port's parity oracle (see [Source Layout](#source-layout)); it is not part of the shipped toolchain.
 2. **The skill and agent layer** — vendor-specific command surfaces (Claude slash commands, Codex skills, Copilot skills) generated from a single source tree under `skills/src/` at install time. Skills invoke binary verbs; binary verbs operate on SQLite.
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
@@ -50,11 +52,11 @@ The database lives at `~/.planar/planar.db` by default. Set `PLANAR_DB` to overr
 
 ### Schema management
 
-Migrations are plain SQL files under `migrations/` in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`, five-digit zero-padded prefix). The build-time codegen tool `tools/gen_migrations.zig` scans the directory and emits a `migrations` Zig module exposing `pub const all: []const Migration` that the runtime applies on startup; already-applied migrations are skipped. There is no external migrator dependency — the migration corpus is embedded in the binary at compile time.
+Migrations are plain SQL files under `migrations/` in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`, five-digit zero-padded prefix). The configure-time CMake codegen `cmake/generate_migrations.cmake` scans the directory (sorted explicitly, never relying on glob order) and `#embed`s each pair into a generated `planar.db.migrations` module that the runtime applies on startup; already-applied migrations are skipped. There is no external migrator dependency — the migration corpus is embedded in the binary at compile time. (The Zig oracle's own `tools/gen_migrations.zig` does the equivalent for `zig/`, as long as that tree remains buildable.)
 
 `schema_migrations` is the public schema-version contract. Every migration inserts one row with a version number and description. Read-side tools (e.g., a web viewer, an Obsidian bridge) must open the database read-only and query `schema_migrations` to verify they support the current version before operating. `planar-agent` and `planar-watch` perform this handshake at startup and refuse with exit code 7 if the database schema is older than the binary's embedded minimum.
 
-Authoring rules (file naming, the `schema_migrations` insert/delete contract, the `.sqlfluff` linter config, and the up/down/up roundtrip test) live in [`migrations/README.md`](../migrations/README.md). New migrations are created via `sqlx migrate add -r <name> --source migrations`; the next `zig build` regenerates the embedded module.
+Authoring rules (file naming, the `schema_migrations` insert/delete contract, the `.sqlfluff` linter config, and the up/down/up roundtrip test) live in [`migrations/README.md`](../migrations/README.md). New migrations are created via `sqlx migrate add -r <name> --source migrations`; the next `cmake --build` regenerates the embedded module (CMake re-runs configure automatically on new/removed migration files).
 
 ### Application tables
 
@@ -93,7 +95,7 @@ Authoring rules (file naming, the `schema_migrations` insert/delete contract, th
 | 0032 routing sample cost metrics | adds nullable `latency_ms`, `cost_micros`, and `total_tokens` to `routing_terminal_samples`, plus a partial index over measured rows. All three are nullable ON PURPOSE: a sample from a host that cannot report them genuinely has no value, and a zero would rank an unmeasured candidate as instant and free — the exact ordering error the quality floor exists to prevent. Ranking compares them only when both candidates carry them. `total_tokens` is kept separate from `cost_micros` so a price change cannot silently re-scale historical samples |
 | 0031 dispatch confirmation tokens | `routing_dispatch_previews` — freezes every value a dispatch preview showed the operator (packet/profile/policy/capability digests, cohort, candidate, host, claim target, exclusions, evidence state) behind a single-use, expiry-bound `preview_token`. Confirm revalidates each bound value before writing a snapshot; a trigger makes a consumed token immutable so the preview→dispatch audit link cannot be rewritten |
 
-Migration 0015 (`migrations/00015_agent_activity.up.sql`) lands the claim + action store that the agent-coordination feature is built on. `claim_token` is generated in SQL via `lower(hex(randomblob(16)))` (32-char opaque handle). Exclusivity of `(entity_kind, entity_id)` is enforced transactionally in the engine store (`src/engine/runtime/agentactivity/`) under `BEGIN IMMEDIATE` because SQLite cannot express the time-dependent "unexpired" predicate in a partial unique index. WAL mode is enabled per-connection in `src/cmd/planar/runtime.zig` — load-bearing for the wake-tier ladder behind `--follow` AND for cross-binary concurrency between the operator and agent binaries (see Four-binary architecture below).
+Migration 0015 (`migrations/00015_agent_activity.up.sql`) lands the claim + action store that the agent-coordination feature is built on. `claim_token` is generated in SQL via `lower(hex(randomblob(16)))` (32-char opaque handle). Exclusivity of `(entity_kind, entity_id)` is enforced transactionally in the engine store (`src/engine/runtime/agentactivity/`) under `BEGIN IMMEDIATE` because SQLite cannot express the time-dependent "unexpired" predicate in a partial unique index. WAL mode is enabled per-connection in `src/cmd/planar/runtime.zig` — load-bearing for the wake-tier ladder behind `--follow` AND for cross-binary concurrency between the operator and agent binaries (see Five-binary architecture below).
 
 Migration 0029 adds the nullable, CHECK-constrained
 `agent_work_claims.failure_category` classification. `planar-agent fail`
@@ -129,17 +131,18 @@ The `agent_actions.metadata` JSON column (migration 00016) is the durable home f
 
 Migration 00027 adds `external_links.baseline_title` and `baseline_status`. These fields store the last common synchronized values used to distinguish local-only, remote-only, converged, and true two-sided changes before a two-way pull mutates local state.
 
-### Four-binary architecture
+### Five-binary architecture
 
-Planar ships four binaries. Three planning-state binaries share the SQLite engine/runtime graph; `planar-execute` links the vendored Lua runtime and no SQLite graph. The split is real: separate `src/cmd/` source trees, separate `addExecutable` entries in `build.zig`, separate `--help` surfaces, and separate installed artifacts.
+Planar ships five binaries (decisions 995–1001 add the fifth, `planar-ext`, this milestone). Four planning-state binaries share the SQLite engine/runtime graph; `planar-execute` links the vendored Lua runtime and no SQLite graph. The split is real: separate `src/cmd/<binary>/` source trees, separate CMake executable targets (`src/cmd/CMakeLists.txt`), separate `--help` surfaces, and separate installed artifacts.
 
-(The fourth binary, `planar-execute`, ships from `src/cmd/planar-execute/`, but it is **not a planning-state binary**: it holds no SQLite handle and is absent from the capability matrix below. It is the deterministic, spawn-free Lua workflow engine described in [`planar-execute` — fourth binary, no DB handle](#planar-execute--fourth-binary-no-db-handle) below; its constrained host surface shells only `planar`, `planar-agent`, and `planar-watch`, so its state access remains bounded by those binaries' verb sets.)
+(`planar-execute` ships from `src/cmd/planar-execute/`, but it is **not a planning-state binary**: it holds no SQLite handle and is absent from the capability matrix below. It is the deterministic, spawn-free Lua workflow engine described in [`planar-execute` — no DB handle](#planar-execute--no-db-handle) below; its constrained host surface shells only `planar`, `planar-agent`, and `planar-watch`, so its state access remains bounded by those binaries' verb sets.)
 
 | Binary | Audience | Write surface | DB open mode |
 |---|---|---|---|
 | `planar` | Operator (human + scripts) | Planning entities (plans/tasks/decisions/etc.) + `tasks.status` on operator-driven transitions | Read-write; owns `init` and runs migrations. |
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `workflow_runs`, and `context_records`; `tasks.status` ONLY as part of an atomic coordinated operation under a status-transition guard | Read-write; refuses startup with exit 7 if schema is older than the binary's embedded minimum. |
 | `planar-watch` | Operator (live view) + scripts | None — the binary registers zero write verbs AND opens SQLite via `file:?mode=ro` URI as a second line of defense | Read-only; same schema-version handshake as `planar-agent`. |
+| `planar-ext` | Agent / operator (operational-plane sync) | Exactly three tables — `external_links`, `external_systems`, `sync_events` — enforced by a `sqlite3_set_authorizer` allowlist keyed on the parsed table name, not by convention alone (decision 995) | Read-write on its three tables; **read-only** on planning tables (`plans`, `tasks`, `questions`, `artifacts`). Owns both operational adapters, Jira and GitHub Issues together (decision 997 — one `external_adapter` interface, one binary). `sync pull` no longer writes remote values into planning entities (decision 996): it emits `remote_title`/`remote_status` for an agent to verify and write back through `planar`. Exposes its own `schema` catalog so `cli-usage-check` polices it (decision 998). |
 
 Capability invariant — non-overlapping write surfaces enforced at
 compile time by each binary's verb set, not by runtime ACLs:
@@ -193,11 +196,13 @@ The `planar-agent run start/end` verbs and the `planar-agent context add/list/re
 
 The shared engine module lives at `src/engine/runtime/agentactivity/`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema`) with a Tier-2 event-driven `--follow` loop.
 
-### Interactive cockpit — embedded in `planar`
+### Interactive cockpit — embedded in `planar` (Zig oracle only; not yet ported)
 
-The `planar` binary embeds an interactive TUI cockpit (plan 591). Bare `planar` on a TTY launches it (landing on the Scope Explorer); `planar explore` is the explicit alias. Non-TTY contexts, `TERM=dumb`, `PLANAR_NO_TUI`, and `--plain` all fall back to the existing help/usage output — the cockpit never activates in automated pipelines.
+> **Not yet in the C++ tree.** `explore` is registered as a leaf in the C++ `planar` binary's surface but its handler is a stub: decision 980 records it as a **rewrite candidate, not a port** (the cockpit is ~4x the rest of the remaining port combined, and the parity harness/state-differential/break-probe verification methods this milestone relies on do not apply to a TUI's screen output). Decision 982 excludes it from decision 963's zig-deletion gate for exactly this reason. The section below describes the Zig oracle's implementation as it exists in `zig/` today — accurate for that tree, not for what `planar explore` currently does when built from this repo's CMake project.
 
-**Why `planar`, not `planar-watch`:** the cockpit offers three editing tiers (entity-field editing, claim-aware task lifecycle transitions, external/workbench actions). Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver. `planar-watch` is **unchanged** — it remains the scriptable, zero-write, NDJSON-streaming viewer whose `capability_boundary_test.zig` invariants stand. The cockpit's placement in `planar` preserves the four-binary capability model.
+The `planar` binary embeds an interactive TUI cockpit (plan 591) **in the Zig oracle**. Bare `planar` on a TTY launches it (landing on the Scope Explorer); `planar explore` is the explicit alias. Non-TTY contexts, `TERM=dumb`, `PLANAR_NO_TUI`, and `--plain` all fall back to the existing help/usage output — the cockpit never activates in automated pipelines.
+
+**Why `planar`, not `planar-watch`:** the cockpit offers three editing tiers (entity-field editing, claim-aware task lifecycle transitions, external/workbench actions). Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver. `planar-watch` is **unchanged** — it remains the scriptable, zero-write, NDJSON-streaming viewer whose `capability_boundary_test.zig` invariants stand. The cockpit's placement in `planar` preserves the (now five-binary) capability model.
 
 **No schema change.** The cockpit's views are read-only projections of existing tables (see the data-source table in the tech spec). Editing reuses the existing engine write paths and guards — no new tables, columns, or write code.
 
@@ -221,7 +226,7 @@ Cockpit startup loads only the selected initial view. Other views load when the 
 
 See [docs/concepts.md § Interactive cockpit](concepts.md#interactive-cockpit) for the operator-facing model and [docs/cli-reference.md § Domain: explore](cli-reference.md#domain-explore) for the full flag reference.
 
-### `planar-execute` — fourth binary, no DB handle
+### `planar-execute` — no DB handle
 
 Revived in plan 633, `planar-execute` is a deterministic, spawn-free Lua workflow engine. A caller invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`), runs the named phase, and prints `flow.result(table)` as JSON. The CLI boundary is an exact `(binary, command path)` allowlist, and each Planar binary is resolved beside the running `planar-execute` rather than through `PATH`. `git.*` is confined with `-C <worktree>` plus validated refs. `fs.*` walks from an opened sandbox-root handle, opens every parent and final entry with no-follow semantics, and rejects absolute paths, dot segments, alternate separators, and symlink components. The sandbox exposes no model-spawning primitive and nils `os`/`io`/`load`/`loadfile`/`loadstring`/`require`/`dofile`/`math.random`. The engine holds no SQLite handle and does not participate in the claim ritual; the caller owns transitions between deterministic phases and any LLM work.
 
@@ -272,15 +277,15 @@ consumers.
 
 ### SQLite driver
 
-Planar vendors the official SQLite amalgamation under `vendor/sqlite/` (`sqlite3.c` + `sqlite3.h`). `build.zig` compiles it as a static library with `SQLITE_THREADSAFE=1`, `SQLITE_ENABLE_FTS5`, `SQLITE_ENABLE_JSON1`, `SQLITE_DQS=0`, `SQLITE_DEFAULT_FOREIGN_KEYS=1`, and `SQLITE_USE_URI=1`. There is no system SQLite requirement and no external wrapper. Cross-compilation works out of the box because Zig itself compiles the C source — the toolchain handles every supported target.
+Planar vendors the official SQLite amalgamation, CPM-cached under `vendor/sqlite/` and compiled by the CMake build (`cmake/dependencies.cmake`) as a static library with the same flags the Zig build used: `SQLITE_THREADSAFE=1`, `SQLITE_ENABLE_FTS5`, `SQLITE_ENABLE_JSON1`, `SQLITE_DQS=0`, `SQLITE_DEFAULT_FOREIGN_KEYS=1`, and `SQLITE_USE_URI=1`. There is no system SQLite requirement and no external wrapper.
 
-The Zig bindings live in `src/db/sqlite.zig`; the higher-level `*Db` wrapper (connection + transaction helpers) lives in `src/db/db.zig`.
+The C++ bindings and RAII wrappers (`connection`, `statement`, `transaction`) live in `src/lib/db/db.cppm`/`db.cpp`; migration application lives in `src/lib/db/migrate.cppm`/`migrate.cpp` against the generated `planar.db.migrations` module.
 
 ---
 
 ## Source Layout
 
-The repo root IS the Zig package root: `build.zig`, `build.zig.zon`, and the source tree (`src/`) sit together at the top level. The runtime is organized into per-binary entry points, a domain engine grouped by bucket, a hand-rolled CLI parser, a database layer, and a build-time codegen pipeline.
+The repo root IS the CMake project root: `CMakeLists.txt`, `CMakePresets.json`, and the source tree (`src/`) sit together at the top level. The Zig implementation this project is porting from lives entirely under `zig/`, kept buildable there only as the port's parity oracle (see [Five-binary architecture](#five-binary-architecture) above and decisions 963/980/982) — it is not part of the CMake project. The C++ runtime is organized into per-binary entry points, a domain engine grouped by bucket, a CLI11-backed parser wrapper, a database layer, and configure-time codegen.
 
 ```mermaid
 flowchart LR
@@ -288,89 +293,76 @@ flowchart LR
         P["planar/<br/>main + handlers/"]
         PA["planar-agent/<br/>main + handlers/"]
         PW["planar-watch/<br/>main + handlers/"]
+        PX["planar-execute/<br/>main + handlers/"]
+        PE["planar-ext/<br/>main + handlers/"]
     end
 
-    subgraph CLI["vendor/etcli-zig/ — vendored CLI parser"]
-        CLI1["cmd · parser · flag · help · completion · validate"]
+    subgraph CLI["src/lib/cliapp/ — CLI wrapper over vendored CLI11"]
+        CLI1["args · schema · completion · walk · surface"]
     end
 
-    subgraph ENG["src/engine/ — domain engine"]
+    subgraph ENG["src/lib/engine/ — domain engine"]
         EB["buckets: identity/ · planning/ · external/ · runtime/"]
-        ES["subsystems: workbench · extsync · templates · ingestor · …"]
+        ES["subsystems: workbench/ · extsync/ · templates/ · ingest/ · …"]
     end
 
-    DBM["src/db/<br/>db · migrate · sqlite"]
-    TOOLS["tools/<br/>gen_migrations · gen_templates"]
-    VEND["vendor/sqlite/<br/>amalgamation"]
+    DBM["src/lib/db/<br/>db · migrate"]
+    CODEGEN["cmake/<br/>generate_migrations · generate_templates"]
+    VEND["vendor/sqlite/<br/>amalgamation (CPM-cached)"]
 
     CMD --> CLI
     CMD --> ENG
     ENG --> DBM
     DBM --> VEND
-    TOOLS -.->|codegen at build time| ENG
+    CODEGEN -.->|configure-time #embed| ENG
 ```
 
 ### Binary entry points (`src/cmd/`)
 
 | Path | Role |
 |------|------|
-| `src/cmd/planar/` | Operator binary entry — `main.zig` plus runtime scaffolding (`runtime.zig`, `scope.zig`, `output.zig`, `editflow.zig`, `editor.zig`, `exit.zig`) and per-verb handlers under `handlers/`. Also contains the interactive cockpit under `cockpit/` (`gate.zig`, `app.zig`, the `view_model.zig` facade plus `view_model/` domains, `views/`, `widgets/`, `edit/`). |
-| `src/cmd/planar-agent/` | Agent-callable coordination binary — `main.zig`, `exit.zig`, and its comptime-registered claim, action, run, context, recovery, and terminal-operation handlers. |
-| `src/cmd/planar-watch/` | Read-only viewer binary — `main.zig`, `exit.zig`, and per-verb handlers under `handlers/` (including the `--follow` wake loop). Unchanged by the cockpit addition; `planar-watch` remains the scriptable NDJSON viewer. |
-| `src/cmd/planar-execute/` | Spawn-free deterministic workflow engine — Lua workflow loading, schema/allowlist enforcement, state, and `run` handling. It links the first-party confinement layers under `src/lua/`, `src/runtime/`, and `src/treesitter/`, but no SQLite module. |
+| `src/cmd/planar/` | Operator binary entry and per-verb handlers under `handlers/` (86 handler files at time of writing, flat — not grouped into per-domain subdirectories). `planar` also registers an `explore` leaf for the interactive cockpit, but that leaf's handler is a stub — the cockpit itself is not yet ported (decision 980; see [Interactive cockpit](#interactive-cockpit--embedded-in-planar-zig-oracle-only-not-yet-ported) above). |
+| `src/cmd/planar-agent/` | Agent-callable coordination binary — its claim, action, run, context, recovery, and terminal-operation handlers. |
+| `src/cmd/planar-watch/` | Read-only viewer binary — per-verb handlers under `handlers/` (including the `--follow` wake loop). |
+| `src/cmd/planar-execute/` | Spawn-free deterministic workflow engine — Lua workflow loading, schema/allowlist enforcement, state, and `run` handling. Links the vendored Lua runtime (`vendor/lua/`) but no `src/lib/db/` or SQLite. |
+| `src/cmd/planar-ext/` | Operational-plane binary (decisions 995–1001, extracted this session from `planar`) — `ext`/`sync` handlers, the strategy selector (`handlers/ext_strategy.cpp`), and the adapter factory (`handlers/ext_adapter_factory.cppm`). Opens SQLite directly; read-only on planning tables, read-write on exactly `external_links`/`external_systems`/`sync_events`. |
 
-The first-party runtime boundary is source-owned: `src/lua/lua.zig` provides
-the Lua binding used by `planar-execute`; and
-`src/treesitter/treesitter.zig` is Planar's Tree-sitter binding. These files
-are ordinary reviewed source, not generated projections. Build-generated Zig
-modules are limited to the migration and default-template outputs emitted by
-`tools/gen_migrations.zig` and `tools/gen_templates.zig`.
+Each `src/cmd/<binary>/` target is registered through `src/cmd/CMakeLists.txt`'s guarded helper (never a bare `add_executable()`), which is what lets `planar-ext`'s write-capability allowlist be enforced at the same registration point as every other binary's capability boundary.
 
-### Domain engine (`src/engine/`)
+### Domain engine (`src/lib/engine/`)
 
-The engine is organized into four buckets that map to data-model domains plus a flat set of subsystem modules. Each bucket directory holds per-entity sub-modules; the bucket name itself is also exported as a `<bucket>.zig` namespace at the engine root.
+The engine is organized into buckets that map to data-model domains plus a flat set of subsystem modules, carried forward from the Zig tree's `src/engine/` layout (ADR-0007/0008 bucket conventions survive the port).
 
 | Path | Contents |
 |------|----------|
-| `src/engine/identity/` | Project, scope, association, and scope-argument parsing — "who is asking and in what context." |
-| `src/engine/planning/` | Plans, tasks, questions, test scenarios, artifacts, decisions — the core structured-intent and execution surfaces. |
-| `src/engine/external/` | External-system registration (`system.zig`), external-link tracking (`link.zig`), sync engine (`sync.zig`), agent ingest (`agentingest/`). |
-| `src/engine/runtime/` | Sessions, session entries, context snapshots, handoffs, capture, audit trail, and the `agentactivity/` claim + action store with its wake transport (`wake.zig`). |
+| `src/lib/engine/identity/` | Project, scope, association, and scope-argument parsing — "who is asking and in what context." |
+| `src/lib/engine/planning/` | Plans, tasks, questions, test scenarios, artifacts, decisions — the core structured-intent and execution surfaces. |
+| `src/lib/engine/external/` | External-system registration, external-link tracking, `parent_issue` (GitHub sub-issue strategy). Compiled into `planar-ext`. |
+| `src/lib/engine/extsync/` | Propagation strategy selection (`propagate.cppm`/`.cpp` — `strategy_for_system`, `strategy_for_repo_count`) shared by `planar-ext`'s handlers. |
+| `src/lib/engine/runtime/` | Sessions, session entries, context snapshots, handoffs, capture, audit trail, claim + action store. |
 
-Subsystem modules live at the engine root:
+Subsystem modules at the engine root include `workbench/` (bidirectional filesystem sync), `templates/` (three-level template resolution), `ingest/` (planning-document parser), `config/` (config-plane reader), `workspace/` (workspace state directory model), `closure/`, `grouping/`, `health/`, `importer/`, `introspect/`, `introspection_adapters/`, `local/`, `models/`, `promotion/`, `routing/`, `runs/`, `search/`, `synthesize/`, `tree/`, `workflows/`, and `execute/` (the `planar-execute` Lua sandbox's engine-side pieces).
 
-| Path | Role |
-|------|------|
-| `src/engine/workbench/` (+ `workbench.zig`) | Bidirectional sync between the workbench filesystem and the database — pull, push, sync, resolve, archive, restore, publish, manifest management. |
-| `src/engine/extsync/` (+ `extsync.zig`) | Operational-plane adapters and propagation. Holds `jira.zig`, `github.zig`, `strategy.zig`, `propagate.zig`, `parent_issue.zig`, `projects_v2.zig`. |
-| `src/engine/templates/` (+ `templates.zig`) | Template rendering for external-system payloads — three-level resolution (user set → default set → embedded), Go-template-compatible placeholder substitution. |
-| `src/engine/ingestor/` (+ `ingestor.zig`) | Planning-document parser and ingestion engine. Reads workbench tech-spec / roadmap / test-spec files, diffs against DB state, applies. |
-| `src/engine/evals.zig` | Read-only routing-evals aggregator. Mines completed dispatch notes, terminal claims, and test-coder action outcomes into a per-`(work_type, candidate)` scorecard for `planar models evals`; never mutates config or SQLite. |
-| `src/engine/synthesize.zig` | Synthesis pipeline for `synthesize`: Request/Result, fingerprint cache, Validate, Merge. The LLM runs in the vendor skill; this module owns the deterministic floor and the skill-handoff cache contract. |
-| `src/engine/import.zig` | Transcription pipeline for `import`: classifier, parser, status-inference, diff, apply. The apply layer is shared with `synthesize`. |
-| `src/engine/tree.zig` | Hierarchical rendering for `planar tree` — walks the plan / task / artifact / decision / scenario / question graph and produces the indented output. |
-| `src/engine/config/` (+ `config.zig`) | Configuration-plane reader: loads `~/.planar/config.toml`, applies the layered resolution order, validates, exposes the resolved config to other modules. |
-| `src/engine/workspace/` (+ `workspace.zig`) | Workspace state directory model: routing table, generated AGENTS.md, symlink lifecycle. |
-| `src/engine/llm/` (+ `llm.zig`), `entitylink.zig`, `health.zig`, `policy/`, `promotion.zig`, `local/`, `docs.zig`, `search.zig`, `init.zig` | Cross-cutting subsystem modules. |
+### CLI wrapper (`src/lib/cliapp/`, over vendored CLI11)
 
-### CLI parser ([`vendor/etcli-zig/`](https://github.com/rdrsss/etcli-zig))
+CLI11 (vendored, `vendor/cli11/`) owns tokenization and value coercion only — decision 948, a mid-port plan change from the originally-intended `etcli` C++ library (which was never adopted; `import cli11;` in `args.cppm` is ground truth, though decision 948's own status is still recorded as `proposed`, an open reconciliation question). Planar's own `src/lib/cliapp/` wraps it with the help renderer, the deterministic `schema` JSON catalog emitter, exit-code mapping, and completion generation — the parts that carry the oracle-pinned parity surface (help text, parse-error wording, exit codes) and that CLI11 itself does not provide in that shape. Each binary's entry point builds a command tree over this wrapper and dispatches to its handlers.
 
-Comptime-driven argv parser — no third-party CLI framework, just a small purpose-built library extracted from Planar's former in-tree `src/cli/` into [etcli-zig](https://github.com/rdrsss/etcli-zig). Vendored under `vendor/etcli-zig/` and consumed via a path dependency in `build.zig.zon`; `build.zig` wires it into every binary as the `cli` module. Files in the upstream tree mirror Planar's prior layout: `cmd.zig`, `parser.zig`, `flag.zig`, `help.zig`, `completion.zig`, `validate.zig`, `error.zig`, `duration.zig`, `platform/`. Each binary's `main.zig` builds a `cli.Cmd` tree and dispatches to its handlers.
-
-### Database layer (`src/db/`)
+### Database layer (`src/lib/db/`)
 
 | File | Role |
 |------|------|
-| `src/db/db.zig` | `*Db` connection wrapper, transaction helpers (`beginTx` / `commit`), PRAGMA setup (foreign keys on, WAL mode). |
-| `src/db/migrate.zig` | Applies the embedded `migrations` Zig module (emitted by `tools/gen_migrations.zig`) on startup. |
-| `src/db/sqlite.zig` | Zig bindings against the vendored SQLite amalgamation. |
+| `db.cppm` / `db.cpp` | `connection` / `statement` / `transaction` RAII wrappers, PRAGMA setup (foreign keys on, WAL mode). Every fallible boundary returns `std::expected<T, db_error>` — no exceptions cross the module boundary. |
+| `migrate.cppm` / `migrate.cpp` | Applies the generated `planar.db.migrations` module on startup. |
+| `migrations.cppm` | The generated module's declared interface (implementation is `#embed`-generated at configure time into a file under the build tree, not checked in). |
 
-### Build-time codegen (`tools/`)
+### Configure-time codegen (`cmake/`)
 
-| Tool | Role |
+| File | Role |
 |------|------|
-| `tools/gen_migrations.zig` | Scans `migrations/` and emits a `migrations` Zig module exposing `pub const all: []const Migration`. |
-| `tools/gen_templates.zig` | Scans `templates/defaults/` and emits an embedded-templates module so propagation defaults compile into the binary. |
+| `cmake/generate_migrations.cmake` | Scans `migrations/*.up.sql`/`*.down.sql`, sorts explicitly, and `#embed`s each pair into a generated `planar.db.migrations` implementation unit. Re-runs configure automatically on new/removed migration files (`file(GLOB CONFIGURE_DEPENDS)`). |
+| `cmake/generate_templates.cmake` | Same pattern for `templates/defaults/` — embeds propagation-template defaults so they compile into the binary. |
+
+Both supersede the Zig tree's build-time `tools/gen_migrations.zig` / `tools/gen_templates.zig`, which still run for `zig/`'s own build as long as it remains buildable.
 
 ---
 
@@ -388,23 +380,24 @@ resetting their disposition to `untriaged`. The `planar feedback triage` read
 leaves are deterministic and `set` uses the normal entity scope guard. It never
 writes agent tables or external systems.
 
-`planar` is a Zig executable with a thin `main` in `src/cmd/planar/main.zig` that builds a `cli.Cmd` tree against the [etcli-zig](https://github.com/rdrsss/etcli-zig) parser (vendored under `vendor/etcli-zig/`). Each subcommand domain maps to one entity kind or system surface. Parsing, help rendering, shell completion, and validation are all in the etcli-zig library — Planar does not vendor a CLI framework like cobra or clap.
+`planar` is a C++26 executable whose entry point builds a command tree against the CLI11-backed wrapper in `src/lib/cliapp/` (see [Source Layout § CLI wrapper](#cli-wrapper-srclibcliapp-over-vendored-cli11) above). Each subcommand domain maps to one entity kind or system surface. Tokenization and value coercion come from vendored CLI11; help rendering, the `schema` catalog, exit-code mapping, and shell completion are Planar's own, preserved across the parser swap because they carry the oracle-pinned parity surface.
 
 ### Handler layout
 
-Per-verb handlers live under `src/cmd/planar/handlers/`, grouped into per-domain sub-directories (`plan/`, `task/`, `artifact/`, `scenario/`, `decision/`, `question/`, `ext/`, `links/`, `sync/`, `handoff/`, `resume/`, `audit/`, `capture/`, `annotate/`, `association/`, `dashboard.zig`, `health.zig`, `init.zig`, `tree.zig`, `synthesize.zig`, `import.zig`, etc.). Each handler is a small dispatch function that parses verb-specific args via `cli.parser`, calls the engine module that owns the domain logic, and emits text or JSON via `output.zig`.
-
-The handler tree mirrors the engine bucket layout. The `runtime` bucket is materialized as runtime-scoped handlers (`handoff/`, `resume/`, `audit/`, `capture/`, `session/`); the `identity` bucket as (`scope/`, `association/`, `promote.zig`, `demote.zig`, `init.zig`); the `planning` bucket as (`plan/`, `task/`, `artifact/`, `question/`, `scenario/`, `decision/`, `spec/`, `templates/`); the `external` bucket as (`ext/`, `link.zig`, `links/`, `sync/`).
+Per-verb handlers live under `src/cmd/planar/handlers/` as flat files (not grouped into per-domain subdirectories the way the Zig tree's `handlers/plan/`, `handlers/task/`, etc. were). Each handler is a small dispatch function that parses verb-specific args via the CLI wrapper, calls the engine module that owns the domain logic, and emits text or JSON. `ext`, `sync`, and their supporting handlers moved off `planar` entirely onto `planar-ext` at task 6419 (decisions 995–1001); `link`, `unlink`, and `audit` stayed on `planar`.
 
 ### Subcommand domains
 
-The live command tree currently exposes `init`, `scope`, `assoc`, `plan`,
+The live `planar` command tree currently exposes `init`, `scope`, `assoc`, `plan`,
 `task`, `question`, `scenario`, `decision`, `artifact`, `annotate`, `promote`,
-`demote`, `workbench`, `workspace`, `ext`, `link`, `unlink`, `links`, `sync`,
+`demote`, `workbench`, `workspace`, `link`, `unlink`, `links`,
 `resume`, `handoff`, `capture`, `audit`, `health`, `models`, `dashboard`,
 `spec`, `test-spec`, `config`, `templates`, `tree`, `search`, `local`, `skills`,
 `import`, `synthesize`, `version`, `completion`, `schema`, `report`, `bench`,
-`closure`, `run`, `groups`, `explore`, `workflow`, and `feedback`.
+`closure`, `run`, `groups`, `explore` (registered leaf, stub handler — see
+above), `workflow`, and `feedback`. `ext` and `sync` are exposed by
+`planar-ext`, not `planar` — see [`planar-ext`](cli-reference.md#domain-ext)
+in the CLI reference.
 
 Use `planar --help` for the current list. Use `planar <domain> --help` for subcommand detail. The full surface is enumerated in [docs/cli-reference.md](cli-reference.md).
 
@@ -568,30 +561,34 @@ Templates are JSON files; string values may contain a Go-template-compatible pla
 
 ## Operational Plane Adapters
 
-The operational plane adapters connect Planar to external issue trackers. The boundary is duck-typed at compile time: `src/engine/external/sync.zig` and `src/engine/extsync/propagate.zig` accept an `adapter: anytype` and route calls through `extsync.dispatch(Adapter, .verb, adapter, args)`, where the comptime `Adapter` parameter resolves the concrete method. Each adapter exposes the same five-method surface (`fetch`, `create`, `update`, `comment`, `search`) with matching argument and return types.
+The operational plane adapters connect Planar to external issue trackers, and are compiled into **`planar-ext`** (decisions 995–1001), not `planar`. `planar-ext` opens SQLite directly: read-only on planning tables (`plans`, `tasks`, `questions`, `artifacts`), read-write on exactly `external_links` / `external_systems` / `sync_events`, enforced by a `sqlite3_set_authorizer` allowlist keyed on the parsed table name (not by convention alone — a boundary test must assert against prepared statements, since `sync.cpp`'s `UPDATE` composes its table name at runtime via `table_for`, invisible to a literal source grep).
 
-HTTP transport runs each request in a cancelable I/O group with a 30-second monotonic deadline and writes responses into a fixed 4 MiB buffer. Timeout, cancellation, and oversized responses fail the adapter call rather than hanging the CLI or growing memory without bound.
+The boundary is a pure-virtual C++ interface: `src/lib/adapter/adapter.cppm`'s `external_adapter` class declares four operations — `validate`, `pull`, `push`, `render` — and `sync.cppm`/`propagate.cppm` consume any adapter polymorphically through `const external_adapter&`. (This is a smaller, C++-native surface than the Zig oracle's five-method `fetch`/`create`/`update`/`comment`/`search` duck-typed `adapter: anytype`; both adapters implement the smaller interface.) `render` returns the provider's JSON creation payload without sending it.
 
-Two adapters are implemented:
+HTTP transport runs over vendored libcurl (`vendor/curl/`, `src/lib/http/`) with a 30-second client timeout.
+
+Both adapters together are one binary, deliberately — decision 997: splitting Jira and GitHub across two binaries would put one interface across two write surfaces and split `sync_events` writes between them, breaking the disjoint-write-surface property the five-binary doctrine rests on.
 
 | Adapter | Location | Transport |
 |---------|----------|-----------|
-| Jira | `src/engine/extsync/jira.zig` | `std.http` (30s client timeout) |
-| GitHub Issues | `src/engine/extsync/github.zig` | `std.http` (30s client timeout) |
+| Jira | `src/lib/engine/extsync/jira.cppm`/`.cpp` (~464 lines) | libcurl (30s client timeout) |
+| GitHub Issues | `src/lib/engine/extsync/github.cppm`/`.cpp` (~531 lines) | libcurl (30s client timeout) |
 
-Per-vendor logic stays behind the dispatch boundary; the sync engine and the ext-sync agent never branch on adapter kind.
+Per-vendor logic stays behind the interface boundary; the sync engine and `planar-ext`'s handlers never branch on adapter kind except to select a propagation strategy (below).
 
 ### Strategy selection
 
-For GitHub Issues, the propagation strategy is selected once at first propagation per feature and cached on `external_links.config_json` of the anchor plan. Today there is a single GitHub strategy: `github-parent-issue`, used regardless of how many repos the feature's descendant tasks touch. The multi-repo `github-projects-v2` strategy (a GitHub Projects board mirroring the feature tree) is permanently cut — decision 1001 — and will not be built.
+For GitHub Issues, the propagation strategy is selected once at first propagation per feature (`src/cmd/planar-ext/handlers/ext_strategy.cpp`'s `select_strategy`) and cached on `external_links.config_json` of the anchor plan. Today the whole-tree `ext propagate` verb executes a single GitHub strategy — `github-parent-issue` — used when the feature's descendant tasks touch exactly one repo (task 6421 scoped the C++ port to this arm only; see the caveat on [`planar-ext ext propagate`](cli-reference.md#planar-ext-ext-propagate-plan)). The multi-repo `github-projects-v2` strategy (a GitHub Projects board mirroring the feature tree) is permanently cut — decision 1001 — and will not be built; `select_strategy` still reports that bucket by name so `ext propagate` can refuse it with a message naming the real reason (a multi-repo feature) rather than a generic "not implemented."
 
 The strategy is sticky: subsequent re-propagations use the cached value. `--restrategize` forces fresh detection.
 
-For Jira, the strategy is always the epic hierarchy: anchor plan → Epic, child plans → Stories, tasks → Sub-tasks.
+For Jira, `strategy_for_system`/`strategy_for_repo_count` always resolve the epic hierarchy (anchor plan → Epic, child plans → Stories, tasks → Sub-tasks) — but the whole-tree `ext propagate` verb does not yet execute it (see the caveat above); `ext propagate-one`, the entity-level primitive, does not branch on strategy for Jira and works today.
 
-### The ext-sync agent
+### The operational-plane binary (`planar-ext`)
 
-Beyond propagation, `src/engine/extsync/propagate.zig` handles whole-feature propagation and `src/engine/external/sync.zig` handles bidirectional sync: pulling remote state changes into `sync_events` and pushing local mutations to the remote. The sync engine orchestrates the pull/push cycle; adapters handle the per-system translation. External conflict events persist a versioned evidence envelope in the existing `sync_events.context_json` contract: exact local and remote title/status values, provenance, observation time, the local entity's `updated_at`, the provider's non-empty remote `updated`/`updated_at` version, and a SHA-256 evidence token. `audit trail --link --json` exposes that envelope as `sync_events[].evidence`. Resolution is compare-and-swap guarded: the event must remain latest, the link conflicted, the approved token and local version exact, and a fresh adapter read must carry a non-empty provider version and match the recorded remote values and provider version before a whole-entity keep-local or keep-remote mutation proceeds. The local transaction and fresh remote read narrow the race window but cannot eliminate a provider-side GET-to-write race when the provider offers no conditional update primitive. After an ambiguous adapter or process failure, inspect audit, sync status, and entity post-state before deciding whether to obtain fresh approval or retry.
+`src/lib/engine/extsync/propagate.cpp` (strategy selection) and `src/lib/engine/external/sync.cpp` (pull/push) are compiled into `planar-ext`'s handlers. **`sync pull` no longer writes remote values into planning entities (decision 996, a deliberate divergence from the Zig oracle recorded against decision 982's clean-differential gate).** The oracle's `apply_remote_to_local` wrote `title`/`status` straight into `tasks`/`plans`/`questions`/`artifacts` on a clean pull; `planar-ext` instead fetches and *emits* `remote_title`/`remote_status` on the result row, and records a `sync_events` row per link touched. The intended flow is three steps across two actors: `planar-ext` fetches and emits (`sync pull`); an agent verifies, synthesizes, and validates the emitted values; the agent then calls `planar` to create or update the planning entity if warranted — precedent already established by `import` and `synthesize`, which externalize their own model calls the same way via a pending/cache-file handoff under `$PLANAR_HOME/cache/<kind>/<slug>/`.
+
+External conflict events persist a versioned evidence envelope in the existing `sync_events.context_json` contract: exact local and remote title/status values, provenance, observation time, the local entity's `updated_at`, the provider's non-empty remote `updated`/`updated_at` version, and a SHA-256 evidence token. `audit trail --link --json` (on `planar`, reading `planar-ext`'s tables) exposes that envelope as `sync_events[].evidence`. Resolution is compare-and-swap guarded: the event must remain latest, the link conflicted, the approved token and local version exact, and a fresh adapter read must carry a non-empty provider version and match the recorded remote values and provider version before a whole-entity keep-local or keep-remote mutation proceeds. The local transaction and fresh remote read narrow the race window but cannot eliminate a provider-side GET-to-write race when the provider offers no conditional update primitive. After an ambiguous adapter or process failure, inspect audit, sync status, and entity post-state before deciding whether to obtain fresh approval or retry.
 
 ---
 
@@ -703,7 +700,7 @@ This is a source-of-truth boundary, not merely a directory convention. Review
 and edit `skills/src/` and `agents/`; validate projections in an out-of-tree
 render destination. Never repair guidance drift by editing a generated vendor
 projection. At documentation closeout the orchestrator derives the migration
-tail, schema version, exact four-binary set, generated-surface boundary, and
+tail, schema version, exact five-binary set, generated-surface boundary, and
 `AGENTS.md`/`CLAUDE.md` equivalence from repository/build evidence. Explicit
 contradictions become operator-gated `guidance-identity-drift` rows; omissions
 do not invent work and no guidance or manifest file is changed automatically.
@@ -787,7 +784,7 @@ itself never opens SQLite and has no write path of its own.
 
 ### Authored-surface validation
 
-`tools/surface_lint.zig` deterministically scans canonical Markdown under
+`src/tools/surface_lint/` (ported from the Zig oracle's `tools/surface_lint.zig` at task 6402, decision 1000) deterministically scans canonical Markdown under
 `agents/`, `skills/src/`, and `docs/`. Its stable finding codes are
 `surface-link-missing`, `surface-legacy-reference`,
 `surface-artifact-set-drift`, `surface-capability-drift`,
@@ -802,8 +799,8 @@ checked by default unless its frontmatter contains the literal boolean
 renderer fixtures rather than resolved against output directories that do not
 exist in a source checkout.
 
-Run `make surface-lint` for stable text findings or
-`zig build surface-lint -- --json` for the versioned envelope
+Run `make surface-lint` for stable text findings or the built
+`surface_lint <repo-root> --json` binary directly for the versioned envelope
 `{version,ok,files_scanned,findings}`. Each finding is
 `{code,file,line,message}`; findings are ordered by file, line, code, and
 message. A clean result exits 0, and any finding or validator failure exits
@@ -827,35 +824,43 @@ once through that composed target; it does not depend separately on
 
 ## Build and Test
 
-The Zig package root IS the repo root: `build.zig` and `build.zig.zon` sit at the top level. Build via the Makefile wrappers or `zig build` directly.
+The CMake project root IS the repo root: `CMakeLists.txt` and `CMakePresets.json` sit at the top level. Build via the Makefile wrappers or CMake/ctest directly.
 
 ```bash
 # Makefile wrappers
-make build              # → ./bin/planar (ReleaseSafe)
-make install            # install the four executables to PREFIX/bin
-make test               # unit tests
-make test-integration   # builds ./bin/planar, sets PLANAR_BIN, runs the
-                        # integration suite under integration_tests/
-make test-all           # unit + integration + parity + coverage + authored-surface gates
+make build              # cmake --preset release; copies planar/planar-agent/
+                        # planar-watch/planar-execute into ./bin/ (task 6431:
+                        # does not yet also copy planar-ext)
+make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
+                        # cmake --install into PREFIX/bin (default ~/.local/bin)
+make test               # cmake --preset debug; cmake --build; ctest
+make test-integration   # runs the Zig-oracle's integration_tests/ suite
+                        # against whichever binaries $PLANAR_BIN et al. point
+                        # at (defaults to a fresh Zig build)
+make test-parity-cpp    # same suite, pointed at the CMake build's binaries
+make test-all           # unit (ctest) + integration + coverage + cli-usage-check
 
-# Direct zig CLI from the repo root
-zig build                                # default install (zig-out/bin/planar)
-zig build test                           # unit tests
-zig build test-integration               # integration tests
-zig build run -- <subcommand>            # run from source
+# Direct CMake/ctest from the repo root
+cmake --preset debug                          # or --preset release
+cmake --build build/debug
+ctest --test-dir build/debug --output-on-failure
 ```
+
+The Zig tree (`zig/`) still builds and tests independently as the port's parity oracle, via its own `zig build` / `zig build test` / `zig build test-integration`; it is not part of `make build`/`make install`/`make test`.
 
 Planar runs a two-tier test model:
 
-- **Unit tests** — `test "<name>" { ... }` blocks colocated with the code under test under `src/<module>/`. They exercise the module directly (plus the `db` module when they need a DB) and run under `zig build test`.
-- **CLI integration tests** — `integration_tests/` at the repo root exec the compiled `planar` binary via the `harness.zig` runner (`harness.smoke`, `harness.mustRun`, `harness.mustRunJSON`, `harness.expectFailure`). The suite imports nothing from the engine modules. These suites lock the user-visible contract — flag names, JSON shapes, exit codes, status-transition rules. Always invoke them via `make test-integration` so `PLANAR_BIN` points at the freshly-built `./bin/planar` rather than falling back to per-call rebuilds.
-- **Cross-binary parity gate (RETIRED)** — the port was originally guarded by a `make parity-check` gate diffing the zig binary against the archived Go reference. It was retired once the port outgrew it: the reference is a frozen archive whose last migration is `00030`, so the two binaries can no longer open the same database, and the audit's premise was that both operate on identical state. Handing each its own copy would not rescue it — the comparison would become "Go at schema 30 vs zig at a later schema", where pure schema drift registers as parity gaps that are not parity gaps. The integration suite is the standing guard, and the `parity_*` suites still assert the user-facing contracts (help prose, exit codes, JSON shapes) the audit originally surfaced; `scripts/parity-data/parity-triage.md` is retained as their rationale.
-- **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator followed by the semantic authored-surface validator. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
+- **Unit tests** — Catch2 `TEST_CASE`s in `*.t.cpp` files colocated with the code under test throughout `src/lib/` and `src/cmd/`. They exercise the module directly (plus the `db` module when they need one) and run under `ctest` (`make test`).
+- **CLI integration tests** — `integration_tests/` at the repo root, still driven by the Zig-era `harness.zig` runner (`harness.smoke`, `harness.mustRun`, `harness.mustRunJSON`, `harness.expectFailure`), exec whichever compiled binary `$PLANAR_BIN` (and its `PLANAR_AGENT_BIN`/`PLANAR_WATCH_BIN`/`PLANAR_EXECUTE_BIN` siblings) points at. The suite imports nothing from the engine modules, so it grades the C++ binaries exactly as it graded the Zig ones — `make test-parity-cpp` runs it against the CMake build's output. These suites lock the user-visible contract — flag names, JSON shapes, exit codes, status-transition rules — across the language rewrite itself (decision 932/D6: the integration suite is the parity oracle for the port).
+- **Cross-binary parity gate against the Go archive (RETIRED)** — an earlier `make parity-check` gate diffed the Zig binary against the archived Go reference. It was retired once the port outgrew it: the reference is a frozen archive whose last migration is `00030`, so the two binaries could no longer open the same database, and the audit's premise was that both operate on identical state. The integration suite is the standing guard, and the `parity_*` suites still assert the user-facing contracts (help prose, exit codes, JSON shapes) the audit originally surfaced; `scripts/parity-data/parity-triage.md` is retained as their rationale.
+- **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator (`cli_usage_lint`) followed by the semantic authored-surface validator (`surface_lint`), both C++ tools under `src/tools/` (decision 1000, ported from the Zig oracle at task 6402 — **no `zig build-exe` remains in this gate**). `cli_usage_lint` dumps all **four** planning-state binaries' `schema` catalogs, `planar`/`planar-agent`/`planar-watch`/`planar-ext` (decision 998 adds `planar-ext`'s). `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
+- **C++ format/tidy/doc-comment lint** — `make cpp-lint` (pinned `clang-format`/`clang-tidy`/Doxygen; see [docs/toolchain-parity.md](toolchain-parity.md)). Not yet composed into `make test-all` — it requires the C++ build already configured and built, which would make every `test-all` run configure and build the whole C++ tree while the Zig tree is still the shipped implementation; revisit once the C++ tree is the sole implementation.
 
 The binaries produced by `make build` land under `./bin/`. `make install`
-installs only those four executables under `PREFIX/bin` (default
-`~/.local/bin`). The legacy `install.sh` / `make install-full` path additionally
-stages skills, agents, workflows, and vendor wiring under `~/.planar`.
+installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
+`~/.local/bin`). `install.sh` / `make install-full` additionally
+stages skills, agents, workflows, and vendor wiring under `~/.planar`, by
+shelling the `scriptorium` binary after the CMake build.
 
 The integration suite also follows two stylistic conventions documented in [`CLAUDE.md` § Test stratification](../CLAUDE.md#test-stratification): focused per-verb tests (`integration_tests/<verb>_test.zig`) pin one verb's contract, and scenario tests (`integration_tests/scenarios/*.zig`) walk realistic operator workflows end-to-end through many verbs.
 
@@ -863,14 +868,16 @@ The integration suite also follows two stylistic conventions documented in [`CLA
 
 ## Key Invariants
 
-- **One `*Db` per process.** Passed through explicit `App` / `Store` parameters; no global mutable state.
+- **One connection per process.** Passed through explicit context/handler parameters; no global mutable state.
 - **Migrations are append-only.** Never edit a released migration. Add a new file with the next sequence number via `sqlx migrate add -r <name> --source migrations`.
-- **The adapter boundary is duck-typed.** The sync engine and propagation modules accept `adapter: anytype` and dispatch via the comptime adapter type; they never branch on adapter kind.
-- **No external (system) C dependencies — only vendored C source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, and `planar-watch`) and `vendor/lua/` (linked into `planar-execute`) are the only C the build touches.
-- **Skills call the binaries.** Agent skills do not write the database directly. They invoke `planar` / `planar-agent` verbs and read stdout. `planar-watch` is read-only and opens the database via `file:?mode=ro`.
+- **The adapter boundary is interface-typed.** The sync engine and propagation modules dispatch through the `external_adapter` interface; they never branch on adapter kind.
+- **No external (system) C dependencies — only vendored, CPM-cached C/C++ source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, `planar-watch`, `planar-ext`) and `vendor/lua/` (linked into `planar-execute`) are the C the build touches; `vendor/curl/`, `vendor/glaze/`, `vendor/spdlog/`, `vendor/cli11/`, `vendor/catch2/` round out the C++ dependency set.
+- **Skills call the binaries.** Agent skills do not write the database directly. They invoke `planar` / `planar-agent` / `planar-ext` verbs and read stdout. `planar-watch` is read-only and opens the database via `file:?mode=ro`.
 - **Schema is the contract.** Read-side tools must check `schema_migrations.version` before operating against the database. `planar-agent` and `planar-watch` enforce this at startup (exit 7 on mismatch).
-- **The capability split is verb-level.** Each of the three planning-state binaries can only do what its registered verb set lets it do; `integration_tests/capability_boundary_test.zig` fails CI if a write verb is registered on `planar-watch` or a planning-entity verb on `planar-agent`. The fourth binary, `planar-execute`, holds no DB handle and is bounded by the verb sets of the binaries it shells.
+- **The capability split is verb-level.** Each of the four planning-state binaries can only do what its registered verb set (and, for `planar-ext`, its `sqlite3_set_authorizer` allowlist) lets it do; the Zig oracle's `integration_tests/capability_boundary_test.zig` fails CI if a write verb is registered on `planar-watch` or a planning-entity verb on `planar-agent`. `planar-execute` holds no DB handle at all and is bounded by the verb sets of the binaries it shells.
 - **The workflow engine holds no DB handle.** `planar-execute` is a pure, deterministic CLI driver: it shells an exact subset of sibling `planar`/`planar-agent`/`planar-watch` commands and confined Git operations, never opens SQLite, and exposes no model-spawning host function.
+- **Reaching a milestone number does not delete the Zig oracle.** `zig/` is retired only once the state-differential evidence for the ported leaves is clean (decisions 963/980/982) — never on milestone arithmetic alone.
+
 ## Host-aware agent model binding
 
 ### Ownership boundary
