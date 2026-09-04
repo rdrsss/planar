@@ -143,3 +143,20 @@ TEST_CASE("make_path_all is idempotent and reports success on an existing direct
   CHECK(wfs::make_path_all(nested));
   CHECK(wfs::path_exists(nested));
 }
+
+TEST_CASE("make_path_all reports FAILURE when a path component is a regular file", "[workbench][fsutil]") {
+  // `create_directories` cannot descend through a regular file, so the
+  // recursive mkdir must fail here. Closes a break-probe SURVIVOR (task
+  // 6423): a mutant that hardcoded `return true` after the
+  // `create_directories` call passed every other fixture, because every
+  // existing case only ever asked for a path that COULD be created. Only a
+  // real failure path can tell "created" apart from "claimed success".
+  scratch_dir scratch;
+  auto const  blocker = scratch.path_ / "blocker";
+  {
+    std::ofstream file(blocker, std::ios::binary);
+    REQUIRE(file);
+  }
+  CHECK_FALSE(wfs::make_path_all(blocker / "nested"));
+  CHECK_FALSE(wfs::path_exists(blocker / "nested"));
+}
