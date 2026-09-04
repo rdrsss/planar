@@ -180,6 +180,29 @@ auto adapter_handle::post_comment(std::string_view external_id, std::string_view
   return static_cast<const engine::extsync::github::github_adapter&>(*_adapter).post_comment(external_id, body);
 }
 
+auto adapter_handle::create_issue(std::string_view owner, std::string_view repo, std::string_view title, std::string_view body,
+                                  std::span<const std::string> labels) const
+    -> std::expected<engine::extsync::github::created_issue, adapter::adapter_error> {
+  // GitHub-only: the parent-issue strategy never builds a handle over a
+  // Jira system, so `_kind` is always `github` here. See this method's
+  // header.
+  assert(_kind == adapter_kind::github);
+  return static_cast<const engine::extsync::github::github_adapter&>(*_adapter).create_issue(owner, repo, title, body, labels);
+}
+
+auto adapter_handle::link_sub_issue(std::string_view owner, std::string_view repo, std::int64_t parent_number,
+                                    std::int64_t child_number) const -> std::expected<void, adapter::adapter_error> {
+  assert(_kind == adapter_kind::github);
+  return static_cast<const engine::extsync::github::github_adapter&>(*_adapter)
+      .link_sub_issue(owner, repo, parent_number, child_number);
+}
+
+auto adapter_handle::link_sub_issue_probe(std::string_view owner, std::string_view repo) const
+    -> std::expected<void, adapter::adapter_error> {
+  assert(_kind == adapter_kind::github);
+  return static_cast<const engine::extsync::github::github_adapter&>(*_adapter).link_sub_issue_probe(owner, repo);
+}
+
 auto factory_error_message(factory_error err, const engine::external::system::external_system& sys) -> domain_error {
   switch (err) {
   case factory_error::token_env_var_missing:

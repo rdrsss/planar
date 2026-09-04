@@ -14,6 +14,7 @@ import planar.cmd.planar_ext.handler;
 import planar.cmd.planar_ext.handlers.schema;
 import planar.cmd.planar_ext.handlers.version;
 import planar.cmd.planar_ext.handlers.ext;
+import planar.cmd.planar_ext.handlers.propagate;
 import planar.cmd.planar_ext.handlers.sync;
 
 namespace planar::cmd::ext {
@@ -51,6 +52,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("ext test", handlers::ext_test);
   table.emplace("ext create", handlers::ext_create);
   table.emplace("ext propagate-one", handlers::ext_propagate_one);
+  table.emplace("ext propagate", handlers::ext_propagate);
   table.emplace("sync pull", handlers::sync_pull);
   table.emplace("sync push", handlers::sync_push);
   table.emplace("sync status", handlers::sync_status);

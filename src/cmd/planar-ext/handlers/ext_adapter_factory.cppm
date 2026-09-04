@@ -89,6 +89,7 @@ import std;
 import planar.adapter;
 import planar.http;
 import planar.engine.external;
+import planar.engine.extsync.github;
 import planar.cmd.planar_ext.context;
 import planar.cmd.planar_ext.exit;
 
@@ -223,6 +224,42 @@ public:
   /// @param body The comment body.
   /// @return Success, or the adapter's failure.
   [[nodiscard]] auto post_comment(std::string_view external_id, std::string_view body) const
+      -> std::expected<void, adapter::adapter_error>;
+
+  /// @brief Create a GitHub issue, dispatched to `github_adapter::create_issue`
+  /// (plan 996, task 6421).
+  ///
+  /// GitHub-only, like the three methods below — none of them is part of
+  /// `external_adapter`'s four-operation interface (see `github.cppm`'s
+  /// header on why `createIssue`/`linkSubIssue`/`linkSubIssueProbe` are not
+  /// there either), so all four go through this dispatch-by-`kind()` shape
+  /// rather than `instance()`. Called only on a `kind() == adapter_kind::github`
+  /// handle; the parent-issue strategy never builds one for a Jira system.
+  /// @param owner The repo owner.
+  /// @param repo The repo name.
+  /// @param title The issue title.
+  /// @param body The issue body.
+  /// @param labels Labels to attach on create.
+  /// @return The created issue's `{number, node_id}`, or the failure.
+  [[nodiscard]] auto create_issue(std::string_view owner, std::string_view repo, std::string_view title,
+                                  std::string_view body, std::span<const std::string> labels) const
+      -> std::expected<engine::extsync::github::created_issue, adapter::adapter_error>;
+
+  /// @brief Link a sub-issue, dispatched to `github_adapter::link_sub_issue`.
+  /// @param owner The repo owner.
+  /// @param repo The repo name.
+  /// @param parent_number The parent issue number.
+  /// @param child_number The child issue number.
+  /// @return Success, or the failure.
+  [[nodiscard]] auto link_sub_issue(std::string_view owner, std::string_view repo, std::int64_t parent_number,
+                                    std::int64_t child_number) const -> std::expected<void, adapter::adapter_error>;
+
+  /// @brief Probe sub-issue support, dispatched to
+  /// `github_adapter::link_sub_issue_probe`.
+  /// @param owner The repo owner.
+  /// @param repo The repo name.
+  /// @return Success when the endpoint is enabled, or the failure.
+  [[nodiscard]] auto link_sub_issue_probe(std::string_view owner, std::string_view repo) const
       -> std::expected<void, adapter::adapter_error>;
 
 private:

@@ -64,4 +64,27 @@ inline auto array_field(const glz::generic& obj, std::string_view key) -> const 
   return value.is_array() ? &value.get<glz::generic::array_t>() : nullptr;
 }
 
+/// @brief Read `key` from `obj` as a whole number.
+///
+/// `glz::generic` (this bucket's alias) parses every JSON number as a
+/// `double` (`num_mode::f64`), so this reads via `.get<double>()` and
+/// truncates towards zero, matching the Zig oracle's
+/// `std.json.Value.integer` extraction closely enough for the two integer
+/// fields this bucket reads (`number`, `id`) — neither payload carries a
+/// fractional issue number.
+/// @param obj The value to read from; need not be an object.
+/// @param key The field name.
+/// @return The number, or unset when `obj` is not an object, `key` is
+/// absent, or the value is not a JSON number.
+inline auto number_field(const glz::generic& obj, std::string_view key) -> std::optional<std::int64_t> {
+  if (!obj.is_object() || !obj.contains(key)) {
+    return std::nullopt;
+  }
+  auto const& value = obj.at(key);
+  if (!value.is_number()) {
+    return std::nullopt;
+  }
+  return static_cast<std::int64_t>(value.get<double>());
+}
+
 } // namespace planar::engine::extsync::json_read

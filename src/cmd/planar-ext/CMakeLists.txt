@@ -52,7 +52,9 @@ planar_binary(planar_ext
     handlers/version.cppm
     handlers/schema.cppm
     handlers/ext_adapter_factory.cppm
+    handlers/ext_strategy.cppm
     handlers/ext.cppm
+    handlers/propagate.cppm
     handlers/sync.cppm
     dispatch.cppm
   SOURCES
@@ -62,7 +64,9 @@ planar_binary(planar_ext
     handlers/version.cpp
     handlers/schema.cpp
     handlers/ext_adapter_factory.cpp
+    handlers/ext_strategy.cpp
     handlers/ext.cpp
+    handlers/propagate.cpp
     handlers/sync.cpp
     dispatch.cpp
   DEPENDS

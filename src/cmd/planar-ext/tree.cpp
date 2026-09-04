@@ -25,7 +25,7 @@ auto add_json(CLI::App& app) -> void {
 /// @param root The root app to attach `ext` to.
 auto add_ext(CLI::App& root) -> void {
   CLI::App* ext = root.add_subcommand("ext", "Register and interact with external systems on the operational plane.\n\n"
-                                             "  Sub-commands: register, list, test, create, propagate-one.\n"
+                                             "  Sub-commands: register, list, test, create, propagate-one, propagate.\n"
                                              "  Currently supported systems: Jira, GitHub Issues.");
   ext->require_subcommand(0);
 
@@ -74,6 +74,22 @@ auto add_ext(CLI::App& root) -> void {
   cliapp::add_bool_flag(*propagate_one, "--dry-run", "Preview without contacting the remote system");
   add_json(*propagate_one);
   propagate_one->add_option("system")->required();
+
+  // `ext propagate` — the github-parent-issue arm only (plan 996, task
+  // 6421). See handlers/propagate.cppm for exactly which flags the oracle
+  // declares that this binary does not yet accept
+  // (--restrategize/--yes/--verify-counterparts/--unlink/--recreate/
+  // --github-strategy all need the strategy-stickiness cache, which is not
+  // ported).
+  CLI::App* propagate =
+      ext->add_subcommand("propagate", "Propagate a feature (plan + descendants) to an external system.\n\n"
+                                       "  This cycle supports the GitHub parent-issue strategy only; a Jira system\n"
+                                       "  or a multi-repo GitHub feature refuses explicitly rather than mis-executing.");
+  propagate->add_option("--system")->description("External system slug (defaults to first registered system)");
+  cliapp::add_bool_flag(*propagate, "--dry-run", "Preview creation plan without contacting the remote system");
+  propagate->add_option("--sync")->description("Sync direction for created links: read-only, write-back, two-way");
+  add_json(*propagate);
+  propagate->add_option("plan-id")->required();
 }
 
 /// @brief `planar sync pull|push|status|resolve` — hand-transcribed from
@@ -120,11 +136,10 @@ auto add_sync(CLI::App& root) -> void {
 
 auto root_app() -> std::unique_ptr<CLI::App> {
   // Task 6419 moved the `ext`/`sync` verb family in; this description no
-  // longer describes a skeleton. `ext propagate` (the feature-tree
-  // walk) has NOT moved — it stays on neither binary yet, carried as a
-  // still-blocked leaf against a future task in this same extraction
-  // (task 6412's remaining steps), same as it was on `planar` before this
-  // move (see `planar.cmd.planar.surface`'s `k_unported` header).
+  // longer describes a skeleton. Task 6421 landed `ext propagate` itself —
+  // the GitHub parent-issue arm only; see handlers/propagate.cppm for what
+  // still refuses explicitly (a Jira system, a multi-repo GitHub feature,
+  // and every `--restrategize`-family flag).
   auto app = std::make_unique<CLI::App>("Host of the external-plane propagation and sync verbs (`ext`, `sync`),\n"
                                         "  moved off `planar` at plan 996, task 6419.\n"
                                         "\n"
