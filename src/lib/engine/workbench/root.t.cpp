@@ -129,6 +129,21 @@ TEST_CASE("the config path defaults to $HOME/.planar/config.toml", "[workbench][
   CHECK(*root == "/x");
 }
 
+TEST_CASE("an EMPTY PLANAR_CONFIG_PATH falls through to the $HOME default, not an empty path",
+          "[workbench][root]") {
+  // Set-but-empty must be treated the same as absent -- exactly the
+  // convention layer 1 already pins for PLANAR_WORKBENCH_ROOT. Closes a
+  // break-probe SURVIVOR (task 6423): a mutant that dropped the
+  // `!raw->empty()` half of PLANAR_CONFIG_PATH's presence check tried to
+  // read the CONFIG FILE AT AN EMPTY PATH instead of falling through to
+  // build the $HOME-derived default, silently losing the real config.
+  auto const root = wr::resolve_root(
+      map_env({{"PLANAR_CONFIG_PATH", ""}, {"HOME", "/home/u"}}),
+      map_files({{"/home/u/.planar/config.toml", "[workbench]\nroot = \"/from/default/config\"\n"}}));
+  REQUIRE(root.has_value());
+  CHECK(*root == "/from/default/config");
+}
+
 TEST_CASE("an absent, unreadable or unparseable config is SILENTLY skipped", "[workbench][root]") {
   // A broken config must not make the workbench unreachable -- it falls
   // through to the default rather than failing the verb.
@@ -148,6 +163,38 @@ TEST_CASE("with only HOME, the built-in default is used", "[workbench][root]") {
   auto const root = wr::resolve_root(map_env({{"HOME", "/home/u"}}), no_files());
   REQUIRE(root.has_value());
   CHECK(*root == "/home/u/.planar/workbench");
+}
+
+TEST_CASE("a set-but-EMPTY HOME is unresolved, same as an absent one", "[workbench][root]") {
+  // Set-but-empty must be treated the same as unset for HOME too, exactly
+  // the convention every other layer already pins. Closes a break-probe
+  // SURVIVOR (task 6423): a mutant that dropped the `!home->empty()` half of
+  // this check (at BOTH its use sites -- deriving the default config path
+  // and the layer-3 default itself) passed every existing fixture, because
+  // none of them ever distinguished a present-but-empty HOME from an
+  // entirely absent one; the only prior empty-HOME case ("with NOTHING
+  // set") leaves HOME absent, not present-and-empty.
+  auto const root = wr::resolve_root(map_env({{"HOME", ""}}), no_files());
+  REQUIRE_FALSE(root.has_value());
+  CHECK(root.error() == wr::root_error::unresolved);
+}
+
+TEST_CASE("an EMPTY HOME does not synthesize a relative default CONFIG path either",
+          "[workbench][root]") {
+  // Isolates the layer-2 else-if specifically (PLANAR_CONFIG_PATH absent,
+  // HOME present-but-empty), independent of layer 3: a stray file placed at
+  // the RELATIVE path `std::filesystem::path{""} / ".planar" / "config.toml"`
+  // (== ".planar/config.toml") must never be read, because the emptiness
+  // check should have refused to synthesize a config path from an empty
+  // HOME at all. Closes a break-probe SURVIVOR left over from the previous
+  // case (task 6423): that fixture's own default-config lookup happens to
+  // fall through to the SAME "unresolved" outcome via layer 3 whether or not
+  // the layer-2 clause is mutated, so it could not tell the two branches
+  // apart on its own.
+  auto const root = wr::resolve_root(map_env({{"HOME", ""}}),
+                                     map_files({{".planar/config.toml", "[workbench]\nroot = \"/should/not/be/used\"\n"}}));
+  REQUIRE_FALSE(root.has_value());
+  CHECK(root.error() == wr::root_error::unresolved);
 }
 
 TEST_CASE("with NOTHING set the result is unresolved, never the cwd", "[workbench][root]") {
@@ -170,6 +217,32 @@ TEST_CASE("read_config_workbench_root handles comments, quoting and sections", "
   CHECK(wr::read_config_workbench_root("[workbench]\nroot = \"/a#b\"\n") == "/a#b");
 }
 
+TEST_CASE("flatten_header treats a DOT INSIDE quotes as data, not a separator", "[workbench][root][toml]") {
+  // A top-level quoted key whose own text happens to contain a literal '.'
+  // must flatten to ONE segment, not split at that embedded dot. Closes a
+  // break-probe SURVIVOR (task 6423): a mutant that disabled the
+  // `c == '\'' || c == '"'` quote-entry check in `flatten_header` passed
+  // every existing fixture -- none of them ever put a literal dot INSIDE a
+  // quoted segment. Here the embedded dot spells the very key this scan
+  // hunts for: if the quote tracking is gone, `"workbench.root"` splits into
+  // two malformed fragments (`"workbench` and `root"`) that neither
+  // `unquote_segment` can strip, so the rejoined key keeps its literal quote
+  // characters and never equals `workbench.root` at all.
+  CHECK(wr::read_config_workbench_root("\"workbench.root\" = \"/x\"\n") == "/x");
+}
+
+TEST_CASE("flatten_header actually CLOSES a quote at its matching character", "[workbench][root][toml]") {
+  // The companion to the case above: once a quote opens, it must close
+  // again at the matching character so a LATER, genuinely unquoted dot is
+  // still honoured as a separator. Closes a break-probe SURVIVOR (task
+  // 6423): a mutant that disabled the `c == in_quote` exit check left
+  // `in_quote` permanently set, which -- because the loop's in-quote branch
+  // unconditionally `continue`s, even on the synthetic end-of-string
+  // iteration -- swallows every remaining character, including the final
+  // append, and returns an EMPTY key instead of "workbench.root".
+  CHECK(wr::read_config_workbench_root("\"workbench\".root = \"/x\"\n") == "/x");
+}
+
 TEST_CASE("read_config_workbench_root ignores other sections and keys", "[workbench][root][toml]") {
   CHECK_FALSE(wr::read_config_workbench_root("[other]\nroot = \"/x\"\n").has_value());
   CHECK_FALSE(wr::read_config_workbench_root("[workbench]\nother = \"/x\"\n").has_value());
@@ -182,6 +255,17 @@ TEST_CASE("read_config_workbench_root rejects a non-string value", "[workbench][
   // next precedence layer exactly as an unreadable file would.
   CHECK_FALSE(wr::read_config_workbench_root("[workbench]\nroot = 42\n").has_value());
   CHECK_FALSE(wr::read_config_workbench_root("[workbench]\nroot = true\n").has_value());
+}
+
+TEST_CASE("read_config_workbench_root rejects MISMATCHED quotes", "[workbench][root][toml]") {
+  // `unquote` must require the SAME quote character at both ends, not just a
+  // quote character at the front. Closes a break-probe SURVIVOR (task 6423):
+  // a mutant that dropped the `text.back() == '\''` half of the single-quote
+  // clause (and, separately, the `text.back() == '"'` half of the
+  // double-quote clause) passed every existing fixture, because none of them
+  // ever opened with one quote character and closed with another.
+  CHECK_FALSE(wr::read_config_workbench_root("[workbench]\nroot = '/x\"\n").has_value());
+  CHECK_FALSE(wr::read_config_workbench_root("[workbench]\nroot = \"/x'\n").has_value());
 }
 
 TEST_CASE("expand_tilde leaves an absolute path alone", "[workbench][root]") {
