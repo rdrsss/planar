@@ -94,8 +94,14 @@ is_excluded() {
 
 for v in $("$PLANAR_BIN" --help 2>&1 | awk '/^  [a-z]/ { print $1 }'); do
   if is_excluded "$v"; then continue; fi
+  # CLI11 (the current parser, since decision 948) emits "SUBCOMMANDS:" as
+  # the section heading, not "COMMANDS:" — the latter was etcli-zig's
+  # heading and never matched CLI11's --help output. With the wrong
+  # heading this awk block set `f` for zero help pages, so every verb's
+  # subcommand list read back empty and the gate silently measured only
+  # top-level verbs (see scripts/coverage-baseline.txt history / task 6433).
   subs=$("$PLANAR_BIN" "$v" --help 2>&1 \
-    | awk '/^COMMANDS:/{f=1;next} f && /^$/{exit} f && /^  [a-z]/{print $1}')
+    | awk '/^SUBCOMMANDS:/{f=1;next} f && /^$/{exit} f && /^  [a-z]/{print $1}')
   if [[ -z "$subs" ]]; then
     # Leaf top-level verb (no subcommands). Track with sentinel "." sub.
     echo "$v ." >> "$TMP_ALL"
