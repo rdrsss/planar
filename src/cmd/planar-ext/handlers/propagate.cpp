@@ -1,6 +1,7 @@
 /// @file propagate.cpp
 /// @brief Implementation of `planar.cmd.planar_ext.handlers.propagate`. See
-/// propagate.cppm for scope: this is the `github-parent-issue` arm only.
+/// propagate.cppm for scope: the `github-parent-issue` arm, plus the
+/// `--restrategize`/`--verify-counterparts`/`--scope` surface (task 6428).
 
 module;
 
@@ -208,14 +209,106 @@ auto op_text(parent_issue::op operation) -> std::string_view {
   }
 }
 
-/// @brief Render the propagate report exactly as the oracle's `runForPlan`
-/// does — see propagate.zig lines 426-478. Only the fields this reduced
-/// scope can ever populate are considered: `verified`/`abandoned`/`missing`
-/// never appear because this arm never sets them.
+/// @brief One `--verify-counterparts` outcome row, rendered alongside the
+/// propagation results. Mirrors the oracle's `verified`/`missing`
+/// `LineResult` rows (propagate.zig lines 384-412) — `title` is always
+/// empty, matching the oracle, which never re-reads the local title for a
+/// verify pass.
+struct verify_row {
+  std::string  entity_kind;
+  std::int64_t entity_id = 0;
+  std::string  external_id;
+  bool         missing = false; ///< false == "verified" (still present).
+};
+
+/// @brief Prompt-and-read a single-line y/N confirmation for
+/// `--restrategize` without `--yes`, verbatim from the oracle's
+/// `confirmRestrategize` (propagate.zig lines 490-514).
+///
+/// Reads directly from `std::cin` rather than through `context` — no other
+/// `planar-ext` handler needs an interactive prompt, so no seam exists yet
+/// to inject one. That also means this path is untestable in-process; the
+/// leaf tests drive it only via `--yes`, which never reaches this function.
+/// @param ctx The invocation context, for the prompt text.
+/// @param old_strategy The cached strategy kind.
+/// @param new_strategy The freshly-selected strategy kind.
+/// @return Whether the operator confirmed.
+auto confirm_restrategize(context& ctx, std::string_view old_strategy, std::string_view new_strategy) -> bool {
+  ctx.out() << std::format("Restrategize: cached strategy is \"{}\", new strategy would be \"{}\".\n", old_strategy,
+                           new_strategy);
+  ctx.out() << "Abandoning old counterparts will not delete them on the remote; Planar will stop tracking them.\n";
+  ctx.out() << "Confirm? [y/N] ";
+  ctx.out().flush();
+
+  std::string line;
+  if (!std::getline(std::cin, line)) {
+    return false;
+  }
+  auto const first = line.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    return false;
+  }
+  auto const last = line.find_last_not_of(" \t\r\n");
+  std::string trimmed{line.substr(first, last - first + 1)};
+  for (auto& c : trimmed) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return trimmed == "y" || trimmed == "yes";
+}
+
+/// @brief What probing one counterpart against the remote found. Mirrors
+/// the oracle's `ProbeResult` union (propagate.zig lines 518-522).
+enum class probe_outcome : std::uint8_t {
+  present,     ///< The remote item still exists.
+  missing,     ///< The remote returned 404 (`adapter_error::not_found`).
+  probe_error, ///< Any other failure — non-fatal, the caller warns and skips.
+};
+
+/// @brief What `probe_counterpart` returns: the outcome, plus the
+/// underlying error when it was inconclusive (`outcome == probe_error`).
+struct probe_result {
+  probe_outcome                         outcome = probe_outcome::present;
+  std::optional<adapter::adapter_error> error;
+};
+
+/// @brief Dispatch a single GET against the remote for `external_id`
+/// through the generic four-operation adapter interface (works for both
+/// Jira and GitHub — `adapter_handle::instance()` erases the concrete
+/// type). Mirrors the oracle's `probeCounterpart`.
+/// @param handle The built adapter handle.
+/// @param external_id The provider-side id to probe.
+/// @return The outcome; `error` is set only when `outcome == probe_error`.
+auto probe_counterpart(const adapter_handle& handle, std::string_view external_id) -> probe_result {
+  auto const result = handle.instance().pull(external_id);
+  if (result) {
+    return {.outcome = probe_outcome::present};
+  }
+  if (result.error() == adapter::adapter_error::not_found) {
+    return {.outcome = probe_outcome::missing};
+  }
+  return {.outcome = probe_outcome::probe_error, .error = result.error()};
+}
+
+/// @brief Render the propagate report, matching the oracle's `runForPlan`
+/// output shape — see propagate.zig lines 426-478 (results) and 375-420
+/// (the verify-counterparts additions, task 6428). `abandoned_count` and
+/// the `verify_rows` are only ever non-empty when `--restrategize` /
+/// `--verify-counterparts` were passed and the run reached that far.
 auto render(context& ctx, std::int64_t plan_id, std::string_view system_slug, const parent_issue::report& rpt, bool dry_run,
-           bool as_json) -> void {
+           bool as_json, std::size_t abandoned_count, std::span<const verify_row> verify_rows, bool unlink_missing,
+           bool recreate_missing) -> void {
+  std::size_t verified_count = 0;
+  std::size_t missing_count  = 0;
+  for (auto const& v : verify_rows) {
+    if (v.missing) {
+      ++missing_count;
+    } else {
+      ++verified_count;
+    }
+  }
+  bool const ok = rpt.failed == 0 && missing_count == 0;
+
   if (as_json) {
-    bool const ok = rpt.failed == 0;
     std::string out;
     out += R"({"ok":)";
     out += ok ? "true" : "false";
@@ -223,7 +316,17 @@ auto render(context& ctx, std::int64_t plan_id, std::string_view system_slug, co
     json_text::append_json_string(out, system_slug);
     out += R"(,"strategy":)";
     json_text::append_json_string(out, rpt.strategy);
-    out += std::format(R"(,"created":{},"skipped":{},"failed":{},"results":[)", rpt.created, rpt.skipped, rpt.failed);
+    out += std::format(R"(,"created":{},"skipped":{},"failed":{})", rpt.created, rpt.skipped, rpt.failed);
+    if (verified_count > 0) {
+      out += std::format(R"(,"verified":{})", verified_count);
+    }
+    if (abandoned_count > 0) {
+      out += std::format(R"(,"abandoned":{})", abandoned_count);
+    }
+    if (missing_count > 0) {
+      out += std::format(R"(,"missing":{})", missing_count);
+    }
+    out += R"(,"results":[)";
     for (std::size_t i = 0; i < rpt.results.size(); ++i) {
       auto const& r = rpt.results[i];
       if (i != 0) {
@@ -243,14 +346,34 @@ auto render(context& ctx, std::int64_t plan_id, std::string_view system_slug, co
       }
       out += "}";
     }
+    for (auto const& v : verify_rows) {
+      out += ",{\"entity_kind\":";
+      json_text::append_json_string(out, v.entity_kind);
+      out += std::format(R"(,"entity_id":{},"title":"",)", v.entity_id);
+      out += R"("op":)";
+      json_text::append_json_string(out, v.missing ? "missing" : "verified");
+      out += R"(,"external_id":)";
+      json_text::append_json_string(out, v.external_id);
+      out += "}";
+    }
     out += "]}";
     ctx.out() << out << '\n';
     return;
   }
 
   std::string_view const prefix = dry_run ? "(dry-run) " : "";
-  ctx.out() << std::format("{}propagated plan {} to {} via strategy {} (created {}, skipped {}, failed {})\n", prefix, plan_id,
+  ctx.out() << std::format("{}propagated plan {} to {} via strategy {} (created {}, skipped {}, failed {}", prefix, plan_id,
                            system_slug, rpt.strategy, rpt.created, rpt.skipped, rpt.failed);
+  if (verified_count > 0) {
+    ctx.out() << std::format(", verified {}", verified_count);
+  }
+  if (abandoned_count > 0) {
+    ctx.out() << std::format(", abandoned {}", abandoned_count);
+  }
+  if (missing_count > 0) {
+    ctx.out() << std::format(", missing {}", missing_count);
+  }
+  ctx.out() << ")\n";
   for (auto const& r : rpt.results) {
     if (r.operation == parent_issue::op::created) {
       ctx.out() << std::format("  {}    {}:{} {} -> {}\n", op_text(r.operation), r.entity_kind, r.entity_id, r.title,
@@ -262,6 +385,17 @@ auto render(context& ctx, std::int64_t plan_id, std::string_view system_slug, co
       ctx.out() << std::format("  FAILED    {}:{} {} ({})\n", r.entity_kind, r.entity_id, r.title, r.error_name);
     }
   }
+  for (auto const& v : verify_rows) {
+    if (v.missing) {
+      ctx.out() << std::format("  MISSING   {}:{}  (counterpart {} not found on remote)\n", v.entity_kind, v.entity_id,
+                               v.external_id);
+    } else {
+      ctx.out() << std::format("  verified  {}:{}  ({} still present)\n", v.entity_kind, v.entity_id, v.external_id);
+    }
+  }
+  if (missing_count > 0 && !unlink_missing && !recreate_missing) {
+    ctx.out() << std::format("  {} counterpart(s) missing; use --unlink or --recreate to remediate\n", missing_count);
+  }
 }
 
 } // namespace
@@ -270,6 +404,29 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   auto conn = ctx.ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
+  }
+
+  // `--scope` is declared on the CLI tree and read here, then discarded —
+  // verbatim `_ = args.scope;` from the oracle. `external_links` carries no
+  // scope column and `ext propagate` is UNGUARDED BY DESIGN (see this
+  // module's header and docs/concepts.md § cross-scope-guard).
+  (void)flag_string(args, "--scope");
+
+  bool const restrategize       = flag_bool(args, "--restrategize");
+  bool const auto_yes           = flag_bool(args, "--yes");
+  bool const verify_counterparts = flag_bool(args, "--verify-counterparts");
+  bool const unlink_missing     = flag_bool(args, "--unlink");
+  bool const recreate_missing   = flag_bool(args, "--recreate");
+
+  // Up-front flag validation, mirroring the oracle's preflight in `handle`
+  // (propagate.zig lines 67-72).
+  if (unlink_missing && recreate_missing) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, "--unlink and --recreate are mutually exclusive"));
+  }
+  if ((unlink_missing || recreate_missing) && !verify_counterparts) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, "--unlink and --recreate require --verify-counterparts"));
   }
 
   auto const plan_id_raw = positional_string(args, "plan-id").value_or(std::string{});
@@ -339,8 +496,45 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
 
   bool const dry_run = flag_bool(args, "--dry-run");
 
+  // --- restrategize -----------------------------------------------------
+  //
+  // Mirrors propagate.zig lines 158-197's `restrategize` arm. Because this
+  // block only ever runs once `selected->kind == "github-parent-issue"` is
+  // already established (a Jira system or a multi-repo GitHub feature
+  // refuses above, before this point), and because
+  // `parent_issue::propagate_parent_issue` is the ONLY thing in this binary
+  // that ever writes the "strategy" cache key (and always writes
+  // "github-parent-issue"), `cached` and `selected->kind` are always equal
+  // here in practice — see propagate.cppm's header on why that is honest
+  // rather than a shortcut.
+  std::size_t abandoned_count = 0;
+  if (restrategize) {
+    auto cached = link_ns::read_cached_strategy(**conn, *plan_id, sys->id);
+    if (!cached) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: read cached strategy: QueryFailed"));
+    }
+    if (cached->has_value() && **cached != selected->kind) {
+      if (!auto_yes) {
+        if (!confirm_restrategize(ctx, **cached, selected->kind)) {
+          return std::unexpected(error_from_body(domain_error_kind::invalid_input, "restrategize cancelled by user"));
+        }
+      }
+      auto abandoned = link_ns::abandon_counterparts(**conn, *plan_id, sys->id, **cached, selected->kind);
+      if (!abandoned) {
+        return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: abandon counterparts: QueryFailed"));
+      }
+      abandoned_count = *abandoned;
+    }
+    // cached == selected->kind (or no cache yet): no-op restrategize.
+  }
+
+  // `need_adapter`: skipped under `--dry-run` unless `--verify-counterparts`
+  // is also set — verify needs the adapter to probe. Mirrors propagate.zig
+  // line 232.
+  bool const need_adapter = !dry_run || verify_counterparts;
+
   std::unique_ptr<adapter_handle> handle;
-  if (!dry_run) {
+  if (need_adapter) {
     auto built = build_adapter(*sys, default_deps(ctx.env()));
     if (!built) {
       return std::unexpected(factory_error_message(built.error(), *sys));
@@ -349,8 +543,8 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   }
 
   std::unique_ptr<parent_issue::gh_client> client_owner =
-      handle ? std::unique_ptr<parent_issue::gh_client>(std::make_unique<adapter_gh_client>(*handle))
-             : std::unique_ptr<parent_issue::gh_client>(std::make_unique<unreachable_gh_client>());
+      (handle && !dry_run) ? std::unique_ptr<parent_issue::gh_client>(std::make_unique<adapter_gh_client>(*handle))
+                           : std::unique_ptr<parent_issue::gh_client>(std::make_unique<unreachable_gh_client>());
 
   auto rpt = parent_issue::propagate_parent_issue(**conn, *client_owner, *plan_id,
                                                   parent_issue::opts{
@@ -363,9 +557,54 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
     return std::unexpected(parent_issue_error_message(rpt.error()));
   }
 
-  bool const as_json = flag_bool(args, "--json");
-  render(ctx, *plan_id, sys->slug, *rpt, dry_run, as_json);
+  // --- verify-counterparts pass -------------------------------------------
+  //
+  // Mirrors propagate.zig lines 375-420. Only runs when NOT dry-run — a
+  // preview should not mutate `external_links` or `sync_events`.
+  std::vector<verify_row> verify_rows;
+  if (verify_counterparts && !dry_run) {
+    auto links = link_ns::list_mirror_links_in_tree(**conn, *plan_id, sys->id);
+    if (!links) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: list links for verify: QueryFailed"));
+    }
+    for (auto const& row : *links) {
+      auto const probed = probe_counterpart(*handle, row.external_id);
+      if (probed.outcome == probe_outcome::present) {
+        verify_rows.push_back(verify_row{
+            .entity_kind = row.entity_kind, .entity_id = row.entity_id, .external_id = row.external_id, .missing = false});
+      } else if (probed.outcome == probe_outcome::missing) {
+        auto recorded = link_ns::record_counterpart_missing(**conn, row.id, row.entity_kind, row.entity_id, row.external_id,
+                                                            unlink_missing || recreate_missing);
+        if (!recorded) {
+          return std::unexpected(
+              error_from_body(domain_error_kind::generic_failure, "ext propagate: record counterpart-missing: QueryFailed"));
+        }
+        verify_rows.push_back(verify_row{
+            .entity_kind = row.entity_kind, .entity_id = row.entity_id, .external_id = row.external_id, .missing = true});
+      } else {
+        // Non-fatal: warn and skip, matching the oracle's probe_error arm.
+        ctx.err() << std::format("warning: counterpart probe failed for {} ({}); skipping\n", row.external_id,
+                                 adapter::adapter_error_name(*probed.error));
+      }
+    }
+  }
 
+  std::size_t missing_count = 0;
+  for (auto const& v : verify_rows) {
+    if (v.missing) {
+      ++missing_count;
+    }
+  }
+
+  bool const as_json = flag_bool(args, "--json");
+  render(ctx, *plan_id, sys->slug, *rpt, dry_run, as_json, abandoned_count, verify_rows, unlink_missing, recreate_missing);
+
+  // Missing-counterpart refusal takes priority, matching the oracle's
+  // ordering (propagate.zig lines 480-485: missing check precedes failed).
+  if (missing_count > 0 && !unlink_missing && !recreate_missing) {
+    return std::unexpected(error_from_body(
+        domain_error_kind::invalid_input, std::format("{} counterpart(s) missing during --verify-counterparts", missing_count)));
+  }
   if (rpt->failed > 0) {
     return std::unexpected(
         error_from_body(domain_error_kind::invalid_input, std::format("{} entity/entities failed during propagation", rpt->failed)));
