@@ -34,6 +34,12 @@ struct entity_fields {
 /// title/status/updated_at triple; the other three
 /// (`test_scenario`/`decision`/`session`) are `unsupported_entity_kind`. The
 /// Zig original's switch has exactly these four arms.
+///
+/// Still used for READS only, after decision 996 (task 6419) removed this
+/// module's one WRITE use (`apply_remote_to_local`'s `update {}` — see
+/// `local_diff`'s header). `local_entity_fields` below reads through this
+/// on every path, including from `planar-ext`, whose write authorizer
+/// restricts INSERT/UPDATE/DELETE, not SELECT.
 /// @param kind The link's entity kind.
 /// @return The table name, or unset when the kind has no syncable triple.
 auto table_for(link::external_entity_kind kind) -> std::optional<std::string_view> {
@@ -307,26 +313,52 @@ auto latest_event_id(db::connection& conn, std::int64_t link_id) -> std::expecte
 ///     computed. False means "the remote did not change this field since the
 ///     baseline", and writing it anyway would clobber a local-only edit.
 ///
+/// @brief What `local_diff` found: which fields differ, the remote's value
+/// for each one that does, and the entity state the caller would now hold
+/// HAD it applied — used to advance the baseline exactly as the removed
+/// write would have, without performing the write.
+struct diff_result {
+  std::vector<std::string>   fields;                ///< Field names that differ, in `title, status` order.
+  std::optional<std::string> title;                 ///< The remote's title, when `title` is in `fields`.
+  std::optional<std::string> status;                ///< The remote's status, when `status` is in `fields`.
+  std::string                baseline_title;        ///< `remote.title` if `title` differs, else the CURRENT local title.
+  std::string                baseline_status;       ///< `remote.status` if `status` differs, else the CURRENT local status.
+  bool                       local_present = false; ///< Whether a local row was actually read (false: missing/unsupported).
+};
+
+/// @brief Compare the remote state against the local entity and report
+/// which fields differ — WITHOUT writing anything.
+///
+/// A behavior-changing replacement for the removed `apply_remote_to_local`
+/// (decision 996, plan 996 task 6419): the write it used to perform,
+/// `update {tasks,plans,questions,artifacts} set title = ?, status = ? …`
+/// through a table name interpolated from `row.entity_kind`, is exactly
+/// the shape `planar-ext`'s connection-level write authorizer (decision
+/// 995, `db::connection::restrict_writes_to`) exists to refuse — this
+/// module no longer attempts it at all, on either call site. What this
+/// function keeps is the SAME comparison logic (same four parameters, same
+/// semantics), so `pull_link`'s conflict-vs-apply decision is unchanged;
+/// only the "apply" half became "report".
 /// @param conn The connection.
 /// @param row The link.
-/// @param remote The remote state to apply.
+/// @param remote The remote state to compare against.
 /// @param skip_empty_remote_status Whether an empty remote status is ignored.
 /// @param allow_missing_local Whether a deleted local entity is tolerated.
-/// @param allow_title Whether the title may be written.
-/// @param allow_status Whether the status may be written.
-/// @return The field names actually written, or the failure.
-auto apply_remote_to_local(db::connection& conn, const link::ext_link& row, const adapter::remote_state& remote,
-                           bool skip_empty_remote_status, bool allow_missing_local, bool allow_title, bool allow_status)
-    -> std::expected<std::vector<std::string>, sync_error> {
+/// @param allow_title Whether the title may be reported as differing.
+/// @param allow_status Whether the status may be reported as differing.
+/// @return Which fields differ and the remote's values for them, or the failure.
+auto local_diff(db::connection& conn, const link::ext_link& row, const adapter::remote_state& remote,
+                bool skip_empty_remote_status, bool allow_missing_local, bool allow_title, bool allow_status)
+    -> std::expected<diff_result, sync_error> {
   auto const local = local_entity_fields(conn, row.entity_kind, row.entity_id);
   if (!local) {
     if (local.error() == sync_error::not_found && allow_missing_local) {
-      return std::vector<std::string>{};
+      return diff_result{};
     }
     if (local.error() == sync_error::unsupported_entity_kind) {
       // The Zig original returns an empty slice here rather than propagating,
       // so a link on an unsyncable kind pulls as `noop` instead of failing.
-      return std::vector<std::string>{};
+      return diff_result{};
     }
     return std::unexpected(local.error());
   }
@@ -335,50 +367,20 @@ auto apply_remote_to_local(db::connection& conn, const link::ext_link& row, cons
   bool const status_changed =
       allow_status &&
       (skip_empty_remote_status ? (!remote.status.empty() && local->status != remote.status) : (local->status != remote.status));
-  if (!title_changed && !status_changed) {
-    return std::vector<std::string>{};
-  }
 
-  auto const table = table_for(row.entity_kind);
-  if (!table.has_value()) {
-    return std::vector<std::string>{};
-  }
-
-  // Three separate statements rather than one with conditional SET clauses,
-  // because the Zig original builds three and the resulting `updated_at`
-  // bump is identical in all three anyway.
-  std::string sql;
-  if (title_changed && status_changed) {
-    sql = std::format("update {} set title = ?, status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?",
-                      *table);
-  } else if (title_changed) {
-    sql = std::format("update {} set title = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?", *table);
-  } else {
-    sql = std::format("update {} set status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?", *table);
-  }
-  auto stmt = conn.prepare(sql);
-  if (!stmt) {
-    return std::unexpected(sync_error::query_failed);
-  }
-  int index = 1;
-  if (title_changed && !stmt->bind_text(index++, remote.title)) {
-    return std::unexpected(sync_error::query_failed);
-  }
-  if (status_changed && !stmt->bind_text(index++, remote.status)) {
-    return std::unexpected(sync_error::query_failed);
-  }
-  if (!stmt->bind_int64(index, row.entity_id) || !stmt->step()) {
-    return std::unexpected(sync_error::query_failed);
-  }
-
-  std::vector<std::string> changed;
+  diff_result out;
+  out.local_present   = true;
+  out.baseline_title  = title_changed ? remote.title : local->title;
+  out.baseline_status = status_changed ? remote.status : local->status;
   if (title_changed) {
-    changed.emplace_back("title");
+    out.fields.emplace_back("title");
+    out.title = remote.title;
   }
   if (status_changed) {
-    changed.emplace_back("status");
+    out.fields.emplace_back("status");
+    out.status = remote.status;
   }
-  return changed;
+  return out;
 }
 
 /// @brief The link status an outcome records.
@@ -546,25 +548,29 @@ auto pull_link(db::connection& conn, const link::ext_link& row, const adapter::e
     }
 
     if (result.result != outcome::conflict) {
-      auto const changed = apply_remote_to_local(conn, row, *remote, true, true, allow_title, allow_status);
-      if (!changed) {
-        return std::unexpected(changed.error());
+      auto const diff = local_diff(conn, row, *remote, true, true, allow_title, allow_status);
+      if (!diff) {
+        return std::unexpected(diff.error());
       }
-      result.result         = changed->empty() ? outcome::noop : outcome::ok;
-      result.fields_changed = *changed;
+      result.result         = diff->fields.empty() ? outcome::noop : outcome::ok;
+      result.fields_changed = diff->fields;
+      result.remote_title   = diff->title;
+      result.remote_status  = diff->status;
 
-      // Re-read AFTER applying, so the baseline records what the entity now
-      // holds. For a field the remote did not touch, the OLD baseline is kept
-      // rather than absorbing the local edit — that is what keeps the next
-      // remote change detectable as a conflict.
-      auto const after = local_entity_fields(conn, row.entity_kind, row.entity_id);
-      if (!after) {
-        if (after.error() != sync_error::not_found && after.error() != sync_error::unsupported_entity_kind) {
-          return std::unexpected(after.error());
-        }
-      } else {
-        auto const baseline_title  = (allow_title || !base->present()) ? after->title : *base->title;
-        auto const baseline_status = (allow_status || !base->present()) ? after->status : *base->status;
+      // The baseline STILL advances exactly as it did when this block wrote
+      // the entity (decision 996 changes WHAT gets written, not the
+      // baseline formula): `diff->baseline_title`/`baseline_status` are what
+      // the entity would now hold HAD it been applied — remote's value for
+      // a changed field, the CURRENT local value otherwise — the same pair
+      // `local_entity_fields` used to return from its post-apply re-read.
+      // This is load-bearing, not cosmetic: D1's first noop pull must still
+      // record a baseline (nothing to detect conflicts against otherwise),
+      // and `allow_title`/`allow_status` being false means "the remote
+      // didn't move since the old baseline", so THAT field keeps the OLD
+      // baseline value — a local-only edit must never leak into it (D3).
+      if (diff->local_present) {
+        auto const baseline_title  = (allow_title || !base->present()) ? diff->baseline_title : *base->title;
+        auto const baseline_status = (allow_status || !base->present()) ? diff->baseline_status : *base->status;
         if (auto const stored = link::store_baseline(conn, row.id, baseline_title, baseline_status); !stored) {
           return std::unexpected(from_link_error(stored.error()));
         }
@@ -706,21 +712,24 @@ auto resolve_conflict(db::connection& conn, std::int64_t event_id, resolve_keep 
     if (!provider.push(row->external_id, adapter::field_change_set{.title = local->title, .status = local->status})) {
       return std::unexpected(sync_error::adapter_failed);
     }
-  } else {
-    // keep=remote sends NOTHING — captured from the oracle as zero PUTs. Note
-    // `allow_missing_local` is FALSE here: unlike a pull, a resolution against
-    // a deleted entity is a real failure.
-    auto const changed = apply_remote_to_local(conn, *row, *remote, true, false, true, true);
-    if (!changed) {
-      return std::unexpected(changed.error());
-    }
   }
+  // `keep=remote` sends NOTHING to the provider — captured from the oracle
+  // as zero PUTs, unchanged — and, as of decision 996 (task 6419), no
+  // longer writes the local entity either: the same authorizer-enforced
+  // write boundary `pull_link` documents applies here. The conflict is
+  // still cleared below (`sync_status::ok`, baseline reset to the CURRENT
+  // — unmodified — local values), so this link stops reporting `conflict`.
+  // A subsequent `sync pull` then re-detects the remote/local difference as
+  // a plain, non-conflicting `ok` emission (local now matches the reset
+  // baseline, only the remote moved), which is exactly the state an agent
+  // needs to pick the change up and apply it through `planar`.
 
   if (auto const state = link::update_sync_state(conn, row->id, link::sync_status::ok); !state) {
     return std::unexpected(from_link_error(state.error()));
   }
-  // Baseline from the RESOLVED local values — re-read, because keep=remote
-  // just rewrote them.
+  // Baseline reset to the CURRENT local values (unchanged by this call —
+  // see above). This is what lets the conflict-detection two-way check
+  // stop reporting `conflict` on the next pull.
   auto const resolved = local_entity_fields(conn, row->entity_kind, row->entity_id);
   if (!resolved) {
     return std::unexpected(resolved.error());

@@ -117,11 +117,26 @@ export enum class resolve_keep : std::uint8_t {
 export auto resolve_keep_to_text(resolve_keep keep) -> std::string_view;
 
 /// @brief What one pull did.
+///
+/// ## `remote_title`/`remote_status`: EMITTED, not applied (decision 996)
+///
+/// Plan 996, task 6419 removed this module's `apply_remote_to_local`: a
+/// `planar-ext` connection is authorizer-restricted to `external_links` /
+/// `external_systems` / `sync_events` (decision 995), so a write into
+/// `tasks`/`plans`/`questions`/`artifacts` would refuse at `prepare()` even
+/// if this module still attempted one. `pull_link` now only DETECTS which
+/// fields differ and reports the remote's values here — it never writes
+/// them. `result == ok` means "the remote differs from the local entity in
+/// `fields_changed`, and here is what the remote holds"; the write itself
+/// is the caller's job, through `planar`, informed by these two fields. Set
+/// only when the corresponding name appears in `fields_changed`.
 export struct pull_result {
-  std::int64_t             link_id = 0;             ///< The link.
-  outcome                  result  = outcome::noop; ///< What happened.
-  std::vector<std::string> fields_changed;          ///< Which fields moved, or (on conflict) which CONFLICTED.
-  std::string              detail;                  ///< Free text; the adapter error tag on `error`.
+  std::int64_t               link_id = 0;             ///< The link.
+  outcome                    result  = outcome::noop; ///< What happened.
+  std::vector<std::string>   fields_changed;          ///< Which fields differ, or (on conflict) which CONFLICTED.
+  std::string                detail;                  ///< Free text; the adapter error tag on `error`.
+  std::optional<std::string> remote_title;            ///< The remote's title, when `title` is in `fields_changed`.
+  std::optional<std::string> remote_status;           ///< The remote's status, when `status` is in `fields_changed`.
 };
 
 /// @brief What one push did. Same shape as `pull_result`; kept as a distinct
@@ -188,11 +203,24 @@ export enum class sync_error : std::uint8_t {
 /// @return The events, or the failure.
 export auto events_for_link(db::connection& conn, std::int64_t link_id) -> std::expected<std::vector<sync_event>, sync_error>;
 
-/// @brief Pull one link: read the remote, detect conflicts, apply what is
-/// safe, and record the attempt.
+/// @brief Pull one link: read the remote, detect conflicts, and EMIT what
+/// differs — it does not write the local entity (decision 996, task 6419).
 ///
-/// See this module's header for the full derived rule set. Writes exactly one
-/// `sync_events` row and always updates the link's sync state.
+/// See this module's header for the full derived rule set and
+/// `pull_result`'s header for what `remote_title`/`remote_status` carry.
+/// Conflict detection is unchanged: it still reads the baseline and the
+/// local entity to decide `ok` vs. `conflict` vs. `noop`. What changed is
+/// the non-conflict arm's WRITE TARGET, not its baseline formula: it used
+/// to call `apply_remote_to_local` (writing `tasks`/`plans`/…) and then
+/// re-read the entity to store a fresh baseline in `external_links`; it now
+/// skips the entity write and computes the SAME would-be baseline directly
+/// (see `local_diff`'s `diff_result`), storing it in `external_links` —
+/// the one table this write was always in, and the one decision 995 keeps
+/// allowing. The baseline still advances on every non-conflict pull,
+/// including a first noop pull with nothing to report, exactly as before;
+/// only `tasks`/`plans`/`questions`/`artifacts` stopped being written.
+/// Writes exactly one `sync_events` row and always updates the link's sync
+/// state.
 /// @param conn An open, migrated database connection.
 /// @param row The link to pull.
 /// @param provider The adapter to read through.

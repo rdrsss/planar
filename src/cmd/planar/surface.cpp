@@ -31,11 +31,9 @@ constexpr std::string_view k_path_10[]  = {"promote"};
 constexpr std::string_view k_path_11[]  = {"demote"};
 constexpr std::string_view k_path_12[]  = {"workbench"};
 constexpr std::string_view k_path_13[]  = {"workspace"};
-constexpr std::string_view k_path_14[]  = {"ext"};
 constexpr std::string_view k_path_15[]  = {"link"};
 constexpr std::string_view k_path_16[]  = {"unlink"};
 constexpr std::string_view k_path_17[]  = {"links"};
-constexpr std::string_view k_path_18[]  = {"sync"};
 constexpr std::string_view k_path_19[]  = {"resume"};
 constexpr std::string_view k_path_20[]  = {"handoff"};
 constexpr std::string_view k_path_21[]  = {"capture"};
@@ -177,20 +175,10 @@ constexpr std::string_view k_path_156[] = {"workspace", "init"};
 constexpr std::string_view k_path_157[] = {"workspace", "doctor"};
 constexpr std::string_view k_path_158[] = {"workspace", "routing"};
 constexpr std::string_view k_path_159[] = {"workspace", "regenerate"};
-constexpr std::string_view k_path_160[] = {"ext", "register"};
-constexpr std::string_view k_path_161[] = {"ext", "list"};
-constexpr std::string_view k_path_162[] = {"ext", "test"};
-constexpr std::string_view k_path_163[] = {"ext", "create"};
-constexpr std::string_view k_path_164[] = {"ext", "propagate-one"};
-constexpr std::string_view k_path_165[] = {"ext", "propagate"};
 constexpr std::string_view k_path_166[] = {"links", "add"};
 constexpr std::string_view k_path_167[] = {"links", "list"};
 constexpr std::string_view k_path_168[] = {"links", "remove"};
 constexpr std::string_view k_path_169[] = {"links", "trail"};
-constexpr std::string_view k_path_170[] = {"sync", "pull"};
-constexpr std::string_view k_path_171[] = {"sync", "push"};
-constexpr std::string_view k_path_172[] = {"sync", "status"};
-constexpr std::string_view k_path_173[] = {"sync", "resolve"};
 constexpr std::string_view k_path_174[] = {"resume", "validate"};
 constexpr std::string_view k_path_175[] = {"handoff", "create"};
 constexpr std::string_view k_path_176[] = {"handoff", "validate"};
@@ -262,8 +250,6 @@ constexpr std::string_view k_path_241[] = {"task", "touches", "list"};
 constexpr std::string_view k_path_242[] = {"task", "touches", "remove"};
 constexpr std::string_view k_path_243[] = {"workspace", "routing", "build"};
 constexpr std::string_view k_path_244[] = {"workspace", "routing", "show"};
-constexpr std::string_view k_path_245[] = {"ext", "register", "jira"};
-constexpr std::string_view k_path_246[] = {"ext", "register", "github"};
 constexpr std::string_view k_path_247[] = {"models", "registry", "list"};
 constexpr std::string_view k_path_248[] = {"models", "registry", "add"};
 constexpr std::string_view k_path_249[] = {"models", "registry", "update"};
@@ -1191,125 +1177,8 @@ constexpr flag_spec k_flags_157[] = {
 constexpr flag_spec k_flags_159[] = {
     {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
 };
-constexpr flag_spec k_flags_161[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_162[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_163[] = {
-    {.name          = "--from",
-     .kind          = "string",
-     .required      = true,
-     .list          = false,
-     .default_value = {},
-     .description   = "Source local entity ref (kind:id)"},
-    {.name          = "--type",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "External issue type, e.g. Epic, Story"},
-    {.name          = "--role",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Link role (default: mirror)"},
-    {.name          = "--sync",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Sync direction (default: two-way)"},
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_164[] = {
-    {.name          = "--from",
-     .kind          = "string",
-     .required      = true,
-     .list          = false,
-     .default_value = {},
-     .description   = "Source local entity ref (kind:id, e.g. plan:42 or task:7)"},
-    {.name          = "--strategy",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Override GitHub strategy: parent-issue, projects-v2, tracking-issue"},
-    {.name          = "--sync",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Sync direction for created link: read-only, write-back, two-way"},
-    {.name          = "--dry-run",
-     .kind          = "bool",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Preview without contacting the remote system"},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_165[] = {
-    {.name          = "--system",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "External system slug (defaults to first registered system)"},
-    {.name          = "--dry-run",
-     .kind          = "bool",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Preview creation plan without contacting the remote system"},
-    {.name          = "--restrategize",
-     .kind          = "bool",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Force fresh strategy detection (M10 engine path)"},
-    {.name          = "--yes",
-     .kind          = "bool",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Auto-confirm prompts (M10 engine path)"},
-    {.name          = "--verify-counterparts",
-     .kind          = "bool",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Probe remote counterparts (M10 engine path)"},
-    {.name          = "--unlink",
-     .kind          = "bool",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Remove links for missing counterparts (requires --verify-counterparts)"},
-    {.name          = "--recreate",
-     .kind          = "bool",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Remove and recreate missing counterparts (requires --verify-counterparts)"},
-    {.name          = "--github-strategy",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Override GitHub strategy: parent-issue, projects-v2, tracking-issue"},
-    {.name          = "--sync",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Sync direction for created links: read-only, write-back, two-way"},
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
+// k_flags_161-165 (ext list/test/create/propagate-one/propagate) removed
+// at plan 996, task 6419 — moved to `planar-ext`.
 constexpr flag_spec k_flags_166[] = {
     {.name = "--relationship", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
     {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
@@ -1323,55 +1192,8 @@ constexpr flag_spec k_flags_168[] = {
 constexpr flag_spec k_flags_169[] = {
     {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
 };
-constexpr flag_spec k_flags_170[] = {
-    {.name = "--all", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--system", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_171[] = {
-    {.name = "--all", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--system", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_172[] = {
-    {.name          = "--entity",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Filter by entity, e.g. task:42"},
-    {.name          = "--system",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Filter by system slug"},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_173[] = {
-    {.name          = "--keep",
-     .kind          = "string",
-     .required      = true,
-     .list          = false,
-     .default_value = {},
-     .description   = "Which side to keep (local|remote)"},
-    {.name          = "--evidence-token",
-     .kind          = "string",
-     .required      = true,
-     .list          = false,
-     .default_value = {},
-     .description   = "Exact token from the approved conflict evidence"},
-    {.name          = "--expected-local-updated-at",
-     .kind          = "string",
-     .required      = true,
-     .list          = false,
-     .default_value = {},
-     .description   = "Approved local entity updated_at version"},
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
+// k_flags_170-173 (sync pull/push/status/resolve) removed at plan 996,
+// task 6419 — moved to `planar-ext`.
 constexpr flag_spec k_flags_177[] = {
     {.name = "--session", .kind = "int", .required = false, .list = false, .default_value = {}, .description = ""},
 };
@@ -1788,32 +1610,8 @@ constexpr flag_spec k_flags_243[] = {
 constexpr flag_spec k_flags_244[] = {
     {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
 };
-constexpr flag_spec k_flags_245[] = {
-    {.name = "--base-url", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name = "--project", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name          = "--auth-env",
-     .kind          = "string",
-     .required      = true,
-     .list          = false,
-     .default_value = {},
-     .description   = "Env var name holding the API token"},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_246[] = {
-    {.name          = "--project",
-     .kind          = "string",
-     .required      = true,
-     .list          = false,
-     .default_value = {},
-     .description   = "GitHub repository owner/repo"},
-    {.name          = "--auth-env",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "Env var name holding the token (uses gh-cli if omitted)"},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
+// k_flags_245/246 (ext register jira/github) removed at plan 996, task
+// 6419 — moved to `planar-ext`.
 constexpr flag_spec k_flags_247[] = {
     {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
 };
@@ -2187,18 +1985,8 @@ constexpr positional_spec k_pos_155[] = {
 constexpr positional_spec k_pos_159[] = {
     {.name = "workspace", .required = false, .description = ""},
 };
-constexpr positional_spec k_pos_162[] = {
-    {.name = "slug", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_163[] = {
-    {.name = "system-slug", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_164[] = {
-    {.name = "system", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_165[] = {
-    {.name = "plan-id", .required = true, .description = ""},
-};
+// k_pos_162-165 (ext test/create/propagate-one/propagate) removed at plan
+// 996, task 6419 — moved to `planar-ext`.
 constexpr positional_spec k_pos_166[] = {
     {.name = "from-ref", .required = true, .description = ""},
     {.name = "to-ref", .required = true, .description = ""},
@@ -2212,15 +2000,8 @@ constexpr positional_spec k_pos_168[] = {
 constexpr positional_spec k_pos_169[] = {
     {.name = "link-id", .required = true, .description = ""},
 };
-constexpr positional_spec k_pos_170[] = {
-    {.name = "ref", .required = false, .description = "<link-id | kind:id>"},
-};
-constexpr positional_spec k_pos_171[] = {
-    {.name = "ref", .required = false, .description = "<link-id | kind:id>"},
-};
-constexpr positional_spec k_pos_173[] = {
-    {.name = "event-id", .required = true, .description = ""},
-};
+// k_pos_170/171/173 (sync pull/push/resolve) removed at plan 996, task
+// 6419 — moved to `planar-ext`.
 constexpr positional_spec k_pos_174[] = {
     {.name = "task-id", .required = true, .description = ""},
 };
@@ -2372,12 +2153,8 @@ constexpr positional_spec k_pos_243[] = {
 constexpr positional_spec k_pos_244[] = {
     {.name = "workspace", .required = false, .description = ""},
 };
-constexpr positional_spec k_pos_245[] = {
-    {.name = "slug", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_246[] = {
-    {.name = "slug", .required = true, .description = ""},
-};
+// k_pos_245/246 (ext register jira/github) removed at plan 996, task 6419
+// — moved to `planar-ext`.
 constexpr positional_spec k_pos_258[] = {
     {.name = "finding", .required = true, .description = ""},
 };
@@ -2495,12 +2272,8 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = {},
        .positionals = {},
        .group       = true},
-      {.path        = k_path_14,
-       .description = "Register and interact with external systems on the operational plane.\n\n  Sub-commands: register, list, "
-                      "test, create, propagate.\n  Currently supported systems: Jira, GitHub Issues, GitHub Projects.",
-       .flags       = {},
-       .positionals = {},
-       .group       = true},
+      // k_path_14 ("ext" group) removed at plan 996, task 6419 — the whole
+      // family moved to `planar-ext`. See tree.cpp's note at `add_unlink`.
       {.path        = k_path_15,
        .description = "Manually record an external_links row linking a local entity to\n  an already-existing external ticket. "
                       "Use this when the external\n  ticket was created outside of 'ext create'. Does not push any data\n  to "
@@ -2523,11 +2296,8 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = {},
        .positionals = {},
        .group       = true},
-      {.path        = k_path_18,
-       .description = "Pull and push data between the local plane and external systems.",
-       .flags       = {},
-       .positionals = {},
-       .group       = true},
+      // k_path_18 ("sync" group) removed at plan 996, task 6419 — the whole
+      // family moved to `planar-ext`.
       {.path = k_path_19,
        .description =
            "Produce a structured 8-section resume packet for the specified\n  task.\n\n  The packet contains:\n    1. Identity   "
@@ -3252,35 +3022,10 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = k_flags_159,
        .positionals = k_pos_159,
        .group       = false},
-      {.path = k_path_160, .description = "Register an external system.", .flags = {}, .positionals = {}, .group = true},
-      {.path        = k_path_161,
-       .description = "List registered external systems.",
-       .flags       = k_flags_161,
-       .positionals = {},
-       .group       = false},
-      {.path        = k_path_162,
-       .description = "Test connection to an external system.",
-       .flags       = k_flags_162,
-       .positionals = k_pos_162,
-       .group       = false},
-      {.path        = k_path_163,
-       .description = "Create an external counterpart for a local entity.",
-       .flags       = k_flags_163,
-       .positionals = k_pos_163,
-       .group       = false},
-      {.path        = k_path_164,
-       .description = "Render one entity's template, POST the counterpart to the external system, and\n  record the "
-                      "external_links row. Idempotent: if a mirror link already exists\n  for this entity+system pair, the call "
-                      "is a no-op and returns op=skipped.\n\n  --from <kind:id>  Source local entity ref (plan:N or task:N)\n  "
-                      "--strategy        Override GitHub strategy: parent-issue, projects-v2, tracking-issue",
-       .flags       = k_flags_164,
-       .positionals = k_pos_164,
-       .group       = false},
-      {.path        = k_path_165,
-       .description = "Propagate a feature (plan + descendants) to an external system.",
-       .flags       = k_flags_165,
-       .positionals = k_pos_165,
-       .group       = false},
+      // k_path_160-165 (ext register group, list, test, create,
+      // propagate-one, propagate) removed at plan 996, task 6419. The first
+      // five moved to `planar-ext`; `propagate` was never wired here (see
+      // `unported_paths`'s header) and is not wired on either binary yet.
       {.path        = k_path_166,
        .description = "Create an entity_links row between two entities.",
        .flags       = k_flags_166,
@@ -3301,26 +3046,8 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = k_flags_169,
        .positionals = k_pos_169,
        .group       = false},
-      {.path        = k_path_170,
-       .description = "Pull remote state for one or more external links.",
-       .flags       = k_flags_170,
-       .positionals = k_pos_170,
-       .group       = false},
-      {.path        = k_path_171,
-       .description = "Push local changes for one or more external links.",
-       .flags       = k_flags_171,
-       .positionals = k_pos_171,
-       .group       = false},
-      {.path        = k_path_172,
-       .description = "Report sync status for links.",
-       .flags       = k_flags_172,
-       .positionals = {},
-       .group       = false},
-      {.path        = k_path_173,
-       .description = "Settle a sync conflict on a link.",
-       .flags       = k_flags_173,
-       .positionals = k_pos_173,
-       .group       = false},
+      // k_path_170-173 (sync pull/push/status/resolve) removed at plan 996,
+      // task 6419 — moved to `planar-ext`.
       {.path = k_path_174, .description = "Check if a task is resumable.", .flags = {}, .positionals = k_pos_174, .group = false},
       {.path        = k_path_175,
        .description = "Create a handoff from an existing snapshot.",
@@ -3695,16 +3422,8 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = k_flags_244,
        .positionals = k_pos_244,
        .group       = false},
-      {.path        = k_path_245,
-       .description = "Register a Jira instance as an external system.",
-       .flags       = k_flags_245,
-       .positionals = k_pos_245,
-       .group       = false},
-      {.path        = k_path_246,
-       .description = "Register a GitHub Issues repository as an external system.",
-       .flags       = k_flags_246,
-       .positionals = k_pos_246,
-       .group       = false},
+      // k_path_245/246 (ext register jira/github) removed at plan 996, task
+      // 6419 — moved to `planar-ext`.
       {.path        = k_path_247,
        .description = "List registrations, bindings, and latest observations.",
        .flags       = k_flags_247,
@@ -4146,9 +3865,14 @@ auto unported_paths() -> std::span<std::string_view const> {
       // `common.{LocalEntity, CreateOptions, Header}`, all three already
       // present as `adapter::local_entity` / `adapter::create_options` /
       // `http::header`. The real precondition was two `adapter_handle`
-      // accessors. Its two siblings below stay — they DO reach
-      // `propagate.zig`.
-      "ext propagate",
+      // accessors. Its two siblings below stayed until task 6419, when the
+      // whole `ext`/`sync` family (including `ext propagate-one`, already
+      // ported by then) moved to `planar-ext`. `ext propagate` moved with
+      // them conceptually but is not yet wired on EITHER binary — it
+      // leaves THIS inventory not because it landed, but because `ext` no
+      // longer has a home on `planar` at all. See tree.cpp's note where
+      // `add_ext` used to be.
+      //
       // `ext propagate-one` left this inventory at task 6335, and it is the
       // SIXTH over-stated blocker of this milestone. It was carried under the
       // whole create/propagate half of `engine_extsync` — 3665 lines across

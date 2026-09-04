@@ -5,9 +5,9 @@
 // ## Why this is its own translation unit
 //
 // The same reason `init.t.cpp` is, and its header states the rule: this file
-// imports `planar.cmd.planar.handlers.ext_adapter_factory`, which opens
-// `namespace planar::cmd::handlers`, while the dispatch helper in
-// `ext_leaves.t.cpp` calls the FUNCTION `planar::cmd::handlers(*tree)`. With
+// imports `planar.cmd.planar_ext.handlers.ext_adapter_factory`, which opens
+// `namespace planar::cmd::ext::handlers`, while the dispatch helper in
+// `ext_leaves.t.cpp` calls the FUNCTION `planar::cmd::ext::handlers(*tree)`. With
 // both in scope the qualified name is ambiguous and the TU does not compile.
 // The split is not cosmetic: it is the one arrangement in which the
 // end-to-end leaf cases and these direct ones can both exist.
@@ -81,18 +81,18 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.cmd.planar.handlers.ext_adapter_factory;
+import planar.cmd.planar_ext.handlers.ext_adapter_factory;
 import planar.engine.external;
 
 namespace {
 
-using planar::cmd::handlers::adapter_kind;
-using planar::cmd::handlers::build_adapter;
-using planar::cmd::handlers::default_transport_factory;
-using planar::cmd::handlers::factory_deps;
-using planar::cmd::handlers::factory_error;
-using planar::cmd::handlers::spawn_capture;
-using planar::cmd::handlers::token_command_result;
+using planar::cmd::ext::handlers::adapter_kind;
+using planar::cmd::ext::handlers::build_adapter;
+using planar::cmd::ext::handlers::default_transport_factory;
+using planar::cmd::ext::handlers::factory_deps;
+using planar::cmd::ext::handlers::factory_error;
+using planar::cmd::ext::handlers::spawn_capture;
+using planar::cmd::ext::handlers::token_command_result;
 
 namespace system_ns = planar::engine::external::system;
 

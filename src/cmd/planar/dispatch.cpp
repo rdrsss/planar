@@ -49,8 +49,6 @@ import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.artifact;
 import planar.cmd.planar.handlers.drafting;
 import planar.cmd.planar.handlers.links;
-import planar.cmd.planar.handlers.ext;
-import planar.cmd.planar.handlers.sync;
 import planar.cmd.planar.handlers.link;
 import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.version;
@@ -449,24 +447,16 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("annotate sweep", handlers::annotate_sweep);
   table.emplace("link", handlers::link);
   table.emplace("unlink", handlers::unlink);
-  table.emplace("ext register jira", handlers::ext_register_jira);
-  table.emplace("ext register github", handlers::ext_register_github);
-  table.emplace("ext list", handlers::ext_list);
-  table.emplace("ext test", handlers::ext_test);
-  table.emplace("ext create", handlers::ext_create);
-  // Task 6335. Carried as blocked on all 3665 unported lines of the
-  // create/propagate half; needed TWO functions (~40 lines) and none of
-  // `parent_issue.zig` or `projects_v2.zig`. `ext propagate` stays deferred.
-  table.emplace("ext propagate-one", handlers::ext_propagate_one);
-  table.emplace("sync pull", handlers::sync_pull);
-  table.emplace("sync push", handlers::sync_push);
-  table.emplace("sync resolve", handlers::sync_resolve);
+  // The whole `ext` family (register/list/test/create/propagate-one) and
+  // the whole `sync` family (pull/push/status/resolve) moved to
+  // `planar-ext` at plan 996, task 6419. `ext propagate` was never wired
+  // here (see `surface.cpp`'s `unported_paths` header) and is not wired
+  // on either binary yet.
   // `promote` and `demote` are TOP-LEVEL leaves, not a family: they take no
   // subcommand, so their table key is the bare verb.
   table.emplace("promote", handlers::promote);
   table.emplace("demote", handlers::demote);
   table.emplace("test-spec status", handlers::test_spec_status);
-  table.emplace("sync status", handlers::sync_status);
   // `skills` has no subcommands, so it is a LEAF and needs an entry here
   // even though the verb is retired and does nothing but render its own
   // help page. See that handler's header.

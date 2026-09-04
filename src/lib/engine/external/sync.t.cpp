@@ -294,7 +294,16 @@ TEST_CASE("D1: the first pull on a fresh link is noop and records a baseline", "
         decltype(event_tuples(fixture.conn, fixture.row.id)){{"pull", "noop", "", ""}});
 }
 
-TEST_CASE("D2: a remote-only change applies both fields and moves the baseline", "[engine][external][sync]") {
+TEST_CASE("D2: a remote-only change EMITS both fields and still moves the baseline; decision 996 does not apply the task",
+          "[engine][external][sync]") {
+  // D2 divergence (decision 996, plan 996 task 6419): the oracle writes the
+  // remote's title/status onto the task. This binary instead reports them
+  // on the result (`remote_title`/`remote_status`) and leaves the task
+  // untouched — `planar-ext`'s write authorizer (decision 995) would
+  // refuse the oracle's `update tasks …` anyway. The BASELINE (stored in
+  // `external_links`, an allowed table) still advances to what the task
+  // would now hold had it been applied — see `pull_link`'s header for why
+  // that part is unchanged.
   rig          fixture;
   stub_adapter provider;
   provider.remote = remote_of("Baseline", "todo", "v1");
@@ -305,10 +314,12 @@ TEST_CASE("D2: a remote-only change applies both fields and moves the baseline",
   REQUIRE(result.has_value());
   CHECK(result->result == sync_ns::outcome::ok);
   CHECK(result->fields_changed == std::vector<std::string>{"title", "status"});
+  CHECK(result->remote_title == std::optional<std::string>{"Remote edit"});
+  CHECK(result->remote_status == std::optional<std::string>{"doing"});
 
   auto const [title, status, _] = read_task(fixture.conn, fixture.task_id);
-  CHECK(title == "Remote edit");
-  CHECK(status == "doing");
+  CHECK(title == "Baseline");
+  CHECK(status == "todo");
   auto const base = link_ns::load_baseline(fixture.conn, fixture.row.id);
   CHECK(base->title == std::optional<std::string>{"Remote edit"});
   CHECK(base->status == std::optional<std::string>{"doing"});
@@ -417,30 +428,48 @@ TEST_CASE("D9: an unmappable remote status is 'no opinion', not a status change"
   // Capture D9: the oracle's Jira adapter maps "Backlog" to the EMPTY string,
   // and the pull reported fields_changed:["title"] rather than clearing the
   // local status.
+  //
+  // The seeding pull's remote MATCHES the fixture's initial local values
+  // ("Baseline"/"todo") deliberately, unlike the oracle capture. Since
+  // decision 996 (task 6419) never applies a diff to the task, a seeding
+  // pull whose remote genuinely differs from local would advance the
+  // baseline to a value the task itself never reaches (nothing writes
+  // it) — the SECOND pull below would then see local trailing that
+  // phantom baseline and misreport a two-way conflict. A true noop seed
+  // sidesteps that and isolates what this test actually checks: the
+  // empty-status mapping.
   rig          fixture;
   stub_adapter provider;
-  provider.remote = remote_of("Base", "todo", "v1");
+  provider.remote = remote_of("Baseline", "todo", "v1");
   REQUIRE(sync_ns::pull_link(fixture.conn, fixture.row, provider).has_value());
 
   provider.remote   = remote_of("Remote B", "", "v2");
   auto const result = sync_ns::pull_link(fixture.conn, fixture.row, provider);
   REQUIRE(result.has_value());
   CHECK(result->fields_changed == std::vector<std::string>{"title"});
+  CHECK(result->remote_title == std::optional<std::string>{"Remote B"});
+  CHECK_FALSE(result->remote_status.has_value());
+  // Decision 996 (task 6419): EMITTED, not applied — the task still holds
+  // its ORIGINAL value; even the first pull's "Base" never got written.
   auto const [title, status, _] = read_task(fixture.conn, fixture.task_id);
-  CHECK(title == "Remote B");
+  CHECK(title == "Baseline");
   CHECK(status == "todo");
 }
 
-TEST_CASE("an empty remote title is likewise never written", "[engine][external][sync]") {
+TEST_CASE("an empty remote title is likewise never reported as changed", "[engine][external][sync]") {
   rig          fixture;
   stub_adapter provider;
   provider.remote   = remote_of("", "doing", "v1");
   auto const result = sync_ns::pull_link(fixture.conn, fixture.row, provider);
   REQUIRE(result.has_value());
   CHECK(result->fields_changed == std::vector<std::string>{"status"});
+  CHECK_FALSE(result->remote_title.has_value());
+  CHECK(result->remote_status == std::optional<std::string>{"doing"});
+  // Decision 996 (task 6419): the task is never written; only the status
+  // differed, and even that was EMITTED above, not applied.
   auto const [title, status, _] = read_task(fixture.conn, fixture.task_id);
   CHECK(title == "Baseline");
-  CHECK(status == "doing");
+  CHECK(status == "todo");
 }
 
 // --- Direction gating -------------------------------------------------------
@@ -476,10 +505,14 @@ TEST_CASE("D11b: a read-only link refuses a push before anything is sent", "[eng
   CHECK(event_tuples(fixture.conn, fixture.row.id).empty());
 }
 
-TEST_CASE("D11c: a read-only link applies the remote with NO conflict check", "[engine][external][sync]") {
+TEST_CASE("D11c: a read-only link diffs the remote against a locally-edited task with NO conflict check",
+          "[engine][external][sync]") {
   // Captured: a read-only pull over a locally-edited task overwrote it,
   // fields_changed ["title","status"], no conflict. Conflict detection is
-  // gated on `two-way` and this is the case that proves the gate is real.
+  // gated on `two-way` and this is the case that proves the gate is real —
+  // unaffected by decision 996, which only changes whether the WRITE that
+  // used to happen here still happens (it does not: the task is EMITTED,
+  // not applied — see `pull_link`'s header).
   rig          fixture(link_ns::sync_direction::read_only);
   stub_adapter provider;
   provider.remote = remote_of("Remote", "todo", "v1");
@@ -491,9 +524,11 @@ TEST_CASE("D11c: a read-only link applies the remote with NO conflict check", "[
   REQUIRE(result.has_value());
   CHECK(result->result == sync_ns::outcome::ok);
   CHECK(result->fields_changed == std::vector<std::string>{"title", "status"});
+  CHECK(result->remote_title == std::optional<std::string>{"Remote C"});
+  CHECK(result->remote_status == std::optional<std::string>{"todo"});
   auto const [title, status, _] = read_task(fixture.conn, fixture.task_id);
-  CHECK(title == "Remote C");
-  CHECK(status == "todo");
+  CHECK(title == "Local edit");
+  CHECK(status == "doing");
 }
 
 // --- Push -------------------------------------------------------------------
@@ -666,7 +701,15 @@ TEST_CASE("D6: resolve --keep local re-reads, pushes, and records a push event",
   CHECK(fixture.row.last_sync_status == link_ns::sync_status::ok);
 }
 
-TEST_CASE("D7: resolve --keep remote rewrites the entity and sends NOTHING", "[engine][external][sync]") {
+TEST_CASE("D7: resolve --keep remote sends NOTHING and, per decision 996, no longer rewrites the entity",
+          "[engine][external][sync]") {
+  // D2-shaped divergence (decision 996, plan 996 task 6419): the oracle
+  // writes the remote's title/status onto the task here. This binary
+  // clears the conflict (`sync_status::ok`, baseline reset to the
+  // CURRENT — unmodified — local values) without touching the task; an
+  // agent applies the remote's values through `planar`, and the next
+  // `sync pull` re-emits them as a plain, non-conflicting `ok` once it
+  // does (see `resolve_conflict`'s header).
   rig          fixture;
   stub_adapter provider;
   auto const   seeded = seed_conflict(fixture, provider);
@@ -679,8 +722,13 @@ TEST_CASE("D7: resolve --keep remote rewrites the entity and sends NOTHING", "[e
   CHECK(provider.pushes == pushes_before);
 
   auto const [title, status, _] = read_task(fixture.conn, fixture.task_id);
-  CHECK(title == "Remote edit 2");
-  CHECK(status == "blocked");
+  CHECK(title == "Local edit");
+  CHECK(status == "doing");
+  auto const base = link_ns::load_baseline(fixture.conn, fixture.row.id);
+  CHECK(base->title == std::optional<std::string>{"Local edit"});
+  CHECK(base->status == std::optional<std::string>{"doing"});
+  fixture.reload();
+  CHECK(fixture.row.last_sync_status == link_ns::sync_status::ok);
   auto const events = event_tuples(fixture.conn, fixture.row.id);
   // Direction `pull`, not `push` — the resolution moved data the other way.
   CHECK(std::get<0>(events.back()) == "pull");

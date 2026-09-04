@@ -118,7 +118,7 @@ struct fixture {
 
 } // namespace
 
-TEST_CASE("planar-ext's declared verb set is exactly {version, schema} — this task lands no ext/sync verb",
+TEST_CASE("planar-ext's declared verb set is exactly {version, schema, ext..., sync...} after task 6419's move",
           "[cmd][ext][capability]") {
   auto const root = planar::cmd::ext::root_app();
   CHECK(root->get_name() == "planar-ext");
@@ -130,18 +130,28 @@ TEST_CASE("planar-ext's declared verb set is exactly {version, schema} — this 
     }
     names.insert(node.node->get_name());
   }
-  CHECK(names == std::set<std::string, std::less<>>{"version", "schema"});
+  // Every node NAME in the tree, group nodes and bare leaves alike — NOT
+  // full paths, so "list"/"push"/"status"/"pull" here are `ext list` /
+  // `sync push` / `sync status` / `sync pull` (task 6419 landed exactly
+  // this set; `ext propagate` is not among them — see `tree.cpp`'s
+  // `add_ext`), not a claim-ritual or planning-entity verb of the same
+  // bare name.
+  CHECK(names == std::set<std::string, std::less<>>{"version", "schema", "ext", "register", "jira", "github", "list", "test",
+                                                    "create", "propagate-one", "sync", "pull", "push", "status", "resolve"});
 
   // The forbidden set: every write verb the OTHER agent-callable binary
   // carries, and every planning-entity verb the operator binary carries —
   // reproduced from `src/cmd/planar-watch/tree.cpp::forbidden_verbs()`
   // rather than re-derived, so the two lists cannot drift apart silently.
-  // None of these belongs on `planar-ext` either, today or after tasks
-  // 6419-6421 (which add `ext`/`sync`, not planning or claim-ritual verbs).
+  // `pull` is deliberately ABSENT from this list as of task 6419: the
+  // claim-ritual `planar-agent pull` never landed here, but `sync pull`
+  // legitimately did, and this check compares bare node NAMES — it cannot
+  // tell the two apart, so keeping `pull` forbidden would make the exact-set
+  // assertion above and this refusal check permanently disagree.
   static constexpr std::string_view k_forbidden[] = {
-      "pull",      "claim", "heartbeat", "complete", "fail", "release",   "block",    "action",   "ingest",
-      "reconcile", "abort", "peek",      "plan",     "task", "decision",  "question", "scenario", "artifact",
-      "annotate",  "init",  "workbench", "doc",      "spec", "templates", "promote",  "demote",   "capture",
+      "claim", "heartbeat", "complete", "fail", "release",   "block",    "action",   "ingest",   "reconcile",
+      "abort", "peek",      "plan",     "task", "decision",  "question", "scenario", "artifact", "annotate",
+      "init",  "workbench", "doc",      "spec", "templates", "promote",  "demote",   "capture",
   };
   for (auto const& forbidden : k_forbidden) {
     INFO("forbidden verb leaked into planar-ext's tree: " << forbidden);

@@ -13,6 +13,8 @@ import planar.cmd.planar_ext.exit;
 import planar.cmd.planar_ext.handler;
 import planar.cmd.planar_ext.handlers.schema;
 import planar.cmd.planar_ext.handlers.version;
+import planar.cmd.planar_ext.handlers.ext;
+import planar.cmd.planar_ext.handlers.sync;
 
 namespace planar::cmd::ext {
 
@@ -43,6 +45,16 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("schema", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return handlers::schema(ctx, args, root);
   });
+  table.emplace("ext register jira", handlers::ext_register_jira);
+  table.emplace("ext register github", handlers::ext_register_github);
+  table.emplace("ext list", handlers::ext_list);
+  table.emplace("ext test", handlers::ext_test);
+  table.emplace("ext create", handlers::ext_create);
+  table.emplace("ext propagate-one", handlers::ext_propagate_one);
+  table.emplace("sync pull", handlers::sync_pull);
+  table.emplace("sync push", handlers::sync_push);
+  table.emplace("sync status", handlers::sync_status);
+  table.emplace("sync resolve", handlers::sync_resolve);
   return table;
 }
 

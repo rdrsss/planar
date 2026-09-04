@@ -124,6 +124,16 @@ inline auto exclusion_reason(std::span<const std::string> path) -> std::optional
   // Decision 980 is the sole port-scope exception (`explore`).  Each entry
   // remains checked and reported by `excluded_steps`; adding an omission here
   // therefore cannot make it disappear from the catalog evidence.
+  //
+  // Plan 996, task 6419 deliberately does NOT add an entry here for the
+  // `ext`/`sync` leaves that moved to `planar-ext`: unlike `explore` (which
+  // exists, unexecuted, on BOTH sides), those leaves now exist ONLY in the
+  // oracle's catalog — `excluded_steps` requires `cpp_excluded ==
+  // zig_excluded` exactly, so a one-sided entry here would fail that
+  // partition check rather than pass it. The state-differential tests
+  // strip those catalog entries out of the oracle's JSON before ever
+  // reaching this function; see `strip_moved_ext_sync_leaves` in
+  // `statediff.t.cpp`.
   const auto is = [&](std::initializer_list<std::string_view> wanted) {
     return path.size() == wanted.size() && std::ranges::equal(path, wanted);
   };

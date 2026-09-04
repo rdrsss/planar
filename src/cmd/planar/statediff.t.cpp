@@ -115,6 +115,103 @@ using planar::cmd::parity::make_arena;
 using planar::cmd::parity::run_pinned;
 namespace state_catalog = planar::cmd::state_catalog;
 
+/// @brief Remove one command object from a compact `planar schema` catalog
+/// document, by its exact `path` array. Duplicated from `parity.t.cpp`'s
+/// helper of the same shape — see that file's header for why a
+/// port-scope carveout does not belong in `catalog_steps.hpp`'s
+/// `exclusion_reason` (it would break `excluded_steps`'s
+/// `cpp_excluded == zig_excluded` partition check, since these leaves are
+/// one-sided: present only in the oracle's catalog).
+/// @param catalog The full `planar schema` JSON document.
+/// @param path The command's path segments, e.g. `{"ext","list"}`.
+/// @return The document with that one command object removed.
+auto strip_command(std::string catalog, std::initializer_list<std::string_view> path) -> std::string {
+  // The oracle's command objects open `{"name":...` — `"path"` is a LATER
+  // key — so the anchor is `"path":[...]` itself, and the object's `{` is
+  // found by scanning BACKWARD to the nearest one. The forward close-scan
+  // is string-aware for the same reason: JSON does not require escaping
+  // `{`/`}` inside a string, and command descriptions do contain literal
+  // braces (JSON examples in prose).
+  std::string needle = R"("path":[)";
+  for (auto const& segment : path) {
+    if (&segment != path.begin()) {
+      needle += ",";
+    }
+    needle += "\"" + std::string{segment} + "\"";
+  }
+  needle += "]";
+
+  auto const anchor = catalog.find(needle);
+  REQUIRE(anchor != std::string::npos);
+
+  auto const start = catalog.rfind("{\"name\"", anchor);
+  REQUIRE(start != std::string::npos);
+
+  int         depth     = 0;
+  bool        in_string = false;
+  bool        escaped   = false;
+  std::size_t end       = std::string::npos;
+  for (std::size_t i = start; i < catalog.size(); ++i) {
+    char const c = catalog[i];
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_string = true;
+    } else if (c == '{') {
+      ++depth;
+    } else if (c == '}') {
+      --depth;
+      if (depth == 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  REQUIRE(end != std::string::npos);
+
+  if (start > 0 && catalog[start - 1] == ',') {
+    catalog.erase(start - 1, end - (start - 1) + 1);
+  } else {
+    auto erase_end = end + 1;
+    if (erase_end < catalog.size() && catalog[erase_end] == ',') {
+      ++erase_end;
+    }
+    catalog.erase(start, erase_end - start);
+  }
+  return catalog;
+}
+
+/// @brief Remove every `ext`/`sync` leaf that moved to `planar-ext` at
+/// plan 996, task 6419 from a Zig-oracle `schema` document, so the
+/// state-catalog machinery below sees the same eligible/excluded/argv
+/// shape this binary's OWN catalog does. Decision 999: this move owes no
+/// oracle parity.
+/// @param zig_catalog The oracle's full `planar schema` JSON document.
+/// @return The document with all 10 moved leaves removed.
+auto strip_moved_ext_sync_leaves(std::string zig_catalog) -> std::string {
+  for (auto const& path : std::initializer_list<std::initializer_list<std::string_view>>{{"ext", "register", "jira"},
+                                                                                         {"ext", "register", "github"},
+                                                                                         {"ext", "list"},
+                                                                                         {"ext", "test"},
+                                                                                         {"ext", "create"},
+                                                                                         {"ext", "propagate-one"},
+                                                                                         {"sync", "pull"},
+                                                                                         {"sync", "push"},
+                                                                                         {"sync", "status"},
+                                                                                         {"sync", "resolve"}}) {
+    zig_catalog = strip_command(std::move(zig_catalog), path);
+  }
+  return zig_catalog;
+}
+
 /// @brief Path to the built C++ binary (set by this target's CMakeLists).
 /// @return The path.
 auto cpp_bin() -> std::filesystem::path {
@@ -1060,14 +1157,19 @@ TEST_CASE("state catalog: installed eligible inventory is an exact C++/Zig bijec
   auto const zig   = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "catalog_zig");
   REQUIRE(cpp.code == 0);
   REQUIRE(zig.code == 0);
+  // Plan 996, task 6419: the oracle still declares the 10 `ext`/`sync`
+  // leaves that moved to `planar-ext`, which has no oracle counterpart
+  // (decision 999). Stripped from the ORACLE side before this binary's
+  // own catalog is compared against it.
+  auto const zig_out = strip_moved_ext_sync_leaves(zig.out);
 
   std::string error;
-  auto        generated = state_catalog::generated_steps(cpp.out, zig.out, error);
+  auto        generated = state_catalog::generated_steps(cpp.out, zig_out, error);
   REQUIRE(generated.has_value());
   INFO("eligible generated leaf count: " << generated->size());
-  REQUIRE(state_catalog::verify_inventory(*generated, cpp.out, zig.out, error));
+  REQUIRE(state_catalog::verify_inventory(*generated, cpp.out, zig_out, error));
 
-  auto excluded = state_catalog::excluded_steps(cpp.out, zig.out, error);
+  auto excluded = state_catalog::excluded_steps(cpp.out, zig_out, error);
   REQUIRE(excluded.has_value());
   for (auto const& item : *excluded) {
     auto rendered = state_catalog::detail::path_key(item.path, error);
@@ -1237,19 +1339,30 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   auto const live_unported = source_unported_inventory(target_source_root());
   REQUIRE(live_unported.has_value());
 
-  // 19 -> 5. FOUR independent drops from a common base of 19, none of which
-  // subsumes another:
+  // 19 -> 5 -> 4. FOUR independent drops from a common base of 19, none of
+  // which subsumes another:
   //   task 6038  -9  the planar-agent leaves
   //   task 6106  -2  `import` and `synthesize`
   //   task 6039  -1  planar-watch's `feed`
   //   task 6189  -2  `closure compute` and `workspace init`
   // Each side updated this cross-binary count for its own drop only, so the
   // three-way merge offered 7 vs 17 and neither is right -- exactly the
-  // drift this sibling test exists to catch. Verified by running the test,
-  // not by arithmetic on this comment.
-  CHECK(live_unported->size() == 5);
+  // drift this sibling test exists to catch.
+  // 5 -> 4 at task 6419: `ext propagate` left `planar`'s own k_unported
+  // array when the rest of the `ext`/`sync` family moved to `planar-ext`
+  // (which does not contribute to this cross-BINARY-SOURCE count at all —
+  // it has no Zig oracle and so no `unported_paths()` of this shape).
+  // Verified by running the test, not by arithmetic on this comment.
+  CHECK(live_unported->size() == 4);
 
-  CHECK(source_oracle_skips(target_source_root()).size() == 37);
+  // 37 -> 35 at plan 996, task 6419: two whole `parity.t.cpp` TEST_CASEs
+  // ("C++ and Zig agree byte-for-byte on the three ported ext leaves" and
+  // "... on the three sync write leaves over seeded links") were removed
+  // rather than adapted — each carried its own `PLANAR_REQUIRE_ORACLE`,
+  // and decision 999 makes the leaves they pinned structurally
+  // incomparable now that they live on `planar-ext`, which has no Zig
+  // oracle counterpart.
+  CHECK(source_oracle_skips(target_source_root()).size() == 35);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
   auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
   auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cpp");
@@ -1269,7 +1382,10 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   // 4 -> 2 at task 6189: `closure compute` and `workspace init` both
   // left surface.cpp's k_unported array, leaving only `explore` and
   // `ext propagate`.
-  CHECK(planar_unported->size() == 2);
+  // 2 -> 1 at task 6419: the whole `ext`/`sync` family moved to
+  // `planar-ext`, taking `ext propagate` with it conceptually (it is not
+  // yet wired on either binary). Only `explore` remains.
+  CHECK(planar_unported->size() == 1);
   CHECK(agent_unported->empty());
   for (auto const& landed : {"ingest", "run start", "run end", "dispatch preview", "dispatch confirm", "context add",
                              "context capsule", "context list", "context resolve"}) {
@@ -1464,8 +1580,12 @@ TEST_CASE("C++ and Zig agree on DATABASE STATE across an ordered planning sequen
   auto const zig_catalog = run_pinned(zig_bin(), std::array<std::string, 1>{"schema"}, space.zig_root, "state_catalog_zig");
   REQUIRE(cpp_catalog.code == 0);
   REQUIRE(zig_catalog.code == 0);
+  // Plan 996, task 6419: strip the 10 moved `ext`/`sync` leaves from the
+  // ORACLE'S catalog before deriving the sequence — see
+  // `strip_moved_ext_sync_leaves`'s header.
+  auto const  zig_catalog_out = strip_moved_ext_sync_leaves(zig_catalog.out);
   std::string catalog_error;
-  auto const  steps = sequence(cpp_catalog.out, zig_catalog.out, catalog_error);
+  auto const  steps = sequence(cpp_catalog.out, zig_catalog_out, catalog_error);
   REQUIRE(steps.has_value());
   INFO("catalog-derived state inventory: " << (steps->size() - hand_authored_stateful_sequence().size()) << " leaves");
   for (auto const identity : in_scope_state_leaves) {

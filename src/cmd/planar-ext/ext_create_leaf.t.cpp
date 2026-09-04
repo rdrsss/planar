@@ -72,9 +72,10 @@
 
 import std;
 import planar.db;
-import planar.cmd.planar.context;
-import planar.cmd.planar.dispatch;
-import planar.cmd.planar.tree;
+import planar.db.migrate;
+import planar.cmd.planar_ext.context;
+import planar.cmd.planar_ext.dispatch;
+import planar.cmd.planar_ext.tree;
 
 // AFTER the imports, not before: the header names `std::function` and
 // `std::thread` without including <functional> or <thread> itself, so it
@@ -84,7 +85,7 @@ import planar.cmd.planar.tree;
 
 namespace {
 
-using planar::cmd::context;
+using planar::cmd::ext::context;
 
 /// @brief One handler invocation's observable result.
 struct invocation {
@@ -120,6 +121,16 @@ auto make_fixture(std::string_view tag) -> fixture {
   };
 }
 
+/// @brief Migrate the fixture database directly — `planar-ext` has no
+/// `init` verb. See `ext_leaves.t.cpp`'s `migrate_fixture` for the full
+/// account.
+/// @param fx The fixture whose `db_path` gets migrated.
+void migrate_fixture(const fixture& fx) {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn));
+}
+
 /// @brief Dispatch `args` against the real tree and table.
 /// @param fx The fixture.
 /// @param args The argv tail.
@@ -136,10 +147,10 @@ auto dispatch(const fixture& fx, std::vector<std::string> args, std::string_view
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(vars), fx.root / "proj", fx.db_path, out, err};
-  auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
-  int const          code  = planar::cmd::run(ctx, *tree, table);
+  context            ctx{std::move(argv), planar::cmd::ext::map_env(vars), fx.root / "proj", fx.db_path, out, err};
+  auto const         tree  = planar::cmd::ext::root_app();
+  auto const         table = planar::cmd::ext::handlers(*tree);
+  int const          code  = planar::cmd::ext::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
 
@@ -197,7 +208,7 @@ auto respond(const planar::http::fixture::captured_request& req) -> planar::http
 /// @param fx The fixture.
 /// @param base The fixture server's base URL.
 void seed(const fixture& fx, std::string_view base) {
-  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  migrate_fixture(fx);
   REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", std::string{base}, "--project", "DEMO",
                         "--auth-env", "DEMO_TOKEN"})
               .code == 0);
@@ -211,11 +222,14 @@ void seed(const fixture& fx, std::string_view base) {
     auto conn = planar::db::connection::open(fx.db_path.string());
     REQUIRE(conn.has_value());
     REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-demo'", base)).has_value());
+    // `plan create` / `task add` / `decision add` all live on `planar`, not
+    // this binary — seeded directly, same as the systems above.
+    REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
+                .has_value());
+    REQUIRE(conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (1, 'global', 1, 'Demo task')").has_value());
+    REQUIRE(conn->execute("insert into decisions (id, scope_kind, title, body) values (1, 'global', 'Demo decision', 'because')")
+                .has_value());
   }
-
-  REQUIRE(dispatch(fx, {"plan", "create", "Anchor plan", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"task", "add", "Demo task", "--plan", "1", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"decision", "add", "Demo decision", "--plan", "1", "--body", "because", "--json"}).code == 0);
 }
 
 } // namespace

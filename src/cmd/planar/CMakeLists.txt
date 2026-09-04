@@ -457,9 +457,7 @@ planar_binary(planar
     handlers/catalog.cppm
     handlers/workflow.cppm
     handlers/annotate.cppm
-    handlers/ext.cppm
     handlers/ext_adapter_factory.cppm
-    handlers/sync.cppm
     # `link` (singular) writes `external_links` and is `unlink`'s exact
     # counterpart; `links` (plural, above) writes `entity_links`. The two
     # spellings mirror the CLI's own `planar link` vs `planar links add`.
@@ -519,9 +517,7 @@ planar_binary(planar
     handlers/catalog.cpp
     handlers/workflow.cpp
     handlers/annotate.cpp
-    handlers/ext.cpp
     handlers/ext_adapter_factory.cpp
-    handlers/sync.cpp
     handlers/link.cpp
     handlers/unlink.cpp
     handlers/skills.cpp
