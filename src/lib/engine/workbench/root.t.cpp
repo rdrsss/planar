@@ -129,17 +129,16 @@ TEST_CASE("the config path defaults to $HOME/.planar/config.toml", "[workbench][
   CHECK(*root == "/x");
 }
 
-TEST_CASE("an EMPTY PLANAR_CONFIG_PATH falls through to the $HOME default, not an empty path",
-          "[workbench][root]") {
+TEST_CASE("an EMPTY PLANAR_CONFIG_PATH falls through to the $HOME default, not an empty path", "[workbench][root]") {
   // Set-but-empty must be treated the same as absent -- exactly the
   // convention layer 1 already pins for PLANAR_WORKBENCH_ROOT. Closes a
   // break-probe SURVIVOR (task 6423): a mutant that dropped the
   // `!raw->empty()` half of PLANAR_CONFIG_PATH's presence check tried to
   // read the CONFIG FILE AT AN EMPTY PATH instead of falling through to
   // build the $HOME-derived default, silently losing the real config.
-  auto const root = wr::resolve_root(
-      map_env({{"PLANAR_CONFIG_PATH", ""}, {"HOME", "/home/u"}}),
-      map_files({{"/home/u/.planar/config.toml", "[workbench]\nroot = \"/from/default/config\"\n"}}));
+  auto const root =
+      wr::resolve_root(map_env({{"PLANAR_CONFIG_PATH", ""}, {"HOME", "/home/u"}}),
+                       map_files({{"/home/u/.planar/config.toml", "[workbench]\nroot = \"/from/default/config\"\n"}}));
   REQUIRE(root.has_value());
   CHECK(*root == "/from/default/config");
 }
@@ -179,8 +178,7 @@ TEST_CASE("a set-but-EMPTY HOME is unresolved, same as an absent one", "[workben
   CHECK(root.error() == wr::root_error::unresolved);
 }
 
-TEST_CASE("an EMPTY HOME does not synthesize a relative default CONFIG path either",
-          "[workbench][root]") {
+TEST_CASE("an EMPTY HOME does not synthesize a relative default CONFIG path either", "[workbench][root]") {
   // Isolates the layer-2 else-if specifically (PLANAR_CONFIG_PATH absent,
   // HOME present-but-empty), independent of layer 3: a stray file placed at
   // the RELATIVE path `std::filesystem::path{""} / ".planar" / "config.toml"`
