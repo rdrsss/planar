@@ -13,6 +13,21 @@ namespace planar::cmd::ext::handlers {
 namespace propagate    = engine::extsync::propagate;
 namespace parent_issue = engine::external::parent_issue;
 
+/// @brief Select the ADR-0006 propagation strategy for a feature. See this
+/// function's declaration in ext_strategy.cppm for the full contract
+/// (oracle mapping, bucket table, and why `"github-projects-v2"` is still a
+/// reported bucket name after decision 1001 cut its execution arm).
+///
+/// Not a one-choice chooser even post-1001: this is the composition point
+/// that lets `propagate.cpp` tell "proceed with `github-parent-issue`" apart
+/// from "this feature wants a strategy we deliberately do not implement"
+/// and refuse the latter clearly. Collapsing the `>=2`-repo bucket into
+/// `github-parent-issue` here (rather than reporting it and letting the
+/// caller refuse) would silently propagate to the wrong repo composition.
+/// @param conn An open, migrated database connection.
+/// @param anchor_plan_id The feature's anchor plan.
+/// @param system_kind The registered system's kind text.
+/// @return The selected strategy, or the failure.
 auto select_strategy(db::connection& conn, std::int64_t anchor_plan_id, std::string_view system_kind)
     -> std::expected<propagate::strategy, strategy_select_error> {
   // jira never touches the database -- the oracle returns before building
