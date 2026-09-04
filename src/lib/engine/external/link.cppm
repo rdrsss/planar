@@ -406,11 +406,11 @@ export auto read_cached_strategy(db::connection& conn, std::int64_t anchor_plan_
 /// @brief One `external_links(link_role='mirror')` row returned by
 /// `list_mirror_links_in_tree`.
 export struct mirror_link {
-  std::int64_t id = 0;           ///< The link row id.
-  std::string  entity_kind;      ///< The local entity kind TEXT.
-  std::int64_t entity_id  = 0;   ///< The local entity id.
-  std::string  external_id;      ///< The provider-side id.
-  std::string  external_url;     ///< The provider URL; empty when unset.
+  std::int64_t id = 0;        ///< The link row id.
+  std::string  entity_kind;   ///< The local entity kind TEXT.
+  std::int64_t entity_id = 0; ///< The local entity id.
+  std::string  external_id;   ///< The provider-side id.
+  std::string  external_url;  ///< The provider URL; empty when unset.
 };
 
 /// @brief Every mirror link for `system_id` in the feature subtree rooted at

@@ -490,8 +490,7 @@ TEST_CASE("read_cached_strategy returns the cached value when config_json carrie
   CHECK(**cached == "github-tracking-issue");
 }
 
-TEST_CASE("read_cached_strategy treats an unparseable or keyless config_json as no cache",
-          "[engine][external][link][strategy]") {
+TEST_CASE("read_cached_strategy treats an unparseable or keyless config_json as no cache", "[engine][external][link][strategy]") {
   scratch_db_path const scratch;
   auto                  conn      = open_migrated(scratch);
   auto const            system_id = insert_system(conn, "gh");

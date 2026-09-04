@@ -89,7 +89,8 @@ auto add_ext(CLI::App& root) -> void {
   propagate->add_option("--sync")->description("Sync direction for created links: read-only, write-back, two-way");
   cliapp::add_bool_flag(*propagate, "--restrategize", "Abandon prior counterparts and re-propagate under a fresh strategy");
   cliapp::add_bool_flag(*propagate, "--yes", "Skip the --restrategize confirmation prompt");
-  cliapp::add_bool_flag(*propagate, "--verify-counterparts", "Probe every existing counterpart and report ones missing on the remote");
+  cliapp::add_bool_flag(*propagate, "--verify-counterparts",
+                        "Probe every existing counterpart and report ones missing on the remote");
   cliapp::add_bool_flag(*propagate, "--unlink", "With --verify-counterparts: delete the link row for a missing counterpart");
   cliapp::add_bool_flag(*propagate, "--recreate",
                         "With --verify-counterparts: delete the link row for a missing counterpart so the next "

@@ -131,16 +131,19 @@ public:
     return to_gh_result(_handle->link_sub_issue(owner, repo, parent_number, child_number));
   }
 
-  auto post_comment(std::string_view external_id, std::string_view body) -> std::expected<void, parent_issue::gh_client_error> override {
+  auto post_comment(std::string_view external_id, std::string_view body)
+      -> std::expected<void, parent_issue::gh_client_error> override {
     return to_gh_result(_handle->post_comment(external_id, body));
   }
 
 private:
   static auto map_error(adapter::adapter_error err) -> parent_issue::gh_client_error {
-    return err == adapter::adapter_error::not_found ? parent_issue::gh_client_error::not_found : parent_issue::gh_client_error::other;
+    return err == adapter::adapter_error::not_found ? parent_issue::gh_client_error::not_found
+                                                    : parent_issue::gh_client_error::other;
   }
 
-  static auto to_gh_result(std::expected<void, adapter::adapter_error> result) -> std::expected<void, parent_issue::gh_client_error> {
+  static auto to_gh_result(std::expected<void, adapter::adapter_error> result)
+      -> std::expected<void, parent_issue::gh_client_error> {
     if (!result) {
       return std::unexpected(map_error(result.error()));
     }
@@ -248,7 +251,7 @@ auto confirm_restrategize(context& ctx, std::string_view old_strategy, std::stri
   if (first == std::string::npos) {
     return false;
   }
-  auto const last = line.find_last_not_of(" \t\r\n");
+  auto const  last = line.find_last_not_of(" \t\r\n");
   std::string trimmed{line.substr(first, last - first + 1)};
   for (auto& c : trimmed) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -295,8 +298,8 @@ auto probe_counterpart(const adapter_handle& handle, std::string_view external_i
 /// the `verify_rows` are only ever non-empty when `--restrategize` /
 /// `--verify-counterparts` were passed and the run reached that far.
 auto render(context& ctx, std::int64_t plan_id, std::string_view system_slug, const parent_issue::report& rpt, bool dry_run,
-           bool as_json, std::size_t abandoned_count, std::span<const verify_row> verify_rows, bool unlink_missing,
-           bool recreate_missing) -> void {
+            bool as_json, std::size_t abandoned_count, std::span<const verify_row> verify_rows, bool unlink_missing,
+            bool recreate_missing) -> void {
   std::size_t verified_count = 0;
   std::size_t missing_count  = 0;
   for (auto const& v : verify_rows) {
@@ -379,8 +382,7 @@ auto render(context& ctx, std::int64_t plan_id, std::string_view system_slug, co
       ctx.out() << std::format("  {}    {}:{} {} -> {}\n", op_text(r.operation), r.entity_kind, r.entity_id, r.title,
                                r.external_id);
     } else if (r.operation == parent_issue::op::skipped) {
-      ctx.out() << std::format("  skipped   {}:{} {} (already linked: {})\n", r.entity_kind, r.entity_id, r.title,
-                               r.external_id);
+      ctx.out() << std::format("  skipped   {}:{} {} (already linked: {})\n", r.entity_kind, r.entity_id, r.title, r.external_id);
     } else {
       ctx.out() << std::format("  FAILED    {}:{} {} ({})\n", r.entity_kind, r.entity_id, r.title, r.error_name);
     }
@@ -412,17 +414,16 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // module's header and docs/concepts.md § cross-scope-guard).
   (void)flag_string(args, "--scope");
 
-  bool const restrategize       = flag_bool(args, "--restrategize");
-  bool const auto_yes           = flag_bool(args, "--yes");
+  bool const restrategize        = flag_bool(args, "--restrategize");
+  bool const auto_yes            = flag_bool(args, "--yes");
   bool const verify_counterparts = flag_bool(args, "--verify-counterparts");
-  bool const unlink_missing     = flag_bool(args, "--unlink");
-  bool const recreate_missing   = flag_bool(args, "--recreate");
+  bool const unlink_missing      = flag_bool(args, "--unlink");
+  bool const recreate_missing    = flag_bool(args, "--recreate");
 
   // Up-front flag validation, mirroring the oracle's preflight in `handle`
   // (propagate.zig lines 67-72).
   if (unlink_missing && recreate_missing) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::invalid_input, "--unlink and --recreate are mutually exclusive"));
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--unlink and --recreate are mutually exclusive"));
   }
   if ((unlink_missing || recreate_missing) && !verify_counterparts) {
     return std::unexpected(
@@ -433,31 +434,29 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   auto const plan_id     = resolve_plan_id(**conn, plan_id_raw);
   if (!plan_id) {
     if (plan_id.error() == "NotFound") {
-      return std::unexpected(
-          error_from_body(domain_error_kind::not_found, std::format("plan '{}' not found", plan_id_raw)));
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("plan '{}' not found", plan_id_raw)));
     }
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
-                                           std::format("ext propagate: lookup plan: {}", plan_id.error())));
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("ext propagate: lookup plan: {}", plan_id.error())));
   }
 
   auto const system_slug = flag_string(args, "--system");
-  auto const sys          = resolve_system(**conn, system_slug.has_value() ? std::optional<std::string_view>{*system_slug}
-                                                                          : std::nullopt);
+  auto const sys = resolve_system(**conn, system_slug.has_value() ? std::optional<std::string_view>{*system_slug} : std::nullopt);
   if (!sys) {
     if (sys.error() == "NotFound") {
-      return std::unexpected(error_from_body(domain_error_kind::not_found,
-                                             std::format("external system '{}' not found", system_slug.value_or(""))));
+      return std::unexpected(
+          error_from_body(domain_error_kind::not_found, std::format("external system '{}' not found", system_slug.value_or(""))));
     }
     if (sys.error() == "NoSystemsRegistered") {
-      return std::unexpected(error_from_body(domain_error_kind::not_found,
-                                             "no external systems registered; run 'planar ext register' first"));
+      return std::unexpected(
+          error_from_body(domain_error_kind::not_found, "no external systems registered; run 'planar ext register' first"));
     }
     return std::unexpected(
         error_from_body(domain_error_kind::generic_failure, std::format("ext propagate: lookup system: {}", sys.error())));
   }
 
   auto const sync_text = flag_string(args, "--sync").value_or(std::string{"read-only"});
-  auto const direction  = link_ns::sync_direction_from_text(sync_text);
+  auto const direction = link_ns::sync_direction_from_text(sync_text);
   if (!direction) {
     return std::unexpected(
         error_from_body(domain_error_kind::invalid_input,
@@ -471,8 +470,7 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
       return std::unexpected(
           error_from_body(domain_error_kind::invalid_input, std::format("system kind '{}' is not supported", kind_text)));
     }
-    return std::unexpected(
-        error_from_body(domain_error_kind::generic_failure, "ext propagate: pick strategy: QueryFailed"));
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: pick strategy: QueryFailed"));
   }
 
   if (selected->kind != "github-parent-issue") {
@@ -511,7 +509,8 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   if (restrategize) {
     auto cached = link_ns::read_cached_strategy(**conn, *plan_id, sys->id);
     if (!cached) {
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: read cached strategy: QueryFailed"));
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, "ext propagate: read cached strategy: QueryFailed"));
     }
     if (cached->has_value() && **cached != selected->kind) {
       if (!auto_yes) {
@@ -521,7 +520,8 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
       }
       auto abandoned = link_ns::abandon_counterparts(**conn, *plan_id, sys->id, **cached, selected->kind);
       if (!abandoned) {
-        return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: abandon counterparts: QueryFailed"));
+        return std::unexpected(
+            error_from_body(domain_error_kind::generic_failure, "ext propagate: abandon counterparts: QueryFailed"));
       }
       abandoned_count = *abandoned;
     }
@@ -565,7 +565,8 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   if (verify_counterparts && !dry_run) {
     auto links = link_ns::list_mirror_links_in_tree(**conn, *plan_id, sys->id);
     if (!links) {
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: list links for verify: QueryFailed"));
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, "ext propagate: list links for verify: QueryFailed"));
     }
     for (auto const& row : *links) {
       auto const probed = probe_counterpart(*handle, row.external_id);
@@ -602,12 +603,12 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // Missing-counterpart refusal takes priority, matching the oracle's
   // ordering (propagate.zig lines 480-485: missing check precedes failed).
   if (missing_count > 0 && !unlink_missing && !recreate_missing) {
-    return std::unexpected(error_from_body(
-        domain_error_kind::invalid_input, std::format("{} counterpart(s) missing during --verify-counterparts", missing_count)));
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                           std::format("{} counterpart(s) missing during --verify-counterparts", missing_count)));
   }
   if (rpt->failed > 0) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::invalid_input, std::format("{} entity/entities failed during propagation", rpt->failed)));
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                           std::format("{} entity/entities failed during propagation", rpt->failed)));
   }
   return {};
 }

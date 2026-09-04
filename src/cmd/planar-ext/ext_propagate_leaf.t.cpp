@@ -113,9 +113,8 @@ struct issue_counter {
 /// (`issues/0/sub_issues`); everything else is fixed shape.
 auto make_respond(issue_counter& counter, int sub_issue_probe_status, bool fail_second_create = false)
     -> std::function<planar::http::fixture::canned_response(const planar::http::fixture::captured_request&)> {
-  return [&counter, sub_issue_probe_status, fail_second_create,
-          seen = std::make_shared<std::atomic<int>>(0)](const planar::http::fixture::captured_request& req)
-             -> planar::http::fixture::canned_response {
+  return [&counter, sub_issue_probe_status, fail_second_create, seen = std::make_shared<std::atomic<int>>(0)](
+             const planar::http::fixture::captured_request& req) -> planar::http::fixture::canned_response {
     if (req.target.contains("/issues/0/sub_issues")) {
       return {.status = sub_issue_probe_status, .body = "{}", .content_type = "application/json"};
     }
@@ -132,8 +131,8 @@ auto make_respond(issue_counter& counter, int sub_issue_probe_status, bool fail_
         return {.status = 500, .body = "internal error", .content_type = "text/plain"};
       }
       auto const number = counter.next.fetch_add(1);
-      return {.status      = 201,
-              .body        = std::format(R"({{"number":{},"node_id":"NODE_{}"}})", number, number),
+      return {.status       = 201,
+              .body         = std::format(R"({{"number":{},"node_id":"NODE_{}"}})", number, number),
               .content_type = "application/json"};
     }
     return {.status = 404, .body = "{}", .content_type = "application/json"};
@@ -150,13 +149,13 @@ auto make_respond(issue_counter& counter, int sub_issue_probe_status, bool fail_
 /// subsequent verify pass against the same server.
 auto make_respond_with_pull(issue_counter& counter, std::set<std::int64_t> missing_numbers)
     -> std::function<planar::http::fixture::canned_response(const planar::http::fixture::captured_request&)> {
-  return [&counter, missing = std::move(missing_numbers)](const planar::http::fixture::captured_request& req)
-             -> planar::http::fixture::canned_response {
+  return [&counter, missing = std::move(missing_numbers)](
+             const planar::http::fixture::captured_request& req) -> planar::http::fixture::canned_response {
     if (req.verb == "GET" && req.target.contains("/issues/") && !req.target.contains("sub_issues")) {
-      auto const        pos     = req.target.rfind('/');
-      auto const        num_str = req.target.substr(pos + 1);
-      std::int64_t       n       = 0;
-      auto const         conv    = std::from_chars(num_str.data(), num_str.data() + num_str.size(), n);
+      auto const   pos     = req.target.rfind('/');
+      auto const   num_str = req.target.substr(pos + 1);
+      std::int64_t n       = 0;
+      auto const   conv    = std::from_chars(num_str.data(), num_str.data() + num_str.size(), n);
       if (conv.ec == std::errc{} && missing.contains(n)) {
         return {.status = 404, .body = "{}", .content_type = "application/json"};
       }
@@ -174,15 +173,14 @@ auto make_respond_with_pull(issue_counter& counter, std::set<std::int64_t> missi
 /// `github-parent-issue`.
 void seed_single_repo(const fixture& fx, std::string_view base) {
   migrate_fixture(fx);
-  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-demo", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"})
-              .code == 0);
+  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-demo", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"}).code ==
+          0);
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
   REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-demo'", base)).has_value());
   REQUIRE(conn->execute("insert into projects (id, slug, name) values (1, 'acme/widgets', 'acme/widgets')").has_value());
-  REQUIRE(
-      conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
-          .has_value());
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
+              .has_value());
   REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug, parent_plan_id) values "
                         "(2, 'global', 'Child plan', 'child-plan', 1)")
               .has_value());
@@ -195,8 +193,7 @@ void seed_single_repo(const fixture& fx, std::string_view base) {
 
 } // namespace
 
-TEST_CASE("ext propagate fixture sanity: seeded rows are present and no links exist yet",
-          "[cmd][ext][propagate][fixture]") {
+TEST_CASE("ext propagate fixture sanity: seeded rows are present and no links exist yet", "[cmd][ext][propagate][fixture]") {
   issue_counter                 counter;
   planar::http::fixture::server remote(make_respond(counter, 201));
   auto const                    fx = make_fixture("fixture");
@@ -208,8 +205,7 @@ TEST_CASE("ext propagate fixture sanity: seeded rows are present and no links ex
   CHECK(remote.request_count() == 0);
 }
 
-TEST_CASE("ext propagate creates the parent issue, both sub-issues, and records mirror links",
-          "[cmd][ext][propagate][happy]") {
+TEST_CASE("ext propagate creates the parent issue, both sub-issues, and records mirror links", "[cmd][ext][propagate][happy]") {
   issue_counter                 counter;
   planar::http::fixture::server remote(make_respond(counter, 422)); // 422 on the bogus probe id == supported.
   auto const                    fx = make_fixture("happy");
@@ -231,7 +227,7 @@ TEST_CASE("ext propagate creates the parent issue, both sub-issues, and records 
   // The anchor's link carries the strategy-stickiness cache with the
   // resolved repo and parent issue number.
   CHECK(scalar(fx, "select count(*) from external_links where entity_kind = 'plan' and entity_id = 1 and "
-                  "config_json like '%github-parent-issue%'") == 1);
+                   "config_json like '%github-parent-issue%'") == 1);
   // One probe + 4 creates (anchor, child plan, task-under-child,
   // direct-anchor-task) + 3 sub-issue links (every non-anchor entity links
   // under its parent) = 8 requests. (No comments: no decisions were seeded.)
@@ -283,7 +279,7 @@ TEST_CASE("ext propagate refuses with sub_issue_unsupported when the probe 404s,
 
 TEST_CASE("ext propagate reports a partial completion when one entity's create fails mid-propagation",
           "[cmd][ext][propagate][partial-failure]") {
-  issue_counter                 counter;
+  issue_counter counter;
   // The SECOND create call (the child plan, per propagate_parent_issue_with_repo's
   // step order: anchor first, then the child plan) fails with a transport
   // error; the direct anchor task afterward still gets attempted.
@@ -332,8 +328,7 @@ TEST_CASE("ext propagate refuses a Jira system explicitly rather than mis-execut
               .code == 0);
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
-  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')")
-              .has_value());
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
 
   auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo"});
   CHECK(ran.code == 2);
@@ -447,7 +442,7 @@ TEST_CASE("ext propagate --verify-counterparts reports every counterpart verifie
 
 TEST_CASE("ext propagate --verify-counterparts reports a missing counterpart and refuses without --unlink/--recreate",
           "[cmd][ext][propagate][verify][missing]") {
-  issue_counter                 counter;
+  issue_counter counter;
   // Pull requests resolve after the happy propagate seeds real issue
   // numbers, so start with no missing numbers and patch the fixture's
   // knowledge in afterward via a fresh server pointed at the same set.
@@ -505,7 +500,7 @@ TEST_CASE("ext propagate --verify-counterparts --unlink deletes the missing link
   }
   auto const missing_external_id =
       text_scalar(fx, "select external_id from external_links where entity_kind = 'plan' and entity_id = 2");
-  auto const   hash           = missing_external_id.rfind('#');
+  auto const hash = missing_external_id.rfind('#');
   REQUIRE(hash != std::string::npos);
   std::int64_t const missing_number = std::stoll(missing_external_id.substr(hash + 1));
 
@@ -518,8 +513,7 @@ TEST_CASE("ext propagate --verify-counterparts --unlink deletes the missing link
                 .has_value());
   }
 
-  auto const ran =
-      dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--verify-counterparts", "--unlink", "--json"});
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--verify-counterparts", "--unlink", "--json"});
   CHECK(ran.code == 0);
   // `"ok"` is `failed==0 && missing==0`, unconditionally -- the oracle's own
   // definition (propagate.zig line 424) does not special-case `--unlink`/
@@ -575,8 +569,7 @@ TEST_CASE("ext propagate accepts --scope and discards it, matching the oracle's 
 
   // "nonexistent-scope" resolves to nothing in this fixture -- if the flag
   // guarded anything, this run would refuse. It does not.
-  auto const ran =
-      dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--scope", "nonexistent-scope", "--json"});
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--scope", "nonexistent-scope", "--json"});
   CHECK(ran.code == 0);
   CHECK(ran.out.contains(R"("created":4)"));
   CHECK(scalar(fx, "select count(*) from external_links") == 4);
