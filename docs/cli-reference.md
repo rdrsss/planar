@@ -2863,9 +2863,9 @@ id   title                  status   dir
 planar workbench publish <plan-id> --system <slug> [--json]
 ```
 
-**Description:** Render the workbench files for the named anchor plan and push the rendered content to a registered external operational system (Jira, GitHub Issues, GitHub Projects) via the adapter layer. The destination system, credentials, and per-entity projection template come from the system registration (see `planar ext list` / `planar ext create`).
+**Description:** Render the workbench files for the named anchor plan and push the rendered content to a registered external operational system (Jira, GitHub Issues) via the adapter layer. The destination system, credentials, and per-entity projection template come from the system registration (see `planar-ext ext list` / `planar-ext ext create`).
 
-For richer per-entity counterpart creation (epics, issues, sub-issues with parent/child links) walking the full plan tree, use `planar ext propagate <plan-id> --system <slug>` instead. `workbench publish` pushes the rendered Markdown body; `ext propagate` creates one external counterpart per entity in the plan subtree.
+For richer per-entity counterpart creation (epics, issues, sub-issues with parent/child links) walking the full plan tree, use `planar-ext ext propagate <plan-id> --system <slug>` once it lands (not yet implemented — see [that command's page](#planar-ext-ext-propagate-plan)) or `planar-ext ext propagate-one <system> --from <kind:id>` today for a single entity. `workbench publish` pushes the rendered Markdown body; `ext propagate` creates one external counterpart per entity in the plan subtree.
 
 **Arguments:**
 
@@ -2877,7 +2877,7 @@ For richer per-entity counterpart creation (epics, issues, sub-issues with paren
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--system <slug>` | _(required)_ | External system slug (must already be registered via `planar ext create`). |
+| `--system <slug>` | _(required)_ | External system slug (must already be registered via `planar-ext ext create`). |
 | `--json` | `false` | Emit a JSON result envelope on stdout. |
 
 **Schema effects:** Renders the workbench tree, creates one remote mirror, then inserts the resulting `external_links` row and its initial successful `sync_events` row atomically. Refuses to publish when the plan already has a link on the named system.
@@ -3163,11 +3163,11 @@ Commands for registering and interacting with external operational plane systems
 
 ---
 
-### `planar ext register jira <slug>`
+### `planar-ext ext register jira <slug>`
 
 **Synopsis:**
 ```
-planar ext register jira <slug> --base-url <url> --project <key> --auth-env <var>
+planar-ext ext register jira <slug> --base-url <url> --project <key> --auth-env <var>
 ```
 
 **Description:** Register a Jira instance as an external system.
@@ -3200,11 +3200,11 @@ planar ext register jira <slug> --base-url <url> --project <key> --auth-env <var
 
 ---
 
-### `planar ext register github <slug>`
+### `planar-ext ext register github <slug>`
 
 **Synopsis:**
 ```
-planar ext register github <slug> --project <owner/repo> [--auth-env <var>]
+planar-ext ext register github <slug> --project <owner/repo> [--auth-env <var>]
 ```
 
 **Description:** Register a GitHub Issues instance as an external system.
@@ -3222,11 +3222,11 @@ planar ext register github <slug> --project <owner/repo> [--auth-env <var>]
 
 ---
 
-### `planar ext list`
+### `planar-ext ext list`
 
 **Synopsis:**
 ```
-planar ext list
+planar-ext ext list
 ```
 
 **Description:** List all registered external systems.
@@ -3246,11 +3246,11 @@ side-gh     github-issues    https://api.github.com        acme/widgets
 
 ---
 
-### `planar ext test <slug>`
+### `planar-ext ext test <slug>`
 
 **Synopsis:**
 ```
-planar ext test <slug>
+planar-ext ext test <slug>
 ```
 
 **Description:** Verify authentication and network reachability for the named external system. Makes a lightweight read-only API call (e.g. fetch a single issue or project metadata).
@@ -3275,11 +3275,11 @@ acme-jira: ok  (Jira 9.4.2, project PROJ found, auth valid)
 
 ---
 
-### `planar ext create <system-slug> --from <kind:id>`
+### `planar-ext ext create <system-slug> --from <kind:id>`
 
 **Synopsis:**
 ```
-planar ext create <system-slug> --from <kind:id> [--type <issue-type>] [--role <link-role>] [--sync <direction>]
+planar-ext ext create <system-slug> --from <kind:id> [--type <issue-type>] [--role <link-role>] [--sync <direction>]
 ```
 
 **Description:** Create a counterpart for an existing local entity on the named external system, then record the link. This is the automation entry point for surfacing local work to the operational plane.
@@ -3319,16 +3319,24 @@ link id: 7  (two-way mirror)
 
 ---
 
-### `planar ext propagate <plan>`
+### `planar-ext ext propagate <plan>`
+
+> **Not yet implemented (plan 996).** The `ext`/`sync` verb family moved to
+> `planar-ext` at task 6419, but the whole-feature tree walk documented below
+> has not landed on either binary — it is tracked separately (task 6421, in
+> progress at time of writing). The entity-level primitive that IS live
+> today is [`planar-ext ext propagate-one`](#planar-ext-ext-propagate-one-system---from-kindid);
+> use it directly for a single plan or task. The section below documents the
+> intended surface once `ext propagate` lands.
 
 **Synopsis:**
 ```
-planar ext propagate <plan> [--system <slug>] [--dry-run] [--restrategize [--yes]]
+planar-ext ext propagate <plan> [--system <slug>] [--dry-run] [--restrategize [--yes]]
                             [--github-strategy <value>]
                             [--verify-counterparts [--unlink | --recreate]]
 ```
 
-**Description:** Push a feature tree to the operational plane. Creates external counterparts (Epic/Story/Sub-task on Jira; parent-issue/sub-issues on GitHub) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): Jira always uses the epic hierarchy; GitHub uses parent-issue (single-repo), Projects v2 (multi-repo), or zero-repo fallback.
+**Description:** Push a feature tree to the operational plane. Creates external counterparts (Epic/Story/Sub-task on Jira; parent-issue/sub-issues on GitHub) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): Jira always uses the epic hierarchy; GitHub always uses the single-repo parent-issue strategy. The multi-repo `projects-v2` strategy is permanently cut (decision 1001) and will not exist.
 
 **Strategy stickiness (Phase C):** The chosen strategy is cached on `external_links.config_json` of the anchor plan at first propagation. Subsequent reruns honor the cached strategy even if the repo count later changes. Strategy is not re-evaluated automatically; use `--restrategize` to rebuild.
 
@@ -3351,7 +3359,7 @@ After propagation, run `planar workbench push <plan>` separately to update workb
 | `--system <slug>` | External system slug. | First registered system. |
 | `--dry-run` | Print what would be created without contacting the remote. | `false` |
 | `--restrategize` | Force fresh strategy detection; prompts for confirmation if the strategy changes. On confirmation, prior counterparts are abandoned (NOT deleted from the remote) and `sync_events(outcome='strategy-abandoned')` rows are written for audit. Fresh propagation then proceeds under the new strategy. | `false` |
-| `--github-strategy <value>` | Override ADR-0006 auto-detection at first propagation for GitHub systems. Accepted values: `parent-issue`, `projects-v2`, `tracking-issue`. The chosen value is cached on `external_links.config_json` identically to auto-detected strategies; subsequent propagations honor the cache. GitHub-only — rejected when the target system is not `github-issues`. Mutually exclusive with `--restrategize`. | (off) |
+| `--github-strategy <value>` | Override ADR-0006 auto-detection at first propagation for GitHub systems. `parent-issue` is the only strategy that creates real counterparts; `projects-v2` is permanently cut (decision 1001) and must not be offered. The chosen value is cached on `external_links.config_json` identically to auto-detected strategies; subsequent propagations honor the cache. GitHub-only — rejected when the target system is not `github-issues`. Mutually exclusive with `--restrategize`. | (off) |
 | `--yes` | Auto-confirm the `--restrategize` prompt without interactive input. No effect without `--restrategize`. | `false` |
 | `--verify-counterparts` | Probe the remote to confirm every already-linked entity still exists. Missing counterparts (404) are reported as `Missing` and `sync_events(outcome='counterpart-missing')` rows are written. Off by default — probing on every run is expensive on large features. | `false` |
 | `--unlink` | Remove `external_links` rows for missing counterparts (requires `--verify-counterparts`). The entity is then treated as "to create" on the next propagation. Mutually exclusive with `--recreate`. | `false` |
@@ -3391,11 +3399,11 @@ The JSON shape gains `verified`, `abandoned`, `partial`, `missing`, and `warning
 
 ---
 
-### `planar ext propagate-one <system> --from <kind:id>`
+### `planar-ext ext propagate-one <system> --from <kind:id>`
 
 **Synopsis:**
 ```
-planar ext propagate-one <system> --from <kind:id> [--strategy <value>] [--sync <direction>] [--dry-run] [--json]
+planar-ext ext propagate-one <system> --from <kind:id> [--strategy <value>] [--sync <direction>] [--dry-run] [--json]
 ```
 
 **Description:** Render one entity's propagation template, POST the counterpart to the named external system, and record the resulting `external_links(link_role='mirror')` row in a single transaction. Designed for targeted one-off propagation (e.g. a missing entity after a bulk `ext propagate` run) and for orchestrator dispatch that creates counterparts one task at a time.
@@ -3406,14 +3414,14 @@ Idempotent: if a mirror link already exists for the `(entity, system)` pair the 
 
 | Argument | Description |
 |----------|-------------|
-| `<system>` | External system slug (must be registered via `planar ext register`). |
+| `<system>` | External system slug (must be registered via `planar-ext ext register`). |
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--from <kind:id>` | Source local entity. Accepts `plan:N` or `task:N`. | Required. |
-| `--strategy <value>` | Override the GitHub ADR-0006 strategy for this entity. Accepted values: `parent-issue`, `projects-v2`, `tracking-issue`. GitHub-only; rejected for non-GitHub systems. | (auto-detect) |
+| `--strategy <value>` | Override the per-entity strategy for GitHub systems. `tracking-issue` is the only accepted value — it is for an entity with no determinable repo. `parent-issue` and `projects-v2` are recognized only to be refused, pointing at the whole-tree `ext propagate --github-strategy` instead (not yet implemented — see that command's page). GitHub-only; rejected for non-GitHub systems. | (auto-detect: `parent-issue`) |
 | `--sync <direction>` | Sync direction for the created `external_links` row. Accepted values: `read-only`, `write-back`, `two-way`. | `read-only` |
 | `--dry-run` | Preview: render the template and report what would be POSTed without contacting the remote system. | off |
 | `--json` | Emit a JSON result object. | off |
@@ -3479,7 +3487,7 @@ planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--s
 | `--to <system-slug>:<external-id>` | External reference, e.g. `acme-jira:PROJ-1234`. | Required. |
 | `--role <link-role>` | One of `mirror`, `parent`, `child`, `reference`. | `reference` |
 | `--sync <direction>` | One of `read-only`, `write-back`, `two-way`. | `read-only` |
-| `--propagate` | After creating the link, propagate the anchor plan of the linked entity to its registered external system. Runs the equivalent of `planar ext propagate` against the top-level plan. | `false` |
+| `--propagate` | After creating the link, propagate the anchor plan of the linked entity to its registered external system. Runs the equivalent of `planar-ext ext propagate` against the top-level plan. Whole-tree `ext propagate` is not yet implemented (see its page); `--propagate` shares that dependency. | `false` |
 
 **Output (`--json`):**
 ```json
@@ -3537,14 +3545,14 @@ Sync commands pull and push data between the local plane and registered external
 
 ---
 
-### `planar sync pull <target>`
+### `planar-ext sync pull <target>`
 
 **Synopsis:**
 ```
-planar sync pull <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
+planar-ext sync pull <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
 ```
 
-**Description:** Pull remote state for one or more links. Updates `external_links.last_synced_at` and mirrors selected fields onto the local entity if `sync_direction` permits. Records a `sync_events` row per link touched.
+**Description:** Pull remote state for one or more links and report it. Updates `external_links.last_synced_at`. **Does not write to the local entity (decision 996).** `planar-ext` fetches and emits remote state; it never mirrors a field onto a task, plan, question, or artifact. When a link's `remote_title` and/or `remote_status` differ from the current local value, the result row carries the emitted value(s) — evidence for the caller to review, not a change already made. The intended flow is three steps: `planar-ext` fetches and emits (this command), an agent verifies/synthesizes/validates the emitted values, then the agent calls `planar` to create or update the planning entity if warranted. Records a `sync_events` row per link touched.
 
 **Scope guard:** Single-target invocations (`<link-id>` or `<kind:id>`) refuse when the operator's resolved write scope disagrees with the local entity referenced by any resolved link. `--all` invocations are not guarded (bulk fan-out is opt-in). See [Cross-scope guard](#cross-scope-guard).
 
@@ -3561,20 +3569,21 @@ planar sync pull <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
 **Output (human):**
 ```
 pulled 3 links
-  link 7 (task:42 ↔ PROJ-1234): ok — title, status updated
-  link 8 (plan:7 ↔ PROJ-100): noop — no remote changes
-  link 9 (task:43 ↔ PROJ-1235): conflict — status diverged (local: done, remote: In Progress)
+  link 7: ok — title status — remote: title="Fix checkout race" status="In Progress"
+  link 8: noop
+  link 9: conflict — status — status diverged (local: done, remote: In Progress)
 ```
 
-**Output (`--json`):** One object per link:
+**Output (`--json`):** One object per link. `remote_title`/`remote_status` are omitted entirely when the corresponding field did not differ from local:
 ```json
-{"link_id":7,"outcome":"ok","fields_changed":["title","status"]}
-{"link_id":9,"outcome":"conflict","detail":"status: local=done remote=in-progress"}
+{"link_id":7,"outcome":"ok","fields_changed":["title","status"],"remote_title":"Fix checkout race","remote_status":"In Progress"}
+{"link_id":8,"outcome":"noop","fields_changed":[]}
+{"link_id":9,"outcome":"conflict","fields_changed":["status"],"detail":"status: local=done remote=in-progress"}
 ```
 
 **Schema effects:**
 - Updates `external_links(last_synced_at, last_sync_status)` per link.
-- Updates the local entity's mirrored fields on `ok`.
+- Does NOT update the local entity's fields. `remote_title`/`remote_status` are emitted in the result only.
 - Inserts into `sync_events(link_id, direction='pull', outcome, fields_changed, detail, at)` per link.
 
 **Capture:** Appends `session_entries` row with `prefix='observation'`.
@@ -3586,11 +3595,11 @@ pulled 3 links
 
 ---
 
-### `planar sync push <target>`
+### `planar-ext sync push <target>`
 
 **Synopsis:**
 ```
-planar sync push <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
+planar-ext sync push <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
 ```
 
 **Description:** Push selected local fields to the remote system for one or more links. For comment and decision posts, appends rather than replaces. Includes the correlation footer on every push.
@@ -3612,11 +3621,11 @@ planar sync push <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
 
 ---
 
-### `planar sync status`
+### `planar-ext sync status`
 
 **Synopsis:**
 ```
-planar sync status [--entity <kind:id>] [--system <slug>]
+planar-ext sync status [--entity <kind:id>] [--system <slug>]
 ```
 
 **Description:** Show the sync status of all links in scope. Highlights conflicts and errors.
@@ -3637,11 +3646,11 @@ link  entity    external-id    system      last-sync           status
 
 ---
 
-### `planar sync resolve <event-id> --keep <side>`
+### `planar-ext sync resolve <event-id> --keep <side>`
 
 **Synopsis:**
 ```
-planar sync resolve <event-id> --keep <side>
+planar-ext sync resolve <event-id> --keep <side>
   --evidence-token <sha256> --expected-local-updated-at <timestamp>
   [--scope <slug>]
 ```
@@ -3768,7 +3777,7 @@ Failure produces concrete remediation guidance, not a generic warning. Example:
 FAIL task:42 is not resumable:
   - next_action is null → run: planar task update 42 --next-action "<text>"
   - no context snapshot → run: planar capture snapshot 42
-  - operational sync stale (last pull: 3 days ago) → run: planar sync pull task:42
+  - operational sync stale (last pull: 3 days ago) → run: planar-ext sync pull task:42
 ```
 
 **Output (`--json`):**
@@ -4773,7 +4782,7 @@ CLI-visible evidence:
 
 ```sh
 planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
-planar sync status --entity <kind:id> --system <system-slug> --json \
+planar-ext sync status --entity <kind:id> --system <system-slug> --json \
   > external-link-<link-id>-status.json
 ```
 
@@ -4802,12 +4811,12 @@ while the old row still exists. After capturing evidence and unlinking, preview
 the now-unlinked entity before allowing a new remote counterpart:
 
 ```sh
-planar ext propagate <plan-id> --system <system-slug> --dry-run \
+planar-ext ext propagate <plan-id> --system <system-slug> --dry-run \
   --sync <read-only|write-back|two-way>
 planar unlink <link-id>
-planar ext propagate <plan-id> --system <system-slug> --dry-run \
+planar-ext ext propagate <plan-id> --system <system-slug> --dry-run \
   --sync <read-only|write-back|two-way>
-planar ext propagate <plan-id> --system <system-slug> \
+planar-ext ext propagate <plan-id> --system <system-slug> \
   --sync <read-only|write-back|two-way>
 ```
 
@@ -4824,7 +4833,7 @@ may differ from the deleted `config_json`.
 planar links update <link-id> --sync <direction>
 ```
 
-**Description:** Mutate the `sync_direction` column on an existing `external_links` row. Use this to change the sync direction for a link that was already created by `ext propagate`, `link`, or `ext create`. The change takes effect on the next `planar sync push` or `planar sync pull` invocation. An audit row is written to `sync_events` with `outcome='ok'` and a payload recording the old and new directions.
+**Description:** Mutate the `sync_direction` column on an existing `external_links` row. Use this to change the sync direction for a link that was already created by `ext propagate`, `link`, or `ext create`. The change takes effect on the next `planar-ext sync push` or `planar-ext sync pull` invocation. An audit row is written to `sync_events` with `outcome='ok'` and a payload recording the old and new directions.
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the local entity referenced by the link. See [Cross-scope guard](#cross-scope-guard).
 
@@ -5181,7 +5190,7 @@ Writes (only with `--apply`):
 
 **Related:**
 - `planar spec ingest <plan>` — decompose workbench planning documents into a task graph for a feature already in Planar.
-- `planar ext propagate <plan>` — propagate the imported tree to Jira or GitHub Issues.
+- `planar-ext ext propagate <plan>` — propagate the imported tree to Jira or GitHub Issues.
 - `planar import <repo-root> --dry-run` — emit the ImportPlan as JSON without writing.
 - `planar synthesize <repo-root>` — sibling verb. Synthesizes fresh planning material from docs + code via an LLM pass instead of transcribing.
 
@@ -5532,7 +5541,7 @@ planar config path
 
 Template-plane commands. Manage, inspect, validate, and render the
 JSON templates used by the ext-sync agent to produce external-system payloads
-(Jira issues, GitHub Issues, GitHub Projects). Templates are files only — no
+(Jira issues, GitHub Issues). Templates are files only — no
 database table. They resolve through a three-level fallback chain: user-chosen
 set → baseline `default` set → embedded binary defaults.
 

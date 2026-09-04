@@ -972,14 +972,14 @@ The `link_role` column distinguishes the relationship kind:
 
 | Role | Meaning |
 |------|---------|
-| `mirror` | This external item was created by Planar's `ext propagate` and tracks the local entity one-to-one |
+| `mirror` | This external item was created by Planar's `ext propagate`/`ext propagate-one` and tracks the local entity one-to-one |
 | `reference` | This external item was created independently; the link is informational |
 
-Each `external_links` row also carries a `config_json` blob used by the ext-sync engine to cache per-feature propagation state (selected GitHub strategy, Projects v2 node id, etc.). This is what makes strategy selection sticky across re-propagation runs.
+Each `external_links` row also carries a `config_json` blob used by the ext-sync engine to cache per-feature propagation state (selected GitHub strategy, etc.). This is what makes strategy selection sticky across re-propagation runs.
 
-`planar link <entity> <system-slug>:<external-id>` creates a reference link manually. `planar ext propagate <plan>` creates mirror links automatically.
+`planar link <entity> <system-slug>:<external-id>` creates a reference link manually. `planar-ext ext propagate-one` creates a mirror link automatically for one entity; the whole-tree `planar-ext ext propagate <plan>` is not yet implemented (see `docs/cli-reference.md`).
 
-**SQLite table:** `external_links`, `external_systems`, `sync_events`. **Primary verbs:** `planar link`, `planar unlink`, `planar ext propagate`, `planar ext create`, `planar sync pull`, `planar sync push`.
+**SQLite table:** `external_links`, `external_systems`, `sync_events`. **Primary verbs:** `planar link`, `planar unlink`, `planar-ext ext propagate`, `planar-ext ext create`, `planar-ext sync pull`, `planar-ext sync push`.
 
 ---
 

@@ -89,7 +89,7 @@ lead with their concrete capture or handoff remediation.
 
 For every failed target, give `planar resume validate <task-id>` plus the exact
 idempotent retry `planar resume <task-id> [--budget <tokens>] [--no-pull]`.
-Name each failed external link's `planar sync status --entity <kind:id>
+Name each failed external link's `planar-ext sync status --entity <kind:id>
 --system <slug> --json` inspection. A successful pull or packet component is
 retained; never imply cross-target rollback.
 

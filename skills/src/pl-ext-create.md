@@ -31,11 +31,11 @@ Wraps [`ext`](../../docs/cli-reference.md#domain-ext), [`link`, and `unlink`](..
 > escape (not for routine use). See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
-planar ext register jira <slug> --base-url <url> --project <key> --auth-env <var>
-planar ext register github <slug> --project <owner/repo> [--auth-env <var>]
-planar ext list
-planar ext test <slug>
-planar ext create <system-slug> --from <kind:id> [--type <issue-type>] [--role <kind>] [--sync <direction>]
+planar-ext ext register jira <slug> --base-url <url> --project <key> --auth-env <var>
+planar-ext ext register github <slug> --project <owner/repo> [--auth-env <var>]
+planar-ext ext list
+planar-ext ext test <slug>
+planar-ext ext create <system-slug> --from <kind:id> [--type <issue-type>] [--role <kind>] [--sync <direction>]
 planar link <kind:id> --to <system-slug>:<external-id> [--role <kind>] [--sync <direction>]
 planar unlink <link-id>
 ```
@@ -64,7 +64,7 @@ available remote evidence. An already-existing exact binding is a skip.
 ## Result
 
 Always report `outcome=ok|partial|error`. After create or link, verify with
-`planar sync status --entity <kind:id> --system <system-slug> --json` and return
+`planar-ext sync status --entity <kind:id> --system <system-slug> --json` and return
 the local entity, external link ID, system slug, and external URL or ID. After
 unlink, verify that the link is absent. List and test are read-only with zero
 applied; an empty list is an informative no-op.
@@ -82,8 +82,8 @@ status read or the next gated propagation preview when appropriate.
 
 ## Recovery
 
-For each failed target, give `planar sync status --entity <kind:id> --system
-<system-slug> --json` and the exact idempotent `planar ext create ...` or
+For each failed target, give `planar-ext sync status --entity <kind:id> --system
+<system-slug> --json` and the exact idempotent `planar-ext ext create ...` or
 `planar link ...` retry with the original role, sync, and scope arguments.
 Inspect an unlink failure with `planar audit trail --link <link-id> --json`.
 Completed independent targets remain applied.

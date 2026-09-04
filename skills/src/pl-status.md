@@ -40,11 +40,11 @@ and external sync state need to be reconciled into one concise view.
    stale when it is older than 24 hours; show its id, task, status, and age.
    When scope ownership is not present in the list row, verify it with
    `planar task show <task-id> --json` before including the handoff.
-5. Read scoped external state with `planar sync status --json` and retain links
+5. Read scoped external state with `planar-ext sync status --json` and retain links
    whose status is `conflict` or `error`. A conflict's executable inspection is
    `planar-watch sync-events --entity <kind:id> --outcome conflict --json`;
    resolution remains an explicit operator choice via
-   `planar sync resolve <event-id> --keep <local|remote>`.
+   `planar-ext sync resolve <event-id> --keep <local|remote>`.
 6. For every in-flight plan, use `planar plan next <plan-id> --json` when the
    dashboard roll-up is insufficient to explain selection. Never choose from
    `task list --status todo` alone: active claims are unavailable, stale claims
@@ -105,7 +105,7 @@ this section.
 Give zero to three executable commands selected from the actual highest-priority
 items. Prefer, as applicable:
 
-- `planar sync resolve <event-id> --keep <local|remote>` after inspection.
+- `planar-ext sync resolve <event-id> --keep <local|remote>` after inspection.
 - `planar-agent reconcile --dry-run --plan <plan-id> --json` for stale claims.
 - `planar resume validate <task-id> --json` for stale handoffs.
 - `planar question show <question-id> --json` for an open decision point.

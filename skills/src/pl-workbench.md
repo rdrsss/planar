@@ -56,7 +56,7 @@ planar workbench publish <plan-id> --system <slug>
 | `archive` | removes FS tree | Feature is done; remove the on-disk tree. DB retains everything. |
 | `restore` | recreates FS tree | Recreate the tree from the DB after archive, or after accidental deletion. |
 | `list` | read-only | List all features that currently have an active FS tree. |
-| `publish` | DB → external system | Render the workbench files for a plan and push the rendered content to a registered external operational system (Jira, GitHub Issues, GitHub Projects) via the adapter layer. |
+| `publish` | DB → external system | Render the workbench files for a plan and push the rendered content to a registered external operational system (Jira, GitHub Issues) via the adapter layer. |
 
 ## `publish` Subcommand
 
@@ -64,14 +64,14 @@ planar workbench publish <plan-id> --system <slug>
 planar workbench publish <plan-id> --system <slug>
 ```
 
-Renders the workbench files for `<plan-id>` and pushes the rendered content to the named external operational system. The system slug must already be registered (`planar ext list` / `planar ext create`).
+Renders the workbench files for `<plan-id>` and pushes the rendered content to the named external operational system. The system slug must already be registered (`planar-ext ext list` / `planar-ext ext create`).
 
 | Flag | Description |
 |------|-------------|
 | `--system <slug>` | External system slug (required). |
 | `--json` | Emit a JSON result envelope. |
 
-For full plan-subtree counterpart creation (one external entity per plan / task / artifact, with parent / child links), use `planar ext propagate <plan-id> --system <slug>` — `publish` pushes the rendered Markdown body; `propagate` walks the plan tree.
+For full plan-subtree counterpart creation (one external entity per plan / task / artifact, with parent / child links), use `planar-ext ext propagate <plan-id> --system <slug>` once it lands — `publish` pushes the rendered Markdown body; `propagate` walks the plan tree. As of this writing `ext propagate` (the whole-feature walk) is not yet implemented on either binary; use `planar-ext ext propagate-one <system> --from <kind:id>` for a single entity today.
 
 See [`docs/cli-reference.md#planar-workbench-publish-plan-id`](../../docs/cli-reference.md#planar-workbench-publish-plan-id) for the full specification.
 
