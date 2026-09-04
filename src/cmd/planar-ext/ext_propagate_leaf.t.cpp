@@ -89,6 +89,17 @@ auto scalar(const fixture& fx, std::string_view sql) -> std::int64_t {
   return stmt->column_int64(0);
 }
 
+auto text_scalar(const fixture& fx, std::string_view sql) -> std::string {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare(sql);
+  REQUIRE(stmt.has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  REQUIRE(*step == planar::db::step_result::row);
+  return std::string{stmt->column_text(0)};
+}
+
 /// @brief One issue-create counter per repo -- used to hand out increasing
 /// issue numbers exactly like a real GitHub repo would, so parent/child
 /// sub-issue links reference numbers that actually came from a create
@@ -102,9 +113,8 @@ struct issue_counter {
 /// (`issues/0/sub_issues`); everything else is fixed shape.
 auto make_respond(issue_counter& counter, int sub_issue_probe_status, bool fail_second_create = false)
     -> std::function<planar::http::fixture::canned_response(const planar::http::fixture::captured_request&)> {
-  return [&counter, sub_issue_probe_status, fail_second_create,
-          seen = std::make_shared<std::atomic<int>>(0)](const planar::http::fixture::captured_request& req)
-             -> planar::http::fixture::canned_response {
+  return [&counter, sub_issue_probe_status, fail_second_create, seen = std::make_shared<std::atomic<int>>(0)](
+             const planar::http::fixture::captured_request& req) -> planar::http::fixture::canned_response {
     if (req.target.contains("/issues/0/sub_issues")) {
       return {.status = sub_issue_probe_status, .body = "{}", .content_type = "application/json"};
     }
@@ -121,11 +131,37 @@ auto make_respond(issue_counter& counter, int sub_issue_probe_status, bool fail_
         return {.status = 500, .body = "internal error", .content_type = "text/plain"};
       }
       auto const number = counter.next.fetch_add(1);
-      return {.status      = 201,
-              .body        = std::format(R"({{"number":{},"node_id":"NODE_{}"}})", number, number),
+      return {.status       = 201,
+              .body         = std::format(R"({{"number":{},"node_id":"NODE_{}"}})", number, number),
               .content_type = "application/json"};
     }
     return {.status = 404, .body = "{}", .content_type = "application/json"};
+  };
+}
+
+/// @brief `make_respond` extended with a `GET .../issues/<n>` arm for
+/// `--verify-counterparts`'s probe (`github_adapter::pull`). Any issue
+/// number in `missing_numbers` reports 404 (`adapter_error::not_found` ->
+/// probe outcome `missing`); every other pull reports 200 with an empty
+/// issue body (outcome `present`). Falls through to `make_respond`'s shape
+/// for every create/link/comment/sub-issue-probe request, so a fixture
+/// built with this responder can run a full happy-path propagate AND a
+/// subsequent verify pass against the same server.
+auto make_respond_with_pull(issue_counter& counter, std::set<std::int64_t> missing_numbers)
+    -> std::function<planar::http::fixture::canned_response(const planar::http::fixture::captured_request&)> {
+  return [&counter, missing = std::move(missing_numbers)](
+             const planar::http::fixture::captured_request& req) -> planar::http::fixture::canned_response {
+    if (req.verb == "GET" && req.target.contains("/issues/") && !req.target.contains("sub_issues")) {
+      auto const   pos     = req.target.rfind('/');
+      auto const   num_str = req.target.substr(pos + 1);
+      std::int64_t n       = 0;
+      auto const   conv    = std::from_chars(num_str.data(), num_str.data() + num_str.size(), n);
+      if (conv.ec == std::errc{} && missing.contains(n)) {
+        return {.status = 404, .body = "{}", .content_type = "application/json"};
+      }
+      return {.status = 200, .body = "{}", .content_type = "application/json"};
+    }
+    return make_respond(counter, 422)(req);
   };
 }
 
@@ -137,15 +173,14 @@ auto make_respond(issue_counter& counter, int sub_issue_probe_status, bool fail_
 /// `github-parent-issue`.
 void seed_single_repo(const fixture& fx, std::string_view base) {
   migrate_fixture(fx);
-  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-demo", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"})
-              .code == 0);
+  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-demo", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"}).code ==
+          0);
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
   REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-demo'", base)).has_value());
   REQUIRE(conn->execute("insert into projects (id, slug, name) values (1, 'acme/widgets', 'acme/widgets')").has_value());
-  REQUIRE(
-      conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
-          .has_value());
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
+              .has_value());
   REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug, parent_plan_id) values "
                         "(2, 'global', 'Child plan', 'child-plan', 1)")
               .has_value());
@@ -158,8 +193,7 @@ void seed_single_repo(const fixture& fx, std::string_view base) {
 
 } // namespace
 
-TEST_CASE("ext propagate fixture sanity: seeded rows are present and no links exist yet",
-          "[cmd][ext][propagate][fixture]") {
+TEST_CASE("ext propagate fixture sanity: seeded rows are present and no links exist yet", "[cmd][ext][propagate][fixture]") {
   issue_counter                 counter;
   planar::http::fixture::server remote(make_respond(counter, 201));
   auto const                    fx = make_fixture("fixture");
@@ -171,8 +205,7 @@ TEST_CASE("ext propagate fixture sanity: seeded rows are present and no links ex
   CHECK(remote.request_count() == 0);
 }
 
-TEST_CASE("ext propagate creates the parent issue, both sub-issues, and records mirror links",
-          "[cmd][ext][propagate][happy]") {
+TEST_CASE("ext propagate creates the parent issue, both sub-issues, and records mirror links", "[cmd][ext][propagate][happy]") {
   issue_counter                 counter;
   planar::http::fixture::server remote(make_respond(counter, 422)); // 422 on the bogus probe id == supported.
   auto const                    fx = make_fixture("happy");
@@ -194,7 +227,7 @@ TEST_CASE("ext propagate creates the parent issue, both sub-issues, and records 
   // The anchor's link carries the strategy-stickiness cache with the
   // resolved repo and parent issue number.
   CHECK(scalar(fx, "select count(*) from external_links where entity_kind = 'plan' and entity_id = 1 and "
-                  "config_json like '%github-parent-issue%'") == 1);
+                   "config_json like '%github-parent-issue%'") == 1);
   // One probe + 4 creates (anchor, child plan, task-under-child,
   // direct-anchor-task) + 3 sub-issue links (every non-anchor entity links
   // under its parent) = 8 requests. (No comments: no decisions were seeded.)
@@ -246,7 +279,7 @@ TEST_CASE("ext propagate refuses with sub_issue_unsupported when the probe 404s,
 
 TEST_CASE("ext propagate reports a partial completion when one entity's create fails mid-propagation",
           "[cmd][ext][propagate][partial-failure]") {
-  issue_counter                 counter;
+  issue_counter counter;
   // The SECOND create call (the child plan, per propagate_parent_issue_with_repo's
   // step order: anchor first, then the child plan) fails with a transport
   // error; the direct anchor task afterward still gets attempted.
@@ -295,8 +328,7 @@ TEST_CASE("ext propagate refuses a Jira system explicitly rather than mis-execut
               .code == 0);
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
-  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')")
-              .has_value());
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
 
   auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo"});
   CHECK(ran.code == 2);
@@ -349,4 +381,196 @@ TEST_CASE("ext propagate refuses an unknown plan and an unknown system before bu
 
   CHECK(remote.request_count() == 0);
   CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+// ---- --unlink / --recreate / --verify-counterparts preflight (task 6428) --
+
+TEST_CASE("ext propagate refuses --unlink or --recreate without --verify-counterparts, before touching the network",
+          "[cmd][ext][propagate][verify][refusal][ordering]") {
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond(counter, 422));
+  auto const                    fx = make_fixture("verify-preflight");
+  seed_single_repo(fx, remote.base_url());
+
+  auto const unlink_alone = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--unlink"});
+  CHECK(unlink_alone.code == 2);
+  CHECK(unlink_alone.err.contains("--unlink and --recreate require --verify-counterparts"));
+
+  auto const recreate_alone = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--recreate"});
+  CHECK(recreate_alone.code == 2);
+  CHECK(recreate_alone.err.contains("--unlink and --recreate require --verify-counterparts"));
+
+  auto const both =
+      dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--verify-counterparts", "--unlink", "--recreate"});
+  CHECK(both.code == 2);
+  CHECK(both.err.contains("--unlink and --recreate are mutually exclusive"));
+
+  CHECK(remote.request_count() == 0);
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+TEST_CASE("ext propagate --verify-counterparts reports every counterpart verified when the remote still has them",
+          "[cmd][ext][propagate][verify][happy]") {
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond_with_pull(counter, {}));
+  auto const                    fx = make_fixture("verify-happy");
+  seed_single_repo(fx, remote.base_url());
+
+  REQUIRE(dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--json"}).code == 0);
+  REQUIRE(scalar(fx, "select count(*) from external_links") == 4);
+
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--verify-counterparts", "--json"});
+  CHECK(ran.code == 0);
+  CHECK(ran.out.contains(R"("ok":true)"));
+  // Only 2, not 4: `list_mirror_links_in_tree` walks plan descendants plus
+  // tasks reachable via `entity_links(relationship='derives-from')` --
+  // mirroring the oracle's `listMirrorLinksInTree` verbatim (strategy.zig).
+  // This binary's `parent_issue` tree walk instead reaches tasks via
+  // `tasks.plan_id` (and direct-anchor tasks via `plan_id` alone), which
+  // `listMirrorLinksInTree` never follows. So `--verify-counterparts` sees
+  // only the 2 plan-level mirror links here; the 2 task links are
+  // invisible to it. This asymmetry is IN THE ORACLE (propagate.zig's
+  // `walkTree` vs strategy.zig's `listMirrorLinksInTree` disagree on what
+  // "in the tree" means for a task) and is reproduced rather than patched
+  // -- see this file's header on D2 and the task 6428 report for the
+  // disclosed finding.
+  CHECK(ran.out.contains(R"("verified":2)"));
+  CHECK_FALSE(ran.out.contains(R"("missing")"));
+  CHECK(scalar(fx, "select count(*) from external_links") == 4);
+  CHECK(scalar(fx, "select count(*) from sync_events where outcome = 'counterpart-missing'") == 0);
+}
+
+TEST_CASE("ext propagate --verify-counterparts reports a missing counterpart and refuses without --unlink/--recreate",
+          "[cmd][ext][propagate][verify][missing]") {
+  issue_counter counter;
+  // Pull requests resolve after the happy propagate seeds real issue
+  // numbers, so start with no missing numbers and patch the fixture's
+  // knowledge in afterward via a fresh server pointed at the same set.
+  auto const fx = make_fixture("verify-missing");
+  {
+    issue_counter                 seed_counter;
+    planar::http::fixture::server seed_remote(make_respond_with_pull(seed_counter, {}));
+    seed_single_repo(fx, seed_remote.base_url());
+    REQUIRE(dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--json"}).code == 0);
+  }
+  REQUIRE(scalar(fx, "select count(*) from external_links") == 4);
+
+  // The child plan's counterpart is the one the remote "deleted".
+  // `--verify-counterparts` only ever reaches plan-level mirror links plus
+  // task links attached via `entity_links(derives-from)` -- see the note in
+  // the "verify][happy]" case above -- and this fixture's tasks are
+  // attached via `tasks.plan_id` alone, so a plan-level link is the only
+  // kind this probe pass can see here.
+  auto const missing_external_id =
+      text_scalar(fx, "select external_id from external_links where entity_kind = 'plan' and entity_id = 2");
+  auto const hash = missing_external_id.rfind('#');
+  REQUIRE(hash != std::string::npos);
+  std::int64_t const missing_number = std::stoll(missing_external_id.substr(hash + 1));
+
+  planar::http::fixture::server remote2(make_respond_with_pull(counter, {missing_number}));
+  // Re-point the registered system at the second server -- pull's base_url
+  // is read fresh from `external_systems` on every invocation.
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-demo'", remote2.base_url()))
+                .has_value());
+  }
+
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--verify-counterparts", "--json"});
+  CHECK(ran.code == 2); // invalid_input
+  CHECK(ran.out.contains(R"("ok":false)"));
+  CHECK(ran.out.contains(R"("missing":1)"));
+  CHECK(ran.out.contains(R"("verified":1)")); // the anchor plan link; the 2 task links are unreachable, see above.
+  CHECK(ran.err.contains("1 counterpart(s) missing during --verify-counterparts"));
+
+  // No remediation flag: the link survives.
+  CHECK(scalar(fx, "select count(*) from external_links") == 4);
+  CHECK(scalar(fx, "select count(*) from sync_events where outcome = 'counterpart-missing'") == 1);
+}
+
+TEST_CASE("ext propagate --verify-counterparts --unlink deletes the missing link's row and exits clean",
+          "[cmd][ext][propagate][verify][unlink]") {
+  auto const fx = make_fixture("verify-unlink");
+  {
+    issue_counter                 seed_counter;
+    planar::http::fixture::server seed_remote(make_respond_with_pull(seed_counter, {}));
+    seed_single_repo(fx, seed_remote.base_url());
+    REQUIRE(dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--json"}).code == 0);
+  }
+  auto const missing_external_id =
+      text_scalar(fx, "select external_id from external_links where entity_kind = 'plan' and entity_id = 2");
+  auto const hash = missing_external_id.rfind('#');
+  REQUIRE(hash != std::string::npos);
+  std::int64_t const missing_number = std::stoll(missing_external_id.substr(hash + 1));
+
+  issue_counter                 counter;
+  planar::http::fixture::server remote2(make_respond_with_pull(counter, {missing_number}));
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-demo'", remote2.base_url()))
+                .has_value());
+  }
+
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--verify-counterparts", "--unlink", "--json"});
+  CHECK(ran.code == 0);
+  // `"ok"` is `failed==0 && missing==0`, unconditionally -- the oracle's own
+  // definition (propagate.zig line 424) does not special-case `--unlink`/
+  // `--recreate` remediation, so a clean-exit `--unlink` run still reports
+  // `"ok":false` even though the exit CODE is 0 because the remediation
+  // flag suppressed the die. Reproduced verbatim rather than "fixed".
+  CHECK(ran.out.contains(R"("ok":false)"));
+  CHECK(ran.out.contains(R"("missing":1)"));
+
+  // The link row is gone; the sync_events audit trail for it survives with
+  // link_id set to NULL (on delete set null), matching `record_mirror_link`'s
+  // documented FK behavior.
+  CHECK(scalar(fx, "select count(*) from external_links") == 3);
+  CHECK(scalar(fx, "select count(*) from sync_events where outcome = 'counterpart-missing'") == 1);
+}
+
+// ---- --restrategize (task 6428) --------------------------------------------
+
+TEST_CASE("ext propagate --restrategize --yes is a documented no-op once the only executable strategy is cached",
+          "[cmd][ext][propagate][restrategize]") {
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond_with_pull(counter, {}));
+  auto const                    fx = make_fixture("restrategize");
+  seed_single_repo(fx, remote.base_url());
+
+  REQUIRE(dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--json"}).code == 0);
+  REQUIRE(scalar(fx, "select count(*) from external_links") == 4);
+
+  // Every entity is already linked, so this run's own tree-walk reports
+  // skipped:4 regardless of --restrategize; the field under test is
+  // "abandoned", which must stay absent (0) because the cached strategy
+  // ("github-parent-issue", written by the propagate above) and the
+  // freshly-selected strategy are the same string in this binary -- see
+  // propagate.cppm's header on why that is the honest, not a shortcut,
+  // outcome of --github-strategy/tracking-issue being unreachable here.
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--restrategize", "--yes", "--json"});
+  CHECK(ran.code == 0);
+  CHECK(ran.out.contains(R"("strategy":"github-parent-issue")"));
+  CHECK(ran.out.contains(R"("skipped":4)"));
+  CHECK_FALSE(ran.out.contains(R"("abandoned")"));
+  CHECK(scalar(fx, "select count(*) from external_links") == 4);
+  CHECK(scalar(fx, "select count(*) from sync_events where outcome = 'strategy-abandoned'") == 0);
+}
+
+// ---- --scope (task 6428) ---------------------------------------------------
+
+TEST_CASE("ext propagate accepts --scope and discards it, matching the oracle's unguarded link-verb contract",
+          "[cmd][ext][propagate][scope][unguarded]") {
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond(counter, 422));
+  auto const                    fx = make_fixture("scope-discard");
+  seed_single_repo(fx, remote.base_url());
+
+  // "nonexistent-scope" resolves to nothing in this fixture -- if the flag
+  // guarded anything, this run would refuse. It does not.
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--scope", "nonexistent-scope", "--json"});
+  CHECK(ran.code == 0);
+  CHECK(ran.out.contains(R"("created":4)"));
+  CHECK(scalar(fx, "select count(*) from external_links") == 4);
 }

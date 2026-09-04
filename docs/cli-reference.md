@@ -3332,15 +3332,15 @@ link id: 7  (two-way mirror)
 **Synopsis:**
 ```
 planar-ext ext propagate <plan> [--system <slug>] [--dry-run] [--restrategize [--yes]]
-                            [--github-strategy <value>]
                             [--verify-counterparts [--unlink | --recreate]]
+                            [--scope <slug>] [--sync <direction>] [--json]
 ```
 
 **Description:** Push a feature tree to the operational plane. Creates external counterparts (Epic/Story/Sub-task on Jira; parent-issue/sub-issues on GitHub) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): Jira always uses the epic hierarchy; GitHub always uses the single-repo parent-issue strategy. The multi-repo `projects-v2` strategy is permanently cut (decision 1001) and will not exist.
 
 **Strategy stickiness (Phase C):** The chosen strategy is cached on `external_links.config_json` of the anchor plan at first propagation. Subsequent reruns honor the cached strategy even if the repo count later changes. Strategy is not re-evaluated automatically; use `--restrategize` to rebuild.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the anchor plan's stored scope. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** UNGUARDED BY DESIGN — `--scope` is accepted and discarded; `external_links` carries no scope column. See [Cross-scope guard](#cross-scope-guard).
 
 Idempotent: entities that already have an `external_links(link_role='mirror')` row for the target system are skipped without error.
 
@@ -3359,12 +3359,12 @@ After propagation, run `planar workbench push <plan>` separately to update workb
 | `--system <slug>` | External system slug. | First registered system. |
 | `--dry-run` | Print what would be created without contacting the remote. | `false` |
 | `--restrategize` | Force fresh strategy detection; prompts for confirmation if the strategy changes. On confirmation, prior counterparts are abandoned (NOT deleted from the remote) and `sync_events(outcome='strategy-abandoned')` rows are written for audit. Fresh propagation then proceeds under the new strategy. | `false` |
-| `--github-strategy <value>` | Override ADR-0006 auto-detection at first propagation for GitHub systems. `parent-issue` is the only strategy that creates real counterparts; `projects-v2` is permanently cut (decision 1001) and must not be offered. The chosen value is cached on `external_links.config_json` identically to auto-detected strategies; subsequent propagations honor the cache. GitHub-only — rejected when the target system is not `github-issues`. Mutually exclusive with `--restrategize`. | (off) |
 | `--yes` | Auto-confirm the `--restrategize` prompt without interactive input. No effect without `--restrategize`. | `false` |
 | `--verify-counterparts` | Probe the remote to confirm every already-linked entity still exists. Missing counterparts (404) are reported as `Missing` and `sync_events(outcome='counterpart-missing')` rows are written. Off by default — probing on every run is expensive on large features. | `false` |
 | `--unlink` | Remove `external_links` rows for missing counterparts (requires `--verify-counterparts`). The entity is then treated as "to create" on the next propagation. Mutually exclusive with `--recreate`. | `false` |
 | `--recreate` | Remove the `external_links` row for missing counterparts and immediately re-create them (requires `--verify-counterparts`). Mutually exclusive with `--unlink`. | `false` |
 | `--sync <direction>` | Sync direction applied to every `external_links` row created by this propagation. Accepted values: `read-only`, `write-back`, `two-way`. **Behavior change from prior versions:** the propagate flow previously defaulted to `two-way`; the new default is `read-only`. Users with downstream tooling that depended on the implicit two-way write must pass `--sync two-way` explicitly going forward. | `read-only` |
+| `--scope <slug>` | Declared for parity with every other write verb but discarded — `external_links` carries no scope column and this verb is UNGUARDED BY DESIGN (see [Cross-scope guard](#cross-scope-guard)). | (off) |
 
 **Output (human):**
 ```
@@ -3421,7 +3421,7 @@ Idempotent: if a mirror link already exists for the `(entity, system)` pair the 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--from <kind:id>` | Source local entity. Accepts `plan:N` or `task:N`. | Required. |
-| `--strategy <value>` | Override the per-entity strategy for GitHub systems. `tracking-issue` is the only accepted value — it is for an entity with no determinable repo. `parent-issue` and `projects-v2` are recognized only to be refused, pointing at the whole-tree `ext propagate --github-strategy` instead (not yet implemented — see that command's page). GitHub-only; rejected for non-GitHub systems. | (auto-detect: `parent-issue`) |
+| `--strategy <value>` | Override the per-entity strategy for GitHub systems. `tracking-issue` is the only accepted value — it is for an entity with no determinable repo. `parent-issue` and `projects-v2` are recognized only to be refused, pointing at the whole-tree `ext propagate` instead. GitHub-only; rejected for non-GitHub systems. | (auto-detect: `parent-issue`) |
 | `--sync <direction>` | Sync direction for the created `external_links` row. Accepted values: `read-only`, `write-back`, `two-way`. | `read-only` |
 | `--dry-run` | Preview: render the template and report what would be POSTed without contacting the remote system. | off |
 | `--json` | Emit a JSON result object. | off |
@@ -4823,10 +4823,9 @@ planar-ext ext propagate <plan-id> --system <system-slug> \
 The first dry run is a pre-delete resolution check; it normally reports the
 existing row as skipped. The second previews fresh creation after unlink. The
 final command creates a new remote counterpart, URL, config, sync state, and
-history; it does not restore the old values. For GitHub, pass
-`--github-strategy <value>` on the fresh propagation only when the old strategy
-is independently known. Otherwise strategy is selected from current state and
-may differ from the deleted `config_json`.
+history; it does not restore the old values. Strategy is selected from
+current state and may differ from the deleted `config_json`; for GitHub
+systems `parent-issue` is the only strategy this binary executes today.
 
 **Synopsis:**
 ```

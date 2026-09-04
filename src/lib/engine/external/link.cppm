@@ -55,6 +55,7 @@ export module planar.engine.external.link;
 
 import std;
 import planar.db;
+import planar.json_dom;
 
 namespace planar::engine::external::link {
 
@@ -367,5 +368,100 @@ export auto load_existing_mirror(db::connection& conn, std::string_view entity_k
 export auto record_mirror_link(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t system_id,
                                std::string_view external_id, std::string_view external_url, sync_direction direction)
     -> std::expected<std::int64_t, link_error>;
+
+// ---- strategy stickiness / verify-counterparts (plan 996, task 6428) ------
+//
+// Behavior-preserving port (D2) of `zig/src/engine/extsync/strategy.zig`'s
+// `readCachedStrategy` / `listMirrorLinksInTree` / `recordCounterpartMissing`
+// / `abandonCounterparts`. These land here rather than under
+// `engine_extsync` for the same reason `load_existing_mirror` /
+// `record_mirror_link` already do: they are nothing but SQL against
+// `external_links` and `sync_events`, and D18 forbids an `engine_extsync ->
+// engine_external` edge (see this file's header). `writeAnchorConfigJSON`
+// is NOT ported: `ext propagate`'s only strategy this binary executes
+// (`github-parent-issue`) already writes its own cache via
+// `engine::external::parent_issue::propagate_parent_issue`, so the CLI
+// bridge never needs a general-purpose merge-write.
+
+/// @brief The `external_links.config_json` key the chosen strategy is
+/// cached under. Read-side tools (the Go archive and the Zig oracle) compare
+/// against this key by name — it must not be renamed.
+export inline constexpr std::string_view strategy_cache_key = "strategy";
+
+/// @brief Read the cached `"strategy"` value from the anchor plan's mirror
+/// link on `system_id`.
+///
+/// Mirrors `readCachedStrategy`: no row, a NULL/empty `config_json`, a
+/// `config_json` that fails to parse, or one with no `"strategy"` key (or a
+/// non-string one) all report "no cache" rather than a query failure — only
+/// an actual SQL failure is `link_error::query_failed`.
+/// @param conn An open, migrated database connection.
+/// @param anchor_plan_id The feature's anchor plan.
+/// @param system_id The registered system.
+/// @return The cached strategy kind, unset when there is none, or the query
+/// failure.
+export auto read_cached_strategy(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id)
+    -> std::expected<std::optional<std::string>, link_error>;
+
+/// @brief One `external_links(link_role='mirror')` row returned by
+/// `list_mirror_links_in_tree`.
+export struct mirror_link {
+  std::int64_t id = 0;        ///< The link row id.
+  std::string  entity_kind;   ///< The local entity kind TEXT.
+  std::int64_t entity_id = 0; ///< The local entity id.
+  std::string  external_id;   ///< The provider-side id.
+  std::string  external_url;  ///< The provider URL; empty when unset.
+};
+
+/// @brief Every mirror link for `system_id` in the feature subtree rooted at
+/// `anchor_plan_id` (the anchor's plan descendants, plus every task whose
+/// `entity_links(relationship='derives-from')` row points into that subtree).
+///
+/// Mirrors `listMirrorLinksInTree`. Used by `--verify-counterparts`.
+/// @param conn An open, migrated database connection.
+/// @param anchor_plan_id The feature's anchor plan.
+/// @param system_id The registered system.
+/// @return The rows, ordered by id, or the failure.
+export auto list_mirror_links_in_tree(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id)
+    -> std::expected<std::vector<mirror_link>, link_error>;
+
+/// @brief Record a `sync_events(outcome='counterpart-missing')` row for one
+/// link, and — when `unlink_or_recreate` is true — delete the link row too.
+///
+/// Mirrors `recordCounterpartMissing`. `--unlink` and `--recreate` both want
+/// the row gone; the only difference between them is that `--recreate`
+/// expects a follow-up `ext propagate` to recreate a fresh counterpart,
+/// which this function has no part in. Transactional: the event and the
+/// (optional) delete commit together.
+/// @param conn An open, migrated database connection.
+/// @param link_id The link.
+/// @param entity_kind The local entity kind TEXT, for the event's `context_json`.
+/// @param entity_id The local entity id, for the event's `context_json`.
+/// @param external_id The provider-side id, for the event's `context_json`.
+/// @param unlink_or_recreate Whether to also delete the link row.
+/// @return Success, or the failure.
+export auto record_counterpart_missing(db::connection& conn, std::int64_t link_id, std::string_view entity_kind,
+                                       std::int64_t entity_id, std::string_view external_id, bool unlink_or_recreate)
+    -> std::expected<void, link_error>;
+
+/// @brief Abandon every mirror link for `system_id` in the feature subtree
+/// rooted at `anchor_plan_id`: record a
+/// `sync_events(outcome='strategy-abandoned')` row for each, then DELETE the
+/// link row, so a subsequent propagation starts clean under the new
+/// strategy.
+///
+/// Mirrors `abandonCounterparts`. The old remote counterparts are NOT
+/// contacted — Planar only stops tracking them; the operator cleans up the
+/// remote manually. Each abandonment runs in its own transaction (Go/oracle
+/// behavior), so a mid-loop failure leaves already-abandoned rows committed.
+/// @param conn An open, migrated database connection.
+/// @param anchor_plan_id The feature's anchor plan.
+/// @param system_id The registered system.
+/// @param old_strategy The cached strategy kind being left, for the event's `context_json`.
+/// @param new_strategy The strategy kind being adopted, for the event's `context_json`.
+/// @return The count of abandoned links, or the failure.
+export auto abandon_counterparts(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id,
+                                 std::string_view old_strategy, std::string_view new_strategy)
+    -> std::expected<std::size_t, link_error>;
 
 } // namespace planar::engine::external::link

@@ -440,3 +440,188 @@ TEST_CASE("record_mirror_link refuses a duplicate and leaves no orphan event", "
   CHECK(count->column_int64(0) == 1);
   CHECK(count->column_int64(1) == 1);
 }
+
+// ---- strategy stickiness / verify-counterparts (task 6428) -----------------
+
+auto insert_plan(planar::db::connection& conn, std::int64_t id, std::string_view title, std::string_view slug,
+                 std::optional<std::int64_t> parent_plan_id = std::nullopt) -> void {
+  auto stmt = conn.prepare("insert into plans (id, scope_kind, title, slug, parent_plan_id) values (?, 'global', ?, ?, ?)");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_int64(1, id).has_value());
+  REQUIRE(stmt->bind_text(2, title).has_value());
+  REQUIRE(stmt->bind_text(3, slug).has_value());
+  if (parent_plan_id.has_value()) {
+    REQUIRE(stmt->bind_int64(4, *parent_plan_id).has_value());
+  } else {
+    REQUIRE(stmt->bind_null(4).has_value());
+  }
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+}
+
+TEST_CASE("read_cached_strategy returns unset when no mirror link row exists", "[engine][external][link][strategy]") {
+  scratch_db_path const scratch;
+  auto                  conn = open_migrated(scratch);
+
+  auto const cached = link::read_cached_strategy(conn, 99, 1);
+  REQUIRE(cached.has_value());
+  CHECK_FALSE(cached->has_value());
+}
+
+TEST_CASE("read_cached_strategy returns the cached value when config_json carries the strategy key",
+          "[engine][external][link][strategy]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+  insert_plan(conn, 1, "Anchor", "anchor");
+  {
+    auto stmt = conn.prepare("insert into external_links (entity_kind, entity_id, system_id, external_id, link_role, "
+                             "sync_direction, last_sync_status, config_json) "
+                             "values ('plan', 1, ?, 'ext-1', 'mirror', 'read-only', 'ok', "
+                             "'{\"strategy\":\"github-tracking-issue\",\"extra\":\"keep\"}')");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_int64(1, system_id).has_value());
+    REQUIRE(stmt->step().has_value());
+  }
+
+  auto const cached = link::read_cached_strategy(conn, 1, system_id);
+  REQUIRE(cached.has_value());
+  REQUIRE(cached->has_value());
+  CHECK(**cached == "github-tracking-issue");
+}
+
+TEST_CASE("read_cached_strategy treats an unparseable or keyless config_json as no cache", "[engine][external][link][strategy]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+  insert_plan(conn, 1, "Anchor", "anchor");
+  {
+    auto stmt = conn.prepare("insert into external_links (entity_kind, entity_id, system_id, external_id, link_role, "
+                             "sync_direction, last_sync_status, config_json) "
+                             "values ('plan', 1, ?, 'ext-1', 'mirror', 'read-only', 'ok', 'not json')");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_int64(1, system_id).has_value());
+    REQUIRE(stmt->step().has_value());
+  }
+
+  auto const cached = link::read_cached_strategy(conn, 1, system_id);
+  REQUIRE(cached.has_value());
+  CHECK_FALSE(cached->has_value());
+}
+
+TEST_CASE("list_mirror_links_in_tree walks plan descendants but NOT tasks attached only via tasks.plan_id",
+          "[engine][external][link][strategy]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+  insert_plan(conn, 1, "Anchor", "anchor");
+  insert_plan(conn, 2, "Child", "child", 1);
+  REQUIRE(link::record_mirror_link(conn, "plan", 1, system_id, "gh#1", "", link::sync_direction::read_only).has_value());
+  REQUIRE(link::record_mirror_link(conn, "plan", 2, system_id, "gh#2", "", link::sync_direction::read_only).has_value());
+
+  // A task attached via entity_links(derives-from) IS reachable...
+  {
+    auto stmt = conn.prepare("insert into tasks (id, scope_kind, title) values (1, 'global', 't1')");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    auto link_stmt = conn.prepare("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                                  "values ('task', 1, 'plan', 2, 'derives-from')");
+    REQUIRE(link_stmt.has_value());
+    REQUIRE(link_stmt->step().has_value());
+  }
+  REQUIRE(link::record_mirror_link(conn, "task", 1, system_id, "gh#3", "", link::sync_direction::read_only).has_value());
+
+  // ...but a second task attached ONLY via tasks.plan_id (no entity_links
+  // row) is NOT -- this is the oracle-inherited asymmetry `ext propagate`'s
+  // CLI bridge documents (propagate.cpp's happy-path walk uses BOTH paths;
+  // this function, ported verbatim from strategy.zig's
+  // `listMirrorLinksInTree`, follows only entity_links).
+  {
+    auto stmt = conn.prepare("insert into tasks (id, scope_kind, plan_id, title) values (2, 'global', 2, 't2')");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+  }
+  REQUIRE(link::record_mirror_link(conn, "task", 2, system_id, "gh#4", "", link::sync_direction::read_only).has_value());
+
+  auto const links = link::list_mirror_links_in_tree(conn, 1, system_id);
+  REQUIRE(links.has_value());
+  CHECK(links->size() == 3);
+  for (auto const& l : *links) {
+    CHECK(l.external_id != "gh#4");
+  }
+}
+
+TEST_CASE("record_counterpart_missing writes the audit event and deletes the link only when asked",
+          "[engine][external][link][strategy]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+  insert_plan(conn, 1, "Anchor", "anchor");
+  auto const link_id = link::record_mirror_link(conn, "plan", 1, system_id, "gh#1", "", link::sync_direction::read_only);
+  REQUIRE(link_id.has_value());
+
+  // Record-only: the link survives.
+  REQUIRE(link::record_counterpart_missing(conn, *link_id, "plan", 1, "gh#1", false).has_value());
+  {
+    auto stmt = conn.prepare("select count(*) from external_links where id = ?");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_int64(1, *link_id).has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    CHECK(stmt->column_int64(0) == 1);
+  }
+  {
+    auto stmt = conn.prepare("select count(*) from sync_events where outcome = 'counterpart-missing'");
+    REQUIRE(stmt.has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    CHECK(stmt->column_int64(0) == 1);
+  }
+
+  // With unlink_or_recreate: the link goes away, a second event is written.
+  REQUIRE(link::record_counterpart_missing(conn, *link_id, "plan", 1, "gh#1", true).has_value());
+  {
+    auto stmt = conn.prepare("select count(*) from external_links where id = ?");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_int64(1, *link_id).has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    CHECK(stmt->column_int64(0) == 0);
+  }
+  {
+    auto stmt = conn.prepare("select count(*) from sync_events where outcome = 'counterpart-missing'");
+    REQUIRE(stmt.has_value());
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    REQUIRE(*stepped == planar::db::step_result::row);
+    CHECK(stmt->column_int64(0) == 2);
+  }
+}
+
+TEST_CASE("abandon_counterparts deletes every mirror link in the subtree and records one event per link",
+          "[engine][external][link][strategy]") {
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+  insert_plan(conn, 1, "Anchor", "anchor");
+  insert_plan(conn, 2, "Child", "child", 1);
+  REQUIRE(link::record_mirror_link(conn, "plan", 1, system_id, "gh#1", "", link::sync_direction::read_only).has_value());
+  REQUIRE(link::record_mirror_link(conn, "plan", 2, system_id, "gh#2", "", link::sync_direction::read_only).has_value());
+
+  auto const abandoned = link::abandon_counterparts(conn, 1, system_id, "github-parent-issue", "github-tracking-issue");
+  REQUIRE(abandoned.has_value());
+  CHECK(*abandoned == 2);
+
+  auto stmt = conn.prepare("select (select count(*) from external_links where system_id = ?), "
+                           "(select count(*) from sync_events where outcome = 'strategy-abandoned')");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_int64(1, system_id).has_value());
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+  REQUIRE(*stepped == planar::db::step_result::row);
+  CHECK(stmt->column_int64(0) == 0);
+  CHECK(stmt->column_int64(1) == 2);
+}

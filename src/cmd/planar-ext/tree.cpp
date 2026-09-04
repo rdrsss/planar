@@ -76,11 +76,10 @@ auto add_ext(CLI::App& root) -> void {
   propagate_one->add_option("system")->required();
 
   // `ext propagate` — the github-parent-issue arm only (plan 996, task
-  // 6421). See handlers/propagate.cppm for exactly which flags the oracle
-  // declares that this binary does not yet accept
-  // (--restrategize/--yes/--verify-counterparts/--unlink/--recreate/
-  // --github-strategy all need the strategy-stickiness cache, which is not
-  // ported).
+  // 6421; strategy-stickiness/verify-counterparts flags added task 6428).
+  // `--github-strategy` is deliberately NOT declared: it would only ever
+  // select `projects-v2`, permanently cut by decision 1001 (see
+  // handlers/propagate.cppm's header).
   CLI::App* propagate =
       ext->add_subcommand("propagate", "Propagate a feature (plan + descendants) to an external system.\n\n"
                                        "  This cycle supports the GitHub parent-issue strategy only; a Jira system\n"
@@ -88,6 +87,15 @@ auto add_ext(CLI::App& root) -> void {
   propagate->add_option("--system")->description("External system slug (defaults to first registered system)");
   cliapp::add_bool_flag(*propagate, "--dry-run", "Preview creation plan without contacting the remote system");
   propagate->add_option("--sync")->description("Sync direction for created links: read-only, write-back, two-way");
+  cliapp::add_bool_flag(*propagate, "--restrategize", "Abandon prior counterparts and re-propagate under a fresh strategy");
+  cliapp::add_bool_flag(*propagate, "--yes", "Skip the --restrategize confirmation prompt");
+  cliapp::add_bool_flag(*propagate, "--verify-counterparts",
+                        "Probe every existing counterpart and report ones missing on the remote");
+  cliapp::add_bool_flag(*propagate, "--unlink", "With --verify-counterparts: delete the link row for a missing counterpart");
+  cliapp::add_bool_flag(*propagate, "--recreate",
+                        "With --verify-counterparts: delete the link row for a missing counterpart so the next "
+                        "propagate recreates it");
+  propagate->add_option("--scope");
   add_json(*propagate);
   propagate->add_option("plan-id")->required();
 }
@@ -137,9 +145,10 @@ auto add_sync(CLI::App& root) -> void {
 auto root_app() -> std::unique_ptr<CLI::App> {
   // Task 6419 moved the `ext`/`sync` verb family in; this description no
   // longer describes a skeleton. Task 6421 landed `ext propagate` itself —
-  // the GitHub parent-issue arm only; see handlers/propagate.cppm for what
-  // still refuses explicitly (a Jira system, a multi-repo GitHub feature,
-  // and every `--restrategize`-family flag).
+  // the GitHub parent-issue arm only — and task 6428 landed the
+  // `--restrategize`/`--verify-counterparts`-family flags on top of it; see
+  // handlers/propagate.cppm for what still refuses explicitly (a Jira
+  // system and a multi-repo GitHub feature).
   auto app = std::make_unique<CLI::App>("Host of the external-plane propagation and sync verbs (`ext`, `sync`),\n"
                                         "  moved off `planar` at plan 996, task 6419.\n"
                                         "\n"

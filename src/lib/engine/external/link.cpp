@@ -6,6 +6,7 @@ module planar.engine.external.link;
 
 import std;
 import planar.db;
+import planar.json_dom;
 
 namespace planar::engine::external::link {
 
@@ -581,6 +582,201 @@ auto record_mirror_link(db::connection& conn, std::string_view entity_kind, std:
     return std::unexpected(link_error::query_failed);
   }
   return link_id;
+}
+
+// ---- strategy stickiness / verify-counterparts -----------------------------
+
+auto read_cached_strategy(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id)
+    -> std::expected<std::optional<std::string>, link_error> {
+  auto stmt = conn.prepare("select coalesce(config_json, '') from external_links "
+                           "where entity_kind = 'plan' and entity_id = ? and system_id = ? and link_role = 'mirror' limit 1");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, system_id)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(link_error::query_failed);
+  }
+  if (*stepped == db::step_result::done) {
+    return std::optional<std::string>{std::nullopt};
+  }
+  auto const raw = stmt->column_text(0);
+  if (raw.empty()) {
+    return std::optional<std::string>{std::nullopt};
+  }
+  auto parsed = json_dom::parse_json(raw);
+  if (!parsed || parsed->kind != json_dom::json_kind::object) {
+    return std::optional<std::string>{std::nullopt};
+  }
+  auto const* v = parsed->find(strategy_cache_key);
+  if (v == nullptr || v->kind != json_dom::json_kind::string) {
+    return std::optional<std::string>{std::nullopt};
+  }
+  return std::optional<std::string>{v->string};
+}
+
+auto list_mirror_links_in_tree(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id)
+    -> std::expected<std::vector<mirror_link>, link_error> {
+  auto stmt = conn.prepare("with recursive plan_tree(id) as ("
+                           "  select ? union all"
+                           "  select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id"
+                           ")"
+                           "select el.id, el.entity_kind, el.entity_id, el.external_id, coalesce(el.external_url, '') "
+                           "from external_links el "
+                           "where el.system_id = ? and el.link_role = 'mirror' "
+                           "  and ("
+                           "    (el.entity_kind = 'plan' and el.entity_id in (select id from plan_tree))"
+                           "    or (el.entity_kind = 'task' and el.entity_id in ("
+                           "      select t.id from tasks t"
+                           "      join entity_links tl on tl.from_kind = 'task' and tl.from_id = t.id"
+                           "                          and tl.to_kind = 'plan' and tl.relationship = 'derives-from'"
+                           "      where tl.to_id in (select id from plan_tree)"
+                           "    ))"
+                           "  )"
+                           "order by el.id");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, system_id)) {
+    return std::unexpected(link_error::query_failed);
+  }
+  std::vector<mirror_link> out;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (*stepped == db::step_result::done) {
+      break;
+    }
+    out.push_back(mirror_link{
+        .id           = stmt->column_int64(0),
+        .entity_kind  = std::string{stmt->column_text(1)},
+        .entity_id    = stmt->column_int64(2),
+        .external_id  = std::string{stmt->column_text(3)},
+        .external_url = std::string{stmt->column_text(4)},
+    });
+  }
+  return out;
+}
+
+auto record_counterpart_missing(db::connection& conn, std::int64_t link_id, std::string_view entity_kind, std::int64_t entity_id,
+                                std::string_view external_id, bool unlink_or_recreate) -> std::expected<void, link_error> {
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return std::unexpected(link_error::query_failed);
+  }
+
+  auto const ctx_json =
+      std::format(R"({{"entity_kind":"{}","entity_id":{},"external_id":"{}"}})", entity_kind, entity_id, external_id);
+  {
+    auto event = conn.prepare("insert into sync_events (link_id, direction, outcome, context_json) "
+                              "values (?, 'push', 'counterpart-missing', ?)");
+    if (!event || !event->bind_int64(1, link_id) || !event->bind_text(2, ctx_json)) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (!event->step()) {
+      return std::unexpected(link_error::query_failed);
+    }
+  }
+
+  if (unlink_or_recreate) {
+    auto del = conn.prepare("delete from external_links where id = ?");
+    if (!del || !del->bind_int64(1, link_id)) {
+      return std::unexpected(link_error::query_failed);
+    }
+    if (!del->step()) {
+      return std::unexpected(link_error::query_failed);
+    }
+  }
+
+  if (!tx->commit()) {
+    return std::unexpected(link_error::query_failed);
+  }
+  return {};
+}
+
+auto abandon_counterparts(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id,
+                          std::string_view old_strategy, std::string_view new_strategy)
+    -> std::expected<std::size_t, link_error> {
+  struct row {
+    std::int64_t id = 0;
+    std::string  entity_kind;
+    std::int64_t entity_id = 0;
+    std::string  external_id;
+  };
+  std::vector<row> rows;
+  {
+    auto stmt = conn.prepare("with recursive plan_tree(id) as ("
+                             "  select ? union all"
+                             "  select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id"
+                             ")"
+                             "select el.id, el.entity_kind, el.entity_id, el.external_id "
+                             "from external_links el "
+                             "where el.system_id = ? and el.link_role = 'mirror' "
+                             "  and ("
+                             "    (el.entity_kind = 'plan' and el.entity_id in (select id from plan_tree))"
+                             "    or (el.entity_kind = 'task' and el.entity_id in ("
+                             "      select t.id from tasks t"
+                             "      join entity_links tl on tl.from_kind = 'task' and tl.from_id = t.id"
+                             "                          and tl.to_kind = 'plan' and tl.relationship = 'derives-from'"
+                             "      where tl.to_id in (select id from plan_tree)"
+                             "    ))"
+                             "  )"
+                             "order by el.id");
+    if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, system_id)) {
+      return std::unexpected(link_error::query_failed);
+    }
+    while (true) {
+      auto stepped = stmt->step();
+      if (!stepped) {
+        return std::unexpected(link_error::query_failed);
+      }
+      if (*stepped == db::step_result::done) {
+        break;
+      }
+      rows.push_back(row{
+          .id          = stmt->column_int64(0),
+          .entity_kind = std::string{stmt->column_text(1)},
+          .entity_id   = stmt->column_int64(2),
+          .external_id = std::string{stmt->column_text(3)},
+      });
+    }
+  }
+
+  for (auto const& r : rows) {
+    auto const ctx_json =
+        std::format(R"({{"old_strategy":"{}","new_strategy":"{}","external_id":"{}","entity_kind":"{}","entity_id":{}}})",
+                    old_strategy, new_strategy, r.external_id, r.entity_kind, r.entity_id);
+
+    auto tx = conn.begin_transaction(db::lock_mode::immediate);
+    if (!tx) {
+      return std::unexpected(link_error::query_failed);
+    }
+
+    {
+      auto event = conn.prepare("insert into sync_events (link_id, direction, outcome, context_json) "
+                                "values (?, 'push', 'strategy-abandoned', ?)");
+      if (!event || !event->bind_int64(1, r.id) || !event->bind_text(2, ctx_json)) {
+        return std::unexpected(link_error::query_failed);
+      }
+      if (!event->step()) {
+        return std::unexpected(link_error::query_failed);
+      }
+    }
+    {
+      auto del = conn.prepare("delete from external_links where id = ?");
+      if (!del || !del->bind_int64(1, r.id)) {
+        return std::unexpected(link_error::query_failed);
+      }
+      if (!del->step()) {
+        return std::unexpected(link_error::query_failed);
+      }
+    }
+
+    if (!tx->commit()) {
+      return std::unexpected(link_error::query_failed);
+    }
+  }
+
+  return rows.size();
 }
 
 } // namespace planar::engine::external::link

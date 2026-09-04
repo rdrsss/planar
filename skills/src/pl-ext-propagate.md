@@ -73,7 +73,6 @@ Entities that already have an `external_links(link_role='mirror')` row for the t
 | `--system <slug>` | Target a specific external system by slug (defaults to first registered system). |
 | `--dry-run` | Print what would be created without contacting the remote. |
 | `--restrategize` | Force fresh strategy detection. Prompts for confirmation when strategy changes; abandoned counterparts write `sync_events(outcome='strategy-abandoned')`. |
-| `--github-strategy <value>` | Override ADR-0006 auto-detection at first propagation for GitHub systems. `parent-issue` is the only strategy that creates real counterparts today; `projects-v2` is permanently cut (decision 1001) and must not be offered. Cached on `external_links.config_json`; subsequent propagations honor the cache. GitHub-only; mutually exclusive with `--restrategize`. |
 | `--yes` | Auto-confirm the `--restrategize` prompt (no interactive input). |
 | `--verify-counterparts` | Probe the remote to confirm existing counterparts still exist. Missing ones write `sync_events(outcome='counterpart-missing')` and are reported as `Missing`. |
 | `--unlink` | Remove `external_links` rows for missing counterparts (requires `--verify-counterparts`). |
@@ -116,8 +115,7 @@ This retains the same remote id but does not restore the omitted fields.
 For a propagation-owned mirror, validate the plan/system with a dry run before
 unlinking. After unlink, dry-run again to preview fresh creation, then propagate
 with an explicit sync direction. This creates a new remote counterpart and new
-state; it does not restore the deleted row. Pass `--github-strategy` only when
-the old value is independently known. See the complete recovery sequence in
+state; it does not restore the deleted row. See the complete recovery sequence in
 [`docs/cli-reference.md`](../../docs/cli-reference.md#planar-links-update-link-id).
 
 > **Cross-scope guard.** This verb refuses with exit 1 when the
@@ -131,7 +129,6 @@ planar-ext ext propagate <plan>              # NOT YET IMPLEMENTED — see statu
 planar-ext ext propagate <plan> --system <slug>
 planar-ext ext propagate <plan> --dry-run
 planar-ext ext propagate <plan> --restrategize [--yes]
-planar-ext ext propagate <plan> --github-strategy parent-issue
 planar-ext ext propagate <plan> --sync read-only|write-back|two-way
 planar-ext ext propagate <plan> --verify-counterparts [--unlink | --recreate]
 planar-ext ext propagate-one <system> --from <kind:id>   # live today
