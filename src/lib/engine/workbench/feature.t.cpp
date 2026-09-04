@@ -68,6 +68,19 @@ TEST_CASE("traversal segments are confined to one literal directory name", "[wor
   // A `.` or `..` as the plan KEY or SLUG likewise cannot escape.
   CHECK(wf::feature_dir("/wb", "org", "..", "s") == "/wb/org/_-s");
   CHECK(wf::feature_dir("/wb", "org", "p1", "..") == "/wb/org/p1-_");
+  // A bare `.` as the plan KEY or SLUG (as opposed to `..`, or ASSOC's `.`
+  // above, which goes through the separate `safe_assoc_slug`) is its own
+  // clause of `safe_path_segment`'s guard. Closes a break-probe SURVIVOR
+  // (task 6423): no existing fixture ever put a literal `.` through
+  // `safe_path_segment` itself.
+  CHECK(wf::feature_dir("/wb", "org", ".", "s") == "/wb/org/_-s");
+  CHECK(wf::feature_dir("/wb", "org", "p1", ".") == "/wb/org/p1-_");
+  // An EMPTY plan key or slug is the third clause, and -- unlike an empty
+  // ASSOC, which collapses the directory level -- must become `_`, not
+  // vanish, or `feature_name`'s `<key>-<slug>` would silently lose a side.
+  // Also closes a break-probe SURVIVOR (task 6423).
+  CHECK(wf::feature_dir("/wb", "org", "", "s") == "/wb/org/_-s");
+  CHECK(wf::feature_dir("/wb", "org", "p1", "") == "/wb/org/p1-_");
 }
 
 TEST_CASE("a BACKSLASH and an embedded NUL are sanitized like a slash", "[workbench][feature][safety]") {
