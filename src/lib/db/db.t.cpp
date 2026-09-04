@@ -72,6 +72,72 @@ TEST_CASE("connection::open succeeds against a fresh path and can round-trip dat
   REQUIRE(stmt->column_int64(0) == 42);
 }
 
+TEST_CASE("restrict_writes_to denies INSERT/UPDATE/DELETE against a table NOT in the allowlist, "
+          "even though the connection is otherwise read-write",
+          "[db][connection][restrict_writes_to]") {
+  scratch_db_path scratch;
+
+  auto conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table forbidden (n integer);"));
+  REQUIRE(conn->execute("create table allowed (n integer);"));
+
+  std::vector<std::string> const allowed{"allowed"};
+  conn->restrict_writes_to(allowed);
+
+  // PREPARE itself fails — the authorizer denies before the statement can
+  // even be compiled, not merely before it runs.
+  auto ins = conn->prepare("insert into forbidden (n) values (1);");
+  REQUIRE_FALSE(ins.has_value());
+  auto upd = conn->prepare("update forbidden set n = 2;");
+  REQUIRE_FALSE(upd.has_value());
+  auto del = conn->prepare("delete from forbidden;");
+  REQUIRE_FALSE(del.has_value());
+
+  // SELECT against the forbidden table is untouched by the write allowlist.
+  auto sel = conn->prepare("select n from forbidden;");
+  REQUIRE(sel.has_value());
+}
+
+TEST_CASE("restrict_writes_to permits INSERT/UPDATE/DELETE against a table that IS in the allowlist",
+          "[db][connection][restrict_writes_to]") {
+  scratch_db_path scratch;
+
+  auto conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table allowed (n integer);"));
+
+  std::vector<std::string> const allowed{"allowed"};
+  conn->restrict_writes_to(allowed);
+
+  REQUIRE(conn->execute("insert into allowed (n) values (1);"));
+  REQUIRE(conn->execute("update allowed set n = 2;"));
+  REQUIRE(conn->execute("delete from allowed;"));
+}
+
+TEST_CASE("restrict_writes_to denies a write against a table named only at RUNTIME via string "
+          "interpolation — the authorizer inspects the PARSED statement, not the source text",
+          "[db][connection][restrict_writes_to]") {
+  scratch_db_path scratch;
+
+  auto conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("create table forbidden (n integer);"));
+
+  std::vector<std::string> const allowed{"allowed"};
+  conn->restrict_writes_to(allowed);
+
+  // Composed exactly the way `src/lib/engine/external/sync.cpp`'s
+  // `table_for`-driven UPDATE composes its statement: the table name is
+  // spliced into the SQL text at runtime rather than appearing as a
+  // literal anywhere a source-text scan would find it. A grep for
+  // "update forbidden" would not even find this line.
+  std::string const table = "forbidden";
+  auto const        sql   = std::format("update {} set n = n;", table);
+  auto              upd   = conn->prepare(sql);
+  REQUIRE_FALSE(upd.has_value());
+}
+
 TEST_CASE("connection::open_read_only fails on a nonexistent path", "[db][connection][error-path]") {
   scratch_db_path scratch; // never created — path simply does not exist.
 
