@@ -79,10 +79,15 @@ TMP_UNCOVERED=$(mktemp)
 # Verbs we deliberately exclude from coverage tracking:
 #   - completion: emits shell scripts; not amenable to scenario testing
 #   - version: emits a single line
-#   - sync: hits live external systems
-#   - planar: doesn't exist as a real verb (appears in --help output as
-#     a synonym for the bare binary in some renderings)
-EXCLUDE_VERBS="completion version sync planar init"
+#
+# NOTE: 'sync' and 'planar' were pruned here (task 6437). 'sync' moved off
+# the `planar` binary onto `planar-ext` this session (task 6419) and no
+# longer appears as a top-level verb in `planar --help`; 'planar' never
+# matched a real top-level row. Both exclusions were dead — pruning them is
+# behavior-preserving (verified: `planar --help` SUBCOMMANDS has no 'sync'
+# or 'planar' row, so is_excluded() never matched either token before this
+# change either).
+EXCLUDE_VERBS="completion version init"
 
 is_excluded() {
   local v="$1"
