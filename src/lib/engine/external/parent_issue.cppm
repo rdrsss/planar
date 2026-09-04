@@ -38,12 +38,12 @@
 /// none of the four GitHub REST operations this flow needs
 /// (`probe`/`create_issue`/`link_sub_issue`/`post_comment`).
 ///
-/// No production implementation of `gh_client` exists yet: `github_adapter`
-/// (engine_extsync/github.cppm) has not grown `createIssue` /
-/// `linkSubIssue` / `linkSubIssueProbe` / `postComment` — every one of
-/// them is still listed as deferred-with-`ext-propagate` in that bucket's
-/// CMakeLists.txt. Wiring a real `gh_client` over those (once they land)
-/// plus the `ext propagate` CLI dispatch is follow-up work; see this
+/// No production implementation of `gh_client` exists yet, though the four
+/// REST operations it needs now do: task 6408 landed `github_adapter`'s
+/// `create_issue` / `link_sub_issue` / `link_sub_issue_probe`
+/// (`post_comment` had already landed at task 6339). Wiring a real
+/// `gh_client` over those plus the `ext propagate` CLI dispatch is follow-up
+/// work; see this
 /// module's task-body note for the exact remaining pieces.
 ///
 /// ## What is NOT here

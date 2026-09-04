@@ -25,11 +25,11 @@
 # speculatively:
 #
 #   - jira: `postComment` — `ext propagate`.
-#   - github: `createIssue`/`buildCreateIssueBody`/`parseCreatedIssue` —
-#     `ext create`, `ext propagate`.
-#   - github: `linkSubIssue`/`createSubIssue`/`linkSubIssueProbe` —
-#     `ext propagate`'s parent/child hierarchy.
-#   - github: `postComment` — `ext propagate`'s decision comments.
+#   - github: `createSubIssue` — never ported at all (not just deferred):
+#     it is a thin `createIssue` + `linkSubIssue` fusion with no test beyond
+#     the two it calls, and `planar.engine.external.parent_issue`'s
+#     `gh_client` seam (task 6353) composes the two calls itself. See
+#     github.cppm's header.
 #   - github: the whole ProjectsV2 GraphQL arm (`getAuthenticatedOwner`,
 #     `createProjectV2`, `addProjectV2Item`, `setProjectV2ItemFieldValue`,
 #     `getProjectV2Fields`, `graphqlDo`) — `ext propagate --github-strategy
@@ -44,12 +44,13 @@
 #     `engine_extsync` without breaking its no-`db` invariant. Its `gh_client`
 #     seam is type-erased the same way `sync.cppm` erases `external_adapter`,
 #     so this module is still never named by it. What still blocks `ext
-#     propagate` from that file: NOTHING in `parent_issue.zig` itself. What
-#     blocks it from THIS bucket: `github_adapter` has not grown
-#     `createIssue`/`linkSubIssue`/`linkSubIssueProbe`/`postComment` (still
-#     true, see below), so no production `gh_client` exists to wire the
-#     handler to yet — that adapter work plus the handler wiring is
-#     follow-up, tracked separately from parent_issue.zig's own port.
+#     propagate` from that file: NOTHING in `parent_issue.zig` itself, and
+#     NOTHING in `github_adapter` either any more — task 6408 landed
+#     `createIssue`/`linkSubIssue`/`linkSubIssueProbe` (`postComment` had
+#     already landed at task 6339, see github.cppm's header) — so a
+#     production `gh_client` CAN be wired to it now. That wiring plus the
+#     `ext propagate` CLI dispatch itself is still follow-up, tracked
+#     separately from both this file's port and task 6408.
 #   - `propagate.zig` PARTIALLY. Task 6335 measured this file by symbol rather
 #     than by name and found it divides cleanly: `ext propagate-one` reaches
 #     only `strategyForSystem` and `loadExistingMirror`, and neither reaches

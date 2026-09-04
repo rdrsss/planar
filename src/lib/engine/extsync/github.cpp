@@ -21,6 +21,7 @@ namespace {
 
 using adapter::adapter_error;
 using json_read::array_field;
+using json_read::number_field;
 using json_read::object_field;
 using json_read::string_field;
 
@@ -138,6 +139,57 @@ auto parse_issue(std::string_view external_id, std::string_view raw) -> std::exp
       .raw_status = std::string(raw_status(state, labels)),
       .version    = string_field(root, "updated_at").value_or(std::string{}),
   };
+}
+
+/// @brief Render the `POST /repos/{o}/{r}/issues` creation body.
+///
+/// Port of `buildCreateIssueBody`. Labels are emitted as a JSON array only
+/// when non-empty, matching `render`'s `append_labels` reuse of the same
+/// shape.
+/// @param title The issue title.
+/// @param body The issue body.
+/// @param labels Labels to attach; omitted from the payload when empty.
+/// @return The JSON payload.
+auto build_create_issue_body(std::string_view title, std::string_view body, std::span<const std::string> labels)
+    -> std::string {
+  std::string out = R"({"title":)";
+  json_text::append_json_string(out, title);
+  out += R"(,"body":)";
+  json_text::append_json_string(out, body);
+  if (!labels.empty()) {
+    out += R"(,"labels":[)";
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+      if (i != 0) {
+        out += ",";
+      }
+      json_text::append_json_string(out, labels[i]);
+    }
+    out += "]";
+  }
+  out += "}";
+  return out;
+}
+
+/// @brief Parse `{number, node_id}` out of an issue-create response body.
+///
+/// Port of `parseCreatedIssue`. `number` missing or not a JSON number is
+/// `parse_failed`; `node_id` missing or not a string defaults to empty
+/// rather than failing — the Zig original's own tolerance, kept because a
+/// payload without `node_id` still carries everything sub-issue linking
+/// needs.
+/// @param raw The response body.
+/// @return The created issue, or `adapter_error::parse_failed`.
+auto parse_created_issue(std::string_view raw) -> std::expected<created_issue, adapter_error> {
+  auto parsed = glz::read_json<glz::generic>(raw);
+  if (!parsed || !parsed->is_object()) {
+    return std::unexpected(adapter_error::parse_failed);
+  }
+  glz::generic const& root = *parsed;
+  auto const           number = number_field(root, "number");
+  if (!number.has_value()) {
+    return std::unexpected(adapter_error::parse_failed);
+  }
+  return created_issue{.number = *number, .node_id = string_field(root, "node_id").value_or(std::string{})};
 }
 
 } // namespace
@@ -338,6 +390,85 @@ auto github_adapter::post_comment(std::string_view external_id, std::string_view
   if (sent->status != 201 && sent->status != 200) {
     return std::unexpected(adapter_error::unexpected_status);
   }
+  return {};
+}
+
+auto github_adapter::create_issue(std::string_view owner, std::string_view repo, std::string_view title,
+                                  std::string_view body, std::span<const std::string> labels) const
+    -> std::expected<created_issue, adapter_error> {
+  auto const payload = build_create_issue_body(title, body, labels);
+
+  auto const auth = support::auth_header(_cred);
+  if (!auth) {
+    return std::unexpected(auth.error());
+  }
+  auto const sent = _transport->send({
+      .verb    = http::method::post,
+      .url     = std::format("{}/repos/{}/{}/issues", _base_url, owner, repo),
+      .headers = {{.name = "Content-Type", .value = "application/json"},
+                  {.name = "Accept", .value = "application/vnd.github+json"},
+                  {.name = "Authorization", .value = *auth}},
+      .body    = payload,
+  });
+  if (!sent) {
+    return std::unexpected(adapter_error::transport_failed);
+  }
+  if (sent->status != 201) {
+    return std::unexpected(adapter_error::unexpected_status);
+  }
+  return parse_created_issue(sent->body);
+}
+
+auto github_adapter::link_sub_issue(std::string_view owner, std::string_view repo, std::int64_t parent_number,
+                                    std::int64_t child_number) const -> std::expected<void, adapter_error> {
+  auto const payload = std::format(R"({{"sub_issue_id":{}}})", child_number);
+
+  auto const auth = support::auth_header(_cred);
+  if (!auth) {
+    return std::unexpected(auth.error());
+  }
+  auto const sent = _transport->send({
+      .verb    = http::method::post,
+      .url     = std::format("{}/repos/{}/{}/issues/{}/sub_issues", _base_url, owner, repo, parent_number),
+      .headers = {{.name = "Content-Type", .value = "application/json"},
+                  {.name = "Accept", .value = "application/vnd.github+json"},
+                  {.name = "Authorization", .value = *auth}},
+      .body    = payload,
+  });
+  if (!sent) {
+    return std::unexpected(adapter_error::transport_failed);
+  }
+  if (sent->status == 404) {
+    return std::unexpected(adapter_error::not_found);
+  }
+  if (sent->status != 200 && sent->status != 201) {
+    return std::unexpected(adapter_error::unexpected_status);
+  }
+  return {};
+}
+
+auto github_adapter::link_sub_issue_probe(std::string_view owner, std::string_view repo) const
+    -> std::expected<void, adapter_error> {
+  auto const auth = support::auth_header(_cred);
+  if (!auth) {
+    return std::unexpected(auth.error());
+  }
+  auto const sent = _transport->send({
+      .verb    = http::method::post,
+      .url     = std::format("{}/repos/{}/{}/issues/0/sub_issues", _base_url, owner, repo),
+      .headers = {{.name = "Content-Type", .value = "application/json"},
+                  {.name = "Accept", .value = "application/vnd.github+json"},
+                  {.name = "Authorization", .value = *auth}},
+      .body    = R"({"sub_issue_id":0})",
+  });
+  if (!sent) {
+    return std::unexpected(adapter_error::transport_failed);
+  }
+  if (sent->status == 404) {
+    return std::unexpected(adapter_error::not_found);
+  }
+  // Every other status (including 422 for the bogus issue id) means the
+  // endpoint exists — see this method's doc comment.
   return {};
 }
 

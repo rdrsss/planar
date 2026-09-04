@@ -365,3 +365,191 @@ TEST_CASE("github adapter refuses a bearer credential with no token before sendi
   CHECK(err(adapter.pull("o/r#1")) == std::optional{adapter_error::invalid_auth});
   CHECK(wire.calls == 0);
 }
+
+// ---- create_issue (plan 1009, task 6408) -----------------------------------
+
+TEST_CASE("github create_issue POSTs to the issues endpoint and parses number and node_id", "[extsync][github]") {
+  // github.zig, "createIssue parses number and node_id from REST response".
+  recording_transport wire;
+  wire.reply_status = 201;
+  wire.reply_body   = R"({"number":42,"node_id":"NODE_42","html_url":"https://github.com/acme/api/issues/42"})";
+  github_adapter const adapter("", bearer("tok"), wire);
+
+  auto const created = adapter.create_issue("acme", "api", "Hello", "World", {});
+  REQUIRE(created.has_value());
+  CHECK(created->number == 42);
+  CHECK(created->node_id == "NODE_42");
+
+  CHECK(wire.calls == 1);
+  CHECK(wire.last_verb == planar::http::method::post);
+  CHECK(wire.last_url == "https://api.github.com/repos/acme/api/issues");
+  REQUIRE(wire.last_body.has_value());
+  // The POST body carries title + body and omits `labels` entirely when
+  // empty — read off buildCreateIssueBody's writer sequence directly.
+  CHECK(*wire.last_body == R"({"title":"Hello","body":"World"})");
+  CHECK(wire.header_value("Accept") == std::optional<std::string>{"application/vnd.github+json"});
+  CHECK(wire.header_value("Content-Type") == std::optional<std::string>{"application/json"});
+}
+
+TEST_CASE("github create_issue emits the labels array when present", "[extsync][github]") {
+  // github.zig, "createIssue emits labels array when present".
+  recording_transport wire;
+  wire.reply_status = 201;
+  wire.reply_body   = R"({"number":7,"node_id":"NODE_7"})";
+  github_adapter const adapter("", bearer("tok"), wire);
+
+  auto const labels  = names({"bug", "p1"});
+  auto const created = adapter.create_issue("o", "r", "T", "B", labels);
+  REQUIRE(created.has_value());
+  REQUIRE(wire.last_body.has_value());
+  CHECK(*wire.last_body == R"({"title":"T","body":"B","labels":["bug","p1"]})");
+}
+
+TEST_CASE("github create_issue reports unexpected_status for anything but 201", "[extsync][github]") {
+  recording_transport  wire;
+  github_adapter const adapter("", bearer("t"), wire);
+
+  wire.reply_status = 200;
+  CHECK(err(adapter.create_issue("o", "r", "T", "B", {})) == std::optional{adapter_error::unexpected_status});
+  wire.reply_status = 422;
+  CHECK(err(adapter.create_issue("o", "r", "T", "B", {})) == std::optional{adapter_error::unexpected_status});
+  wire.reply_status = 500;
+  CHECK(err(adapter.create_issue("o", "r", "T", "B", {})) == std::optional{adapter_error::unexpected_status});
+}
+
+TEST_CASE("github create_issue reports parse_failed for a malformed or number-less body", "[extsync][github]") {
+  recording_transport  wire;
+  github_adapter const adapter("", bearer("t"), wire);
+
+  wire.reply_status = 201;
+  wire.reply_body   = "]not json[";
+  CHECK(err(adapter.create_issue("o", "r", "T", "B", {})) == std::optional{adapter_error::parse_failed});
+
+  wire.reply_body = R"({"node_id":"N1"})"; // `number` missing entirely.
+  CHECK(err(adapter.create_issue("o", "r", "T", "B", {})) == std::optional{adapter_error::parse_failed});
+
+  wire.reply_body = R"({"number":"42"})"; // `number` present but wrong-typed.
+  CHECK(err(adapter.create_issue("o", "r", "T", "B", {})) == std::optional{adapter_error::parse_failed});
+}
+
+TEST_CASE("github create_issue tolerates a response with no node_id", "[extsync][github]") {
+  recording_transport wire;
+  wire.reply_status = 201;
+  wire.reply_body   = R"({"number":9})";
+  github_adapter const adapter("", bearer("t"), wire);
+
+  auto const created = adapter.create_issue("o", "r", "T", "B", {});
+  REQUIRE(created.has_value());
+  CHECK(created->number == 9);
+  CHECK(created->node_id.empty());
+}
+
+TEST_CASE("github create_issue refuses a bearer credential with no token before sending", "[extsync][github]") {
+  recording_transport  wire;
+  github_adapter const adapter("", auth_credential{.kind = auth_kind::bearer}, wire);
+  CHECK(err(adapter.create_issue("o", "r", "T", "B", {})) == std::optional{adapter_error::invalid_auth});
+  CHECK(wire.calls == 0);
+}
+
+// ---- link_sub_issue (plan 1009, task 6408) ---------------------------------
+
+TEST_CASE("github link_sub_issue POSTs sub_issue_id to the sub_issues endpoint", "[extsync][github]") {
+  // github.zig, "linkSubIssue 201 success".
+  recording_transport wire;
+  wire.reply_status = 201;
+  wire.reply_body   = R"({"id":2})";
+  github_adapter const adapter("", bearer("tok"), wire);
+
+  auto const linked = adapter.link_sub_issue("o", "r", 1, 2);
+  REQUIRE(linked.has_value());
+  CHECK(wire.calls == 1);
+  CHECK(wire.last_verb == planar::http::method::post);
+  CHECK(wire.last_url == "https://api.github.com/repos/o/r/issues/1/sub_issues");
+  REQUIRE(wire.last_body.has_value());
+  CHECK(*wire.last_body == R"({"sub_issue_id":2})");
+}
+
+TEST_CASE("github link_sub_issue also accepts 200", "[extsync][github]") {
+  recording_transport wire;
+  wire.reply_status = 200;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(adapter.link_sub_issue("o", "r", 1, 2).has_value());
+}
+
+TEST_CASE("github link_sub_issue maps 404 to not_found", "[extsync][github]") {
+  // github.zig, "linkSubIssue 404 maps to NotFound".
+  recording_transport wire;
+  wire.reply_status = 404;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(err(adapter.link_sub_issue("o", "r", 1, 2)) == std::optional{adapter_error::not_found});
+}
+
+TEST_CASE("github link_sub_issue reports unexpected_status for anything else", "[extsync][github]") {
+  recording_transport wire;
+  wire.reply_status = 500;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(err(adapter.link_sub_issue("o", "r", 1, 2)) == std::optional{adapter_error::unexpected_status});
+}
+
+TEST_CASE("github link_sub_issue refuses a bearer credential with no token before sending", "[extsync][github]") {
+  recording_transport  wire;
+  github_adapter const adapter("", auth_credential{.kind = auth_kind::bearer}, wire);
+  CHECK(err(adapter.link_sub_issue("o", "r", 1, 2)) == std::optional{adapter_error::invalid_auth});
+  CHECK(wire.calls == 0);
+}
+
+// ---- link_sub_issue_probe (plan 1009, task 6408) ---------------------------
+//
+// This probe's whole purpose is telling apart "sub-issues unsupported"
+// (404) from "sub-issues supported" (anything else, including the 422 a
+// bogus issue-0 payload legitimately provokes on a supporting account) —
+// see this method's doc comment in github.cppm. Both arms are covered
+// below, plus the exact request shape, so a canned-response fixture that
+// replies the same regardless of input could not pass both.
+
+TEST_CASE("github link_sub_issue_probe posts the bogus issue-0 payload to the sub_issues endpoint", "[extsync][github]") {
+  recording_transport wire;
+  wire.reply_status = 422;
+  github_adapter const adapter("", bearer("tok"), wire);
+
+  auto const probed = adapter.link_sub_issue_probe("acme", "api");
+  REQUIRE(probed.has_value());
+  CHECK(wire.calls == 1);
+  CHECK(wire.last_verb == planar::http::method::post);
+  CHECK(wire.last_url == "https://api.github.com/repos/acme/api/issues/0/sub_issues");
+  REQUIRE(wire.last_body.has_value());
+  CHECK(*wire.last_body == R"({"sub_issue_id":0})");
+}
+
+TEST_CASE("github link_sub_issue_probe: 404 means the endpoint is not enabled", "[extsync][github]") {
+  // github.zig, "linkSubIssueProbe 404 means endpoint not enabled".
+  recording_transport wire;
+  wire.reply_status = 404;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(err(adapter.link_sub_issue_probe("o", "r")) == std::optional{adapter_error::not_found});
+}
+
+TEST_CASE("github link_sub_issue_probe: 422 means the endpoint is enabled", "[extsync][github]") {
+  // github.zig, "linkSubIssueProbe 422 means endpoint enabled".
+  recording_transport wire;
+  wire.reply_status = 422;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(adapter.link_sub_issue_probe("o", "r").has_value());
+}
+
+TEST_CASE("github link_sub_issue_probe: 200 also means the endpoint is enabled", "[extsync][github]") {
+  // Any non-404 status is "supported" — not just 422. This pins the
+  // asymmetry at a SECOND status so a mutation collapsing the check to
+  // "only 422 is supported" cannot survive.
+  recording_transport wire;
+  wire.reply_status = 200;
+  github_adapter const adapter("", bearer("t"), wire);
+  CHECK(adapter.link_sub_issue_probe("o", "r").has_value());
+}
+
+TEST_CASE("github link_sub_issue_probe refuses a bearer credential with no token before sending", "[extsync][github]") {
+  recording_transport  wire;
+  github_adapter const adapter("", auth_credential{.kind = auth_kind::bearer}, wire);
+  CHECK(err(adapter.link_sub_issue_probe("o", "r")) == std::optional{adapter_error::invalid_auth});
+  CHECK(wire.calls == 0);
+}

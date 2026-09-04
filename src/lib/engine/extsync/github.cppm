@@ -6,18 +6,21 @@
 /// `zig/src/engine/extsync/github.zig` (a 1240-line file): `init`,
 /// `validate`, `pull`, `push`, `render`, plus `parseExternalID`,
 /// `stateForStatus`, `labelsForStatus`, `statusToLocal`, `rawStatus` and
-/// `parseIssue`.
+/// `parseIssue`, PLUS (plan 1009, task 6408) `createIssue`,
+/// `buildCreateIssueBody`, `parseCreatedIssue`, `linkSubIssue` and
+/// `linkSubIssueProbe` — the four production methods `ext propagate`'s
+/// parent/child hierarchy needs. `createSubIssue` is NOT ported: it is a
+/// thin `createIssue` + `linkSubIssue` fusion with no test of its own beyond
+/// the two it calls, and `planar.engine.external.parent_issue`'s `gh_client`
+/// seam (task 6353) composes the two calls itself rather than needing a
+/// fused helper — see that module's header.
 ///
 /// ## What is NOT ported, and with which verb it is deferred
 ///
-/// Roughly 560 of that file's lines implement a surface no verb in this cycle
-/// reaches, and every one of them is deferred WITH its verb rather than
-/// speculatively:
+/// Roughly 460 of that file's remaining lines implement a surface no verb in
+/// this cycle reaches, and every one of them is deferred WITH its verb rather
+/// than speculatively:
 ///
-///   - `createIssue` / `buildCreateIssueBody` / `parseCreatedIssue` —
-///     `ext create` and `ext propagate`.
-///   - `linkSubIssue` / `createSubIssue` / `linkSubIssueProbe` — the
-///     parent/child issue hierarchy `ext propagate` builds.
 ///   - The entire ProjectsV2 GraphQL arm (`getAuthenticatedOwner`,
 ///     `createProjectV2`, `addProjectV2Item`, `setProjectV2ItemFieldValue`,
 ///     `getProjectV2Fields`, `graphqlDo`) — `ext propagate --github-strategy
@@ -74,6 +77,17 @@ namespace planar::engine::extsync::github {
 
 /// @brief The API root used when the registered system carries no base URL.
 export inline constexpr std::string_view k_api_base_default = "https://api.github.com";
+
+/// @brief The `{number, node_id}` pair `POST /repos/{o}/{r}/issues` returns.
+///
+/// Port of the Zig `GithubAdapter.CreatedIssue`. `node_id` is the GraphQL
+/// node id the (unported) ProjectsV2 arm would need; it defaults to empty
+/// when the response omits it, matching `parseCreatedIssue`'s tolerance —
+/// see that function's port, `parse_created_issue`, below.
+export struct created_issue {
+  std::int64_t number = 0; ///< The issue number within its repo.
+  std::string  node_id;    ///< The GraphQL node id; may be empty.
+};
 
 /// @brief The GitHub Issues adapter.
 ///
@@ -141,6 +155,57 @@ public:
   /// @param body The comment body.
   /// @return Success, or the failure.
   [[nodiscard]] auto post_comment(std::string_view external_id, std::string_view body) const
+      -> std::expected<void, adapter::adapter_error>;
+
+  /// @brief `POST {base}/repos/{owner}/{repo}/issues` — create a regular
+  /// issue (plan 1009, task 6408).
+  ///
+  /// The `labels` array is emitted only when non-empty. Expects 201;
+  /// anything else is `unexpected_status`. On success, parses `{number,
+  /// node_id}` out of the response body — `node_id` defaults to empty
+  /// rather than failing when the field is absent (needed for ProjectsV2
+  /// wiring this cycle does not reach, so a payload lacking it must not
+  /// break sub-issue creation).
+  /// @param owner The repo owner.
+  /// @param repo The repo name.
+  /// @param title The issue title.
+  /// @param body The issue body.
+  /// @param labels Labels to attach on create.
+  /// @return The created issue's `{number, node_id}`, or the failure.
+  [[nodiscard]] auto create_issue(std::string_view owner, std::string_view repo, std::string_view title,
+                                  std::string_view body, std::span<const std::string> labels) const
+      -> std::expected<created_issue, adapter::adapter_error>;
+
+  /// @brief `POST {base}/repos/{owner}/{repo}/issues/{parent}/sub_issues` —
+  /// parent `child_number` under `parent_number` (plan 1009, task 6408).
+  ///
+  /// A 404 response is `not_found` — the caller uses this to detect
+  /// "sub-issue endpoint unavailable on this account". Any other non-
+  /// (200|201) status is `unexpected_status`.
+  /// @param owner The repo owner.
+  /// @param repo The repo name.
+  /// @param parent_number The parent issue number.
+  /// @param child_number The child issue number.
+  /// @return Success, or the failure.
+  [[nodiscard]] auto link_sub_issue(std::string_view owner, std::string_view repo, std::int64_t parent_number,
+                                    std::int64_t child_number) const -> std::expected<void, adapter::adapter_error>;
+
+  /// @brief Probe whether the sub-issue REST endpoint is enabled for
+  /// `owner/repo`, without creating any real relation (plan 1009, task
+  /// 6408).
+  ///
+  /// `POST {base}/repos/{owner}/{repo}/issues/0/sub_issues` with
+  /// `{"sub_issue_id":0}`. A 404 is `not_found` (endpoint not enabled for
+  /// the account). ANY OTHER status — including a 422 the bogus issue id
+  /// 0 provokes — is treated as SUCCESS: the endpoint exists, it just
+  /// rejected this particular bogus payload. That asymmetry is the Zig
+  /// oracle's own behavior (`linkSubIssueProbe`), preserved rather than
+  /// tightened.
+  /// @param owner The repo owner.
+  /// @param repo The repo name.
+  /// @return Success when the endpoint is enabled, or `not_found`
+  /// otherwise (or a transport-level failure).
+  [[nodiscard]] auto link_sub_issue_probe(std::string_view owner, std::string_view repo) const
       -> std::expected<void, adapter::adapter_error>;
 };
 
