@@ -138,62 +138,24 @@ auto add_unlink(CLI::App& root) -> void {
   unlink->add_option("link-id")->description("External-link id (integer)")->required();
 }
 
-/// @brief The `ext` group — transcribed from
-/// zig/src/cmd/planar/handlers/ext/cmd.zig (plan 996, task 6041).
-///
-/// THREE of the oracle's six children are declared: `register jira`,
-/// `register github` and `list`. `test`, `create`, `propagate-one` and
-/// `propagate` are absent, deferred with the surfaces they compose —
-/// `test` with the adapter FACTORY (auth-env resolution plus the `gh auth
-/// token` subprocess arm), and the other three with the whole
-/// create/propagate half of `engine_extsync` (see
-/// src/lib/engine/extsync/CMakeLists.txt). `catalog_parity.hpp` compares
-/// the C++ subcommand list as a SUBSET of the oracle's for exactly this
-/// reason, so a partial group is expressible without loosening the check.
-///
-/// The group's own help text is the oracle's verbatim, including its
-/// "Sub-commands: register, list, test, create, propagate" line — which
-/// still names four verbs this binary does not have. Rewriting it to match
-/// the ported subset would be a divergence in the one place the parity
-/// suite reads bytes; the honest record of what is missing lives in this
-/// comment and in the bucket CMakeLists, not in a doctored help page.
-///
-/// `register jira` requires ALL THREE of `--base-url` / `--project` /
-/// `--auth-env`; `register github` requires only `--project`, and its
-/// `--auth-env` being optional is load-bearing rather than lax — omitting
-/// it selects `gh-cli` auth (see
-/// `planar.engine.external.system`'s `register_github`).
-/// @param root The root app to attach the group to.
-auto add_ext(CLI::App& root) -> void {
-  CLI::App* ext = root.add_subcommand("ext", "Register and interact with external systems on the operational plane.\n\n"
-                                             "  Sub-commands: register, list, test, create, propagate.\n"
-                                             "  Currently supported systems: Jira, GitHub Issues, GitHub Projects.");
-  ext->require_subcommand(0);
-
-  CLI::App* reg = ext->add_subcommand("register", "Register an external system.");
-  reg->require_subcommand(0);
-
-  CLI::App* jira = reg->add_subcommand("jira", "Register a Jira instance as an external system.");
-  jira->add_option("--base-url")->required();
-  jira->add_option("--project")->required();
-  jira->add_option("--auth-env")->description("Env var name holding the API token")->required();
-  add_json(*jira);
-  // Redeclared on each child rather than declared once on `register` with
-  // fallthrough() — CLI11's fallthrough bleeds a parent's positional onto
-  // every child and throws OptionAlreadyAdded WHILE THE TREE IS BEING BUILT
-  // when parent and child share a positional name, aborting every
-  // invocation of the binary.
-  jira->add_option("slug")->required();
-
-  CLI::App* github = reg->add_subcommand("github", "Register a GitHub Issues repository as an external system.");
-  github->add_option("--project")->description("GitHub repository owner/repo")->required();
-  github->add_option("--auth-env")->description("Env var name holding the token (uses gh-cli if omitted)");
-  add_json(*github);
-  github->add_option("slug")->required();
-
-  CLI::App* list = ext->add_subcommand("list", "List registered external systems.");
-  add_json(*list);
-}
+// The `ext` group (register/list/test/create/propagate-one) and the whole
+// `sync` group (pull/push/status/resolve) moved off this binary at plan
+// 996, task 6419 — see `src/cmd/planar-ext/tree.cpp`'s `add_ext`/`add_sync`
+// for the destination. `ext propagate`, the one remaining unported leaf of
+// the family, moved with them conceptually but is NOT yet declared on
+// EITHER binary: it stays blocked on the same surfaces
+// `k_unported`'s header always named (the feature-tree walk, the
+// create/propagate half of `engine_extsync`), and lands on `planar-ext`
+// once a later step of task 6412's extraction closes that gap. `ext
+// register jira`/`github`'s auth-resolution FACTORY
+// (`ext_adapter_factory.cppm`) stayed here — `audit publish-decision` and
+// `workbench publish` are its other two callers and neither moved, and
+// D18 forbids a `cmd_planar -> cmd_planar_ext` edge — so
+// `src/cmd/planar-ext/handlers/ext_adapter_factory.cppm` is a deliberate
+// duplicate, not a shared import. Same shape for the cross-scope guard
+// (`planar.cmd.planar.scope`'s `guard_with_membership`/
+// `resolve_write_scope`, also needed by `feedback triage set`, which
+// stayed): `src/cmd/planar-ext/scope.cppm` duplicates it.
 
 /// @brief The `skills` node — transcribed from
 /// zig/src/cmd/planar/handlers/skills/cmd.zig.
@@ -565,7 +527,6 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_workflow(*app);
   add_annotate(*app);
   add_unlink(*app);
-  add_ext(*app);
   add_skills(*app);
   add_workspace(*app);
   add_workbench(*app);

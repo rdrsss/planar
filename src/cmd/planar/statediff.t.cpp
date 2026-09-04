@@ -1269,7 +1269,10 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   // 4 -> 2 at task 6189: `closure compute` and `workspace init` both
   // left surface.cpp's k_unported array, leaving only `explore` and
   // `ext propagate`.
-  CHECK(planar_unported->size() == 2);
+  // 2 -> 1 at task 6419: the whole `ext`/`sync` family moved to
+  // `planar-ext`, taking `ext propagate` with it conceptually (it is not
+  // yet wired on either binary). Only `explore` remains.
+  CHECK(planar_unported->size() == 1);
   CHECK(agent_unported->empty());
   for (auto const& landed : {"ingest", "run start", "run end", "dispatch preview", "dispatch confirm", "context add",
                              "context capsule", "context list", "context resolve"}) {

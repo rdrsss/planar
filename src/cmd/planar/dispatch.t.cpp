@@ -1050,7 +1050,12 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `closure compute` without updating this count; corrected here
   // against the live `k_unported` array rather than re-derived.
 
-  CHECK(unported.size() == 2);
+  // 2 -> 1: task 6419 moved the whole `ext`/`sync` family off this binary.
+  // `ext propagate` (the other member of this array) left WITH them
+  // conceptually, leaving only `explore`. It is not re-added here because
+  // it is not yet wired on `planar-ext` either — see surface.cpp's
+  // `unported_paths` header.
+  CHECK(unported.size() == 1);
   // `workspace regenerate` had already moved at task 6364. It had been carried
   // as blocked on an unvendored xxh64 for its `.manifest-docs` merkle —
   // verified TRANSITIVELY true (the leaf's own source has no xxh64
@@ -1064,13 +1069,15 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `closure compute` without updating this count; corrected here
   // against the live `k_unported` array rather than re-derived.
 
-  CHECK(unported.size() == 2);
+  CHECK(unported.size() == 1);
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
   INFO("moved by task 6362: bench harvest");
   CHECK_FALSE(unported.contains("bench harvest"));
   INFO("moved by task 6365: spec ingest");
   CHECK_FALSE(unported.contains("spec ingest"));
+  INFO("moved off this binary by task 6419: ext propagate");
+  CHECK_FALSE(unported.contains("ext propagate"));
   INFO("moved by task 6357: health");
   CHECK_FALSE(unported.contains("health"));
   INFO("moved by task 6358: capture commits");

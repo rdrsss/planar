@@ -47,26 +47,49 @@ planar_binary(planar_ext
     exit.cppm
     context.cppm
     handler.cppm
+    scope.cppm
     tree.cppm
     handlers/version.cppm
     handlers/schema.cppm
+    handlers/ext_adapter_factory.cppm
+    handlers/ext.cppm
+    handlers/sync.cppm
     dispatch.cppm
   SOURCES
     context.cpp
+    scope.cpp
     tree.cpp
     handlers/version.cpp
     handlers/schema.cpp
+    handlers/ext_adapter_factory.cpp
+    handlers/ext.cpp
+    handlers/sync.cpp
     dispatch.cpp
   DEPENDS
     cliapp
-    db)
+    db
+    adapter
+    process
+    http
+    json_text
+    json_dom
+    engine_config
+    engine_external
+    engine_extsync
+    engine_identity
+    engine_templates)
 
 # Each binary builds its own CLI::App tree directly, so the CLI11 module
 # target is linked per binary rather than laundered through a shared
 # layer-1 wrapper (plan 996, task 6123's finding, reproduced here).
 target_link_libraries(planar_cmd_planar_ext PRIVATE CLI11::CLI11_Module)
+# `handlers/ext_adapter_factory.cpp` parses `gh auth token`'s JSON output via
+# glaze — the same reason `planar_cmd_planar` links it (see that
+# CMakeLists.txt). Header-only; not laundered through a layer-1 wrapper for
+# the same reason CLI11 is linked per binary above.
+target_link_libraries(planar_cmd_planar_ext PRIVATE glaze::glaze)
 if(TARGET planar_cmd_planar_ext_tests)
-  target_link_libraries(planar_cmd_planar_ext_tests PRIVATE CLI11::CLI11_Module SQLite::SQLite3)
+  target_link_libraries(planar_cmd_planar_ext_tests PRIVATE CLI11::CLI11_Module SQLite::SQLite3 glaze::glaze)
   target_include_directories(planar_cmd_planar_ext_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
   add_dependencies(planar_cmd_planar_ext_tests planar_cmd_planar_ext)
 endif()

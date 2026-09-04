@@ -1,5 +1,5 @@
 /// @file ext.cppm
-/// @brief `planar.cmd.planar.handlers.ext` — the four ported `planar ext`
+/// @brief `planar.cmd.planar_ext.handlers.ext` — the four ported `planar ext`
 /// leaves: `register jira`, `register github`, `list` (plan 996, task 6041)
 /// and `test` (task 6258).
 ///
@@ -11,7 +11,7 @@
 /// `ext test` was deferred through task 6041 on the adapter FACTORY — the
 /// auth-resolution unit that turns an `external_systems` row into an adapter
 /// instance. Task 6258 ported it as
-/// `planar.cmd.planar.handlers.ext_adapter_factory`, and `ext test` is the
+/// `planar.cmd.planar_ext.handlers.ext_adapter_factory`, and `ext test` is the
 /// leaf that makes it observable: SIX refusal messages (the header of that
 /// module says why it is six and not the five this file previously claimed)
 /// and one success line are its entire surface.
@@ -48,15 +48,15 @@
 /// in this binary.
 module;
 
-export module planar.cmd.planar.handlers.ext;
+export module planar.cmd.planar_ext.handlers.ext;
 
 import std;
 import cli11;
 import planar.cliapp.args;
-import planar.cmd.planar.context;
-import planar.cmd.planar.handler;
+import planar.cmd.planar_ext.context;
+import planar.cmd.planar_ext.handler;
 
-namespace planar::cmd::handlers {
+namespace planar::cmd::ext::handlers {
 
 /// @brief Handle `planar ext register jira <slug> --base-url <u> --project
 /// <p> --auth-env <e> [--json]`.
@@ -87,7 +87,7 @@ export auto ext_list(context& ctx, const cliapp::parsed_args& args) -> handler_r
 /// checks that construction produced an adapter — so this leaf reaches the
 /// network on no path and is testable with no fixture server. The whole
 /// observable surface is the six refusals in
-/// `planar.cmd.planar.handlers.ext_adapter_factory`, plus one success line.
+/// `planar.cmd.planar_ext.handlers.ext_adapter_factory`, plus one success line.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, `not_found` (exit 1) for an unknown slug, or
@@ -215,4 +215,4 @@ export auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler
 /// @return Success, or the failure.
 export auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-} // namespace planar::cmd::handlers
+} // namespace planar::cmd::ext::handlers

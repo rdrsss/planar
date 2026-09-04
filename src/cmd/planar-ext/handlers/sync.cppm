@@ -1,5 +1,5 @@
 /// @file sync.cppm
-/// @brief `planar.cmd.planar.handlers.sync` — the `sync pull`, `sync push`
+/// @brief `planar.cmd.planar_ext.handlers.sync` — the `sync pull`, `sync push`
 /// and `sync resolve` leaves (plan 996, task 6294).
 ///
 /// Port target: `zig/src/cmd/planar/handlers/sync/{pull,push,resolve,
@@ -40,7 +40,7 @@
 /// same argument. `adapter_kind` stays on the handle because `ext` verbs
 /// that build a provider-specific URL still need it.
 ///
-/// ## `guard_with_membership` HAS MOVED TO `planar.cmd.planar.scope`
+/// ## `guard_with_membership` HAS MOVED TO `planar.cmd.planar_ext.scope`
 ///
 /// `engine::identity::check_scope_guard` is the pure comparison and was
 /// already ported. The membership-aware wrapper
@@ -55,7 +55,7 @@
 /// second family needed it. Task 6303 is that move: `feedback triage set`
 /// calls the same wrapper (`zig/.../handlers/feedback/triage/set.zig` calls
 /// `scope.guardWithMembership` exactly as the sync leaves do), so the helper
-/// now lives in `planar.cmd.planar.scope` next to `resolve_write_scope`,
+/// now lives in `planar.cmd.planar_ext.scope` next to `resolve_write_scope`,
 /// which every one of its callers already invokes immediately before it.
 /// The alternative — importing one handler family from another — is the
 /// `cmd_* -> cmd_*` edge D18 prohibits.
@@ -89,18 +89,18 @@
 /// unusable rather than safe. The targeted form guards every resolved link.
 module;
 
-export module planar.cmd.planar.handlers.sync;
+export module planar.cmd.planar_ext.handlers.sync;
 
 import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.engine.external;
-import planar.cmd.planar.context;
-import planar.cmd.planar.exit;
-import planar.cmd.planar.handler;
+import planar.cmd.planar_ext.context;
+import planar.cmd.planar_ext.exit;
+import planar.cmd.planar_ext.handler;
 
-namespace planar::cmd::handlers {
+namespace planar::cmd::ext::handlers {
 
 /// @brief A parsed `<kind>:<id>` external-entity reference, e.g. `task:42`.
 ///
@@ -196,4 +196,4 @@ export auto sync_resolve(context& ctx, const cliapp::parsed_args& args) -> handl
 /// @return Success, or the failure to report.
 export auto sync_status(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-} // namespace planar::cmd::handlers
+} // namespace planar::cmd::ext::handlers

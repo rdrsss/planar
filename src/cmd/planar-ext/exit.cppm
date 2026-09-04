@@ -16,6 +16,20 @@
 /// HERE, complete and local, taking no binary parameter — a shared,
 /// binary-parameterized helper is exactly the shape that let a call site
 /// silently apply the wrong binary's policy by one defaulted argument.
+///
+/// ## Task 6419 widened the taxonomy to match the moved verbs
+///
+/// The skeleton (task 6418) declared only the five buckets `version`/
+/// `schema` could ever raise. Task 6419 moved the `ext`/`sync` verb family
+/// in, and their handlers raise `not_found`, `invalid_input`,
+/// `scope_mismatch`, `slug_conflict` and `sync_conflict` too — the exact
+/// five `planar-agent` already carries, mapped through the SAME buckets
+/// (`exit_user_input`, `exit_scope_violation`, `exit_precondition_conflict`,
+/// `exit_sync_conflict`), per this file's header note that `planar-ext`
+/// models `planar-agent`'s policy rather than `planar`'s (the two disagree
+/// on `parse_error` and `schema_version_behind`; this binary keeps
+/// `planar-agent`'s choice on both, verified against that binary's own
+/// `exit_code_for`).
 module;
 
 export module planar.cmd.planar_ext.exit;
@@ -27,17 +41,26 @@ namespace planar::cmd::ext {
 /// @brief The domain-error taxonomy this binary's handlers raise.
 export enum class domain_error_kind : std::uint8_t {
   generic_failure,
+  not_found,
+  invalid_input,
+  scope_mismatch,
   parse_error,
+  slug_conflict,
+  sync_conflict,
   schema_version_ahead,
   schema_version_behind,
   not_implemented,
 };
 
 // The exit-code convention, as named constants rather than magic numbers.
-export inline constexpr int exit_success         = 0;  ///< Success.
-export inline constexpr int exit_generic_failure = 1;  ///< Unmapped/generic failure, and parse errors.
-export inline constexpr int exit_schema_version  = 7;  ///< DB schema newer/older than this binary supports.
-export inline constexpr int exit_not_implemented = 64; ///< Placeholder / not-yet-implemented handler.
+export inline constexpr int exit_success               = 0;  ///< Success.
+export inline constexpr int exit_generic_failure       = 1;  ///< Unmapped/generic failure, and parse errors.
+export inline constexpr int exit_user_input            = 2;  ///< Bad flag value / invalid entity ref.
+export inline constexpr int exit_sync_conflict         = 3;  ///< Operational-plane sync conflict.
+export inline constexpr int exit_scope_violation       = 5;  ///< Cross-scope write refused.
+export inline constexpr int exit_precondition_conflict = 6;  ///< Slug conflict / already-exists.
+export inline constexpr int exit_schema_version        = 7;  ///< DB schema newer/older than this binary supports.
+export inline constexpr int exit_not_implemented       = 64; ///< Placeholder / not-yet-implemented handler.
 
 /// @brief A handler failure: which exit-code bucket it falls in, plus the
 /// stderr text.
@@ -77,8 +100,18 @@ export auto error_from_rendered(domain_error_kind kind, std::string payload) -> 
 export auto exit_code_for(domain_error_kind kind) -> int {
   switch (kind) {
   case domain_error_kind::generic_failure:
+  case domain_error_kind::not_found:
+    return exit_generic_failure;
+  case domain_error_kind::invalid_input:
+    return exit_user_input;
   case domain_error_kind::parse_error:
     return exit_generic_failure;
+  case domain_error_kind::sync_conflict:
+    return exit_sync_conflict;
+  case domain_error_kind::scope_mismatch:
+    return exit_scope_violation;
+  case domain_error_kind::slug_conflict:
+    return exit_precondition_conflict;
   case domain_error_kind::schema_version_ahead:
   case domain_error_kind::schema_version_behind:
     return exit_schema_version;

@@ -1,10 +1,10 @@
 /// @file ext.cpp
-/// @brief Implementation of `planar.cmd.planar.handlers.ext`. See ext.cppm
+/// @brief Implementation of `planar.cmd.planar_ext.handlers.ext`. See ext.cppm
 /// for the three-of-six cut and the two renderer traps.
 
 module;
 
-module planar.cmd.planar.handlers.ext;
+module planar.cmd.planar_ext.handlers.ext;
 
 import std;
 import cli11;
@@ -16,15 +16,15 @@ import planar.json_text;
 import planar.engine.external;
 import planar.json_dom;
 import planar.engine.config;
+import planar.engine.config.effective;
 import planar.engine.templates;
 import planar.engine.extsync.propagate;
-import planar.cmd.planar.context;
-import planar.cmd.planar.exit;
-import planar.cmd.planar.handler;
-import planar.cmd.planar.handlers.ext_adapter_factory;
-import planar.cmd.planar.handlers.templates;
+import planar.cmd.planar_ext.context;
+import planar.cmd.planar_ext.exit;
+import planar.cmd.planar_ext.handler;
+import planar.cmd.planar_ext.handlers.ext_adapter_factory;
 
-namespace planar::cmd::handlers {
+namespace planar::cmd::ext::handlers {
 
 namespace system_ns         = engine::external::system;
 namespace jd                = json_dom;
@@ -33,6 +33,101 @@ namespace tmpl              = engine::templates;
 namespace extsync_propagate = engine::extsync::propagate;
 
 namespace {
+
+/// @brief Expand a leading `~` against `$HOME`.
+///
+/// A local copy of `planar.cmd.planar.handlers.templates`'s
+/// `expand_home` (task 6419 move) — that module stays on `planar` for the
+/// `templates` verb family, which did not move, so the ten-line tilde
+/// expansion is duplicated here rather than pulled across a `cmd_* ->
+/// cmd_*` edge D18 forbids. The oracle itself keeps two copies of this
+/// exact helper for the same reason (see the moved copy's own header).
+/// `$HOME` and NOT `$PLANAR_HOME`.
+/// @param path The configured path.
+/// @param env The environment lookup.
+/// @return The expanded path, or nullopt when `~` was used and `$HOME` is
+/// unset or empty.
+auto expand_home(std::string_view path, const env_lookup& env) -> std::optional<std::string> {
+  if (path.empty()) {
+    return std::string{};
+  }
+  if (path == "~" || path.starts_with("~/")) {
+    auto const home = env("HOME");
+    if (!home.has_value() || home->empty()) {
+      return std::nullopt;
+    }
+    if (path == "~") {
+      return *home;
+    }
+    return (std::filesystem::path{*home} / path.substr(2)).string();
+  }
+  return std::string{path};
+}
+
+/// @brief Resolve `$PLANAR_CONFIG_PATH`, or `$HOME/.planar/config.toml`.
+///
+/// A local copy of `planar.cmd.planar.cli_log`'s `resolve_config_path` —
+/// see `expand_home`'s header for why this file carries its own rather
+/// than importing across a `cmd_planar -> cmd_planar_ext` edge.
+/// @param env The environment lookup.
+/// @return The resolved path, or unset when neither variable is usable.
+auto resolve_config_path(const env_lookup& env) -> std::optional<std::filesystem::path> {
+  auto const home = env("HOME");
+  if (auto const raw = env("PLANAR_CONFIG_PATH"); raw.has_value() && !raw->empty()) {
+    if (*raw == "~") {
+      return home.has_value() ? std::optional{std::filesystem::path{*home}} : std::nullopt;
+    }
+    if (raw->starts_with("~/")) {
+      if (!home.has_value()) {
+        return std::nullopt;
+      }
+      return std::filesystem::path{*home} / std::string_view{*raw}.substr(2);
+    }
+    return std::filesystem::path{*raw};
+  }
+  if (!home.has_value()) {
+    return std::nullopt;
+  }
+  return std::filesystem::path{*home} / ".planar" / "config.toml";
+}
+
+/// @brief Resolve the operator's templates directory: `$PLANAR_TEMPLATES_DIR`
+/// > `[templates] dir` in the config file > the embedded default, tilde
+/// expanded. A local copy of `planar.cmd.planar.handlers.templates`'s
+/// `resolve_templates_root` — see `expand_home`'s header.
+/// @param ctx The invocation context.
+/// @return The resolved root, or the exit-1 refusal.
+auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error> {
+  auto const cfg_path = resolve_config_path(ctx.env());
+
+  std::optional<std::string> file_content;
+  if (cfg_path.has_value()) {
+    std::ifstream file(*cfg_path, std::ios::binary);
+    if (file) {
+      file_content = std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    }
+  }
+
+  std::map<std::string, std::string, std::less<>> vars;
+  if (auto const raw = ctx.env()("PLANAR_TEMPLATES_DIR"); raw.has_value() && !raw->empty()) {
+    vars.emplace("PLANAR_TEMPLATES_DIR", *raw);
+  }
+
+  std::optional<std::string_view> content_view;
+  if (file_content.has_value()) {
+    content_view = std::string_view{*file_content};
+  }
+  auto resolved = cfg::resolve(content_view, cfg::env_view{std::move(vars)}, std::nullopt);
+  if (!resolved.has_value()) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving templates root: ParseFailed"));
+  }
+
+  auto expanded = expand_home(resolved->cfg.templates.dir, ctx.env());
+  if (!expanded.has_value()) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving templates root: HomeNotSet"));
+  }
+  return *expanded;
+}
 
 /// @brief Map a registration failure onto this binary's error taxonomy.
 ///
@@ -291,7 +386,7 @@ auto read_local_entity(db::connection& conn, const raw_ref& ref) -> std::expecte
 }
 
 // `created_remote`, `trim_slash` and `create_remote` MOVED to
-// `planar.cmd.planar.handlers.ext_adapter_factory` at task 6335. They were
+// `planar.cmd.planar_ext.handlers.ext_adapter_factory` at task 6335. They were
 // TU-local here while `ext create` was their only caller; `ext propagate-one`
 // and `workbench publish` are now the second and third, and all three must
 // POST through the identical URL/header/parse shape. Duplicating it would
@@ -695,4 +790,4 @@ auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler
   return {};
 }
 
-} // namespace planar::cmd::handlers
+} // namespace planar::cmd::ext::handlers

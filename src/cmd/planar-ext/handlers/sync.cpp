@@ -1,10 +1,10 @@
 /// @file sync.cpp
-/// @brief Implementation of `planar.cmd.planar.handlers.sync`. See sync.cppm
+/// @brief Implementation of `planar.cmd.planar_ext.handlers.sync`. See sync.cppm
 /// for why these three leaves need nothing from `engine_extsync`, why the
 /// oracle's `Handle`-kind switch does not survive the port, and why `pull`
 /// has a conflict exit arm that `push` does not.
 
-module planar.cmd.planar.handlers.sync;
+module planar.cmd.planar_ext.handlers.sync;
 
 import std;
 import cli11;
@@ -14,13 +14,13 @@ import planar.json_text;
 import planar.adapter;
 import planar.engine.identity;
 import planar.engine.external;
-import planar.cmd.planar.context;
-import planar.cmd.planar.exit;
-import planar.cmd.planar.handler;
-import planar.cmd.planar.scope;
-import planar.cmd.planar.handlers.ext_adapter_factory;
+import planar.cmd.planar_ext.context;
+import planar.cmd.planar_ext.exit;
+import planar.cmd.planar_ext.handler;
+import planar.cmd.planar_ext.scope;
+import planar.cmd.planar_ext.handlers.ext_adapter_factory;
 
-namespace planar::cmd::handlers {
+namespace planar::cmd::ext::handlers {
 
 namespace link_ns   = engine::external::link;
 namespace sync_ns   = engine::external::sync;
@@ -183,10 +183,12 @@ auto scope_kind_from_column(std::string_view text) -> std::optional<engine::iden
 /// types — they stay distinct there for the reason that module's header
 /// gives.
 struct rendered_result {
-  std::int64_t             link_id = 0;                      ///< The link.
-  sync_ns::outcome         result  = sync_ns::outcome::noop; ///< What happened.
-  std::vector<std::string> fields_changed;                   ///< Which fields moved.
-  std::string              detail;                           ///< Free text, or the error name.
+  std::int64_t                link_id = 0;                      ///< The link.
+  sync_ns::outcome            result  = sync_ns::outcome::noop; ///< What happened.
+  std::vector<std::string>    fields_changed;                   ///< Which fields differ.
+  std::string                 detail;                           ///< Free text, or the error name.
+  std::optional<std::string>  remote_title;  ///< EMITTED remote title (pull only; decision 996). Never written locally.
+  std::optional<std::string>  remote_status; ///< EMITTED remote status (pull only; decision 996). Never written locally.
 };
 
 /// @brief Render one result as the oracle's JSON line.
@@ -214,6 +216,17 @@ auto render_result_json(const rendered_result& row) -> std::string {
     out += R"(,"detail":)";
     json_text::append_json_string(out, row.detail);
   }
+  // EMITTED, not applied (decision 996): these carry the remote's values so
+  // an agent can decide whether to write them through `planar`. Omitted
+  // entirely when unset, same posture as `detail`.
+  if (row.remote_title.has_value()) {
+    out += R"(,"remote_title":)";
+    json_text::append_json_string(out, *row.remote_title);
+  }
+  if (row.remote_status.has_value()) {
+    out += R"(,"remote_status":)";
+    json_text::append_json_string(out, *row.remote_status);
+  }
   out += "}\n";
   return out;
 }
@@ -239,6 +252,18 @@ auto render_result_text(const rendered_result& row) -> std::string {
   if (!row.detail.empty()) {
     out += " — ";
     out += row.detail;
+  }
+  // EMITTED, not applied (decision 996). Rendered after `detail` so the
+  // human-facing line still reads "outcome — fields — detail — remote:
+  // ...".
+  if (row.remote_title.has_value() || row.remote_status.has_value()) {
+    out += " — remote:";
+    if (row.remote_title.has_value()) {
+      out += std::format(" title={:?}", *row.remote_title);
+    }
+    if (row.remote_status.has_value()) {
+      out += std::format(" status={:?}", *row.remote_status);
+    }
   }
   out += "\n";
   return out;
@@ -451,6 +476,8 @@ auto run_pull_or_push(context& ctx, const cliapp::parsed_args& args, bool pullab
         rendered.result         = done->result;
         rendered.fields_changed = done->fields_changed;
         rendered.detail         = done->detail;
+        rendered.remote_title   = done->remote_title;
+        rendered.remote_status  = done->remote_status;
         if (done->result == sync_ns::outcome::conflict) {
           conflict_seen = true;
         }
@@ -556,7 +583,7 @@ auto entity_scope_slug(db::connection& conn, const engine::external::link::ext_l
   return *resolved;
 }
 
-// `guard_with_membership` moved to `planar.cmd.planar.scope` at task 6303,
+// `guard_with_membership` moved to `planar.cmd.planar_ext.scope` at task 6303,
 // when `feedback triage set` became its second caller family. The two call
 // sites below are unchanged; this TU already imports that module for
 // `resolve_write_scope`.
@@ -780,4 +807,4 @@ auto sync_status(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   return {};
 }
 
-} // namespace planar::cmd::handlers
+} // namespace planar::cmd::ext::handlers

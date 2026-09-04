@@ -72,9 +72,9 @@
 
 import std;
 import planar.db;
-import planar.cmd.planar.context;
-import planar.cmd.planar.dispatch;
-import planar.cmd.planar.tree;
+import planar.cmd.planar_ext.context;
+import planar.cmd.planar_ext.dispatch;
+import planar.cmd.planar_ext.tree;
 
 // AFTER the imports, not before: the header names `std::function` and
 // `std::thread` without including <functional> or <thread> itself, so it
@@ -84,7 +84,7 @@ import planar.cmd.planar.tree;
 
 namespace {
 
-using planar::cmd::context;
+using planar::cmd::ext::context;
 
 /// @brief One handler invocation's observable result.
 struct invocation {
@@ -136,10 +136,10 @@ auto dispatch(const fixture& fx, std::vector<std::string> args, std::string_view
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(vars), fx.root / "proj", fx.db_path, out, err};
-  auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
-  int const          code  = planar::cmd::run(ctx, *tree, table);
+  context            ctx{std::move(argv), planar::cmd::ext::map_env(vars), fx.root / "proj", fx.db_path, out, err};
+  auto const         tree  = planar::cmd::ext::root_app();
+  auto const         table = planar::cmd::ext::handlers(*tree);
+  int const          code  = planar::cmd::ext::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
 
