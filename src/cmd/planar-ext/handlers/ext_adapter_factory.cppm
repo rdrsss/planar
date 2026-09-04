@@ -241,8 +241,8 @@ public:
   /// @param body The issue body.
   /// @param labels Labels to attach on create.
   /// @return The created issue's `{number, node_id}`, or the failure.
-  [[nodiscard]] auto create_issue(std::string_view owner, std::string_view repo, std::string_view title,
-                                  std::string_view body, std::span<const std::string> labels) const
+  [[nodiscard]] auto create_issue(std::string_view owner, std::string_view repo, std::string_view title, std::string_view body,
+                                  std::span<const std::string> labels) const
       -> std::expected<engine::extsync::github::created_issue, adapter::adapter_error>;
 
   /// @brief Link a sub-issue, dispatched to `github_adapter::link_sub_issue`.

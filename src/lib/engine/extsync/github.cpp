@@ -150,8 +150,7 @@ auto parse_issue(std::string_view external_id, std::string_view raw) -> std::exp
 /// @param body The issue body.
 /// @param labels Labels to attach; omitted from the payload when empty.
 /// @return The JSON payload.
-auto build_create_issue_body(std::string_view title, std::string_view body, std::span<const std::string> labels)
-    -> std::string {
+auto build_create_issue_body(std::string_view title, std::string_view body, std::span<const std::string> labels) -> std::string {
   std::string out = R"({"title":)";
   json_text::append_json_string(out, title);
   out += R"(,"body":)";
@@ -184,8 +183,8 @@ auto parse_created_issue(std::string_view raw) -> std::expected<created_issue, a
   if (!parsed || !parsed->is_object()) {
     return std::unexpected(adapter_error::parse_failed);
   }
-  glz::generic const& root = *parsed;
-  auto const           number = number_field(root, "number");
+  glz::generic const& root   = *parsed;
+  auto const          number = number_field(root, "number");
   if (!number.has_value()) {
     return std::unexpected(adapter_error::parse_failed);
   }
@@ -393,9 +392,8 @@ auto github_adapter::post_comment(std::string_view external_id, std::string_view
   return {};
 }
 
-auto github_adapter::create_issue(std::string_view owner, std::string_view repo, std::string_view title,
-                                  std::string_view body, std::span<const std::string> labels) const
-    -> std::expected<created_issue, adapter_error> {
+auto github_adapter::create_issue(std::string_view owner, std::string_view repo, std::string_view title, std::string_view body,
+                                  std::span<const std::string> labels) const -> std::expected<created_issue, adapter_error> {
   auto const payload = build_create_issue_body(title, body, labels);
 
   auto const auth = support::auth_header(_cred);

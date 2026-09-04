@@ -98,8 +98,7 @@ TEST_CASE("select_strategy: fixture sanity -- the seeded rows are actually prese
   CHECK(stmt->column_int64(0) == 1);
 }
 
-TEST_CASE("select_strategy: jira is always jira-epic and never touches the database",
-          "[cmd][planar-ext][ext_strategy]") {
+TEST_CASE("select_strategy: jira is always jira-epic and never touches the database", "[cmd][planar-ext][ext_strategy]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
@@ -132,7 +131,7 @@ TEST_CASE("select_strategy: github-issues buckets by distinct touched repo count
   }
 
   auto const project1 = insert_project(conn, "acme/api", "https://github.com/acme/api.git");
-  auto const t1        = insert_task_under_plan(conn, "touches project1", anchor_id);
+  auto const t1       = insert_task_under_plan(conn, "touches project1", anchor_id);
   insert_touches_edge(conn, t1, project1);
 
   // 1 repo -> github-parent-issue.
@@ -159,7 +158,7 @@ TEST_CASE("select_strategy: github-issues buckets by distinct touched repo count
   // 2 repos -> github-projects-v2, the other boundary this bucket switch
   // discriminates at.
   auto const project2 = insert_project(conn, "acme/web", "https://github.com/acme/web.git");
-  auto const t3        = insert_task_under_plan(conn, "touches project2", anchor_id);
+  auto const t3       = insert_task_under_plan(conn, "touches project2", anchor_id);
   insert_touches_edge(conn, t3, project2);
   {
     auto s = handlers::select_strategy(conn, anchor_id, "github-issues");

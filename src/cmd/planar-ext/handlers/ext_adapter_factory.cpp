@@ -193,8 +193,8 @@ auto adapter_handle::create_issue(std::string_view owner, std::string_view repo,
 auto adapter_handle::link_sub_issue(std::string_view owner, std::string_view repo, std::int64_t parent_number,
                                     std::int64_t child_number) const -> std::expected<void, adapter::adapter_error> {
   assert(_kind == adapter_kind::github);
-  return static_cast<const engine::extsync::github::github_adapter&>(*_adapter)
-      .link_sub_issue(owner, repo, parent_number, child_number);
+  return static_cast<const engine::extsync::github::github_adapter&>(*_adapter).link_sub_issue(owner, repo, parent_number,
+                                                                                               child_number);
 }
 
 auto adapter_handle::link_sub_issue_probe(std::string_view owner, std::string_view repo) const
