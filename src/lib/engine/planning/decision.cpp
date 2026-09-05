@@ -9,6 +9,7 @@ module planar.engine.planning.decision;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.log;
 import planar.scope_ref;
 import planar.policy;
 import planar.engine.planning.transitions;
@@ -20,6 +21,15 @@ using json_text::json_string;
 namespace audit = planar::policy::audit;
 
 namespace {
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>`
+/// diagnostic ahead of the outer handler error. See
+/// `zig/src/engine/planning/decision.zig`'s `create` for the shape this
+/// ports; mirrors `exec_failed` in task.cpp (same bucket, separate TU).
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> decision_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return decision_error::query_failed;
+}
 
 /// @brief SQLITE_CONSTRAINT_UNIQUE — the same constant
 /// `engine_entitylink`'s `entitylink.cpp` and `engine_planning`'s
@@ -357,39 +367,39 @@ auto create_decision(db::connection& conn, const decision_create_args& args) -> 
     auto stmt = conn.prepare("insert into decisions (scope_kind, scope_id, title, body, rationale, status, session_id) "
                              "values (?, ?, ?, ?, ?, 'proposed', ?) returning id");
     if (!stmt) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "PrepareFailed"));
     }
     if (auto b = stmt->bind_text(1, scope_kind_to_text(scope->first)); !b) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "BindFailed"));
     }
     auto b2 = scope->second.has_value() ? stmt->bind_int64(2, *scope->second) : stmt->bind_null(2);
     if (!b2) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "BindFailed"));
     }
     if (auto b = stmt->bind_text(3, args.title); !b) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "BindFailed"));
     }
     // `body` is `not null` and is bound unconditionally — an empty body
     // binds `''`, never NULL.
     if (auto b = stmt->bind_text(4, args.body); !b) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "BindFailed"));
     }
     // `rationale` binds SQL NULL when absent, NOT the empty string:
     // `render_json` emits `null` vs `""` and the two are operator-visible.
     auto b5 = args.rationale.has_value() ? stmt->bind_text(5, *args.rationale) : stmt->bind_null(5);
     if (!b5) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "BindFailed"));
     }
     auto b6 = args.session_id.has_value() ? stmt->bind_int64(6, *args.session_id) : stmt->bind_null(6);
     if (!b6) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "BindFailed"));
     }
     auto step = stmt->step();
     if (!step) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "StepFailed"));
     }
     if (*step != db::step_result::row) {
-      return std::unexpected(decision_error::query_failed);
+      return std::unexpected(exec_failed("decision.create", "StepFailed"));
     }
     id = stmt->column_int64(0);
   }

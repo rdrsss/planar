@@ -8,6 +8,7 @@ module planar.engine.planning.plan;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.log;
 import planar.scope_ref;
 import planar.policy;
 import planar.engine.planning.transitions;
@@ -19,6 +20,16 @@ using json_text::json_string;
 namespace audit = planar::policy::audit;
 
 namespace {
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>`
+/// diagnostic ahead of the outer handler error. See
+/// `zig/src/engine/planning/plan.zig`'s `create`/`update` for the shapes
+/// this ports; mirrors `exec_failed` in task.cpp (same bucket, separate
+/// TU).
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> plan_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return plan_error::query_failed;
+}
 
 /// @brief Append one `audit_log` row, mapping a write failure into this
 /// module's error surface. Called AFTER the plan's own write succeeds --
@@ -310,31 +321,31 @@ auto create_plan(db::connection& conn, const plan_create_args& args) -> std::exp
   auto stmt = conn.prepare("insert into plans (scope_kind, scope_id, title, slug, summary, status, parent_plan_id) "
                            "values (?, ?, ?, ?, ?, ?, ?) returning id");
   if (!stmt) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "PrepareFailed"));
   }
   if (auto b = stmt->bind_text(1, scope_kind_to_text(scope_ref->first)); !b) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "BindFailed"));
   }
   auto b2 = scope_ref->second.has_value() ? stmt->bind_int64(2, *scope_ref->second) : stmt->bind_null(2);
   if (!b2) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "BindFailed"));
   }
   if (auto b = stmt->bind_text(3, args.title); !b) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "BindFailed"));
   }
   if (auto b = stmt->bind_text(4, slug); !b) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "BindFailed"));
   }
   auto b5 = args.summary.has_value() ? stmt->bind_text(5, *args.summary) : stmt->bind_null(5);
   if (!b5) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "BindFailed"));
   }
   if (auto b = stmt->bind_text(6, plan_status_to_text(args.status)); !b) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "BindFailed"));
   }
   auto b7 = args.parent_plan_id.has_value() ? stmt->bind_int64(7, *args.parent_plan_id) : stmt->bind_null(7);
   if (!b7) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "BindFailed"));
   }
 
   auto step = stmt->step();
@@ -342,7 +353,7 @@ auto create_plan(db::connection& conn, const plan_create_args& args) -> std::exp
     if (is_unique_violation(step.error())) {
       return std::unexpected(plan_error::slug_conflict);
     }
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.create", "StepFailed"));
   }
 
   const auto id = stmt->column_int64(0);
@@ -613,7 +624,7 @@ auto update_plan(db::connection& conn, std::int64_t id, const plan_update_args& 
 
   auto stmt = conn.prepare(sql);
   if (!stmt) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.update", "PrepareFailed"));
   }
   int         bind_idx = 1;
   std::size_t text_i   = 0;
@@ -622,12 +633,12 @@ auto update_plan(db::connection& conn, std::int64_t id, const plan_update_args& 
     switch (k) {
     case param_kind::text:
       if (auto b = stmt->bind_text(bind_idx++, text_params[text_i++]); !b) {
-        return std::unexpected(plan_error::query_failed);
+        return std::unexpected(exec_failed("plan.update", "BindFailed"));
       }
       break;
     case param_kind::int64:
       if (auto b = stmt->bind_int64(bind_idx++, int_params[int_i++]); !b) {
-        return std::unexpected(plan_error::query_failed);
+        return std::unexpected(exec_failed("plan.update", "BindFailed"));
       }
       break;
     case param_kind::null:
@@ -635,7 +646,7 @@ auto update_plan(db::connection& conn, std::int64_t id, const plan_update_args& 
     }
   }
   if (auto b = stmt->bind_int64(bind_idx++, id); !b) {
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.update", "BindFailed"));
   }
 
   auto step = stmt->step();
@@ -643,7 +654,7 @@ auto update_plan(db::connection& conn, std::int64_t id, const plan_update_args& 
     if (is_unique_violation(step.error())) {
       return std::unexpected(plan_error::slug_conflict);
     }
-    return std::unexpected(plan_error::query_failed);
+    return std::unexpected(exec_failed("plan.update", "StepFailed"));
   }
 
   // ORACLE: a patch carrying a status writes `status_change`; any other

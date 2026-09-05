@@ -9,6 +9,7 @@ module planar.engine.planning.scenario;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.log;
 import planar.scope_ref;
 import planar.policy;
 import planar.engine.planning.transitions;
@@ -20,6 +21,15 @@ using json_text::json_string;
 namespace audit = planar::policy::audit;
 
 namespace {
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>`
+/// diagnostic ahead of the outer handler error. See
+/// `zig/src/engine/planning/scenario.zig`'s `create` for the shape this
+/// ports; mirrors `exec_failed` in task.cpp (same bucket, separate TU).
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> scenario_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return scenario_error::query_failed;
+}
 
 /// @brief Append one `audit_log` row, mapping a write failure into this
 /// module's error surface. Called AFTER the scenario's own write succeeds —
@@ -429,34 +439,37 @@ auto create_scenario(db::connection& conn, const scenario_create_args& args) -> 
     auto stmt = conn.prepare("insert into test_scenarios (scope_kind, scope_id, title, body, related_artifact_id) "
                              "values (?, ?, ?, ?, ?) returning id");
     if (!stmt) {
-      return std::unexpected(scenario_error::query_failed);
+      return std::unexpected(exec_failed("scenario.create", "PrepareFailed"));
     }
     if (auto b = stmt->bind_text(1, scope_kind_to_text(scope->first)); !b) {
-      return std::unexpected(scenario_error::query_failed);
+      return std::unexpected(exec_failed("scenario.create", "BindFailed"));
     }
     auto b2 = scope->second.has_value() ? stmt->bind_int64(2, *scope->second) : stmt->bind_null(2);
     if (!b2) {
-      return std::unexpected(scenario_error::query_failed);
+      return std::unexpected(exec_failed("scenario.create", "BindFailed"));
     }
     if (auto b = stmt->bind_text(3, args.title); !b) {
-      return std::unexpected(scenario_error::query_failed);
+      return std::unexpected(exec_failed("scenario.create", "BindFailed"));
     }
     // `body` binds SQL NULL when absent, NOT the empty string: `render_json`
     // emits `null` vs `""` and the two are operator-visible.
     auto b4 = args.body.has_value() ? stmt->bind_text(4, *args.body) : stmt->bind_null(4);
     if (!b4) {
-      return std::unexpected(scenario_error::query_failed);
+      return std::unexpected(exec_failed("scenario.create", "BindFailed"));
     }
     auto b5 = args.related_artifact_id.has_value() ? stmt->bind_int64(5, *args.related_artifact_id) : stmt->bind_null(5);
     if (!b5) {
-      return std::unexpected(scenario_error::query_failed);
+      return std::unexpected(exec_failed("scenario.create", "BindFailed"));
     }
     auto step = stmt->step();
     if (!step) {
       // This is where a nonexistent `--related` artifact lands: the
       // `references artifacts(id)` foreign key fails the INSERT and NO row
       // is written. Oracle-captured as exit 1 / `scenario add: QueryFailed`.
-      return std::unexpected(scenario_error::query_failed);
+      // The oracle's execParams catch has no unique-violation special
+      // case here (unlike plan.create/task.create) -- StepFailed applies
+      // uniformly, including to this FK-violation path.
+      return std::unexpected(exec_failed("scenario.create", "StepFailed"));
     }
     if (*step != db::step_result::row) {
       return std::unexpected(scenario_error::query_failed);
