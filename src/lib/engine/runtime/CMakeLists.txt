@@ -16,9 +16,11 @@
 # this bucket used to be blocked on. It rests on
 # zig/src/engine/runtime/sessioncommits.zig's STRICT git-walk functions
 # (`resolveRepoRootStrict`, `walkStrict`, `resolveShas`) plus the write
-# half (`recordCount`) -- see sessioncommits.cppm's header for exactly what
-# landed and what is still deferred (the FAIL-SOFT `walk` variant and the
-# claim-window fold neither `capture commits` nor any ported verb reaches).
+# half (`recordCount`). Task 6360 added the FAIL-SOFT `walk` variant and
+# wired it into `capture end`'s automatic harvest (below) and into
+# `planar-agent`'s terminal-verb claim-window fold (see the agent-plane
+# section) -- see sessioncommits.cppm's header for exactly what each task
+# landed.
 #
 # NOT ported, named explicitly rather than silently dropped:
 #
@@ -30,20 +32,16 @@
 #     `planar.git::probe_start_context` (task 6128).
 #   - `capture.zig`'s `recordSessionWindow` -- `capture end`'s AUTOMATIC
 #     commit capture, distinct from the `capture commits` MANUAL leaf task
-#     6358 ported. STILL UNWIRED, and the justification this paragraph
-#     used to carry ("a no-op whenever `repo_root`/`head_sha_at_start` is
-#     NULL, which is every session this tree can currently open") is now
-#     STALE and is corrected here rather than silently dropped: task 6128
-#     landed the git probe that stamps both columns on `capture session`,
-#     so a session opened inside a repository DOES carry them, and
-#     `capture end` on it is a real, reachable divergence from the oracle
-#     (no automatic commit rows) rather than an unreachable one. task 6358
-#     ports the git-walk PRIMITIVES `recordSessionWindow` would need
-#     (`walk_strict` in `sessioncommits.cppm`; `recordSessionWindow` itself
-#     calls the FAIL-SOFT `walk`, still absent -- see that header) but
-#     deliberately does NOT wire them into `capture_end`, which is a
-#     separate leaf outside this task's claimed scope. Tracked for a
-#     follow-up task rather than fixed here.
+#     6358 ported. WIRED at task 6360: `capture::close_session` now calls
+#     the private `record_session_window` helper (capture.cpp) before
+#     appending the "session ended" note, using `sessioncommits::walk`
+#     (fail-soft) for the git side and surfacing a database failure as
+#     `capture_error::query_failed`, matching the oracle's `try
+#     recordSessionWindow(...)`. This closed a real, reachable divergence:
+#     task 6128 landed the git probe that stamps `repo_root` /
+#     `head_sha_at_start` on `capture session`, so a session opened inside
+#     a repository carries them and `capture end` skipping the harvest was
+#     observable, not moot.
 #   - `policy.audit.record` calls in `startSession`, `endSession`,
 #     `handoff::{create,validate,consume,abandon}`, and `snapshot::create`
 #     landed in task 6191. Each is a separate statement after its primary
@@ -107,10 +105,13 @@
 #     captures and does not is documented in
 #     src/cmd/planar-agent/locality.cppm. Same call `capture commits` and
 #     `bench harvest` already made.
-#   - `sessioncommits.recordClaimWindowBestEffort`, which the four terminal
-#     handlers call AFTER their transaction. Same git-subprocess dependency,
-#     and it is outside the transaction in the original, so nothing atomic
-#     rests on it.
+#   - `sessioncommits.recordClaimWindowBestEffort` -- WIRED at task 6360.
+#     The four `cmd_planar_agent` terminal handlers (`complete`/`fail`/
+#     `release`/`block`, in `terminal.cpp`) call it AFTER their transaction
+#     commits and BEFORE the shared envelope is emitted, matching the
+#     oracle's call order. It is outside the terminal op's own transaction
+#     in both the oracle and this port, so nothing atomic rests on it, and
+#     a failure there is swallowed rather than surfaced.
 #   - `latestActiveClaimForSession`, `nextWork`,
 #     `recordEntityCreateAction`. Read paths for `planar-watch`'s display
 #     surfaces and for `planar` verbs, not for any `planar-agent` verb.
@@ -205,18 +206,19 @@
 # 6358 added the STRICT git-walk slice `capture commits` needs
 # (`resolve_repo_root_strict`, `walk_strict`, `resolve_shas`,
 # `record_count`), now that `planar.git` (tasks 6128/6137) supplies the
-# process-spawn seam this bucket used to lack.
+# process-spawn seam this bucket used to lack. Task 6360 added the
+# FAIL-SOFT `walk` (used by `capture end`'s automatic `recordSessionWindow`
+# harvest and as the fallback leg of the claim-window fold) and
+# `record_claim_window_best_effort` (the private `walkClaimWindow` folded
+# in as an internal helper), wiring both `capture end` and the four
+# `planar-agent` terminal verbs to the oracle's automatic commit capture.
 #
-# STILL DEFERRED — the FAIL-SOFT `walk` (used only by `recordSessionWindow`,
-# `capture end`'s automatic capture; see the paragraph above), and
-# `walkClaimWindow` / `recordClaimWindowBestEffort` (the `planar-agent`
-# terminal verbs' claim-window fold). Nothing in this task's diff touches
-# `audit commits` or `bench harvest`; `audit commits` was already ported
-# (task 6272 corrected the earlier claim that it needed this git-walk
-# slice — it never did, see sessioncommits.cppm's header) and
-# `bench harvest` remains genuinely blocked on functionality this module
-# still does not carry. The module header says so at length, because the
-# module NAME is the thing most likely to mislead a later reader.
+# Still genuinely blocked: `bench harvest`, on functionality this module
+# does not carry. `audit commits` needs none of this — it only reads rows
+# an earlier walk already wrote (task 6272 corrected the earlier claim
+# that it needed the git-walk slice; see sessioncommits.cppm's header).
+# The module header says so at length, because the module NAME is the
+# thing most likely to mislead a later reader.
 
 planar_module(engine_runtime
   INTERFACE

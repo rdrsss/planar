@@ -9,6 +9,7 @@ import planar.cliapp.args;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.agentrender;
+import planar.engine.runtime.sessioncommits;
 import planar.cmd.planar_agent.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
@@ -57,6 +58,30 @@ auto emit(context& ctx, const atomic::terminal_result& result, bool json) -> han
   return {};
 }
 
+/// @brief Port of `terminal_common.collectCommits` (task 6360). Best-effort
+/// claim-window commit harvest run AFTER the atomic op commits and BEFORE
+/// the shared envelope is emitted, matching the oracle's call order in
+/// complete.zig/fail.zig/release.zig/block.zig. Swallows every failure --
+/// nothing atomic and nothing these verbs print depends on it.
+/// @param ctx The invocation context.
+/// @param result The terminal outcome; `result.released` carries the
+/// claim's locality snapshot.
+/// @param no_locality_probe The verb's `--no-locality-probe` flag.
+auto collect_commits(context& ctx, const atomic::terminal_result& result, bool no_locality_probe) -> void {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return;
+  }
+  engine::runtime::sessioncommits::claim_window const window{
+      .claim_id          = result.released.id,
+      .session_id        = result.released.session_id,
+      .worktree_path     = result.released.worktree_path,
+      .repo_root         = result.released.repo_root,
+      .head_sha_at_claim = result.released.head_sha_at_claim,
+  };
+  engine::runtime::sessioncommits::record_claim_window_best_effort(**conn, window, no_locality_probe);
+}
+
 } // namespace
 
 auto complete(context& ctx, const cliapp::parsed_args& args) -> handler_result {
@@ -70,6 +95,7 @@ auto complete(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!result) {
     return std::unexpected(verb_error("complete", result.error()));
   }
+  collect_commits(ctx, *result, cliapp::flag_bool(args, "--no-locality-probe"));
   return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
 }
 
@@ -90,6 +116,7 @@ auto fail(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!result) {
     return std::unexpected(verb_error("fail", result.error()));
   }
+  collect_commits(ctx, *result, cliapp::flag_bool(args, "--no-locality-probe"));
   return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
 }
 
@@ -104,6 +131,7 @@ auto release(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!result) {
     return std::unexpected(verb_error("release", result.error()));
   }
+  collect_commits(ctx, *result, cliapp::flag_bool(args, "--no-locality-probe"));
   return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
 }
 
@@ -118,6 +146,7 @@ auto block(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!result) {
     return std::unexpected(verb_error("block", result.error()));
   }
+  collect_commits(ctx, *result, cliapp::flag_bool(args, "--no-locality-probe"));
   return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
 }
 

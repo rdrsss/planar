@@ -24,18 +24,18 @@
 /// choice to stop, `aborted` records something going wrong. A sweep over
 /// `failure_category` counts one and not the other.
 ///
-/// ## What the handler does NOT do
+/// ## `terminal_common.collectCommits` — WIRED at task 6360
 ///
 /// `terminal_common.collectCommits` — the best-effort harvest of commits
-/// made during the claim window — is not ported. It rests on
-/// `sessioncommits.recordClaimWindowBestEffort`, a git revision walk
-/// through `std.process.run`; the same dependency `capture commits` and
-/// `bench harvest` were already deferred with. It runs OUTSIDE the
-/// transaction in the original and writes only to `session_commits`, so
-/// nothing atomic and nothing these verbs print depends on it.
-/// `--no-locality-probe` is still declared on all four verbs, because
-/// dropping a flag changes the `--help` bytes; it currently gates nothing
-/// in this port and that is stated here rather than left to be discovered.
+/// made during the claim window — calls
+/// `sessioncommits::record_claim_window_best_effort` (task 6360) after
+/// each atomic op succeeds and BEFORE the shared envelope is emitted,
+/// matching the oracle's call order in complete.zig/fail.zig/release.zig/
+/// block.zig. It runs OUTSIDE the terminal op's own transaction and writes
+/// only to `session_commits`, so nothing atomic and nothing these verbs
+/// print depends on it -- a failure there is swallowed, never surfaced.
+/// `--no-locality-probe` gates it exactly as it already gated the
+/// declared-but-unwired flag before this task.
 module;
 
 export module planar.cmd.planar_agent.handlers.terminal;

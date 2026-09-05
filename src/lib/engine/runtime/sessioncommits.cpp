@@ -391,4 +391,74 @@ auto record_count(db::connection& conn, std::int64_t session_id, std::optional<s
   return inserted;
 }
 
+auto walk(const std::filesystem::path& dir, std::string_view base_sha, std::optional<std::string_view> repo_root)
+    -> std::vector<commit_meta> {
+  auto result = walk_strict(dir, base_sha, repo_root);
+  if (!result) {
+    return {};
+  }
+  return std::move(*result);
+}
+
+namespace {
+
+/// @brief Port of zig's private `walkClaimWindow`. Tries `primary_dir`
+/// strictly first; on ANY failure, falls back to the FAIL-SOFT `walk` over
+/// `fallback_dir` when one was given, else answers empty. Not exported --
+/// nothing outside `record_claim_window_best_effort` calls this in the
+/// oracle either.
+auto walk_claim_window(const claim_window& window, const std::filesystem::path& primary_dir,
+                       std::optional<std::string_view> fallback_dir, std::string_view base_sha)
+    -> std::vector<commit_meta> {
+  auto const repo_root_view =
+      window.repo_root.has_value() ? std::optional<std::string_view>{*window.repo_root} : std::nullopt;
+  auto primary = walk_strict(primary_dir, base_sha, repo_root_view);
+  if (primary) {
+    return std::move(*primary);
+  }
+  if (!fallback_dir.has_value()) {
+    return {};
+  }
+  return walk(std::filesystem::path{std::string{*fallback_dir}}, base_sha, repo_root_view);
+}
+
+} // namespace
+
+auto record_claim_window_best_effort(db::connection& conn, const claim_window& window, bool no_locality_probe) -> void {
+  if (no_locality_probe) {
+    return;
+  }
+  if (!window.head_sha_at_claim.has_value()) {
+    return;
+  }
+  std::optional<std::string_view> const primary_view =
+      window.worktree_path.has_value()
+          ? std::optional<std::string_view>{*window.worktree_path}
+          : (window.repo_root.has_value() ? std::optional<std::string_view>{*window.repo_root} : std::nullopt);
+  if (!primary_view.has_value()) {
+    return;
+  }
+  std::filesystem::path const primary_dir{std::string{*primary_view}};
+
+  std::optional<std::string_view> fallback_dir;
+  if (window.repo_root.has_value() && *window.repo_root != *primary_view) {
+    fallback_dir = std::string_view{*window.repo_root};
+  }
+
+  auto commits = walk_claim_window(window, primary_dir, fallback_dir, *window.head_sha_at_claim);
+  if (commits.empty()) {
+    return;
+  }
+
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return;
+  }
+  auto inserted = record_count(conn, window.session_id, window.claim_id, commits);
+  if (!inserted) {
+    return;
+  }
+  (void)tx->commit();
+}
+
 } // namespace planar::engine::runtime::sessioncommits

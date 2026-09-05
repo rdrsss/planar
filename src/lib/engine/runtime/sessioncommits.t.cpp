@@ -463,3 +463,183 @@ TEST_CASE("record_count inserts every commit once and reports zero on a duplicat
   REQUIRE(rows.has_value());
   CHECK(rows->size() == 2);
 }
+
+// ---------------------------------------------------------------------------
+// `walk` — the FAIL-SOFT variant (task 6360)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("walk returns the same commits walk_strict would, for a valid range", "[engine][sessioncommits][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_dir repo;
+  REQUIRE(make_repo(repo.get()));
+  REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m first"));
+  auto const base = head_sha(repo.get());
+  REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m second"));
+
+  auto const commits = sc::walk(repo.get(), base);
+  REQUIRE(commits.size() == 1);
+  CHECK(commits[0].subject == "second");
+}
+
+TEST_CASE("walk degrades an unresolvable ref to an empty vector instead of an error", "[engine][sessioncommits][commits]") {
+  // The whole point of the fail-soft variant: `walk_strict` on the same
+  // input surfaces `git_failed` (see the case above); `walk` must not
+  // propagate that, or its caller (`capture::close_session`'s automatic
+  // harvest) would fail the whole verb on a git hiccup.
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_dir repo;
+  REQUIRE(make_repo(repo.get()));
+
+  auto const commits = sc::walk(repo.get(), "not-a-ref");
+  CHECK(commits.empty());
+}
+
+TEST_CASE("walk degrades a non-repository directory to an empty vector", "[engine][sessioncommits][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_dir non_repo;
+  auto const  commits = sc::walk(non_repo.get(), "HEAD");
+  CHECK(commits.empty());
+}
+
+// ---------------------------------------------------------------------------
+// `record_claim_window_best_effort` — the `planar-agent` terminal-verb
+// claim-window fold (task 6360)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("record_claim_window_best_effort records commits reachable from worktree_path", "[engine][sessioncommits][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into sessions (id, vendor, started_at) values (1, 'claude', '2026-01-01T00:00:00.000Z')");
+  // `session_commits.claim_id` FK-references `agent_work_claims(id)` -- a
+  // dangling id is silently REJECTED by the insert (task 6360's own
+  // best-effort contract swallows that failure), so the row must exist for
+  // this to test the fold rather than a foreign-key rejection.
+  exec(conn, "insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, claim_scope, status, "
+             "vendor, claimed_at, last_heartbeat_at, lease_expires_at) "
+             "values (42, 'tok-42', 1, 'task', 1, 'exclusive', 'active', 'claude', "
+             "'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T01:00:00.000Z')");
+
+  scratch_dir repo;
+  REQUIRE(make_repo(repo.get()));
+  auto const base = head_sha(repo.get());
+  REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m claimed"));
+
+  std::string const repo_str = repo.get().string();
+  sc::record_claim_window_best_effort(conn,
+                                      sc::claim_window{
+                                          .claim_id          = 42,
+                                          .session_id        = 1,
+                                          .worktree_path     = repo_str,
+                                          .repo_root         = repo_str,
+                                          .head_sha_at_claim = base,
+                                      },
+                                      /*no_locality_probe=*/false);
+
+  auto const rows = sc::list_filtered(conn, sc::list_filter{.session_id = 1});
+  REQUIRE(rows.has_value());
+  REQUIRE(rows->size() == 1);
+  CHECK((*rows)[0].subject == "claimed");
+  REQUIRE((*rows)[0].claim_id.has_value());
+  CHECK(*(*rows)[0].claim_id == 42);
+}
+
+TEST_CASE("record_claim_window_best_effort is a no-op when no_locality_probe is set", "[engine][sessioncommits][commits]") {
+  // PERMISSIVE probe target: a mutation that ALWAYS skipped the probe
+  // (dropped `--no-locality-probe` entirely) would still pass every OTHER
+  // case here, since none of them assert on the flag being HONOURED in the
+  // negative direction except this one.
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into sessions (id, vendor, started_at) values (1, 'claude', '2026-01-01T00:00:00.000Z')");
+
+  scratch_dir repo;
+  REQUIRE(make_repo(repo.get()));
+  auto const base = head_sha(repo.get());
+  REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m claimed"));
+
+  std::string const repo_str = repo.get().string();
+  sc::record_claim_window_best_effort(conn,
+                                      sc::claim_window{
+                                          .claim_id          = 42,
+                                          .session_id        = 1,
+                                          .worktree_path     = repo_str,
+                                          .repo_root         = repo_str,
+                                          .head_sha_at_claim = base,
+                                      },
+                                      /*no_locality_probe=*/true);
+
+  auto const rows = sc::list_filtered(conn, sc::list_filter{.session_id = 1});
+  REQUIRE(rows.has_value());
+  CHECK(rows->empty());
+}
+
+TEST_CASE("record_claim_window_best_effort is a no-op when head_sha_at_claim is unset", "[engine][sessioncommits][commits]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into sessions (id, vendor, started_at) values (1, 'claude', '2026-01-01T00:00:00.000Z')");
+
+  sc::record_claim_window_best_effort(conn,
+                                      sc::claim_window{
+                                          .claim_id   = 42,
+                                          .session_id = 1,
+                                      },
+                                      /*no_locality_probe=*/false);
+
+  auto const rows = sc::list_filtered(conn, sc::list_filter{.session_id = 1});
+  REQUIRE(rows.has_value());
+  CHECK(rows->empty());
+}
+
+TEST_CASE("record_claim_window_best_effort falls back to repo_root when the worktree_path walk fails",
+          "[engine][sessioncommits][commits]") {
+  // The oracle's `walkClaimWindow`: a STRICT walk over `worktree_path`
+  // that fails falls back to the FAIL-SOFT `walk` over `repo_root`, but
+  // ONLY because the two directories differ here -- see the next case for
+  // the guard against re-walking the same directory twice.
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into sessions (id, vendor, started_at) values (1, 'claude', '2026-01-01T00:00:00.000Z')");
+  exec(conn, "insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, claim_scope, status, "
+             "vendor, claimed_at, last_heartbeat_at, lease_expires_at) "
+             "values (42, 'tok-42', 1, 'task', 1, 'exclusive', 'active', 'claude', "
+             "'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T01:00:00.000Z')");
+
+  scratch_dir repo;
+  REQUIRE(make_repo(repo.get()));
+  auto const base = head_sha(repo.get());
+  REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m claimed"));
+
+  scratch_dir non_repo; // stands in for a worktree that has since been removed.
+
+  std::string const repo_str     = repo.get().string();
+  std::string const non_repo_str = non_repo.get().string();
+  sc::record_claim_window_best_effort(conn,
+                                      sc::claim_window{
+                                          .claim_id          = 42,
+                                          .session_id        = 1,
+                                          .worktree_path     = non_repo_str,
+                                          .repo_root         = repo_str,
+                                          .head_sha_at_claim = base,
+                                      },
+                                      /*no_locality_probe=*/false);
+
+  auto const rows = sc::list_filtered(conn, sc::list_filter{.session_id = 1});
+  REQUIRE(rows.has_value());
+  REQUIRE(rows->size() == 1);
+  CHECK((*rows)[0].subject == "claimed");
+}
