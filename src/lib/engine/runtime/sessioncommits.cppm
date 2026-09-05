@@ -16,15 +16,17 @@
 ///   - `record_count` — port of `recordCount`, the WRITE half.
 ///   - `commit_meta` — port of the Zig `Commit` struct these three return.
 ///
-/// Still absent, because nothing this tree ports reaches them: `walk` (the
-/// FAIL-SOFT variant `close_session`'s automatic `recordSessionWindow`
-/// would use), `walkClaimWindow` and `recordClaimWindowBestEffort` (the
-/// `planar-agent` terminal-verb claim-window fold). `capture commits` is
-/// the OPERATOR path and calls only the strict functions above — see
-/// zig's `recordCommits` (capture.zig:163), which never calls `walk`.
-/// Wiring the automatic fail-soft capture into `capture end` or the
-/// terminal verbs is a SEPARATE port, not a side effect of this one; see
-/// this module's CMakeLists.txt for the tracking note.
+/// Task 6360 added the rest: `walk` (the FAIL-SOFT variant used by
+/// `capture::close_session`'s `record_session_window` and by
+/// `record_claim_window_best_effort`'s fallback leg) and
+/// `record_claim_window_best_effort` (the `planar-agent` terminal-verb
+/// claim-window fold, folding in zig's private `walkClaimWindow` helper as
+/// this module's own internal helper rather than a fourth exported name --
+/// nothing outside `recordClaimWindowBestEffort` calls it in the oracle
+/// either). `capture commits` is the OPERATOR path and calls only the
+/// strict functions above — see zig's `recordCommits` (capture.zig:163),
+/// which never calls `walk`; the AUTOMATIC paths (`capture end`, the
+/// terminal verbs) are what task 6360 wired.
 ///
 /// The pre-existing READ half is unchanged:
 ///
@@ -172,6 +174,19 @@ export auto walk_strict(const std::filesystem::path& dir, std::string_view base_
                         std::optional<std::string_view> repo_root = std::nullopt)
     -> std::expected<std::vector<commit_meta>, commits_error>;
 
+/// @brief `walk_strict`, degrading every git or parse failure to an empty
+/// vector. Port of zig's `walk` (task 6360) — the FAIL-SOFT variant used by
+/// `capture end`'s automatic `recordSessionWindow` and by the
+/// `planar-agent` terminal verbs' claim-window commit fold. Never fails:
+/// the caller must not learn "commit capture failed" when the whole point
+/// of this path is that it must never abort the verb it rides along with.
+/// @param dir The `-C` directory.
+/// @param base_sha The range's exclusive lower bound.
+/// @param repo_root As `walk_strict`.
+/// @return The commits, newest first, or an empty vector on any failure.
+export auto walk(const std::filesystem::path& dir, std::string_view base_sha,
+                 std::optional<std::string_view> repo_root = std::nullopt) -> std::vector<commit_meta>;
+
 /// @brief Resolve explicit SHAs to the same metadata shape `walk_strict`
 /// returns, in the REQUESTED order. Port of zig's `resolveShas`.
 ///
@@ -202,6 +217,35 @@ export auto resolve_shas(const std::filesystem::path& dir, std::span<const std::
 /// @return The count of newly inserted rows, or `commits_error::query_failed`.
 export auto record_count(db::connection& conn, std::int64_t session_id, std::optional<std::int64_t> claim_id,
                          std::span<const commit_meta> commits) -> std::expected<std::size_t, commits_error>;
+
+/// @brief The claim-window commit-collection input. Mirrors zig's
+/// `ClaimWindow` (task 6360) -- the locality snapshot an
+/// `agent_work_claims` row carries, handed in by the caller rather than
+/// re-read here.
+export struct claim_window {
+  std::int64_t                claim_id{};        ///< The claim the commits fall under.
+  std::int64_t                session_id{};      ///< The owning session.
+  std::optional<std::string>  worktree_path;     ///< Preferred walk directory, when the claim carries one.
+  std::optional<std::string>  repo_root;         ///< Fallback walk directory AND the value stamped onto every commit's `repo_root`.
+  std::optional<std::string>  head_sha_at_claim; ///< The range's exclusive lower bound. Unset means nothing to walk.
+};
+
+/// @brief Best-effort automatic claim-window commit collection. Port of
+/// zig's `recordClaimWindowBestEffort` (task 6360) -- the fold the
+/// `planar-agent` terminal verbs (`complete`/`fail`/`release`/`block`) run
+/// after every outcome, not only success.
+///
+/// Never throws and never shells git when `no_locality_probe` is true or
+/// `window.head_sha_at_claim` is unset. Tries `window.worktree_path`
+/// first (falling back to `window.repo_root` when the worktree path is
+/// unset), and when that STRICT walk fails falls back to the FAIL-SOFT
+/// `walk` over `window.repo_root` -- but only when it differs from the
+/// directory already tried, mirroring the oracle's own `fallback_dir`
+/// guard against re-walking the same directory twice.
+/// @param conn An open, migrated database connection.
+/// @param window The claim's locality snapshot.
+/// @param no_locality_probe The verb's `--no-locality-probe` flag.
+export auto record_claim_window_best_effort(db::connection& conn, const claim_window& window, bool no_locality_probe) -> void;
 
 /// @brief Every `session_commits` row for any of `session_ids`, newest
 /// RECORDED first, capped at `limit` when one is given.

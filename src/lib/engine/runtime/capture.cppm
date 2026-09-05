@@ -54,24 +54,24 @@
 ///   repository legitimately has nothing to pass), but a HANDLER that omits
 ///   it is a defect, and `handlers.t.cpp`'s `[6128]` cases assert the row
 ///   rather than the stdout precisely because nothing else can see it.
-/// - **`close_session`'s `recordSessionWindow`.** `capture end`'s
-///   AUTOMATIC commit capture — walks git commits between
+/// - **`close_session`'s `recordSessionWindow` — WIRED at task 6360.**
+///   `capture end`'s AUTOMATIC commit capture walks git commits between
 ///   `head_sha_at_start` and HEAD and records them, distinct from the
-///   `capture commits` MANUAL leaf task 6358 ported. STILL NOT WIRED, and
-///   the justification this note used to carry — "a no-op whenever
+///   `capture commits` MANUAL leaf task 6358 ported. The justification an
+///   earlier revision of this note carried — "a no-op whenever
 ///   `repo_root`/`head_sha_at_start` is NULL, which is every session this
-///   tree can currently open" — is now STALE, corrected here rather than
-///   silently dropped: task 6128 landed the git probe that stamps both
-///   columns on `capture session`, so a session opened inside a
-///   repository DOES carry them, and `close_session` on it is a real,
-///   reachable divergence from the oracle (no automatic commit rows on
-///   `capture end`) rather than an unreachable one. `record_commits`
-///   below reaches the STRICT git-walk primitives `recordSessionWindow`
-///   would need; it calls the FAIL-SOFT `walk` variant, which
-///   `sessioncommits.cppm` still does not carry. Wiring it into
-///   `close_session` is a separate leaf's behavior change, outside this
-///   task's claimed scope — tracked for a follow-up task rather than
-///   fixed here.
+///   tree can currently open" — went stale at task 6128, which landed the
+///   git probe that stamps both columns on `capture session`: a session
+///   opened inside a repository DOES carry them, so `close_session`
+///   skipping the harvest was a real, reachable divergence. Task 6360
+///   closed it: `close_session` now calls the private `record_session_window`
+///   helper (this file's .cpp) before appending the "session ended" note,
+///   matching the oracle's call order. It uses `sessioncommits::walk` —
+///   the FAIL-SOFT variant task 6360 also added — so a git failure during
+///   the harvest degrades to zero commits rather than failing the whole
+///   `capture end`; a DATABASE failure while persisting the walked
+///   commits is NOT fail-soft and surfaces as `capture_error::query_failed`,
+///   matching the oracle's `try recordSessionWindow(...)`.
 ///
 /// The `--session` / `$PLANAR_VENDOR` resolution the four append-style
 /// leaves share IS ported (`resolve_session_id`), because it is pure
@@ -148,17 +148,22 @@ export struct snapshot_args {
 export auto open_session(db::connection& conn, const open_args& args, std::optional<start_git_context> git = std::nullopt)
     -> std::expected<session::session, capture_error>;
 
-/// @brief Append a `session ended` note, then set `ended_at`/`summary`.
+/// @brief Record the automatic commit-window harvest, append a
+/// `session ended` note, then set `ended_at`/`summary`.
 ///
-/// Order matters and is preserved: the note lands BEFORE the row is
-/// flipped, so the timeline records the boundary. The note append is
+/// Order matters and is preserved: the automatic commit harvest runs
+/// FIRST (mirrors the oracle's `try recordSessionWindow(...)` as
+/// `closeSession`'s first statement), then the note lands BEFORE the row
+/// is flipped, so the timeline records the boundary. The note append is
 /// best-effort; the `end_session` write is not.
 ///
 /// @param conn An open, migrated database connection.
 /// @param session_id The session to close.
 /// @param summary The summary to store, or unset.
-/// @return Success, `capture_error::not_found`, or
-/// `capture_error::already_ended`.
+/// @return Success, `capture_error::not_found`, `capture_error::already_ended`,
+/// or `capture_error::query_failed` (a database failure while persisting
+/// the harvested commits -- the git walk itself is fail-soft and never
+/// surfaces here).
 export auto close_session(db::connection& conn, std::int64_t session_id, std::optional<std::string_view> summary)
     -> std::expected<void, capture_error>;
 

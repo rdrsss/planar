@@ -78,6 +78,42 @@ auto as_view(const std::optional<std::string>& s) -> std::optional<std::string_v
   return std::string_view{*s};
 }
 
+/// @brief Port of zig's private `recordSessionWindow` (task 6360). Walks
+/// `head_sha_at_start..HEAD` in the session's `repo_root` (fail-soft --
+/// `sessioncommits::walk`, never a git error) and persists any commits
+/// found. A no-op when either column is NULL, matching the oracle's early
+/// `orelse return`. The database write is NOT fail-soft: a failure there
+/// surfaces as `capture_error::query_failed`, matching the oracle's
+/// `try` on the whole function.
+auto record_session_window(db::connection& conn, std::int64_t session_id) -> std::expected<void, capture_error> {
+  auto s = session::get_by_id(conn, session_id);
+  if (!s) {
+    return std::unexpected(from_session_error(s.error()));
+  }
+  if (!s->repo_root.has_value() || !s->head_sha_at_start.has_value()) {
+    return {};
+  }
+
+  std::filesystem::path const dir{*s->repo_root};
+  auto commits = sessioncommits::walk(dir, *s->head_sha_at_start, std::string_view{*s->repo_root});
+  if (commits.empty()) {
+    return {};
+  }
+
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return std::unexpected(capture_error::query_failed);
+  }
+  auto inserted = sessioncommits::record_count(conn, session_id, std::nullopt, commits);
+  if (!inserted) {
+    return std::unexpected(from_commits_error(inserted.error()));
+  }
+  if (auto committed = tx->commit(); !committed) {
+    return std::unexpected(capture_error::query_failed);
+  }
+  return {};
+}
+
 } // namespace
 
 auto open_session(db::connection& conn, const open_args& args, std::optional<start_git_context> git)
@@ -108,10 +144,9 @@ auto open_session(db::connection& conn, const open_args& args, std::optional<sta
 
 auto close_session(db::connection& conn, std::int64_t session_id, std::optional<std::string_view> summary)
     -> std::expected<void, capture_error> {
-  // `recordSessionWindow` (git commit harvest) is deliberately absent --
-  // see capture.cppm's cut list. It is a no-op for any session this tree
-  // can open, since `repo_root` / `head_sha_at_start` are only ever
-  // stamped by a caller that can spawn `git`.
+  if (auto recorded = record_session_window(conn, session_id); !recorded) {
+    return std::unexpected(recorded.error());
+  }
   (void)session::append_entry(conn, session_id, "note", "session ended");
   auto ended = session::end_session(conn, session_id, summary);
   if (!ended) {

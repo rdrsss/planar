@@ -91,11 +91,13 @@ import planar.db;
 import planar.db.migrate;
 import planar.engine.runtime.capture;
 import planar.engine.runtime.session;
+import planar.engine.runtime.sessioncommits;
 import planar.engine.runtime.snapshot;
 
 namespace {
 
 namespace cap  = planar::engine::runtime::capture;
+namespace sc   = planar::engine::runtime::sessioncommits;
 namespace sess = planar::engine::runtime::session;
 namespace snap = planar::engine::runtime::snapshot;
 
@@ -537,6 +539,86 @@ TEST_CASE("closing a nonexistent session is not_found", "[capture]") {
 TEST_CASE("the capture end envelopes match the oracle byte for byte", "[capture][parity]") {
   CHECK(cap::render_end_json(1) == "{\"ok\":true,\"id\":1}\n");
   CHECK(cap::render_end_text(1) == "session 1 ended\n");
+}
+
+// ---------------------------------------------------------------------------
+// close_session's automatic commit harvest (task 6360)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("close_session records the automatic commit harvest when repo_root/head_sha_at_start are stamped",
+          "[capture][commits]") {
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     repo;
+  auto const      base = make_repo(repo.get());
+  REQUIRE(base.has_value());
+
+  std::string const repo_str = repo.get().string();
+  auto               s       = cap::open_session(conn, cap::open_args{.vendor = "cli"},
+                                                 cap::start_git_context{.repo_root          = repo_str,
+                                                                        .head_sha_at_start = *base});
+  REQUIRE(s.has_value());
+
+  REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m tracked"));
+
+  REQUIRE(cap::close_session(conn, s->id, std::nullopt).has_value());
+
+  auto rows = sc::list_filtered(conn, sc::list_filter{.session_id = s->id});
+  REQUIRE(rows.has_value());
+  REQUIRE(rows->size() == 1);
+  CHECK((*rows)[0].subject == "tracked");
+  CHECK_FALSE((*rows)[0].claim_id.has_value());
+  REQUIRE((*rows)[0].repo_root.has_value());
+  CHECK(*(*rows)[0].repo_root == repo_str);
+}
+
+TEST_CASE("close_session skips the automatic harvest when repo_root/head_sha_at_start are unset", "[capture][commits]") {
+  // The oracle's early `orelse return` -- a session opened without a git
+  // context (the common case for every session outside a repository) is
+  // a no-op for the harvest, not a failure.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            s    = cap::open_session(conn, cap::open_args{.vendor = "cli"});
+  REQUIRE(s.has_value());
+  REQUIRE_FALSE(s->repo_root.has_value());
+  REQUIRE_FALSE(s->head_sha_at_start.has_value());
+
+  REQUIRE(cap::close_session(conn, s->id, std::nullopt).has_value());
+
+  auto rows = sc::list_filtered(conn, sc::list_filter{.session_id = s->id});
+  REQUIRE(rows.has_value());
+  CHECK(rows->empty());
+}
+
+TEST_CASE("close_session degrades cleanly when the stamped repo_root can no longer be walked", "[capture][commits]") {
+  // The FAIL-SOFT contract task 6360 added: a git failure during the
+  // automatic harvest (here, a `head_sha_at_start` that no longer resolves)
+  // must not fail `capture end` itself -- only the database write half is
+  // NOT fail-soft. Mirrors zig's `walk`, which swallows every git error.
+  if (!have_git()) {
+    SKIP("git not on PATH");
+  }
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  scratch_dir     repo;
+  auto const      base = make_repo(repo.get());
+  REQUIRE(base.has_value());
+
+  std::string const repo_str = repo.get().string();
+  auto               s       = cap::open_session(
+      conn, cap::open_args{.vendor = "cli"},
+      cap::start_git_context{.repo_root = repo_str, .head_sha_at_start = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"});
+  REQUIRE(s.has_value());
+
+  auto result = cap::close_session(conn, s->id, std::nullopt);
+  REQUIRE(result.has_value());
+
+  auto rows = sc::list_filtered(conn, sc::list_filter{.session_id = s->id});
+  REQUIRE(rows.has_value());
+  CHECK(rows->empty());
 }
 
 // ---------------------------------------------------------------------------
