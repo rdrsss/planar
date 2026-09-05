@@ -12,10 +12,20 @@
 # yields exit 1. That must fail on the first attempt, every time, with no
 # retry and no masking.
 #
-# Distinction: a shell-terminated-by-signal exit status is 128+signal, so
-# any exit code >= 128 means the process died from a signal (crash), not a
-# doxygen-reported lint violation. Exit 1 (WARN_AS_ERROR) and any other
-# exit in [1,127] is a genuine finding and propagates immediately.
+# task 6315: exit status ALONE is not a reliable discriminator. Doxyfile.lint
+# sets WARN_AS_ERROR=YES, whose own documented behavior is "immediately stop
+# when a warning is encountered" — and on this 1.18.0 build that stop can
+# itself manifest as a signal death (the same >=128 family as the SIGBUS
+# flake) instead of a clean exit 1, AFTER the diagnostic line has already
+# been written to stderr per WARN_FORMAT. Two real findings were absorbed by
+# the retry loop this way (task 6303, task 6330) even though the exit-code
+# split below is exactly what the original design intended. So: capture
+# every attempt's combined output and scan it for a genuine WARN_FORMAT
+# diagnostic line ("$file:$line: $text", see Doxyfile.lint) BEFORE looking at
+# the exit code at all. A diagnostic in the output is authoritative and never
+# retried, regardless of how the process then exited. Only a crash that
+# produced no diagnostic text is treated as the known content-independent
+# SIGBUS flake and gets a retry.
 set -u
 
 doxyfile="${1:?usage: cpp-lint-doxygen.sh <Doxyfile>}"
@@ -29,27 +39,56 @@ doxyfile="${1:?usage: cpp-lint-doxygen.sh <Doxyfile>}"
 max_attempts=3
 attempt=1
 
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/cpp-lint-doxygen.XXXXXX") || exit 1
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Matches Doxyfile.lint's WARN_FORMAT = "$file:$line: $text" — a path,
+# a colon, a line number, a colon-space. QUIET=YES means this is the only
+# kind of line doxygen ever writes on a clean invocation, so any match is a
+# genuine diagnostic, never incidental output.
+diagnostic_pattern='^[^[:space:]]+:[0-9]+: '
+
 while :; do
-	doxygen "$doxyfile"
+	outfile="$tmpdir/attempt-$attempt.out"
+	doxygen "$doxyfile" >"$outfile" 2>&1
 	status=$?
 
+	if grep -qE "$diagnostic_pattern" "$outfile"; then
+		# A real WARN_FORMAT diagnostic was captured on this attempt. This
+		# is authoritative regardless of how the process then exited —
+		# including a signal death (task 6315: WARN_AS_ERROR's "stop
+		# immediately" can itself crash instead of cleanly exit(1) on this
+		# doxygen build). Never retried, never masked.
+		cat "$outfile" >&2
+		if [ "$status" -ge 128 ]; then
+			echo "cpp-lint-doxygen: doxygen printed the diagnostic above and then died from a signal (exit $status) on attempt $attempt/$max_attempts; the diagnostic is authoritative — failing immediately with no retry" >&2
+		fi
+		exit 1
+	fi
+
 	if [ "$status" -eq 0 ]; then
+		if [ "$attempt" -gt 1 ]; then
+			echo "cpp-lint-doxygen: doxygen succeeded on attempt $attempt/$max_attempts; attempt(s) 1-$((attempt - 1)) died from a signal with no diagnostic in their output (known upstream doxygen 1.18.0 SIGBUS flake)" >&2
+		fi
 		exit 0
 	fi
 
 	if [ "$status" -lt 128 ]; then
-		# Genuine doxygen-reported exit (e.g. WARN_AS_ERROR=YES lint
-		# failure = exit 1). Never retried, never masked.
+		# Genuine non-zero, non-signal exit with no WARN_FORMAT line
+		# matched above (e.g. a config or invocation error). Never
+		# retried, never masked.
+		cat "$outfile" >&2
 		exit "$status"
 	fi
 
-	# exit >= 128 => terminated by signal (128 + signal number), e.g.
-	# 138 = 128 + SIGBUS. This is the known upstream flake.
+	# exit >= 128 (terminated by signal, 128 + signal number, e.g. 138 =
+	# 128 + SIGBUS) AND no diagnostic text captured in this attempt's
+	# output: the known content-independent upstream flake.
 	if [ "$attempt" -ge "$max_attempts" ]; then
-		echo "cpp-lint-doxygen: doxygen died from a signal (exit $status) on attempt $attempt/$max_attempts; giving up" >&2
+		echo "cpp-lint-doxygen: doxygen died from a signal (exit $status) on attempt $attempt/$max_attempts with no diagnostic captured on any attempt; giving up" >&2
 		exit "$status"
 	fi
 
-	echo "cpp-lint-doxygen: doxygen died from a signal (exit $status) on attempt $attempt/$max_attempts; retrying (known upstream doxygen 1.18.0 SIGBUS flake, see docs/toolchain-parity.md)" >&2
+	echo "cpp-lint-doxygen: doxygen died from a signal (exit $status) on attempt $attempt/$max_attempts with no diagnostic in its output; retrying (known upstream doxygen 1.18.0 SIGBUS flake, see docs/toolchain-parity.md)" >&2
 	attempt=$((attempt + 1))
 done
