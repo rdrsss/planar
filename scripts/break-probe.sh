@@ -76,6 +76,22 @@
 #      so the discriminator cannot silently match nothing — which is trap 2
 #      applied to this check itself.
 #
+#   6. THE UNVERIFIED RESTORE — task 6344. A prior cycle reported "working
+#      tree clean, zero residue" after its probes, while a live, compiled,
+#      uncommitted mutant sat in the worktree at a file this script had
+#      "restored". The restore step had run — `cp` from the backup — but
+#      nothing checked it actually took, and the report asserted cleanliness
+#      instead of showing it. Compounding factor: an interrupted run (an
+#      agent stopped mid-gate, a killed background job) hits the EXIT/INT/
+#      TERM trap's restore path, which is exactly the path nobody was
+#      checking. This script now hashes every file's pre-mutation backup,
+#      re-hashes it after every restore (both the normal completion path
+#      and the trap), and refuses to report success on a digest mismatch —
+#      loudly, on stderr, naming the exact file and the fix-it-by-hand
+#      command. It also prints `git status --short` for the probed files on
+#      every restore, so a caller sees the tree state directly rather than
+#      trusting an assertion.
+#
 # ## Usage
 #
 #   scripts/break-probe.sh \
@@ -147,24 +163,91 @@ done
 BACKUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/break-probe.XXXXXX")"
 RESTORED=0
 
+# Pick a checksum tool up front — restore-verification (task 6344) needs it
+# on every exit path, including the trap, so it cannot wait for the later
+# "pick a checksum tool" step below.
+if command -v shasum > /dev/null 2>&1; then
+  RESTORE_SHA_TOOL=(shasum -a 256)
+elif command -v sha256sum > /dev/null 2>&1; then
+  RESTORE_SHA_TOOL=(sha256sum)
+else
+  die "neither shasum nor sha256sum is available — cannot verify restores (task 6344)"
+fi
+
+digest_of() {
+  "${RESTORE_SHA_TOOL[@]}" < "$1" | cut -d' ' -f1
+}
+
 # Restore by CONTENT into the original path and then bump the mtime, rather
 # than `mv`-ing the backup over it: see trap 1 above.
+#
+# task 6344: a prior cycle reported "working tree clean, zero residue" while
+# a live, compiled, uncommitted mutant sat in the tree — the restore step ran
+# but nobody checked it actually took. This function now VERIFIES every
+# restored file's digest against the pre-mutation backup's digest before
+# declaring success, and refuses to lie: on any mismatch it prints the exact
+# path loudly to stderr and returns failure instead of silently continuing.
+# This runs on EVERY exit path (normal completion AND the EXIT/INT/TERM trap
+# below), so an interrupted run cannot leave a live mutant behind unreported.
 restore() {
   [ "$RESTORED" -eq 1 ] && return 0
-  local i=0 f
+  local i=0 f rc=0
   for f in "${FILES[@]}"; do
-    cp "$BACKUP_DIR/$i" "$f" || die "could not restore '$f' from backup — the tree is MUTATED, fix it by hand"
+    if ! cp "$BACKUP_DIR/$i" "$f"; then
+      printf 'break-probe: RESTORE FAILED for %s — could not copy backup into place. THE TREE IS MUTATED. Fix it by hand:\n  cp %q %q\n' \
+        "$f" "$BACKUP_DIR/$i" "$f" >&2
+      rc=1
+      i=$((i + 1))
+      continue
+    fi
     touch "$f"
+    local want got
+    want="$(digest_of "$BACKUP_DIR/$i")"
+    got="$(digest_of "$f")"
+    if [ "$want" != "$got" ]; then
+      printf 'break-probe: RESTORE VERIFICATION FAILED for %s\n' "$f" >&2
+      printf '  expected sha256 %s (pre-mutation backup)\n' "$want" >&2
+      printf '  found    sha256 %s (after restore)\n' "$got" >&2
+      printf '  THE TREE MAY STILL BE MUTATED. Do not trust any gate result from this run.\n' >&2
+      printf '  Restore by hand:\n  cp %q %q\n' "$BACKUP_DIR/$i" "$f" >&2
+      rc=1
+    fi
     i=$((i + 1))
   done
+  # Loud, unconditional evidence for whatever invoked this script — task
+  # 6344 item 3: don't make callers trust an assertion of cleanliness, show
+  # them the actual git state of every file this probe touched.
+  if command -v git > /dev/null 2>&1 && git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    printf 'break-probe: post-restore git status (should be empty for a clean restore):\n' >&2
+    git status --short -- "${FILES[@]}" >&2
+  fi
+  if [ "$rc" -eq 0 ]; then
+    printf 'break-probe: restore verified (digest match on all %d file(s)).\n' "${#FILES[@]}" >&2
+  else
+    printf 'break-probe: RESTORE NOT VERIFIED — see above. This is not a probe verdict, it is a broken tree.\n' >&2
+  fi
   RESTORED=1
+  return "$rc"
 }
 
 cleanup() {
-  restore
+  restore || printf 'break-probe: cleanup restore failed — inspect the tree before trusting anything else in it.\n' >&2
   rm -rf "$BACKUP_DIR"
 }
-trap cleanup EXIT INT TERM
+# A single `trap cleanup EXIT INT TERM` looked right but was live-fire tested
+# (task 6344) and found broken: bash's default post-trap behavior for INT/TERM
+# on a non-interactive script is to RESUME execution after the handler
+# returns, not to terminate. An interruption mid-run therefore ran cleanup()
+# (which restores AND `rm -rf`s $BACKUP_DIR), then kept executing the probe
+# body against a backup directory that no longer existed — every subsequent
+# reference to $BACKUP_DIR failed with "No such file or directory" and the
+# script limped on printing garbage instead of stopping. INT/TERM must each
+# `exit` explicitly after cleanup so the process actually terminates; that
+# exit re-fires the EXIT trap, which is safe — `restore` no-ops via its
+# RESTORED guard and `rm -rf` on an already-gone directory is a no-op.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # Pick a checksum tool once. macOS ships `shasum`, most Linuxes ship
 # `sha256sum`; either is fine, we only ever compare our own output against
@@ -320,7 +403,7 @@ printf '   [4/7] mutant build ... '
 if ! build; then
   printf 'REJECTED\n'
   tail -30 "$BACKUP_DIR/build.log" >&2
-  restore
+  restore || die "the mutant does not compile, AND the restore did not verify — the tree is left MUTATED; see the digest mismatch above and fix it by hand before trusting anything else"
   build > /dev/null 2>&1
   die "the mutant does not compile — a compiler-rejected mutant is NOT a kill; pick a mutation the compiler accepts"
 fi
@@ -360,7 +443,7 @@ else
 fi
 
 printf '   [7/7] restore + rebuild + re-test ... '
-restore
+restore || die "restore did not verify (digest mismatch) — the tree is left MUTATED; see above and fix it by hand before trusting any other result"
 if ! build; then
   printf 'FAILED\n'
   tail -30 "$BACKUP_DIR/build.log" >&2
