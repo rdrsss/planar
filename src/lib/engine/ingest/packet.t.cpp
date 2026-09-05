@@ -750,6 +750,64 @@ TEST_CASE("a mandatory fact that is present but false is invalid rather than mis
   CHECK(std::ranges::find(names, "missing_acceptance_fact") == names.end());
 }
 
+TEST_CASE("evidence lacking provenance is refused even though it is otherwise current", "[packet]") {
+  // `missing_provenance` (packet.cpp's evidence-class walk) fires when a
+  // REQUIRED evidence row's `provenance` is blank. Every real loader stamps
+  // a non-empty provenance (see `row_evidence`'s callers), so this rule is
+  // unreachable from `assemble_task` and can only be pinned through the pure
+  // compiler -- same rationale as `invalid_mandatory_fact` above. Reached
+  // through the citation class specifically: `validate_evidence_classes`
+  // walks `citations` and, independently of digest freshness or lifecycle
+  // status, requires a non-blank provenance on every required row.
+  pk::evidence citation;
+  citation.kind           = "product_spec";
+  citation.id             = 10;
+  citation.locator        = "artifact:10#Overview";
+  citation.text           = "Spec section body for product_spec.";
+  citation.source_digest  = "same";
+  citation.current_digest = "same";
+  citation.status         = "active";
+  citation.required       = true;
+  citation.provenance     = ""; // <-- the defect under test
+
+  pk::task_input input;
+  input.citations = {citation};
+  const auto names = reason_names(pk::compile_task(input));
+  CHECK(std::ranges::find(names, "missing_provenance") != names.end());
+
+  // `evidence_current` ALSO gates on a non-blank provenance, independently of
+  // the class-walk check above (see this file's header note on the two not
+  // being interchangeable). `has_kind("product_spec")` calls `evidence_current`
+  // directly, so a blank-provenance citation must ALSO fail that gate and
+  // trip `missing_product_spec` -- proving the provenance clause INSIDE
+  // `evidence_current` fires, not merely the class-walk's own direct check.
+  CHECK(std::ranges::find(names, "missing_product_spec") != names.end());
+}
+
+TEST_CASE("a required scenario lacking provenance is refused even when covered", "[packet]") {
+  // The scenario walk in `validate_evidence_classes` duplicates the same
+  // provenance check independently of the citation/decision/etc. class loop
+  // above (see that function's own comment on why scenarios are handled
+  // separately). Pinned as its own case so the two blank-provenance arms are
+  // not conflated into one assertion covering only one of them.
+  pk::evidence scenario;
+  scenario.kind           = "test_scenario";
+  scenario.id             = 30;
+  scenario.locator        = "scenario:30";
+  scenario.text           = "Scenario body.";
+  scenario.source_digest  = "same";
+  scenario.current_digest = "same";
+  scenario.status         = "ready";
+  scenario.required       = true;
+  scenario.covered        = true;
+  scenario.provenance     = ""; // <-- the defect under test
+
+  pk::task_input input;
+  input.scenarios = {scenario};
+  const auto names = reason_names(pk::compile_task(input));
+  CHECK(std::ranges::find(names, "missing_provenance") != names.end());
+}
+
 TEST_CASE("render_text names every reason and ends with the canonical body", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
