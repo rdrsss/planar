@@ -119,25 +119,49 @@ fn runBin(
     return .{ .stdout = result.stdout, .stderr = result.stderr, .term = result.term };
 }
 
-// Parse a Planar `--help` COMMANDS table into the set of verb names.
-// The table line shape is two leading spaces, the verb token, then >=2
-// spaces, then the description. We tokenize the line on whitespace and
-// take token[0] as the verb name. Stops at the first blank line after
-// the COMMANDS header.
+// Parse a Planar `--help` SUBCOMMANDS table (CLI11's own formatter,
+// vendor/cli11/*/include/CLI/FormatterFwd.hpp's `column_width_{30}`) into
+// the set of verb names.
+//
+// CLI11 emits the table as:
+//   SUBCOMMANDS:
+//     <name>                      <description ...>
+//                                 <wrapped description continuation ...>
+// i.e. every real entry starts at EXACTLY 2 leading spaces; every wrapped
+// description continuation line is padded out to column 30 (CLI11's fixed
+// left-column width) and so starts with MORE than 2 leading spaces. We
+// tokenize an entry line on whitespace and take token[0] as the verb name,
+// and skip continuation lines outright rather than misreading their first
+// word as a verb. The table ends at the first blank line, or at the first
+// line that de-indents below 2 spaces (next top-level section).
+//
+// The header itself must be matched as a whole line ("SUBCOMMANDS:"),
+// anchored at line-start — NOT via a raw substring search over the whole
+// help text, which would (and did) match inside the header's own tail
+// ("SUBCOMMANDS:" contains "COMMANDS:" as a suffix), silently defeating the
+// missing-header guard below.
 fn parseHelpVerbs(
     gpa: std.mem.Allocator,
     help: []const u8,
 ) std.StringHashMap(void) {
     var set = std.StringHashMap(void).init(gpa);
-    const header_idx = std.mem.indexOf(u8, help, "COMMANDS:") orelse {
-        std.debug.print("help output missing COMMANDS section:\n{s}\n", .{help});
-        @panic("no COMMANDS header in help");
-    };
-    var it = std.mem.splitScalar(u8, help[header_idx..], '\n');
-    _ = it.next(); // skip "COMMANDS:" line itself.
-    while (it.next()) |line| {
+
+    var line_it = std.mem.splitScalar(u8, help, '\n');
+    const found_header = while (line_it.next()) |line| {
+        if (std.mem.eql(u8, line, "SUBCOMMANDS:")) break true;
+    } else false;
+    if (!found_header) {
+        std.debug.print("help output missing SUBCOMMANDS section:\n{s}\n", .{help});
+        @panic("no SUBCOMMANDS header in help");
+    }
+
+    while (line_it.next()) |line| {
         if (line.len == 0) break; // table ends at first blank line.
-        if (!std.mem.startsWith(u8, line, "  ")) break; // table ends at de-indent.
+        const indent = std.mem.indexOfNone(u8, line, " ") orelse continue;
+        if (indent != 2) {
+            if (indent < 2) break; // table ends at de-indent.
+            continue; // wrapped description continuation line; not a verb.
+        }
         // Tokenize on whitespace; first token is the verb.
         var tok_it = std.mem.tokenizeAny(u8, line, " \t");
         const first = tok_it.next() orelse continue;
