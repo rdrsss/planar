@@ -774,6 +774,14 @@ TEST_CASE("evidence lacking provenance is refused even though it is otherwise cu
   input.citations = {citation};
   const auto names = reason_names(pk::compile_task(input));
   CHECK(std::ranges::find(names, "missing_provenance") != names.end());
+
+  // `evidence_current` ALSO gates on a non-blank provenance, independently of
+  // the class-walk check above (see this file's header note on the two not
+  // being interchangeable). `has_kind("product_spec")` calls `evidence_current`
+  // directly, so a blank-provenance citation must ALSO fail that gate and
+  // trip `missing_product_spec` -- proving the provenance clause INSIDE
+  // `evidence_current` fires, not merely the class-walk's own direct check.
+  CHECK(std::ranges::find(names, "missing_product_spec") != names.end());
 }
 
 TEST_CASE("a required scenario lacking provenance is refused even when covered", "[packet]") {
