@@ -255,15 +255,17 @@ TEST_CASE("planar-watch completion: a bad shell exits 2, a missing positional ex
   CHECK(bad.err == "error: unsupported shell 'badshell'; supported: bash, zsh, fish\n");
 
   // Parser-level refusal: parse_error -> 1 under THIS binary's policy
-  // (the operator binary would say 2). Two streams, as the oracle does.
+  // (the operator binary would say 2). One stream, stderr only — decision
+  // 1004 (task 6271) moved the parser's message off stdout so it presents
+  // identically to the handler refusal above.
   auto const missing = dispatch(fx, {"completion"});
   CHECK(missing.code == 1);
   // Re-baselined onto CLI11's wording by task 6123 and pinned exactly. The
   // pair of exit codes out of ONE verb — 2 for the handler's refusal above,
   // 1 for the parser's here — is the part that cannot be satisfied by a
   // collapsed mapping, and it did not move.
-  CHECK(missing.out == "error: shell is required\n");
-  CHECK(missing.err == "error: RequiredError\n");
+  CHECK(missing.out.empty());
+  CHECK(missing.err == "error: shell is required\n");
 }
 
 TEST_CASE("planar-watch schema appends the terminator its renderer omits", "[cmd][watch][handlers]") {
@@ -282,15 +284,16 @@ TEST_CASE("planar-watch schema appends the terminator its renderer omits", "[cmd
   CHECK(got.out.contains("\"planar-watch feed\""));
 }
 
-TEST_CASE("planar-watch parse failures exit 1 and write both streams", "[cmd][watch][handlers][exitcode]") {
+TEST_CASE("planar-watch parse failures exit 1 and write stderr only", "[cmd][watch][handlers][exitcode]") {
   auto const fx  = make_fixture("parse");
   auto const got = dispatch(fx, {"nosuchverb"});
   CHECK(got.code == 1);
   // Re-baselined onto CLI11's wording by task 6123 and pinned exactly.
-  // The SHAPE is the contract and did not move: formatted message to
-  // stdout, CamelCase tag to stderr, exit 1 (NOT the operator binary's 2).
-  CHECK(got.out == "error: planar-watch: The following argument was not expected: nosuchverb\n");
-  CHECK(got.err == "error: ExtrasError\n");
+  // Decision 1004 (task 6271) moved the formatted message to stderr and
+  // dropped the CamelCase tag: nothing on stdout, exit 1 (NOT the
+  // operator binary's 2).
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: planar-watch: The following argument was not expected: nosuchverb\n");
   CHECK_FALSE(got.db_open);
 }
 
@@ -550,10 +553,12 @@ TEST_CASE("planar-watch: --follow is refused loudly, not answered with a single 
 
   // `log` declares no `--follow` at all, matching the oracle — so the flag
   // is a PARSE error there, not a handler refusal, and lands on this
-  // binary's exit 1.
+  // binary's exit 1. Decision 1004 (task 6271): the formatted message is
+  // on stderr alone, no CamelCase tag.
   auto const on_log = dispatch(fx, {"log", "--task", "1", "--follow"});
   CHECK(on_log.code == 1);
-  CHECK(on_log.err == "error: ExtrasError\n");
+  CHECK(on_log.out.empty());
+  CHECK(on_log.err == "error: log: The following argument was not expected: --follow\n");
 }
 
 TEST_CASE("planar-watch log requires exactly one filter and says how many it got", "[cmd][watch][handlers][exitcode]") {

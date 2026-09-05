@@ -15,14 +15,30 @@
 // CLI11 directly, so the WORDING is now CLI11's and is no longer
 // oracle-comparable. The operator sanctioned that re-baseline explicitly.
 //
-// What did NOT change, and is still the reason these are pinned, is the
-// SHAPE: one parse failure writes a FORMATTED message to STDOUT and a
-// CamelCase error TAG to STDERR, and the operator binary exits 2 where
-// planar-agent and planar-watch exit 1. Putting either message on the
-// other stream, or collapsing the exit code, would look correct and be
-// wrong. `CLI::ParseError::get_name()` already returns CamelCase
-// (`ExtrasError`, `RequiredError`, `ValidationError`), so the stderr line
-// needed no translation table.
+// WHAT DECISION 1004 (TASK 6271) CHANGED, AND WHY THE OLD HEADER IS WRONG.
+//
+// Until this decision, the SHAPE these cases pinned was: one parse failure
+// writes a FORMATTED message to STDOUT and a CamelCase error TAG to
+// STDERR. That was itself a deliberate, faithfully-ported piece of oracle
+// behavior — but the operator ruled it out (decision 1004): an operator
+// piping stdout to a consumer got an error mixed into the data stream, and
+// one capturing stderr to catch errors lost the only line that said what
+// went wrong. Neither reading was defensible, so decision 1004 moves the
+// WHOLE formatted message to stderr, matching how a handler refusal has
+// always presented (`report()` in `exit.cppm` — stderr only, one line),
+// and DROPS the CamelCase tag rather than keeping it as a second stderr
+// line: keeping it would leave parse failures as the only two-line
+// refusal shape in the binary, which is exactly the asymmetry this
+// decision closes.
+//
+// The oracle is NOT touched and keeps its own stdout/stderr split — this
+// is a recorded, deliberate C++-only divergence (option (c) in decision
+// 1004), not a port bug and not something a future parity pass should
+// try to re-align. What is STILL pinned, and is the reason these cases
+// exist at all: the exit code (2 on this binary, 1 on planar-agent and
+// planar-watch) is unaffected by this decision, and stdout MUST be empty
+// on every parse failure — a formatted message reappearing on stdout, or
+// the exit code collapsing, would look correct and be wrong.
 //
 // The bytes below were captured from the BUILT C++ binary the same way the
 // oracle captures were taken — run under a scratch
@@ -33,30 +49,33 @@
 //
 //   $C nosuchverb
 //     exit 2
-//     stdout b'error: planar: The following argument was not expected: nosuchverb\n'
-//     stderr b'error: ExtrasError\n'
+//     stdout b''
+//     stderr b'error: planar: The following argument was not expected: nosuchverb\n'
 //
 //   $C workflow nosuchsub
 //     exit 2
-//     stdout b'error: workflow: The following argument was not expected: nosuchsub\n'
-//     stderr b'error: ExtrasError\n'
+//     stdout b''
+//     stderr b'error: workflow: The following argument was not expected: nosuchsub\n'
 //
 //   $C workflow list --nosuchflag
 //     exit 2
-//     stdout b'error: list: The following argument was not expected: --nosuchflag\n'
-//     stderr b'error: ExtrasError\n'
+//     stdout b''
+//     stderr b'error: list: The following argument was not expected: --nosuchflag\n'
 //
 //   $C workflow show          (missing required positional)
 //     exit 2
-//     stdout b'error: name is required\n'
-//     stderr b'error: RequiredError\n'
+//     stdout b''
+//     stderr b'error: name is required\n'
 //
-// NOTE the error NAME is coarser than the oracle's: CLI11 reports an
-// unknown subcommand, an unknown subcommand under a group, AND an unknown
-// flag all as `ExtrasError`, where etcli distinguished
-// `UnknownSubcommand` from `UnknownFlag`. The three cases stay separate
-// tests because the stdout message still names the offending token and the
-// command it was rejected under, which is the part an operator reads.
+// NOTE the error NAME CLI11 assigns internally is coarser than the
+// oracle's — an unknown subcommand, an unknown subcommand under a group,
+// AND an unknown flag are all `ExtrasError` internally, where etcli
+// distinguished `UnknownSubcommand` from `UnknownFlag` — but that name is
+// no longer surfaced anywhere in this binary's output (decision 1004
+// dropped it), so it is no longer part of what these tests discriminate.
+// The three cases stay separate tests because the stderr message still
+// names the offending token and the command it was rejected under, which
+// is the part an operator reads.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -158,32 +177,32 @@ TEST_CASE("unreachable_handlers actually reports a dead entry", "[cmd][dispatch]
   CHECK(dead.front() == "workflow shwo");
 }
 
-TEST_CASE("an unknown subcommand writes to BOTH streams and exits 2", "[cmd][dispatch][parity]") {
+TEST_CASE("an unknown subcommand writes stderr ONLY and exits 2", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"nosuchverb"});
   CHECK(got.code == 2);
-  CHECK(got.out == "error: planar: The following argument was not expected: nosuchverb\n");
-  CHECK(got.err == "error: ExtrasError\n");
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: planar: The following argument was not expected: nosuchverb\n");
 }
 
 TEST_CASE("an unknown subcommand under a group names the group", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"workflow", "nosuchsub"});
   CHECK(got.code == 2);
-  CHECK(got.out == "error: workflow: The following argument was not expected: nosuchsub\n");
-  CHECK(got.err == "error: ExtrasError\n");
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: workflow: The following argument was not expected: nosuchsub\n");
 }
 
-TEST_CASE("an unknown flag writes to BOTH streams and exits 2", "[cmd][dispatch][parity]") {
+TEST_CASE("an unknown flag writes stderr ONLY and exits 2", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"workflow", "list", "--nosuchflag"});
   CHECK(got.code == 2);
-  CHECK(got.out == "error: list: The following argument was not expected: --nosuchflag\n");
-  CHECK(got.err == "error: ExtrasError\n");
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: list: The following argument was not expected: --nosuchflag\n");
 }
 
-TEST_CASE("a missing required positional writes to BOTH streams and exits 2", "[cmd][dispatch][parity]") {
+TEST_CASE("a missing required positional writes stderr ONLY and exits 2", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"workflow", "show"});
   CHECK(got.code == 2);
-  CHECK(got.out == "error: name is required\n");
-  CHECK(got.err == "error: RequiredError\n");
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: name is required\n");
 }
 
 TEST_CASE("--help renders the leaf's page to stdout and exits 0", "[cmd][dispatch]") {

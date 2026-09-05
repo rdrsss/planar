@@ -817,11 +817,12 @@ TEST_CASE("skills rejects a positional the way a flagless leaf must", "[cmd][han
   // The EXIT CODE is the contract and did not move: 2 on the operator
   // binary, where planar-agent and planar-watch would say 1. Task 6123
   // re-baselined the wording — CLI11 reports a rejected extra token as
-  // `ExtrasError` where etcli distinguished `TooManyPositionals` — and the
-  // new bytes are pinned exactly.
+  // `ExtrasError` where etcli distinguished `TooManyPositionals`. Decision
+  // 1004 (task 6271) then moved the formatted message to stderr alone and
+  // dropped the CamelCase tag — the new bytes are pinned exactly.
   CHECK(got.code == 2);
-  CHECK(got.out == "error: skills: The following argument was not expected: extra\n");
-  CHECK(got.err == "error: ExtrasError\n");
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: skills: The following argument was not expected: extra\n");
 }
 
 TEST_CASE("workspace doctor on an empty database: zero bytes vs {\"orgs\":[]}", "[cmd][handlers][parity][terminator]") {

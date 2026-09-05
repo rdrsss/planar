@@ -121,17 +121,23 @@ TEST_CASE("planar-agent parity: parse failures still exit 1, not the operator bi
   // The exit CODE is still diffed live against the oracle — that is the
   // contract. The BYTES are CLI11's as of task 6123 and are pinned against
   // the built binary instead, exactly rather than loosely.
+  //
+  // Decision 1004 (task 6271): the C++ tree moves the formatted message to
+  // stderr and drops the CamelCase tag, so it no longer matches the
+  // oracle's own stdout/stderr split at all — that divergence is recorded
+  // and deliberate. Only the exit code is compared against the oracle here;
+  // the C++ stdout/stderr bytes are pinned against the built binary.
   auto const [cpp_verb, zig_verb] = both("unknownverb", {"nosuchverb"});
   CHECK(cpp_verb.code == zig_verb.code);
   CHECK(cpp_verb.code == 1);
-  CHECK(cpp_verb.out == "error: planar-agent: The following argument was not expected: nosuchverb\n");
-  CHECK(cpp_verb.err == "error: ExtrasError\n");
+  CHECK(cpp_verb.out.empty());
+  CHECK(cpp_verb.err == "error: planar-agent: The following argument was not expected: nosuchverb\n");
 
   auto const [cpp_flag, zig_flag] = both("unknownflag", {"version", "--badflag"});
   CHECK(cpp_flag.code == zig_flag.code);
   CHECK(cpp_flag.code == 1);
-  CHECK(cpp_flag.out == "error: version: The following argument was not expected: --badflag\n");
-  CHECK(cpp_flag.err == "error: ExtrasError\n");
+  CHECK(cpp_flag.out.empty());
+  CHECK(cpp_flag.err == "error: version: The following argument was not expected: --badflag\n");
 }
 
 TEST_CASE("planar-agent parity: every ported command declares what the oracle declares", "[cmd][agent][parity][catalog]") {
