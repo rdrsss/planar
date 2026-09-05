@@ -78,4 +78,5 @@ planar_module(engine_entitylink
   DEPENDS
     db
     json_text
+    log
     policy)

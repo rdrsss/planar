@@ -6,10 +6,20 @@ module planar.engine.external.system;
 
 import std;
 import planar.db;
+import planar.log;
 
 namespace planar::engine::external::system {
 
 namespace {
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>` diagnostic
+/// ahead of the outer handler error. See
+/// `zig/src/engine/external/system.zig`'s `register` for the shape this
+/// ports; mirrors `engine::planning::exec_failed`.
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> system_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return system_error::query_failed;
+}
 
 // SQLITE_CONSTRAINT_UNIQUE — the same constant link.cpp and every other
 // bucket uses to detect a UNIQUE violation without string-matching the
@@ -157,20 +167,22 @@ auto register_system(db::connection& conn, const register_args& args) -> std::ex
   auto stmt = conn.prepare("insert into external_systems (kind, slug, base_url, default_project, auth_method, auth_ref) "
                            "values (?, ?, ?, ?, ?, ?) returning id");
   if (!stmt) {
-    return std::unexpected(system_error::query_failed);
+    return std::unexpected(exec_failed("external.system.register", "PrepareFailed"));
   }
   if (!stmt->bind_text(1, system_kind_to_text(args.kind)) || !stmt->bind_text(2, args.slug) ||
       !bind_text_opt(*stmt, 3, args.base_url) || !bind_text_opt(*stmt, 4, args.default_project) ||
       !stmt->bind_text(5, auth_method_to_text(args.auth)) || !stmt->bind_text(6, args.auth_ref)) {
-    return std::unexpected(system_error::query_failed);
+    return std::unexpected(exec_failed("external.system.register", "BindFailed"));
   }
   auto stepped = stmt->step();
   if (!stepped) {
-    return std::unexpected(stepped.error().code_ == k_sqlite_constraint_unique ? system_error::slug_exists
-                                                                               : system_error::query_failed);
+    if (stepped.error().code_ == k_sqlite_constraint_unique) {
+      return std::unexpected(system_error::slug_exists);
+    }
+    return std::unexpected(exec_failed("external.system.register", "StepFailed"));
   }
   if (*stepped == db::step_result::done) {
-    return std::unexpected(system_error::query_failed);
+    return std::unexpected(exec_failed("external.system.register", "StepFailed"));
   }
   return show_by_id(conn, stmt->column_int64(0));
 }
