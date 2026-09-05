@@ -176,13 +176,23 @@ pub const Suite = struct {
         // DB first. The Zig oracle lane (ext_bin aliases bin) needs no
         // seeding: whichever verb reaches the shared binary first migrates
         // it regardless of which family (`exec*` vs `execExt*`) issued it.
+        //
+        // The seed verb must (a) open and migrate the DB, (b) exit 0 on a
+        // FRESH database, and (c) register nothing. `health` is the only
+        // verb measured to satisfy all three. Do not "simplify" this to a
+        // planning verb: `plan list --json` exits 1 on a fresh DB ("cwd is
+        // not inside any registered Planar scope") even though it DOES
+        // migrate, which panicked every one of the 652 suites; `scope show`
+        // and `assoc list` exit 2 without creating the DB at all; `version`
+        // exits 0 but never opens it; `init` works but registers cwd as a
+        // project, perturbing fixtures that expect an unregistered scope.
         if (!std.mem.eql(u8, ext_bin, bin)) {
-            const seed = self.execOnBin(bin, &.{ "plan", "list", "--json" }, &.{});
+            const seed = self.execOnBin(bin, &.{"health"}, &.{});
             allocator.free(seed.stdout);
             allocator.free(seed.stderr);
             if (seed.term != .exited or seed.term.exited != 0) {
                 std.debug.panic(
-                    "Suite.init: seeding migrations via '{s} plan list --json' failed (needed before any planar-ext call against a fresh DB)",
+                    "Suite.init: seeding migrations via '{s} health' failed (needed before any planar-ext call against a fresh DB)",
                     .{bin},
                 );
             }
