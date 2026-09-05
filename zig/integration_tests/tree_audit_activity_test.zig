@@ -484,7 +484,7 @@ test "audit trail link form folds in commits and omits the commits key when empt
     const arena = arena_state.allocator();
 
     _ = suite.registerProject("trail-link-commits");
-    gpa.free(suite.mustRun(&.{ "ext", "register", "github", "gh", "--project", "owner/repo" }));
+    gpa.free(suite.mustRunExt(&.{ "ext", "register", "github", "gh", "--project", "owner/repo" }));
 
     const repo_root = try makeFixtureRepo(gpa, &suite, "trail-link-commits-repo");
     defer gpa.free(repo_root);

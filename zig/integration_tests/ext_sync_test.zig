@@ -96,20 +96,22 @@ fn expectResolveRefusedWithoutMutation(
 ) !void {
     const task_before = suite.mustRun(&.{ "task", "show", task_id, "--json" });
     defer gpa.free(task_before);
-    const status_before = suite.mustRun(&.{ "sync", "status", "--entity", task_ref, "--json" });
+    const status_before = suite.mustRunExt(&.{ "sync", "status", "--entity", task_ref, "--json" });
     defer gpa.free(status_before);
     const audit_before = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });
     defer gpa.free(audit_before);
     const puts_before = put_count.load(.acquire);
 
-    const refused = suite.execWith(args, env);
+    // `args` is always a `sync resolve ...` invocation (see call sites
+    // below), so this routes to ext_bin like the rest of the sync surface.
+    const refused = suite.execExtWith(args, env);
     defer refused.deinit(gpa);
     try std.testing.expect(refused.term.exited != 0);
     try std.testing.expectEqual(puts_before, put_count.load(.acquire));
 
     const task_after = suite.mustRun(&.{ "task", "show", task_id, "--json" });
     defer gpa.free(task_after);
-    const status_after = suite.mustRun(&.{ "sync", "status", "--entity", task_ref, "--json" });
+    const status_after = suite.mustRunExt(&.{ "sync", "status", "--entity", task_ref, "--json" });
     defer gpa.free(status_after);
     const audit_after = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });
     defer gpa.free(audit_after);
@@ -127,7 +129,7 @@ test "ext register github + ext test wiring" {
     defer arena_backing.deinit();
     const arena = arena_backing.allocator();
 
-    const reg = suite.mustRunJSON(RegisterJSON, arena, &.{
+    const reg = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",       "register",  "github",     "gh-demo",
         "--project", "acme/demo", "--auth-env", "PLANAR_TEST_GH_TOKEN",
         "--json",
@@ -136,11 +138,11 @@ test "ext register github + ext test wiring" {
     try std.testing.expectEqualStrings("gh-demo", reg.slug);
     try std.testing.expectEqualStrings("github-issues", reg.kind);
 
-    const list = suite.mustRun(&.{ "ext", "list" });
+    const list = suite.mustRunExt(&.{ "ext", "list" });
     defer gpa.free(list);
     try std.testing.expect(std.mem.containsAtLeast(u8, list, 1, "gh-demo"));
 
-    const test_out = suite.mustRunWith(
+    const test_out = suite.mustRunExtWith(
         &.{ "ext", "test", "gh-demo", "--json" },
         &.{.{ .key = "PLANAR_TEST_GH_TOKEN", .value = "dummy-token" }},
     );
@@ -169,18 +171,18 @@ pub fn runSyncConflictEvidenceAndResolutionLifecycle() !void {
     const task = suite.mustRunJSON(struct { id: i64 }, arena, &.{ "task", "add", "--json", "Baseline" });
     const task_id = try std.fmt.allocPrint(arena, "{d}", .{task.id});
     const task_ref = try std.fmt.allocPrint(arena, "task:{d}", .{task.id});
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{ "ext", "register", "jira", "sync-jira", "--base-url", base_url, "--project", "SYNC", "--auth-env", "PLANAR_SYNC_TOKEN", "--json" });
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{ "ext", "register", "jira", "sync-jira", "--base-url", base_url, "--project", "SYNC", "--auth-env", "PLANAR_SYNC_TOKEN", "--json" });
     const linked_raw = suite.mustRun(&.{ "link", task_ref, "--to", "sync-jira:SYNC-1", "--role", "mirror", "--sync", "two-way", "--json" });
     defer gpa.free(linked_raw);
     var linked = try std.json.parseFromSlice(struct { link_id: i64 }, arena, linked_raw, .{ .ignore_unknown_fields = true });
     defer linked.deinit();
     const link_id = try std.fmt.allocPrint(arena, "{d}", .{linked.value.link_id});
 
-    gpa.free(suite.mustRunWith(&.{ "sync", "pull", task_ref, "--json" }, env));
+    gpa.free(suite.mustRunExtWith(&.{ "sync", "pull", task_ref, "--json" }, env));
     try std.testing.expectEqual(@as(usize, 0), server.put_count.load(.acquire));
     gpa.free(suite.mustRun(&.{ "task", "update", task_id, "--title", "Local edit", "--json" }));
     server.remote_race.store(3, .release);
-    const conflict_run = suite.execWith(&.{ "sync", "pull", task_ref, "--json" }, env);
+    const conflict_run = suite.execExtWith(&.{ "sync", "pull", task_ref, "--json" }, env);
     defer conflict_run.deinit(gpa);
     try std.testing.expectEqual(@as(u8, 3), conflict_run.term.exited);
 
@@ -233,7 +235,7 @@ pub fn runSyncConflictEvidenceAndResolutionLifecycle() !void {
 
     // A fresh pull records a new latest conflict. The former event is now
     // stale and cannot be resolved even with otherwise-current inputs.
-    const second_conflict_run = suite.execWith(&.{ "sync", "pull", task_ref, "--json" }, env);
+    const second_conflict_run = suite.execExtWith(&.{ "sync", "pull", task_ref, "--json" }, env);
     defer second_conflict_run.deinit(gpa);
     try std.testing.expectEqual(@as(u8, 3), second_conflict_run.term.exited);
     try expectResolveRefusedWithoutMutation(&suite, gpa, task_id, task_ref, link_id, &.{ "sync", "resolve", event_arg, "--keep", "local", "--evidence-token", token, "--expected-local-updated-at", reviewed_local_version, "--json" }, env, &server.put_count);
@@ -250,7 +252,7 @@ pub fn runSyncConflictEvidenceAndResolutionLifecycle() !void {
     const fresh_local_version = fresh_evidence.get("local").?.object.get("updated_at").?.string;
     const fresh_event_arg = try std.fmt.allocPrint(arena, "{d}", .{fresh_event_id});
 
-    const resolved_raw = suite.mustRunWith(&.{ "sync", "resolve", fresh_event_arg, "--keep", "local", "--evidence-token", fresh_token, "--expected-local-updated-at", fresh_local_version, "--json" }, env);
+    const resolved_raw = suite.mustRunExtWith(&.{ "sync", "resolve", fresh_event_arg, "--keep", "local", "--evidence-token", fresh_token, "--expected-local-updated-at", fresh_local_version, "--json" }, env);
     defer gpa.free(resolved_raw);
     const resolved = try std.json.parseFromSlice(struct { ok: bool, event_id: i64, new_event_id: i64 }, arena, resolved_raw, .{ .ignore_unknown_fields = true });
     try std.testing.expect(resolved.value.ok);
@@ -258,7 +260,7 @@ pub fn runSyncConflictEvidenceAndResolutionLifecycle() !void {
     try std.testing.expect(resolved.value.new_event_id > fresh_event_id);
     try std.testing.expectEqual(@as(usize, 1), server.put_count.load(.acquire));
 
-    const status_raw = suite.mustRun(&.{ "sync", "status", "--entity", task_ref, "--json" });
+    const status_raw = suite.mustRunExt(&.{ "sync", "status", "--entity", task_ref, "--json" });
     defer gpa.free(status_raw);
     try std.testing.expect(std.mem.indexOf(u8, status_raw, "\"last_sync_status\":\"ok\"") != null);
 
@@ -301,17 +303,17 @@ test "sync resolve rejects versionless approved evidence and keep-remote replace
     const task = suite.mustRunJSON(struct { id: i64 }, arena, &.{ "task", "add", "--json", "Baseline" });
     const task_id = try std.fmt.allocPrint(arena, "{d}", .{task.id});
     const task_ref = try std.fmt.allocPrint(arena, "task:{d}", .{task.id});
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{ "ext", "register", "jira", "sync-jira", "--base-url", base_url, "--project", "SYNC", "--auth-env", "PLANAR_SYNC_TOKEN", "--json" });
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{ "ext", "register", "jira", "sync-jira", "--base-url", base_url, "--project", "SYNC", "--auth-env", "PLANAR_SYNC_TOKEN", "--json" });
     const linked_raw = suite.mustRun(&.{ "link", task_ref, "--to", "sync-jira:SYNC-1", "--role", "mirror", "--sync", "two-way", "--json" });
     defer gpa.free(linked_raw);
     var linked = try std.json.parseFromSlice(struct { link_id: i64 }, arena, linked_raw, .{ .ignore_unknown_fields = true });
     defer linked.deinit();
     const link_id = try std.fmt.allocPrint(arena, "{d}", .{linked.value.link_id});
 
-    gpa.free(suite.mustRunWith(&.{ "sync", "pull", task_ref, "--json" }, env));
+    gpa.free(suite.mustRunExtWith(&.{ "sync", "pull", task_ref, "--json" }, env));
     gpa.free(suite.mustRun(&.{ "task", "update", task_id, "--title", "Local authoritative candidate", "--json" }));
     server.remote_race.store(4, .release);
-    const versionless_conflict = suite.execWith(&.{ "sync", "pull", task_ref, "--json" }, env);
+    const versionless_conflict = suite.execExtWith(&.{ "sync", "pull", task_ref, "--json" }, env);
     defer versionless_conflict.deinit(gpa);
     try std.testing.expectEqual(@as(u8, 3), versionless_conflict.term.exited);
 
@@ -330,7 +332,7 @@ test "sync resolve rejects versionless approved evidence and keep-remote replace
     server.remote_race.store(3, .release);
     try expectResolveRefusedWithoutMutation(&suite, gpa, task_id, task_ref, link_id, &.{ "sync", "resolve", event_arg, "--keep", "remote", "--evidence-token", token, "--expected-local-updated-at", local_version, "--json" }, env, &server.put_count);
 
-    const fresh_conflict_run = suite.execWith(&.{ "sync", "pull", task_ref, "--json" }, env);
+    const fresh_conflict_run = suite.execExtWith(&.{ "sync", "pull", task_ref, "--json" }, env);
     defer fresh_conflict_run.deinit(gpa);
     try std.testing.expectEqual(@as(u8, 3), fresh_conflict_run.term.exited);
     const fresh_trail_raw = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });
@@ -343,7 +345,7 @@ test "sync resolve rejects versionless approved evidence and keep-remote replace
     const fresh_event_id = fresh_conflict.get("id").?.integer;
     const fresh_event_arg = try std.fmt.allocPrint(arena, "{d}", .{fresh_event_id});
 
-    const resolved_raw = suite.mustRunWith(&.{
+    const resolved_raw = suite.mustRunExtWith(&.{
         "sync",             "resolve",                            fresh_event_arg,               "--keep",                                                        "remote",
         "--evidence-token", fresh_evidence.get("token").?.string, "--expected-local-updated-at", fresh_evidence.get("local").?.object.get("updated_at").?.string, "--json",
     }, env);
@@ -361,7 +363,7 @@ test "sync resolve rejects versionless approved evidence and keep-remote replace
     try std.testing.expectEqualStrings("Remote edit", task_after.value.title);
     try std.testing.expectEqualStrings("doing", task_after.value.status);
 
-    const status_after = suite.mustRun(&.{ "sync", "status", "--entity", task_ref, "--json" });
+    const status_after = suite.mustRunExt(&.{ "sync", "status", "--entity", task_ref, "--json" });
     defer gpa.free(status_after);
     try std.testing.expect(std.mem.indexOf(u8, status_after, "\"last_sync_status\":\"ok\"") != null);
     const audit_after_raw = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });

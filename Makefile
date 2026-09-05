@@ -251,6 +251,7 @@ test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binar
 	PLANAR_AGENT_BIN=$(CPP_BIN_ABS)/$(AGENT_BINARY) \
 	PLANAR_WATCH_BIN=$(CPP_BIN_ABS)/$(WATCH_BINARY) \
 	PLANAR_EXECUTE_BIN=$(CPP_BIN_ABS)/$(EXECUTE_BINARY) \
+	PLANAR_EXT_BIN=$(CPP_BIN_ABS)/$(EXT_BINARY) \
 	$(ZIGBUILD) test-integration -Dtest-binary=true $(ARGS)
 
 .PHONY: cli-usage-check

@@ -54,7 +54,7 @@ test "scenario: external plane — register github + jira, list, propagate --dry
     _ = suite.registerProject("ext-flow");
 
     // ---- 1. Register both adapter shapes.
-    const gh = suite.mustRunJSON(RegisterResult, arena, &.{
+    const gh = suite.mustRunExtJSON(RegisterResult, arena, &.{
         "ext",       "register",     "github",     "gh-ext",
         "--project", "acme/widgets", "--auth-env", "PLANAR_TEST_GH_TOKEN",
         "--json",
@@ -63,7 +63,7 @@ test "scenario: external plane — register github + jira, list, propagate --dry
     try std.testing.expectEqualStrings("gh-ext", gh.slug);
     try std.testing.expectEqualStrings("github-issues", gh.kind);
 
-    const jira = suite.mustRunJSON(RegisterResult, arena, &.{
+    const jira = suite.mustRunExtJSON(RegisterResult, arena, &.{
         "ext",                    "register",   "jira",
         "jira-ext",               "--base-url", "https://example.atlassian.net",
         "--project",              "WIDG",       "--auth-env",
@@ -74,7 +74,7 @@ test "scenario: external plane — register github + jira, list, propagate --dry
     try std.testing.expectEqualStrings("jira", jira.kind);
 
     // ---- 2. ext list contains both rows.
-    const list_out = suite.mustRun(&.{ "ext", "list" });
+    const list_out = suite.mustRunExt(&.{ "ext", "list" });
     defer gpa.free(list_out);
     try std.testing.expect(std.mem.containsAtLeast(u8, list_out, 1, "gh-ext"));
     try std.testing.expect(std.mem.containsAtLeast(u8, list_out, 1, "jira-ext"));
@@ -105,7 +105,7 @@ test "scenario: external plane — register github + jira, list, propagate --dry
     // plan_id, system, strategy, created, skipped, failed,
     // results: [...]}. created reflects the count of NEW
     // counterparts a live run would create.
-    const preview = suite.mustRunJSON(PropagateResult, arena, &.{
+    const preview = suite.mustRunExtJSON(PropagateResult, arena, &.{
         "ext", "propagate", plan_id_str, "--dry-run", "--system", "gh-ext", "--json",
     });
     try std.testing.expect(preview.ok);
@@ -120,7 +120,7 @@ test "scenario: external plane — register github + jira, list, propagate --dry
     // either outcome — the verb's CONTRACT is "exit 0 on JSON
     // {ok:true} or exit non-zero on failure". We just want the
     // verb to round-trip its JSON when it does succeed.
-    const test_res = suite.execWith(&.{
+    const test_res = suite.execExtWith(&.{
         "ext", "test", "gh-ext", "--json",
     }, &.{.{ .key = "PLANAR_TEST_GH_TOKEN", .value = "dummy-token" }});
     defer gpa.free(test_res.stdout);

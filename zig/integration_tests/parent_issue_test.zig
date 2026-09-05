@@ -34,7 +34,7 @@ test "ext propagate --github-strategy parent-issue dispatches to the new engine 
     const arena = arena_backing.allocator();
 
     // Register a github-issues system.
-    const reg_out = suite.mustRun(&.{
+    const reg_out = suite.mustRunExt(&.{
         "ext",       "register",  "github",     "gh-pi",
         "--project", "acme/demo", "--auth-env", "PLANAR_TEST_GH_TOKEN",
     });
@@ -50,7 +50,7 @@ test "ext propagate --github-strategy parent-issue dispatches to the new engine 
     // dispatches to the engine; the engine fails fast on the missing
     // touched repo with an InvalidInput-mapped exit instead of the legacy
     // NotImplemented (exit 64).
-    const stderr = suite.expectFailureWith(
+    const stderr = suite.expectFailureExtWith(
         &.{
             "ext",          "propagate", plan_id_s,
             "--system",     "gh-pi",     "--github-strategy",
@@ -81,7 +81,7 @@ test "ext propagate --github-strategy projects-v2 dry-run runs the engine (task 
     defer arena_backing.deinit();
     const arena = arena_backing.allocator();
 
-    const reg_out = suite.mustRun(&.{
+    const reg_out = suite.mustRunExt(&.{
         "ext",       "register",  "github",     "gh-p2",
         "--project", "acme/demo", "--auth-env", "PLANAR_TEST_GH_TOKEN",
     });
@@ -95,7 +95,7 @@ test "ext propagate --github-strategy projects-v2 dry-run runs the engine (task 
     // Dry-run with no touched repos: the projects-v2 engine still runs and
     // reports the anchor as a planned creation. We must NOT see the legacy
     // NotImplemented message (Cycle B''' closure).
-    const out = suite.mustRunWith(
+    const out = suite.mustRunExtWith(
         &.{
             "ext",         "propagate", plan_id_s,
             "--system",    "gh-p2",     "--github-strategy",

@@ -39,6 +39,32 @@ fn resolveBin() []const u8 {
     );
 }
 
+/// Resolve the path to the compiled `planar-ext` binary, if the caller's
+/// environment names one.
+///
+/// Decisions 995-1001 moved the `ext`/top-level `sync` surface off `planar`
+/// onto a dedicated `planar-ext` binary — but only for the C++ port. The
+/// Zig-oracle `planar` binary still hosts `ext`/`sync` itself (it predates
+/// the split), and `zig build test-integration` never sets PLANAR_EXT_BIN
+/// because there is no oracle-side `planar-ext` to point it at.
+///
+/// So unlike `resolveBin`, this does NOT panic when the var is absent —
+/// it returns null, and callers (`Suite.init`) fall back to the suite's
+/// primary `bin` (PLANAR_BIN). `make test-parity-cpp` sets PLANAR_EXT_BIN
+/// explicitly, which is what routes ext/sync calls to the real binary
+/// under the C++ parity lane; every other lane is unaffected.
+fn resolveExtBinOpt() ?[]const u8 {
+    const raw: [*:null]?[*:0]u8 = std.c.environ;
+    var i: usize = 0;
+    while (raw[i]) |entry| : (i += 1) {
+        const s: []const u8 = std.mem.span(entry);
+        if (std.mem.startsWith(u8, s, "PLANAR_EXT_BIN=")) {
+            return s["PLANAR_EXT_BIN=".len..];
+        }
+    }
+    return null;
+}
+
 /// Shared state for one integration test run. Allocate on the stack in each
 /// test function; call deinit() when done (or defer it).
 ///
@@ -48,6 +74,13 @@ fn resolveBin() []const u8 {
 pub const Suite = struct {
     allocator: std.mem.Allocator,
     bin: []const u8,
+    /// Binary that owns the top-level `ext`/`sync` surface. Resolved from
+    /// PLANAR_EXT_BIN when set (the C++ parity lane, via `make
+    /// test-parity-cpp`); otherwise aliases `bin` (the Zig oracle, whose
+    /// `planar` binary still hosts `ext`/`sync` itself). Only the
+    /// ext*/mustRunExt* family of methods use this — plain `exec`/`mustRun`
+    /// etc. always target `bin`.
+    ext_bin: []const u8,
     /// Absolute path to the ephemeral database file (does not exist until the
     /// binary creates it on first use).
     db_path: []const u8,
@@ -82,6 +115,7 @@ pub const Suite = struct {
     /// on its first invocation via `ensureDb`.
     pub fn init(allocator: std.mem.Allocator) Suite {
         const bin = resolveBin();
+        const ext_bin = resolveExtBinOpt() orelse bin;
         const tmp = std.testing.tmpDir(.{});
         // Build the absolute DB path: .zig-cache/tmp/<random>/planar.db
         const db_path = std.fs.path.join(allocator, &.{
@@ -118,6 +152,7 @@ pub const Suite = struct {
         return .{
             .allocator = allocator,
             .bin = bin,
+            .ext_bin = ext_bin,
             .db_path = db_path,
             .config_path = config_path,
             .planar_home = planar_home,
@@ -302,44 +337,16 @@ pub const Suite = struct {
         }
     };
 
-    /// Execute the binary with the given extra arguments (the binary path is
-    /// prepended automatically). Returns stdout, stderr, and the exit term.
-    /// Never fails the test; callers inspect `term` to decide.
-    pub fn exec(self: *const Suite, args: []const []const u8) RunResult {
-        const gpa = self.allocator;
-
-        // Compose full argv: binary + caller-supplied args.
-        var argv_buf: [1 + max_argv_extra][]const u8 = undefined;
-        argv_buf[0] = self.bin;
-        if (args.len > max_argv_extra) @panic("too many argv entries; raise max_argv_extra");
-        for (args, 0..) |a, j| argv_buf[1 + j] = a;
-        const argv = argv_buf[0 .. 1 + args.len];
-
-        var env_map = self.buildEnvMap();
-        defer env_map.deinit();
-
-        const result = std.process.run(gpa, std.testing.io, .{
-            .argv = argv,
-            .environ_map = &env_map,
-        }) catch |e| {
-            std.debug.panic("Suite.exec failed to spawn '{s}': {s}", .{ self.bin, @errorName(e) });
-        };
-
-        return .{
-            .stdout = result.stdout,
-            .stderr = result.stderr,
-            .term = result.term,
-        };
-    }
-
     /// ExtraEnv carries extra environment variable overrides for execWith.
     pub const ExtraEnvEntry = struct { key: []const u8, value: []const u8 };
 
-    /// Like exec, but accepts additional environment variables that are merged
-    /// on top of the inherited + PLANAR_DB environment. Later entries override
-    /// earlier ones. Used by tests that need to control PAGER, PLANAR_EDITOR, etc.
-    pub fn execWith(
+    /// Shared implementation behind exec/execWith/execExt/execExtWith:
+    /// invoke `bin` with `args`, merging `extra_env` on top of the
+    /// inherited + PLANAR_DB environment. Never fails the test; callers
+    /// inspect `term` to decide.
+    fn execOnBin(
         self: *const Suite,
+        bin: []const u8,
         args: []const []const u8,
         extra_env: []const ExtraEnvEntry,
     ) RunResult {
@@ -347,7 +354,7 @@ pub const Suite = struct {
 
         // Compose full argv: binary + caller-supplied args.
         var argv_buf: [1 + max_argv_extra][]const u8 = undefined;
-        argv_buf[0] = self.bin;
+        argv_buf[0] = bin;
         if (args.len > max_argv_extra) @panic("too many argv entries; raise max_argv_extra");
         for (args, 0..) |a, j| argv_buf[1 + j] = a;
         const argv = argv_buf[0 .. 1 + args.len];
@@ -362,7 +369,7 @@ pub const Suite = struct {
             .argv = argv,
             .environ_map = &env_map,
         }) catch |e| {
-            std.debug.panic("Suite.execWith failed to spawn '{s}': {s}", .{ self.bin, @errorName(e) });
+            std.debug.panic("Suite.execOnBin failed to spawn '{s}': {s}", .{ bin, @errorName(e) });
         };
 
         return .{
@@ -370,6 +377,40 @@ pub const Suite = struct {
             .stderr = result.stderr,
             .term = result.term,
         };
+    }
+
+    /// Execute the binary with the given extra arguments (the binary path is
+    /// prepended automatically). Returns stdout, stderr, and the exit term.
+    /// Never fails the test; callers inspect `term` to decide.
+    pub fn exec(self: *const Suite, args: []const []const u8) RunResult {
+        return self.execOnBin(self.bin, args, &.{});
+    }
+
+    /// Like exec, but accepts additional environment variables that are merged
+    /// on top of the inherited + PLANAR_DB environment. Later entries override
+    /// earlier ones. Used by tests that need to control PAGER, PLANAR_EDITOR, etc.
+    pub fn execWith(
+        self: *const Suite,
+        args: []const []const u8,
+        extra_env: []const ExtraEnvEntry,
+    ) RunResult {
+        return self.execOnBin(self.bin, args, extra_env);
+    }
+
+    /// Like exec, but targets the `ext`/top-level-`sync` binary (`ext_bin`)
+    /// instead of `bin`. Use for `&.{"ext", ...}` / `&.{"sync", ...}`
+    /// invocations — NOT for `workbench sync`, which stays on `bin`.
+    pub fn execExt(self: *const Suite, args: []const []const u8) RunResult {
+        return self.execOnBin(self.ext_bin, args, &.{});
+    }
+
+    /// Like execWith, but targets `ext_bin`. See `execExt`.
+    pub fn execExtWith(
+        self: *const Suite,
+        args: []const []const u8,
+        extra_env: []const ExtraEnvEntry,
+    ) RunResult {
+        return self.execOnBin(self.ext_bin, args, extra_env);
     }
 
     /// Like execWith, but runs the command with process cwd set to `cwd`.
@@ -412,16 +453,13 @@ pub const Suite = struct {
     // Public test helpers (mirror Go's BaseSuite methods)
     // -------------------------------------------------------------------------
 
-    /// mustRun executes the binary with the given arguments. Fails the test
-    /// LOUDLY if the process exits non-zero — panics so the test runner
-    /// surfaces the failure rather than silently returning bogus stdout.
-    /// Returns stdout; caller must free with `self.allocator.free(stdout)`.
-    pub fn mustRun(self: *const Suite, args: []const []const u8) []u8 {
-        const res = self.exec(args);
+    /// Shared non-zero-exit panic path behind mustRun/mustRunWith/mustRunExt/
+    /// mustRunExtWith. Frees `res.stderr` on success; returns `res.stdout`.
+    fn mustFromResult(self: *const Suite, label: []const u8, res: RunResult) []u8 {
         if (res.term != .exited or res.term.exited != 0) {
             std.debug.print(
-                "\nmustRun: non-zero exit\nstdout: {s}\nstderr: {s}\n",
-                .{ res.stdout, res.stderr },
+                "\n{s}: non-zero exit\nstdout: {s}\nstderr: {s}\n",
+                .{ label, res.stdout, res.stderr },
             );
             self.allocator.free(res.stderr);
             self.allocator.free(res.stdout);
@@ -431,19 +469,44 @@ pub const Suite = struct {
         return res.stdout;
     }
 
+    /// Shared unexpected-success panic path behind expectFailure/
+    /// expectFailureWith/expectFailureExt/expectFailureExtWith. Frees
+    /// `res.stdout` on success; returns `res.stderr`.
+    fn expectFailureFromResult(self: *const Suite, label: []const u8, res: RunResult) []u8 {
+        if (res.term == .exited and res.term.exited == 0) {
+            std.debug.print(
+                "\n{s}: command succeeded unexpectedly\nstdout: {s}\n",
+                .{ label, res.stdout },
+            );
+            self.allocator.free(res.stdout);
+            self.allocator.free(res.stderr);
+            @panic("expectFailure: command exited 0 (negative-path assertion broken)");
+        }
+        self.allocator.free(res.stdout);
+        return res.stderr;
+    }
+
+    /// mustRun executes the binary with the given arguments. Fails the test
+    /// LOUDLY if the process exits non-zero — panics so the test runner
+    /// surfaces the failure rather than silently returning bogus stdout.
+    /// Returns stdout; caller must free with `self.allocator.free(stdout)`.
+    pub fn mustRun(self: *const Suite, args: []const []const u8) []u8 {
+        return self.mustFromResult("mustRun", self.exec(args));
+    }
+
+    /// Like mustRun, but targets `ext_bin` — the binary that owns the
+    /// top-level `ext`/`sync` surface. Use for `&.{"ext", ...}` /
+    /// `&.{"sync", ...}` invocations — NOT for `workbench sync`.
+    pub fn mustRunExt(self: *const Suite, args: []const []const u8) []u8 {
+        return self.mustFromResult("mustRunExt", self.execExt(args));
+    }
+
     /// mustRunJSON executes the binary, decodes stdout as a single JSON object
     /// into `T`, and returns the parsed value. Fails the test on non-zero exit
     /// or JSON decode error. String fields in the returned value are owned by
     /// `arena` and remain valid until the arena is freed.
-    pub fn mustRunJSON(
-        self: *const Suite,
-        comptime T: type,
-        arena: std.mem.Allocator,
-        args: []const []const u8,
-    ) T {
-        const stdout = self.mustRun(args);
-        defer self.allocator.free(stdout);
-
+    /// Shared JSON-decode panic path behind mustRunJSON/mustRunExtJSON.
+    fn parseMustJSON(comptime T: type, arena: std.mem.Allocator, stdout: []const u8) T {
         const parsed = std.json.parseFromSlice(T, arena, stdout, .{
             .allocate = .alloc_always,
             .ignore_unknown_fields = true,
@@ -458,23 +521,40 @@ pub const Suite = struct {
         return parsed.value;
     }
 
+    pub fn mustRunJSON(
+        self: *const Suite,
+        comptime T: type,
+        arena: std.mem.Allocator,
+        args: []const []const u8,
+    ) T {
+        const stdout = self.mustRun(args);
+        defer self.allocator.free(stdout);
+        return parseMustJSON(T, arena, stdout);
+    }
+
+    /// Like mustRunJSON, but targets `ext_bin`. See `mustRunExt`.
+    pub fn mustRunExtJSON(
+        self: *const Suite,
+        comptime T: type,
+        arena: std.mem.Allocator,
+        args: []const []const u8,
+    ) T {
+        const stdout = self.mustRunExt(args);
+        defer self.allocator.free(stdout);
+        return parseMustJSON(T, arena, stdout);
+    }
+
     /// expectFailure runs the command and asserts that the process exits
     /// non-zero. Panics if the command succeeded — silent success on a
     /// negative-path test is misleading. Returns stderr; caller must
     /// free with `self.allocator.free`.
     pub fn expectFailure(self: *const Suite, args: []const []const u8) []u8 {
-        const res = self.exec(args);
-        if (res.term == .exited and res.term.exited == 0) {
-            std.debug.print(
-                "\nexpectFailure: command succeeded unexpectedly\nstdout: {s}\n",
-                .{res.stdout},
-            );
-            self.allocator.free(res.stdout);
-            self.allocator.free(res.stderr);
-            @panic("expectFailure: command exited 0 (negative-path assertion broken)");
-        }
-        self.allocator.free(res.stdout);
-        return res.stderr;
+        return self.expectFailureFromResult("expectFailure", self.exec(args));
+    }
+
+    /// Like expectFailure, but targets `ext_bin`. See `mustRunExt`.
+    pub fn expectFailureExt(self: *const Suite, args: []const []const u8) []u8 {
+        return self.expectFailureFromResult("expectFailureExt", self.execExt(args));
     }
 
     /// mustRunWith is like mustRun but merges extra_env on top of the
@@ -485,18 +565,16 @@ pub const Suite = struct {
         args: []const []const u8,
         extra_env: []const ExtraEnvEntry,
     ) []u8 {
-        const res = self.execWith(args, extra_env);
-        if (res.term != .exited or res.term.exited != 0) {
-            std.debug.print(
-                "\nmustRunWith: non-zero exit\nstdout: {s}\nstderr: {s}\n",
-                .{ res.stdout, res.stderr },
-            );
-            self.allocator.free(res.stderr);
-            self.allocator.free(res.stdout);
-            @panic("mustRunWith: non-zero exit (see stderr above)");
-        }
-        self.allocator.free(res.stderr);
-        return res.stdout;
+        return self.mustFromResult("mustRunWith", self.execWith(args, extra_env));
+    }
+
+    /// Like mustRunWith, but targets `ext_bin`. See `mustRunExt`.
+    pub fn mustRunExtWith(
+        self: *const Suite,
+        args: []const []const u8,
+        extra_env: []const ExtraEnvEntry,
+    ) []u8 {
+        return self.mustFromResult("mustRunExtWith", self.execExtWith(args, extra_env));
     }
 
     /// expectFailureWith is like expectFailure but merges extra_env on top of
@@ -507,18 +585,16 @@ pub const Suite = struct {
         args: []const []const u8,
         extra_env: []const ExtraEnvEntry,
     ) []u8 {
-        const res = self.execWith(args, extra_env);
-        if (res.term == .exited and res.term.exited == 0) {
-            std.debug.print(
-                "\nexpectFailureWith: command succeeded unexpectedly\nstdout: {s}\n",
-                .{res.stdout},
-            );
-            self.allocator.free(res.stdout);
-            self.allocator.free(res.stderr);
-            @panic("expectFailureWith: command exited 0 (negative-path assertion broken)");
-        }
-        self.allocator.free(res.stdout);
-        return res.stderr;
+        return self.expectFailureFromResult("expectFailureWith", self.execWith(args, extra_env));
+    }
+
+    /// Like expectFailureWith, but targets `ext_bin`. See `mustRunExt`.
+    pub fn expectFailureExtWith(
+        self: *const Suite,
+        args: []const []const u8,
+        extra_env: []const ExtraEnvEntry,
+    ) []u8 {
+        return self.expectFailureFromResult("expectFailureExtWith", self.execExtWith(args, extra_env));
     }
 
     // -------------------------------------------------------------------------

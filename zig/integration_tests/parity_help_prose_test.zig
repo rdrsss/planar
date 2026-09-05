@@ -78,7 +78,13 @@ test "parity: `<verb> --help` retains Go prose lead-ins (Cluster B; red until pe
     }
 
     inline for (CASES) |case| {
-        const stdout = suite.mustRun(&.{ case.verb, "--help" });
+        // "ext" moved off `planar` onto `planar-ext` (decisions 995-1001);
+        // its prose now lives on ext_bin. Every other verb here stays on
+        // the primary binary.
+        const stdout = if (std.mem.eql(u8, case.verb, "ext"))
+            suite.mustRunExt(&.{ case.verb, "--help" })
+        else
+            suite.mustRun(&.{ case.verb, "--help" });
         defer gpa.free(stdout);
 
         var missing: std.ArrayList([]const u8) = .empty;
