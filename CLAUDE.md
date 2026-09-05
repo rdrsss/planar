@@ -196,11 +196,22 @@ distinction is load-bearing — never collapse them.
 - **C++ format/tidy/doc-comment lint** — `make cpp-lint` runs the pinned
   LLVM's `clang-format --dry-run --Werror`, `clang-tidy`, and a Doxygen
   doc-comment pass over every first-party `.cppm`/`.cpp` file (see
-  `docs/toolchain-parity.md`). It requires `build/debug` already configured
-  and built (clang-tidy needs the module BMIs materialized) and is
-  deliberately **not** composed into `make test-all` yet — see the Makefile's
-  own comment on why, and revisit once the C++ tree is the sole
-  implementation.
+  `docs/toolchain-parity.md`). Of the three, only `clang-format --Werror` and
+  the Doxygen pass (`WARN_AS_ERROR`) actually gate the recipe — a nonzero
+  exit from either stops `make` before the next step runs. **`clang-tidy` is
+  advisory only**: the recipe invokes it with no `--warnings-as-errors` and
+  `.clang-tidy` declares no `WarningsAsErrors` key, so any number of
+  clang-tidy warnings still exits 0 and the recipe proceeds (task 6438).
+  `.clang-tidy` enables exactly one check, `readability-identifier-naming`;
+  task 6438 fixed one config/codebase disagreement inherited wholesale from
+  tabula (a `PublicMemberSuffix: '_'` rule that matched none of this
+  codebase's public struct members and accounted for 2925 of 3030 measured
+  warnings) but left 105 genuine residual findings (task 6439) that block
+  turning `--warnings-as-errors` on for now. It requires `build/debug`
+  already configured and built (clang-tidy needs the module BMIs
+  materialized) and is deliberately **not** composed into `make test-all`
+  yet — see the Makefile's own comment on why, and revisit once the C++ tree
+  is the sole implementation.
 
 - **Authored-surface lint gate** — `make cli-usage-check` runs two ordered
   C++ validators, ported from the Zig oracle's `tools/cli_usage_lint.zig` and
@@ -377,10 +388,10 @@ When invoking the CLI to exercise documented behavior (running skills, composing
 
 The defaults follow centurion's proven conventions (decision D4, adopted wholesale); deviations require justification.
 
-- `make cpp-lint` (pinned LLVM `clang-format --dry-run --Werror` + `clang-tidy` + a Doxygen doc-comment pass, configs `.clang-format` / `.clang-tidy` / `Doxyfile.lint` — decision D16, adopting tabula's configs) clean before merge. `cmake --build` clean with `PLANAR_WARNINGS_AS_ERRORS=ON` (the `debug` preset's default). `cpp-lint` is not yet composed into `make test-all` (see Build And Test); run it explicitly.
+- `make cpp-lint` (pinned LLVM `clang-format --dry-run --Werror` + `clang-tidy` + a Doxygen doc-comment pass, configs `.clang-format` / `.clang-tidy` / `Doxyfile.lint` — decision D16, adopting tabula's configs) clean before merge for the two steps that actually gate: `clang-format --Werror` and the Doxygen pass. **`clang-tidy` is advisory only** — see Build And Test § Test stratification for why and its current warning count. `cmake --build` clean with `PLANAR_WARNINGS_AS_ERRORS=ON` (the `debug` preset's default). `cpp-lint` is not yet composed into `make test-all` (see Build And Test); run it explicitly.
 - **Modules only, no headers in first-party code** (decision D1/D4): every translation unit is a named module (`.cppm` interface + `.cpp` implementation), imported via `import planar.<dotted.path>;`. `import std;` is the only way the standard library is visible — no `#include <...>` for anything the standard library provides.
 - **Strictly downward module dependencies** (decision D15): a module may only import modules beneath it in the dependency graph (`cmd` → `engine`/`cliapp` → `lib` leaves). No cycles, no sideways coupling between sibling command binaries.
-- Identifiers: `snake_case` throughout — functions, variables, namespaces, and types alike (e.g. `struct parsed_args`, `class connection`, `struct db_error`); `SCREAMING_SNAKE_CASE` for macros/constants by convention. Module file names lowercase, short, no underscores when possible. Enforced by `.clang-format`/`.clang-tidy`, not restated as a separate house style here.
+- Identifiers: `snake_case` throughout — functions, variables, namespaces, and types alike (e.g. `struct parsed_args`, `class connection`, `struct db_error`); `SCREAMING_SNAKE_CASE` for macros/constants by convention. Module file names lowercase, short, no underscores when possible. Checked by `.clang-format` (enforced) and `.clang-tidy`'s `readability-identifier-naming` (advisory only — see Build And Test § Test stratification), not restated as a separate house style here.
 - Errors: `std::expected<T, E>` at API boundaries, not exceptions, for expected-failure paths (decision-driven; see `domain_error_kind` and the per-module `*_error` enums under `src/lib/`). Exceptions are reserved for genuinely exceptional/unrecoverable conditions. Wrap underlying library errors (SQLite, curl, Lua) at the boundary into the module's own error enum; never let a raw vendor error code leak past the module surface.
 - Database access: `src/lib/db/` (`db.cppm`/`db.cpp` connection + transaction wrappers, `migrate.cppm`/`migrate.cpp` migration application against the generated `planar.db.migrations` module). One connection per process, threaded through context/handler structs. Migrations are applied via the embedded module — never write ad-hoc SQL migration code in the runtime.
 - CLI parsing: CLI11 (vendored, `vendor/cli11/`) wrapped by Planar's own `src/lib/cliapp/` for tokenization/value-coercion only (decision 948) — help text, the `schema` JSON catalog, exit-code mapping, and completion are Planar's own, not CLI11's, because they are the oracle-pinned parity surface. Subcommand-per-domain (init, scope, association, plan, task, question, scenario, decision, artifact, promote, workbench, workspace, ext, link, sync, resume, handoff, capture, audit, health, help, spec, config, templates, tree); `ext propagate` is the whole-feature propagation verb (now on `planar-ext`); `tree` is the hierarchical drill-down verb. Authoritative list lives in `docs/cli-reference.md`.
