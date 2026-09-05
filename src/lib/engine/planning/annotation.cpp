@@ -8,6 +8,7 @@ module planar.engine.planning.annotation;
 import std;
 import planar.json_text;
 import planar.db;
+import planar.log;
 import planar.scope_ref;
 import planar.policy;
 import planar.engine.planning.transitions;
@@ -37,6 +38,16 @@ auto record_audit(db::connection& conn, const audit::record_args& args) -> std::
     return std::unexpected(annotation_error::audit_write_failed);
   }
   return {};
+}
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>` diagnostic
+/// ahead of the outer handler error. See
+/// `zig/src/engine/planning/annotation.zig`'s `create`/`update`/`remove`
+/// for the shapes this ports; mirrors `engine::planning::exec_failed`
+/// (task.cpp).
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> annotation_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return annotation_error::query_failed;
 }
 
 } // namespace
@@ -455,7 +466,7 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<anno
                            "title, slug, body, status, vendor, plan_id, task_id"
                            ") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id");
   if (!stmt) {
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.create", "PrepareFailed"));
   }
 
   const auto bind_opt_text = [&](int index, std::optional<std::string_view> v) {
@@ -474,7 +485,7 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<anno
                      stmt->bind_text(13, args.vendor).has_value() && bind_opt_int(14, args.plan_id) &&
                      bind_opt_int(15, args.task_id);
   if (!bound) {
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.create", "BindFailed"));
   }
 
   auto step = stmt->step();
@@ -727,7 +738,7 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
 
   auto stmt = conn.prepare(sql);
   if (!stmt) {
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.update", "PrepareFailed"));
   }
   int  idx   = 1;
   bool bound = true;
@@ -767,7 +778,7 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
   }
   bound = bound && stmt->bind_int64(idx, id).has_value();
   if (!bound) {
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.update", "BindFailed"));
   }
 
   auto step = stmt->step();
@@ -775,7 +786,7 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
     if (is_unique_violation(step.error())) {
       return std::unexpected(annotation_error::slug_conflict);
     }
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.update", "StepFailed"));
   }
   // ORACLE: a patch that carries a status writes `status_change`; any
   // other patch writes `update`. BOTH carry a NULL summary -- verified by
@@ -801,13 +812,13 @@ auto remove(db::connection& conn, std::int64_t id) -> std::expected<void, annota
   }
   auto stmt = conn.prepare("delete from annotations where id = ?");
   if (!stmt) {
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.remove", "PrepareFailed"));
   }
   if (auto b = stmt->bind_int64(1, id); !b) {
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.remove", "BindFailed"));
   }
   if (auto s = stmt->step(); !s) {
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.remove", "StepFailed"));
   }
   // ORACLE: `delete` with a NULL summary -- the deleted row's title is NOT
   // interpolated, unlike `create`.
