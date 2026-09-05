@@ -149,7 +149,7 @@ pub const Suite = struct {
         // automatic and a test that "passed" looks identical either way.
         assertIsolatedDbPath(db_path);
 
-        return .{
+        const self: Suite = .{
             .allocator = allocator,
             .bin = bin,
             .ext_bin = ext_bin,
@@ -159,6 +159,36 @@ pub const Suite = struct {
             .codex_home = codex_home,
             .tmp_dir = tmp,
         };
+
+        // `planar-ext` deliberately does NOT auto-apply migrations (decisions
+        // 995-1001: it is read-only on planning tables and read-write on
+        // exactly external_links/external_systems/sync_events, enforced by a
+        // sqlite3_set_authorizer allowlist -- it is not the migration owner
+        // and must not become one). `bin` (`planar`) DOES auto-migrate on
+        // first use. When PLANAR_EXT_BIN names a distinct binary (the C++
+        // parity lane, via `make test-parity-cpp`), a fresh per-suite DB has
+        // no schema_migrations table at all yet, and the first call routed
+        // to ext_bin would fail SchemaVersionBehind before any test body
+        // runs. Seed once, here, by running `bin` against the same
+        // db_path/env the suite will use for every subsequent call -- this
+        // is the documented ordering contract (see docs/concepts.md
+        // "Binaries"): an ext_bin caller must have `planar` initialize the
+        // DB first. The Zig oracle lane (ext_bin aliases bin) needs no
+        // seeding: whichever verb reaches the shared binary first migrates
+        // it regardless of which family (`exec*` vs `execExt*`) issued it.
+        if (!std.mem.eql(u8, ext_bin, bin)) {
+            const seed = self.execOnBin(bin, &.{ "plan", "list", "--json" }, &.{});
+            allocator.free(seed.stdout);
+            allocator.free(seed.stderr);
+            if (seed.term != .exited or seed.term.exited != 0) {
+                std.debug.panic(
+                    "Suite.init: seeding migrations via '{s} plan list --json' failed (needed before any planar-ext call against a fresh DB)",
+                    .{bin},
+                );
+            }
+        }
+
+        return self;
     }
 
     /// Panic unless `path` is a build-directory scratch database.
