@@ -18,7 +18,7 @@ scripts are committed at `scripts/toolchain-probes/`.
 | CMake | **4.4.2** | `import std;`'s experimental gate is a UUID keyed to the CMake feature release; verified against the actually-installed 4.4.2 (see below). |
 | Ninja | **1.13.2** | Required for C++ module dependency scanning (dyndep); no other CMake generator supports it. |
 | git | **2.50.1** (floor: **≥ 2.31**) | The floor was discovered in the M0 zig/-relocation cycle (commit `6423d9b`): `detectWorktree`'s git-common-dir fallback needs `git rev-parse --path-format=absolute --git-common-dir`, a flag introduced in git 2.31. `--path-format=absolute` must precede `--git-common-dir` (it is a mode flag that governs how the path options after it are printed). Below that floor the path resolves incorrectly against the wrong base and a primary checkout gets misclassified as a secondary worktree. |
-| Doxygen | **1.18.0** (Homebrew formula `doxygen`) — not version-pinned, tracked as-installed | The `doxygen Doxyfile.lint` gate (`make cpp-lint`) is live (plan 996, task `cpp-lint-doxygen-sigbus`). 1.18.0 has a nondeterministic upstream defect: it dies with SIGBUS (exit 138) on a clean, unchanged tree, unrelated to load, config, or content. Measured by the orchestrator on 2026-08-22: 6 standalone runs against an idle machine produced exits `0,138,0,0,138,0` — roughly a **25-50% crash rate**. `scripts/cpp-lint-doxygen.sh` retries doxygen up to 3 attempts total, but ONLY on a signal-death exit (`>= 128`); a genuine lint failure (e.g. `WARN_AS_ERROR=YES` on an undocumented export, exit 1) fails immediately on the first attempt with no retry, so the gate stays honest under the flake. Each retry prints a visible message so a rising crash rate remains observable. Re-evaluate this row (and reconsider pinning a fixed Doxygen release) the next time Doxygen is upgraded — compare the new version's crash rate against this 25-50% baseline before assuming the upstream bug is fixed. |
+| Doxygen | **1.18.0** (Homebrew formula `doxygen`) — not version-pinned, tracked as-installed | The `doxygen Doxyfile.lint` gate (`make cpp-lint`) is live (plan 996, task `cpp-lint-doxygen-sigbus`). 1.18.0 has a nondeterministic upstream defect: it dies with SIGBUS (exit 138) on a clean, unchanged tree, unrelated to load, config, or content. Measured by the orchestrator on 2026-08-22: 6 standalone runs against an idle machine produced exits `0,138,0,0,138,0` — roughly a **25-50% crash rate**. `scripts/cpp-lint-doxygen.sh` retries doxygen up to 3 attempts total, but ONLY when the captured output of the attempt contains no WARN_FORMAT diagnostic line — a genuine finding is authoritative the moment it is printed, regardless of whether doxygen then also dies from a signal while unwinding (task 6315; see "Doxygen retry loop discriminates on captured output, not just exit code" below). Each retry prints a visible message so a rising crash rate remains observable. Re-evaluate this row (and reconsider pinning a fixed Doxygen release) the next time Doxygen is upgraded — compare the new version's crash rate against this 25-50% baseline before assuming the upstream bug is fixed. 1.18.0 also mangles the `override` substring inside identifiers used as template arguments in a trailing return type — see "Doxygen 1.18.0 mangles `override` inside identifiers" below (task 6323). |
 
 ### Why 23, and the 22 interim
 
@@ -46,6 +46,112 @@ findings recorded below, including the `-Wc23-extensions` diagnostic on
 `llvm@22` (22.1.8) is still installed alongside it on this machine but is
 no longer the pin; re-run the probes again before trusting a future major
 bump.
+
+### Doxygen retry loop discriminates on captured output, not just exit code
+
+Task 6315. `scripts/cpp-lint-doxygen.sh` originally split behavior purely on
+the shell exit-status family: `>= 128` (terminated by signal) meant "known
+SIGBUS flake, retry"; anything in `[1,127]` meant "genuine `WARN_AS_ERROR`
+finding, fail immediately". That split is necessary but was not sufficient:
+task 6303 and task 6330 each found a genuine doc-comment defect (undocumented
+params/members) that got absorbed by the retry loop and reported as flake
+noise instead.
+
+The reason: `Doxyfile.lint` sets `WARN_AS_ERROR = YES`, whose documented
+behavior is to "immediately stop when a warning is encountered" — and on this
+1.18.0 build that stop can itself die from a signal instead of a clean
+`exit(1)`, *after* the diagnostic line has already been written to stderr per
+`WARN_FORMAT`. A crash in that family is indistinguishable from the
+content-independent SIGBUS flake by exit code alone.
+
+The fix: the script now captures every attempt's combined stdout+stderr and
+scans it for a line matching `WARN_FORMAT`'s shape
+(`^[^[:space:]]+:[0-9]+: `, i.e. `$file:$line: $text`) *before* looking at the
+exit code. Since `QUIET = YES` means that pattern is the only kind of line
+doxygen ever writes on a clean run, any match is a genuine diagnostic and is
+now authoritative — printed and failed immediately, with no retry — even if
+the process then also dies from a signal. Only a crash whose output contains
+no such line is treated as the flake and retried, up to the existing 3-attempt
+bound.
+
+Verified with two proofs (both read the script's own exit code directly, not
+through a pipe):
+
+- A real `WARN_AS_ERROR` finding (a `.cppm` with an undocumented parameter,
+  clean `exit 1`, no signal) fails on attempt 1/3 with no retry message.
+- A stub `doxygen` that dies from `SIGBUS` with no diagnostic output on its
+  first invocation and exits 0 on its second reproduces the original retry
+  path unchanged: one retry message, then a clean pass.
+- A stub `doxygen` that prints a `WARN_FORMAT`-shaped diagnostic line and
+  *then* dies from `SIGBUS` on every attempt — the exact task-6315 masking
+  shape — now fails immediately on attempt 1/3 with the diagnostic reprinted,
+  instead of retrying and possibly reporting a false pass on a later attempt.
+
+### Doxygen 1.18.0 mangles `override` inside identifiers
+
+Task 6323. Reproduced empirically: doxygen 1.18.0 tokenizes the `override`
+**keyword** out of the middle of an identifier when that identifier is used
+as a template argument **inside a trailing return type** (`-> std::expected<
+some_override_thing, other_type>`, etc.). It does not misfire when the same
+identifier appears as a function parameter, a struct/class member's
+declared type, an enum value, or a template argument in an ordinary
+(non-trailing-return-type) declaration — all of those parse clean. The
+narrower a repro gets, the more this looks like the trailing-`->` parse path
+specifically mis-tokenizing its argument list, not a blanket "the word
+override is special" bug.
+
+Minimal repro (fully documented on both sides, to make the false positive
+unambiguous):
+
+```cpp
+export enum class decode_error : std::uint8_t { syntax };
+export struct manual_overrides { std::int64_t schema_version = 0; };
+export auto load(const std::filesystem::path& path)
+    -> std::expected<manual_overrides, decode_error>;
+```
+
+fails with:
+
+```
+error: Member decode_error (variable) of namespace probe is not documented.
+```
+
+— `decode_error` **is** documented; doxygen has misparsed
+`std::expected<manual_overrides, decode_error>`, apparently reading
+`manual_` + `override` + `s` as the keyword `override` embedded in the first
+template argument, which knocks the rest of the trailing-return-type parse
+off the rails and makes it treat the second template argument as an
+undocumented namespace-scope variable declaration instead. Renaming
+`manual_overrides` to `manual_edits` (no `override` substring, same
+semantics) makes the identical declaration parse clean with zero warnings.
+
+This exact defect and repro were hit for real in
+`src/lib/engine/workspace/routing.cppm`'s `manual_edits` type (see the
+`## Why this type is NOT called \`overrides\`` comment on that struct for the
+full investigation, including two wrong hypotheses ruled out along the way);
+that is the only occurrence in the current tree, and it already carries the
+rename fix. A repo-wide sweep for `override`-substring identifiers used as
+template arguments (`grep -rnE '<[^<>]*[a-zA-Z_]override[a-zA-Z_]*[^<>]*>'`)
+found no other live occurrence.
+
+**Chosen fix: none of `Doxyfile.lint`, a suppression, or a rename was needed
+this cycle** (the one prior occurrence is already renamed) — this section
+exists so the trigger is documented at the canonical toolchain-parity
+location instead of only inside one struct's comment, and so a future author
+does not re-spend the investigation. **Rejected approaches**, in order of how
+much they would have weakened the gate: (1) loosening `WARN_AS_ERROR` off
+`YES` — rejected outright, it would silence every future genuine
+undocumented-export finding tree-wide, not just this false positive; (2) a
+blanket per-file Doxygen suppression — rejected, `Doxyfile.lint` has no
+per-line escape hatch analogous to `cli-lint-ignore`, and a file-wide
+suppression would hide real findings elsewhere in the same file; (3) a
+`Doxyfile.lint` setting — none exists that disables keyword-substring
+tokenization for identifiers. Renaming the offending identifier is the
+narrowest fix that keeps `WARN_AS_ERROR = YES` fully in force everywhere
+else, and is what actually resolved the one occurrence found. If a future
+`.cppm`/`.cpp` hits this again: rename the identifier so it does not contain
+`override` as a substring (matching case, e.g. `Override`/`OVERRIDE` too) —
+do not reach for a suppression.
 
 ## Platform prefixes
 
