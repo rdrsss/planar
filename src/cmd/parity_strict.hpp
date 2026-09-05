@@ -129,13 +129,30 @@ namespace planar::parity {
     return false;
   }
 
-  // `git log -1 --format=%ct -- zig/` — the unix-epoch commit time of the
-  // most recent COMMITTED change under zig/. Shelled rather than linked
-  // against libgit2: every other timestamp-vs-git-history comparison in
-  // this tree (the CMake configure-time version this replaces) did the
-  // same, and a single `popen` per oracle-gated case is the trivial cost
-  // documented above.
-  std::string const cmd = "git -C " + shell_quote_path(oracle_root.string()) + " log -1 --format=%ct -- zig/ 2>/dev/null";
+  // `git log -1 --format=%ct -- <pathspecs>` — the unix-epoch commit time
+  // of the most recent COMMITTED change under the paths that actually
+  // produce `zig/zig-out/bin/planar`. Deliberately NARROWER than the whole
+  // `zig/` tree (task 6447): `zig/build.zig` wires the `exe` artifact from
+  // `src/cmd/planar/main.zig` through `mod`/`db_mod`/`cli_mod`/`engine_mod`/
+  // `runtime_mod`, which in turn pull in `zig/src/`, the vendored C/Zig deps
+  // under `zig/vendor/` (sqlite, lua, tree-sitter, tree-sitter-zig, libvaxis,
+  // etcli-zig), the dependency manifest `zig/build.zig.zon`, and the two
+  // build-time codegen tools `zig/tools/gen_migrations.zig` and
+  // `zig/tools/gen_templates.zig` (each spawned by `build.zig` to produce
+  // the `migrations`/`templates_embed` modules `db_mod`/`engine_mod`
+  // import). `zig/integration_tests/`, `zig/tools/vendor_sync.zig`,
+  // `zig/tools/cli_usage_lint.zig`, and `zig/tools/surface_lint.zig` are
+  // NOT inputs to this artifact — a commit that only touches those cannot
+  // change the built binary, so it must not trip staleness. Shelled rather
+  // than linked against libgit2: every other timestamp-vs-git-history
+  // comparison in this tree (the CMake configure-time version this
+  // replaces) did the same, and a single `popen` per oracle-gated case is
+  // the trivial cost documented above.
+  std::string const cmd = "git -C " + shell_quote_path(oracle_root.string()) +
+                           " log -1 --format=%ct -- "
+                           "zig/build.zig zig/build.zig.zon zig/src/ zig/vendor/ "
+                           "zig/tools/gen_migrations.zig zig/tools/gen_templates.zig "
+                           "2>/dev/null";
   FILE*             pipe = ::popen(cmd.c_str(), "r");
   if (pipe == nullptr) {
     return false;
