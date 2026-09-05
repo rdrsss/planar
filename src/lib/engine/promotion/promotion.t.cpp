@@ -406,3 +406,124 @@ TEST_CASE("the text output echoes the --to flag verbatim, not the resolved slug"
   CHECK(render_promote_text("plan", 1, "assoc:beta", scope_info{.scope_kind = "global", .scope_id = std::nullopt}) ==
         "plan:1 promoted to association assoc:beta  (was: global)\n");
 }
+
+// =========================================================================
+// Audit (task 6184)
+// =========================================================================
+//
+// Oracle-captured shape (running `$Z promote plan:1 --to project:planar
+// --json` then `$Z demote plan:1 --from project:planar --json` against a
+// scratch DB, `select * from audit_log`):
+//
+//   status_change|plan|1|||promote plan:1 from global to association:1
+//   status_change|plan|1|||demote plan:1 from association:1 to global
+//
+// `actor`/`scope` are NULL on both rows, matching every other wired site.
+
+namespace {
+
+struct audit_row {
+  std::string              verb;
+  std::string              entity_kind;
+  std::int64_t             entity_id;
+  bool                     actor_is_null;
+  bool                     scope_is_null;
+  std::optional<std::string> summary;
+};
+
+auto last_audit_row(planar::db::connection& conn) -> audit_row {
+  auto stmt = conn.prepare("select verb, entity_kind, entity_id, actor, scope, summary "
+                           "from audit_log order by id desc limit 1");
+  REQUIRE(stmt.has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  REQUIRE(*step == planar::db::step_result::row);
+  audit_row row{.verb          = stmt->column_text(0),
+               .entity_kind   = stmt->column_text(1),
+               .entity_id     = stmt->column_int64(2),
+               .actor_is_null = stmt->is_null(3),
+               .scope_is_null = stmt->is_null(4),
+               .summary       = std::nullopt};
+  if (!stmt->is_null(5)) {
+    row.summary = stmt->column_text(5);
+  }
+  return row;
+}
+
+} // namespace
+
+TEST_CASE("promote writes an oracle-shaped best-effort audit row", "[promotion][audit]") {
+  scratch_db_path scratch;
+  auto            conn     = open_migrated(scratch);
+  const auto      assoc_id = insert_assoc(conn, "alpha");
+  const auto      plan_id  = insert_global_plan(conn, "pg");
+
+  REQUIRE(promote(conn, promote_args{.kind = "plan", .id = plan_id, .to_scope = "alpha"}).has_value());
+
+  auto row = last_audit_row(conn);
+  CHECK(row.verb == "status_change");
+  CHECK(row.entity_kind == "plan");
+  CHECK(row.entity_id == plan_id);
+  CHECK(row.actor_is_null);
+  CHECK(row.scope_is_null);
+  REQUIRE(row.summary.has_value());
+  CHECK(*row.summary == std::format("promote plan:{} from global to association:{}", plan_id, assoc_id));
+}
+
+TEST_CASE("demote writes an oracle-shaped best-effort audit row", "[promotion][audit]") {
+  scratch_db_path scratch;
+  auto            conn     = open_migrated(scratch);
+  const auto      assoc_id = insert_assoc(conn, "alpha");
+  const auto      plan_id  = insert_global_plan(conn, "pg");
+  REQUIRE(promote(conn, promote_args{.kind = "plan", .id = plan_id, .to_scope = "alpha"}).has_value());
+
+  REQUIRE(demote(conn, "plan", plan_id).has_value());
+
+  auto row = last_audit_row(conn);
+  CHECK(row.verb == "status_change");
+  CHECK(row.entity_kind == "plan");
+  CHECK(row.entity_id == plan_id);
+  CHECK(row.actor_is_null);
+  CHECK(row.scope_is_null);
+  REQUIRE(row.summary.has_value());
+  CHECK(*row.summary == std::format("demote plan:{} from association:{} to global", plan_id, assoc_id));
+}
+
+TEST_CASE("promote's audit write is best-effort: a broken audit_log does not fail the verb", "[promotion][audit]") {
+  // This is the asymmetry task 6184 calls out explicitly: promotion.zig
+  // `catch {}`s the audit write so a failed row cannot roll back an
+  // already-committed scope change. Every other wired bucket instead
+  // propagates the failure (see association.cpp's `record_audit`). Drop
+  // the table out from under the connection to force `audit::record` to
+  // fail, then assert the scope mutation still lands.
+  scratch_db_path scratch;
+  auto            conn     = open_migrated(scratch);
+  const auto      assoc_id = insert_assoc(conn, "alpha");
+  const auto      plan_id  = insert_global_plan(conn, "pg");
+  exec(conn, "drop table audit_log");
+
+  auto ok = promote(conn, promote_args{.kind = "plan", .id = plan_id, .to_scope = "alpha"});
+  REQUIRE(ok.has_value());
+
+  auto after = read_entity_scope(conn, "plan", plan_id);
+  REQUIRE(after.has_value());
+  CHECK(after->scope_kind == "association");
+  REQUIRE(after->scope_id.has_value());
+  CHECK(*after->scope_id == assoc_id);
+}
+
+TEST_CASE("demote's audit write is best-effort: a broken audit_log does not fail the verb", "[promotion][audit]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  insert_assoc(conn, "alpha");
+  const auto plan_id = insert_global_plan(conn, "pg");
+  REQUIRE(promote(conn, promote_args{.kind = "plan", .id = plan_id, .to_scope = "alpha"}).has_value());
+  exec(conn, "drop table audit_log");
+
+  auto ok = demote(conn, "plan", plan_id);
+  REQUIRE(ok.has_value());
+
+  auto after = read_entity_scope(conn, "plan", plan_id);
+  REQUIRE(after.has_value());
+  CHECK(after->scope_kind == "global");
+}

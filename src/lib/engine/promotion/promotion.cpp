@@ -9,12 +9,15 @@ import std;
 import planar.json_text;
 import planar.db;
 import planar.scope_ref;
+import planar.policy;
 
 namespace planar::engine::promotion {
 
 // The one shared escape table, layer 1. See json_text.cppm -- the local
 // copy this replaced was missing the \b and \f short forms.
 using json_text::json_string;
+
+namespace audit = planar::policy::audit;
 
 namespace {
 
@@ -100,9 +103,43 @@ auto apply_scope_update(db::connection& conn, std::string_view table, std::strin
   return {};
 }
 
+/// @brief Render a stored `current_scope` the way both handlers' text
+/// output does: `"<kind>:<id>"` when `scope_id` is set, else just `"<kind>"`.
+/// Same shape as `scope_display(const scope_info&)` below, over the
+/// module-local `current_scope` type.
+auto scope_display(const current_scope& s) -> std::string {
+  return s.id.has_value() ? std::format("{}:{}", s.kind, *s.id) : s.kind;
+}
+
+/// @brief Append the best-effort `status_change` audit row both `promote`
+/// and `demote` write after their scope UPDATE has already committed.
+///
+/// Mirrors zig's `policy.audit.record(...) catch {}` at both call sites in
+/// promotion.zig: this is the tree's ONLY best-effort audit shape (every
+/// other wired call site propagates a write failure). The caller's scope
+/// mutation is the load-bearing write; a failed audit write here is
+/// swallowed on purpose so it cannot undo an already-committed scope
+/// change. `actor`/`scope` are left unset, matching every ported site.
+/// @param conn An open, migrated connection whose scope UPDATE already
+/// succeeded.
+/// @param kind The entity kind text (e.g. `"plan"`).
+/// @param id The entity's row id.
+/// @param summary The oracle-shaped one-line summary (see promotion.cppm).
+void record_audit_best_effort(db::connection& conn, std::string_view kind, std::int64_t id, std::string_view summary) {
+  (void)audit::record(conn, audit::record_args{.verb    = audit::verb::status_change,
+                                               .entity  = audit::entity_ref{.kind = kind, .id = id},
+                                               .actor   = std::nullopt,
+                                               .scope   = std::nullopt,
+                                               .summary = summary});
+}
+
 /// @brief Shared demote path used by both `demote` and
-/// `promote(to_scope == "global")`. Mirrors zig's `demoteEntity`.
-auto demote_entity(db::connection& conn, std::string_view table, std::int64_t id) -> std::expected<void, promote_error> {
+/// `promote(to_scope == "global")`. Mirrors zig's `demoteEntity`, including
+/// its best-effort audit write (see promotion.cppm § Audit).
+/// @param kind The entity kind text, used only for the audit summary (the
+/// table lookup already happened in the caller).
+auto demote_entity(db::connection& conn, std::string_view table, std::string_view kind, std::int64_t id)
+    -> std::expected<void, promote_error> {
   auto current = read_current_scope(conn, table, id);
   if (!current) {
     return std::unexpected(current.error());
@@ -110,7 +147,13 @@ auto demote_entity(db::connection& conn, std::string_view table, std::int64_t id
   if (current->kind == "global") {
     return std::unexpected(promote_error::scope_unchanged);
   }
-  return apply_scope_update(conn, table, "global", std::nullopt, id);
+  auto from_str = scope_display(*current);
+  auto applied  = apply_scope_update(conn, table, "global", std::nullopt, id);
+  if (!applied) {
+    return applied;
+  }
+  record_audit_best_effort(conn, kind, id, std::format("demote {}:{} from {} to global", kind, id, from_str));
+  return {};
 }
 
 /// @brief Render `scope_id`-style optional integers the way the oracle
@@ -148,7 +191,7 @@ auto promote(db::connection& conn, const promote_args& args) -> std::expected<vo
     return std::unexpected(promote_error::unsupported_scope);
   }
   if (args.to_scope == "global") {
-    return demote_entity(conn, *table, args.id);
+    return demote_entity(conn, *table, args.kind, args.id);
   }
 
   auto resolved = scope_ref::resolve(conn, args.to_scope);
@@ -178,7 +221,15 @@ auto promote(db::connection& conn, const promote_args& args) -> std::expected<vo
     return std::unexpected(promote_error::scope_unchanged);
   }
 
-  return apply_scope_update(conn, *table, "association", assoc_id, args.id);
+  auto from_str = scope_display(*current);
+  auto to_str   = std::format("association:{}", assoc_id);
+  auto applied  = apply_scope_update(conn, *table, "association", assoc_id, args.id);
+  if (!applied) {
+    return applied;
+  }
+  record_audit_best_effort(conn, args.kind, args.id,
+                           std::format("promote {}:{} from {} to {}", args.kind, args.id, from_str, to_str));
+  return {};
 }
 
 auto demote(db::connection& conn, std::string_view kind, std::int64_t id) -> std::expected<void, promote_error> {
@@ -186,7 +237,7 @@ auto demote(db::connection& conn, std::string_view kind, std::int64_t id) -> std
   if (!table.has_value()) {
     return std::unexpected(promote_error::invalid_scope);
   }
-  return demote_entity(conn, *table, id);
+  return demote_entity(conn, *table, kind, id);
 }
 
 auto render_scope_change_json(std::string_view kind, std::int64_t id, const scope_info& current, const scope_info& previous)
