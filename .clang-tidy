@@ -1,9 +1,17 @@
-# Planar clang-tidy configuration — adopted from tabula (D16). Identifier
-# naming only, for now — lower_case identifiers, `_` private/protected
-# member prefix, `_` public member suffix, and tabula's deliberate exception
-# kept: template parameters are CamelCase, the one non-lower_case identifier
-# kind, kept as the visual signal distinguishing a template parameter from a
+# Planar clang-tidy configuration — adopted from tabula (D16), corrected at
+# task 6438. Identifier naming only, for now — lower_case identifiers, `_`
+# private/protected member prefix, and tabula's deliberate exception kept:
+# template parameters are CamelCase, the one non-lower_case identifier kind,
+# kept as the visual signal distinguishing a template parameter from a
 # concrete type. Use the pinned LLVM's clang-tidy (docs/toolchain-parity.md).
+#
+# Task 6438 removed tabula's `_` PublicMemberSuffix rule: it never matched
+# this codebase's actual convention (CLAUDE.md § C++ Style: plain snake_case
+# throughout, e.g. `struct parsed_args`) and was firing on 2925 of 3030
+# measured warnings (96.5%) — a config/codebase disagreement inherited
+# wholesale from tabula rather than a real defect. Public members now fall
+# back to VariableCase (lower_case), matching what the codebase already
+# does almost everywhere (see e.g. src/lib/engine/identity/scope.cppm).
 ---
 Checks: >
   -*,
@@ -12,8 +20,6 @@ CheckOptions:
   - key: readability-identifier-naming.PrivateMemberPrefix
     value: '_'
   - key: readability-identifier-naming.ProtectedMemberPrefix
-    value: '_'
-  - key: readability-identifier-naming.PublicMemberSuffix
     value: '_'
   - key: readability-identifier-naming.ClassCase
     value: lower_case
