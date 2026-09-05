@@ -19,18 +19,27 @@
 /// string builders over this module's own `scope_info` type, take no
 /// database handle, and are trivially liftable into a handler later.
 ///
+/// ## Audit (task 6184)
+///
+/// Both `promote` and `demote` write a BEST-EFFORT `audit_log` row (verb
+/// `status_change`, entity kind/id = the promoted entity) after the scope
+/// UPDATE has already committed. This is the tree's ONLY best-effort audit
+/// shape — every other wired call site (`engine_planning`, `engine_identity`,
+/// `engine_entitylink`) propagates a write failure to the caller. Here a
+/// failed audit write is swallowed: the scope change is the load-bearing
+/// write and must not be undone by an audit-table problem. Oracle-captured
+/// summaries (running `zig/zig-out/bin/planar promote|demote` against a
+/// scratch DB, never read from source):
+///
+///     promote plan:1 from global to association:1
+///     demote plan:1 from association:1 to global
+///
+/// `actor`/`scope` are NULL, matching every other site. promotion.t.cpp
+/// proves the best-effort shape with a deliberately broken `audit_log`
+/// table and asserts the scope mutation still succeeds.
+///
 /// ## Deliberate omissions, with rationale
 ///
-/// - **`policy.audit.record`.** The Zig original writes a BEST-EFFORT
-///   `audit_log` row (verb `status_change`) after each successful scope
-///   UPDATE — `catch {}`, deliberately, so a failed audit row cannot roll
-///   back an already-committed scope change. The layer-1 `planar.policy`
-///   module exists as of task 6100 and `engine_planning`/
-///   `engine_identity` write through it, but those sites all use the
-///   `try`-propagate shape. This bucket's two sites are the tree's only
-///   best-effort ones, and wiring them by reflex alongside the rest would
-///   have quietly made a failed audit write fail `promote`. Left for its
-///   own cycle; see CMakeLists.txt.
 /// - **The cross-scope guard.** VERIFIED EMPIRICALLY against the oracle,
 ///   not assumed: with the cwd project joined to association `alpha` and
 ///   a plan living in association `beta`,

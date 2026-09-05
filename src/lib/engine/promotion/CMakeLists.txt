@@ -14,22 +14,16 @@
 #      so this module depends downward on `scope_ref` exactly the way
 #      `engine_identity` and `engine_planning` already do. No new
 #      extraction was needed and none was invented.
-#   2. `policy.audit.record` -- STILL UNWIRED, and now for a real reason
-#      rather than a missing module. Task 6100 stood up the layer-1
-#      `planar.policy` module and wired `engine_planning` and
-#      `engine_identity`. This bucket's two call sites were left because
-#      they are the tree's ONLY BEST-EFFORT ones: zig/src/engine/
-#      promotion.zig `catch {}`s the write, deliberately, so that a failed
-#      audit row does not roll back an already-committed scope change --
-#      the opposite of the `try`-propagate shape every wired site uses.
-#      Porting it correctly means porting that asymmetry and testing it,
-#      which is its own cycle, and doing it by reflex alongside the others
-#      would have quietly made a failed audit write fail `promote`. This is
-#      one of only THREE buckets left carrying an actual audit gap (the
-#      others are `engine_entitylink` and `engine_runtime`); the other
-#      eight CMakeLists that used to carry a paragraph like this were
-#      audited and have no Zig call sites at all. The DEPENDS line below
-#      does not name `policy`, which is the mechanical tell.
+#   2. `policy.audit.record` -- WIRED as of task 6184, preserving the
+#      asymmetry deliberately: zig/src/engine/promotion.zig `catch {}`s the
+#      write at both call sites, so a failed audit row does NOT roll back
+#      an already-committed scope change. This bucket's two sites are the
+#      tree's ONLY BEST-EFFORT audit call sites -- every other wired site
+#      (engine_planning, engine_identity, engine_entitylink) uses the
+#      `try`-propagate shape where a failed audit write fails the whole
+#      verb. promotion.t.cpp proves the asymmetry with a deliberately
+#      broken `audit_log` (dropped table) and asserts `promote`/`demote`
+#      still succeed. The DEPENDS line below now names `policy`.
 #
 # The `kind:id` positional parsing the two handlers do (`entitylink.parseRef`)
 # is NOT duplicated here: `engine_entitylink` already exports `parse_ref`,
@@ -59,4 +53,5 @@ planar_module(engine_promotion
   DEPENDS
     db
     json_text
+    policy
     scope_ref)
