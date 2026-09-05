@@ -573,7 +573,7 @@ test "scenario: [M4] self-report — confirmed post records external link on fin
     //      `ext register github` is a local-only write: no network contact,
     //      no auth required at registration. The system slug `planar-upstream`
     //      is the convention documented in pl-report-issue.md.
-    gpa.free(suite.mustRun(&.{
+    gpa.free(suite.mustRunExt(&.{
         "ext", "register", "github", "planar-upstream", "--project", "rdrsss/planar",
     }));
 
@@ -610,7 +610,7 @@ test "scenario: [M4] self-report — confirmed post records external link on fin
     // We verify via the ext list: the system exists and no error was thrown,
     // which proves the link is visible. The no-propagation invariant is
     // structurally guaranteed by not passing --propagate to `planar link`.
-    const ext_list_raw = suite.mustRun(&.{ "ext", "list", "--json" });
+    const ext_list_raw = suite.mustRunExt(&.{ "ext", "list", "--json" });
     defer gpa.free(ext_list_raw);
     try std.testing.expect(std.mem.containsAtLeast(u8, ext_list_raw, 1, "planar-upstream"));
 }
@@ -735,7 +735,7 @@ test "scenario: [M4] self-report — record-only external link; no propagation" 
     const q_ref = std.fmt.allocPrint(arena, "question:{d}", .{q_finding.id}) catch unreachable;
 
     // Register the planar-upstream system (local row, no network).
-    gpa.free(suite.mustRun(&.{
+    gpa.free(suite.mustRunExt(&.{
         "ext", "register", "github", "planar-upstream", "--project", "rdrsss/planar",
     }));
 
@@ -770,7 +770,7 @@ test "scenario: [M4] self-report — record-only external link; no propagation" 
     // `sync status --entity question:<id> --json` returns the external_links
     // row; its last_sync_status must be "never" — confirming no propagation
     // or pull/push has run on this record-only link.
-    const sync_status_raw = suite.mustRun(&.{ "sync", "status", "--entity", q_ref, "--json" });
+    const sync_status_raw = suite.mustRunExt(&.{ "sync", "status", "--entity", q_ref, "--json" });
     defer gpa.free(sync_status_raw);
     // The "never" status is the positive invariant: link exists, no sync ran.
     try std.testing.expect(std.mem.containsAtLeast(u8, sync_status_raw, 1, "\"never\""));
@@ -835,7 +835,7 @@ test "scenario: [M4] self-report — linkback does not alter finding lifecycle s
     const q_ref = std.fmt.allocPrint(arena, "question:{d}", .{q_finding.id}) catch unreachable;
 
     // Register the planar-upstream system (local row, no network).
-    gpa.free(suite.mustRun(&.{
+    gpa.free(suite.mustRunExt(&.{
         "ext", "register", "github", "planar-upstream", "--project", "rdrsss/planar",
     }));
 
@@ -844,7 +844,7 @@ test "scenario: [M4] self-report — linkback does not alter finding lifecycle s
     // `sync status --entity question:<id> --json` returns one NDJSON line per
     // external link on the entity. Before `planar link` is called (the state
     // when gh has not yet succeeded), the output must be empty — zero rows.
-    const no_links_raw = suite.mustRun(&.{ "sync", "status", "--entity", q_ref, "--json" });
+    const no_links_raw = suite.mustRunExt(&.{ "sync", "status", "--entity", q_ref, "--json" });
     defer gpa.free(no_links_raw);
     try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, no_links_raw, "link_id"));
 
@@ -873,7 +873,7 @@ test "scenario: [M4] self-report — linkback does not alter finding lifecycle s
     //
     // `sync status --entity question:<id> --json` returns one NDJSON line per
     // external link. After the link step the count must be exactly one.
-    const one_link_raw = suite.mustRun(&.{ "sync", "status", "--entity", q_ref, "--json" });
+    const one_link_raw = suite.mustRunExt(&.{ "sync", "status", "--entity", q_ref, "--json" });
     defer gpa.free(one_link_raw);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, one_link_raw, "link_id"));
 

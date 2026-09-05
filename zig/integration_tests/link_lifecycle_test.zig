@@ -69,7 +69,7 @@ test "scenario: top-level link / unlink external-link lifecycle" {
 
     // Register a GitHub system to link against (no network — registration
     // is a local row).
-    gpa.free(suite.mustRun(&.{ "ext", "register", "github", "gh", "--project", "owner/repo" }));
+    gpa.free(suite.mustRunExt(&.{ "ext", "register", "github", "gh", "--project", "owner/repo" }));
 
     // link the task to an external issue.
     const linked = suite.mustRunJSON(ExtLink, arena, &.{ "link", task_ref, "--to", "gh:ISSUE-7", "--json" });

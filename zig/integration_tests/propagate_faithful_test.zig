@@ -79,7 +79,7 @@ test "[happy] reimplemented ext propagate yields same results as iterating propa
     const arena = arena_backing.allocator();
 
     // Register a jira system (dry-run works without HTTP).
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",                    "register",   "jira",
         "jira-faithful",          "--base-url", "https://test.atlassian.net",
         "--project",              "FAITH",      "--auth-env",
@@ -119,7 +119,7 @@ test "[happy] reimplemented ext propagate yields same results as iterating propa
     gpa.free(l2_out);
 
     // --- Path A: `ext propagate --dry-run --json` ----------------------------
-    const propagate_raw = suite.mustRun(&.{
+    const propagate_raw = suite.mustRunExt(&.{
         "ext",      "propagate",     anchor_id_s,
         "--system", "jira-faithful", "--dry-run",
         "--json",
@@ -161,7 +161,7 @@ test "[happy] reimplemented ext propagate yields same results as iterating propa
     // corresponding propagate result entry.
     for (propagate_entries, descendants) |a, entry| {
         const from_ref = try std.fmt.allocPrint(arena, "{s}:{d}", .{ entry.kind, entry.id });
-        const one_raw = suite.mustRun(&.{
+        const one_raw = suite.mustRunExt(&.{
             "ext",    "propagate-one", "jira-faithful",
             "--from", from_ref,        "--dry-run",
             "--json",
@@ -196,7 +196,7 @@ test "[happy] ext propagate idempotency: second dry-run after first dry-run stil
     defer arena_backing.deinit();
     const arena = arena_backing.allocator();
 
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",                    "register",   "jira",
         "jira-idem",              "--base-url", "https://test.atlassian.net",
         "--project",              "IDEM",       "--auth-env",
@@ -209,7 +209,7 @@ test "[happy] ext propagate idempotency: second dry-run after first dry-run stil
     const anchor_id_s = try std.fmt.allocPrint(arena, "{d}", .{anchor.id});
 
     // First dry-run.
-    const r1_raw = suite.mustRun(&.{
+    const r1_raw = suite.mustRunExt(&.{
         "ext",      "propagate", anchor_id_s,
         "--system", "jira-idem", "--dry-run",
         "--json",
@@ -224,7 +224,7 @@ test "[happy] ext propagate idempotency: second dry-run after first dry-run stil
 
     // Second dry-run: same counts (dry-run never writes links so idempotency
     // only matters for real runs; this confirms the verb remains stable).
-    const r2_raw = suite.mustRun(&.{
+    const r2_raw = suite.mustRunExt(&.{
         "ext",      "propagate", anchor_id_s,
         "--system", "jira-idem", "--dry-run",
         "--json",
@@ -353,7 +353,7 @@ test "[happy] audit publish-decision comments on a direct external link and reco
     const server = try FakeJira.init(gpa, std.testing.io);
     defer server.deinit();
     const base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{server.port});
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",       "register", "jira",       "jira-decision",      "--base-url", base_url,
         "--project", "AUDIT",    "--auth-env", "PLANAR_AUDIT_TOKEN", "--json",
     });
@@ -400,7 +400,7 @@ test "[happy] workbench publish renders the feature and creates one external mir
     const server = try FakeJira.init(gpa, std.testing.io);
     defer server.deinit();
     const base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{server.port});
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",       "register", "jira",       "jira-workbench",         "--base-url", base_url,
         "--project", "WORK",     "--auth-env", "PLANAR_WORKBENCH_TOKEN", "--json",
     });
@@ -431,7 +431,7 @@ test "[happy] workbench publish renders the feature and creates one external mir
     try std.testing.expect(published.value.bytes_published > 0);
     try std.testing.expectEqual(@as(usize, 1), server.requestCount());
 
-    const probe_raw = suite.mustRunWith(&.{
+    const probe_raw = suite.mustRunExtWith(&.{
         "ext", "propagate-one", "jira-workbench", "--from", plan_ref, "--dry-run", "--json",
     }, env);
     defer gpa.free(probe_raw);
@@ -454,12 +454,12 @@ test "[happy] ext create posts one entity and records an idempotent mirror link"
     const server = try FakeJira.init(gpa, std.testing.io);
     defer server.deinit();
     const base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{server.port});
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",       "register", "jira",       "jira-create",         "--base-url", base_url,
         "--project", "CREATE",   "--auth-env", "PLANAR_CREATE_TOKEN", "--json",
     });
 
-    const created_raw = suite.mustRunWith(&.{
+    const created_raw = suite.mustRunExtWith(&.{
         "ext", "create", "jira-create", "--from", plan_ref, "--json",
     }, &.{.{ .key = "PLANAR_CREATE_TOKEN", .value = "test-token" }});
     defer gpa.free(created_raw);
@@ -469,7 +469,7 @@ test "[happy] ext create posts one entity and records an idempotent mirror link"
     try std.testing.expectEqualStrings("TEST-1", created.value.external_id);
     try std.testing.expectEqualStrings("two-way", created.value.sync_direction);
 
-    const probe_raw = suite.mustRunWith(&.{
+    const probe_raw = suite.mustRunExtWith(&.{
         "ext", "propagate-one", "jira-create", "--from", plan_ref, "--dry-run", "--json",
     }, &.{.{ .key = "PLANAR_CREATE_TOKEN", .value = "test-token" }});
     defer gpa.free(probe_raw);
@@ -522,7 +522,7 @@ test "[happy] HTTP-fixture faithfulness: ext propagate and manual propagate-one 
     defer server_a.deinit();
     const base_url_a = try std.fmt.allocPrint(arena_a, "http://127.0.0.1:{d}", .{server_a.port});
 
-    _ = suite_a.mustRunJSON(RegisterJSON, arena_a, &.{
+    _ = suite_a.mustRunExtJSON(RegisterJSON, arena_a, &.{
         "ext",             "register",   "jira",
         "jira-ff-a",       "--base-url", base_url_a,
         "--project",       "FAITH",      "--auth-env",
@@ -530,7 +530,7 @@ test "[happy] HTTP-fixture faithfulness: ext propagate and manual propagate-one 
     });
 
     // Run `ext propagate` (real, non-dry-run).
-    const prop_a_raw = suite_a.mustRunWith(&.{
+    const prop_a_raw = suite_a.mustRunExtWith(&.{
         "ext",      "propagate", anchor_a_id_s,
         "--system", "jira-ff-a", "--json",
     }, &.{.{ .key = "PLANAR_FF_TOKEN", .value = "test-token-ff" }});
@@ -555,7 +555,7 @@ test "[happy] HTTP-fixture faithfulness: ext propagate and manual propagate-one 
         const from_ref = try std.fmt.allocPrint(arena_a, "{s}:{d}", .{ r_a.entity_kind, r_a.entity_id });
 
         // A real (non-dry-run) row was created → the idempotency skip fires.
-        const probe_raw = suite_a.mustRunWith(&.{
+        const probe_raw = suite_a.mustRunExtWith(&.{
             "ext",    "propagate-one", "jira-ff-a",
             "--from", from_ref,        "--dry-run",
             "--json",
@@ -619,7 +619,7 @@ test "[happy] HTTP-fixture faithfulness: ext propagate and manual propagate-one 
     defer server_b.deinit();
     const base_url_b = try std.fmt.allocPrint(arena_b, "http://127.0.0.1:{d}", .{server_b.port});
 
-    _ = suite_b.mustRunJSON(RegisterJSON, arena_b, &.{
+    _ = suite_b.mustRunExtJSON(RegisterJSON, arena_b, &.{
         "ext",             "register",   "jira",
         "jira-ff-b",       "--base-url", base_url_b,
         "--project",       "FAITH",      "--auth-env",
@@ -654,7 +654,7 @@ test "[happy] HTTP-fixture faithfulness: ext propagate and manual propagate-one 
 
     for (desc_b) |entry| {
         const from_ref = try std.fmt.allocPrint(arena_b, "{s}:{d}", .{ entry.kind, entry.id });
-        const one_raw = suite_b.mustRunWith(&.{
+        const one_raw = suite_b.mustRunExtWith(&.{
             "ext",    "propagate-one", "jira-ff-b",
             "--from", from_ref,        "--json",
         }, &.{.{ .key = "PLANAR_FF_TOKEN", .value = "test-token-ff" }});
@@ -699,7 +699,7 @@ test "[happy] HTTP-fixture faithfulness: ext propagate and manual propagate-one 
 
     // Verify idempotency in Suite B: a second `ext propagate` (dry-run) over
     // the same entities returns zero "created" and all "skipped".
-    const idem_b_raw = suite_b.mustRunWith(&.{
+    const idem_b_raw = suite_b.mustRunExtWith(&.{
         "ext",      "propagate", anchor_b_id_s,
         "--system", "jira-ff-b", "--dry-run",
         "--json",

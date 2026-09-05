@@ -37,7 +37,7 @@ test "[happy] propagate-one --dry-run returns planned without contacting remote"
     const arena = arena_backing.allocator();
 
     // Register a jira system (doesn't need a network in dry-run mode).
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",                    "register",   "jira",
         "jira-p1",                "--base-url", "https://test.atlassian.net",
         "--project",              "TEST",       "--auth-env",
@@ -51,7 +51,7 @@ test "[happy] propagate-one --dry-run returns planned without contacting remote"
     const from_ref = try std.fmt.allocPrint(arena, "plan:{d}", .{plan.id});
 
     // Run propagate-one in dry-run mode — no HTTP call needed.
-    const result = suite.mustRunJSON(PropagateOneJSON, arena, &.{
+    const result = suite.mustRunExtJSON(PropagateOneJSON, arena, &.{
         "ext",    "propagate-one", "jira-p1",
         "--from", from_ref,        "--dry-run",
         "--json",
@@ -77,7 +77,7 @@ test "[happy] propagate-one on a task --dry-run returns planned" {
     defer arena_backing.deinit();
     const arena = arena_backing.allocator();
 
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",                    "register",   "jira",
         "jira-p1t",               "--base-url", "https://test.atlassian.net",
         "--project",              "TEST",       "--auth-env",
@@ -100,7 +100,7 @@ test "[happy] propagate-one on a task --dry-run returns planned" {
     gpa.free(lout);
     const from_ref = try std.fmt.allocPrint(arena, "task:{d}", .{task.id});
 
-    const result = suite.mustRunJSON(PropagateOneJSON, arena, &.{
+    const result = suite.mustRunExtJSON(PropagateOneJSON, arena, &.{
         "ext",    "propagate-one", "jira-p1t",
         "--from", from_ref,        "--dry-run",
         "--json",
@@ -121,7 +121,7 @@ test "[error] propagate-one with invalid --from format rejects" {
     defer arena_backing.deinit();
     const arena = arena_backing.allocator();
 
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",                    "register",   "jira",
         "jira-err",               "--base-url", "https://test.atlassian.net",
         "--project",              "TEST",       "--auth-env",
@@ -129,7 +129,7 @@ test "[error] propagate-one with invalid --from format rejects" {
     });
 
     // Missing colon — should fail with InvalidInput.
-    const stderr = suite.expectFailure(&.{
+    const stderr = suite.expectFailureExt(&.{
         "ext",    "propagate-one", "jira-err",
         "--from", "plan42",        "--dry-run",
     });
@@ -143,7 +143,7 @@ test "[error] propagate-one with no registered systems rejects" {
     defer suite.deinit();
 
     // No ext register call — should fail with NotFound.
-    const stderr = suite.expectFailure(&.{
+    const stderr = suite.expectFailureExt(&.{
         "ext",    "propagate-one", "nonexistent-system",
         "--from", "plan:1",        "--dry-run",
     });
@@ -173,7 +173,7 @@ test "[error] propagate-one --strategy parent-issue is rejected (task 4168)" {
     // Register a jira system (closest we can get without GitHub—strategy
     // validation fires before the system kind check, so jira is fine here
     // to isolate the strategy guard).
-    _ = suite.mustRunJSON(RegisterJSON, arena, &.{
+    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{
         "ext",                    "register",   "jira",
         "jira-strat-pi",          "--base-url", "https://test.atlassian.net",
         "--project",              "TEST",       "--auth-env",
@@ -186,7 +186,7 @@ test "[error] propagate-one --strategy parent-issue is rejected (task 4168)" {
     const from_ref = try std.fmt.allocPrint(arena, "plan:{d}", .{plan.id});
 
     // --strategy parent-issue must be rejected with a clear error message.
-    const stderr_pi = suite.expectFailure(&.{
+    const stderr_pi = suite.expectFailureExt(&.{
         "ext",          "propagate-one", "jira-strat-pi",
         "--from",       from_ref,        "--strategy",
         "parent-issue",
@@ -199,7 +199,7 @@ test "[error] propagate-one --strategy parent-issue is rejected (task 4168)" {
     );
 
     // --strategy projects-v2 must also be rejected.
-    const stderr_pv2 = suite.expectFailure(&.{
+    const stderr_pv2 = suite.expectFailureExt(&.{
         "ext",         "propagate-one", "jira-strat-pi",
         "--from",      from_ref,        "--strategy",
         "projects-v2",
@@ -214,7 +214,7 @@ test "[error] propagate-one --strategy parent-issue is rejected (task 4168)" {
     // Verify it doesn't error on the strategy validation step (it will
     // error later when trying to build the adapter for a real run, but
     // under --dry-run it should succeed since no HTTP is needed).
-    const result = suite.mustRunJSON(PropagateOneJSON, arena, &.{
+    const result = suite.mustRunExtJSON(PropagateOneJSON, arena, &.{
         "ext",            "propagate-one", "jira-strat-pi",
         "--from",         from_ref,        "--strategy",
         "tracking-issue", "--dry-run",     "--json",
