@@ -259,22 +259,24 @@ TEST_CASE("planar-agent maps a parse failure to exit 1, not the operator binary'
   // from identical argv shapes.
   auto const unknown_verb = dispatch(fx, {"nosuchverb"});
   CHECK(unknown_verb.code == 1);
-  // Both streams, and that is the oracle's shape too — a reasonable person
-  // would have put the parse error on stderr alone and been wrong. Task
-  // 6123 re-baselined the WORDING onto CLI11's (pinned exactly below) but
-  // kept the shape and, critically, the exit code.
-  CHECK(unknown_verb.out == "error: planar-agent: The following argument was not expected: nosuchverb\n");
-  CHECK(unknown_verb.err == "error: ExtrasError\n");
+  // Stderr ONLY (decision 1004, task 6271 — was both streams before this
+  // decision, matching the oracle's own split). Task 6123 re-baselined the
+  // WORDING onto CLI11's (pinned exactly below); decision 1004 then moved
+  // it to stderr alone and dropped the CamelCase tag. The exit code is
+  // unaffected by either change.
+  CHECK(unknown_verb.out.empty());
+  CHECK(unknown_verb.err == "error: planar-agent: The following argument was not expected: nosuchverb\n");
   CHECK_FALSE(unknown_verb.db_open);
 
   auto const unknown_flag = dispatch(fx, {"version", "--badflag"});
   CHECK(unknown_flag.code == 1);
   // CLI11 reports an unknown FLAG and an unknown SUBCOMMAND under the same
-  // `ExtrasError` name, where etcli distinguished `UnknownFlag` from
-  // `UnknownSubcommand`. A named coarsening of the swap; the stdout line
+  // internal `ExtrasError` name, where etcli distinguished `UnknownFlag`
+  // from `UnknownSubcommand` — but that name is no longer surfaced in this
+  // binary's output at all (decision 1004 dropped it). The stderr line
   // still identifies the offending token and the command that rejected it.
-  CHECK(unknown_flag.out == "error: version: The following argument was not expected: --badflag\n");
-  CHECK(unknown_flag.err == "error: ExtrasError\n");
+  CHECK(unknown_flag.out.empty());
+  CHECK(unknown_flag.err == "error: version: The following argument was not expected: --badflag\n");
 }
 
 TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][handlers]") {

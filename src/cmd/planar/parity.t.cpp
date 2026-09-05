@@ -876,41 +876,44 @@ TEST_CASE("the CLI surface is CLI11's now, and pinned", "[cmd][parity][cli-surfa
     return run_pinned(cpp_bin(), args, space.cpp_root, tag);
   };
 
-  SECTION("parse failures write BOTH streams and exit 2") {
-    // The dual-stream shape is the surprising part and the reason these
-    // are pinned at all: a formatted message on STDOUT and a CamelCase tag
-    // on STDERR, from one invocation. A reasonable person would have put
-    // the parse error on stderr alone and been wrong. That shape is the
-    // oracle's and did not move.
+  SECTION("parse failures write stderr ONLY and exit 2") {
+    // Decision 1004 (task 6271): the dual-stream split this section used to
+    // pin — a formatted message on STDOUT, a CamelCase tag on STDERR — is
+    // now a recorded, deliberate divergence from the oracle: the C++ tree
+    // moves the whole formatted message to stderr and drops the CamelCase
+    // tag, so a parse failure presents identically to a handler refusal
+    // (stdout empty, one "error: <message>" line on stderr). The oracle is
+    // NOT touched and keeps the split; see decision 1004 for the rationale
+    // and task 6316 for why these bytes were already off oracle-comparison.
     auto const bad_verb = run({"nosuchverb"}, "badverb");
     CHECK(bad_verb.code == 2);
-    CHECK(bad_verb.out == "error: planar: The following argument was not expected: nosuchverb\n");
-    CHECK(bad_verb.err == "error: ExtrasError\n");
+    CHECK(bad_verb.out.empty());
+    CHECK(bad_verb.err == "error: planar: The following argument was not expected: nosuchverb\n");
 
     auto const bad_sub = run({"workflow", "nosuchsub"}, "badsub");
     CHECK(bad_sub.code == 2);
-    CHECK(bad_sub.out == "error: workflow: The following argument was not expected: nosuchsub\n");
-    CHECK(bad_sub.err == "error: ExtrasError\n");
+    CHECK(bad_sub.out.empty());
+    CHECK(bad_sub.err == "error: workflow: The following argument was not expected: nosuchsub\n");
 
     auto const bad_flag = run({"workflow", "list", "--nosuchflag"}, "badflag");
     CHECK(bad_flag.code == 2);
-    CHECK(bad_flag.out == "error: list: The following argument was not expected: --nosuchflag\n");
-    CHECK(bad_flag.err == "error: ExtrasError\n");
+    CHECK(bad_flag.out.empty());
+    CHECK(bad_flag.err == "error: list: The following argument was not expected: --nosuchflag\n");
 
     auto const missing_pos = run({"workflow", "show"}, "missingpos");
     CHECK(missing_pos.code == 2);
-    CHECK(missing_pos.out == "error: name is required\n");
-    CHECK(missing_pos.err == "error: RequiredError\n");
+    CHECK(missing_pos.out.empty());
+    CHECK(missing_pos.err == "error: name is required\n");
 
     auto const unlink_no_pos = run({"unlink"}, "ulnopos");
     CHECK(unlink_no_pos.code == 2);
-    CHECK(unlink_no_pos.out == "error: link-id is required\n");
-    CHECK(unlink_no_pos.err == "error: RequiredError\n");
+    CHECK(unlink_no_pos.out.empty());
+    CHECK(unlink_no_pos.err == "error: link-id is required\n");
 
     auto const skills_extra = run({"skills", "extra"}, "skextra");
     CHECK(skills_extra.code == 2);
-    CHECK(skills_extra.out == "error: skills: The following argument was not expected: extra\n");
-    CHECK(skills_extra.err == "error: ExtrasError\n");
+    CHECK(skills_extra.out.empty());
+    CHECK(skills_extra.err == "error: skills: The following argument was not expected: extra\n");
   }
 
   SECTION("leaf help pages render every declared flag and positional") {

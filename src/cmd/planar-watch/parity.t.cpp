@@ -145,19 +145,21 @@ TEST_CASE("planar-watch parity: completion's two failure paths keep their distin
   CHECK(cpp_bad.out == zig_bad.out);
   CHECK(cpp_bad.err == zig_bad.err);
 
-  // Parser-level refusal: exit 1, BOTH streams. Two different codes out of
+  // Parser-level refusal: exit 1, stderr only (decision 1004, task 6271 —
+  // was BOTH streams before this decision). Two different codes out of
   // one verb — a collapsed exit mapping cannot satisfy both cases, and
   // THAT is what this case exists to prove.
   //
   // The exit CODE is still diffed against the oracle, because the per-binary
   // exit-code table is an operator contract task 6123 was required to
   // preserve. The BYTES are not: CLI11 writes the parse-error wording now
-  // (task 6123), so they are pinned against the built binary instead.
+  // (task 6123), and decision 1004 moved it to stderr alone, dropping the
+  // CamelCase tag, so both are pinned against the built binary instead.
   auto const [cpp_missing, zig_missing] = both("noshell", {"completion"});
   CHECK(cpp_missing.code == zig_missing.code);
   CHECK(cpp_missing.code == 1);
-  CHECK(cpp_missing.out == "error: shell is required\n");
-  CHECK(cpp_missing.err == "error: RequiredError\n");
+  CHECK(cpp_missing.out.empty());
+  CHECK(cpp_missing.err == "error: shell is required\n");
 }
 
 TEST_CASE("planar-watch parity: an unknown verb still exits 1, matching the oracle", "[cmd][watch][parity]") {
@@ -165,13 +167,14 @@ TEST_CASE("planar-watch parity: an unknown verb still exits 1, matching the orac
 
   // As above: the exit CODE is still diffed against the oracle (exit 1
   // here, where the operator binary exits 2 — the divergence task 6123 was
-  // required to preserve); the BYTES are CLI11's now and are pinned
-  // against the built binary.
+  // required to preserve); the BYTES are CLI11's now, moved to stderr
+  // alone by decision 1004 (task 6271), and are pinned against the built
+  // binary.
   auto const [cpp, zig] = both("unknownverb", {"nosuchverb"});
   CHECK(cpp.code == zig.code);
   CHECK(cpp.code == 1);
-  CHECK(cpp.out == "error: planar-watch: The following argument was not expected: nosuchverb\n");
-  CHECK(cpp.err == "error: ExtrasError\n");
+  CHECK(cpp.out.empty());
+  CHECK(cpp.err == "error: planar-watch: The following argument was not expected: nosuchverb\n");
 }
 
 TEST_CASE("planar-watch: no ported invocation creates a database file", "[cmd][watch][parity][readonly]") {

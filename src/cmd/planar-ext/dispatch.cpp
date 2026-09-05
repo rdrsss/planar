@@ -98,8 +98,12 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
     ctx.out() << node->help();
     return exit_success;
   } catch (const CLI::ParseError& e) {
-    ctx.out() << "error: " << e.what() << '\n';
-    ctx.err() << "error: " << e.get_name() << '\n';
+    // Decision 1004 (task 6271): every parse failure writes ONE line to
+    // stderr, the same shape a handler refusal already writes. The
+    // CamelCase tag (`e.get_name()`) is dropped rather than kept as a
+    // second stderr line — see `planar.cmd.planar.dispatch`'s header for
+    // the full rationale. Nothing is written to stdout on a parse failure.
+    ctx.err() << "error: " << e.what() << '\n';
     return exit_code_for(domain_error_kind::parse_error);
   }
 

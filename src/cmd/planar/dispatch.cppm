@@ -20,7 +20,7 @@
 /// "someone added a tree node and forgot to wire it" is a FAILING TEST
 /// rather than a runtime fallthrough an operator discovers.
 ///
-/// ## Parse failures go to BOTH streams, and that shape is preserved
+/// ## Parse failures go to stderr ONLY (decision 1004, task 6271)
 ///
 /// The oracle writes two messages for one parse failure:
 ///
@@ -29,14 +29,22 @@
 ///     stderr: "error: UnknownSubcommand\n"
 ///     exit:   2
 ///
-/// A reasonable person would have put the parse error on stderr alone and
-/// been wrong. Task 6123 re-baselined the WORDING (CLI11 writes its own
-/// message and its own CamelCase error name) but deliberately kept the
-/// SHAPE — formatted message to stdout, CamelCase tag to stderr, exit 2 —
-/// because that is an operator/scripting contract rather than a parser
-/// detail. `CLI::ParseError::get_name()` already returns CamelCase
-/// (`ExtrasError`, `RequiredError`, `ValidationError`), so the stderr line
-/// needed no translation table at all.
+/// Task 6123 re-baselined the WORDING (CLI11 writes its own message and
+/// its own CamelCase error name) but at the time kept the oracle's SHAPE —
+/// formatted message to stdout, CamelCase tag to stderr. Decision 1004
+/// (task 6271) reverses that: a parse failure now writes ONE line to
+/// stderr and nothing to stdout, so it presents identically to a handler
+/// refusal (`report()` in `exit.cppm`, which has always been stderr-only).
+/// The CamelCase tag (`CLI::ParseError::get_name()`, e.g. `ExtrasError`,
+/// `RequiredError`, `ValidationError`) is DROPPED rather than kept as a
+/// second stderr line — keeping it would leave parse failures as the only
+/// two-line refusal shape in the binary, the exact asymmetry this decision
+/// closes. This is a deliberate, recorded divergence from the oracle,
+/// which keeps its stdout/stderr split untouched; see decision 1004 for
+/// the full rationale and task 6316 for why these bytes were already off
+/// oracle-comparison before this change (re-baselined at task 6123). The
+/// exit code is unaffected: 2 on this binary, 1 on planar-agent and
+/// planar-watch, unchanged by this decision.
 ///
 /// ## A node can be a GROUP and a LEAF at once (plan 996, task 6040)
 ///

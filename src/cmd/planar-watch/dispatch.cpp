@@ -150,10 +150,14 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
     ctx.out() << node->help();
     return exit_success;
   } catch (const CLI::ParseError& e) {
-    // Both streams — see this module's header for the oracle capture and
-    // for why task 6123 kept the shape while re-baselining the wording.
-    ctx.out() << "error: " << e.what() << '\n';
-    ctx.err() << "error: " << e.get_name() << '\n';
+    // Decision 1004 (task 6271): every parse failure writes ONE line to
+    // stderr, the same shape a handler refusal already writes — see this
+    // module's header. The CamelCase tag (`e.get_name()`) is dropped
+    // rather than kept as a second stderr line: keeping it would leave
+    // parse failures as the only two-line refusal shape in the binary,
+    // which is exactly the asymmetry this decision closes. Nothing is
+    // written to stdout on a parse failure.
+    ctx.err() << "error: " << e.what() << '\n';
     // This binary's policy is exit 1, NOT the operator binary's 2.
     return exit_code_for(domain_error_kind::parse_error);
   }
