@@ -493,10 +493,10 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<anno
     if (is_unique_violation(step.error())) {
       return std::unexpected(annotation_error::slug_conflict);
     }
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.create", "StepFailed"));
   }
   if (*step != db::step_result::row) {
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(exec_failed("annotation.create", "StepFailed"));
   }
   const auto id = stmt->column_int64(0);
 
