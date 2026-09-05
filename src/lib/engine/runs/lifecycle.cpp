@@ -7,10 +7,21 @@ module planar.engine.runs.lifecycle;
 
 import std;
 import planar.db;
+import planar.log;
 
 namespace planar::engine::runs::lifecycle {
 
 namespace {
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>`
+/// diagnostic ahead of the outer handler error. See
+/// `zig/src/engine/runs/runs.zig`'s `start`/`event`/`touch`/
+/// `touchIdempotent`/`finish` for the shapes this ports; mirrors
+/// `engine::planning::exec_failed` (task.cpp).
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> runs_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return runs_error::query_failed;
+}
 
 // The two extended result codes zig's `Db.lastWasUniqueViolation` treats as a
 // uniqueness conflict (zig/src/db/sqlite.zig:208). Both are checked here for
@@ -102,24 +113,24 @@ auto start(db::connection& conn, const start_args& args) -> std::expected<start_
                              "(run_uid, plan_id, arm, base_sha, config_hash, config_json, corpus_repo, status) "
                              "values (?, ?, ?, ?, ?, ?, ?, coalesce(?, 'running')) returning id");
     if (!stmt) {
-      return std::unexpected(runs_error::query_failed);
+      return std::unexpected(exec_failed("runs.start", "PrepareFailed"));
     }
     const bool bound = stmt->bind_text(1, args.run_uid).has_value() && stmt->bind_int64(2, args.plan_id).has_value() &&
                        stmt->bind_text(3, args.arm).has_value() && stmt->bind_text(4, args.base_sha).has_value() &&
                        stmt->bind_text(5, args.config_hash).has_value() && bind_opt_text(*stmt, 6, args.config_json) &&
                        bind_opt_text(*stmt, 7, args.corpus_repo) && bind_opt_text(*stmt, 8, args.status);
     if (!bound) {
-      return std::unexpected(runs_error::query_failed);
+      return std::unexpected(exec_failed("runs.start", "BindFailed"));
     }
     auto stepped = stmt->step();
     if (!stepped) {
       if (is_unique_violation(stepped.error())) {
         return std::unexpected(runs_error::duplicate_run_uid);
       }
-      return std::unexpected(runs_error::query_failed);
+      return std::unexpected(exec_failed("runs.start", "StepFailed"));
     }
     if (*stepped != db::step_result::row) {
-      return std::unexpected(runs_error::query_failed);
+      return std::unexpected(exec_failed("runs.start", "StepFailed"));
     }
     new_id = stmt->column_int64(0);
   }
@@ -203,22 +214,22 @@ auto event(db::connection& conn, std::int64_t run_id, std::int64_t seq, std::str
            std::optional<std::string_view> payload) -> std::expected<std::int64_t, runs_error> {
   auto stmt = conn.prepare("insert into run_events (run_id, seq, kind, payload) values (?, ?, ?, ?) returning id");
   if (!stmt) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.event", "PrepareFailed"));
   }
   const bool bound = stmt->bind_int64(1, run_id).has_value() && stmt->bind_int64(2, seq).has_value() &&
                      stmt->bind_text(3, kind).has_value() && bind_opt_text(*stmt, 4, payload);
   if (!bound) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.event", "BindFailed"));
   }
   auto stepped = stmt->step();
   if (!stepped) {
     if (is_unique_violation(stepped.error())) {
       return std::unexpected(runs_error::duplicate_seq);
     }
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.event", "StepFailed"));
   }
   if (*stepped != db::step_result::row) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.event", "StepFailed"));
   }
   return stmt->column_int64(0);
 }
@@ -245,12 +256,12 @@ auto touch(db::connection& conn, std::int64_t run_id, std::int64_t task_id, std:
     -> std::expected<std::int64_t, runs_error> {
   auto stmt = conn.prepare("insert into run_touches (run_id, task_id, path, kind) values (?, ?, ?, ?) returning id");
   if (!stmt) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.touch", "PrepareFailed"));
   }
   const bool bound = stmt->bind_int64(1, run_id).has_value() && stmt->bind_int64(2, task_id).has_value() &&
                      stmt->bind_text(3, path).has_value() && stmt->bind_text(4, touch_kind_to_text(kind)).has_value();
   if (!bound) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.touch", "BindFailed"));
   }
   // Deliberately maps a UNIQUE conflict to query_failed, not to a dedicated
   // error: the oracle surfaces a duplicate touch as a bare
@@ -258,10 +269,10 @@ auto touch(db::connection& conn, std::int64_t run_id, std::int64_t task_id, std:
   // contract. Use `touch_idempotent` when a repeat must be a no-op.
   auto stepped = stmt->step();
   if (!stepped) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.touch", "StepFailed"));
   }
   if (*stepped != db::step_result::row) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.touch", "StepFailed"));
   }
   return stmt->column_int64(0);
 }
@@ -270,14 +281,18 @@ auto touch_idempotent(db::connection& conn, std::int64_t run_id, std::int64_t ta
     -> std::expected<void, runs_error> {
   auto stmt = conn.prepare("insert or ignore into run_touches (run_id, task_id, path, kind) values (?, ?, ?, ?)");
   if (!stmt) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.touchIdempotent", "PrepareFailed"));
   }
   const bool bound = stmt->bind_int64(1, run_id).has_value() && stmt->bind_int64(2, task_id).has_value() &&
                      stmt->bind_text(3, path).has_value() && stmt->bind_text(4, touch_kind_to_text(kind)).has_value();
   if (!bound) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.touchIdempotent", "BindFailed"));
   }
-  return step_write(*stmt, runs_error::query_failed);
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(exec_failed("runs.touchIdempotent", "StepFailed"));
+  }
+  return {};
 }
 
 auto finish(db::connection& conn, std::int64_t run_id, std::string_view status) -> std::expected<void, runs_error> {
@@ -304,13 +319,17 @@ auto finish(db::connection& conn, std::int64_t run_id, std::string_view status) 
   auto stmt = conn.prepare("update runs set status = ?, "
                            "ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?");
   if (!stmt) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.finish", "PrepareFailed"));
   }
   const bool bound = stmt->bind_text(1, status).has_value() && stmt->bind_int64(2, run_id).has_value();
   if (!bound) {
-    return std::unexpected(runs_error::query_failed);
+    return std::unexpected(exec_failed("runs.finish", "BindFailed"));
   }
-  return step_write(*stmt, runs_error::query_failed);
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(exec_failed("runs.finish", "StepFailed"));
+  }
+  return {};
 }
 
 auto show(db::connection& conn, std::int64_t id) -> std::expected<run, runs_error> {

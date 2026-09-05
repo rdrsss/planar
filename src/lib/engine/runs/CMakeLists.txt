@@ -68,7 +68,8 @@ planar_module(engine_runs
   DEPENDS
     db
     git
-    json_text)
+    json_text
+    log)
 
 # render.cpp validates --payload / --config-json through glz::validate_json --
 # the same purpose-built probe engine/config uses, and the only one that

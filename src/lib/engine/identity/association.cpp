@@ -10,6 +10,7 @@ import std;
 import planar.db;
 import planar.git;
 import planar.json_text;
+import planar.log;
 import planar.policy;
 
 namespace planar::engine::identity {
@@ -25,6 +26,18 @@ namespace {
 /// @param conn An open, migrated connection.
 /// @param args The row to write.
 /// @return Nothing, or `audit_write_failed`.
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>` diagnostic
+/// ahead of the outer handler error. See
+/// `zig/src/engine/identity/association.zig`'s `create`/`addMember` for the
+/// shapes this ports; mirrors `engine::planning::exec_failed` (task.cpp).
+/// NOTE: does NOT cover `findOrCreateProjectByPath`/`...WithSuffix`, whose
+/// oracle diagnostics are "project insert failed"/"project insert (suffix)
+/// failed" -- a different message shape, out of this task's 28-site scope.
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> association_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return association_error::query_failed;
+}
+
 auto record_audit(db::connection& conn, const audit::record_args& args) -> std::expected<void, association_error> {
   if (auto ok = audit::record(conn, args); !ok) {
     return std::unexpected(association_error::audit_write_failed);
@@ -333,20 +346,20 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<asso
 
   auto stmt = conn.prepare("insert into associations (slug, name, kind, config_json) values (?, ?, ?, ?) returning id");
   if (!stmt) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.create", "PrepareFailed"));
   }
   if (auto b1 = stmt->bind_text(1, args.slug); !b1) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.create", "BindFailed"));
   }
   if (auto b2 = stmt->bind_text(2, name); !b2) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.create", "BindFailed"));
   }
   if (auto b3 = stmt->bind_text(3, association_kind_to_text(kind)); !b3) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.create", "BindFailed"));
   }
   auto bind_config = args.config_json.has_value() ? stmt->bind_text(4, *args.config_json) : stmt->bind_null(4);
   if (!bind_config) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.create", "BindFailed"));
   }
 
   auto step = stmt->step();
@@ -354,7 +367,7 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<asso
     if (is_unique_violation(step.error())) {
       return std::unexpected(association_error::slug_conflict);
     }
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.create", "StepFailed"));
   }
 
   const auto id = stmt->column_int64(0);
@@ -468,23 +481,23 @@ auto add_member(db::connection& conn, std::string_view assoc_slug, std::string_v
 
   auto stmt = conn.prepare("insert into project_associations (project_id, association_id, source) values (?, ?, ?)");
   if (!stmt) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.addMember", "PrepareFailed"));
   }
   if (auto b1 = stmt->bind_int64(1, project->id); !b1) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.addMember", "BindFailed"));
   }
   if (auto b2 = stmt->bind_int64(2, assoc->id); !b2) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.addMember", "BindFailed"));
   }
   if (auto b3 = stmt->bind_text(3, add_member_source_to_text(source)); !b3) {
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.addMember", "BindFailed"));
   }
   auto step = stmt->step();
   if (!step) {
     if (is_unique_violation(step.error())) {
       return std::unexpected(association_error::already_member);
     }
-    return std::unexpected(association_error::query_failed);
+    return std::unexpected(exec_failed("association.addMember", "StepFailed"));
   }
   // ORACLE: verb `link` (not `create`), entity kind `association` with the
   // ASSOCIATION's id -- not the project's -- and the summary

@@ -6,6 +6,7 @@ module planar.engine.planning.plan_step;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.log;
 import planar.policy;
 
 namespace planar::engine::planning {
@@ -14,6 +15,15 @@ namespace {
 
 using planar::json_text::json_string;
 namespace audit = planar::policy::audit;
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>`
+/// diagnostic ahead of the outer handler error. See
+/// `zig/src/engine/planning/plan_step.zig`'s `add` for the shape this
+/// ports; mirrors `exec_failed` in task.cpp (same bucket, separate TU).
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> plan_step_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return plan_step_error::query_failed;
+}
 
 /// @brief Wrap an audit write in this module's error type.
 /// @param conn An open database connection.
@@ -213,23 +223,23 @@ auto add_step(db::connection& conn, const plan_step_add_args& args) -> std::expe
   auto stmt = conn.prepare("insert into plan_steps (plan_id, ordinal, body, status) "
                            "values (?, ?, ?, 'pending') returning id");
   if (!stmt) {
-    return std::unexpected(plan_step_error::query_failed);
+    return std::unexpected(exec_failed("plan_step.add", "PrepareFailed"));
   }
   if (auto b = stmt->bind_int64(1, args.plan_id); !b) {
-    return std::unexpected(plan_step_error::query_failed);
+    return std::unexpected(exec_failed("plan_step.add", "BindFailed"));
   }
   if (auto b = stmt->bind_int64(2, ordinal); !b) {
-    return std::unexpected(plan_step_error::query_failed);
+    return std::unexpected(exec_failed("plan_step.add", "BindFailed"));
   }
   if (auto b = stmt->bind_text(3, args.body); !b) {
-    return std::unexpected(plan_step_error::query_failed);
+    return std::unexpected(exec_failed("plan_step.add", "BindFailed"));
   }
   auto stepped = stmt->step();
   if (!stepped) {
     if (is_unique_violation(stepped.error())) {
       return std::unexpected(plan_step_error::ordinal_conflict);
     }
-    return std::unexpected(plan_step_error::query_failed);
+    return std::unexpected(exec_failed("plan_step.add", "StepFailed"));
   }
   const auto id = stmt->column_int64(0);
 

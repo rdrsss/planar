@@ -767,7 +767,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
 
   auto stmt = conn.prepare(sql);
   if (!stmt) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.update", "PrepareFailed"));
   }
   int         bind_idx = 1;
   std::size_t text_i   = 0;
@@ -776,12 +776,12 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
     switch (k) {
     case param_kind::text:
       if (auto b = stmt->bind_text(bind_idx++, text_params[text_i++]); !b) {
-        return std::unexpected(task_error::query_failed);
+        return std::unexpected(exec_failed("task.update", "BindFailed"));
       }
       break;
     case param_kind::int64:
       if (auto b = stmt->bind_int64(bind_idx++, int_params[int_i++]); !b) {
-        return std::unexpected(task_error::query_failed);
+        return std::unexpected(exec_failed("task.update", "BindFailed"));
       }
       break;
     case param_kind::null:
@@ -789,7 +789,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
     }
   }
   if (auto b = stmt->bind_int64(bind_idx++, id); !b) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.update", "BindFailed"));
   }
 
   auto step = stmt->step();
@@ -797,7 +797,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
     if (is_unique_violation(step.error())) {
       return std::unexpected(task_error::slug_conflict);
     }
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(exec_failed("task.update", "StepFailed"));
   }
 
   // ORACLE: a patch carrying a status writes `status_change`, any other

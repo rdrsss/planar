@@ -9,6 +9,7 @@ module planar.engine.planning.artifact;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.log;
 import planar.scope_ref;
 import planar.policy;
 import planar.engine.planning.transitions;
@@ -20,6 +21,16 @@ using json_text::json_string;
 namespace audit = planar::policy::audit;
 
 namespace {
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>`
+/// diagnostic ahead of the outer handler error. See
+/// `zig/src/engine/planning/artifact.zig`'s `create`/`update` for the
+/// shapes this ports; mirrors `exec_failed` in task.cpp (same bucket,
+/// separate translation unit).
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> artifact_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return artifact_error::query_failed;
+}
 
 /// @brief The column list every read in this module selects, in the order
 /// `read_row` decodes. `slug` is deliberately absent — the oracle's
@@ -429,35 +440,35 @@ auto create_artifact(db::connection& conn, const artifact_create_args& args) -> 
     auto stmt = conn.prepare("insert into artifacts (scope_kind, scope_id, kind, title, body, source_path, status) "
                              "values (?, ?, ?, ?, ?, ?, ?) returning id");
     if (!stmt) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "PrepareFailed"));
     }
     if (auto b = stmt->bind_text(1, scope_kind_to_text(scope->first)); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "BindFailed"));
     }
     auto b2 = scope->second.has_value() ? stmt->bind_int64(2, *scope->second) : stmt->bind_null(2);
     if (!b2) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "BindFailed"));
     }
     if (auto b = stmt->bind_text(3, artifact_kind_to_text(args.kind)); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "BindFailed"));
     }
     if (auto b = stmt->bind_text(4, args.title); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "BindFailed"));
     }
     auto b5 = args.body.has_value() ? stmt->bind_text(5, *args.body) : stmt->bind_null(5);
     if (!b5) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "BindFailed"));
     }
     auto b6 = args.source_path.has_value() ? stmt->bind_text(6, *args.source_path) : stmt->bind_null(6);
     if (!b6) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "BindFailed"));
     }
     if (auto b = stmt->bind_text(7, artifact_status_to_text(args.status)); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "BindFailed"));
     }
     auto step = stmt->step();
     if (!step || *step != db::step_result::row) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.create", "StepFailed"));
     }
     id = stmt->column_int64(0);
   }
@@ -646,43 +657,43 @@ auto update_artifact(db::connection& conn, std::int64_t id, const artifact_updat
 
   auto stmt = conn.prepare(sql);
   if (!stmt) {
-    return std::unexpected(artifact_error::query_failed);
+    return std::unexpected(exec_failed("artifact.update", "PrepareFailed"));
   }
   int index = 1;
   if (scope.has_value()) {
     if (auto b = stmt->bind_text(index++, scope_kind_to_text(scope->first)); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.update", "BindFailed"));
     }
     auto b = scope->second.has_value() ? stmt->bind_int64(index++, *scope->second) : stmt->bind_null(index++);
     if (!b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.update", "BindFailed"));
     }
   }
   if (patch.title.has_value()) {
     if (auto b = stmt->bind_text(index++, *patch.title); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.update", "BindFailed"));
     }
   }
   if (patch.body.has_value()) {
     if (auto b = stmt->bind_text(index++, *patch.body); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.update", "BindFailed"));
     }
   }
   if (patch.status.has_value()) {
     if (auto b = stmt->bind_text(index++, artifact_status_to_text(*patch.status)); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.update", "BindFailed"));
     }
   }
   if (patch.source_path.has_value()) {
     if (auto b = stmt->bind_text(index++, *patch.source_path); !b) {
-      return std::unexpected(artifact_error::query_failed);
+      return std::unexpected(exec_failed("artifact.update", "BindFailed"));
     }
   }
   if (auto b = stmt->bind_int64(index++, id); !b) {
-    return std::unexpected(artifact_error::query_failed);
+    return std::unexpected(exec_failed("artifact.update", "BindFailed"));
   }
   if (!stmt->step().has_value()) {
-    return std::unexpected(artifact_error::query_failed);
+    return std::unexpected(exec_failed("artifact.update", "StepFailed"));
   }
 
   // The verb depends on whether a status moved, and the summary is

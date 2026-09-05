@@ -41,6 +41,7 @@ planar_module(engine_identity
     db
     git
     json_text
+    log
     scope_ref
     policy
   )

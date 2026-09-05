@@ -7,10 +7,19 @@ module planar.engine.external.link;
 import std;
 import planar.db;
 import planar.json_dom;
+import planar.log;
 
 namespace planar::engine::external::link {
 
 namespace {
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>` diagnostic
+/// ahead of the outer handler error. See `zig/src/engine/external/link.zig`'s
+/// `create` for the shape this ports; mirrors `engine::planning::exec_failed`.
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> link_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return link_error::query_failed;
+}
 
 // SQLITE_CONSTRAINT_UNIQUE — the same constant plan.cpp / task.cpp /
 // annotation.cpp / entitylink.cpp already use to detect a UNIQUE violation
@@ -244,21 +253,24 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<ext_
                            "(entity_kind, entity_id, system_id, external_id, external_url, link_role, sync_direction, "
                            "last_sync_status, config_json) values (?, ?, ?, ?, ?, ?, ?, ?, ?) returning id");
   if (!stmt) {
-    return std::unexpected(link_error::query_failed);
+    return std::unexpected(exec_failed("external.link.create", "PrepareFailed"));
   }
   if (!stmt->bind_text(1, external_entity_kind_to_text(args.entity_kind)) || !stmt->bind_int64(2, args.entity_id) ||
       !stmt->bind_int64(3, args.system_id) || !stmt->bind_text(4, args.external_id) ||
       !bind_text_opt(*stmt, 5, args.external_url) || !stmt->bind_text(6, link_role_to_text(args.role)) ||
       !stmt->bind_text(7, sync_direction_to_text(args.direction)) ||
       !stmt->bind_text(8, sync_status_to_text(args.initial_status)) || !bind_text_opt(*stmt, 9, args.config_json)) {
-    return std::unexpected(link_error::query_failed);
+    return std::unexpected(exec_failed("external.link.create", "BindFailed"));
   }
   auto stepped = stmt->step();
   if (!stepped) {
-    return std::unexpected(is_unique_violation(stepped.error()) ? link_error::link_exists : link_error::query_failed);
+    if (is_unique_violation(stepped.error())) {
+      return std::unexpected(link_error::link_exists);
+    }
+    return std::unexpected(exec_failed("external.link.create", "StepFailed"));
   }
   if (*stepped == db::step_result::done) {
-    return std::unexpected(link_error::query_failed);
+    return std::unexpected(exec_failed("external.link.create", "StepFailed"));
   }
   return show(conn, stmt->column_int64(0));
 }

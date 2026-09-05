@@ -81,7 +81,7 @@ planar_module(engine_external
     system.cpp
     sync.cpp
     parent_issue.cpp
-  DEPENDS db adapter json_text json_dom)
+  DEPENDS db adapter json_text json_dom log)
 
 target_link_libraries(planar_engine_external PRIVATE glaze::glaze)
 

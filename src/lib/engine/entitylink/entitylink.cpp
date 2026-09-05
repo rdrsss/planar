@@ -8,6 +8,7 @@ module planar.engine.entitylink;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.log;
 import planar.policy;
 
 namespace planar::engine::entitylink {
@@ -18,6 +19,15 @@ namespace {
 // task.cpp already use to detect a UNIQUE-constraint violation without
 // string-matching the driver's error message.
 constexpr int k_sqlite_constraint_unique = 2067;
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>` diagnostic
+/// ahead of the outer handler error. Mirrors `engine::planning::exec_failed`
+/// (task.cpp); see `zig/src/engine/entitylink.zig`'s `add`/`remove` for the
+/// oracle shapes this ports.
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> entity_link_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return entity_link_error::query_failed;
+}
 
 auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique;
@@ -254,22 +264,22 @@ auto add(db::connection& conn, const entity_link_add_args& args) -> std::expecte
   auto stmt = conn.prepare("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
                            "values (?, ?, ?, ?, ?) returning id");
   if (!stmt) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.add", "PrepareFailed"));
   }
   if (auto b = stmt->bind_text(1, entity_kind_to_text(args.from_kind)); !b) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.add", "BindFailed"));
   }
   if (auto b = stmt->bind_int64(2, args.from_id); !b) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.add", "BindFailed"));
   }
   if (auto b = stmt->bind_text(3, entity_kind_to_text(args.to_kind)); !b) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.add", "BindFailed"));
   }
   if (auto b = stmt->bind_int64(4, args.to_id); !b) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.add", "BindFailed"));
   }
   if (auto b = stmt->bind_text(5, relationship_to_text(args.relationship_)); !b) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.add", "BindFailed"));
   }
 
   auto step = stmt->step();
@@ -277,10 +287,10 @@ auto add(db::connection& conn, const entity_link_add_args& args) -> std::expecte
     if (is_unique_violation(step.error())) {
       return std::unexpected(entity_link_error::link_exists);
     }
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.add", "StepFailed"));
   }
   if (*step != db::step_result::row) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.add", "StepFailed"));
   }
   auto new_id = stmt->column_int64(0);
 
@@ -312,14 +322,14 @@ auto remove(db::connection& conn, std::int64_t id) -> std::expected<void, entity
 
   auto stmt = conn.prepare("delete from entity_links where id = ?");
   if (!stmt) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.remove", "PrepareFailed"));
   }
   if (auto b = stmt->bind_int64(1, id); !b) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.remove", "BindFailed"));
   }
   auto step = stmt->step();
   if (!step) {
-    return std::unexpected(entity_link_error::query_failed);
+    return std::unexpected(exec_failed("entitylink.remove", "StepFailed"));
   }
 
   // Same ordering rule as `add`: the audit row records a delete that has

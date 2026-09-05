@@ -9,6 +9,7 @@ module planar.engine.planning.question;
 import std;
 import planar.db;
 import planar.json_text;
+import planar.log;
 import planar.scope_ref;
 import planar.policy;
 import planar.engine.planning.transitions;
@@ -20,6 +21,15 @@ using json_text::json_string;
 namespace audit = planar::policy::audit;
 
 namespace {
+
+/// @brief Emit the oracle's inner `<op> exec failed: <ErrorName>`
+/// diagnostic ahead of the outer handler error. See
+/// `zig/src/engine/planning/question.zig`'s `create` for the shape this
+/// ports; mirrors `exec_failed` in task.cpp (same bucket, separate TU).
+auto exec_failed(std::string_view op, std::string_view zig_error_name) -> question_error {
+  log::diag_err(std::format("{} exec failed: {}", op, zig_error_name));
+  return question_error::query_failed;
+}
 
 /// @brief Append one `audit_log` row, mapping a write failure into this
 /// module's error surface. Called AFTER the question's own write succeeds —
@@ -349,30 +359,30 @@ auto create_question(db::connection& conn, const question_create_args& args) -> 
   {
     auto stmt = conn.prepare("insert into questions (scope_kind, scope_id, title, body) values (?, ?, ?, ?) returning id");
     if (!stmt) {
-      return std::unexpected(question_error::query_failed);
+      return std::unexpected(exec_failed("question.create", "PrepareFailed"));
     }
     if (auto b = stmt->bind_text(1, scope_kind_to_text(scope->first)); !b) {
-      return std::unexpected(question_error::query_failed);
+      return std::unexpected(exec_failed("question.create", "BindFailed"));
     }
     auto b2 = scope->second.has_value() ? stmt->bind_int64(2, *scope->second) : stmt->bind_null(2);
     if (!b2) {
-      return std::unexpected(question_error::query_failed);
+      return std::unexpected(exec_failed("question.create", "BindFailed"));
     }
     if (auto b = stmt->bind_text(3, args.title); !b) {
-      return std::unexpected(question_error::query_failed);
+      return std::unexpected(exec_failed("question.create", "BindFailed"));
     }
     // `body` binds SQL NULL when absent, NOT the empty string: `render_json`
     // emits `null` vs `""` and the two are operator-visible.
     auto b4 = args.body.has_value() ? stmt->bind_text(4, *args.body) : stmt->bind_null(4);
     if (!b4) {
-      return std::unexpected(question_error::query_failed);
+      return std::unexpected(exec_failed("question.create", "BindFailed"));
     }
     auto step = stmt->step();
     if (!step) {
-      return std::unexpected(question_error::query_failed);
+      return std::unexpected(exec_failed("question.create", "StepFailed"));
     }
     if (*step != db::step_result::row) {
-      return std::unexpected(question_error::query_failed);
+      return std::unexpected(exec_failed("question.create", "StepFailed"));
     }
     id = stmt->column_int64(0);
   }
