@@ -758,3 +758,139 @@ pub const Suite = struct {
         self.allocator.free(add_out);
     }
 };
+
+// =========================================================================
+// Shared --help SUBCOMMANDS-table parsing (task 6440 / task 6442).
+//
+// A raw substring/indexOf search over the whole `--help` text is unsafe
+// under CLI11 (decision 948): wrapped description continuation lines are
+// padded out to a fixed left-column width, so a description word can
+// collide with a verb-shaped needle (e.g. "  claim " matching inside a
+// wrapped sentence that happens to contain the word "claim"). Parsing the
+// SUBCOMMANDS table into a verb set and testing set membership is immune
+// to that false-positive class. Originally written for
+// capability_boundary_test.zig (task 6440); promoted here so
+// planar_watch_test.zig (task 6442) can share it rather than re-deriving
+// it.
+// =========================================================================
+
+/// Parse a Planar `--help` SUBCOMMANDS table (CLI11's own formatter,
+/// vendor/cli11/*/include/CLI/FormatterFwd.hpp's `column_width_{30}`) into
+/// the set of verb names.
+///
+/// CLI11 emits the table as:
+///   SUBCOMMANDS:
+///     <name>                      <description ...>
+///                                 <wrapped description continuation ...>
+/// i.e. every real entry starts at EXACTLY 2 leading spaces; every wrapped
+/// description continuation line is padded out to column 30 (CLI11's fixed
+/// left-column width) and so starts with MORE than 2 leading spaces. We
+/// tokenize an entry line on whitespace and take token[0] as the verb name,
+/// and skip continuation lines outright rather than misreading their first
+/// word as a verb. The table ends at the first blank line, or at the first
+/// line that de-indents below 2 spaces (next top-level section).
+///
+/// The header itself must be matched as a whole line ("SUBCOMMANDS:"),
+/// anchored at line-start — NOT via a raw substring search over the whole
+/// help text, which would (and did) match inside the header's own tail
+/// ("SUBCOMMANDS:" contains "COMMANDS:" as a suffix), silently defeating the
+/// missing-header guard below.
+pub fn parseHelpVerbs(
+    gpa: std.mem.Allocator,
+    help: []const u8,
+) std.StringHashMap(void) {
+    var set = std.StringHashMap(void).init(gpa);
+
+    var line_it = std.mem.splitScalar(u8, help, '\n');
+    const found_header = while (line_it.next()) |line| {
+        if (std.mem.eql(u8, line, "SUBCOMMANDS:")) break true;
+    } else false;
+    if (!found_header) {
+        std.debug.print("help output missing SUBCOMMANDS section:\n{s}\n", .{help});
+        @panic("no SUBCOMMANDS header in help");
+    }
+
+    while (line_it.next()) |line| {
+        if (line.len == 0) break; // table ends at first blank line.
+        const indent = std.mem.indexOfNone(u8, line, " ") orelse continue;
+        if (indent != 2) {
+            if (indent < 2) break; // table ends at de-indent.
+            continue; // wrapped description continuation line; not a verb.
+        }
+        // Tokenize on whitespace; first token is the verb.
+        var tok_it = std.mem.tokenizeAny(u8, line, " \t");
+        const first = tok_it.next() orelse continue;
+        // Copy into a stable heap buffer so the map key outlives the
+        // input slice (the input is owned by the caller and will be
+        // freed before the caller reads the map).
+        const owned = gpa.dupe(u8, first) catch @panic("OOM");
+        set.put(owned, {}) catch @panic("OOM");
+    }
+    return set;
+}
+
+/// Free a verb set returned by `parseHelpVerbs`.
+pub fn freeVerbSet(gpa: std.mem.Allocator, set: *std.StringHashMap(void)) void {
+    var it = set.keyIterator();
+    while (it.next()) |k| gpa.free(k.*);
+    set.deinit();
+}
+
+/// Assert that `set` contains every verb in `required`; used to check that
+/// read verbs are present.
+pub fn assertContainsAll(
+    set: *const std.StringHashMap(void),
+    required: []const []const u8,
+    bin: []const u8,
+) !void {
+    for (required) |v| {
+        if (!set.contains(v)) {
+            std.debug.print(
+                "[{s}] capability-boundary: REQUIRED verb '{s}' missing from --help; have {d} verbs\n",
+                .{ bin, v, set.count() },
+            );
+            var it = set.keyIterator();
+            while (it.next()) |k| std.debug.print("  - {s}\n", .{k.*});
+            return error.MissingRequiredVerb;
+        }
+    }
+}
+
+/// Assert that `set` contains none of `forbidden`; used for capability
+/// boundary checks — a read-only binary must not expose a write verb.
+pub fn assertContainsNone(
+    set: *const std.StringHashMap(void),
+    forbidden: []const []const u8,
+    bin: []const u8,
+) !void {
+    for (forbidden) |v| {
+        if (set.contains(v)) {
+            std.debug.print(
+                "[{s}] capability-boundary: FORBIDDEN verb '{s}' leaked into --help\n",
+                .{ bin, v },
+            );
+            return error.ForbiddenVerbPresent;
+        }
+    }
+}
+
+/// Assert that `set` is exactly `expected` (same size, same members).
+pub fn assertExactSet(
+    set: *const std.StringHashMap(void),
+    expected: []const []const u8,
+    bin: []const u8,
+) !void {
+    if (set.count() != expected.len) {
+        std.debug.print(
+            "[{s}] capability-boundary: verb count mismatch — got {d}, expected {d}\n",
+            .{ bin, set.count(), expected.len },
+        );
+        std.debug.print("  expected:\n", .{});
+        for (expected) |v| std.debug.print("    - {s}\n", .{v});
+        std.debug.print("  actual:\n", .{});
+        var it = set.keyIterator();
+        while (it.next()) |k| std.debug.print("    - {s}\n", .{k.*});
+        return error.VerbSetSizeMismatch;
+    }
+    try assertContainsAll(set, expected, bin);
+}

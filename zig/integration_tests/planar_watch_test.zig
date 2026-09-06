@@ -173,36 +173,33 @@ test "planar-watch --help lists the read verbs + version + completion" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
-    // Must mention each read verb.
-    inline for ([_][]const u8{
+    // Parse the SUBCOMMANDS table into a verb set and test set membership,
+    // rather than a raw substring/indexOf search over the whole --help
+    // text (task 6442). Under CLI11 (decision 948), wrapped description
+    // continuation lines are padded out to a fixed left-column width, so a
+    // description word can collide with a verb-shaped needle — e.g. line
+    // 60 of this binary's real --help output ("        claim (matches `ps
+    // --stale`).") is a wrapped DESCRIPTION line that matched the old
+    // "  claim " needle even though `claim` is not a planar-watch verb.
+    // harness.parseHelpVerbs (shared with capability_boundary_test.zig,
+    // task 6440) tokenizes only genuine 2-space-indented table entries.
+    var verbs = harness.parseHelpVerbs(gpa, res.stdout);
+    defer harness.freeVerbSet(gpa, &verbs);
+
+    // Must contain each read verb.
+    try harness.assertContainsAll(&verbs, &.{
         "feed",        "ps",      "claims",     "actions", "plans", "log", "tree", "run",
         "sync-events", "version", "completion",
-    }) |v| {
-        if (std.mem.indexOf(u8, res.stdout, v) == null) {
-            std.debug.print("missing verb '{s}' in --help:\n{s}\n", .{ v, res.stdout });
-            return error.MissingVerb;
-        }
-    }
+    }, "planar-watch");
 
-    // Capability boundary — no write verb may appear anywhere in the
-    // help output. These are planar-agent's; they MUST NOT be
-    // reachable through planar-watch.
-    //
-    // Each search term is prefixed/suffixed by word boundaries so we
-    // don't false-positive on substrings (e.g. "release" inside a
-    // doc-comment for some unrelated verb). The verb list in
-    // --help is one-per-line; matching "  pull " (two-space prefix +
-    // trailing space) is the COMMANDS table's exact format.
-    inline for ([_][]const u8{
-        "  pull ",    "  claim ",  "  complete ",  "  fail ",
-        "  release ", "  block ",  "  heartbeat ", "  reconcile ",
-        "  abort ",   "  ingest ", "  action ",
-    }) |bad| {
-        if (std.mem.indexOf(u8, res.stdout, bad) != null) {
-            std.debug.print("planar-watch --help leaked write verb '{s}':\n{s}\n", .{ bad, res.stdout });
-            return error.WriteVerbExposed;
-        }
-    }
+    // Capability boundary — no write verb may appear as a table entry.
+    // These are planar-agent's; they MUST NOT be reachable through
+    // planar-watch.
+    try harness.assertContainsNone(&verbs, &.{
+        "pull",    "claim",  "complete",  "fail",
+        "release", "block",  "heartbeat", "reconcile",
+        "abort",   "ingest", "action",
+    }, "planar-watch");
 }
 
 // =========================================================================

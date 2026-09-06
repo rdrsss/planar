@@ -119,120 +119,11 @@ fn runBin(
     return .{ .stdout = result.stdout, .stderr = result.stderr, .term = result.term };
 }
 
-// Parse a Planar `--help` SUBCOMMANDS table (CLI11's own formatter,
-// vendor/cli11/*/include/CLI/FormatterFwd.hpp's `column_width_{30}`) into
-// the set of verb names.
-//
-// CLI11 emits the table as:
-//   SUBCOMMANDS:
-//     <name>                      <description ...>
-//                                 <wrapped description continuation ...>
-// i.e. every real entry starts at EXACTLY 2 leading spaces; every wrapped
-// description continuation line is padded out to column 30 (CLI11's fixed
-// left-column width) and so starts with MORE than 2 leading spaces. We
-// tokenize an entry line on whitespace and take token[0] as the verb name,
-// and skip continuation lines outright rather than misreading their first
-// word as a verb. The table ends at the first blank line, or at the first
-// line that de-indents below 2 spaces (next top-level section).
-//
-// The header itself must be matched as a whole line ("SUBCOMMANDS:"),
-// anchored at line-start — NOT via a raw substring search over the whole
-// help text, which would (and did) match inside the header's own tail
-// ("SUBCOMMANDS:" contains "COMMANDS:" as a suffix), silently defeating the
-// missing-header guard below.
-fn parseHelpVerbs(
-    gpa: std.mem.Allocator,
-    help: []const u8,
-) std.StringHashMap(void) {
-    var set = std.StringHashMap(void).init(gpa);
-
-    var line_it = std.mem.splitScalar(u8, help, '\n');
-    const found_header = while (line_it.next()) |line| {
-        if (std.mem.eql(u8, line, "SUBCOMMANDS:")) break true;
-    } else false;
-    if (!found_header) {
-        std.debug.print("help output missing SUBCOMMANDS section:\n{s}\n", .{help});
-        @panic("no SUBCOMMANDS header in help");
-    }
-
-    while (line_it.next()) |line| {
-        if (line.len == 0) break; // table ends at first blank line.
-        const indent = std.mem.indexOfNone(u8, line, " ") orelse continue;
-        if (indent != 2) {
-            if (indent < 2) break; // table ends at de-indent.
-            continue; // wrapped description continuation line; not a verb.
-        }
-        // Tokenize on whitespace; first token is the verb.
-        var tok_it = std.mem.tokenizeAny(u8, line, " \t");
-        const first = tok_it.next() orelse continue;
-        // Copy into a stable heap buffer so the map key outlives the
-        // input slice (the input is owned by the caller and will be
-        // freed before the caller reads the map).
-        const owned = gpa.dupe(u8, first) catch @panic("OOM");
-        set.put(owned, {}) catch @panic("OOM");
-    }
-    return set;
-}
-
-fn freeVerbSet(gpa: std.mem.Allocator, set: *std.StringHashMap(void)) void {
-    var it = set.keyIterator();
-    while (it.next()) |k| gpa.free(k.*);
-    set.deinit();
-}
-
-fn assertContainsAll(
-    set: *const std.StringHashMap(void),
-    required: []const []const u8,
-    bin: []const u8,
-) !void {
-    for (required) |v| {
-        if (!set.contains(v)) {
-            std.debug.print(
-                "[{s}] capability-boundary: REQUIRED verb '{s}' missing from --help; have {d} verbs\n",
-                .{ bin, v, set.count() },
-            );
-            var it = set.keyIterator();
-            while (it.next()) |k| std.debug.print("  - {s}\n", .{k.*});
-            return error.MissingRequiredVerb;
-        }
-    }
-}
-
-fn assertContainsNone(
-    set: *const std.StringHashMap(void),
-    forbidden: []const []const u8,
-    bin: []const u8,
-) !void {
-    for (forbidden) |v| {
-        if (set.contains(v)) {
-            std.debug.print(
-                "[{s}] capability-boundary: FORBIDDEN verb '{s}' leaked into --help\n",
-                .{ bin, v },
-            );
-            return error.ForbiddenVerbPresent;
-        }
-    }
-}
-
-fn assertExactSet(
-    set: *const std.StringHashMap(void),
-    expected: []const []const u8,
-    bin: []const u8,
-) !void {
-    if (set.count() != expected.len) {
-        std.debug.print(
-            "[{s}] capability-boundary: verb count mismatch — got {d}, expected {d}\n",
-            .{ bin, set.count(), expected.len },
-        );
-        std.debug.print("  expected:\n", .{});
-        for (expected) |v| std.debug.print("    - {s}\n", .{v});
-        std.debug.print("  actual:\n", .{});
-        var it = set.keyIterator();
-        while (it.next()) |k| std.debug.print("    - {s}\n", .{k.*});
-        return error.VerbSetSizeMismatch;
-    }
-    try assertContainsAll(set, expected, bin);
-}
+// SUBCOMMANDS-table parsing (parseHelpVerbs/freeVerbSet/assertContainsAll/
+// assertContainsNone/assertExactSet) lives in harness.zig — shared with
+// planar_watch_test.zig (task 6442) rather than re-derived per test file.
+// See harness.zig's own doc comment on parseHelpVerbs for the CLI11
+// wrapped-continuation-line rationale.
 
 // =========================================================================
 // t#2598 — planar-agent capability boundary.
@@ -262,10 +153,10 @@ test "planar-agent verb set is EXACTLY the 18 documented agent verbs" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
-    var verbs = parseHelpVerbs(gpa, res.stdout);
-    defer freeVerbSet(gpa, &verbs);
+    var verbs = harness.parseHelpVerbs(gpa, res.stdout);
+    defer harness.freeVerbSet(gpa, &verbs);
 
-    try assertExactSet(&verbs, &.{
+    try harness.assertExactSet(&verbs, &.{
         "version",
         "pull",
         "peek",
@@ -290,7 +181,7 @@ test "planar-agent verb set is EXACTLY the 18 documented agent verbs" {
     }, "planar-agent");
 
     // Forbidden set: planning-entity verbs and operator-only namespaces.
-    try assertContainsNone(&verbs, &.{
+    try harness.assertContainsNone(&verbs, &.{
         "plan",     "task",      "decision",  "question",  "scenario",
         "artifact", "annotate",  "init",      "workbench", "doc",
         "spec",     "templates", "ext",       "sync",      "promote",
@@ -309,10 +200,10 @@ test "planar-agent context subverbs are EXACTLY {add, capsule, list, resolve}" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
-    var verbs = parseHelpVerbs(gpa, res.stdout);
-    defer freeVerbSet(gpa, &verbs);
+    var verbs = harness.parseHelpVerbs(gpa, res.stdout);
+    defer harness.freeVerbSet(gpa, &verbs);
 
-    try assertExactSet(&verbs, &.{ "add", "capsule", "list", "resolve" }, "planar-agent context");
+    try harness.assertExactSet(&verbs, &.{ "add", "capsule", "list", "resolve" }, "planar-agent context");
 }
 
 test "planar-agent run subverbs are EXACTLY {start, end}" {
@@ -325,10 +216,10 @@ test "planar-agent run subverbs are EXACTLY {start, end}" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
-    var verbs = parseHelpVerbs(gpa, res.stdout);
-    defer freeVerbSet(gpa, &verbs);
+    var verbs = harness.parseHelpVerbs(gpa, res.stdout);
+    defer harness.freeVerbSet(gpa, &verbs);
 
-    try assertExactSet(&verbs, &.{ "start", "end" }, "planar-agent run");
+    try harness.assertExactSet(&verbs, &.{ "start", "end" }, "planar-agent run");
 }
 
 test "planar-agent action subverbs are EXACTLY {start, end}" {
@@ -341,10 +232,10 @@ test "planar-agent action subverbs are EXACTLY {start, end}" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
-    var verbs = parseHelpVerbs(gpa, res.stdout);
-    defer freeVerbSet(gpa, &verbs);
+    var verbs = harness.parseHelpVerbs(gpa, res.stdout);
+    defer harness.freeVerbSet(gpa, &verbs);
 
-    try assertExactSet(&verbs, &.{ "start", "end" }, "planar-agent action");
+    try harness.assertExactSet(&verbs, &.{ "start", "end" }, "planar-agent action");
 }
 
 // Recursively walk every leaf verb's --help; assert each invocation
@@ -431,23 +322,23 @@ test "planar-watch verb set is EXACTLY the read verbs + version + completion" {
     try std.testing.expect(res.term == .exited);
     try std.testing.expectEqual(@as(u32, 0), res.term.exited);
 
-    var verbs = parseHelpVerbs(gpa, res.stdout);
-    defer freeVerbSet(gpa, &verbs);
+    var verbs = harness.parseHelpVerbs(gpa, res.stdout);
+    defer harness.freeVerbSet(gpa, &verbs);
 
-    try assertExactSet(&verbs, &.{
+    try harness.assertExactSet(&verbs, &.{
         "feed",        "ps",      "claims",     "actions", "plans", "log", "tree", "run",
         "sync-events", "version", "completion", "schema",
     }, "planar-watch");
 
     // Forbidden: every planar-agent write verb.
-    try assertContainsNone(&verbs, &.{
+    try harness.assertContainsNone(&verbs, &.{
         "pull",    "claim", "heartbeat", "complete", "fail",
         "release", "block", "action",    "ingest",   "reconcile",
         "abort",   "peek",
     }, "planar-watch");
 
     // Forbidden: every planar planning-entity verb.
-    try assertContainsNone(&verbs, &.{
+    try harness.assertContainsNone(&verbs, &.{
         "plan",     "task",      "decision", "question",  "scenario",
         "artifact", "annotate",  "init",     "workbench", "doc",
         "spec",     "templates", "ext",      "sync",      "promote",
