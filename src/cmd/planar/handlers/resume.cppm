@@ -1,8 +1,7 @@
 /// @file resume.cppm
 /// @brief `planar.cmd.planar.handlers.resume` — `planar resume validate`,
-/// the no-id cwd-scope derivation ahead of the 8-section packet, and the
-/// placeholder that keeps the still-unported packet body LOUD (plan 996,
-/// tasks 6040/6452).
+/// the no-id cwd-scope derivation, and the 8-section packet body (plan 996,
+/// tasks 6040/6452/6455).
 ///
 /// Port target: zig/src/cmd/planar/handlers/resume/validate.zig and the
 /// no-id branch of zig/src/cmd/planar/handlers/resume/cmd.zig's `handle`.
@@ -50,44 +49,71 @@
 ///                     not inside any registered Planar scope; cd into a
 ///                     registered scope or pass <task-id> explicitly"
 ///
-/// What remains NOT ported is the 8-section packet BODY: once a task id is
-/// in hand — whether typed explicitly or derived from cwd above — building
-/// and rendering its packet still answers `not_implemented` (exit 64). It
-/// is registered as a handler that returns that failure rather than left
-/// unregistered, and that is a deliberate choice between two imperfect
-/// options: `resume` is a dual group-and-leaf node, so an unregistered
-/// parent would fall to dispatch's help-page path and answer EXIT 0 with a
-/// help page — a silent success where the oracle produces a packet. Exit
-/// 64 is this binary's designated placeholder code and fails loudly
-/// instead.
+/// ## The 8-section packet BODY IS ported (task 6455)
 ///
-/// The remaining divergence is real and is recorded rather than hidden:
+/// Once a task id is in hand — whether typed explicitly or derived from
+/// cwd above — this handler now calls
+/// `planar.engine.runtime.resumecheck::build_packet` and renders its
+/// result. `resume` stays registered as a handler regardless (the
+/// dual-group-and-leaf argument above still holds: an unregistered parent
+/// would fall to dispatch's help-page path and answer EXIT 0 with a help
+/// page — a silent success where the oracle produces a packet), but the
+/// not-found and query-failure arms are the only ones left, plus the
+/// bad-id `invalid_input` refusal.
 ///
-///     oracle:  planar resume 2         -> exit 0, the 8-section packet
-///     here:    planar resume [<id>]    -> exit 64, "not implemented yet"
-///             (once a task id is resolved, by either path above)
+/// Task 6452's blocker inventory named FOUR layer-2 surfaces as missing.
+/// Re-verified by RUNNING the oracle at task 6455: only session's
+/// per-task readers (`recent_entries_for_task` / `recent_sessions_for_task`,
+/// landed on `session.cppm` this task) were genuinely absent. The other
+/// three had already landed as unrelated work progressed
+/// (`external.link::links_for_entity`, all three of
+/// `engine.planning.{decision,question,artifact}`) or were never actually
+/// missing (`plan_step::list_steps` already existed; only `plan.cppm`
+/// itself lacked a step read path, and the note conflated the two
+/// modules). None of that changes the LAYER shape though — `build_packet`
+/// reproduces the oracle's own raw SQL for plan position, operational-plane
+/// links, decisions, questions and artifacts directly rather than importing
+/// those sibling layer-2 buckets; see `resumecheck.cppm`'s header for the
+/// full account and for why `decisions_for_task` specifically is NOT reused
+/// here.
 ///
-/// The packet's oracle bytes, captured in a pinned arena so the port that
-/// lands it has a target — RE-VERIFIED live against the oracle at task
-/// 6452 and still an accurate shape (field names/nesting unchanged; the
-/// concrete values below are from an EARLIER fixture, not the live run):
+/// Byte-for-byte confirmed against the live oracle at task 6455 (values
+/// from a fresh fixture, not the stale one this header used to carry):
 ///
-///     {"identity":{"task_id":2,"plan_id":1,"title":"...","status":"done",
-///      "scope_kind":"association","scope_id":1},
-///      "state":{"status":"done","next_action":"do the thing",
-///               "last_action_at":"...","last_action_body":"checkpoint body"},
-///      "plan":{"plan_id":1,"plan_title":"Demo plan","completed":[],
-///              "current":[],"remaining":[]},
-///      "operational_plane":{"links":[],"refresh_note":""},
-///      "recent_activity":[],"decisions":[],"questions":[],"artifacts":[],
-///      "audit":null,"active_claim":null,"from_handoff":null}
+///     {"identity":{"task_id":1,"plan_id":1,"title":"RESUME_TARGET",
+///      "status":"todo","scope_kind":"global","scope_id":null},
+///      "state":{"status":"todo","next_action":"verify",
+///               "last_action_at":"...","last_action_body":"checkpoint"},
+///      "plan":{"plan_id":1,"plan_title":"Demo plan",
+///              "completed":[{"ordinal":1,"body":"step one","status":"done"}],
+///              "current":[],
+///              "remaining":[{"ordinal":2,"body":"step two","status":"pending"},
+///                           {"ordinal":3,"body":"step three","status":"pending"}]},
+///      "operational_plane":{"links":[{"link_id":1,"external_id":"42",
+///        "external_url":"","remote_status":"","remote_assignee":"",
+///        "last_synced_at":"","sync_status":"never","conflict":false,
+///        "refresh_error":""}],"refresh_note":""},
+///      "recent_activity":[...],
+///      "decisions":[{"id":1,"title":"Use X","status":"proposed"}],
+///      "questions":[{"id":1,"title":"Is X ok","status":"open","answer_body":""}],
+///      "artifacts":[{"artifact_id":1,"title":"Design doc","kind":"design_note",
+///                    "relationship":"verifies"}],
+///      "audit":{"session_id":1,"vendor":"cli","started_at":"..."},
+///      "active_claim":null,"from_handoff":{"handoff_id":1,
+///        "worktree_path":"/wt2","repo_root":"","branch":""}}
 ///
-/// and the text form is eight `## N. <Title>` sections under a
-/// `=== Resume Packet: task N ===` banner, with `(none)` / `(no external
-/// links)` / `(no prior session)` placeholders for the empty ones.
+/// (`active_claim`, when one is held, carries `claim_id`/`claim_token`/
+/// `vendor`/`worktree_path`/`repo_root`/`branch` — probed separately since
+/// a task cannot hold both an active claim AND the handoff fallback in the
+/// same fixture; `from_handoff` is populated only when no active claim
+/// carries a nonempty `worktree_path`.)
 ///
-/// What blocks it is four unported LAYER-2 surfaces, not this layer; the
-/// inventory is in `src/lib/engine/runtime/CMakeLists.txt`.
+/// The text form is the eight `## N. <Title>` sections under a
+/// `=== Resume Packet: task N ===` banner, oracle-captured byte-for-byte
+/// from `handlers/resume/cmd.zig`'s `renderText` — see
+/// `resumecheck.cpp`'s `render_packet_text` for the exact strings,
+/// including the `(none)` / `(no external links)` / `(no prior session)`
+/// placeholders and the em-dash (U+2014) in the recent-activity line.
 module;
 
 export module planar.cmd.planar.handlers.resume;
@@ -103,16 +129,15 @@ namespace planar::cmd::handlers {
 /// @brief `planar resume [<task-id>] [--json]` — the 8-section packet.
 ///
 /// The no-id cwd-scope derivation (read-set resolution plus the
-/// most-recent-active-task walk) IS ported and can fail with its own two
-/// refusals; the packet BODY built from a resolved task id is NOT PORTED
-/// and always answers the `not_implemented` failure. See this module's
-/// header.
+/// most-recent-active-task walk) and the packet body built from a
+/// resolved task id are BOTH ported. See this module's header.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return The no-id derivation's refusal when cwd resolution or
 /// most-recent-active selection fails; the bad-id `invalid_input` failure
-/// for a malformed explicit id; otherwise `not_implemented` once a task id
-/// is in hand.
+/// for a malformed explicit id; `not_found` when the resolved task id does
+/// not exist; otherwise success with the rendered packet written to
+/// `ctx.out()`.
 export auto resume_packet(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `planar resume validate <task-id> [--json]`.

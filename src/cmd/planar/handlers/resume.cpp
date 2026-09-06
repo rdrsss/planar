@@ -125,10 +125,21 @@ auto resume_packet(context& ctx, const cliapp::parsed_args& args) -> handler_res
     }
   }
 
-  // The 8-section packet itself is NOT ported (see this module's header);
-  // both the with-id and the derived-from-cwd task id land here.
-  static_cast<void>(task_id);
-  return std::unexpected(error_from_body(kind_t::not_implemented, "not implemented yet"));
+  // Both the with-id and the derived-from-cwd task id land here.
+  auto built = rck::build_packet(**conn, task_id);
+  if (!built) {
+    if (built.error() == rck::resume_error::not_found) {
+      return std::unexpected(error_from_body(kind_t::not_found, std::format("task {} not found", task_id)));
+    }
+    return std::unexpected(error_from_body(kind_t::generic_failure, "resume: QueryFailed"));
+  }
+
+  if (flag_bool(args, "--json")) {
+    ctx.out() << rck::render_packet_json(*built);
+  } else {
+    ctx.out() << rck::render_packet_text(*built);
+  }
+  return {};
 }
 
 auto resume_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
