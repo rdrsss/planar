@@ -424,6 +424,24 @@ RUN_DEPS=(
 
 check_deps "build" 1 "${BUILD_DEPS[@]}"
 
+# TBB (decision 1006, task 6459) — cmake/dependencies.cmake now vendors
+# Mt-KaHyPar unconditionally, and Mt-KaHyPar's own CMakeLists.txt
+# find_package(TBB)s the Homebrew `tbb` formula (TBB does not support static
+# linking; decision 1006 accepts this as the one dynamic runtime dependency
+# the vendored solver needs). CMake configure FATAL_ERRORs without it, so
+# this fails the install here too rather than deep into the CMake build.
+# check_deps() above only probes command-line tools (`command -v`); TBB
+# ships no CLI binary of its own, so it is checked directly the same way
+# cmake/dependencies.cmake's own probe resolves it.
+if command -v brew >/dev/null 2>&1 && [[ -d "$(brew --prefix tbb 2>/dev/null)" ]]; then
+  vlog "dep ok: tbb ($(brew --prefix tbb))"
+else
+  printf '\n%sinstall.sh: missing required build tool(s):%s\n' "$C_RED$C_BOLD" "$C_RESET" >&2
+  printf '  %s✗%s tbb — Mt-KaHyPar (`groups recommend --solver mtkahypar`) TBB runtime dependency\n' "$C_RED" "$C_RESET" >&2
+  printf '  macOS: brew install tbb\n' >&2
+  exit 1
+fi
+
 # Check that we are in a CMake Planar source checkout.
 [[ -f "$REPO_ROOT/CMakeLists.txt" ]] || err "CMakeLists.txt not found in $REPO_ROOT (run install.sh from the Planar source repo)"
 [[ -f "$REPO_ROOT/CMakePresets.json" ]] || err "CMakePresets.json not found in $REPO_ROOT"

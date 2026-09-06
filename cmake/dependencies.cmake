@@ -393,3 +393,128 @@ if(tree_sitter_zig_ADDED)
   target_link_libraries(tree_sitter_zig_static PUBLIC tree_sitter::tree_sitter)
   add_library(tree_sitter::zig ALIAS tree_sitter_zig_static)
 endif()
+
+# --- Mt-KaHyPar (decision 1006, task 6459 — groups recommend --solver mtkahypar) ---
+#
+# Supersedes the Zig-era Python-wheel bridge (`bin/mtkahypar`,
+# `opt/mtkahypar/<v>/venv/`). Task 6457 found that bridge was never a real C
+# library seam -- the installed wheel is a CPython extension with no
+# `mtkahypar_*` C ABI -- so calling it from C++ would mean embedding a
+# CPython interpreter, not linking a library. Decision 1006 (option b)
+# instead resources building Mt-KaHyPar from its own C++ source and linking
+# `libmtkahypar` directly.
+#
+# ## The vendor graph, and why it is three blocks rather than five-plus
+#
+# Mt-KaHyPar's own CMakeLists.txt unconditionally `FetchContent`s four
+# further repositories to build even its library target. On THIS platform
+# (Apple Silicon / arm64) two of those four never activate:
+#
+#   * `growt`  -- gated behind `KAHYPAR_USE_GROWT`, which upstream's own
+#     CMakeLists.txt only turns on when `KAHYPAR_X86` is true (x86/amd64
+#     `CMAKE_SYSTEM_PROCESSOR`). arm64 never sets it -- verified by reading
+#     the upstream CMakeLists.txt gate directly, not assumed.
+#   * `ParlayLib` -- gated behind `KAHYPAR_DISABLE_PARLAY` (default OFF,
+#     i.e. parlay normally fetched). Explicitly disabled here via
+#     `KAHYPAR_DISABLE_PARLAY ON` in the OPTIONS below -- upstream's own
+#     doc comment says this "might impact running time of deterministic
+#     mode on some instances", a performance tradeoff, not a correctness
+#     one, and one this port accepts to keep the vendor graph small.
+#   * `googletest` -- gated behind `KAHYPAR_ENABLE_TESTING` (default OFF,
+#     left OFF). Planar supplies its own Catch2 tests.
+#   * TBB's own `FetchContent` arm is gated behind `KAHYPAR_DOWNLOAD_TBB`
+#     (default OFF, left OFF): upstream falls through to
+#     `find_package(TBB 2021.5 COMPONENTS tbb tbbmalloc)` instead, which is
+#     exactly the dynamic-TBB-via-Homebrew path decision 1006 accepts (see
+#     below) -- no vendor block needed for TBB either.
+#   * `hwloc` -- gated behind `KAHYPAR_DISABLE_HWLOC` (default OFF, i.e.
+#     hwloc normally required via a second `find_package`). Decision 1006
+#     accepts exactly ONE dynamic system dependency (TBB); a second
+#     (hwloc, for NUMA-aware thread pinning this build does not enable
+#     anyway -- `KAHYPAR_ENABLE_THREAD_PINNING` is also left at its default
+#     OFF) would expand that surface beyond what was decided. Disabled here
+#     via `KAHYPAR_DISABLE_HWLOC ON`.
+#
+# What is left needing a pinned CPM block, because upstream's own
+# CMakeLists.txt calls them unconditionally regardless of platform:
+#
+#   * Mt-KaHyPar itself
+#   * `kahypar-shared-resources` (header-only support library)
+#   * `WHFC` (larsgottesbueren's fork; header-only flow algorithms)
+#
+# CLI11 is also fetched unconditionally by upstream, but this tree already
+# vendors CLI11 (see the CLI11 block above) -- reused rather than fetched a
+# second time.
+#
+# All three are pinned by tag/commit archive via `codeload.github.com`
+# (the friendlier `archive/refs/...` form 302-redirects and CPM's
+# `file(DOWNLOAD ...)` does not follow), SHA256 computed by downloading the
+# archive and running `shasum -a 256` on it directly.
+#
+# `cmake/patches/mtkahypar-vendor-network.patch` neutralizes upstream's own
+# `FetchContent_Declare(cli11 ...)` / `FetchContent_Populate(kahypar-shared-resources ...)`
+# / `FetchContent_Populate(WHFC ...)` calls (the only three that fire
+# unconditionally on this platform) so a configured build never reaches the
+# network -- verified by configuring from a clean build dir with networking
+# blocked (`sandbox-exec -p '(version 1)(deny network*)'`) after `vendor/`
+# is populated.
+#
+# ## TBB: accepted dynamic dependency (decision 1006)
+#
+# Upstream states TBB does not support static linking. Rather than vendor
+# and build oneTBB from source (`KAHYPAR_DOWNLOAD_TBB`, itself a further
+# FetchContent), this pins to the system Homebrew `tbb` formula via
+# `find_package(TBB)`, matching decision 1006's explicit acceptance of a
+# dynamic TBB runtime dependency. `tbb` is added to `install.sh`'s
+# `BUILD_DEPS`/`RUN_DEPS` and `README.md` § Prerequisites in the same
+# change (CLAUDE.md: an un-manifested dependency silently breaks for users
+# who lack it).
+if(APPLE)
+  execute_process(
+    COMMAND brew --prefix tbb
+    OUTPUT_VARIABLE PLANAR_TBB_BREW_PREFIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE PLANAR_TBB_BREW_RESULT)
+  if(PLANAR_TBB_BREW_RESULT EQUAL 0 AND PLANAR_TBB_BREW_PREFIX)
+    list(APPEND CMAKE_PREFIX_PATH "${PLANAR_TBB_BREW_PREFIX}")
+  endif()
+endif()
+
+CPMAddPackage(
+  NAME kahypar_shared_resources
+  URL https://codeload.github.com/kahypar/kahypar-shared-resources/tar.gz/6d5c8e2444e4310667ec1925e995f26179d7ee88
+  URL_HASH SHA256=bace1a64c1298f050085fc1db6163bf331b0731f9087a8df4a8aaf09fe62db0b
+  DOWNLOAD_ONLY YES EXCLUDE_FROM_ALL YES SYSTEM YES)
+
+CPMAddPackage(
+  NAME WHFC
+  URL https://codeload.github.com/larsgottesbueren/WHFC/tar.gz/51b27ff2c27a4794bfbaa4e8189d38159d249312
+  URL_HASH SHA256=92307340ba2839214a074ffa329fe1591220b5e514a65af4281690b6666474de
+  DOWNLOAD_ONLY YES EXCLUDE_FROM_ALL YES SYSTEM YES)
+
+# These three must be set BEFORE CPMAddPackage(mtkahypar ...): CPM's
+# add_subdirectory() for a non-DOWNLOAD_ONLY package runs synchronously
+# inside that call, and the patched CMakeLists.txt (see the patch file
+# above) reads these variables while it runs.
+set(PLANAR_CLI11_TARGET CLI11::CLI11)
+set(PLANAR_KAHYPAR_SHARED_RESOURCES_DIR "${kahypar_shared_resources_SOURCE_DIR}")
+set(PLANAR_WHFC_DIR "${WHFC_SOURCE_DIR}")
+
+CPMAddPackage(
+  NAME mtkahypar
+  URL https://codeload.github.com/kahypar/mt-kahypar/tar.gz/refs/tags/v1.6.2
+  URL_HASH SHA256=f1e44b160e49d760a54249435a69b452ed4872082f59620edfc6a458e66b60c4
+  EXCLUDE_FROM_ALL YES
+  SYSTEM YES
+  PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/mtkahypar-vendor-network.patch"
+  OPTIONS
+    "CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE}"
+    "KAHYPAR_ENABLE_TESTING OFF"
+    "KAHYPAR_INSTALL_CLI OFF"
+    "KAHYPAR_DOWNLOAD_TBB OFF"
+    "KAHYPAR_DISABLE_PARLAY ON"
+    "KAHYPAR_DISABLE_HWLOC ON"
+    "KAHYPAR_PYTHON OFF"
+    "KAHYPAR_BUILD_DEBIAN_PACKAGE OFF"
+)
