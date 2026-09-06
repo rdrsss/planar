@@ -196,6 +196,144 @@ export auto validate_confined_rel(std::string_view rel) -> bool;
 export auto format_double(double value) -> std::string;
 
 // ---------------------------------------------------------------------------
+// state — planner state-read parsing (port target: state.zig)
+// ---------------------------------------------------------------------------
+
+/// @brief Pure JSON-decode helpers for the planner reads `ctx.brief` needs.
+///
+/// Port target: `zig/src/cmd/planar-execute/state.zig`. Only the slice that
+/// feeds `ctx.brief` is ported — `planShow`, `taskShow`, and the
+/// `TaskPacket` family. The oracle's other `state.zig` helpers
+/// (`recommendStrategy`'s typed struct, `contextList`, `claimStatus`,
+/// `testSpecStatus`, `questionAdd`, `taskTouchesList`'s typed struct) exist
+/// there ONLY to serve `main.zig`'s retired orchestration loop
+/// (`agent`/`parallel`/`pipeline`/`workflow` primitives) — the very
+/// re-entrant harness plan 633 D5 exists to keep out of this binary. The
+/// registered `ctx.plan_show` / `ctx.task_show` / `ctx.task_touches` /
+/// `ctx.recommend_strategy` host functions confirm this: in the CURRENT
+/// oracle (`host.zig`) all four shell generically and push raw parsed JSON,
+/// never touching these typed structs. Porting them here would be
+/// dead code with no consumer on the ported host surface.
+///
+/// Every read is PURE (no subprocess call): the caller shells the binary via
+/// `run_allowlisted` in `host.cpp` and hands the captured stdout to the
+/// parser below, mirroring `state.zig`'s own `spawnPlanar` / parse split
+/// (`parseTaskPacket` was already factored out there for the same reason:
+/// testability without a live `planar`).
+namespace state {
+
+/// @brief Why a `state::parse_*` call failed.
+///
+/// One enumerator, matching `schema_parse_error` and `json_dom::json_parse_error`'s
+/// reasoning: every caller here maps any failure to the same oracle-shaped
+/// diagnostic (`ctx.brief: plan <id> not found`, etc.), so a richer error set
+/// would invite a distinction no caller makes.
+export enum class state_parse_error : std::uint8_t {
+  malformed, ///< The bytes are not valid JSON, or a required field is
+             ///< missing or the wrong type.
+};
+
+/// @brief Minimal view of `planar plan show <id> --json`. Port target:
+/// `state.zig`'s `PlanShow`.
+export struct plan_show {
+  std::int64_t                id = 0;
+  std::string                 title;
+  std::string                 status;
+  std::optional<std::string>  slug;
+  std::optional<std::int64_t> parent_plan_id;
+};
+
+/// @brief Minimal view of `planar task show <id> --json`. Port target:
+/// `state.zig`'s `TaskShow`.
+export struct task_show {
+  std::int64_t               id = 0;
+  std::optional<std::string> slug;
+  std::string                status;
+};
+
+/// @brief One task, adapted for `brief::brief_inputs::tasks`. Port target:
+/// `state.zig`'s `TaskEntry`.
+export struct task_entry {
+  std::int64_t               id      = 0;
+  std::int64_t               plan_id = 0;
+  std::string                title;
+  std::optional<std::string> slug;
+  std::string                status;
+};
+
+/// @brief One row of `planar task packet <id> --json`'s evidence arrays.
+/// Port target: `state.zig`'s `PacketEvidence`.
+export struct packet_evidence {
+  std::string  kind;
+  std::int64_t id = 0;
+  std::string  locator;
+  std::string  text;
+  std::string  display_label;
+  std::string  source_digest;
+  std::string  current_digest;
+  bool         required = false;
+  bool         covered  = false;
+  std::string  status;
+  std::string  provenance;
+  std::string  materializer_version;
+  std::string  current_materializer_version;
+  std::string  freshness = "current";
+};
+
+/// @brief The `input` object of `planar task packet <id> --json`. Port
+/// target: `state.zig`'s `TaskPacketInput`.
+export struct task_packet_input {
+  std::int64_t                 task_id = 0;
+  std::string                  status;
+  std::string                  title;
+  std::string                  body;
+  std::string                  next_action;
+  std::string                  acceptance_criteria;
+  std::vector<packet_evidence> owning_plans;
+  std::vector<packet_evidence> anchor_plans;
+  std::vector<packet_evidence> citations;
+  std::vector<packet_evidence> decisions;
+  std::vector<packet_evidence> questions;
+  std::vector<packet_evidence> scenarios;
+  std::vector<packet_evidence> dependencies;
+  std::vector<packet_evidence> touches;
+  std::vector<packet_evidence> claims;
+  std::vector<packet_evidence> validation_gates;
+  std::vector<packet_evidence> facts;
+};
+
+/// @brief The whole authoritative packet document. Port target:
+/// `state.zig`'s `TaskPacket`.
+export struct task_packet {
+  task_packet_input        input;
+  std::string              digest;
+  std::vector<std::string> reasons;
+
+  /// @brief Whether the packet is ready to compile a brief from.
+  /// @return `true` when `reasons` is empty, matching `TaskPacket.ready()`.
+  [[nodiscard]] auto ready() const -> bool {
+    return reasons.empty();
+  }
+};
+
+/// @brief Parse `planar plan show <id> --json`'s stdout.
+/// @param json The captured stdout.
+/// @return The decoded value, or `state_parse_error::malformed`.
+export auto parse_plan_show(std::string_view json) -> std::expected<plan_show, state_parse_error>;
+
+/// @brief Parse `planar task show <id> --json`'s stdout.
+/// @param json The captured stdout.
+/// @return The decoded value, or `state_parse_error::malformed`.
+export auto parse_task_show(std::string_view json) -> std::expected<task_show, state_parse_error>;
+
+/// @brief Parse `planar task packet <id> --json`'s stdout.
+/// @param json The captured stdout.
+/// @return The decoded value, or `state_parse_error::malformed`.
+export auto parse_task_packet(std::string_view json) -> std::expected<task_packet, state_parse_error>;
+
+} // namespace state
+
+// ---------------------------------------------------------------------------
 // Running a workflow
 // ---------------------------------------------------------------------------
 

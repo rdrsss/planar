@@ -35,6 +35,14 @@
 #                (`append_json_string`). `flow.result` marshals a Lua table
 #                to JSON and needs exactly that; writing an eleventh escaper
 #                here was not an option (see json_text/CMakeLists.txt).
+#   json_dom   — added at task 6125 for the `state`/`schema` parse helpers
+#                behind `ctx.brief`: `planar plan show`/`task show`/`task
+#                packet --json` and `planar-agent schema` all need typed
+#                field extraction from a decoded document, and json_dom is
+#                the one JSON DOM in the tree (D19) rather than a twelfth
+#                bespoke recursive-descent reader. It is a layer-1 leaf with
+#                no db import of its own, so this does not touch the
+#                no-SQLite exception above.
 #
 # That is the whole list. No db. No cli — planar-execute parses argv by hand
 # and has no `schema` catalog, which is why zig's capability_boundary_test
@@ -74,8 +82,10 @@ planar_module(engine_execute
   SOURCES
     manifest.cpp
     host.cpp
+    state.cpp
   DEPENDS
-    json_text)
+    json_text
+    json_dom)
 
 target_link_libraries(planar_engine_execute PRIVATE lua::lua)
 
