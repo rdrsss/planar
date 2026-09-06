@@ -17,10 +17,11 @@ Planar is a local-first tool built as five binaries: `planar` (operator surface)
 Planar shells out to a small set of external tools. On macOS, install them via Homebrew:
 
 ```bash
-brew install cmake ninja llvm zig git gh jq ripgrep
+brew install cmake ninja llvm zig git gh jq ripgrep tbb
 ```
 
 - `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries. `install.sh` preflights the exact preset compilers, `/opt/homebrew/opt/llvm/bin/clang` and `/opt/homebrew/opt/llvm/bin/clang++`, before it invokes CMake. Use the repository's `debug` and `release` presets; see [toolchain parity](docs/toolchain-parity.md).
+- `tbb` (>= 2021.5) — **required to build**, since `cmake/dependencies.cmake` vendors Mt-KaHyPar (decision 1006, task 6459) as a pinned CPM source block and Mt-KaHyPar's own CMake `find_package(TBB)`s it. Unlike every other third-party dependency this tree takes, TBB is **not** vendored as source: upstream states TBB does not support static linking, so this is a deliberately accepted dynamic system dependency rather than a hermetic one. `install.sh` preflights `brew --prefix tbb` and fails fast if it is missing, matching CMake's own `find_package(TBB)` failure.
 - `zig` — retained during the port solely as the behavior oracle: it builds the `zig/` tree that the C++ integration suite is graded against and that `capability_boundary_test.zig` still locks. It is **not** needed to build, install, or run Planar — `install.sh` never invokes it, and the authored-surface lint utilities (`cli_usage_lint`, `surface_lint`) are C++ tools under `src/tools/` today, not Zig ones.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
@@ -38,7 +39,7 @@ the installer preflights them before making changes.
 
 ### Optional / research tools
 
-- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Run `./install.sh --with-mtkahypar` to install the official, hash-locked native PyPI wheel into `~/.planar/opt/mtkahypar/` behind Planar's prefix-owned CLI adapter at `~/.planar/bin/mtkahypar`. This requires `python3` only for the optional adapter and does not add Mt-KaHyPar to the CMake build or Planar's binary set. When absent, `groups recommend` degrades gracefully to greedy and reports `optimal_available:false`.
+- `mtkahypar` — the external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. As of decision 1006 (task 6459) it is **vendored from source** via `cmake/dependencies.cmake` and linked directly into the C++ tree (`libmtkahypar`), superseding the earlier `--with-mtkahypar` Python-wheel adapter. Building it requires `tbb` (see above); no `python3` step is needed any more. When the solver seam is not yet wired (or `tbb` is unavailable at build time), `groups recommend` degrades gracefully to greedy and reports `optimal_available:false` — this fallback is a deliberate, permanent contract, not a placeholder for missing Mt-KaHyPar support.
 
 `sqlx-cli` and `sqlite3` are only needed for ad-hoc developer workflows against a scratch database (see [Build from source](#build-from-source)); the runtime embeds migrations via build-time codegen and uses the vendored SQLite amalgamation, so neither CLI is a runtime dependency. Install the optional `sqlx-cli` for authoring new migration pairs:
 
