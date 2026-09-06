@@ -219,7 +219,7 @@ TEST_CASE("task packet: an unready packet is exit 0 with named reasons", "[task-
   // not notice it changing.
   CHECK(res.out.find(R"("reasons":["missing_body","missing_acceptance_section","generic_acceptance",)"
                      R"("generic_next_action","missing_product_spec","missing_tech_spec","missing_roadmap",)"
-                     R"("missing_test_spec","missing_locked_decision","missing_dependency","missing_touch",)"
+                     R"("missing_test_spec","missing_locked_decision","missing_touch",)"
                      R"("absent_validation_gates","missing_acceptance_fact","missing_next_action_fact",)"
                      R"("uncovered_required_scenario"]})") != std::string::npos);
 }

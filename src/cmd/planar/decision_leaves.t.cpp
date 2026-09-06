@@ -670,19 +670,44 @@ TEST_CASE("decision withdraw REFUSES a terminal decision with its own verb word"
   CHECK(res.err == "error: decision 1 is terminal; cannot withdraw\n");
 }
 
-TEST_CASE("decision accept and withdraw ACCEPT AND IGNORE --scope, even an unresolvable one") {
+TEST_CASE("decision transitions enforce the entity scope before mutating") {
   auto const fx = make_fixture("transition-scope");
-  seed(fx);
-  add(fx, {"a", "--body", "b"});
-  add(fx, {"b", "--body", "b"});
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  std::error_code ec;
+  std::filesystem::create_directories(fx.root / "other", ec);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", (fx.root / "other").string()}).code == 0);
+  add(fx, {"global", "--body", "b"});
+  add(fx, {"mismatch", "--body", "b", "--scope", "acme"});
+  add(fx, {"explicit", "--body", "b", "--scope", "acme"});
+  add(fx, {"invalid", "--body", "b", "--scope", "acme"});
 
-  // Deliberate CLI parity in the original: `_ = args.scope;`. A port that
-  // helpfully resolved it would turn both of these into SlugNotFound.
-  CHECK(dispatch(fx, {"decision", "accept", "1", "--scope", "nosuchslug"}).code == 0);
-  CHECK(dispatch(fx, {"decision", "withdraw", "2", "--scope", "nosuchslug"}).code == 0);
+  // The cwd has no registered project, so the global decision is a same-scope
+  // transition and establishes that the guard does not reject valid writes.
+  CHECK(dispatch(fx, {"decision", "accept", "1"}).code == 0);
+
+  const auto mismatch = dispatch(fx, {"decision", "accept", "2"});
+  CHECK(mismatch.code == 5);
+  CHECK(mismatch.err == "error: decision 2 belongs to a different scope\n");
+
+  // An explicit matching scope authorizes both transition verbs.
+  CHECK(dispatch(fx, {"decision", "accept", "3", "--scope", "acme"}).code == 0);
+  CHECK(dispatch(fx, {"decision", "withdraw", "4", "--scope", "acme"}).code == 0);
+
+  // An invalid explicit scope is rejected before the engine can transition.
+  const auto invalid = dispatch(fx, {"decision", "accept", "4", "--scope", "nosuchslug"});
+  CHECK(invalid.code == 1);
+  CHECK(invalid.err == "error: decision accept: resolving write scope failed: SlugNotFound\n");
+
+  // A missing target remains a lookup failure even when the supplied scope is
+  // otherwise valid, and cannot write an audit row or alter an existing row.
+  const auto missing = dispatch(fx, {"decision", "withdraw", "999", "--scope", "acme"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: no decision with id 999\n");
 
   auto conn = open_db(fx);
-  CHECK(query_rows(conn, "select id, status from decisions order by id", 2) == "1|accepted;2|withdrawn");
+  CHECK(query_rows(conn, "select id, status from decisions order by id", 2) ==
+        "1|accepted;2|proposed;3|accepted;4|withdrawn");
 }
 
 // ===========================================================================
