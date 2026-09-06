@@ -1029,6 +1029,74 @@ TEST_CASE("workspace init meta-repo refuses a reused org recorded at another roo
   CHECK(links->column_int64(0) == 0);
 }
 
+// ORACLE PROVENANCE (task 6456). Captured by running the Zig oracle's
+// `workspace init meta repo layout failure commits registration and
+// recovers without root files` (zig/integration_tests/workspace_test.zig)
+// against a scratch PLANAR_DB/PLANAR_HOME/PWD with PLANAR_HOME pointed at a
+// FILE where the layout directory is expected. The oracle exits 0 and
+// writes two lines to stderr:
+//
+//   warning: pipeline pass failed: layout-create-failed
+//   hint: re-run `planar workspace doctor` then `planar workspace routing
+//   build` && `planar workspace regenerate`
+//
+// while org/project registration still commits. The pre-fix C++ handler
+// computed the same `pipeline_error` bool but never surfaced it in text
+// mode (silent exit 0 with the full "Routing table refreshed" success
+// banner) and always reported a hardcoded "QueryFailed" in JSON mode
+// regardless of which pass actually failed.
+TEST_CASE("workspace init meta repo layout failure commits registration and reports the doctor recovery hint",
+          "[cmd][handlers][workspace-init][meta][recovery]") {
+  auto const      fx = make_fixture("wsinit_meta_recover");
+  std::error_code ec;
+  std::filesystem::create_directories(fx.root / "proj" / ".git", ec);
+  std::filesystem::create_directories(fx.root / "proj" / "modules" / "nested" / ".git", ec);
+  REQUIRE_FALSE(ec);
+
+  // Break PLANAR_HOME: a file where `ensure_layout` expects a directory it
+  // can create/open, mirroring the oracle fixture exactly.
+  std::filesystem::remove_all(fx.root / "home", ec);
+  REQUIRE_FALSE(ec);
+  {
+    std::ofstream broken_home{fx.root / "home"};
+    REQUIRE(broken_home.good());
+  }
+
+  auto const got = dispatch(fx, {"workspace", "init", "--meta-repo", "--scan", "2", "--slug", "recover-ws"});
+  INFO(got.err);
+  CHECK(got.code == 0);
+  CHECK(got.err.contains("warning: pipeline pass failed: layout-create-failed\n"));
+  CHECK(got.err.contains(
+      "hint: re-run `planar workspace doctor` then `planar workspace routing build` && `planar workspace regenerate`\n"));
+  CHECK(got.out.contains("created org:recover-ws"));
+  CHECK_FALSE(got.out.contains("Routing table refreshed"));
+  CHECK_FALSE(std::filesystem::exists(fx.root / "proj" / "AGENTS.md"));
+  CHECK_FALSE(std::filesystem::exists(fx.root / "proj" / "CLAUDE.md"));
+
+  // Registration must have committed despite the layout failure: both the
+  // org and its two project memberships (meta root + nested) are durable.
+  std::ostringstream out;
+  std::ostringstream err;
+  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  auto               conn = ctx.ensure_db();
+  REQUIRE(conn.has_value());
+  auto org_count = (*conn)->prepare("select count(*) from associations where slug='recover-ws' and kind='org'");
+  REQUIRE(org_count.has_value());
+  REQUIRE(org_count->step().has_value());
+  CHECK(org_count->column_int64(0) == 1);
+  auto member_count = (*conn)->prepare("select count(*) from project_associations");
+  REQUIRE(member_count.has_value());
+  REQUIRE(member_count->step().has_value());
+  CHECK(member_count->column_int64(0) == 2);
+
+  // The JSON arm must carry the same specific error kind, not a hardcoded
+  // generic one.
+  auto const got_json = dispatch(fx, {"workspace", "init", "--meta-repo", "--scan", "2", "--slug", "recover-ws", "--json"});
+  CHECK(got_json.code == 0);
+  CHECK(got_json.err.empty());
+  CHECK(got_json.out.contains("\"error\":\"layout-create-failed\""));
+}
+
 // =========================================================================
 // task 6110 — `workspace routing show`.
 //
