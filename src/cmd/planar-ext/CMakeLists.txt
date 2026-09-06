@@ -81,6 +81,7 @@ planar_binary(planar_ext
     engine_external
     engine_extsync
     engine_identity
+    engine_planning
     engine_templates)
 
 # Each binary builds its own CLI::App tree directly, so the CLI11 module

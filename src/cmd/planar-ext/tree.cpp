@@ -75,18 +75,22 @@ auto add_ext(CLI::App& root) -> void {
   add_json(*propagate_one);
   propagate_one->add_option("system")->required();
 
-  // `ext propagate` — the github-parent-issue arm only (plan 996, task
-  // 6421; strategy-stickiness/verify-counterparts flags added task 6428).
-  // `--github-strategy` is deliberately NOT declared: it would only ever
-  // select `projects-v2`, permanently cut by decision 1001 (see
-  // handlers/propagate.cppm's header).
+  // `ext propagate` — the github-parent-issue arm plus the generic
+  // per-entity tree walk for every other reachable strategy (plan 996, task
+  // 6421/6428; the generic loop and `--github-strategy` landed at task
+  // 6451). `--github-strategy projects-v2` is still declared (matching the
+  // oracle's accepted-value set) but ALWAYS refuses at run time — decision
+  // 1001 permanently cut execution of that strategy; see
+  // handlers/propagate.cppm's header.
   CLI::App* propagate =
       ext->add_subcommand("propagate", "Propagate a feature (plan + descendants) to an external system.\n\n"
-                                       "  This cycle supports the GitHub parent-issue strategy only; a Jira system\n"
-                                       "  or a multi-repo GitHub feature refuses explicitly rather than mis-executing.");
+                                       "  A multi-repo GitHub feature (or an explicit --github-strategy projects-v2)\n"
+                                       "  refuses explicitly rather than mis-executing.");
   propagate->add_option("--system")->description("External system slug (defaults to first registered system)");
   cliapp::add_bool_flag(*propagate, "--dry-run", "Preview creation plan without contacting the remote system");
   propagate->add_option("--sync")->description("Sync direction for created links: read-only, write-back, two-way");
+  propagate->add_option("--github-strategy")
+      ->description("Override GitHub strategy: parent-issue, projects-v2 (always refused), tracking-issue (not ported)");
   cliapp::add_bool_flag(*propagate, "--restrategize", "Abandon prior counterparts and re-propagate under a fresh strategy");
   cliapp::add_bool_flag(*propagate, "--yes", "Skip the --restrategize confirmation prompt");
   cliapp::add_bool_flag(*propagate, "--verify-counterparts",

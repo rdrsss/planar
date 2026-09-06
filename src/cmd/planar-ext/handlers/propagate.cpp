@@ -15,9 +15,11 @@ import planar.db;
 import planar.json_text;
 import planar.engine.external;
 import planar.engine.extsync.github;
+import planar.engine.planning.descendants;
 import planar.cmd.planar_ext.context;
 import planar.cmd.planar_ext.exit;
 import planar.cmd.planar_ext.handler;
+import planar.cmd.planar_ext.handlers.ext;
 import planar.cmd.planar_ext.handlers.ext_adapter_factory;
 import planar.cmd.planar_ext.handlers.ext_strategy;
 
@@ -26,6 +28,7 @@ namespace planar::cmd::ext::handlers {
 namespace system_ns    = engine::external::system;
 namespace link_ns      = engine::external::link;
 namespace parent_issue = engine::external::parent_issue;
+namespace descendants  = engine::planning::descendants;
 
 namespace {
 
@@ -464,47 +467,75 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   }
 
   auto const kind_text = system_ns::system_kind_to_text(sys->kind);
-  auto       selected  = select_strategy(**conn, *plan_id, kind_text);
-  if (!selected) {
-    if (selected.error() == strategy_select_error::unsupported_system_kind) {
-      return std::unexpected(
-          error_from_body(domain_error_kind::invalid_input, std::format("system kind '{}' is not supported", kind_text)));
-    }
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: pick strategy: QueryFailed"));
+
+  // `--github-strategy` (task 6451): an explicit override that BYPASSES
+  // `select_strategy`'s repo-count query entirely, exactly like the
+  // oracle's `handle` (propagate.zig lines 76-83, 132-141) — an override
+  // is a deliberate operator choice, not something the auto-detected
+  // bucket should second-guess. Declared as mutually exclusive with
+  // `--restrategize`, matching the oracle's up-front preflight.
+  auto const github_strategy_flag = flag_string(args, "--github-strategy");
+  if (github_strategy_flag.has_value() && restrategize) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, "--github-strategy and --restrategize are mutually exclusive"));
   }
 
-  if (selected->kind != "github-parent-issue") {
-    if (selected->kind == "github-projects-v2") {
-      // Decision 1001: the multi-repo GitHub strategy is CUT from the C++
-      // rewrite, not merely unported yet. `select_strategy` still reports
-      // this bucket by name (see that module's header) so this refusal can
-      // name the real reason instead of pretending the feature is
-      // single-repo.
+  std::string selected_kind;
+  if (github_strategy_flag.has_value()) {
+    if (sys->kind != system_ns::system_kind::github_issues) {
       return std::unexpected(error_from_body(
           domain_error_kind::invalid_input,
-          "ext propagate: this feature touches multiple repos; multi-repo propagation (projects-v2) was cut from the "
-          "C++ rewrite (decision 1001) and is not available"));
+          std::format("--github-strategy is only valid for github-issues systems; system '{}' has kind '{}'", sys->slug,
+                      kind_text)));
     }
+    if (*github_strategy_flag == "parent-issue") {
+      selected_kind = "github-parent-issue";
+    } else if (*github_strategy_flag == "projects-v2") {
+      selected_kind = "github-projects-v2";
+    } else if (*github_strategy_flag == "tracking-issue") {
+      selected_kind = "github-tracking-issue";
+    } else {
+      return std::unexpected(error_from_body(
+          domain_error_kind::invalid_input,
+          std::format("invalid --github-strategy '{}'; accepted: parent-issue, projects-v2, tracking-issue",
+                      *github_strategy_flag)));
+    }
+  } else {
+    auto selected = select_strategy(**conn, *plan_id, kind_text);
+    if (!selected) {
+      if (selected.error() == strategy_select_error::unsupported_system_kind) {
+        return std::unexpected(
+            error_from_body(domain_error_kind::invalid_input, std::format("system kind '{}' is not supported", kind_text)));
+      }
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: pick strategy: QueryFailed"));
+    }
+    selected_kind = std::string(selected->kind);
+  }
+
+  if (selected_kind == "github-projects-v2") {
+    // Decision 1001 (accepted): the multi-repo GitHub strategy is CUT from
+    // the C++ rewrite, not merely unported yet. `select_strategy` still
+    // reports this bucket by name for an auto-detected >=2-repo feature
+    // (see that module's header), and `--github-strategy projects-v2` is
+    // still an ACCEPTED flag value (matching the oracle's accepted set) —
+    // both paths land here, and this refusal names the real reason instead
+    // of pretending the feature is single-repo or the flag is unknown.
     return std::unexpected(error_from_body(
         domain_error_kind::invalid_input,
-        std::format("ext propagate: strategy '{}' is not yet implemented in planar-ext (only github-parent-issue this "
-                    "cycle)",
-                    selected->kind)));
+        "ext propagate: this feature touches multiple repos; multi-repo propagation (projects-v2) was cut from the "
+        "C++ rewrite (decision 1001) and is not available"));
   }
 
   bool const dry_run = flag_bool(args, "--dry-run");
 
   // --- restrategize -----------------------------------------------------
   //
-  // Mirrors propagate.zig lines 158-197's `restrategize` arm. Because this
-  // block only ever runs once `selected->kind == "github-parent-issue"` is
-  // already established (a Jira system or a multi-repo GitHub feature
-  // refuses above, before this point), and because
-  // `parent_issue::propagate_parent_issue` is the ONLY thing in this binary
-  // that ever writes the "strategy" cache key (and always writes
-  // "github-parent-issue"), `cached` and `selected->kind` are always equal
-  // here in practice — see propagate.cppm's header on why that is honest
-  // rather than a shortcut.
+  // Mirrors propagate.zig lines 158-197's `restrategize` arm. Generalized
+  // at task 6451 to key off `selected_kind` (auto-detected OR
+  // `--github-strategy`-overridden) rather than assuming
+  // `github-parent-issue` — `link_ns::read_cached_strategy` /
+  // `abandon_counterparts` are keyed by string, not by which strategy
+  // produced it, so nothing here is parent-issue-specific.
   std::size_t abandoned_count = 0;
   if (restrategize) {
     auto cached = link_ns::read_cached_strategy(**conn, *plan_id, sys->id);
@@ -512,29 +543,131 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
       return std::unexpected(
           error_from_body(domain_error_kind::generic_failure, "ext propagate: read cached strategy: QueryFailed"));
     }
-    if (cached->has_value() && **cached != selected->kind) {
+    if (cached->has_value() && **cached != selected_kind) {
       if (!auto_yes) {
-        if (!confirm_restrategize(ctx, **cached, selected->kind)) {
+        if (!confirm_restrategize(ctx, **cached, selected_kind)) {
           return std::unexpected(error_from_body(domain_error_kind::invalid_input, "restrategize cancelled by user"));
         }
       }
-      auto abandoned = link_ns::abandon_counterparts(**conn, *plan_id, sys->id, **cached, selected->kind);
+      auto abandoned = link_ns::abandon_counterparts(**conn, *plan_id, sys->id, **cached, selected_kind);
       if (!abandoned) {
         return std::unexpected(
             error_from_body(domain_error_kind::generic_failure, "ext propagate: abandon counterparts: QueryFailed"));
       }
       abandoned_count = *abandoned;
     }
-    // cached == selected->kind (or no cache yet): no-op restrategize.
+    // cached == selected_kind (or no cache yet): no-op restrategize.
   }
 
-  // `need_adapter`: skipped under `--dry-run` unless `--verify-counterparts`
-  // is also set — verify needs the adapter to probe. Mirrors propagate.zig
-  // line 232.
-  bool const need_adapter = !dry_run || verify_counterparts;
+  if (selected_kind == "github-parent-issue") {
+    // `need_adapter`: skipped under `--dry-run` unless `--verify-counterparts`
+    // is also set — verify needs the adapter to probe. Mirrors propagate.zig
+    // line 232.
+    bool const need_adapter = !dry_run || verify_counterparts;
+
+    std::unique_ptr<adapter_handle> handle;
+    if (need_adapter) {
+      auto built = build_adapter(*sys, default_deps(ctx.env()));
+      if (!built) {
+        return std::unexpected(factory_error_message(built.error(), *sys));
+      }
+      handle = std::move(*built);
+    }
+
+    std::unique_ptr<parent_issue::gh_client> client_owner =
+        (handle && !dry_run) ? std::unique_ptr<parent_issue::gh_client>(std::make_unique<adapter_gh_client>(*handle))
+                             : std::unique_ptr<parent_issue::gh_client>(std::make_unique<unreachable_gh_client>());
+
+    auto rpt = parent_issue::propagate_parent_issue(**conn, *client_owner, *plan_id,
+                                                    parent_issue::opts{
+                                                        .sys_id          = sys->id,
+                                                        .sys_slug        = sys->slug,
+                                                        .dry_run         = dry_run,
+                                                        .sync_direction_ = *direction,
+                                                    });
+    if (!rpt) {
+      return std::unexpected(parent_issue_error_message(rpt.error()));
+    }
+
+    // --- verify-counterparts pass -------------------------------------------
+    //
+    // Mirrors propagate.zig lines 375-420. Only runs when NOT dry-run — a
+    // preview should not mutate `external_links` or `sync_events`.
+    std::vector<verify_row> verify_rows;
+    if (verify_counterparts && !dry_run) {
+      auto links = link_ns::list_mirror_links_in_tree(**conn, *plan_id, sys->id);
+      if (!links) {
+        return std::unexpected(
+            error_from_body(domain_error_kind::generic_failure, "ext propagate: list links for verify: QueryFailed"));
+      }
+      for (auto const& row : *links) {
+        auto const probed = probe_counterpart(*handle, row.external_id);
+        if (probed.outcome == probe_outcome::present) {
+          verify_rows.push_back(verify_row{
+              .entity_kind = row.entity_kind, .entity_id = row.entity_id, .external_id = row.external_id, .missing = false});
+        } else if (probed.outcome == probe_outcome::missing) {
+          auto recorded = link_ns::record_counterpart_missing(**conn, row.id, row.entity_kind, row.entity_id, row.external_id,
+                                                              unlink_missing || recreate_missing);
+          if (!recorded) {
+            return std::unexpected(
+                error_from_body(domain_error_kind::generic_failure, "ext propagate: record counterpart-missing: QueryFailed"));
+          }
+          verify_rows.push_back(verify_row{
+              .entity_kind = row.entity_kind, .entity_id = row.entity_id, .external_id = row.external_id, .missing = true});
+        } else {
+          // Non-fatal: warn and skip, matching the oracle's probe_error arm.
+          ctx.err() << std::format("warning: counterpart probe failed for {} ({}); skipping\n", row.external_id,
+                                   adapter::adapter_error_name(*probed.error));
+        }
+      }
+    }
+
+    std::size_t missing_count = 0;
+    for (auto const& v : verify_rows) {
+      if (v.missing) {
+        ++missing_count;
+      }
+    }
+
+    bool const as_json = flag_bool(args, "--json");
+    render(ctx, *plan_id, sys->slug, *rpt, dry_run, as_json, abandoned_count, verify_rows, unlink_missing, recreate_missing);
+
+    // Missing-counterpart refusal takes priority, matching the oracle's
+    // ordering (propagate.zig lines 480-485: missing check precedes failed).
+    if (missing_count > 0 && !unlink_missing && !recreate_missing) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                             std::format("{} counterpart(s) missing during --verify-counterparts", missing_count)));
+    }
+    if (rpt->failed > 0) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                             std::format("{} entity/entities failed during propagation", rpt->failed)));
+    }
+    return {};
+  }
+
+  // --- generic per-entity tree walk ---------------------------------------
+  //
+  // `jira-epic`, `github-zero-repo`, `github-tracking-issue`: every reachable
+  // strategy that is NOT `github-parent-issue` (and not the cut
+  // `github-projects-v2`, refused above). Ported at task 6451 as the
+  // trivial loop the oracle itself uses (propagate.zig's `else for (tree)
+  // |entry|` arm): walk the feature tree, then call the SAME
+  // `propagate_one_entity` core `ext propagate-one` calls for each entry —
+  // this is what makes the two verbs genuinely equivalent rather than
+  // similar (see `propagate_one_entity`'s header in ext.cppm and
+  // `propagate_faithful_test.zig`, the test this closes).
+  //
+  // `--verify-counterparts` is intentionally NOT ported onto this arm this
+  // cycle — refusing explicitly here is honest about the gap; silently
+  // ignoring the flag would not be.
+  if (verify_counterparts) {
+    return std::unexpected(error_from_body(
+        domain_error_kind::invalid_input,
+        "ext propagate: --verify-counterparts is only supported for the github-parent-issue strategy this cycle"));
+  }
 
   std::unique_ptr<adapter_handle> handle;
-  if (need_adapter) {
+  if (!dry_run) {
     auto built = build_adapter(*sys, default_deps(ctx.env()));
     if (!built) {
       return std::unexpected(factory_error_message(built.error(), *sys));
@@ -542,73 +675,67 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
     handle = std::move(*built);
   }
 
-  std::unique_ptr<parent_issue::gh_client> client_owner =
-      (handle && !dry_run) ? std::unique_ptr<parent_issue::gh_client>(std::make_unique<adapter_gh_client>(*handle))
-                           : std::unique_ptr<parent_issue::gh_client>(std::make_unique<unreachable_gh_client>());
-
-  auto rpt = parent_issue::propagate_parent_issue(**conn, *client_owner, *plan_id,
-                                                  parent_issue::opts{
-                                                      .sys_id          = sys->id,
-                                                      .sys_slug        = sys->slug,
-                                                      .dry_run         = dry_run,
-                                                      .sync_direction_ = *direction,
-                                                  });
-  if (!rpt) {
-    return std::unexpected(parent_issue_error_message(rpt.error()));
+  auto root = templates_root_for(ctx);
+  if (!root) {
+    return std::unexpected(root.error());
   }
 
-  // --- verify-counterparts pass -------------------------------------------
-  //
-  // Mirrors propagate.zig lines 375-420. Only runs when NOT dry-run — a
-  // preview should not mutate `external_links` or `sync_events`.
-  std::vector<verify_row> verify_rows;
-  if (verify_counterparts && !dry_run) {
-    auto links = link_ns::list_mirror_links_in_tree(**conn, *plan_id, sys->id);
-    if (!links) {
-      return std::unexpected(
-          error_from_body(domain_error_kind::generic_failure, "ext propagate: list links for verify: QueryFailed"));
-    }
-    for (auto const& row : *links) {
-      auto const probed = probe_counterpart(*handle, row.external_id);
-      if (probed.outcome == probe_outcome::present) {
-        verify_rows.push_back(verify_row{
-            .entity_kind = row.entity_kind, .entity_id = row.entity_id, .external_id = row.external_id, .missing = false});
-      } else if (probed.outcome == probe_outcome::missing) {
-        auto recorded = link_ns::record_counterpart_missing(**conn, row.id, row.entity_kind, row.entity_id, row.external_id,
-                                                            unlink_missing || recreate_missing);
-        if (!recorded) {
-          return std::unexpected(
-              error_from_body(domain_error_kind::generic_failure, "ext propagate: record counterpart-missing: QueryFailed"));
-        }
-        verify_rows.push_back(verify_row{
-            .entity_kind = row.entity_kind, .entity_id = row.entity_id, .external_id = row.external_id, .missing = true});
-      } else {
-        // Non-fatal: warn and skip, matching the oracle's probe_error arm.
-        ctx.err() << std::format("warning: counterpart probe failed for {} ({}); skipping\n", row.external_id,
-                                 adapter::adapter_error_name(*probed.error));
-      }
-    }
+  auto tree = descendants::walk_tree(**conn, *plan_id);
+  if (!tree) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate: walk tree: QueryFailed"));
   }
 
-  std::size_t missing_count = 0;
-  for (auto const& v : verify_rows) {
-    if (v.missing) {
-      ++missing_count;
+  parent_issue::report rpt;
+  rpt.strategy = selected_kind;
+  for (auto const& entry : *tree) {
+    std::string_view const entity_kind_str = entry.kind == descendants::entry_kind::task ? "task" : "plan";
+    auto const              role           = entry.kind == descendants::entry_kind::plan_anchor ? entity_role::plan_anchor
+                                            : entry.kind == descendants::entry_kind::task        ? entity_role::task
+                                                                                                 : entity_role::plan_child;
+    auto const template_kind = template_kind_for_entity(kind_text, role);
+    if (!template_kind) {
+      rpt.results.push_back(parent_issue::entity_result{.entity_kind = std::string(entity_kind_str),
+                                                        .entity_id   = entry.id,
+                                                        .title       = entry.title,
+                                                        .operation   = parent_issue::op::failed,
+                                                        .error_name  = "UnsupportedSystemKind"});
+      ++rpt.failed;
+      continue;
+    }
+    auto outcome = propagate_one_entity(**conn, handle.get(), *sys, entity_kind_str, entry.id, role, selected_kind,
+                                        *template_kind, *direction, dry_run, *root);
+    if (!outcome) {
+      rpt.results.push_back(parent_issue::entity_result{.entity_kind = std::string(entity_kind_str),
+                                                        .entity_id   = entry.id,
+                                                        .title       = entry.title,
+                                                        .operation   = parent_issue::op::failed,
+                                                        .error_name  = outcome.error().text});
+      ++rpt.failed;
+      continue;
+    }
+    parent_issue::op const op_val = outcome->op == "skipped"  ? parent_issue::op::skipped
+                                   : outcome->op == "planned" ? parent_issue::op::planned
+                                                              : parent_issue::op::created;
+    rpt.results.push_back(parent_issue::entity_result{.entity_kind = std::string(entity_kind_str),
+                                                      .entity_id   = entry.id,
+                                                      .title       = entry.title,
+                                                      .operation   = op_val,
+                                                      .external_id = outcome->external_id});
+    // A `planned` (dry-run) row counts as `created`, matching the oracle's
+    // own `created_count` accounting (propagate.zig lines 352-360).
+    if (op_val == parent_issue::op::skipped) {
+      ++rpt.skipped;
+    } else {
+      ++rpt.created;
     }
   }
 
   bool const as_json = flag_bool(args, "--json");
-  render(ctx, *plan_id, sys->slug, *rpt, dry_run, as_json, abandoned_count, verify_rows, unlink_missing, recreate_missing);
+  render(ctx, *plan_id, sys->slug, rpt, dry_run, as_json, abandoned_count, {}, unlink_missing, recreate_missing);
 
-  // Missing-counterpart refusal takes priority, matching the oracle's
-  // ordering (propagate.zig lines 480-485: missing check precedes failed).
-  if (missing_count > 0 && !unlink_missing && !recreate_missing) {
-    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
-                                           std::format("{} counterpart(s) missing during --verify-counterparts", missing_count)));
-  }
-  if (rpt->failed > 0) {
-    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
-                                           std::format("{} entity/entities failed during propagation", rpt->failed)));
+  if (rpt.failed > 0) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, std::format("{} entity/entities failed during propagation", rpt.failed)));
   }
   return {};
 }

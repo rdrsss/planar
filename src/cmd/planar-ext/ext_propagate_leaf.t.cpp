@@ -317,11 +317,17 @@ TEST_CASE("ext propagate --dry-run builds no adapter, sends nothing, and reports
   CHECK(scalar(fx, "select count(*) from external_links") == 0);
 }
 
-TEST_CASE("ext propagate refuses a Jira system explicitly rather than mis-executing the parent-issue path",
-          "[cmd][ext][propagate][jira-refusal]") {
-  issue_counter                 counter;
-  planar::http::fixture::server remote(make_respond(counter, 422));
-  auto const                    fx = make_fixture("jira");
+TEST_CASE("ext propagate runs the generic jira-epic tree walk end to end, no longer refusing (task 6451)",
+          "[cmd][ext][propagate][jira-generic]") {
+  // A Jira-shaped 201 response for every issue create -- the generic
+  // per-entity loop (`propagate_one_entity`) is the SAME core
+  // `propagate-one` uses, so this is the same shape
+  // `ext_propagate_one_leaf.t.cpp`'s jira case exercises.
+  planar::http::fixture::server remote([](const planar::http::fixture::captured_request&) {
+    return planar::http::fixture::canned_response{
+        .status = 201, .body = R"({"key":"DEMO-77"})", .content_type = "application/json"};
+  });
+  auto const fx = make_fixture("jira");
   migrate_fixture(fx);
   REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
                         "--auth-env", "DEMO_TOKEN"})
@@ -329,13 +335,25 @@ TEST_CASE("ext propagate refuses a Jira system explicitly rather than mis-execut
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
   REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
+  REQUIRE(conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (1, 'global', 1, 'Demo task')").has_value());
+  // `walk_tree` reaches a task only through a `derives-from` entity_links
+  // row, NOT `tasks.plan_id` -- see `descendants.cppm`'s header.
+  REQUIRE(conn->execute("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                        "values ('task', 1, 'plan', 1, 'derives-from')")
+              .has_value());
 
-  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo"});
-  CHECK(ran.code == 2);
-  CHECK(ran.err.contains("jira-epic"));
-  CHECK(ran.err.contains("not yet implemented in planar-ext"));
-  CHECK(remote.request_count() == 0);
-  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo", "--json"});
+  CHECK(ran.code == 0);
+  CHECK(ran.err.empty());
+  CHECK(ran.out.contains(R"("strategy":"jira-epic")"));
+  CHECK(ran.out.contains(R"("created":2)"));
+  CHECK(ran.out.contains(R"("failed":0)"));
+  CHECK(remote.request_count() == 2);
+  CHECK(scalar(fx, "select count(*) from external_links") == 2);
+  // Only the ANCHOR caches the strategy.
+  CHECK(text_scalar(fx, "select config_json from external_links where entity_kind = 'plan' and entity_id = 1") ==
+        R"({"strategy":"jira-epic"})");
+  CHECK(text_scalar(fx, "select config_json from external_links where entity_kind = 'task' and entity_id = 1").empty());
 }
 
 TEST_CASE("ext propagate refuses a multi-repo GitHub feature by name (projects-v2 was cut, decision 1001)",

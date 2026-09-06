@@ -52,9 +52,13 @@ export module planar.cmd.planar_ext.handlers.ext;
 
 import std;
 import cli11;
+import planar.db;
 import planar.cliapp.args;
+import planar.engine.external;
 import planar.cmd.planar_ext.context;
+import planar.cmd.planar_ext.exit;
 import planar.cmd.planar_ext.handler;
+import planar.cmd.planar_ext.handlers.ext_adapter_factory;
 
 namespace planar::cmd::ext::handlers {
 
@@ -214,5 +218,73 @@ export auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler
 /// @param args The parsed arguments.
 /// @return Success, or the failure.
 export auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief How an entity sits in the feature tree, which picks its template.
+/// Exported (task 6451) so `planar.cmd.planar_ext.handlers.propagate`'s
+/// generic per-entity tree-walk loop can share it with `ext_propagate_one`
+/// rather than re-deriving the same three-way split from
+/// `planar.engine.planning.descendants::entry_kind`.
+export enum class entity_role : std::uint8_t {
+  plan_anchor, ///< The feature's root plan.
+  plan_child,  ///< A plan with a parent.
+  task,        ///< A task.
+};
+
+/// @brief Map `(system_kind, role)` to the template kind to render.
+///
+/// `strategy_kind` is deliberately NOT a parameter: the oracle takes it and
+/// discards it for GitHub (`_ = strategy_kind;`), and Jira never branches on
+/// it either.
+/// @param system_kind `"jira"` or `"github-issues"`.
+/// @param role How the entity sits in the feature tree.
+/// @return The template kind, or `std::nullopt` for an unrecognized system kind.
+export auto template_kind_for_entity(std::string_view system_kind, entity_role role) -> std::optional<std::string_view>;
+
+/// @brief The outcome of `propagate_one_entity`: what happened, and the
+/// resulting (or pre-existing) provider id.
+export struct propagate_one_outcome {
+  std::string op;          ///< One of `"skipped"`, `"planned"`, `"created"`.
+  std::string external_id; ///< The provider id — existing, placeholder (`"<template-kind>"` under dry-run), or freshly created.
+};
+
+/// @brief The shared per-entity propagation body: idempotency check, render,
+/// POST, record `external_links` — ported from the oracle's
+/// `propagateOneEntity` (`propagate_one.zig`), which BOTH `ext propagate-one`
+/// and the generic arm of `ext propagate`'s loop call, guaranteeing the two
+/// verbs execute identical logic rather than merely similar logic (task
+/// 6451; this is the equivalence `propagate_faithful_test.zig` pins).
+///
+/// `handle` is `nullptr` under `dry_run` — this function never dereferences
+/// it on that path, mirroring `ext_propagate_one`'s own "dry-run builds no
+/// adapter" invariant.
+/// @param conn An open, migrated database connection.
+/// @param handle The built adapter handle, or `nullptr` under `dry_run`.
+/// @param sys The target external system.
+/// @param entity_kind `"plan"` or `"task"`.
+/// @param entity_id The local row id.
+/// @param role How the entity sits in the feature tree (only the anchor caches the strategy).
+/// @param strategy_kind The resolved strategy name, cached into the anchor's `config_json` on first link.
+/// @param template_kind The template kind to render, from `template_kind_for_entity`.
+/// @param direction The sync direction recorded on a newly created link.
+/// @param dry_run When true, no adapter is contacted and no row is written.
+/// @param templates_root The resolved templates root.
+/// @return The outcome, or the failure.
+/// @brief Resolve the operator's templates directory:
+/// `$PLANAR_TEMPLATES_DIR` > `[templates] dir` in the config file > the
+/// embedded default, tilde expanded.
+///
+/// Exported (task 6451) so `planar.cmd.planar_ext.handlers.propagate`'s
+/// generic per-entity tree-walk loop resolves the SAME root
+/// `ext_propagate_one` does, rather than re-deriving config/env resolution
+/// a second time.
+/// @param ctx The invocation context.
+/// @return The resolved root, or the exit-1 refusal.
+export auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error>;
+
+export auto propagate_one_entity(db::connection& conn, adapter_handle* handle,
+                                 const engine::external::system::external_system& sys, std::string_view entity_kind,
+                                 std::int64_t entity_id, entity_role role, std::string_view strategy_kind,
+                                 std::string_view template_kind, engine::external::link::sync_direction direction, bool dry_run,
+                                 std::string_view templates_root) -> std::expected<propagate_one_outcome, domain_error>;
 
 } // namespace planar::cmd::ext::handlers

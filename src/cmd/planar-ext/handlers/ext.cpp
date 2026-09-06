@@ -97,7 +97,7 @@ auto resolve_config_path(const env_lookup& env) -> std::optional<std::filesystem
 /// `resolve_templates_root` — see `expand_home`'s header.
 /// @param ctx The invocation context.
 /// @return The resolved root, or the exit-1 refusal.
-auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error> {
+auto templates_root_for_impl(context& ctx) -> std::expected<std::string, domain_error> {
   auto const cfg_path = resolve_config_path(ctx.env());
 
   std::optional<std::string> file_content;
@@ -128,6 +128,14 @@ auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error
   }
   return *expanded;
 }
+
+} // namespace
+
+auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error> {
+  return templates_root_for_impl(ctx);
+}
+
+namespace {
 
 /// @brief Map a registration failure onto this binary's error taxonomy.
 ///
@@ -506,21 +514,12 @@ auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler_result
   return {};
 }
 
-namespace {
-
-/// @brief How an entity sits in the feature tree, which picks its template.
-enum class entity_role : std::uint8_t {
-  plan_anchor, ///< The feature's root plan.
-  plan_child,  ///< A plan with a parent.
-  task,        ///< A task.
-};
-
 /// @brief Map `(system_kind, role)` to the template kind to render.
 ///
 /// `strategy_kind` is deliberately NOT a parameter: the oracle takes it and
 /// discards it for GitHub (`_ = strategy_kind;`), and Jira never branches on
 /// it either. Taking it would imply an influence that does not exist — see
-/// ext.cppm.
+/// ext.cppm. Exported (task 6451) — see ext.cppm's `entity_role` header.
 auto template_kind_for_entity(std::string_view system_kind, entity_role role) -> std::optional<std::string_view> {
   if (system_kind == "jira") {
     switch (role) {
@@ -544,6 +543,8 @@ auto template_kind_for_entity(std::string_view system_kind, entity_role role) ->
   }
   return std::nullopt;
 }
+
+namespace {
 
 /// @brief Decide whether a plan ref is the anchor or a child.
 ///
@@ -588,6 +589,81 @@ auto load_entity_title(db::connection& conn, std::string_view kind, std::int64_t
 }
 
 } // namespace
+
+auto propagate_one_entity(db::connection& conn, adapter_handle* handle, const system_ns::external_system& sys,
+                          std::string_view entity_kind, std::int64_t entity_id, entity_role role,
+                          std::string_view strategy_kind, std::string_view template_kind, link_ns::sync_direction direction,
+                          bool dry_run, std::string_view templates_root) -> std::expected<propagate_one_outcome, domain_error> {
+  // THE IDEMPOTENCY GATE. It precedes the template load and the POST, which
+  // is what makes a repeat send nothing — see ext.cppm on the three
+  // different answers this tree gives to "it already exists".
+  auto const existing = link_ns::load_existing_mirror(conn, entity_kind, entity_id, sys.id);
+  if (!existing) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: QueryFailed"));
+  }
+  if (!existing->empty()) {
+    return propagate_one_outcome{.op = "skipped", .external_id = *existing};
+  }
+
+  auto const kind_text  = system_ns::system_kind_to_text(sys.kind);
+  auto       built_ctx  = entity_kind == "task" ? tmpl::build_task_context(conn, entity_id) : tmpl::build_plan_context(conn, entity_id);
+  if (!built_ctx) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: building render context"));
+  }
+  auto const entry = cfg::load_template("default", kind_text, template_kind, templates_root);
+  if (!entry) {
+    return std::unexpected(error_from_body(
+        domain_error_kind::not_found, std::format("ext propagate-one: no template for {}/{}", kind_text, template_kind)));
+  }
+  auto const decoded = jd::parse_json(entry->raw);
+  if (!decoded) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("templates: {}: InvalidJson", entry->path)));
+  }
+  auto const rendered = tmpl::render_template(*decoded, *built_ctx);
+  if (!rendered) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("rendering template: {}", tmpl::error_name(rendered.error()))));
+  }
+  // indent-2, matching the oracle's `Stringify.value(.. .indent_2)`. The
+  // provider receives these exact bytes.
+  auto const payload = jd::stringify_indent2(*rendered);
+
+  if (dry_run) {
+    return propagate_one_outcome{.op = "planned", .external_id = std::format("<{}>", template_kind)};
+  }
+
+  auto const created = create_remote(*handle, sys, payload);
+  if (!created) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("ext propagate-one: {}", created.error())));
+  }
+  auto const entity_kind_enum = link_ns::external_entity_kind_from_text(entity_kind);
+  if (!entity_kind_enum) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, std::format("unsupported entity kind '{}'", entity_kind)));
+  }
+  // Only the ANCHOR caches the strategy, so a later `ext propagate` hits
+  // the stickiness path. Raw interpolation matches the oracle; the value
+  // comes from a closed set.
+  auto const config_json =
+      role == entity_role::plan_anchor ? std::optional{std::format(R"({{"strategy":"{}"}})", strategy_kind)} : std::nullopt;
+  auto const stored = link_ns::create(
+      conn, link_ns::create_args{
+                .entity_kind    = *entity_kind_enum,
+                .entity_id      = entity_id,
+                .system_id      = sys.id,
+                .external_id    = created->external_id,
+                .external_url   = created->external_url.empty() ? std::nullopt : std::optional{created->external_url},
+                .role           = link_ns::link_role::mirror,
+                .direction      = direction,
+                .initial_status = link_ns::sync_status::ok,
+                .config_json    = config_json,
+            });
+  if (!stored) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: insert link"));
+  }
+  return propagate_one_outcome{.op = "created", .external_id = created->external_id};
+}
 
 auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.ensure_db();
@@ -682,8 +758,8 @@ auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler
     return std::unexpected(root.error());
   }
 
-  bool const                                     dry_run = flag_bool(args, "--dry-run");
-  std::optional<std::unique_ptr<adapter_handle>> handle;
+  bool const                      dry_run = flag_bool(args, "--dry-run");
+  std::unique_ptr<adapter_handle> handle;
   if (!dry_run) {
     auto built = build_adapter(*sys, default_deps(ctx.env()));
     if (!built) {
@@ -692,81 +768,14 @@ auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler
     handle = std::move(*built);
   }
 
-  // THE IDEMPOTENCY GATE. It precedes the template load and the POST, which
-  // is what makes a repeat send nothing — see ext.cppm on the three
-  // different answers this tree gives to "it already exists".
-  auto const existing = link_ns::load_existing_mirror(**conn, ref->kind, ref->id, sys->id);
-  if (!existing) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: QueryFailed"));
-  }
-
-  std::string      external_id;
-  std::string_view op;
-
-  if (!existing->empty()) {
-    op          = "skipped";
-    external_id = *existing;
-  } else {
-    auto built_ctx = ref->kind == "task" ? tmpl::build_task_context(**conn, ref->id) : tmpl::build_plan_context(**conn, ref->id);
-    if (!built_ctx) {
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: building render context"));
-    }
-    auto const entry = cfg::load_template("default", kind_text, *template_kind, *root);
-    if (!entry) {
-      return std::unexpected(error_from_body(domain_error_kind::not_found,
-                                             std::format("ext propagate-one: no template for {}/{}", kind_text, *template_kind)));
-    }
-    auto const decoded = jd::parse_json(entry->raw);
-    if (!decoded) {
-      return std::unexpected(
-          error_from_body(domain_error_kind::generic_failure, std::format("templates: {}: InvalidJson", entry->path)));
-    }
-    auto const rendered = tmpl::render_template(*decoded, *built_ctx);
-    if (!rendered) {
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure,
-                                             std::format("rendering template: {}", tmpl::error_name(rendered.error()))));
-    }
-    // indent-2, matching the oracle's `Stringify.value(.. .indent_2)`. The
-    // provider receives these exact bytes.
-    auto const payload = jd::stringify_indent2(*rendered);
-
-    if (dry_run) {
-      op          = "planned";
-      external_id = std::format("<{}>", *template_kind);
-    } else {
-      auto const created = create_remote(*handle->get(), *sys, payload);
-      if (!created) {
-        return std::unexpected(
-            error_from_body(domain_error_kind::generic_failure, std::format("ext propagate-one: {}", created.error())));
-      }
-      auto const entity_kind = link_ns::external_entity_kind_from_text(ref->kind);
-      if (!entity_kind) {
-        return std::unexpected(
-            error_from_body(domain_error_kind::invalid_input, std::format("unsupported entity kind '{}'", ref->kind)));
-      }
-      // Only the ANCHOR caches the strategy, so a later `ext propagate` hits
-      // the stickiness path. Raw interpolation matches the oracle; the value
-      // comes from a closed set.
-      auto const config_json =
-          *role == entity_role::plan_anchor ? std::optional{std::format(R"({{"strategy":"{}"}})", strategy_kind)} : std::nullopt;
-      auto const stored = link_ns::create(
-          **conn, link_ns::create_args{
-                      .entity_kind    = *entity_kind,
-                      .entity_id      = ref->id,
-                      .system_id      = sys->id,
-                      .external_id    = created->external_id,
-                      .external_url   = created->external_url.empty() ? std::nullopt : std::optional{created->external_url},
-                      .role           = link_ns::link_role::mirror,
-                      .direction      = *direction,
-                      .initial_status = link_ns::sync_status::ok,
-                      .config_json    = config_json,
-                  });
-      if (!stored) {
-        return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: insert link"));
-      }
-      op          = "created";
-      external_id = created->external_id;
-    }
+  // The idempotency check, render, POST, and `external_links` write are the
+  // shared body `ext propagate`'s generic per-entity loop ALSO calls (task
+  // 6451) — see `propagate_one_entity`'s header for why sharing the actual
+  // function, not just the shape, is the point.
+  auto outcome = propagate_one_entity(**conn, handle.get(), *sys, ref->kind, ref->id, *role, strategy_kind, *template_kind,
+                                      *direction, dry_run, *root);
+  if (!outcome) {
+    return std::unexpected(outcome.error());
   }
 
   if (flag_bool(args, "--json")) {
@@ -775,9 +784,9 @@ auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler
     out += std::format(R"(,"entity_id":{},"title":)", ref->id);
     json_text::append_json_string(out, *title);
     out += R"(,"op":)";
-    json_text::append_json_string(out, op);
+    json_text::append_json_string(out, outcome->op);
     out += R"(,"external_id":)";
-    json_text::append_json_string(out, external_id);
+    json_text::append_json_string(out, outcome->external_id);
     out += R"(,"system":)";
     json_text::append_json_string(out, sys->slug);
     out += R"(,"strategy":)";
@@ -785,7 +794,8 @@ auto ext_propagate_one(context& ctx, const cliapp::parsed_args& args) -> handler
     out += "}";
     ctx.out() << out << '\n';
   } else {
-    ctx.out() << std::format("{}{} {}:{} ({}) -> {}\n", dry_run ? "(dry-run) " : "", op, ref->kind, ref->id, *title, external_id);
+    ctx.out() << std::format("{}{} {}:{} ({}) -> {}\n", dry_run ? "(dry-run) " : "", outcome->op, ref->kind, ref->id, *title,
+                             outcome->external_id);
   }
   return {};
 }
