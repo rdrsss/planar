@@ -16,7 +16,9 @@ import planar.cmd.planar_watch.handlers.completion;
 import planar.cmd.planar_watch.handlers.feed;
 import planar.cmd.planar_watch.handlers.ledger;
 import planar.cmd.planar_watch.handlers.live;
+import planar.cmd.planar_watch.handlers.run;
 import planar.cmd.planar_watch.handlers.schema;
+import planar.cmd.planar_watch.handlers.syncevents;
 import planar.cmd.planar_watch.handlers.version;
 
 namespace planar::cmd::watch {
@@ -77,6 +79,9 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("plans", handlers::plans);
   table.emplace("log", handlers::log);
   table.emplace("tree", handlers::tree);
+  table.emplace("run list", handlers::run_list);
+  table.emplace("run show", handlers::run_show);
+  table.emplace("sync-events", handlers::sync_events);
   table.emplace("version", handlers::version);
   table.emplace("schema", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return handlers::schema(ctx, args, root);

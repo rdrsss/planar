@@ -482,12 +482,11 @@ auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_vi
 }
 
 auto unported_paths() -> std::span<std::string_view const> {
-  static constexpr std::string_view k_unported[] = {
-      "run list",
-      "run show",
-      "sync-events",
-  };
-  return k_unported;
+  // `run list` / `run show` / `sync-events` landed at task 6448; nothing
+  // remains declared-but-unported on this binary. `feed --follow` is a
+  // FLAG on an otherwise-ported leaf, not a leaf of its own, so it does
+  // not belong in this table (see `handlers::feed`'s own refusal).
+  return {};
 }
 
 } // namespace planar::cmd::watch

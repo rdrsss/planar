@@ -568,10 +568,12 @@ TEST_CASE("planar-watch parity: the catalog is BYTE-identical to the oracle's", 
   CHECK(cpp.out == zig.out);
 }
 
-TEST_CASE("planar-watch: a declared-but-unported verb refuses at exit 64", "[cmd][watch][parity][not-implemented]") {
-  // The headline property of the full-surface declaration: DECLARING a
-  // verb is not IMPLEMENTING it, and the difference must be loud. A
-  // declared node that exits 0 is worse than an absent one.
+TEST_CASE("planar-watch: `run list` / `run show` / `sync-events` are ported, not stubbed",
+         "[cmd][watch][parity][not-implemented]") {
+  // Task 6448 landed real handlers for all three. This case used to pin
+  // their exit-64 stub refusal; it is rewritten (not deleted) to pin what
+  // replaced it, so the suite keeps grading this surface rather than
+  // silently losing coverage of it.
   auto const arena = make_arena("unported");
   auto const run   = [&](std::vector<std::string> args, std::string_view tag) {
     return run_pinned(cpp_bin(), args, arena.cpp_root, tag);
@@ -581,21 +583,26 @@ TEST_CASE("planar-watch: a declared-but-unported verb refuses at exit 64", "[cmd
   // handlers/feed.cppm and the default-verb cases in handlers.t.cpp); it
   // is no longer declared-but-unported and does not belong in this list.
 
+  // Against an EMPTY arena (no `planar init`), a ported read verb that
+  // reaches the read-only database handle fails the same way `ps` already
+  // does: `OpenFailed`, exit 1 — NOT exit 64. That is the discrimination
+  // that makes "ported now" observable rather than assumed.
   auto const events = run({"sync-events"}, "syncevents");
-  CHECK(events.code == 64);
-  CHECK(events.err == "error: sync-events: not implemented in this build\n");
+  CHECK(events.code == 1);
+  CHECK(events.err == "error: OpenFailed\n");
 
   // A nested one, to prove the key is the full path and not the leaf name.
   auto const run_list = run({"run", "list"}, "runlist");
-  CHECK(run_list.code == 64);
-  CHECK(run_list.err == "error: run list: not implemented in this build\n");
+  CHECK(run_list.code == 1);
+  CHECK(run_list.err == "error: OpenFailed\n");
+
+  auto const run_show = run({"run", "show", "1"}, "runshow");
+  CHECK(run_show.code == 1);
+  CHECK(run_show.err == "error: OpenFailed\n");
 
   // And the discrimination that makes the three above mean something: a
-  // PORTED verb on the same binary does NOT answer 64, so "exit 64" is not
-  // simply what this binary now does. Two of them, because they fail
-  // differently: `version` needs nothing and exits 0, while `ps` reaches
-  // the read-only database handle and exits 1 (`OpenFailed`) against an
-  // empty arena — neither is the not-implemented code.
+  // verb that needs no database at all does NOT answer OpenFailed —
+  // `version` needs nothing and exits 0.
   auto const ported = run({"version"}, "ported");
   CHECK(ported.code == 0);
   CHECK(ported.err.empty());
@@ -611,4 +618,11 @@ TEST_CASE("planar-watch: a declared-but-unported verb refuses at exit 64", "[cmd
   CHECK(group.code == 0);
   CHECK(group.out.contains("list"));
   CHECK(group.out.contains("show"));
+
+  // `run list --arm bogus` against a database that DOES exist: the
+  // database is opened first (matching the oracle's own ordering — see
+  // `handlers::run_list`), so this arm's `--arm` validation is exercised
+  // once a handle is available. Pinned in `handlers.t.cpp` against a
+  // migrated fixture rather than here, where every other case in this
+  // TEST_CASE deliberately points at an EMPTY arena to pin `OpenFailed`.
 }
