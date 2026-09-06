@@ -39,7 +39,23 @@ auto mode_name(im::outcome::mode mode) -> std::string_view {
   }
   return "skipped";
 }
-auto json(const im::outcome& out, std::optional<std::int64_t> anchor) -> std::string {
+/// Real reconciliation counters accumulated while applying an import/synthesize
+/// cache payload. These feed both the human-readable message and the JSON
+/// `applied` block -- previously both were hardcoded stubs that never
+/// reflected the actual database mutations (task 6453).
+struct apply_counts {
+  int plans_created      = 0;
+  int plans_updated      = 0;
+  int plans_abandoned    = 0;
+  int tasks_created      = 0;
+  int tasks_updated      = 0;
+  int tasks_cancelled    = 0;
+  int artifacts_created  = 0;
+  int artifacts_retired  = 0;
+  int decisions_created  = 0;
+  int decisions_superseded = 0;
+};
+auto json(const im::outcome& out, std::optional<std::int64_t> anchor, const apply_counts& counts) -> std::string {
   std::string value = std::format("{{\"mode\":{},\"provider\":\"openai\",\"repo_slug\":{},\"fingerprint\":{},\"cache_path\":",
                                   json_text::json_string(mode_name(out.mode_)), json_text::json_string(out.request_.repo_slug),
                                   json_text::json_string(out.request_.fingerprint));
@@ -50,10 +66,13 @@ auto json(const im::outcome& out, std::optional<std::int64_t> anchor) -> std::st
       std::format(",\"docs_count\":{},\"guide_files_count\":{},\"tree_entry_count\":{},\"message\":{}", out.request_.docs_count,
                   out.request_.guide_count, out.request_.tree_count, json_text::json_string(out.message));
   if (anchor.has_value())
-    value += std::format(",\"applied\":{{\"anchor_plan_id\":{},\"plans_created\":1,\"plans_updated\":0,\"plans_abandoned\":0,"
-                         "\"tasks_created\":0,\"tasks_updated\":0,\"tasks_cancelled\":0,\"artifacts_created\":0,\"artifacts_"
-                         "retired\":0,\"decisions_created\":0,\"decisions_superseded\":0}}",
-                         *anchor);
+    value += std::format(
+        ",\"applied\":{{\"anchor_plan_id\":{},\"plans_created\":{},\"plans_updated\":{},\"plans_abandoned\":{},"
+        "\"tasks_created\":{},\"tasks_updated\":{},\"tasks_cancelled\":{},\"artifacts_created\":{},\"artifacts_"
+        "retired\":{},\"decisions_created\":{},\"decisions_superseded\":{}}}",
+        *anchor, counts.plans_created, counts.plans_updated, counts.plans_abandoned, counts.tasks_created, counts.tasks_updated,
+        counts.tasks_cancelled, counts.artifacts_created, counts.artifacts_retired, counts.decisions_created,
+        counts.decisions_superseded);
   value += "}\n";
   return value;
 }
@@ -67,8 +86,8 @@ auto text_member(const json_dom::json_value& object, std::string_view name) -> s
     return std::nullopt;
   return value->string;
 }
-auto plan_for(db::connection& conn, const json_dom::json_value& value, std::int64_t anchor, std::optional<std::string> scope)
-    -> std::expected<std::int64_t, domain_error> {
+auto plan_for(db::connection& conn, const json_dom::json_value& value, std::int64_t anchor, std::optional<std::string> scope,
+              apply_counts& counts) -> std::expected<std::int64_t, domain_error> {
   auto slug   = text_member(value, "slug");
   auto title  = text_member(value, "title");
   auto status = text_member(value, "status");
@@ -79,8 +98,10 @@ auto plan_for(db::connection& conn, const json_dom::json_value& value, std::int6
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
   auto created = pl::create_plan(
       conn, {.title = *title, .slug = *slug, .status = *parsed_status, .parent_plan_id = anchor, .scope = std::move(scope)});
-  if (created)
+  if (created) {
+    ++counts.plans_created;
     return created->id;
+  }
   if (created.error() != pl::plan_error::slug_conflict)
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
   auto rows = pl::list_plans(conn, {.statuses       = {pl::plan_status::draft, pl::plan_status::active, pl::plan_status::paused,
@@ -108,7 +129,8 @@ auto artifact_kind_for(const std::filesystem::path& path) -> pl::artifact_kind {
   return pl::artifact_kind::other;
 }
 auto reconcile_artifacts(db::connection& conn, const std::filesystem::path& root, std::int64_t anchor,
-                         std::optional<std::string> scope, bool apply_removals) -> std::expected<void, domain_error> {
+                         std::optional<std::string> scope, bool apply_removals, apply_counts& counts)
+    -> std::expected<void, domain_error> {
   auto existing = pl::list_artifacts(conn, {.plan_id = anchor});
   if (!existing)
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
@@ -131,6 +153,7 @@ auto reconcile_artifacts(db::connection& conn, const std::filesystem::path& root
                                                         .scope       = scope});
     if (!artifact)
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    ++counts.artifacts_created;
   }
   if (ec)
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
@@ -144,6 +167,10 @@ auto reconcile_artifacts(db::connection& conn, const std::filesystem::path& root
                                   "id=? and status!='retired'");
       if (!retired || !retired->bind_int64(1, row.id) || !retired->step())
         return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+      // `list_artifacts` with no --status filter already narrows to
+      // {draft, active} (see artifact.cppm), so every row reaching here
+      // genuinely transitions to retired.
+      ++counts.artifacts_retired;
     }
   return {};
 }
@@ -189,7 +216,8 @@ auto seed_forward_artifacts(db::connection& conn, std::int64_t plan, std::string
 }
 auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std::filesystem::path& root, std::int64_t anchor,
                      std::optional<std::string> scope, bool apply_removals, std::optional<std::string> accept_spec,
-                     bool no_forward_specs, std::string_view workbench_root) -> std::expected<void, domain_error> {
+                     bool no_forward_specs, std::string_view workbench_root, apply_counts& counts)
+    -> std::expected<void, domain_error> {
   std::ifstream input(staged.cache_path, std::ios::binary);
   std::string   raw{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
   auto          result = json_dom::parse_json(raw);
@@ -202,7 +230,7 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
       decisions->kind != json_dom::json_kind::array || forward_specs == nullptr ||
       forward_specs->kind != json_dom::json_kind::array)
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
-  auto artifacts = reconcile_artifacts(conn, root, anchor, scope, apply_removals);
+  auto artifacts = reconcile_artifacts(conn, root, anchor, scope, apply_removals, counts);
   if (!artifacts)
     return std::unexpected(artifacts.error());
   std::set<std::int64_t> kept_plans;
@@ -210,7 +238,7 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
   for (auto const& phase : phases->array) {
     if (phase.kind != json_dom::json_kind::object)
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "invalid import arguments"));
-    auto plan = plan_for(conn, phase, anchor, scope);
+    auto plan = plan_for(conn, phase, anchor, scope, counts);
     if (!plan)
       return std::unexpected(plan.error());
     kept_plans.insert(*plan);
@@ -229,9 +257,10 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
       auto task = pl::create_task(
           conn,
           {.title = *title, .status = *task_status, .plan_id = *plan, .slug = *slug, .no_auto_promote = true, .scope = scope});
-      if (task)
+      if (task) {
         kept_tasks.insert(task->id);
-      else if (task.error() == pl::task_error::slug_conflict) {
+        ++counts.tasks_created;
+      } else if (task.error() == pl::task_error::slug_conflict) {
         auto found = conn.prepare("select id from tasks where plan_id=? and slug=? limit 1");
         if (!found || !found->bind_int64(1, *plan) || !found->bind_text(2, *slug))
           return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
@@ -261,6 +290,7 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
           conn.prepare("update tasks set status='cancelled', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?");
       if (!cancelled || !cancelled->bind_int64(1, id) || !cancelled->step())
         return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+      ++counts.tasks_cancelled;
     }
     auto plans = conn.prepare("select id from plans where parent_plan_id=? and status!='abandoned'");
     if (!plans || !plans->bind_int64(1, anchor))
@@ -278,6 +308,7 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
           conn.prepare("update plans set status='abandoned', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?");
       if (!abandoned || !abandoned->bind_int64(1, id) || !abandoned->step())
         return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+      ++counts.plans_abandoned;
     }
   }
   std::set<std::int64_t> kept_decisions;
@@ -299,6 +330,7 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
     if (!decision)
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     kept_decisions.insert(decision->id);
+    ++counts.decisions_created;
   }
   if (apply_removals) {
     auto rows = conn.prepare(
@@ -319,6 +351,7 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
           conn.prepare("update decisions set status='superseded', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') where id=?");
       if (!superseded || !superseded->bind_int64(1, id) || !superseded->step())
         return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+      ++counts.decisions_superseded;
     }
   }
   if (no_forward_specs)
@@ -363,6 +396,8 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
     auto created = pl::create_plan(conn, {.title = *title, .slug = *slug, .status = pl::plan_status::draft, .scope = scope});
     if (!created && created.error() != pl::plan_error::slug_conflict)
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
+    if (created)
+      ++counts.plans_created;
     std::int64_t plan_id = created ? created->id : 0;
     if (!created) {
       auto rows = pl::list_plans(conn, {.statuses = {pl::plan_status::draft, pl::plan_status::active, pl::plan_status::paused,
@@ -407,6 +442,7 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "import failed: Io"));
   }
   std::optional<std::int64_t> anchor;
+  apply_counts                counts;
   if (flag_bool(args, "--apply")) {
     if (flag_bool(args, "--interpret") && result->mode_ == im::outcome::mode::pending)
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "import failed: NotFound"));
@@ -440,25 +476,28 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
         }
       if (!anchor.has_value())
         return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
-    } else
+    } else {
       anchor = created->id;
+      ++counts.plans_created;
+    }
     auto workbench_root = engine::workbench::root::resolve_root(ctx.env());
     if (!workbench_root)
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     if (flag_bool(args, "--interpret") && result->mode_ == im::outcome::mode::cache_hit) {
       auto reconciled =
           reconcile_cache(**db, *result, root, *anchor, flag_string(args, "--scope"), flag_bool(args, "--apply-removals"),
-                          flag_string(args, "--accept-spec"), flag_bool(args, "--no-forward-specs"), *workbench_root);
+                          flag_string(args, "--accept-spec"), flag_bool(args, "--no-forward-specs"), *workbench_root, counts);
       if (!reconciled)
         return std::unexpected(reconciled.error());
     }
     if (!txn->commit())
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
-    result->message =
-        std::format("applied: anchor {}; 1 plans created/0 updated, 0 tasks created/0 updated/0 cancelled", *anchor);
+    result->message = std::format("applied: anchor {}; {} plans created/{} updated, {} tasks created/{} updated/{} cancelled",
+                                  *anchor, counts.plans_created, counts.plans_updated, counts.tasks_created, counts.tasks_updated,
+                                  counts.tasks_cancelled);
   }
   if (flag_bool(args, "--json"))
-    ctx.out() << json(*result, anchor);
+    ctx.out() << json(*result, anchor, counts);
   else
     ctx.out() << result->message << '\n';
   return {};
