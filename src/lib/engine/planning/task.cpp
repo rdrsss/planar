@@ -785,6 +785,14 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
       }
       break;
     case param_kind::null:
+      // Every `?` placeholder in `sql` -- including a NULL scope_id --
+      // consumes one positional bind slot. Skipping the increment here
+      // shifted every subsequent bind (title, body, status, ...) left by
+      // one, silently mis-binding them (and leaving the real update a
+      // no-op in the common `--scope global` case, task 6453).
+      if (auto b = stmt->bind_null(bind_idx++); !b) {
+        return std::unexpected(exec_failed("task.update", "BindFailed"));
+      }
       break;
     }
   }

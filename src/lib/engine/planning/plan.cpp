@@ -642,6 +642,13 @@ auto update_plan(db::connection& conn, std::int64_t id, const plan_update_args& 
       }
       break;
     case param_kind::null:
+      // Same off-by-one hazard as task.cpp's update_task (task 6453): a
+      // NULL scope_id still occupies a `?` placeholder in `sql` and must
+      // consume a bind slot, or every subsequent field silently shifts
+      // left and mis-binds.
+      if (auto b = stmt->bind_null(bind_idx++); !b) {
+        return std::unexpected(exec_failed("plan.update", "BindFailed"));
+      }
       break;
     }
   }
