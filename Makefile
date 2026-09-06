@@ -251,12 +251,20 @@ test-cpp-strict: ## Same, but an absent Zig oracle FAILS the differential cases 
 
 .PHONY: test-parity-cpp
 test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binaries (parity lane; fails until C++ binaries exist)
+	cmake --preset debug -DPLANAR_WITH_MTKAHYPAR=ON
+	cmake --build $(CPP_BUILD_DIR)
 	PLANAR_BIN=$(CPP_BIN_ABS)/$(BINARY) \
 	PLANAR_AGENT_BIN=$(CPP_BIN_ABS)/$(AGENT_BINARY) \
 	PLANAR_WATCH_BIN=$(CPP_BIN_ABS)/$(WATCH_BINARY) \
 	PLANAR_EXECUTE_BIN=$(CPP_BIN_ABS)/$(EXECUTE_BINARY) \
 	PLANAR_EXT_BIN=$(CPP_BIN_ABS)/$(EXT_BINARY) \
 	$(ZIGBUILD) test-integration -Dtest-binary=true $(ARGS)
+
+# The parity lane builds WITH the solver (decision 1032): groups_recommend's
+# task-4247 test hard-asserts optimal_available, and the developer default
+# keeps PLANAR_WITH_MTKAHYPAR OFF so nobody builds the 330MB library. The ON
+# build is hermetic since task 6461 pinned CPM's cache key; verify with
+# `make test-vendor-mtkahypar-offline`.
 
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
