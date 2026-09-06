@@ -242,7 +242,8 @@ auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
                                .membership_created = !before->has_value() || !before->value().second});
   }
 
-  bool         pipeline_error   = false;
+  bool         pipeline_error       = false;
+  bool         layout_setup_failed  = false;
   std::size_t  routing_projects = 0, routing_edges = 0;
   std::int64_t agents_bytes = 0;
   std::string  agents_path;
@@ -251,7 +252,8 @@ auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
     auto layout = identity::ensure_layout(ctx.env(), org->id);
     auto home   = identity::planar_home(ctx.env());
     if (!layout || !home) {
-      pipeline_error = true;
+      pipeline_error      = true;
+      layout_setup_failed = true;
     } else {
       auto rules = routing::load_capability_rules(*home / "templates" / "workspace-capabilities.toml");
       if (!rules)
@@ -292,6 +294,24 @@ auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
       }
     }
   }
+  // Mirrors the Zig oracle's `workspace init` partial-failure reporting: a
+  // failed pipeline pass never rolls back the org/project registration that
+  // already committed above -- it only surfaces a warning plus a recovery
+  // hint on stderr (or the `error` field in JSON) naming the verb(s) an
+  // operator needs to re-run. When the layout directory itself could not be
+  // created/opened (e.g. `$PLANAR_HOME` resolves to a file), the recovery
+  // must start with `workspace doctor`, since routing/regenerate cannot run
+  // without a working layout; any later pipeline step failing with a
+  // working layout can skip straight to routing build + regenerate.
+  const std::string pipeline_error_kind = !pipeline_error ? "" : layout_setup_failed ? "layout-create-failed" : "QueryFailed";
+  if (pipeline_error && !flag_bool(args, "--no-scan") && !flag_bool(args, "--json")) {
+    ctx.err() << "warning: pipeline pass failed: " << pipeline_error_kind << "\n";
+    if (layout_setup_failed)
+      ctx.err() << "hint: re-run `planar workspace doctor` then `planar workspace routing build` && `planar workspace "
+                   "regenerate`\n";
+    else
+      ctx.err() << "hint: re-run `planar workspace routing build` && `planar workspace regenerate`\n";
+  }
   if (flag_bool(args, "--json")) {
     std::string out = "{\"org\":{\"id\":" + std::format("{}", org->id) + ",\"slug\":";
     json_text::append_json_string(out, org->slug);
@@ -316,7 +336,7 @@ auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
     json_text::append_json_string(out, strategy);
     out += meta ? ",\"installed\":[]}" : ",\"installed\":[\"AGENTS.md\",\"CLAUDE.md\"]}";
     out += ",\"error\":";
-    json_text::append_json_string(out, pipeline_error ? "QueryFailed" : "");
+    json_text::append_json_string(out, pipeline_error_kind);
     out += "}}\n";
     ctx.out() << out;
     return {};
