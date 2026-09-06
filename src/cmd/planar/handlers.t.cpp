@@ -2731,6 +2731,35 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
                        "two-way", "--json"})
               .code == 0);
 
+  // A second, unrelated task with its OWN session/decision/question/entry —
+  // present in the same database so that every per-task filter above is
+  // proven to SCOPE rather than merely to find *something*. Without this,
+  // a permissive filter that drops the `task_id`/`session_id` clause
+  // entirely (e.g. `where 1=1`) produces byte-identical output in a
+  // single-task fixture and the assertions below cannot tell the
+  // difference — confirmed as live SURVIVORS by break-probing the
+  // decisions/questions/recent-activity filters against an earlier,
+  // single-task version of this fixture (see
+  // scripts/break-probe-logs/6455-resume-packet.jsonl).
+  auto const other_task = seed_task(fx, "OTHER_TASK", "unrelated");
+  REQUIRE(dispatch(fx, {"capture", "session", "--task", std::to_string(other_task), "--vendor-session-id", "other",
+                       "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"capture", "note", "unrelated note", "--session", "2"}).code == 0);
+  // `decision add` / `question add` bind to the AMBIENT active session
+  // (`ensure_active` on the vendor tuple), not to a `--task`/`--session`
+  // flag they do not have — so route them at session 2 (the other task's
+  // session) via the same vendor-session-id env var `capture session`
+  // used to open it, rather than letting them fall onto session 1's
+  // implicit `('cli', NULL)` tuple.
+  auto fx_other = fx;
+  fx_other.vars["PLANAR_VENDOR_SESSION_ID"] = "other";
+  REQUIRE(dispatch(fx_other, {"decision", "add", "Other decision", "--body", "n/a", "--json"}).code == 0);
+  REQUIRE(dispatch(fx_other, {"question", "add", "Other question", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"question", "link", "2", std::format("task:{}", other_task), "--relationship", "addresses",
+                       "--json"})
+              .code == 0);
+
   auto const got = dispatch(fx, {"resume", "--json", std::to_string(task)});
   CHECK(got.code == 0);
   CHECK(got.err.empty());
@@ -2765,6 +2794,12 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
   // Section 8 — audit footer, no active claim or handoff in this fixture.
   CHECK(got.out.contains(R"("audit":{"session_id":1,"vendor":"cli")"));
   CHECK(got.out.contains(R"("active_claim":null,"from_handoff":null})"));
+
+  // Isolation: nothing belonging to the OTHER task leaks into this
+  // packet — the property a permissive (unscoped) filter would violate.
+  CHECK_FALSE(got.out.contains("Other decision"));
+  CHECK_FALSE(got.out.contains("Other question"));
+  CHECK_FALSE(got.out.contains("unrelated note"));
 
   // The text form carries the same content under its section headers.
   auto const text = dispatch(fx, {"resume", std::to_string(task)});
