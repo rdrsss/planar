@@ -77,14 +77,15 @@
 #                 what it borrowed from `ps` — the `generated_at` emitter —
 #                 now exists at `handlers/format.cppm`. Cheapest next verb.
 #
-# `--follow` and `--interval` on every verb that declares them. The flags ARE
-# declared (catalog parity compares declared flag sets), and the handler
-# returns not_implemented (exit 64) rather than emitting one snapshot and
-# exiting 0. A silent single-shot would read as a working stream to any
-# script that pipes it. The arm needs a SIGINT handler and a poll/wake loop
-# reproducing the oracle's Tier-2 kqueue/inotify wake source
-# (`zig/src/cmd/planar-watch/handlers/follow.zig`), neither of which exists
-# anywhere in this tree; see `handlers.t.cpp`'s pinned refusal test.
+# `--follow` on `feed` landed at task 6449 (`handlers/follow.cppm`): a SIGINT
+# handler, a chunked interruptible-sleep loop, and a Tier-2 wake source
+# (kqueue on macOS/BSD, inotify on Linux, degraded timed-sleep elsewhere)
+# watching the SQLite `-wal` sibling, reproducing
+# `zig/src/cmd/planar-watch/handlers/follow.zig` and
+# `zig/src/engine/runtime/agentactivity/wake.zig`. `--follow` on `ps` /
+# `claims` / `actions` / `plans` / `tree` remains unported and still refuses
+# with not_implemented (exit 64) -- see `handlers.t.cpp`'s pinned refusal
+# test for those five.
 #
 # The root help page now lists all twelve subcommands (CLI11's own
 # generated SUBCOMMANDS block, via `cliapp::apply_surface` for the two
@@ -106,6 +107,7 @@ planar_binary(planar_watch
     handlers/schema.cppm
     handlers/completion.cppm
     handlers/feed.cppm
+    handlers/follow.cppm
     handlers/ledger.cppm
     handlers/live.cppm
     handlers/run.cppm
@@ -120,6 +122,7 @@ planar_binary(planar_watch
     handlers/schema.cpp
     handlers/completion.cpp
     handlers/feed.cpp
+    handlers/follow.cpp
     handlers/ledger.cpp
     handlers/live.cpp
     handlers/run.cpp
