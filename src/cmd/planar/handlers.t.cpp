@@ -2553,12 +2553,137 @@ TEST_CASE("the resume PACKET is not ported and says so with exit 64", "[cmd][han
   // Registered on purpose: an UNregistered dual node would fall to
   // dispatch's help path and exit 0, a silent success where the oracle
   // produces a packet. See `planar.cmd.planar.handlers.resume`.
+  //
+  // `bare` used to always land here (the whole verb was unconditionally
+  // `not_implemented`). Task 6452 ported the no-id branch's cwd-scope
+  // derivation ahead of the packet, so a bare `resume` from THIS fixture's
+  // unregistered cwd now refuses one step earlier — with the oracle's own
+  // "cwd is not inside any registered Planar scope" message — before ever
+  // reaching the not-ported packet. See the next test case for the case
+  // where derivation SUCCEEDS and control reaches the placeholder.
+  auto const bare = dispatch(fx, {"resume"});
+  CHECK(bare.code == 1);
+  CHECK(bare.err == "error: cwd is not inside any registered Planar scope; cd into a registered scope or pass "
+                    "<task-id> explicitly\n");
+
+  // The with-id form skips derivation entirely and still lands on the
+  // not-ported placeholder — this half of the divergence is unchanged.
+  auto const with_id = dispatch(fx, {"resume", "2", "--json"});
+  CHECK(with_id.code == 64);
+  CHECK(with_id.err == "error: not implemented yet\n");
+}
+
+TEST_CASE("resume's no-id cwd-scope derivation resolves a task id, then hits the same not-ported placeholder",
+          "[cmd][handlers][resume]") {
+  // Port target: zig/src/cmd/planar/handlers/resume/cmd.zig's no-id branch
+  // (task 6452). Unlike the fixture above, THIS one registers the cwd as
+  // an association and seeds an active task with a session in that scope,
+  // so cwd-scope derivation and the most-recent-active-session walk both
+  // succeed — control reaches the same `not_implemented` placeholder as
+  // the with-id form, rather than refusing earlier. This is the "legitimate
+  // partial" the task called for: the derivation is real, the packet body
+  // still is not.
+  auto const fx = make_fixture("rvderiv");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "rvderiv-assoc", "--kind", "project"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "rvderiv-assoc", (fx.root / "proj").string()}).code == 0);
+
+  auto const task = seed_task(fx, "Has action", "do the thing");
+  auto conn       = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  // `seed_task` inserts a GLOBAL task; re-point it at the association this
+  // cwd derives to, so the no-id walk's scope match actually exercises the
+  // association arm rather than the (unreachable from this cwd) global one.
+  REQUIRE(conn->execute(std::format("update tasks set scope_kind = 'association', scope_id = "
+                                    "(select id from associations where slug = 'rvderiv-assoc') where id = {}",
+                                    task))
+              .has_value());
+  REQUIRE(conn->execute(std::format("insert into sessions (task_id, vendor, vendor_session_id) "
+                                    "values ({}, 'cli', 'rvderiv-session')",
+                                    task))
+              .has_value());
+
   auto const bare = dispatch(fx, {"resume"});
   CHECK(bare.code == 64);
   CHECK(bare.err == "error: not implemented yet\n");
+}
 
-  auto const with_id = dispatch(fx, {"resume", "2", "--json"});
-  CHECK(with_id.code == 64);
+TEST_CASE("resume without id refuses when cwd scope has no active task", "[cmd][handlers][resume][6452]") {
+  // Port of zig/integration_tests/resume_scope_test.zig's same-named case.
+  // A session exists, but only for a GLOBAL task; this fixture's cwd
+  // derives to an association, so the walk finds a row and rejects it on
+  // the scope match rather than falling straight to the empty-set refusal
+  // — pinning the "session exists but nothing in scope" arm distinctly
+  // from "cwd has no scope at all" (the fixture above).
+  auto const fx = make_fixture("rvnoactive");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "rvnoactive-assoc", "--kind", "project"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "rvnoactive-assoc", (fx.root / "proj").string()}).code == 0);
+
+  auto const task = seed_task(fx, "Foreign global task", "continue global work");
+  auto conn       = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(std::format("insert into sessions (task_id, vendor, vendor_session_id) "
+                                    "values ({}, 'cli', 'global-only-session')",
+                                    task))
+              .has_value());
+
+  auto const got = dispatch(fx, {"resume", "--json"});
+  CHECK(got.code == 1);
+  CHECK(got.err == "error: no active task in cwd-derived scope; pass <task-id> explicitly\n");
+}
+
+TEST_CASE("resume without id does not refuse when an in-scope task exists behind a newer out-of-scope session",
+          "[cmd][handlers][resume][6452]") {
+  // Port of zig/integration_tests/resume_scope_test.zig's "selects the
+  // most recent active task in cwd scope" case. Oracle-verified at task
+  // 6452 (by running BOTH the Zig oracle and this binary against this
+  // exact fixture shape, with a temporary debug print on the C++ side) to
+  // select the ASSOCIATION-scoped task even when a GLOBAL task's session
+  // is newer — a global task never leaks into a repo/association cwd
+  // (`matches_read_scope`'s whole point).
+  //
+  // HONEST LIMIT: the packet body is not ported, and the placeholder is
+  // task-id-agnostic, so a wrong (global) selection and a right (local)
+  // one both land on the identical `not_implemented` exit 64 here — this
+  // assertion alone cannot distinguish them. What it DOES pin is that the
+  // walk does not incorrectly REFUSE (the "no active task" error) just
+  // because the newest session is out of scope, which is what a
+  // regression to "only look at the single newest session row" would
+  // produce (a `LIMIT 1` before the scope filter, rather than a scan that
+  // keeps walking past a non-matching row). The scope-selects-correctly
+  // property itself is pinned by the break-probe evidence at
+  // scripts/break-probe-logs/6452-resume.jsonl, which mutates
+  // `matches_read_scope` to always-true and confirms the resulting
+  // wrong-task selection is a live, killable mutation — i.e. a future
+  // packet port that surfaces `identity.task_id` in `--json` output would
+  // have an immediately failing assertion to tighten this test with.
+  auto const fx = make_fixture("rvselect");
+  REQUIRE(dispatch(fx, {"init"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "rvselect-assoc", "--kind", "project"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "rvselect-assoc", (fx.root / "proj").string()}).code == 0);
+
+  auto const local_task  = seed_task(fx, "Local task", "continue local work");
+  auto const global_task = seed_task(fx, "Global task", "continue global work");
+  auto       conn        = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(std::format("update tasks set scope_kind = 'association', scope_id = "
+                                    "(select id from associations where slug = 'rvselect-assoc') where id = {}",
+                                    local_task))
+              .has_value());
+  // The LOCAL session is older; the GLOBAL one is newer but out of scope.
+  REQUIRE(conn->execute(std::format("insert into sessions (task_id, vendor, vendor_session_id, started_at) "
+                                    "values ({}, 'cli', 'local-session', '2020-01-01T00:00:00.000Z')",
+                                    local_task))
+              .has_value());
+  REQUIRE(conn->execute(std::format("insert into sessions (task_id, vendor, vendor_session_id, started_at) "
+                                    "values ({}, 'cli', 'newer-global-session', '2030-01-01T00:00:00.000Z')",
+                                    global_task))
+              .has_value());
+
+  auto const bare = dispatch(fx, {"resume"});
+  CHECK(bare.code == 64);
+  CHECK(bare.err == "error: not implemented yet\n");
 }
 
 TEST_CASE("handoff refuses without an active session and does NOT create one", "[cmd][handlers][handoff]") {
