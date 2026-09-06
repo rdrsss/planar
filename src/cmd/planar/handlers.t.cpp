@@ -2587,7 +2587,7 @@ TEST_CASE("resume's no-id cwd-scope derivation resolves a task id, then renders 
   REQUIRE(dispatch(fx, {"assoc", "add", "rvderiv-assoc", (fx.root / "proj").string()}).code == 0);
 
   auto const task = seed_task(fx, "Has action", "do the thing");
-  auto conn       = planar::db::connection::open(fx.db_path.string());
+  auto       conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
   // `seed_task` inserts a GLOBAL task; re-point it at the association this
   // cwd derives to, so the no-id walk's scope match actually exercises the
@@ -2629,7 +2629,7 @@ TEST_CASE("resume without id refuses when cwd scope has no active task", "[cmd][
   REQUIRE(dispatch(fx, {"assoc", "add", "rvnoactive-assoc", (fx.root / "proj").string()}).code == 0);
 
   auto const task = seed_task(fx, "Foreign global task", "continue global work");
-  auto conn       = planar::db::connection::open(fx.db_path.string());
+  auto       conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
   REQUIRE(conn->execute(std::format("insert into sessions (task_id, vendor, vendor_session_id) "
                                     "values ({}, 'cli', 'global-only-session')",
@@ -2641,8 +2641,7 @@ TEST_CASE("resume without id refuses when cwd scope has no active task", "[cmd][
   CHECK(got.err == "error: no active task in cwd-derived scope; pass <task-id> explicitly\n");
 }
 
-TEST_CASE("resume without id selects the most recent active task in cwd scope",
-          "[cmd][handlers][resume][6452][6455]") {
+TEST_CASE("resume without id selects the most recent active task in cwd scope", "[cmd][handlers][resume][6452][6455]") {
   // Port of zig/integration_tests/resume_scope_test.zig's "selects the
   // most recent active task in cwd scope" case. Oracle-verified at task
   // 6452 (by running BOTH the Zig oracle and this binary against this
@@ -2709,13 +2708,12 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
 
   REQUIRE(dispatch(fx, {"decision", "add", "Use X", "--body", "because", "--json"}).code == 0);
   REQUIRE(dispatch(fx, {"question", "add", "Is X ok", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"question", "link", "1", std::format("task:{}", task), "--relationship", "addresses", "--json"})
-              .code == 0);
-  REQUIRE(dispatch(fx, {"artifact", "add", "Design doc", "--kind", "design_note", "--body", "content", "--editor=false",
-                       "--json"})
-              .code == 0);
-  REQUIRE(dispatch(fx, {"task", "link", std::to_string(task), "artifact:1", "--relationship", "verifies", "--json"})
-              .code == 0);
+  REQUIRE(dispatch(fx, {"question", "link", "1", std::format("task:{}", task), "--relationship", "addresses", "--json"}).code ==
+          0);
+  REQUIRE(
+      dispatch(fx, {"artifact", "add", "Design doc", "--kind", "design_note", "--body", "content", "--editor=false", "--json"})
+          .code == 0);
+  REQUIRE(dispatch(fx, {"task", "link", std::to_string(task), "artifact:1", "--relationship", "verifies", "--json"}).code == 0);
   // `ext register` moved to `planar-ext` (decisions 995-1001) and is not
   // reachable from this in-process `planar` dispatch harness; insert the
   // `external_systems` row directly so the CLI-reachable `link` verb below
@@ -2727,8 +2725,8 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
                           "values ('github-issues', 'demo-gh', 'foo/bar', 'gh-cli', 'gh-cli')")
                 .has_value());
   }
-  REQUIRE(dispatch(fx, {"link", std::format("task:{}", task), "--to", "demo-gh:42", "--role", "reference", "--sync",
-                       "two-way", "--json"})
+  REQUIRE(dispatch(fx, {"link", std::format("task:{}", task), "--to", "demo-gh:42", "--role", "reference", "--sync", "two-way",
+                        "--json"})
               .code == 0);
 
   // A second, unrelated task with its OWN session/decision/question/entry —
@@ -2742,9 +2740,9 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
   // single-task version of this fixture (see
   // scripts/break-probe-logs/6455-resume-packet.jsonl).
   auto const other_task = seed_task(fx, "OTHER_TASK", "unrelated");
-  REQUIRE(dispatch(fx, {"capture", "session", "--task", std::to_string(other_task), "--vendor-session-id", "other",
-                       "--json"})
-              .code == 0);
+  REQUIRE(
+      dispatch(fx, {"capture", "session", "--task", std::to_string(other_task), "--vendor-session-id", "other", "--json"}).code ==
+      0);
   REQUIRE(dispatch(fx, {"capture", "note", "unrelated note", "--session", "2"}).code == 0);
   // `decision add` / `question add` bind to the AMBIENT active session
   // (`ensure_active` on the vendor tuple), not to a `--task`/`--session`
@@ -2752,13 +2750,13 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
   // session) via the same vendor-session-id env var `capture session`
   // used to open it, rather than letting them fall onto session 1's
   // implicit `('cli', NULL)` tuple.
-  auto fx_other = fx;
+  auto fx_other                             = fx;
   fx_other.vars["PLANAR_VENDOR_SESSION_ID"] = "other";
   REQUIRE(dispatch(fx_other, {"decision", "add", "Other decision", "--body", "n/a", "--json"}).code == 0);
   REQUIRE(dispatch(fx_other, {"question", "add", "Other question", "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"question", "link", "2", std::format("task:{}", other_task), "--relationship", "addresses",
-                       "--json"})
-              .code == 0);
+  REQUIRE(
+      dispatch(fx, {"question", "link", "2", std::format("task:{}", other_task), "--relationship", "addresses", "--json"}).code ==
+      0);
 
   auto const got = dispatch(fx, {"resume", "--json", std::to_string(task)});
   CHECK(got.code == 0);
@@ -2788,8 +2786,8 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
   CHECK(got.out.contains(R"("questions":[{"id":1,"title":"Is X ok","status":"open","answer_body":""}])"));
 
   // Section 7 — artifacts.
-  CHECK(got.out.contains(
-      R"("artifacts":[{"artifact_id":1,"title":"Design doc","kind":"design_note","relationship":"verifies"}])"));
+  CHECK(
+      got.out.contains(R"("artifacts":[{"artifact_id":1,"title":"Design doc","kind":"design_note","relationship":"verifies"}])"));
 
   // Section 8 — audit footer, no active claim or handoff in this fixture.
   CHECK(got.out.contains(R"("audit":{"session_id":1,"vendor":"cli")"));
@@ -2817,8 +2815,7 @@ TEST_CASE("resume packet surfaces an active claim's worktree, then falls back to
   auto const fx   = make_fixture("rvclaim");
   auto const task = seed_task(fx, "Claimed task", "verify");
   REQUIRE(dispatch(fx, {"capture", "session", "--task", std::to_string(task), "--json"}).code == 0);
-  REQUIRE(dispatch(fx, {"capture", "snapshot", "--task", std::to_string(task), "--note", "checkpoint", "--json"}).code ==
-          0);
+  REQUIRE(dispatch(fx, {"capture", "snapshot", "--task", std::to_string(task), "--note", "checkpoint", "--json"}).code == 0);
 
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
@@ -2843,8 +2840,7 @@ TEST_CASE("resume packet surfaces an active claim's worktree, then falls back to
 
   // Release the claim and record a handoff carrying the same worktree —
   // the cold-start fallback path (Plan 297 followup t#2947).
-  REQUIRE(conn
-              ->execute("update agent_work_claims set status = 'released', released_at = "
+  REQUIRE(conn->execute("update agent_work_claims set status = 'released', released_at = "
                         "strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = 1")
               .has_value());
   REQUIRE(conn->execute(std::format("insert into handoffs (from_snapshot_id, from_vendor, status, worktree_path) "

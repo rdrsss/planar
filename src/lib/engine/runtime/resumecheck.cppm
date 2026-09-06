@@ -157,19 +157,19 @@ export auto render_validate_text(const validation_result& result) -> std::string
 
 /// @brief Section 1. Mirrors zig's `resume.Identity`.
 export struct identity {
-  std::int64_t                 task_id{};      ///< The resolved task.
-  std::optional<std::int64_t>  plan_id;        ///< The task's parent plan, when bound.
-  std::string                  title;          ///< Task title.
-  std::string                  status;         ///< Task status text.
-  std::string                  scope_kind;     ///< Task scope kind (`repo`/`association`/`global`).
-  std::optional<std::int64_t>  scope_id;       ///< Task scope id, unset for `global`.
+  std::int64_t                task_id{};  ///< The resolved task.
+  std::optional<std::int64_t> plan_id;    ///< The task's parent plan, when bound.
+  std::string                 title;      ///< Task title.
+  std::string                 status;     ///< Task status text.
+  std::string                 scope_kind; ///< Task scope kind (`repo`/`association`/`global`).
+  std::optional<std::int64_t> scope_id;   ///< Task scope id, unset for `global`.
 };
 
 /// @brief Section 2. Mirrors zig's `resume.State`.
 export struct state {
   std::string status;                ///< Task status text (duplicated from `identity` in the oracle).
   std::string next_action;           ///< The task's stored `next_action`.
-  std::string last_action_at = "";   ///< Timestamp of the most recent context, snapshot-preferred.
+  std::string last_action_at   = ""; ///< Timestamp of the most recent context, snapshot-preferred.
   std::string last_action_body = ""; ///< Body of the most recent context, snapshot-preferred.
 };
 
@@ -186,11 +186,11 @@ export struct plan_step_summary {
 /// `current`; everything else (`pending`) folds into `remaining` —
 /// matching `resume.zig`'s `buildPlanPosition` fold exactly.
 export struct plan_position {
-  std::optional<std::int64_t>   plan_id;             ///< The task's parent plan, when bound.
-  std::string                   plan_title = "";     ///< The parent plan's title.
-  std::vector<plan_step_summary> completed;          ///< `done` + `skipped` steps.
-  std::vector<plan_step_summary> current;            ///< `in-progress` steps.
-  std::vector<plan_step_summary> remaining;          ///< Every other (`pending`) step.
+  std::optional<std::int64_t>    plan_id;         ///< The task's parent plan, when bound.
+  std::string                    plan_title = ""; ///< The parent plan's title.
+  std::vector<plan_step_summary> completed;       ///< `done` + `skipped` steps.
+  std::vector<plan_step_summary> current;         ///< `in-progress` steps.
+  std::vector<plan_step_summary> remaining;       ///< Every other (`pending`) step.
 };
 
 /// @brief One recent `session_entries` row. Mirrors zig's
@@ -213,10 +213,10 @@ export struct decision_summary {
 /// @brief One `questions` row summary. Mirrors zig's
 /// `resume.QuestionSummary`.
 export struct question_summary {
-  std::int64_t id{};                ///< The question's row id.
-  std::string  title;               ///< Question title.
-  std::string  status;              ///< Question status text.
-  std::string  answer_body = "";    ///< The answer body, when answered.
+  std::int64_t id{};             ///< The question's row id.
+  std::string  title;            ///< Question title.
+  std::string  status;           ///< Question status text.
+  std::string  answer_body = ""; ///< The answer body, when answered.
 };
 
 /// @brief One artifact linked to the task. Mirrors zig's
@@ -234,20 +234,20 @@ export struct artifact_link {
 /// auto-applied remote mirror this port would otherwise have carried;
 /// see `planar-ext`'s doctrine in the top-level agent guide.
 export struct external_link_state {
-  std::int64_t link_id{};              ///< The link's row id.
-  std::string  external_id;            ///< The external ticket id.
-  std::string  external_url = "";      ///< The ticket URL, when known.
-  std::string  remote_status = "";     ///< Always empty (see above).
-  std::string  remote_assignee = "";   ///< Always empty (see above).
-  std::string  last_synced_at = "";    ///< Last sync timestamp, when ever synced.
-  std::string  sync_status;            ///< `last_sync_status` text.
-  bool         conflict = false;       ///< True when `sync_status == "conflict"`.
-  std::string  refresh_error = "";     ///< Always empty in this port.
+  std::int64_t link_id{};             ///< The link's row id.
+  std::string  external_id;           ///< The external ticket id.
+  std::string  external_url    = "";  ///< The ticket URL, when known.
+  std::string  remote_status   = "";  ///< Always empty (see above).
+  std::string  remote_assignee = "";  ///< Always empty (see above).
+  std::string  last_synced_at  = "";  ///< Last sync timestamp, when ever synced.
+  std::string  sync_status;           ///< `last_sync_status` text.
+  bool         conflict      = false; ///< True when `sync_status == "conflict"`.
+  std::string  refresh_error = "";    ///< Always empty in this port.
 };
 
 /// @brief Section 4. Mirrors zig's `resume.OperationalPlane`.
 export struct operational_plane {
-  std::vector<external_link_state> links;         ///< Every `external_links` row on this task.
+  std::vector<external_link_state> links;             ///< Every `external_links` row on this task.
   std::string                      refresh_note = ""; ///< Always empty in this port.
 };
 
@@ -261,21 +261,21 @@ export struct audit_footer {
 /// @brief Section 8's active-claim half. Mirrors zig's
 /// `resume.ActiveClaim`.
 export struct active_claim_state {
-  std::int64_t claim_id{};          ///< The claim's row id.
-  std::string  claim_token;         ///< The claim token.
-  std::string  vendor;              ///< Claiming vendor.
-  std::string  worktree_path = "";  ///< Worktree path, when the claim carries one.
-  std::string  repo_root = "";      ///< Repo root, when the claim carries one.
-  std::string  branch = "";         ///< Branch, when the claim carries one.
+  std::int64_t claim_id{};         ///< The claim's row id.
+  std::string  claim_token;        ///< The claim token.
+  std::string  vendor;             ///< Claiming vendor.
+  std::string  worktree_path = ""; ///< Worktree path, when the claim carries one.
+  std::string  repo_root     = ""; ///< Repo root, when the claim carries one.
+  std::string  branch        = ""; ///< Branch, when the claim carries one.
 };
 
 /// @brief Section 8's cold-start fallback. Mirrors zig's
 /// `resume.HandoffWorktree`.
 export struct handoff_worktree_state {
-  std::int64_t handoff_id{};        ///< The handoff's row id.
-  std::string  worktree_path = "";  ///< Worktree path, when the handoff carries one.
-  std::string  repo_root = "";      ///< Repo root, when the handoff carries one.
-  std::string  branch = "";         ///< Branch, when the handoff carries one.
+  std::int64_t handoff_id{};       ///< The handoff's row id.
+  std::string  worktree_path = ""; ///< Worktree path, when the handoff carries one.
+  std::string  repo_root     = ""; ///< Repo root, when the handoff carries one.
+  std::string  branch        = ""; ///< Branch, when the handoff carries one.
 };
 
 /// @brief The complete 8-section resume packet. Mirrors zig's
@@ -283,17 +283,17 @@ export struct handoff_worktree_state {
 /// renderer emits them in this order to match `std.json.Stringify`'s
 /// declaration-order emission.
 export struct packet {
-  identity                            ident;             ///< Section 1.
-  state                                st;               ///< Section 2.
-  plan_position                        plan;              ///< Section 3.
-  operational_plane                    op_plane;          ///< Section 4.
-  std::vector<recent_entry>            recent_activity;   ///< Section 5.
-  std::vector<decision_summary>        decisions;         ///< Section 6a.
-  std::vector<question_summary>        questions;         ///< Section 6b.
-  std::vector<artifact_link>           artifacts;         ///< Section 7.
-  std::optional<audit_footer>          audit;             ///< Section 8, session half.
-  std::optional<active_claim_state>    active_claim;      ///< Section 8, active-claim half.
-  std::optional<handoff_worktree_state> from_handoff;     ///< Section 8, cold-start fallback.
+  identity                              ident;           ///< Section 1.
+  state                                 st;              ///< Section 2.
+  plan_position                         plan;            ///< Section 3.
+  operational_plane                     op_plane;        ///< Section 4.
+  std::vector<recent_entry>             recent_activity; ///< Section 5.
+  std::vector<decision_summary>         decisions;       ///< Section 6a.
+  std::vector<question_summary>         questions;       ///< Section 6b.
+  std::vector<artifact_link>            artifacts;       ///< Section 7.
+  std::optional<audit_footer>           audit;           ///< Section 8, session half.
+  std::optional<active_claim_state>     active_claim;    ///< Section 8, active-claim half.
+  std::optional<handoff_worktree_state> from_handoff;    ///< Section 8, cold-start fallback.
 };
 
 /// @brief Assemble the full resume packet for `task_id`. Mirrors zig's

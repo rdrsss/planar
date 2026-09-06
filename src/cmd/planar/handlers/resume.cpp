@@ -85,10 +85,9 @@ auto resume_packet(context& ctx, const cliapp::parsed_args& args) -> handler_res
       return std::unexpected(error_from_body(kind_t::generic_failure, "resolve scope for resume: QueryFailed"));
     }
     if (set->empty()) {
-      return std::unexpected(
-          error_from_body(kind_t::generic_failure,
-                          "cwd is not inside any registered Planar scope; cd into a registered scope or pass "
-                          "<task-id> explicitly"));
+      return std::unexpected(error_from_body(kind_t::generic_failure,
+                                             "cwd is not inside any registered Planar scope; cd into a registered scope or pass "
+                                             "<task-id> explicitly"));
     }
 
     // Sessions are the activity clock for resume. Walk newest-first and

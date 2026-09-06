@@ -240,7 +240,8 @@ auto build_artifacts(db::connection& conn, std::int64_t task_id) -> std::expecte
 /// `listByEntity`, which orders DESC — see this module's header for why it
 /// is not touched here); the most-recent ACTIVE row is therefore the LAST
 /// one found scanning ascending, not the first.
-auto build_active_claim(db::connection& conn, std::int64_t task_id) -> std::expected<std::optional<active_claim_state>, resume_error> {
+auto build_active_claim(db::connection& conn, std::int64_t task_id)
+    -> std::expected<std::optional<active_claim_state>, resume_error> {
   auto rows = agent::list_claims_by_entity(conn, "task", task_id);
   if (!rows) {
     return std::unexpected(resume_error::query_failed);
@@ -399,11 +400,11 @@ auto build_packet(db::connection& conn, std::int64_t task_id) -> std::expected<p
     if (*step != db::step_result::row) {
       return std::unexpected(resume_error::not_found);
     }
-    auto const plan_id    = stmt->is_null(1) ? std::optional<std::int64_t>{} : std::optional{stmt->column_int64(1)};
-    auto const title      = stmt->column_text(2);
-    auto const status_txt = stmt->column_text(3);
-    auto const scope_kind = stmt->column_text(4);
-    auto const scope_id   = stmt->is_null(5) ? std::optional<std::int64_t>{} : std::optional{stmt->column_int64(5)};
+    auto const plan_id     = stmt->is_null(1) ? std::optional<std::int64_t>{} : std::optional{stmt->column_int64(1)};
+    auto const title       = stmt->column_text(2);
+    auto const status_txt  = stmt->column_text(3);
+    auto const scope_kind  = stmt->column_text(4);
+    auto const scope_id    = stmt->is_null(5) ? std::optional<std::int64_t>{} : std::optional{stmt->column_int64(5)};
     auto const next_action = stmt->column_text(6);
 
     out.ident = identity{
