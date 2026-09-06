@@ -331,7 +331,17 @@ auto build_request(const std::filesystem::path& canonical, const options& opts) 
                                             : counts.second > 0 ? (req.has_tests ? 1.0 : 0.7)
                                                                 : 0.2});
   }
-  req.greenfield = opts.treat_as_greenfield || (!opts.treat_as_nongreenfield && (req.total_files == 0 || req.total_lines == 0));
+  // Auto-greenfield fires either when the repo is literally empty, or when
+  // every detected code area carries zero signal strength (a tests-only or
+  // otherwise substance-free tree still has files/lines, but none of them
+  // constitute real production evidence). Mirrors the Zig oracle's
+  // isAutoGreenfield (task 6453): a bare zero-files check missed the latter
+  // case entirely.
+  auto const all_areas_zero_signal =
+      std::ranges::all_of(req.areas, [](auto const& area) { return area.signal_strength == 0.0; });
+  req.greenfield = opts.treat_as_greenfield ||
+                   (!opts.treat_as_nongreenfield &&
+                    (req.total_files == 0 || req.total_lines == 0 || all_areas_zero_signal));
   std::string input;
   append_record(input, {"repo_slug", req.repo_slug});
   append_record(input, {"readme", req.readme});
