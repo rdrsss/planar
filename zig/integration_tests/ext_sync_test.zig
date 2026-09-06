@@ -288,93 +288,35 @@ test "sync conflict evidence and guarded resolution run through the public CLI" 
     try runSyncConflictEvidenceAndResolutionLifecycle();
 }
 
-test "sync resolve rejects versionless approved evidence and keep-remote replaces the whole local entity" {
-    const gpa = std.testing.allocator;
-    var suite = harness.Suite.init(gpa);
-    defer suite.deinit();
-    var arena_backing = std.heap.ArenaAllocator.init(gpa);
-    defer arena_backing.deinit();
-    const arena = arena_backing.allocator();
-    const server = try FakeSyncJira.init(gpa, std.testing.io);
-    defer server.deinit();
-    const base_url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{server.port});
-    const env: []const harness.Suite.ExtraEnvEntry = &.{.{ .key = "PLANAR_SYNC_TOKEN", .value = "test-token" }};
-
-    const task = suite.mustRunJSON(struct { id: i64 }, arena, &.{ "task", "add", "--json", "Baseline" });
-    const task_id = try std.fmt.allocPrint(arena, "{d}", .{task.id});
-    const task_ref = try std.fmt.allocPrint(arena, "task:{d}", .{task.id});
-    _ = suite.mustRunExtJSON(RegisterJSON, arena, &.{ "ext", "register", "jira", "sync-jira", "--base-url", base_url, "--project", "SYNC", "--auth-env", "PLANAR_SYNC_TOKEN", "--json" });
-    const linked_raw = suite.mustRun(&.{ "link", task_ref, "--to", "sync-jira:SYNC-1", "--role", "mirror", "--sync", "two-way", "--json" });
-    defer gpa.free(linked_raw);
-    var linked = try std.json.parseFromSlice(struct { link_id: i64 }, arena, linked_raw, .{ .ignore_unknown_fields = true });
-    defer linked.deinit();
-    const link_id = try std.fmt.allocPrint(arena, "{d}", .{linked.value.link_id});
-
-    gpa.free(suite.mustRunExtWith(&.{ "sync", "pull", task_ref, "--json" }, env));
-    gpa.free(suite.mustRun(&.{ "task", "update", task_id, "--title", "Local authoritative candidate", "--json" }));
-    server.remote_race.store(4, .release);
-    const versionless_conflict = suite.execExtWith(&.{ "sync", "pull", task_ref, "--json" }, env);
-    defer versionless_conflict.deinit(gpa);
-    try std.testing.expectEqual(@as(u8, 3), versionless_conflict.term.exited);
-
-    const trail_raw = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });
-    defer gpa.free(trail_raw);
-    var trail = try std.json.parseFromSlice(std.json.Value, arena, trail_raw, .{});
-    defer trail.deinit();
-    const events = trail.value.object.get("sync_events").?.array.items;
-    const conflict = events[events.len - 1].object;
-    const evidence = conflict.get("evidence").?.object;
-    try std.testing.expectEqualStrings("", evidence.get("remote").?.object.get("version").?.string);
-    const event_arg = try std.fmt.allocPrint(arena, "{d}", .{conflict.get("id").?.integer});
-    const token = evidence.get("token").?.string;
-    const local_version = evidence.get("local").?.object.get("updated_at").?.string;
-
-    server.remote_race.store(3, .release);
-    try expectResolveRefusedWithoutMutation(&suite, gpa, task_id, task_ref, link_id, &.{ "sync", "resolve", event_arg, "--keep", "remote", "--evidence-token", token, "--expected-local-updated-at", local_version, "--json" }, env, &server.put_count);
-
-    const fresh_conflict_run = suite.execExtWith(&.{ "sync", "pull", task_ref, "--json" }, env);
-    defer fresh_conflict_run.deinit(gpa);
-    try std.testing.expectEqual(@as(u8, 3), fresh_conflict_run.term.exited);
-    const fresh_trail_raw = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });
-    defer gpa.free(fresh_trail_raw);
-    var fresh_trail = try std.json.parseFromSlice(std.json.Value, arena, fresh_trail_raw, .{});
-    defer fresh_trail.deinit();
-    const fresh_events = fresh_trail.value.object.get("sync_events").?.array.items;
-    const fresh_conflict = fresh_events[fresh_events.len - 1].object;
-    const fresh_evidence = fresh_conflict.get("evidence").?.object;
-    const fresh_event_id = fresh_conflict.get("id").?.integer;
-    const fresh_event_arg = try std.fmt.allocPrint(arena, "{d}", .{fresh_event_id});
-
-    const resolved_raw = suite.mustRunExtWith(&.{
-        "sync",             "resolve",                            fresh_event_arg,               "--keep",                                                        "remote",
-        "--evidence-token", fresh_evidence.get("token").?.string, "--expected-local-updated-at", fresh_evidence.get("local").?.object.get("updated_at").?.string, "--json",
-    }, env);
-    defer gpa.free(resolved_raw);
-    var resolved = try std.json.parseFromSlice(struct { ok: bool, new_event_id: i64, keep: []const u8 }, arena, resolved_raw, .{ .ignore_unknown_fields = true });
-    defer resolved.deinit();
-    try std.testing.expect(resolved.value.ok);
-    try std.testing.expectEqualStrings("remote", resolved.value.keep);
-    try std.testing.expectEqual(@as(usize, 0), server.put_count.load(.acquire));
-
-    const task_after_raw = suite.mustRun(&.{ "task", "show", task_id, "--json" });
-    defer gpa.free(task_after_raw);
-    var task_after = try std.json.parseFromSlice(struct { title: []const u8, status: []const u8 }, arena, task_after_raw, .{ .ignore_unknown_fields = true });
-    defer task_after.deinit();
-    try std.testing.expectEqualStrings("Remote edit", task_after.value.title);
-    try std.testing.expectEqualStrings("doing", task_after.value.status);
-
-    const status_after = suite.mustRunExt(&.{ "sync", "status", "--entity", task_ref, "--json" });
-    defer gpa.free(status_after);
-    try std.testing.expect(std.mem.indexOf(u8, status_after, "\"last_sync_status\":\"ok\"") != null);
-    const audit_after_raw = suite.mustRun(&.{ "audit", "trail", "--link", link_id, "--json" });
-    defer gpa.free(audit_after_raw);
-    var audit_after = try std.json.parseFromSlice(std.json.Value, arena, audit_after_raw, .{});
-    defer audit_after.deinit();
-    const final_events = audit_after.value.object.get("sync_events").?.array.items;
-    const resolution_event = final_events[final_events.len - 1].object;
-    try std.testing.expectEqual(resolved.value.new_event_id, resolution_event.get("id").?.integer);
-    try std.testing.expectEqualStrings("pull", resolution_event.get("direction").?.string);
-    try std.testing.expectEqualStrings("ok", resolution_event.get("outcome").?.string);
-    const expected_detail = try std.fmt.allocPrint(arena, "resolved=remote; from sync_event={d}", .{fresh_event_id});
-    try std.testing.expectEqualStrings(expected_detail, resolution_event.get("detail").?.string);
+// RETIRED against decision 996 (accepted; plan 996, task 6419; triaged at
+// plan 1006, task 6453).
+//
+// This test asserted two things about `sync resolve --keep remote`:
+// (1) versionless remote evidence can never authorize a resolution, and
+// (2) resolving with `--keep remote` REPLACES the whole local entity
+// (title AND status) with the remote values -- the pre-cutover oracle
+// contract. Decision 996 changed (2): `planar-ext` is read-only on
+// planning tables and read-write on exactly `external_links` /
+// `external_systems` / `sync_events` (decision 995's authorizer-enforced
+// boundary), so `sync resolve --keep remote` can no longer write
+// `tasks.title` / `tasks.status` directly at all. It now sends nothing to
+// the provider, clears the conflict, and resets the sync baseline to the
+// CURRENT (unmodified) local values -- see
+// `src/lib/engine/external/sync.cpp`'s `resolve_conflict`, `keep ==
+// resolve_keep::remote` arm. A subsequent `sync pull` then re-surfaces the
+// remote/local difference as a plain non-conflicting emission for an agent
+// to apply through `planar`, per decision 996's "no auto-apply" contract.
+//
+// This test is retired rather than converted to assert the new behavior,
+// because both halves it exercised now have direct Catch2 coverage that
+// pins the actual decision-996 contract precisely:
+//   - versionless evidence rejection: `src/lib/engine/external/sync.t.cpp`
+//     "D5: guard 4 — a versionless provider can never authorize a
+//     resolution"
+//   - keep=remote no longer rewriting the entity:
+//     `src/lib/engine/external/sync.t.cpp` "D7: resolve --keep remote
+//     sends NOTHING and, per decision 996, no longer rewrites the entity"
+// both run under `ctest -L engine_external`.
+test "sync resolve rejects versionless approved evidence and keep-remote replaces the whole local entity -- RETIRED, decision 996" {
+    return error.SkipZigTest;
 }
