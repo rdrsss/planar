@@ -88,6 +88,14 @@ export struct node_spec {
   std::span<flag_spec const>        flags;         ///< Locally declared flags.
   std::span<positional_spec const>  positionals;   ///< Positionals, in declaration order.
   bool                              group = false; ///< Whether the node has children.
+  /// Whether this leaf accepts ANY unrecognized flag or positional without
+  /// a CLI11 parse refusal, rather than the normal strict-surface behavior.
+  /// Reserved for a leaf whose oracle contract is "print a fixed refusal
+  /// regardless of input" -- `scope use`/`pop`/`clear` (removed in plan 153
+  /// M5) are the only three today: the oracle tolerated arbitrary legacy
+  /// flags/positionals from the pre-M5 CLI and always answered with the
+  /// same removal message, never a parse error.
+  bool allow_extras = false;
 };
 
 /// @brief Declare a boolean flag together with the `--no-<name>` negation
