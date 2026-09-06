@@ -173,6 +173,24 @@ public:
   /// @return The open read-only connection, or the failure as a
   /// `domain_error`.
   auto ensure_db() -> std::expected<db::connection*, domain_error>;
+
+  /// @brief Close the cached read-only connection (if any) and reopen it.
+  ///
+  /// Works around a SQLite behavior where a long-lived read-only
+  /// connection's wrapped read transaction holds a stale snapshot across
+  /// another process's `PRAGMA wal_checkpoint(TRUNCATE)` — the pure
+  /// read-only handle cannot write its read-mark back into the shared SHM
+  /// segment, so it never re-syncs to the truncated WAL header and
+  /// already-committed rows stay invisible to it forever. `--follow`'s
+  /// wake loop (`handlers::follow::interruptible_sleep`) calls this before
+  /// every re-query. Ported from `zig`'s `runtime.refreshDbStrictReadOnly`
+  /// (plan 85 t#2623). A reopen failure surfaces as a query error on the
+  /// next call to `ensure_db`, rather than silently masking the state.
+  /// @return The freshly opened connection, or the failure.
+  auto refresh_db() -> std::expected<db::connection*, domain_error> {
+    _db.reset();
+    return ensure_db();
+  }
 };
 
 } // namespace planar::cmd::watch
