@@ -354,6 +354,22 @@ TEST_CASE("ext propagate runs the generic jira-epic tree walk end to end, no lon
   CHECK(text_scalar(fx, "select config_json from external_links where entity_kind = 'plan' and entity_id = 1") ==
         R"({"strategy":"jira-epic"})");
   CHECK(text_scalar(fx, "select config_json from external_links where entity_kind = 'task' and entity_id = 1").empty());
+
+  // A repeat run over the SAME feature is idempotent: every entity already
+  // has a mirror link, so the generic loop's `propagate_one_entity` call
+  // hits the idempotency gate and reports "skipped", sending no new
+  // requests. This is the generic-loop counterpart of the dedicated
+  // `parent_issue` engine's own "a repeated ext propagate SKIPS every
+  // entity" case above -- the two paths share `propagate_one_entity`, but
+  // nothing here proved that WITHOUT this second run.
+  auto const repeat = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo", "--json"});
+  CHECK(repeat.code == 0);
+  CHECK(repeat.out.contains(R"("created":0)"));
+  CHECK(repeat.out.contains(R"("skipped":2)"));
+  CHECK(repeat.out.contains(R"("op":"skipped")"));
+  CHECK_FALSE(repeat.out.contains(R"("op":"created")"));
+  CHECK(remote.request_count() == 2); // unchanged -- the repeat sent nothing new.
+  CHECK(scalar(fx, "select count(*) from external_links") == 2);
 }
 
 TEST_CASE("ext propagate --dry-run on the generic jira-epic loop reports op:\"planned\", never \"failed\" (task 6451)",
