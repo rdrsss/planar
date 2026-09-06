@@ -288,10 +288,28 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // port can drag it along by accident) and arg-free — no positionals at
   // all in `surface.cpp`, so the parser cannot refuse at exit 2 before
   // dispatch is reached.
+  // TASK 6444 / DECISION 1003 ENDED THE EXEMPLAR CHAIN. `explore` was the
+  // last name on the rotation above, and it has now left too — not by being
+  // ported, but because decision 1003 DROPPED the cockpit outright and task
+  // 6444 gave `explore` the oracle's own cockpit-gate fallback: it prints the
+  // verb's help and exits 0 on every gate refusal (non-TTY, TERM=dumb,
+  // PLANAR_NO_TUI, --plain).
+  //
+  // `explore` therefore remains the single entry in `unported_paths()` —
+  // decision 982's gate condition 2 requires that inventory to read EXACTLY
+  // that — while no longer being a refusal. There is consequently NO
+  // declared-but-unported leaf left in this binary to demonstrate the
+  // exit-64 property with, and the next reader should not go hunting for a
+  // replacement exemplar: the inventory is exhausted, which is the point.
+  //
+  // What is still worth pinning is that `explore` is handled rather than
+  // silently succeeding at nothing, and that the surrounding claim about the
+  // inventory still holds.
   auto const leaf = dispatch({"explore"});
-  CHECK(leaf.code == 64);
-  CHECK(leaf.out.empty());
-  CHECK(leaf.err == "error: explore: not implemented in this build\n");
+  CHECK(leaf.code == 0);
+  CHECK(leaf.err.empty());
+  CHECK(leaf.out.contains("explore"));
+  CHECK(leaf.out.contains("--plain"));
 
   // And the sibling that left the inventory at task 6352 answers its own
   // verb instead of 64, which is what makes the row above a statement
