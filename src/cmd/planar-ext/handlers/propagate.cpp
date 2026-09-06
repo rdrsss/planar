@@ -209,6 +209,11 @@ auto op_text(parent_issue::op operation) -> std::string_view {
     return "created";
   case parent_issue::op::skipped:
     return "skipped";
+  case parent_issue::op::planned:
+    // CLI-only value the generic per-entity loop uses under `--dry-run`
+    // (task 6451) -- never produced by the parent-issue engine itself. See
+    // `parent_issue::op`'s doc comment.
+    return "planned";
   case parent_issue::op::failed:
   default:
     return "failed";
@@ -381,7 +386,7 @@ auto render(context& ctx, std::int64_t plan_id, std::string_view system_slug, co
   }
   ctx.out() << ")\n";
   for (auto const& r : rpt.results) {
-    if (r.operation == parent_issue::op::created) {
+    if (r.operation == parent_issue::op::created || r.operation == parent_issue::op::planned) {
       ctx.out() << std::format("  {}    {}:{} {} -> {}\n", op_text(r.operation), r.entity_kind, r.entity_id, r.title,
                                r.external_id);
     } else if (r.operation == parent_issue::op::skipped) {
