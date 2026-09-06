@@ -8,6 +8,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.engine.planning;
+import planar.engine.identity;
 import planar.engine.runtime;
 import planar.engine.entitylink;
 import planar.cmd.planar.context;
@@ -154,10 +155,41 @@ auto transition_verb(context& ctx, const cliapp::parsed_args& args, std::string_
     return std::unexpected(id.error());
   }
 
-  // `--scope` is declared on both leaves and READ BY NEITHER. The oracle
-  // discards it (`_ = args.scope;`) and links/transitions anyway, even for
-  // a slug that resolves to nothing — captured by running `decision accept
-  // 1 --scope nosuchslug`, which succeeds at exit 0.
+  auto current = pl::show_decision(**conn, *id);
+  if (!current) {
+    return std::unexpected(map_lookup_error(current.error(), std::format("decision {}", verb_word), *id));
+  }
+
+  auto const scope_flag = cliapp::flag_string(args, "--scope");
+  auto const scope_view =
+      scope_flag.has_value() ? std::optional<std::string_view>{*scope_flag} : std::optional<std::string_view>{};
+  auto resolved = resolve_write_scope(ctx, scope_view, std::format("decision {}", verb_word));
+  if (!resolved) {
+    return std::unexpected(resolved.error());
+  }
+
+  auto const scope_kind = [&] {
+    switch (current->scope_kind) {
+    case pl::decision_scope_kind::global:
+      return engine::identity::scope_kind::global;
+    case pl::decision_scope_kind::association:
+      return engine::identity::scope_kind::association;
+    case pl::decision_scope_kind::repo:
+      break;
+    }
+    return engine::identity::scope_kind::repo;
+  }();
+  auto entity_scope = engine::identity::slug_from_ref(**conn, scope_kind, current->scope_id);
+  if (!entity_scope) {
+    return std::unexpected(
+        map_scope_error(entity_scope.error(), std::format("decision {}: resolving decision scope", verb_word)));
+  }
+  auto const entity_view = entity_scope->has_value() ? std::optional<std::string_view>{**entity_scope} : std::nullopt;
+  auto const write_view  = resolved->scope.has_value() ? std::optional<std::string_view>{*resolved->scope} : std::nullopt;
+  if (!guard_with_membership(**conn, entity_view, write_view)) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::scope_mismatch, std::format("decision {} belongs to a different scope", *id)));
+  }
 
   auto moved = apply(**conn, *id);
   if (!moved) {

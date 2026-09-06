@@ -839,12 +839,12 @@ TEST_CASE("render_json carries the policy version in the envelope", "[packet]") 
   // The version rides in the envelope so a consumer can establish that two
   // packets are comparable BEFORE parsing the canonical body — which is the
   // very thing whose format the version describes.
-  CHECK(json.starts_with(R"({"policy_version":"routing-packet-v1","ready":true,"input":{)"));
+  CHECK(json.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{)"));
   CHECK(json.find(R"("reasons":[]})") != std::string::npos);
   CHECK(json.ends_with("\n"));
   // `policy` appears again INSIDE the escaped canonical body; the two are not
   // the same field and both are contract.
-  CHECK(json.find(R"(\"policy\":\"routing-packet-v1\")") != std::string::npos);
+  CHECK(json.find(R"(\"policy\":\"routing-packet-v2\")") != std::string::npos);
 
   auto blocked = pk::assemble_task(conn, bare_task);
   REQUIRE(blocked.has_value());
@@ -1110,7 +1110,7 @@ TEST_CASE("compile_planning: canonical body key order and digest/canonical split
   input.scope_facts[0].display_label = "Renamed Plan";
   const auto packet                  = pk::compile_planning(input);
 
-  CHECK(packet.canonical.starts_with(R"({"policy":"routing-packet-v1","role":"orchestrator","goal":"Ship the thing.")"));
+  CHECK(packet.canonical.starts_with(R"({"policy":"routing-packet-v2","role":"orchestrator","goal":"Ship the thing.")"));
   CHECK(packet.canonical.find(R"("review_rubric_version":"")") != std::string::npos);
   CHECK(packet.canonical.find("display_label") != std::string::npos);
 

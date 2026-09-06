@@ -54,11 +54,11 @@
 /// and leaves the vector empty — the mirror image of what `question
 /// list`'s handler does with the same flag).
 ///
-/// `decision accept`, `decision withdraw`, `decision supersede` and
-/// `decision link` all DECLARE `--scope` and all IGNORE it. The oracle
-/// accepts `--scope nosuchslug` on each and proceeds; that is deliberate
-/// CLI parity in the original ("first-cut decisions are global, so the
-/// engine ignores it") and is reproduced.
+/// `decision accept` and `decision withdraw` resolve their write scope and
+/// refuse before mutating when it does not admit the decision's scope. An
+/// explicit `--scope` authorizes a cross-directory transition only when it
+/// names the decision's own scope. `decision supersede` and `decision link`
+/// retain their separately pinned surfaces.
 module;
 
 export module planar.cmd.planar.handlers.decision;

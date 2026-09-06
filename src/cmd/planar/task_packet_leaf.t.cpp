@@ -194,7 +194,7 @@ TEST_CASE("task packet: the ready arm is genuinely reachable through the CLI", "
   CHECK(res.out.find(R"("reasons":[])") != std::string::npos);
 
   // The envelope's shape, in the order a consumer reads it.
-  CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v1","ready":true,"input":{"task_id":100,)"));
+  CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{"task_id":100,)"));
   CHECK(res.out.find(R"("canonical":)") != std::string::npos);
   CHECK(res.out.find(R"("digest":)") != std::string::npos);
   CHECK(res.out.ends_with("]}\n"));
@@ -235,8 +235,8 @@ TEST_CASE("task packet: the policy version rides in the envelope, not only the b
   // establish that BEFORE comparing digests, and digging the version out of
   // the canonical body would mean parsing the very thing whose format the
   // version describes. So it appears twice, and both are contract.
-  CHECK(res.out.find(R"("policy_version":"routing-packet-v1")") != std::string::npos);
-  CHECK(res.out.find(R"(\"policy\":\"routing-packet-v1\")") != std::string::npos);
+  CHECK(res.out.find(R"("policy_version":"routing-packet-v2")") != std::string::npos);
+  CHECK(res.out.find(R"(\"policy\":\"routing-packet-v2\")") != std::string::npos);
 }
 
 TEST_CASE("task packet: the digest is a change detector", "[task-packet]") {
@@ -279,7 +279,7 @@ TEST_CASE("task packet: the text rendering names ready, digest, reasons and body
   CHECK(ready.out.starts_with("task packet 100: ready\ndigest: "));
   // A ready packet prints NO reasons block — not an empty one.
   CHECK(ready.out.find("reasons:") == std::string::npos);
-  CHECK(ready.out.find(R"({"policy":"routing-packet-v1","task_id":100)") != std::string::npos);
+  CHECK(ready.out.find(R"({"policy":"routing-packet-v2","task_id":100)") != std::string::npos);
 
   auto const blocked = dispatch(fx, {"task", "packet", "200"});
   REQUIRE(blocked.code == 0);

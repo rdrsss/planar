@@ -694,10 +694,12 @@ TEST_CASE("decision transitions enforce the entity scope before mutating") {
   CHECK(dispatch(fx, {"decision", "accept", "3", "--scope", "acme"}).code == 0);
   CHECK(dispatch(fx, {"decision", "withdraw", "4", "--scope", "acme"}).code == 0);
 
-  // An invalid explicit scope is rejected before the engine can transition.
+  // An invalid explicit scope is still a different write scope and is
+  // rejected before the engine can transition. Write-scope resolution carries
+  // an explicit flag through verbatim; it is the guard that refuses it.
   const auto invalid = dispatch(fx, {"decision", "accept", "4", "--scope", "nosuchslug"});
-  CHECK(invalid.code == 1);
-  CHECK(invalid.err == "error: decision accept: resolving write scope failed: SlugNotFound\n");
+  CHECK(invalid.code == 5);
+  CHECK(invalid.err == "error: decision 4 belongs to a different scope\n");
 
   // A missing target remains a lookup failure even when the supplied scope is
   // otherwise valid, and cannot write an audit row or alter an existing row.
@@ -706,8 +708,7 @@ TEST_CASE("decision transitions enforce the entity scope before mutating") {
   CHECK(missing.err == "error: no decision with id 999\n");
 
   auto conn = open_db(fx);
-  CHECK(query_rows(conn, "select id, status from decisions order by id", 2) ==
-        "1|accepted;2|proposed;3|accepted;4|withdrawn");
+  CHECK(query_rows(conn, "select id, status from decisions order by id", 2) == "1|accepted;2|proposed;3|accepted;4|withdrawn");
 }
 
 // ===========================================================================
