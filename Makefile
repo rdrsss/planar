@@ -136,6 +136,10 @@ test: test-install-manifest test-install-deps ## Run unit tests
 	cmake --build build/debug $(ARGS)
 	ctest --test-dir build/debug --output-on-failure $(ARGS)
 
+.PHONY: test-vendor-mtkahypar-offline
+test-vendor-mtkahypar-offline: ## Recurrence guard (task 6461): -DPLANAR_WITH_MTKAHYPAR=ON must configure offline from the committed vendor cache. macOS/sandbox-exec only; not part of test-all (slow, platform-specific) -- run after touching cmake/dependencies.cmake's mtkahypar block, or wire into make test-parity-cpp when that lane configures with the solver ON (task 6532).
+	bash scripts/vendor-mtkahypar-offline-test.sh
+
 .PHONY: oracle-retirement-gate
 oracle-retirement-gate: ## Fail-closed evidence required before retiring zig/
 	cmake --preset debug
