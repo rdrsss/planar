@@ -312,6 +312,12 @@ auto apply_surface(CLI::App& root, std::span<node_spec const> nodes) -> std::vec
       // the oracle does for every group node except the three duals.
       node->require_subcommand(0);
     }
+    if (spec.allow_extras) {
+      // See node_spec::allow_extras: this leaf's handler always answers
+      // with a fixed refusal, so any unrecognized flag or positional must
+      // reach it rather than being rejected by CLI11 first.
+      node->allow_extras();
+    }
     std::set<std::string_view, std::less<>> declared;
     for (auto const& flag : spec.flags) {
       declare_flag(*node, flag);

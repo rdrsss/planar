@@ -125,10 +125,12 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   }
   if (*stored > embedded_max) {
     _db.reset();
-    return std::unexpected(
-        error_from_body(domain_error_kind::schema_version_ahead,
-                        std::format("database schema version {} is newer than this binary supports ({}); upgrade planar", *stored,
-                                    embedded_max)));
+    return std::unexpected(error_from_body(
+        domain_error_kind::schema_version_ahead,
+        std::format("database schema version {} is newer than this binary supports ({}); the DB was migrated by a "
+                    "newer build -- rebuild/reinstall planar from a checkout whose migrations include version {}, "
+                    "then retry",
+                    *stored, embedded_max, *stored)));
   }
 
   return &*_db;
