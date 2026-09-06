@@ -501,10 +501,30 @@ set(PLANAR_CLI11_TARGET CLI11::CLI11)
 set(PLANAR_KAHYPAR_SHARED_RESOURCES_DIR "${kahypar_shared_resources_SOURCE_DIR}")
 set(PLANAR_WHFC_DIR "${WHFC_SOURCE_DIR}")
 
+# CUSTOM_CACHE_KEY pins the committed cache directory name (task 6461).
+# Without it, CPM derives the directory from a SHA1 of this call's own
+# unparsed arguments -- and the PATCHES keyword folds in an ABSOLUTE path
+# (this file's own directory plus the system `patch` binary's absolute
+# path, both baked in by CPM's cpm_add_patches()/PATCH_COMMAND machinery)
+# before that hash is computed. That makes the resolved cache directory
+# name depend on the absolute checkout path, not just on the package
+# identity/options -- a clone or worktree at a different path re-derives a
+# different directory and refetches from the network even though nothing
+# about the dependency changed. Confirmed empirically: this worktree
+# resolves the un-pinned call to a directory (`1501`) that differs from
+# the identical call's directory in the checkout that originally vendored
+# it (`3762`), and ON vs OFF `PLANAR_WITH_MTKAHYPAR` make no difference to
+# either -- the CPMAddPackage call for mtkahypar itself is unconditional
+# (only the *link* in src/lib/engine/grouping/ is gated on the option), so
+# the option was never the actual variable. A literal key tied to the pin
+# (the released version tag) keeps the directory name stable across every
+# checkout location while remaining a real vendored source tree, not a
+# second copy of it.
 CPMAddPackage(
   NAME mtkahypar
   URL https://codeload.github.com/kahypar/mt-kahypar/tar.gz/refs/tags/v1.6.2
   URL_HASH SHA256=f1e44b160e49d760a54249435a69b452ed4872082f59620edfc6a458e66b60c4
+  CUSTOM_CACHE_KEY 1.6.2
   EXCLUDE_FROM_ALL YES
   SYSTEM YES
   PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/mtkahypar-vendor-network.patch"
