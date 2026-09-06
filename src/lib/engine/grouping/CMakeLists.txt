@@ -60,10 +60,12 @@ planar_module(engine_grouping
   INTERFACE
     greedy.cppm
     load.cppm
+    mtkahypar.cppm
     grouping.cppm
   SOURCES
     greedy.cpp
     load.cpp
+    mtkahypar.cpp
   DEPENDS
     db
     json_text)
@@ -72,4 +74,28 @@ if(TARGET planar_engine_grouping_tests)
   # The test binary opens real on-disk scratch databases through
   # planar.db.migrate, exactly as engine/runs' and engine/closure's suites do.
   target_link_libraries(planar_engine_grouping_tests PRIVATE SQLite::SQLite3)
+endif()
+
+# --- Mt-KaHyPar linkage (plan 1006, task 6460) --------------------------
+#
+# OFF by default (see the top-level `PLANAR_WITH_MTKAHYPAR` option doc).
+# `mtkahypar.cpp` is ALWAYS compiled -- the file itself branches on the
+# `PLANAR_HAS_MTKAHYPAR` macro, defined here ONLY when both the option is ON
+# and the (EXCLUDE_FROM_ALL) `MtKaHyPar::mtkahypar` target actually exists,
+# so a developer who has not populated `vendor/mtkahypar` (or is on a
+# platform where the CPM block did not configure) still gets a clean build
+# with the graceful stub rather than a configure-time failure.
+if(PLANAR_WITH_MTKAHYPAR AND TARGET MtKaHyPar::mtkahypar)
+  target_compile_definitions(planar_engine_grouping PRIVATE PLANAR_HAS_MTKAHYPAR)
+  target_link_libraries(planar_engine_grouping PRIVATE MtKaHyPar::mtkahypar)
+  if(TARGET planar_engine_grouping_tests)
+    target_compile_definitions(planar_engine_grouping_tests PRIVATE PLANAR_HAS_MTKAHYPAR)
+    target_link_libraries(planar_engine_grouping_tests PRIVATE MtKaHyPar::mtkahypar)
+  endif()
+elseif(PLANAR_WITH_MTKAHYPAR)
+  message(WARNING
+    "PLANAR_WITH_MTKAHYPAR=ON but the MtKaHyPar::mtkahypar target does not "
+    "exist (vendor/mtkahypar not populated, or this platform's CPM block "
+    "did not configure) -- engine_grouping falls back to the graceful stub "
+    "(available() == false) for this configure.")
 endif()

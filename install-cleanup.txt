@@ -21,3 +21,10 @@
 # not delete, it).)
 # Retired documentation binary (moved to the standalone tabularium project).
 bin/tabularium
+# Retired Python-wheel Mt-KaHyPar bridge (decision 1006, task 6460): the
+# `--with-mtkahypar` flag installed these; the solver is now vendored from
+# source and linked directly into the C++ tree (opt-in via
+# -DPLANAR_WITH_MTKAHYPAR=ON), so a wheel environment and its launcher are
+# dead weight from any prior install.
+bin/mtkahypar
+opt/mtkahypar/

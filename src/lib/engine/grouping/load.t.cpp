@@ -112,11 +112,13 @@ import planar.db;
 import planar.db.migrate;
 import planar.engine.grouping.greedy;
 import planar.engine.grouping.load;
+import planar.engine.grouping.mtkahypar;
 
 namespace {
 
 namespace gg = planar::engine::grouping::greedy;
 namespace gl = planar::engine::grouping::load;
+namespace gm = planar::engine::grouping::mtkahypar;
 
 struct scratch_db_path {
   std::filesystem::path path_;
@@ -189,6 +191,39 @@ auto seed_fixture_dep(planar::db::connection& conn) -> void {
              "(12,1,'p.zig','d3.only','modify',7,'v1')");
   exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) values "
              "('task',11,'task',10,'depends-on')");
+}
+
+/// @brief FIXTURE 6 (task 6460) -- forces the mtkahypar `k` estimate to
+/// split a pair greedy would happily keep merged, so the never-worse
+/// comparison in `recommend_with` has a REAL losing solver result to catch,
+/// not just a tie.
+///
+/// Two independent sharing pairs (A,B) via `h` weight 90, (C,D) via `l`
+/// weight 5, plus a disjoint task E with a large solo symbol (weight 200,
+/// held by no one else). Deduped union total = 90+5+200 = 295. At
+/// `--budget 90`: each pair's OWN merge cost fits the budget (90 and 5), so
+/// GREEDY merges both pairs unconstrained by `k` -- 3 slices, total 295
+/// (`{A,B}=90 + {C,D}=5 + {E}=200`). `block_count` computes
+/// `ceil(295/90)=4`, forcing the solver into 4 non-empty blocks across 5
+/// vertices -- pigeonhole means at least one pair must split, duplicating
+/// its shared symbol and landing at total >= 300. Without the
+/// never-worse comparison this seam would regress `groups recommend
+/// --solver mtkahypar` below the greedy baseline on a plausible input.
+auto seed_fixture_forced_split(planar::db::connection& conn) -> void {
+  exec(conn, "insert into projects (id,slug,name,root_path) values (1,'r','r','/tmp/gx/repo')");
+  exec(conn, "insert into plans (id,scope_kind,title,slug,status) values (6,'global','ForcedSplit','fs','active')");
+  exec(conn, "insert into tasks (id,scope_kind,plan_id,title,slug,status,priority) values "
+             "(40,'global',6,'A','fsa','todo',100),"
+             "(41,'global',6,'B','fsb','todo',100),"
+             "(42,'global',6,'C','fsc','todo',100),"
+             "(43,'global',6,'D','fsd','todo',100),"
+             "(44,'global',6,'E','fse','todo',100)");
+  exec(conn, "insert into closures (task_id,repo_id,path,symbol,role,token_weight,extractor_version) values "
+             "(40,1,'p.zig','h','reference',90,'v1'),"
+             "(41,1,'p.zig','h','reference',90,'v1'),"
+             "(42,1,'p.zig','l','reference',5,'v1'),"
+             "(43,1,'p.zig','l','reference',5,'v1'),"
+             "(44,1,'p.zig','e.only','modify',200,'v1')");
 }
 
 /// @brief FIXTURE 5 -- a constructed score tie the budget isolates.
@@ -574,6 +609,123 @@ TEST_CASE("grouping: the reporting flags stay false without the optimal arm", "[
   REQUIRE_FALSE(rec->optimal_available);
   REQUIRE_FALSE(rec->selected_greedy);
   REQUIRE(gl::render_json(*rec).find(R"("optimal_available":false,"selected_greedy":false)") != std::string::npos);
+}
+
+TEST_CASE("grouping: recommend_with(solver::greedy) is identical to recommend", "[grouping]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_fixture_1(conn);
+
+  auto plain = gl::recommend(conn, 1, gl::k_default_budget);
+  auto via   = gl::recommend_with(conn, 1, gl::k_default_budget, gl::solver::greedy);
+  REQUIRE(plain.has_value());
+  REQUIRE(via.has_value());
+  REQUIRE(gl::render_json(*plain) == gl::render_json(*via));
+}
+
+TEST_CASE("grouping: recommend_with(solver::mtkahypar) degrades to greedy when the seam is unavailable (task 6460)",
+          "[grouping]") {
+  // This test binary is built WITHOUT -DPLANAR_WITH_MTKAHYPAR=ON in every
+  // default `cmake --build`, so `mtkahypar::available()` is false and this
+  // is the branch that actually runs under `ctest -L engine_grouping`. The
+  // check is gated on `available()` rather than hard-coded so the SAME test
+  // source stays correct (rather than spuriously failing) when compiled
+  // against a `-DPLANAR_WITH_MTKAHYPAR=ON` build where the seam IS linked --
+  // exercised manually against the real library while developing this seam
+  // (see this task's break-probe log for that run).
+  if (gm::available()) {
+    SUCCEED("built with -DPLANAR_WITH_MTKAHYPAR=ON; degrade path is not reachable here, see the tie-fixture test instead");
+    return;
+  }
+
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_fixture_1(conn);
+
+  auto greedy_rec = gl::recommend(conn, 1, gl::k_default_budget);
+  auto mtk_rec    = gl::recommend_with(conn, 1, gl::k_default_budget, gl::solver::mtkahypar);
+  REQUIRE(greedy_rec.has_value());
+  REQUIRE(mtk_rec.has_value());
+  REQUIRE(mtk_rec->solver_ == gl::solver::greedy);
+  REQUIRE_FALSE(mtk_rec->optimal_available);
+  REQUIRE_FALSE(mtk_rec->selected_greedy);
+  REQUIRE(gl::render_json(*mtk_rec) == gl::render_json(*greedy_rec));
+}
+
+TEST_CASE("grouping: recommend_with(solver::mtkahypar) is never worse than greedy (task 4247)", "[grouping]") {
+  // Runs ONLY when the real seam is linked in (`-DPLANAR_WITH_MTKAHYPAR=ON`);
+  // a default build has nothing to prove here beyond the degrade test above,
+  // so it SUCCEED()s trivially rather than skipping silently.
+  if (!gm::available()) {
+    SUCCEED("built without -DPLANAR_WITH_MTKAHYPAR=ON; the real comparison needs the linked seam");
+    return;
+  }
+
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_fixture_tie(conn);
+
+  // budget:100 forces block_count() to 2 (deduped union x+p+q = 190), so the
+  // solver arm actually partitions rather than trivially merging everything.
+  auto greedy_rec = gl::recommend(conn, 5, 100);
+  auto mtk_rec    = gl::recommend_with(conn, 5, 100, gl::solver::mtkahypar);
+  REQUIRE(greedy_rec.has_value());
+  REQUIRE(mtk_rec.has_value());
+
+  // The contract itself: the SAME cost function, and the shipped result is
+  // never worse than greedy's own.
+  REQUIRE(mtk_rec->grouping_.total_cost() <= greedy_rec->grouping_.total_cost());
+  REQUIRE(mtk_rec->solver_ == gl::solver::mtkahypar);
+  REQUIRE(mtk_rec->optimal_available);
+  // `selected_greedy` records which arm's grouping actually shipped -- when
+  // set, the shipped cost must equal greedy's own (not merely be <= it),
+  // proving the fallback ships greedy's ACTUAL result rather than some other
+  // value that happens to satisfy the inequality.
+  if (mtk_rec->selected_greedy) {
+    REQUIRE(mtk_rec->grouping_.total_cost() == greedy_rec->grouping_.total_cost());
+  }
+}
+
+TEST_CASE("grouping: recommend_with(solver::mtkahypar) never regresses below greedy even when the solver's OWN "
+          "partition would (task 6460 fixture)",
+          "[grouping]") {
+  // Runs ONLY when the real seam is linked in. See seed_fixture_forced_split
+  // for why this input is expected to give the raw solver a genuinely worse
+  // partition than greedy: block_count's k=4 pigeonholes a split that
+  // greedy's own budget check never forces. This is the test that would
+  // catch an "always accept mtkahypar" regression -- the tie fixture above
+  // cannot, because both arms tie there.
+  if (!gm::available()) {
+    SUCCEED("built without -DPLANAR_WITH_MTKAHYPAR=ON; the real comparison needs the linked seam");
+    return;
+  }
+
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_fixture_forced_split(conn);
+
+  auto greedy_rec = gl::recommend(conn, 6, 90);
+  auto mtk_rec    = gl::recommend_with(conn, 6, 90, gl::solver::mtkahypar);
+  REQUIRE(greedy_rec.has_value());
+  REQUIRE(mtk_rec.has_value());
+
+  // Greedy achieves the true optimum here (295): both pairs merge, nothing
+  // is ever forced apart.
+  REQUIRE(greedy_rec->grouping_.total_cost() == 295);
+
+  // The contract: whatever the raw solver call produced internally, the
+  // SHIPPED result is never worse than greedy's 295.
+  REQUIRE(mtk_rec->grouping_.total_cost() <= 295);
+  REQUIRE(mtk_rec->optimal_available);
+  REQUIRE(mtk_rec->solver_ == gl::solver::mtkahypar);
+  // Not asserted as a hard requirement (a future solver version could find
+  // 295 directly, which would also satisfy the contract above) but WARN
+  // records what actually happened for this run: measured empirically while
+  // developing this seam, the raw solver call DOES produce a worse partition
+  // here (block_count's k=4 pigeonholes a split) and `selected_greedy` flips
+  // to true, proving the comparison -- not the solver -- is what keeps this
+  // test green. See this task's break-probe log.
+  WARN("selected_greedy=" << mtk_rec->selected_greedy << " shipped_cost=" << mtk_rec->grouping_.total_cost());
 }
 
 TEST_CASE("grouping: solver parsing accepts exactly two values", "[grouping]") {

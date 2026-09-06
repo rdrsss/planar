@@ -37,15 +37,20 @@ auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_
     budget = static_cast<std::uint32_t>(*parsed);
   }
 
-  // VALIDATED but not forwarded. The mtkahypar arm is unported, and the
-  // recommendation's `solver` field reports the solver that ACTUALLY ran — so
-  // a `--solver mtkahypar` run reports `greedy` with `optimal_available:false`,
-  // which is byte-identical to what the oracle produces on a host with no
-  // solver installed. An unknown value is still a refusal. See groups.cppm.
+  // Forwarded to `load::recommend_with` (task 6460). The recommendation's
+  // `solver` field reports the solver that ACTUALLY ran — a
+  // `--solver mtkahypar` run degrades to `greedy` with
+  // `optimal_available:false` when the seam is unavailable (build not linked
+  // with `-DPLANAR_WITH_MTKAHYPAR=ON`, or the call itself failed), which is
+  // byte-identical to what the oracle produces on a host with no solver
+  // installed. An unknown value is still a refusal. See groups.cppm.
+  auto requested_solver = load::solver::greedy;
   if (auto const raw = cliapp::flag_string(args, "--solver"); raw.has_value()) {
-    if (!load::solver_from_text(*raw).has_value()) {
+    auto const parsed = load::solver_from_text(*raw);
+    if (!parsed.has_value()) {
       return std::unexpected(error_from_body(domain_error_kind::invalid_input, load::render_invalid_solver(*raw)));
     }
+    requested_solver = *parsed;
   }
 
   auto conn = ctx.ensure_db();
@@ -53,7 +58,7 @@ auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_
     return std::unexpected(conn.error());
   }
 
-  auto const rec = load::recommend(**conn, *plan_id, budget);
+  auto const rec = load::recommend_with(**conn, *plan_id, budget, requested_solver);
   if (!rec) {
     // `not_found` is exit 1, NOT exit 2: the oracle folds entity-not-found
     // into the generic bucket so a script can `|| exit 1` cleanly. A plan that

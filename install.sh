@@ -16,8 +16,6 @@
 #                                     # Issues adapters; read-only on planning
 #                                     # tables, read-write on external_links /
 #                                     # external_systems / sync_events)
-#     bin/mtkahypar                   # optional wheel-backed solver adapter
-#     opt/mtkahypar/1.6.1/venv/       # optional native PyPI wheel environment
 #     planar.db                       # created on first `planar init`
 #     migrations/0001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at compile
@@ -59,7 +57,6 @@
 #   ./install.sh --force              # overwrite existing symlinks
 #   ./install.sh --uninstall          # tear down everything install.sh created
 #   ./install.sh --preset debug       # CMake preset (default release)
-#   ./install.sh --with-mtkahypar     # install the optional native solver wheel
 #   ./install.sh --dry-run            # preview planned actions without changing anything
 #   ./install.sh --verbose            # per-file detail (default prints a summary)
 #   ./install.sh --version            # print installer version and exit
@@ -83,8 +80,6 @@ NO_PRUNE=0                    # set with --no-prune to skip stale-vendor-file re
 BUILD_PRESET="release"        # CMake preset
 VERBOSE=0                     # set with --verbose/-v for per-file detail
 DRY_RUN=0                     # set with --dry-run/-n to preview without changes
-WITH_MTKAHYPAR=0              # opt-in native wheel + Planar CLI adapter
-MTKAHYPAR_VERSION="1.6.1"
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,7 +104,6 @@ Options:
   --force            Overwrite existing symlinks / adopt a non-Planar prefix
   --no-prune         Skip removal of stale vendor files
   --preset NAME      CMake build preset: debug|release (default: release)
-  --with-mtkahypar   Install the optional pinned Mt-KaHyPar native wheel + adapter
   --dry-run, -n      Show what would happen without making any changes
   --verbose, -v      Per-file detail (default prints a summary)
   --uninstall        Tear down everything install.sh created
@@ -132,7 +126,6 @@ while [[ $# -gt 0 ]]; do
     --uninstall)  UNINSTALL=1; shift ;;
     --no-prune)   NO_PRUNE=1; shift ;;
     --preset)     BUILD_PRESET="$2"; shift 2 ;;
-    --with-mtkahypar) WITH_MTKAHYPAR=1; shift ;;
     --verbose|-v) VERBOSE=1; shift ;;
     --dry-run|-n) DRY_RUN=1; shift ;;
     --version)
@@ -418,8 +411,6 @@ RUN_DEPS=(
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
   "tabularium||bundled documentation-maintenance workflows"
-  "python3|python|optional: hosts the pinned native Mt-KaHyPar wheel installed by --with-mtkahypar"
-  "mtkahypar||optional: 'planar groups recommend --solver=mtkahypar' optimal arm; install with --with-mtkahypar"
 )
 
 check_deps "build" 1 "${BUILD_DEPS[@]}"
@@ -472,16 +463,10 @@ if command -v git >/dev/null 2>&1; then
     warn "git $MIN_GIT or newer required for correct worktree detection, found $HAVE_GIT ($(command -v git))"
   fi
 fi
-if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
-  check_deps "Mt-KaHyPar adapter" 1 \
-    "python3|python|creates the isolated native-wheel environment"
-fi
-
 log "PLANAR_HOME = $PLANAR_HOME"
 log "mode        = $MODE"
 log "vendors     = ${VENDORS:-(none)}"
 log "preset      = $BUILD_PRESET"
-log "mtkahypar   = $([[ "$WITH_MTKAHYPAR" -eq 1 ]] && echo install || echo unchanged)"
 [[ "$DRY_RUN" -eq 1 ]] && log "dry-run     = yes (no changes will be made)"
 
 # Writability — the install writes into $PLANAR_HOME (or creates it). Fail with
@@ -518,9 +503,6 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
   log "place templates/ (missing-only; --force overwrites)"
-  if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
-    log "install pinned Mt-KaHyPar $MTKAHYPAR_VERSION wheel + adapter → $PLANAR_HOME"
-  fi
   if [[ -n "$VENDORS" ]]; then
     log "wire vendor surfaces: $VENDORS → ~/.claude, ~/.codex, ~/.copilot, ~/.gemini/antigravity-cli"
   else
@@ -702,62 +684,6 @@ fi
 # modes (including non-executable data manifests).
 if [[ "$MODE" != "link" && -d "$PLANAR_HOME/scripts" ]]; then
   chmod +x "$PLANAR_HOME/scripts/"* 2>/dev/null || true
-fi
-
-# ---------- optional Mt-KaHyPar wheel adapter ----------
-
-if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
-  title "Installing optional Mt-KaHyPar $MTKAHYPAR_VERSION wheel"
-  MTK_PARENT="$PLANAR_HOME/opt/mtkahypar"
-  MTK_FINAL="$MTK_PARENT/$MTKAHYPAR_VERSION"
-  MTK_STAGE="$MTK_PARENT/.stage.$$"
-  MTK_SMOKE="$MTK_PARENT/.smoke.$$"
-  rm -rf "$MTK_STAGE" "$MTK_SMOKE"
-  mkdir -p "$MTK_STAGE" "$MTK_SMOKE"
-
-  if ! python3 -m venv "$MTK_STAGE/venv"; then
-    rm -rf "$MTK_STAGE" "$MTK_SMOKE"
-    err "python3 could not create the Mt-KaHyPar virtual environment"
-  fi
-  if ! "$MTK_STAGE/venv/bin/python" -m pip install \
-      --disable-pip-version-check \
-      --only-binary=:all: \
-      --no-deps \
-      --require-hashes \
-      -r "$PLANAR_HOME/scripts/mtkahypar-requirements.txt"; then
-    rm -rf "$MTK_STAGE" "$MTK_SMOKE"
-    err "no compatible hash-locked Mt-KaHyPar $MTKAHYPAR_VERSION wheel was installed"
-  fi
-
-  rm -rf "$MTK_FINAL"
-  mv "$MTK_STAGE" "$MTK_FINAL"
-  symlink_to "$PLANAR_HOME/scripts/mtkahypar" "$PLANAR_HOME/bin/mtkahypar"
-
-  # A successful import/help probe is necessary but insufficient. Exercise a
-  # real two-vertex hMETIS partition and require the expected two-row output.
-  printf '1 2 11\n1 1 2\n1\n1\n' > "$MTK_SMOKE/graph.hgr"
-  if ! "$PLANAR_HOME/bin/mtkahypar" \
-      -h "$MTK_SMOKE/graph.hgr" -k 2 -e 0.03 -o km1 -m direct \
-      --write-partition-file=true --partition-output-folder "$MTK_SMOKE"; then
-    rm -rf "$MTK_SMOKE"
-    err "Mt-KaHyPar installed but failed its live partition smoke test"
-  fi
-  MTK_PARTITION="$(find "$MTK_SMOKE" -maxdepth 1 -type f -name 'graph.hgr.part*' | head -n 1)"
-  if [[ -z "$MTK_PARTITION" || "$(grep -c '^[01]$' "$MTK_PARTITION" || true)" -ne 2 ]]; then
-    rm -rf "$MTK_SMOKE"
-    err "Mt-KaHyPar smoke test did not produce a two-vertex partition"
-  fi
-  rm -rf "$MTK_SMOKE"
-  ok "installed and live-tested Mt-KaHyPar $MTKAHYPAR_VERSION → $MTK_FINAL"
-fi
-
-# Preserve the optional-extra record on ordinary reinstalls. The solver is
-# intentionally opt-in to install, but once managed by Planar it remains part
-# of the installed surface until the operator removes it explicitly.
-MTKAHYPAR_PRESENT=0
-if [[ -x "$PLANAR_HOME/opt/mtkahypar/$MTKAHYPAR_VERSION/venv/bin/python" && \
-      -e "$PLANAR_HOME/bin/mtkahypar" ]]; then
-  MTKAHYPAR_PRESENT=1
 fi
 
 # ---------- vendor symlinks ----------
@@ -1232,9 +1158,6 @@ fi
 # found only in vendor destinations (including personal local-* extensions)
 # are deliberately excluded.
 install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
-if [[ "$MTKAHYPAR_PRESENT" -eq 1 ]]; then
-  install_manifest_add_extra mtkahypar
-fi
 if [[ -n "$VENDORS" ]]; then
   IFS=',' read -r -a vendor_list <<< "$VENDORS"
   for v in "${vendor_list[@]}"; do
@@ -1267,13 +1190,6 @@ agents_n="$(count_glob "$PLANAR_HOME"/agents/claude/*.md)"
 
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
 log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
-if [[ "$MTKAHYPAR_PRESENT" -eq 1 ]]; then
-  if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
-    log "extra:      mtkahypar $MTKAHYPAR_VERSION (native wheel adapter, live-tested)"
-  else
-    log "extra:      mtkahypar $MTKAHYPAR_VERSION (native wheel adapter, preserved)"
-  fi
-fi
 log "surfaces:   $skills_n skills · $agents_n agents · vendors: ${VENDORS:-none}"
 if [[ "$WARN_COUNT" -gt 0 ]]; then
   printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"
