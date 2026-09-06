@@ -104,6 +104,29 @@ auto not_implemented_for(std::string_view verb) -> handler_fn {
   };
 }
 
+/// @brief `explore`'s handler (decision 1003; task 6444).
+///
+/// `explore` stays in `unported_paths()` — there is no cockpit in this tree
+/// and never will be — but unlike every other entry there, its own path is
+/// NOT a refusal. The oracle's cockpit gate (non-TTY stdout, `TERM=dumb`,
+/// `PLANAR_NO_TUI`, `--plain`) always refuses in a scripted/test
+/// environment, and every refusal path prints the SAME thing: the verb's
+/// own help page, exit 0. `--plan` / `--task` / `--scope` are declared
+/// flags on this leaf (see `k_flags_44` in `surface.cpp`) so CLI11 already
+/// parses and discards them before this handler runs; nothing here needs to
+/// read them.
+///
+/// `node` is looked up once, at table-build time, via `root.get_subcommand`
+/// rather than re-walked per invocation.
+/// @param node The `explore` leaf's CLI11 node.
+/// @return A handler that always succeeds, printing the leaf's help text.
+auto explore_fallback(const CLI::App* node) -> handler_fn {
+  return [node](context& ctx, const cliapp::parsed_args&) -> handler_result {
+    ctx.out() << node->help();
+    return {};
+  };
+}
+
 auto handlers(const CLI::App& root) -> handler_table {
   handler_table table;
   table.emplace("init", handlers::init);
@@ -581,6 +604,11 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("spec ingest", handlers::spec_ingest);
   table.emplace("import", handlers::import_repo);
   table.emplace("synthesize", handlers::synthesize);
+  // `explore` stays in `unported_paths()` (decision 1003 — the cockpit is
+  // dropped, not deferred) but its own fallback IS implemented: every gate
+  // refusal in the oracle prints the verb's help text, not an error. See
+  // `explore_fallback`'s header just above.
+  table.emplace("explore", explore_fallback(root.get_subcommand("explore")));
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64. The inventory is generated alongside the surface
