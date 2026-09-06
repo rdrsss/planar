@@ -356,6 +356,90 @@ TEST_CASE("ext propagate runs the generic jira-epic tree walk end to end, no lon
   CHECK(text_scalar(fx, "select config_json from external_links where entity_kind = 'task' and entity_id = 1").empty());
 }
 
+TEST_CASE("ext propagate --github-strategy overrides auto-selection: same fixture, two different outcomes (task 6451)",
+          "[cmd][ext][propagate][github-strategy]") {
+  // A zero-touched-repo GitHub feature auto-selects `github-zero-repo` (a
+  // generic-loop bucket, task 6451) and succeeds by posting through the
+  // SYSTEM's own registered project -- it never needs a touched repo at
+  // all. `--github-strategy parent-issue` forces the DIFFERENT, dedicated
+  // `parent_issue::propagate_parent_issue` engine instead, which DOES need
+  // one -- so the identical fixture must diverge: auto succeeds, override
+  // refuses. If the override were a no-op this pair would be identical.
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond(counter, 422));
+  auto const                    fx = make_fixture("ghstrategy");
+  migrate_fixture(fx);
+  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-strat", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"})
+              .code == 0);
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(
+      conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-strat'", remote.base_url()))
+          .has_value());
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
+
+  // Auto-selected: `github-zero-repo`, a generic-loop bucket -- succeeds.
+  auto const auto_ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-strat", "--json"});
+  CHECK(auto_ran.code == 0);
+  CHECK(auto_ran.out.contains(R"("strategy":"github-zero-repo")"));
+  CHECK(scalar(fx, "select count(*) from external_links") == 1);
+  REQUIRE(conn->execute("delete from external_links").has_value());
+
+  // Same fixture, `--github-strategy parent-issue`: forces the dedicated
+  // engine, which refuses on the missing touched repo instead.
+  auto const override_ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-strat", "--github-strategy", "parent-issue"});
+  CHECK(override_ran.code == 2);
+  CHECK(override_ran.err.contains("needs a touched repo"));
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+TEST_CASE("ext propagate --github-strategy projects-v2 refuses by decision 1001, never reaching the engine (task 6451)",
+          "[cmd][ext][propagate][github-strategy]") {
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond(counter, 422));
+  auto const                    fx = make_fixture("ghstratv2");
+  seed_single_repo(fx, remote.base_url());
+
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--github-strategy", "projects-v2"});
+  CHECK(ran.code == 2);
+  CHECK(ran.err.contains("multiple repos"));
+  CHECK(ran.err.contains("decision 1001"));
+  CHECK(remote.request_count() == 0);
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+TEST_CASE("ext propagate --github-strategy validates its value, its system kind, and its exclusivity with --restrategize",
+          "[cmd][ext][propagate][github-strategy]") {
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond(counter, 422));
+  auto const                    fx = make_fixture("ghstratbad");
+  seed_single_repo(fx, remote.base_url());
+
+  auto const bad_value = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--github-strategy", "bogus"});
+  CHECK(bad_value.code == 2);
+  CHECK(bad_value.err.contains("invalid --github-strategy"));
+
+  auto const both_flags =
+      dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--github-strategy", "parent-issue", "--restrategize"});
+  CHECK(both_flags.code == 2);
+  CHECK(both_flags.err.contains("mutually exclusive"));
+
+  // A Jira system, told to use a GitHub-only override.
+  auto const              fx2 = make_fixture("ghstratjira");
+  migrate_fixture(fx2);
+  REQUIRE(dispatch(fx2, {"ext", "register", "jira", "jira-x", "--base-url", "https://x.atlassian.net", "--project", "X",
+                        "--auth-env", "DEMO_TOKEN"})
+              .code == 0);
+  auto conn2 = planar::db::connection::open(fx2.db_path.string());
+  REQUIRE(conn2.has_value());
+  REQUIRE(
+      conn2->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
+  auto const wrong_kind =
+      dispatch(fx2, {"ext", "propagate", "1", "--system", "jira-x", "--github-strategy", "parent-issue"});
+  CHECK(wrong_kind.code == 2);
+  CHECK(wrong_kind.err.contains("--github-strategy is only valid for github-issues systems"));
+}
+
 TEST_CASE("ext propagate refuses a multi-repo GitHub feature by name (projects-v2 was cut, decision 1001)",
           "[cmd][ext][propagate][multi-repo-refusal]") {
   issue_counter                 counter;
