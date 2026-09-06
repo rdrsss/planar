@@ -108,6 +108,8 @@ planar_binary(planar_watch
     handlers/feed.cppm
     handlers/ledger.cppm
     handlers/live.cppm
+    handlers/run.cppm
+    handlers/syncevents.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -120,6 +122,8 @@ planar_binary(planar_watch
     handlers/feed.cpp
     handlers/ledger.cpp
     handlers/live.cpp
+    handlers/run.cpp
+    handlers/syncevents.cpp
     dispatch.cpp
   DEPENDS
     cliapp

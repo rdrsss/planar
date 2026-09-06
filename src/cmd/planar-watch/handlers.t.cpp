@@ -810,3 +810,275 @@ TEST_CASE("planar-watch inject_default_verb leaves an unknown verb for the parse
   auto const                     out = planar::cmd::watch::inject_default_verb(argv);
   CHECK(out == argv);
 }
+
+// ===========================================================================
+// Task 6448 — `run list` / `run show` / `sync-events`
+// ===========================================================================
+
+namespace {
+
+/// @brief Seed one plan (id 1) and nothing else — the minimum `run list` /
+/// `run show` / `sync-events` need as an FK target.
+/// @param fx The fixture whose `db_path` to populate.
+auto seed_plan_only(const fixture& fx) -> void {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto applied = planar::db::apply_all(*conn);
+  REQUIRE(applied.has_value());
+  exec(*conn, "insert into associations (slug, name, kind) values ('project:seed','project:seed','project')");
+  exec(*conn, "insert into plans (scope_kind, scope_id, title, slug, status) "
+              "values ('association', 1, 'Seed plan', 'seed-plan', 'active')");
+}
+
+} // namespace
+
+TEST_CASE("planar-watch run list --json unions workflow_runs (wf) and runs (op)", "[cmd][watch][handlers][run]") {
+  auto const fx = make_fixture("runlistunion");
+  seed_plan_only(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
+                "values (1, 'wf-name', 'wf-run-1', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
+    exec(*conn, "insert into runs (run_uid, plan_id, arm, base_sha, config_hash, started_at, status) "
+                "values ('op-uid-1', 1, 'finalize', '', '', '2024-01-02T00:00:00.000Z', 'running')");
+  }
+
+  auto const got = dispatch(fx, {"run", "list", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("\"generated_at\":"));
+  CHECK(got.out.contains("\"runs\":["));
+  CHECK(got.out.contains("\"source\":\"wf\""));
+  CHECK(got.out.contains("\"source\":\"op\""));
+  CHECK(got.out.contains("\"workflow_name\":\"wf-name\""));
+  CHECK(got.out.contains("\"workflow_name\":\"finalize\""));
+  // op-source sentinels: pid 0, repo_root "".
+  CHECK(got.out.contains("\"pid\":0"));
+  CHECK(got.out.contains("\"repo_root\":\"\""));
+  // Descending by started_at: the op row (started later) sorts first.
+  auto const op_pos = got.out.find("\"source\":\"op\"");
+  auto const wf_pos = got.out.find("\"source\":\"wf\"");
+  REQUIRE(op_pos != std::string::npos);
+  REQUIRE(wf_pos != std::string::npos);
+  CHECK(op_pos < wf_pos);
+}
+
+TEST_CASE("planar-watch run list --arm restricts to one source", "[cmd][watch][handlers][run]") {
+  auto const fx = make_fixture("runlistarm");
+  seed_plan_only(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
+                "values (1, 'wf-only', 'wf-run-2', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
+    exec(*conn, "insert into runs (run_uid, plan_id, arm, base_sha, config_hash, started_at, status) "
+                "values ('op-uid-2', 1, 'op-only', '', '', '2024-01-02T00:00:00.000Z', 'running')");
+  }
+
+  auto const wf_only = dispatch(fx, {"run", "list", "--arm", "wf", "--json"});
+  CHECK(wf_only.code == 0);
+  CHECK(wf_only.out.contains("\"source\":\"wf\""));
+  CHECK_FALSE(wf_only.out.contains("\"source\":\"op\""));
+
+  auto const op_only = dispatch(fx, {"run", "list", "--arm", "op", "--json"});
+  CHECK(op_only.code == 0);
+  CHECK(op_only.out.contains("\"source\":\"op\""));
+  CHECK_FALSE(op_only.out.contains("\"source\":\"wf\""));
+}
+
+TEST_CASE("planar-watch run list --status filters both sources", "[cmd][watch][handlers][run]") {
+  auto const fx = make_fixture("runliststatus");
+  seed_plan_only(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
+                "values (1, 'wf-running', 'wf-run-3', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status) "
+                "values (1, 'wf-done', 'wf-run-4', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', "
+                "'2024-01-01T01:00:00.000Z', 'completed')");
+  }
+
+  auto const running = dispatch(fx, {"run", "list", "--status", "running", "--json"});
+  CHECK(running.code == 0);
+  CHECK(running.out.contains("\"workflow_name\":\"wf-running\""));
+  CHECK_FALSE(running.out.contains("\"workflow_name\":\"wf-done\""));
+
+  auto const completed_status = dispatch(fx, {"run", "list", "--status", "completed", "--json"});
+  CHECK(completed_status.code == 0);
+  CHECK(completed_status.out.contains("\"workflow_name\":\"wf-done\""));
+  CHECK_FALSE(completed_status.out.contains("\"workflow_name\":\"wf-running\""));
+}
+
+TEST_CASE("planar-watch run list --plan restricts to the seeded plan's run only", "[cmd][watch][handlers][run]") {
+  auto const fx = make_fixture("runlistplan");
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    auto applied = planar::db::apply_all(*conn);
+    REQUIRE(applied.has_value());
+    exec(*conn, "insert into associations (slug, name, kind) values ('project:seed','project:seed','project')");
+    exec(*conn, "insert into plans (scope_kind, scope_id, title, slug, status) "
+                "values ('association', 1, 'Plan A', 'plan-a', 'active')");
+    exec(*conn, "insert into plans (scope_kind, scope_id, title, slug, status) "
+                "values ('association', 1, 'Plan B', 'plan-b', 'active')");
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
+                "values (1, 'wf-a', 'wf-run-a', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
+                "values (2, 'wf-b', 'wf-run-b', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
+  }
+
+  auto const got = dispatch(fx, {"run", "list", "--plan", "1", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("\"wf-a\""));
+  CHECK_FALSE(got.out.contains("\"wf-b\""));
+}
+
+TEST_CASE("planar-watch run list --arm rejects an unrecognized value with exit 1, not 2",
+         "[cmd][watch][handlers][run][exitcode]") {
+  // Reproduced from the oracle's own `error.InvalidValue`, which its
+  // `exit.zig` does NOT map to the 2 an `InvalidInput` gets — it falls
+  // through to the generic `else => 1`.
+  auto const fx = make_fixture("runlistbadarm");
+  seed_empty_database(fx);
+  auto const got = dispatch(fx, {"run", "list", "--arm", "bogus"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: run list: --arm must be wf, op, or all (got 'bogus')\n");
+}
+
+TEST_CASE("planar-watch run show groups context_records by stage then created_at, id as tiebreak",
+         "[cmd][watch][handlers][run]") {
+  namespace aa = planar::engine::runtime::agentactivity;
+  auto const fx = make_fixture("runshowstage");
+  seed_plan_only(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+                "values ('association', 1, 1, 'First', 'todo', 100)");
+    exec(*conn, "insert into sessions (vendor) values ('seedvendor')");
+    auto const claim = aa::acquire_claim(
+        *conn, aa::acquire_args{.session_id = 1, .kind = aa::entity_kind::task, .entity_id = 1, .vendor = "seedvendor"});
+    REQUIRE(claim.has_value());
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
+                "values (1, 'show-wf', 'show-run-1', 111, '/tmp', '2024-01-01T00:00:00.000Z', 'running')");
+    // "plan" stage inserted FIRST (lower id) but sorts AFTER "code"
+    // alphabetically — the ordering the oracle's `ORDER BY stage asc,
+    // created_at asc, id asc` produces, and what a naive "insertion
+    // order" or "id order" implementation would get wrong.
+    exec(*conn, "insert into context_records (run_id, stage, session_id, claim_id, kind, body, created_at) "
+                "values (1, 'plan', 1, 1, 'finding', 'finding from plan stage', '2024-01-01T00:00:01.000Z')");
+    exec(*conn, "insert into context_records (run_id, stage, session_id, claim_id, kind, body, created_at) "
+                "values (1, 'code', 1, 1, 'risk', 'risk from code stage', '2024-01-01T00:00:02.000Z')");
+  }
+
+  auto const got = dispatch(fx, {"run", "show", "1", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("\"run\":"));
+  CHECK(got.out.contains("\"context_records\":["));
+  auto const code_pos = got.out.find("\"stage\":\"code\"");
+  auto const plan_pos = got.out.find("\"stage\":\"plan\"");
+  REQUIRE(code_pos != std::string::npos);
+  REQUIRE(plan_pos != std::string::npos);
+  CHECK(code_pos < plan_pos);
+}
+
+TEST_CASE("planar-watch run show with an unknown id fails with not_found, not a crash", "[cmd][watch][handlers][run]") {
+  auto const fx = make_fixture("runshowmissing");
+  seed_empty_database(fx);
+  auto const got = dispatch(fx, {"run", "show", "999999", "--json"});
+  CHECK(got.code != 0);
+  CHECK(got.err == "error: run show: run 999999 not found\n");
+}
+
+TEST_CASE("planar-watch run show: a non-integer id is a distinct failure from an unknown id",
+         "[cmd][watch][handlers][run][exitcode]") {
+  auto const fx = make_fixture("runshowbadid");
+  seed_empty_database(fx);
+  auto const got = dispatch(fx, {"run", "show", "not-a-number", "--json"});
+  CHECK(got.code == 2);
+  CHECK(got.err == "error: run show: id must be an integer\n");
+}
+
+TEST_CASE("planar-watch sync-events --json on an empty table returns sync_events: []", "[cmd][watch][handlers][syncevents]") {
+  auto const fx = make_fixture("synceventsempty");
+  seed_empty_database(fx);
+  auto const got = dispatch(fx, {"sync-events", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("\"sync_events\":[]"));
+}
+
+TEST_CASE("planar-watch sync-events --outcome narrows; text count matches the filtered rows",
+         "[cmd][watch][handlers][syncevents]") {
+  auto const fx = make_fixture("synceventsoutcome");
+  seed_empty_database(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into sync_events (scope, direction, outcome) values ('workbench', 'push', 'ok')");
+    exec(*conn, "insert into sync_events (scope, direction, outcome) values ('workbench', 'pull', 'error')");
+  }
+
+  auto const all = dispatch(fx, {"sync-events", "--json"});
+  CHECK(all.code == 0);
+  CHECK(all.out.contains("\"outcome\":\"ok\""));
+  CHECK(all.out.contains("\"outcome\":\"error\""));
+
+  auto const filtered = dispatch(fx, {"sync-events", "--outcome", "error", "--json"});
+  CHECK(filtered.code == 0);
+  CHECK(filtered.out.contains("\"outcome\":\"error\""));
+  CHECK_FALSE(filtered.out.contains("\"outcome\":\"ok\""));
+
+  // Text mode's count reflects the FILTERED set here — unlike `claims`,
+  // sync-events counts AFTER applying the filter (see `sync_events`'s own
+  // two-pass count-then-print, matching `emitOnce`).
+  auto const text = dispatch(fx, {"sync-events", "--outcome", "error"});
+  CHECK(text.code == 0);
+  CHECK(text.out.starts_with("sync_events: 1\n"));
+}
+
+TEST_CASE("planar-watch sync-events --plan / --system / --entity filter through the external_links join",
+         "[cmd][watch][handlers][syncevents]") {
+  auto const fx = make_fixture("synceventsjoin");
+  seed_plan_only(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into external_systems (kind, slug, auth_method, auth_ref) "
+                "values ('github-issues', 'gh-seed', 'gh-cli', 'seed')");
+    exec(*conn, "insert into external_links (entity_kind, entity_id, system_id, external_id) "
+                "values ('plan', 1, 1, 'GH-1')");
+    // Linked event (via link_id 1) and an unlinked workbench event.
+    exec(*conn, "insert into sync_events (link_id, scope, direction, outcome) values (1, 'external', 'push', 'ok')");
+    exec(*conn, "insert into sync_events (scope, direction, outcome) values ('workbench', 'push', 'ok')");
+  }
+
+  auto const by_plan = dispatch(fx, {"sync-events", "--plan", "1", "--json"});
+  CHECK(by_plan.code == 0);
+  CHECK(by_plan.out.contains("\"link_id\":1"));
+  CHECK_FALSE(by_plan.out.contains("\"link_id\":null"));
+
+  auto const by_system = dispatch(fx, {"sync-events", "--system", "gh-seed", "--json"});
+  CHECK(by_system.code == 0);
+  CHECK(by_system.out.contains("\"link_id\":1"));
+  CHECK_FALSE(by_system.out.contains("\"link_id\":null"));
+
+  auto const by_entity = dispatch(fx, {"sync-events", "--entity", "plan:1", "--json"});
+  CHECK(by_entity.code == 0);
+  CHECK(by_entity.out.contains("\"link_id\":1"));
+  CHECK_FALSE(by_entity.out.contains("\"link_id\":null"));
+
+  // A plan id that does not match the link excludes the row entirely.
+  auto const wrong_plan = dispatch(fx, {"sync-events", "--plan", "999", "--json"});
+  CHECK(wrong_plan.code == 0);
+  CHECK(wrong_plan.out.contains("\"sync_events\":[]"));
+}
+
+TEST_CASE("planar-watch sync-events --entity requires kind:id form", "[cmd][watch][handlers][syncevents][exitcode]") {
+  auto const fx = make_fixture("synceventsbadentity");
+  seed_empty_database(fx);
+  auto const got = dispatch(fx, {"sync-events", "--entity", "noColon", "--json"});
+  CHECK(got.code == 2);
+  CHECK(got.err == "error: sync-events: InvalidInput\n");
+}

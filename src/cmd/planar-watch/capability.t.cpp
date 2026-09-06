@@ -122,7 +122,11 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
   for (auto const& verb : planar::cmd::watch::unported_paths()) {
     unported.emplace(verb);
   }
-  CHECK(unported == std::set<std::string, std::less<>>{"run list", "run show", "sync-events"});
+  // Task 6448 landed real handlers for the three that used to be the whole
+  // contents of this set. Nothing on this binary remains declared-but-
+  // unported — pinned as an EMPTY set rather than deleting the assertion,
+  // so a future addition to `unported_paths()` still has a test noticing it.
+  CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
   CHECK(leaves.size() == 13);
@@ -130,7 +134,8 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
-  for (auto const& implemented : {"feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion"}) {
+  for (auto const& implemented : {"feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion",
+                                  "run list", "run show", "sync-events"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
