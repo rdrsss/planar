@@ -356,6 +356,43 @@ TEST_CASE("ext propagate runs the generic jira-epic tree walk end to end, no lon
   CHECK(text_scalar(fx, "select config_json from external_links where entity_kind = 'task' and entity_id = 1").empty());
 }
 
+TEST_CASE("ext propagate --dry-run on the generic jira-epic loop reports op:\"planned\", never \"failed\" (task 6451)",
+          "[cmd][ext][propagate][jira-generic][dry-run]") {
+  // Regression coverage for a real bug this cycle's own manual reproduction
+  // caught (the fast Catch2 suite had NO case exercising a dry-run generic
+  // loop, so this specific defect was invisible until the slow Zig oracle
+  // parity suite's "reimplemented ext propagate yields same results as
+  // iterating propagate-one" case failed): `op_text`'s switch had no arm
+  // for the new `parent_issue::op::planned` enumerator, so every dry-run
+  // row fell into the `failed`/`default` case and rendered `op:"failed"`
+  // with a `"<template-kind>"` external_id -- the exact SHAPE of a planned
+  // row, mislabeled. `remote.request_count() == 0` proves this is asserted
+  // under dry-run, where no create ever reaches the network.
+  planar::http::fixture::server remote(
+      [](const planar::http::fixture::captured_request&) -> planar::http::fixture::canned_response {
+        FAIL("dry-run must not contact the remote");
+        return {.status = 500, .body = "{}", .content_type = "application/json"};
+      });
+  auto const fx = make_fixture("jira-dryplanned");
+  migrate_fixture(fx);
+  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
+                        "--auth-env", "DEMO_TOKEN"})
+              .code == 0);
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
+
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo", "--dry-run", "--json"});
+  CHECK(ran.code == 0);
+  CHECK(ran.err.empty());
+  CHECK(ran.out.contains(R"("op":"planned")"));
+  CHECK_FALSE(ran.out.contains(R"("op":"failed")"));
+  CHECK(ran.out.contains(R"("external_id":"<epic>")"));
+  CHECK(ran.out.contains(R"("failed":0)"));
+  CHECK(remote.request_count() == 0);
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
 TEST_CASE("ext propagate --github-strategy overrides auto-selection: same fixture, two different outcomes (task 6451)",
           "[cmd][ext][propagate][github-strategy]") {
   // A zero-touched-repo GitHub feature auto-selects `github-zero-repo` (a
