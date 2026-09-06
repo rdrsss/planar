@@ -175,4 +175,28 @@ export auto get_by_id(db::connection& conn, std::int64_t id) -> std::expected<se
 export auto list_entries_for_session(db::connection& conn, std::int64_t session_id)
     -> std::expected<std::vector<session_entry>, session_error>;
 
+/// @brief Return up to `limit` `session_entries` rows belonging to any
+/// session bound to `task_id`, newest first. Mirrors zig's
+/// `recentEntriesForTask` (task 6455): the resume packet's "recent
+/// activity" section, and the source of `state.last_action_at` /
+/// `state.last_action_body` (the caller prefers a durable snapshot body
+/// over `entries[0]` when one exists — see `resume.cpp`).
+/// @param conn An open, migrated database connection.
+/// @param task_id The bound task to filter on.
+/// @param limit The maximum row count.
+/// @return The entries, newest first, or `session_error::query_failed`.
+export auto recent_entries_for_task(db::connection& conn, std::int64_t task_id, std::int64_t limit)
+    -> std::expected<std::vector<session_entry>, session_error>;
+
+/// @brief Return up to `limit` `sessions` rows bound to `task_id`, newest
+/// first by `started_at`. Mirrors zig's `recentSessionsForTask` — the
+/// resume packet's audit footer (section 8) reads the single most recent
+/// row from this.
+/// @param conn An open, migrated database connection.
+/// @param task_id The bound task to filter on.
+/// @param limit The maximum row count.
+/// @return The sessions, newest first, or `session_error::query_failed`.
+export auto recent_sessions_for_task(db::connection& conn, std::int64_t task_id, std::int64_t limit)
+    -> std::expected<std::vector<session>, session_error>;
+
 } // namespace planar::engine::runtime::session

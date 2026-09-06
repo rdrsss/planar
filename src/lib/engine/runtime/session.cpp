@@ -373,4 +373,61 @@ auto list_entries_for_session(db::connection& conn, std::int64_t session_id)
   return out;
 }
 
+auto recent_entries_for_task(db::connection& conn, std::int64_t task_id, std::int64_t limit)
+    -> std::expected<std::vector<session_entry>, session_error> {
+  auto stmt = conn.prepare("select se.id, se.session_id, se.ordinal, se.prefix, se.body, se.created_at "
+                           "from session_entries se "
+                           "join sessions s on s.id = se.session_id "
+                           "where s.task_id = ? "
+                           "order by se.created_at desc "
+                           "limit ?");
+  if (!stmt) {
+    return std::unexpected(session_error::query_failed);
+  }
+  if (auto b = stmt->bind_int64(1, task_id); !b) {
+    return std::unexpected(session_error::query_failed);
+  }
+  if (auto b = stmt->bind_int64(2, limit); !b) {
+    return std::unexpected(session_error::query_failed);
+  }
+  std::vector<session_entry> out;
+  while (true) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(session_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      break;
+    }
+    out.push_back(read_entry_row(*stmt));
+  }
+  return out;
+}
+
+auto recent_sessions_for_task(db::connection& conn, std::int64_t task_id, std::int64_t limit)
+    -> std::expected<std::vector<session>, session_error> {
+  auto stmt = conn.prepare(std::format("{} where task_id = ? order by started_at desc limit ?", k_select_columns));
+  if (!stmt) {
+    return std::unexpected(session_error::query_failed);
+  }
+  if (auto b = stmt->bind_int64(1, task_id); !b) {
+    return std::unexpected(session_error::query_failed);
+  }
+  if (auto b = stmt->bind_int64(2, limit); !b) {
+    return std::unexpected(session_error::query_failed);
+  }
+  std::vector<session> out;
+  while (true) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(session_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      break;
+    }
+    out.push_back(read_session_row(*stmt));
+  }
+  return out;
+}
+
 } // namespace planar::engine::runtime::session

@@ -504,3 +504,75 @@ TEST_CASE("vendor_session_id_from_env treats empty as absent", "[session][env]")
     CHECK(*v == "abc");
   }
 }
+
+TEST_CASE("recent_entries_for_task returns entries from bound sessions newest first, ignoring other tasks", "[session][resume]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto ok = conn.execute("insert into tasks (scope_kind, title, status, priority) values ('global', 'T', 'todo', 100)");
+  REQUIRE(ok.has_value());
+  auto ok2 = conn.execute("insert into tasks (scope_kind, title, status, priority) values ('global', 'OTHER', 'todo', 100)");
+  REQUIRE(ok2.has_value());
+
+  auto s1 = sess::start_session(conn, sess::start_args{.vendor = "cli", .task_id = 1});
+  REQUIRE(s1.has_value());
+  auto s2 = sess::start_session(conn, sess::start_args{.vendor = "claude", .vendor_session_id = "abc", .task_id = 1});
+  REQUIRE(s2.has_value());
+  auto s3 = sess::start_session(conn, sess::start_args{.vendor = "codex", .task_id = 2});
+  REQUIRE(s3.has_value());
+
+  REQUIRE(sess::append_entry(conn, s1->id, "action", "first").has_value());
+  REQUIRE(sess::append_entry(conn, s2->id, "note", "second").has_value());
+  REQUIRE(sess::append_entry(conn, s3->id, "note", "on the other task").has_value());
+
+  auto entries = sess::recent_entries_for_task(conn, 1, 50);
+  REQUIRE(entries.has_value());
+  // Both entries came from sessions bound to task 1; the "other task"
+  // entry must not appear at all.
+  REQUIRE(entries->size() == 2);
+  for (auto const& e : *entries) {
+    CHECK(e.body != "on the other task");
+  }
+
+  // limit is honored.
+  auto limited = sess::recent_entries_for_task(conn, 1, 1);
+  REQUIRE(limited.has_value());
+  CHECK(limited->size() == 1);
+
+  // A task with no sessions at all reports empty, not an error.
+  auto ok3 = conn.execute("insert into tasks (scope_kind, title, status, priority) values ('global', 'LONE', 'todo', 100)");
+  REQUIRE(ok3.has_value());
+  auto empty = sess::recent_entries_for_task(conn, 3, 50);
+  REQUIRE(empty.has_value());
+  CHECK(empty->empty());
+}
+
+TEST_CASE("recent_sessions_for_task returns only sessions bound to that task, newest first", "[session][resume]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto ok = conn.execute("insert into tasks (scope_kind, title, status, priority) values ('global', 'T', 'todo', 100)");
+  REQUIRE(ok.has_value());
+  auto ok2 = conn.execute("insert into tasks (scope_kind, title, status, priority) values ('global', 'OTHER', 'todo', 100)");
+  REQUIRE(ok2.has_value());
+
+  auto s1 = sess::start_session(conn, sess::start_args{.vendor = "cli", .task_id = 1});
+  REQUIRE(s1.has_value());
+  auto s2 = sess::start_session(conn, sess::start_args{.vendor = "claude", .vendor_session_id = "abc", .task_id = 1});
+  REQUIRE(s2.has_value());
+  auto s3 = sess::start_session(conn, sess::start_args{.vendor = "codex", .task_id = 2});
+  REQUIRE(s3.has_value());
+
+  auto sessions = sess::recent_sessions_for_task(conn, 1, 50);
+  REQUIRE(sessions.has_value());
+  REQUIRE(sessions->size() == 2);
+  for (auto const& s : *sessions) {
+    CHECK(s.task_id == 1);
+  }
+
+  auto limited = sess::recent_sessions_for_task(conn, 1, 1);
+  REQUIRE(limited.has_value());
+  CHECK(limited->size() == 1);
+
+  auto none = sess::recent_sessions_for_task(conn, 2, 0);
+  REQUIRE(none.has_value());
+  CHECK(none->empty());
+}

@@ -151,18 +151,38 @@
 #
 # NOT ported, named rather than dropped silently:
 #
-#   - The 8-section RESUME PACKET (`resume.zig`'s `buildPacket`, ~500 of
-#     its 994 lines). Blocked at LAYER 2 on FOUR surfaces, none of them in
-#     this bucket: the plan_step completed/current/remaining fold
-#     (`engine.planning.plan` has no step read path), external_links listed
-#     BY ENTITY with their remote state (`engine.external.link` is
-#     create/show/remove only), `session::recentEntriesForTask` (this
-#     bucket has `list_entries_for_session` only), and
-#     `engine.planning.{decision,question,artifact}` -- three modules that
-#     do not exist in `src/lib/engine/planning/` at all. The `resume`
-#     leaf's oracle behavior is captured in
-#     src/cmd/planar/handlers/resume.cppm so the port that lands it has the
-#     bytes to hit.
+#   - LANDED (task 6455): the 8-section RESUME PACKET (`resume.zig`'s
+#     `buildPacket`, ~500 of its 994 lines) as
+#     `resumecheck::build_packet` + `render_packet_json`/`render_packet_text`.
+#     This note previously named FOUR blocking layer-2 surfaces; re-verified
+#     by RUNNING the oracle, only ONE was genuinely missing.
+#     `external.link::links_for_entity` had already landed (task 6106) and
+#     all three of `engine.planning.{decision,question,artifact}` already
+#     existed by the time this task started -- both claims in the prior
+#     revision of this note were stale, not wrong-when-written. The
+#     plan_step claim was never actually true: `plan_step.cppm`'s
+#     `list_steps(conn, plan_id)` (ordered by ordinal) already existed;
+#     only `plan.cppm` itself lacked a step read path, and the note
+#     conflated the sibling module with its neighbor. Only
+#     `session::recentEntriesForTask` was genuinely absent -- landed this
+#     task as `session::recent_entries_for_task` alongside
+#     `recent_sessions_for_task` (the audit-footer reader, which the prior
+#     note did not even list as a dependency).
+#
+#     None of that changes the LAYER shape: `plan_step`, `external.link`
+#     and `engine.planning.{decision,question,artifact}` remain sibling
+#     layer-2 buckets, and importing any of them from `engine_runtime`
+#     would still be the `engine_* -> engine_*` edge D15/D18 forbid.
+#     `build_packet` sidesteps this the same way the oracle's OWN
+#     `buildPlanPosition` / `buildOperationalPlane` / `buildDecisions` /
+#     `buildQuestions` / `buildArtifacts` do: raw SQL against
+#     `plan_steps` / `external_links` / `decisions` / `questions` /
+#     `artifacts` directly, not a call into the sibling module. Only
+#     `session`, `snapshot`, `agentactivity` and `handoff` are consulted
+#     through real calls, because all four already live in THIS bucket.
+#     See resumecheck.cppm's header for the full account, including why
+#     `planar.engine.planning.decision`'s existing `decisions_for_task`
+#     is deliberately NOT reused (different query, different semantics).
 #   - `resolveWorktreeForTask`'s git side. The worktree fields it copies
 #     come from the claim row, which IS readable here; nothing shells git.
 #   - No `policy.audit.record` gap remains here: task 6191 wired
