@@ -1,16 +1,24 @@
 /// @file follow.t.cpp
 /// @brief Deterministic unit coverage for
-/// `planar.cmd.planar_watch.handlers.follow`'s pure/testable pieces:
-/// duration parsing and the SIGINT flag. The Tier-2 wake source itself
-/// (kqueue/inotify against a real `-wal` file) is inherently
-/// filesystem-and-timing dependent and is instead covered by the
-/// integration suite's four `feed --follow` scenarios (task 6449) — this
-/// file deliberately does NOT sleep-and-hope over real fds, per this
-/// task's "test discipline" directive.
+/// `planar.cmd.planar_watch.handlers.follow`'s pure/testable pieces
+/// (duration parsing, the SIGINT flag) plus one deterministic coverage
+/// case for the Tier-2 wake source's directory-watch fix (task 6450).
+///
+/// The wake source is inherently filesystem-dependent, but the LAST case
+/// below is not a "sleep and hope" test: the background thread's create
+/// (and immediate delete) of the `-wal` sibling is scheduled at a fixed
+/// offset chosen to fall INSIDE the old code's first 100ms blind-wait
+/// window (see that case's comment for the exact reasoning) — the
+/// assertion is a generous elapsed-time ceiling that separates "the wake
+/// fired" from "only the heartbeat fired," not a race whose outcome is
+/// left to chance. The broader end-to-end cross-process scenario (a real
+/// `planar-agent pull` against a real `feed --follow` child process) stays
+/// in the integration suite's four `feed --follow` scenarios (task 6449).
 #include <catch2/catch_test_macros.hpp>
 #include <csignal>
 
 import std;
+import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.handlers.follow;
 
 using planar::cmd::watch::handlers::interval_or_default;
@@ -78,3 +86,85 @@ TEST_CASE("follow: SIGINT flips should_stop, and reset_for_testing clears it", "
   reset_for_testing();
   CHECK_FALSE(should_stop());
 }
+
+#if defined(__APPLE__) || defined(__linux__)
+TEST_CASE("follow: interruptible_sleep wakes on a transient -wal via the parent-directory watch (task 6450)",
+          "[cmd][watch][follow][wake]") {
+  // ## Why this timing is deterministic, not sleep-and-hope
+  //
+  // Root cause (task 6450): a one-shot writer (`planar-agent pull`, etc.)
+  // creates AND DELETES the `-wal` sibling entirely within its own short
+  // process lifetime. The pre-fix code only attempted to attach to that
+  // file at fixed 100ms slice boundaries (`k_slice_ns`); a transient file
+  // whose entire lifetime falls INSIDE one of those 100ms blind-wait
+  // windows is invisible to it no matter how many times the loop retries,
+  // because kqueue with zero registered filters cannot wake early.
+  //
+  // This case reproduces exactly that shape: the background thread
+  // creates, and immediately deletes, the `-wal` sibling at a fixed
+  // 40ms offset from the moment `interruptible_sleep` starts (i.e.,
+  // squarely inside the FIRST [0ms, 100ms) slice, not near either
+  // boundary). Against the pre-fix code this is a 100%-reproducible
+  // miss — not a probabilistic one — because the transient window's
+  // timing is fixed relative to `wake_source`'s construction, which
+  // itself happens synchronously at the top of the first
+  // `interruptible_sleep` call. Against the fixed code, the parent
+  // directory watch is registered at construction (before the loop
+  // starts waiting at all), so the mid-window create is queued the
+  // instant it happens and `interruptible_sleep` returns almost
+  // immediately.
+  //
+  // The assertion is a generous elapsed-time ceiling (2s) against a 5s
+  // configured timeout: "did the wake fire" vs. "only the heartbeat
+  // fired," not a tight race against real time. This tolerates ordinary
+  // scheduler jitter without becoming a coin flip.
+  using planar::cmd::watch::context;
+  using planar::cmd::watch::map_env;
+  using planar::cmd::watch::handlers::interruptible_sleep;
+  using planar::cmd::watch::handlers::reset_for_testing;
+
+  auto const root = std::filesystem::temp_directory_path() /
+                     std::format("planar_watch_follow_wake_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::error_code ec;
+  std::filesystem::create_directories(root, ec);
+  REQUIRE_FALSE(ec);
+  struct cleanup {
+    std::filesystem::path p;
+    ~cleanup() {
+      std::error_code rm_ec;
+      std::filesystem::remove_all(p, rm_ec);
+    }
+  } const guard{root};
+
+  auto const db_path  = root / "planar.db";
+  auto const wal_path = root / "planar.db-wal";
+
+  reset_for_testing();
+
+  std::ostringstream out;
+  std::ostringstream err;
+  context             ctx{std::vector<std::string>{"planar-watch"},
+                           map_env({{"PLANAR_HOME", (root / "home").string()}, {"HOME", (root / "fakehome").string()}}), root,
+                           db_path, out, err};
+
+  std::jthread writer([&wal_path] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    {
+      std::ofstream f(wal_path, std::ios::binary);
+      f << "x";
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    std::error_code rm_ec;
+    std::filesystem::remove(wal_path, rm_ec);
+  });
+
+  auto const start = std::chrono::steady_clock::now();
+  interruptible_sleep(ctx, 5'000'000'000ULL); // 5s configured heartbeat
+  auto const elapsed = std::chrono::steady_clock::now() - start;
+
+  writer.join();
+  reset_for_testing();
+
+  CHECK(elapsed < std::chrono::seconds(2));
+}
+#endif

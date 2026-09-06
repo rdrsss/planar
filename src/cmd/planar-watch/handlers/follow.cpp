@@ -40,13 +40,45 @@ constexpr std::uint64_t k_slice_ns = 100'000'000ULL; // 100ms
 /// Single-threaded, one instance per follow loop. See this file's header
 /// and `zig/src/engine/runtime/agentactivity/wake.zig` for the backend
 /// rationale (kqueue on macOS/BSD, inotify on Linux, degraded elsewhere).
+///
+/// ## The attach-race fix (task 6450)
+///
+/// Watching the `-wal` file directly cannot observe a one-shot writer
+/// (`planar-agent pull`, etc.): the file is created, written, and then
+/// deleted again (SQLite's "delete `-wal`/`-shm` on last-connection-close"
+/// behavior — confirmed empirically for this codebase's connection usage
+/// pattern) entirely within that single short-lived process's lifetime.
+/// Measured: the file exists for roughly the writer's own wall-clock
+/// runtime (tens of ms), which is SHORTER than the `k_slice_ns` (100ms)
+/// attach-retry sampling grid used by `interruptible_sleep`. Retrying
+/// `try_attach()` only at 100ms boundaries therefore has a real (not
+/// theoretical) chance of landing entirely outside the file's brief
+/// existence window on every single sample, and once the writer exits
+/// there is nothing left to attach to until the NEXT write.
+///
+/// The fix: watch the `-wal`'s PARENT DIRECTORY as well as the file
+/// itself. The directory always exists (it is the DB's own directory),
+/// so this watch attaches exactly once, at construction, with no race at
+/// all. A directory-level filesystem event (`NOTE_WRITE` on the dir fd /
+/// `IN_CREATE` on the dir path) fires the instant a sibling is created or
+/// removed — including within the narrow window a one-shot writer's
+/// `-wal` file lives — because kqueue/inotify queue the event as soon as
+/// it happens, not just when we happen to sample. `wait_next` treats any
+/// such directory event as `wal_changed` (the caller just re-queries;
+/// redundant re-queries are harmless) and opportunistically retries
+/// `try_attach()` immediately so future in-process commits by a
+/// longer-lived writer are still tracked via the file's own watch.
 class wake_source {
 public:
-  explicit wake_source(std::filesystem::path db_path) : wal_path_(db_path.string() + "-wal") {
+  explicit wake_source(std::filesystem::path db_path)
+      : wal_path_(db_path.string() + "-wal"),
+        dir_path_(db_path.has_parent_path() ? db_path.parent_path() : std::filesystem::path(".")) {
 #if defined(PLANAR_WATCH_FOLLOW_KQUEUE)
     kq_ = kqueue();
+    try_attach_dir();
 #elif defined(PLANAR_WATCH_FOLLOW_INOTIFY)
     inotify_fd_ = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    try_attach_dir();
 #endif
   }
 
@@ -68,12 +100,40 @@ public:
   }
 
 private:
-  std::string wal_path_;
+  std::string           wal_path_;
+  std::filesystem::path dir_path_;
 
 #if defined(PLANAR_WATCH_FOLLOW_KQUEUE)
   int  kq_            = -1;
   int  wal_fd_        = -1;
+  int  dir_fd_        = -1;
   bool fresh_attach_  = false;
+
+  /// @brief Open the `-wal`'s parent directory (best-effort) and register
+  /// an `EVFILT_VNODE` watch for `NOTE_WRITE` — fires the instant a
+  /// sibling is created, removed, or renamed within it. This attach can
+  /// never race the way the `-wal` file attach can: the directory always
+  /// exists (it is the DB's own directory), so it succeeds exactly once,
+  /// at construction. See the class doc "The attach-race fix" for why
+  /// this is necessary at all.
+  auto try_attach_dir() -> void {
+    if (kq_ < 0 || dir_fd_ >= 0)
+      return;
+#if defined(O_EVTONLY)
+    int const fd = ::open(dir_path_.c_str(), O_RDONLY | O_EVTONLY | O_CLOEXEC);
+#else
+    int const fd = ::open(dir_path_.c_str(), O_RDONLY | O_CLOEXEC);
+#endif
+    if (fd < 0)
+      return;
+    dir_fd_ = fd;
+    struct kevent ev {};
+    EV_SET(&ev, static_cast<std::uintptr_t>(dir_fd_), EVFILT_VNODE, EV_ADD | EV_CLEAR, NOTE_WRITE, 0, nullptr);
+    if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
+      ::close(dir_fd_);
+      dir_fd_ = -1;
+    }
+  }
 
   /// @brief Open the `-wal` file (best-effort; missing is fine — SQLite
   /// only creates it on the first write) and register an `EVFILT_VNODE`
@@ -110,22 +170,20 @@ private:
       return wait_next_degraded(timeout_ns);
     if (wal_fd_ < 0)
       try_attach();
+    if (dir_fd_ < 0)
+      try_attach_dir();
     if (fresh_attach_) {
       fresh_attach_ = false;
       return wake_event::wal_changed;
     }
-    if (wal_fd_ < 0) {
-      // Still no `-wal` (DB not yet written to) — fall through to a
-      // plain timed wait so we still degrade to a heartbeat cadence.
-      struct timespec ts {};
-      ts.tv_sec  = static_cast<time_t>(timeout_ns / 1'000'000'000ULL);
-      ts.tv_nsec = static_cast<long>(timeout_ns % 1'000'000'000ULL);
-      struct kevent out {};
-      int const n = kevent(kq_, nullptr, 0, &out, 1, &ts);
-      if (n < 0)
-        return errno == EINTR ? wake_event::interrupted : wake_event::heartbeat;
-      return wake_event::heartbeat;
-    }
+    // Single wait covers whichever of {wal fd, dir fd} is currently
+    // registered on kq_ — kqueue reports an event from ANY filter
+    // attached to this kq, so there is no need to branch on wal_fd_'s
+    // state here. This is what closes the attach-race: the directory
+    // watch is already live (registered at construction), so a `-wal`
+    // creation that happens entirely within a one-shot writer's brief
+    // lifetime is queued the instant it happens, not just when we
+    // happen to sample at a 100ms slice boundary.
     struct timespec ts {};
     ts.tv_sec  = static_cast<time_t>(timeout_ns / 1'000'000'000ULL);
     ts.tv_nsec = static_cast<long>(timeout_ns % 1'000'000'000ULL);
@@ -135,14 +193,29 @@ private:
       return errno == EINTR ? wake_event::interrupted : wake_event::heartbeat;
     if (n == 0)
       return wake_event::heartbeat;
-    if ((out.fflags & (NOTE_DELETE | NOTE_RENAME)) != 0u) {
-      // Rotation: the sibling was unlinked/renamed out from under us
-      // (e.g. PRAGMA wal_checkpoint(TRUNCATE)). Drop the stale fd; the
-      // next wait_next call re-attaches (and surfaces the synthetic
-      // wal_changed for the attach-gap race above).
-      ::close(wal_fd_);
-      wal_fd_ = -1;
+    if (wal_fd_ >= 0 && out.ident == static_cast<std::uintptr_t>(wal_fd_)) {
+      if ((out.fflags & (NOTE_DELETE | NOTE_RENAME)) != 0u) {
+        // Rotation: the sibling was unlinked/renamed out from under us
+        // (e.g. PRAGMA wal_checkpoint(TRUNCATE), or a one-shot writer's
+        // own close-time cleanup). Drop the stale fd; the next
+        // wait_next call re-attaches (and surfaces the synthetic
+        // wal_changed for the attach-gap race above).
+        ::close(wal_fd_);
+        wal_fd_ = -1;
+      }
+      return wake_event::wal_changed;
     }
+    // Directory-level event (a sibling — almost certainly the `-wal` —
+    // was created, removed, or renamed). Retry the file attach right
+    // now, while the odds of the file still existing are best; but
+    // report wal_changed regardless of whether that attach succeeds —
+    // the caller's re-query is the meaningful side effect either way,
+    // and a spurious re-query on an unrelated directory write is
+    // harmless.
+    if (wal_fd_ < 0)
+      try_attach();
+    if (fresh_attach_)
+      fresh_attach_ = false;
     return wake_event::wal_changed;
   }
 #endif
@@ -150,6 +223,31 @@ private:
 #if defined(PLANAR_WATCH_FOLLOW_INOTIFY)
   int inotify_fd_ = -1;
   int watch_fd_   = -1;
+  int dir_wd_     = -1;
+
+  // NOTE: this backend is a build-verified, structurally-parallel port of
+  // the kqueue fix above (task 6450) — it has NOT been runtime-verified
+  // (this repo's oracle/dev host is macOS; there is no Linux CI leg
+  // exercising `feed --follow` here). The failure this closes has the
+  // same shape on inotify (`watch_fd_` only ever attaches to a `-wal`
+  // that may not exist yet, and a one-shot writer can create+delete it
+  // faster than the 100ms retry grid samples), and IN_CREATE-on-parent-
+  // directory is the textbook inotify remedy for "watch for creation of
+  // a file that doesn't exist yet" (see inotify(7)), but this specific
+  // path is unexercised by this task's verification.
+
+  /// @brief Register a persistent `IN_CREATE` watch on the `-wal`'s
+  /// parent directory. Unlike the `-wal` file watch, this cannot race:
+  /// the directory always exists, so this attaches exactly once, at
+  /// construction. See the class doc "The attach-race fix".
+  auto try_attach_dir() -> void {
+    if (inotify_fd_ < 0 || dir_wd_ >= 0)
+      return;
+    int const wd = ::inotify_add_watch(inotify_fd_, dir_path_.c_str(), IN_CREATE);
+    if (wd < 0)
+      return;
+    dir_wd_ = wd;
+  }
 
   auto try_attach() -> void {
     if (inotify_fd_ < 0 || watch_fd_ >= 0)
@@ -168,6 +266,8 @@ private:
       return wait_next_degraded(timeout_ns);
     if (watch_fd_ < 0)
       try_attach();
+    if (dir_wd_ < 0)
+      try_attach_dir();
     if (fresh_attach_) {
       fresh_attach_ = false;
       return wake_event::wal_changed;
@@ -181,10 +281,16 @@ private:
       return errno == EINTR ? wake_event::interrupted : wake_event::heartbeat;
     if (rc == 0)
       return wake_event::heartbeat;
-    // Drain the event buffer; we don't care about individual event
-    // contents, only that something fired.
+    // Drain the event buffer. Any event (dir-level create, or the wal
+    // file's own watch) is treated as wal_changed below — the caller's
+    // re-query is the meaningful side effect either way, and a
+    // spurious re-query is harmless. We still inspect the mask so a
+    // rotation on the FILE watch clears the stale wd, and a directory
+    // IN_CREATE retries the file attach immediately (best odds of
+    // catching a one-shot writer's brief `-wal` window).
     alignas(struct inotify_event) char buf[4096];
-    bool                              rotated = false;
+    bool                              rotated       = false;
+    bool                              dir_signaled  = false;
     for (;;) {
       ssize_t const n = ::read(inotify_fd_, buf, sizeof(buf));
       if (n <= 0)
@@ -194,11 +300,15 @@ private:
         auto const* event = reinterpret_cast<struct inotify_event const*>(&buf[off]);
         if ((event->mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED)) != 0u)
           rotated = true;
+        if (dir_wd_ >= 0 && event->wd == dir_wd_ && (event->mask & IN_CREATE) != 0u)
+          dir_signaled = true;
         off += static_cast<ssize_t>(sizeof(struct inotify_event) + event->len);
       }
     }
     if (rotated)
       watch_fd_ = -1; // re-attach on the next call (IN_IGNORED already removed it kernel-side)
+    if (dir_signaled && watch_fd_ < 0)
+      try_attach(); // best-effort; wal_changed below fires regardless
     return wake_event::wal_changed;
   }
 #endif
@@ -218,6 +328,10 @@ private:
       ::close(wal_fd_);
       wal_fd_ = -1;
     }
+    if (dir_fd_ >= 0) {
+      ::close(dir_fd_);
+      dir_fd_ = -1;
+    }
     if (kq_ >= 0) {
       ::close(kq_);
       kq_ = -1;
@@ -227,6 +341,10 @@ private:
     if (watch_fd_ >= 0 && inotify_fd_ >= 0) {
       ::inotify_rm_watch(inotify_fd_, watch_fd_);
       watch_fd_ = -1;
+    }
+    if (dir_wd_ >= 0 && inotify_fd_ >= 0) {
+      ::inotify_rm_watch(inotify_fd_, dir_wd_);
+      dir_wd_ = -1;
     }
     if (inotify_fd_ >= 0) {
       ::close(inotify_fd_);
