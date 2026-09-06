@@ -124,6 +124,31 @@ export enum class grouping_error {
 export auto recommend(db::connection& conn, std::int64_t plan_id, std::uint32_t budget)
     -> std::expected<recommendation, grouping_error>;
 
+/// @brief Solver-aware grouping recommendation (task 6460).
+///
+/// `requested == solver::greedy` is identical to `recommend`. For
+/// `solver::mtkahypar`: when the seam is unavailable (build not linked, or
+/// the solver call itself fails), this degrades SILENTLY to the plain greedy
+/// result with `optimal_available:false` — the exact behavior a genuinely
+/// solver-less machine already produces, so a caller cannot distinguish "not
+/// built" from "not installed".
+///
+/// When the seam IS available, both arms run on the identical loaded inputs
+/// and are scored with the SAME `greedy::grouping::total_cost()`. The lower
+/// (or tied) grouping ships; `solver` reports `mtkahypar` and
+/// `optimal_available` is `true` in both outcomes (the optimal arm ran
+/// either way), while `selected_greedy` records whether greedy's own result
+/// was the one that shipped. This is the "never worse than greedy" contract
+/// (task 4247): the returned grouping's cost is never higher than greedy's.
+/// @param conn An open, migrated database connection.
+/// @param plan_id The plan to group.
+/// @param budget The per-slice window budget.
+/// @param requested Which solver the caller asked for.
+/// @return The recommendation, or `grouping_error::not_found` when the plan
+/// does not exist.
+export auto recommend_with(db::connection& conn, std::int64_t plan_id, std::uint32_t budget, solver requested)
+    -> std::expected<recommendation, grouping_error>;
+
 /// @brief The plan's open (todo) task ids, ordered by priority then id.
 /// @param conn An open, migrated database connection.
 /// @param plan_id The plan.

@@ -9,6 +9,7 @@ import std;
 import planar.json_text;
 import planar.db;
 import planar.engine.grouping.greedy;
+import planar.engine.grouping.mtkahypar;
 
 namespace planar::engine::grouping::load {
 
@@ -183,8 +184,18 @@ auto load_deps(db::connection& conn, std::span<const std::int64_t> open_ids)
   return out;
 }
 
-auto recommend(db::connection& conn, std::int64_t plan_id, std::uint32_t budget)
-    -> std::expected<recommendation, grouping_error> {
+namespace {
+
+/// @brief Shared loader: the plan-existence check, open tasks, their
+/// effective closures, and the dependency DAG. Both `recommend` and
+/// `recommend_with` need identical inputs so the two solver arms are scored
+/// on the exact same data.
+struct loaded_inputs {
+  std::vector<greedy::task> tasks;
+  std::vector<greedy::dep>  deps;
+};
+
+auto load_inputs(db::connection& conn, std::int64_t plan_id) -> std::expected<loaded_inputs, grouping_error> {
   auto exists = plan_exists(conn, plan_id);
   if (!exists) {
     return std::unexpected(exists.error());
@@ -213,11 +224,79 @@ auto recommend(db::connection& conn, std::int64_t plan_id, std::uint32_t budget)
     return std::unexpected(deps.error());
   }
 
+  return loaded_inputs{.tasks = std::move(tasks), .deps = std::move(*deps)};
+}
+
+} // namespace
+
+auto recommend(db::connection& conn, std::int64_t plan_id, std::uint32_t budget)
+    -> std::expected<recommendation, grouping_error> {
+  auto loaded = load_inputs(conn, plan_id);
+  if (!loaded) {
+    return std::unexpected(loaded.error());
+  }
+
   return recommendation{
       .plan_id           = plan_id,
       .budget            = budget,
-      .open_tasks        = task_ids->size(),
-      .grouping_         = greedy::group(tasks, *deps, budget),
+      .open_tasks        = loaded->tasks.size(),
+      .grouping_         = greedy::group(loaded->tasks, loaded->deps, budget),
+      .solver_           = solver::greedy,
+      .optimal_available = false,
+      .selected_greedy   = false,
+  };
+}
+
+auto recommend_with(db::connection& conn, std::int64_t plan_id, std::uint32_t budget, solver requested)
+    -> std::expected<recommendation, grouping_error> {
+  if (requested == solver::greedy) {
+    return recommend(conn, plan_id, budget);
+  }
+
+  auto loaded = load_inputs(conn, plan_id);
+  if (!loaded) {
+    return std::unexpected(loaded.error());
+  }
+  const auto open_tasks = loaded->tasks.size();
+
+  if (mtkahypar::available()) {
+    if (auto solver_grouping = mtkahypar::try_partition(loaded->tasks, loaded->deps, budget); solver_grouping.has_value()) {
+      // Both arms run on IDENTICAL inputs, scored with the IDENTICAL cost
+      // function (greedy::grouping::total_cost()) -- the task-4247 contract:
+      // the shipped result's cost is never higher than greedy's own.
+      auto greedy_grouping = greedy::group(loaded->tasks, loaded->deps, budget);
+      if (greedy_grouping.total_cost() < solver_grouping->total_cost()) {
+        // Greedy strictly better -> ship greedy, but report the optimal arm
+        // as having run (it did) and record that its result was discarded.
+        return recommendation{
+            .plan_id           = plan_id,
+            .budget            = budget,
+            .open_tasks        = open_tasks,
+            .grouping_         = std::move(greedy_grouping),
+            .solver_           = solver::mtkahypar,
+            .optimal_available = true,
+            .selected_greedy   = true,
+        };
+      }
+      // mtkahypar tied or beat greedy -> ship the solver result.
+      return recommendation{
+          .plan_id           = plan_id,
+          .budget            = budget,
+          .open_tasks        = open_tasks,
+          .grouping_         = std::move(*solver_grouping),
+          .solver_           = solver::mtkahypar,
+          .optimal_available = true,
+          .selected_greedy   = false,
+      };
+    }
+    // Invocation failed mid-run -> degrade to greedy, same as unavailable.
+  }
+
+  return recommendation{
+      .plan_id           = plan_id,
+      .budget            = budget,
+      .open_tasks        = open_tasks,
+      .grouping_         = greedy::group(loaded->tasks, loaded->deps, budget),
       .solver_           = solver::greedy,
       .optimal_available = false,
       .selected_greedy   = false,
