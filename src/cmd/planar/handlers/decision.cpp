@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.scope_ref;
 import planar.engine.planning;
 import planar.engine.identity;
 import planar.engine.runtime;
@@ -161,6 +162,14 @@ auto transition_verb(context& ctx, const cliapp::parsed_args& args, std::string_
   }
 
   auto const scope_flag = cliapp::flag_string(args, "--scope");
+  if (scope_flag.has_value()) {
+    auto explicit_scope = scope_ref::resolve(**conn, *scope_flag);
+    if (!explicit_scope) {
+      auto const name = explicit_scope.error() == scope_ref::error::slug_not_found ? "SlugNotFound" : "QueryFailed";
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                             std::format("decision {}: resolving write scope failed: {}", verb_word, name)));
+    }
+  }
   auto const scope_view =
       scope_flag.has_value() ? std::optional<std::string_view>{*scope_flag} : std::optional<std::string_view>{};
   auto resolved = resolve_write_scope(ctx, scope_view, std::format("decision {}", verb_word));

@@ -967,7 +967,7 @@ planar decision add "Adopt strict resolver for writes" \
   --kind design
 ```
 
-`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision edit`, `decision supersede`, and `audit publish-decision` calls.
+`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision edit`, `decision accept`, `decision withdraw`, `decision supersede`, and `audit publish-decision` calls.
 
 ### Debugging stale stack state
 

@@ -681,6 +681,8 @@ TEST_CASE("decision transitions enforce the entity scope before mutating") {
   add(fx, {"mismatch", "--body", "b", "--scope", "acme"});
   add(fx, {"explicit", "--body", "b", "--scope", "acme"});
   add(fx, {"invalid", "--body", "b", "--scope", "acme"});
+  add(fx, {"invalid-accept-global", "--body", "b"});
+  add(fx, {"invalid-withdraw-global", "--body", "b"});
 
   // The cwd has no registered project, so the global decision is a same-scope
   // transition and establishes that the guard does not reject valid writes.
@@ -694,12 +696,15 @@ TEST_CASE("decision transitions enforce the entity scope before mutating") {
   CHECK(dispatch(fx, {"decision", "accept", "3", "--scope", "acme"}).code == 0);
   CHECK(dispatch(fx, {"decision", "withdraw", "4", "--scope", "acme"}).code == 0);
 
-  // An invalid explicit scope is still a different write scope and is
-  // rejected before the engine can transition. Write-scope resolution carries
-  // an explicit flag through verbatim; it is the guard that refuses it.
-  const auto invalid = dispatch(fx, {"decision", "accept", "4", "--scope", "nosuchslug"});
-  CHECK(invalid.code == 5);
-  CHECK(invalid.err == "error: decision 4 belongs to a different scope\n");
+  // Validate an explicit scope before the global-scope shortcut in the guard.
+  // Otherwise either transition could mutate a global decision while silently
+  // accepting a typoed `--scope`.
+  const auto invalid_accept = dispatch(fx, {"decision", "accept", "5", "--scope", "nosuchslug"});
+  CHECK(invalid_accept.code == 1);
+  CHECK(invalid_accept.err == "error: decision accept: resolving write scope failed: SlugNotFound\n");
+  const auto invalid_withdraw = dispatch(fx, {"decision", "withdraw", "6", "--scope", "nosuchslug"});
+  CHECK(invalid_withdraw.code == 1);
+  CHECK(invalid_withdraw.err == "error: decision withdraw: resolving write scope failed: SlugNotFound\n");
 
   // A missing target remains a lookup failure even when the supplied scope is
   // otherwise valid, and cannot write an audit row or alter an existing row.
@@ -708,7 +713,8 @@ TEST_CASE("decision transitions enforce the entity scope before mutating") {
   CHECK(missing.err == "error: no decision with id 999\n");
 
   auto conn = open_db(fx);
-  CHECK(query_rows(conn, "select id, status from decisions order by id", 2) == "1|accepted;2|proposed;3|accepted;4|withdrawn");
+  CHECK(query_rows(conn, "select id, status from decisions order by id", 2) ==
+        "1|accepted;2|proposed;3|accepted;4|withdrawn;5|proposed;6|proposed");
 }
 
 // ===========================================================================

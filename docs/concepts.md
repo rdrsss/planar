@@ -326,7 +326,9 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 
 ### Which verbs are guarded
 
-**Measured against the source at task 6075 (2026-09-11).** Eight verbs, seven call sites (`sync push` and `sync pull` share one):
+**Measured against the source at task 6075 (2026-09-11).** Ten verbs, eight
+call sites (`sync push` and `sync pull` share one; `decision accept` and
+`decision withdraw` share their transition helper):
 
 | Verb | Comparison |
 |------|-----------|
@@ -336,6 +338,8 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 | `planar-ext sync push <link\|kind:id>` | membership-aware |
 | `planar-ext sync pull <link\|kind:id>` | membership-aware |
 | `planar-ext sync resolve <event-id>` | membership-aware |
+| `decision accept` | membership-aware |
+| `decision withdraw` | membership-aware |
 | `task update` | **strict equality** |
 | `closure compute` | **strict equality** |
 
@@ -345,7 +349,7 @@ The two classes the guard was designed around — bulk-write-from-parent (the le
 
 ### Two comparisons, not one
 
-Five guarded verbs call the cmd-layer `guard_with_membership`; two — `task update` and `closure compute` — call `engine::identity::check_scope_guard` directly, which is strict equality after `assoc:` normalization.
+Six guarded call sites use the cmd-layer `guard_with_membership`; two — `task update` and `closure compute` — call `engine::identity::check_scope_guard` directly, which is strict equality after `assoc:` normalization.
 
 The observable consequence: an `assoc:<org>` → `repo:<member>` write is **accepted** by `spec ingest --apply` and **refused** by `task update`, from the identical working directory. This is recorded here as fact, not endorsed. Reconciling the two flavours — and which direction to reconcile them in — is an open operator decision, because either choice changes behaviour that ships today.
 
