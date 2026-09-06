@@ -22,11 +22,12 @@
 //   CODES — 2 and 0. Comparing only output would pass a port that
 //   collapsed them.
 //
-// NOT compared: `run <file> --phase <p>` where the file EXISTS. The Lua
-// engine is unported (no Lua in this tree, no engine_execute bucket), so
-// this binary exits 64 there while the oracle runs the workflow. Declared
-// in engine.cppm and asserted below as a DIVERGENCE rather than silently
-// skipped — a deferral nobody tests is a deferral nobody notices.
+// `run <file> --phase <p>` where the file EXISTS IS compared below — the Lua
+// engine (task 6042) and all twenty-five host functions, `ctx.brief`
+// included as of task 6125, are ported. The comment this replaced described
+// an earlier state (task 6107, before `engine_execute` existed) where this
+// binary exited 64 unconditionally; that exit code and its NOT-compared
+// carve-out are both gone.
 //
 // SKIP, not fail, when the oracle is absent (D6).
 
@@ -313,19 +314,42 @@ end
   CHECK(std::filesystem::read_symlink(arena.zig_root / "proj" / "escape.txt") == std::filesystem::path{"/etc/hosts"});
 }
 
-TEST_CASE("planar-execute: ctx.brief is the one declared divergence from the oracle", "[cmd][execute][parity][workflow]") {
-  // Declared in src/lib/engine/execute/CMakeLists.txt and asserted here so it
-  // cannot rot into a silent wrong answer: the oracle compiles a brief, this
-  // binary reports that the compiler is unported. Everything else on the host
-  // surface is ported.
+TEST_CASE("planar-execute: ctx.brief maps a missing plan to 'not found', byte-identically to the oracle",
+          "[cmd][execute][parity][workflow]") {
+  // Task 6125 ported the brief compiler; this is no longer a declared
+  // divergence (see the retired test this replaced, and
+  // src/lib/engine/execute/CMakeLists.txt). A full happy-path differential —
+  // real plan/task/claim state seeded through both binaries' own `plan
+  // add`/`task add` verbs, then diffing the compiled brief body — is a
+  // heavier fixture than this file's other cases build; that positive-path
+  // coverage lives instead in `workflow.t.cpp`'s fake-bin_dir unit test,
+  // which drives real `compile_brief` output deterministically. What THIS
+  // differential pins is the failure-message mapping `run_allowlisted` and
+  // the oracle's `state.zig` `StateError` catch must agree on byte-for-byte:
+  // a plan `ctx.brief` cannot find is not the same failure shape as a
+  // process that crashed, and a port that stringified the wrong exception
+  // would show up here.
+  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-execute)");
+
   auto const arena = make_arena("brief");
   {
     std::ofstream file(arena.cpp_root / "proj" / "wf.lua", std::ios::binary);
     file << "function p() ctx.brief({plan_id = 1, task_id = 1, claim_token = 'x', problem_statement = 'y'}) end";
   }
+  {
+    std::ofstream file(arena.zig_root / "proj" / "wf.lua", std::ios::binary);
+    file << "function p() ctx.brief({plan_id = 1, task_id = 1, claim_token = 'x', problem_statement = 'y'}) end";
+  }
   std::vector<std::string> const args{"run", "wf.lua", "--phase", "p"};
-  auto const                     got = run_pinned(cpp_bin(), args, arena.cpp_root, "brief");
-  CHECK(got.code == 1);
-  CHECK(got.out.empty());
-  CHECK(got.err.contains("the brief compiler is not ported yet"));
+  auto const                     cpp = run_pinned(cpp_bin(), args, arena.cpp_root, "cpp");
+  auto const                     zig = run_pinned(zig_bin(), args, arena.zig_root, "zig");
+
+  CHECK(cpp.code == zig.code);
+  CHECK(cpp.code == 1);
+  CHECK(cpp.out == zig.out);
+  CHECK(cpp.out.empty());
+  CHECK(cpp.err == zig.err);
+  // Not vacuous: this is "plan not found" from a fresh, plan-less DB, not
+  // "the brief compiler is not ported yet" or a generic subprocess failure.
+  CHECK(cpp.err.contains("ctx.brief: plan 1 not found"));
 }

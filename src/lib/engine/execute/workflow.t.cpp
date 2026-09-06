@@ -320,19 +320,90 @@ TEST_CASE("fs confinement holds against text escapes and symlinks alike", "[engi
   CHECK(over_link.err.contains("fs.mkdir rejected symlink: dirlink"));
 }
 
-TEST_CASE("ctx.brief reports the unported brief compiler at the point of call", "[engine][execute][workflow]") {
-  // The one declared divergence from the oracle in this module. Asserted so
-  // it cannot rot into a silent wrong answer, and REGISTERED rather than
-  // omitted so a workflow gets a diagnosis rather than the nil-field error an
-  // absent registration produces — which is indistinguishable from a typo.
+TEST_CASE("ctx.brief maps a missing plan/task to 'not found', matching the oracle's StateError catch",
+          "[engine][execute][workflow]") {
+  // task 6125 landed the body: this used to be the one declared divergence
+  // ("the brief compiler is not ported yet"). With no bin_dir configured,
+  // `run_allowlisted`'s own "trusted binary directory is unavailable" is
+  // exactly the shell failure host.zig's `state.planShow(...) catch
+  // raiseError(L, "ctx.brief: plan {d} not found", ...)` collapses into
+  // "not found" too — so this pins the SAME oracle-shaped message the real
+  // shell-and-parse failure would produce, without needing a live `planar`.
   auto const got = run("function p() ctx.brief({plan_id = 1, task_id = 1, claim_token = 'x', problem_statement = 'y'}) end");
   CHECK(got.status == ex::run_status::phase_failed);
-  CHECK(got.err.contains("ctx.brief: the brief compiler is not ported yet"));
+  CHECK(got.err.contains("ctx.brief: plan 1 not found"));
 
   // And the field really is a function, so the message above came from
   // calling it rather than from `ctx` having no such key.
   auto const shape = run("function p() flow.result({t = type(ctx.brief)}) end");
   CHECK(shape.out == "{\"t\":\"function\"}\n");
+}
+
+namespace {
+
+/// @brief Write an executable POSIX shell script at `path`.
+/// @param path The destination.
+/// @param body The script body (a `#!/bin/sh` line is prepended).
+auto write_script(std::filesystem::path const& path, std::string_view body) -> void {
+  {
+    std::ofstream file(path, std::ios::binary);
+    file << "#!/bin/sh\n" << body;
+  }
+  std::filesystem::permissions(path, std::filesystem::perms::owner_all | std::filesystem::perms::group_read |
+                                         std::filesystem::perms::group_exec | std::filesystem::perms::others_read |
+                                         std::filesystem::perms::others_exec);
+}
+
+} // namespace
+
+TEST_CASE("ctx.brief compiles a real brief from a fake planar/planar-agent bin_dir", "[engine][execute][workflow]") {
+  // Fakes the two binaries `run_allowlisted` shells (`planar` for
+  // plan/task/packet reads, `planar-agent` for the schema catalog) with
+  // fixed-argv shell scripts, so the whole `state`/`schema`/`brief` pipeline
+  // runs deterministically without a live database.
+  scratch const bin_dir;
+
+  write_script(bin_dir.path() / "planar", R"(case "$1 $2" in
+  "plan show")
+    echo '{"id":7,"title":"Fake Plan","status":"active","slug":"fake-plan","parent_plan_id":null}'
+    ;;
+  "task show")
+    echo '{"id":9,"slug":"fake-task","status":"todo"}'
+    ;;
+  "task packet")
+    echo '{"input":{"task_id":9,"status":"todo","title":"Authoritative title","body":"body text","next_action":"do the thing","acceptance_criteria":"it works","owning_plans":[{"kind":"plan","id":7,"locator":"plan:7","text":"Fake Plan","source_digest":"d","current_digest":"d","required":true,"covered":true,"status":"current","provenance":"db"}],"anchor_plans":[],"citations":[{"kind":"spec","id":1,"locator":"tech-spec.md #Brief","text":"cite me","source_digest":"d","current_digest":"d","required":true,"covered":true,"status":"current","provenance":"workbench"}],"decisions":[],"questions":[],"scenarios":[],"dependencies":[],"touches":[],"claims":[{"kind":"claim","id":3,"locator":"claim:3","text":"tok-123","source_digest":"d","current_digest":"d","required":true,"covered":true,"status":"active","provenance":"db"}],"validation_gates":[{"kind":"gate","id":1,"locator":"gate:1","text":"make test","source_digest":"d","current_digest":"d","required":true,"covered":true,"status":"current","provenance":"methodology"}],"facts":[]},"digest":"packet-digest-abc","reasons":[]}'
+    ;;
+esac
+)");
+
+  write_script(bin_dir.path() / "planar-agent", R"(if [ "$1" = "schema" ]; then
+  echo '{"schemaVersion":1,"layout":"flat","root":"planar-agent","commands":[{"name":"planar-agent","command":"planar-agent","subcommands":["complete"],"flags":[],"hidden":false},{"name":"complete","command":"planar-agent complete","subcommands":[],"flags":[{"long":"--claim","required":true,"description":"Claim token"}],"hidden":false},{"name":"internal","command":"planar-agent internal","subcommands":[],"flags":[],"hidden":true}]}'
+fi
+)");
+
+  auto const got = run("function p() flow.result({b = ctx.brief({plan_id = 7, task_id = 9, claim_token = 'tok-123', "
+                       "problem_statement = 'unused because the packet is authoritative'})}) end",
+                       "p", [&](ex::run_config& config) { config.bin_dir = bin_dir.path().string(); });
+  CHECK(got.status == ex::run_status::ok);
+  CHECK(got.out.contains("# Coder Brief"));
+  CHECK(got.out.contains("**Plan:** Fake Plan (id 7)"));
+  CHECK(got.out.contains("task:9 — Authoritative title"));
+  CHECK(got.out.contains("**Claim token:** `tok-123`"));
+  CHECK(got.out.contains("**Authoritative packet digest:** `packet-digest-abc`"));
+  CHECK(got.out.contains("tech-spec.md #Brief"));
+  CHECK(got.out.contains("planar-agent complete"));
+  // The hidden command must not appear.
+  CHECK(!got.out.contains("planar-agent internal"));
+  CHECK(got.out.contains("make test"));
+  CHECK(got.out.contains("## Terminal verb"));
+
+  // A claim token that does not match the packet's active claim is the
+  // AuthoritativeIdentityMismatch path.
+  auto const mismatched =
+      run("function p() ctx.brief({plan_id = 7, task_id = 9, claim_token = 'wrong-token', problem_statement = 'x'}) end", "p",
+          [&](ex::run_config& config) { config.bin_dir = bin_dir.path().string(); });
+  CHECK(mismatched.status == ex::run_status::phase_failed);
+  CHECK(mismatched.err.contains("ctx.brief: caller plan/task/claim does not match authoritative packet"));
 }
 
 TEST_CASE("ctx.context returns an empty table, matching the oracle", "[engine][execute][workflow]") {

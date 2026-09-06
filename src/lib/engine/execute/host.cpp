@@ -176,6 +176,46 @@ auto argv_from_table(lua_State* L, int idx) -> std::vector<std::string> {
   return argv;
 }
 
+/// @brief Read an integer field from the table at `idx`.
+///
+/// Port target: `host.zig`'s `tableIntField`. Pops the field off the stack
+/// before returning, whether or not it was found.
+/// @param L The Lua state.
+/// @param idx The table's stack index.
+/// @param field The field name.
+/// @return The integer, or unset when absent or not an integer.
+auto table_int_field(lua_State* L, int idx, char const* field) -> std::optional<std::int64_t> {
+  lua_getfield(L, idx, field);
+  std::optional<std::int64_t> out;
+  if (lua_isinteger(L, -1) != 0) {
+    out = static_cast<std::int64_t>(lua_tointeger(L, -1));
+  }
+  lua_settop(L, -2);
+  return out;
+}
+
+/// @brief Read a string field from the table at `idx`, copied off the
+/// stack.
+///
+/// Port target: `host.zig`'s `tableStrField`. The Zig original dupes onto an
+/// arena so the value survives the field's stack slot being popped; the
+/// C++ `std::string` copy below is the same fix by construction.
+/// @param L The Lua state.
+/// @param idx The table's stack index.
+/// @param field The field name.
+/// @return The string, or unset when absent or not a string.
+auto table_str_field(lua_State* L, int idx, char const* field) -> std::optional<std::string> {
+  lua_getfield(L, idx, field);
+  std::optional<std::string> out;
+  if (lua_type(L, -1) == LUA_TSTRING) {
+    std::size_t len = 0;
+    char const* raw = lua_tolstring(L, -1, &len);
+    out             = std::string{raw, len};
+  }
+  lua_settop(L, -2);
+  return out;
+}
+
 /// @brief Trim ASCII whitespace from both ends.
 /// @param text The input.
 /// @return The trimmed view.
@@ -1317,21 +1357,128 @@ extern "C" auto host_ctx_context(lua_State* L) -> int {
   });
 }
 
-/// @brief `ctx.brief(opts)` — DEFERRED WITH ITS DEPENDENCY, and it says so.
+/// @brief `ctx.brief(opts)` — renders the coder brief from the plan, task,
+/// authoritative packet, and `planar-agent` schema.
 ///
-/// This is the one host function whose body is not ported. Its Zig original
-/// renders a coder brief from `brief.zig` + `schema.zig` + `state.zig` —
-/// 3,600 lines of packet parsing, agent-schema loading and template
-/// rendering that is a milestone of its own, not a corner of this one. The
-/// other twenty-four functions are complete.
+/// Port target: `host.zig`'s `hostCtxBrief`, over the `state`/`schema`/
+/// `brief` namespaces this task ported (task 6125; plan 996). All twenty-five
+/// host functions are now complete.
 ///
-/// It is REGISTERED rather than omitted, deliberately. The frozen manifest
-/// is a statement about the shape of the capability surface, and a workflow
-/// that calls `ctx.brief` should be told the compiler is missing — not told
-/// that `ctx` has no such field, which is what a missing registration looks
-/// like from Lua and is indistinguishable from a typo.
+/// `opts` table fields: `plan_id` (int, required), `task_id` (int,
+/// required), `claim_token` (string, required), `problem_statement`
+/// (string, required), `gates` (array of strings, optional).
+///
+/// The error-message mapping below matches the oracle's exactly: a
+/// `plan`/`task` shell-or-parse failure both collapse to "not found" (the
+/// oracle catches a `state.zig` `StateError` union covering both), while the
+/// authoritative-packet shell failure surfaces `run_allowlisted`'s own
+/// message unchanged (`host.zig` only wraps the JSON-parse half of that
+/// call, not the shell).
 extern "C" auto host_ctx_brief(lua_State* L) -> int {
-  return guarded(L, [] -> int { fail("ctx.brief: the brief compiler is not ported yet (plan 996; brief/schema/state)"); });
+  return guarded(L, [L] -> int {
+    auto& hs = upvalue_state(L);
+    if (lua_type(L, 1) != LUA_TTABLE) {
+      fail("ctx.brief expects an opts table");
+    }
+
+    auto const plan_id = table_int_field(L, 1, "plan_id");
+    if (!plan_id.has_value()) {
+      fail("ctx.brief: opts.plan_id required");
+    }
+    auto const task_id = table_int_field(L, 1, "task_id");
+    if (!task_id.has_value()) {
+      fail("ctx.brief: opts.task_id required");
+    }
+    auto const claim_token = table_str_field(L, 1, "claim_token");
+    if (!claim_token.has_value()) {
+      fail("ctx.brief: opts.claim_token required");
+    }
+    auto const problem_statement = table_str_field(L, 1, "problem_statement");
+    if (!problem_statement.has_value()) {
+      fail("ctx.brief: opts.problem_statement required");
+    }
+
+    std::vector<std::string> gates;
+    lua_getfield(L, 1, "gates");
+    if (lua_type(L, -1) == LUA_TTABLE) {
+      gates = argv_from_table(L, lua_absindex(L, -1));
+    }
+    lua_settop(L, -2);
+
+    auto const plan_id_str = std::format("{}", *plan_id);
+    auto const task_id_str = std::format("{}", *task_id);
+
+    std::string plan_json;
+    try {
+      plan_json = run_allowlisted(hs, "planar", {"plan", "show", plan_id_str, "--json"});
+    } catch (host_error const&) {
+      fail("ctx.brief: plan {} not found", *plan_id);
+    }
+    auto plan_parsed = state::parse_plan_show(plan_json);
+    if (!plan_parsed.has_value()) {
+      fail("ctx.brief: plan {} not found", *plan_id);
+    }
+
+    std::string task_json;
+    try {
+      task_json = run_allowlisted(hs, "planar", {"task", "show", task_id_str, "--json"});
+    } catch (host_error const&) {
+      fail("ctx.brief: task {} not found", *task_id);
+    }
+    auto task_parsed = state::parse_task_show(task_json);
+    if (!task_parsed.has_value()) {
+      fail("ctx.brief: task {} not found", *task_id);
+    }
+
+    std::string schema_json;
+    try {
+      schema_json = run_allowlisted(hs, "planar-agent", {"schema"});
+    } catch (host_error const&) {
+      fail("ctx.brief: failed to load planar-agent schema");
+    }
+    auto schema_parsed = schema::parse_raw_schema(schema_json);
+    if (!schema_parsed.has_value()) {
+      fail("ctx.brief: failed to load planar-agent schema");
+    }
+    schema::bin_schema const agent_schema{std::move(*schema_parsed)};
+
+    // Unlike plan/task above, a shell failure here is NOT remapped — the
+    // oracle only wraps the JSON-parse half of this particular call.
+    auto const packet_json   = run_allowlisted(hs, "planar", {"task", "packet", task_id_str, "--json"});
+    auto       packet_parsed = state::parse_task_packet(packet_json);
+    if (!packet_parsed.has_value()) {
+      fail("ctx.brief: authoritative packet parse failed");
+    }
+    if (!packet_parsed->ready()) {
+      fail("ctx.brief: authoritative packet not ready");
+    }
+
+    // Adapt task_show -> the task_entry shape compile_brief consumes: the
+    // title comes from the AUTHORITATIVE packet, not the plain task-show
+    // read (matches host.zig's hostCtxBrief exactly).
+    state::task_entry adapted;
+    adapted.id      = task_parsed->id;
+    adapted.plan_id = *plan_id;
+    adapted.title   = packet_parsed->input.title;
+    adapted.slug    = task_parsed->slug;
+    adapted.status  = task_parsed->status;
+
+    brief::brief_inputs inputs;
+    inputs.authoritative_packet = std::move(*packet_parsed);
+    inputs.plan                 = std::move(*plan_parsed);
+    inputs.tasks                = {adapted};
+    inputs.claim_token          = *claim_token;
+    inputs.problem_statement    = *problem_statement;
+    inputs.agent_schema         = agent_schema;
+    inputs.gates                = std::move(gates);
+
+    auto compiled = brief::compile_brief(inputs);
+    if (!compiled.has_value()) {
+      fail("ctx.brief: caller plan/task/claim does not match authoritative packet");
+    }
+    lua_pushlstring(L, compiled->data(), compiled->size());
+    return 1;
+  });
 }
 
 // ---------------------------------------------------------------------------

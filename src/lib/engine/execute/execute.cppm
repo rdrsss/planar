@@ -196,6 +196,314 @@ export auto validate_confined_rel(std::string_view rel) -> bool;
 export auto format_double(double value) -> std::string;
 
 // ---------------------------------------------------------------------------
+// state — planner state-read parsing (port target: state.zig)
+// ---------------------------------------------------------------------------
+
+/// @brief Pure JSON-decode helpers for the planner reads `ctx.brief` needs.
+///
+/// Port target: `zig/src/cmd/planar-execute/state.zig`. Only the slice that
+/// feeds `ctx.brief` is ported — `planShow`, `taskShow`, and the
+/// `TaskPacket` family. The oracle's other `state.zig` helpers
+/// (`recommendStrategy`'s typed struct, `contextList`, `claimStatus`,
+/// `testSpecStatus`, `questionAdd`, `taskTouchesList`'s typed struct) exist
+/// there ONLY to serve `main.zig`'s retired orchestration loop
+/// (`agent`/`parallel`/`pipeline`/`workflow` primitives) — the very
+/// re-entrant harness plan 633 D5 exists to keep out of this binary. The
+/// registered `ctx.plan_show` / `ctx.task_show` / `ctx.task_touches` /
+/// `ctx.recommend_strategy` host functions confirm this: in the CURRENT
+/// oracle (`host.zig`) all four shell generically and push raw parsed JSON,
+/// never touching these typed structs. Porting them here would be
+/// dead code with no consumer on the ported host surface.
+///
+/// Every read is PURE (no subprocess call): the caller shells the binary via
+/// `run_allowlisted` in `host.cpp` and hands the captured stdout to the
+/// parser below, mirroring `state.zig`'s own `spawnPlanar` / parse split
+/// (`parseTaskPacket` was already factored out there for the same reason:
+/// testability without a live `planar`).
+namespace state {
+
+/// @brief Why a `state::parse_*` call failed.
+///
+/// One enumerator, matching `schema_parse_error` and `json_dom::json_parse_error`'s
+/// reasoning: every caller here maps any failure to the same oracle-shaped
+/// diagnostic (`ctx.brief: plan <id> not found`, etc.), so a richer error set
+/// would invite a distinction no caller makes.
+export enum class state_parse_error : std::uint8_t {
+  malformed, ///< The bytes are not valid JSON, or a required field is
+             ///< missing or the wrong type.
+};
+
+/// @brief Minimal view of `planar plan show <id> --json`. Port target:
+/// `state.zig`'s `PlanShow`.
+export struct plan_show {
+  std::int64_t                id = 0;
+  std::string                 title;
+  std::string                 status;
+  std::optional<std::string>  slug;
+  std::optional<std::int64_t> parent_plan_id;
+};
+
+/// @brief Minimal view of `planar task show <id> --json`. Port target:
+/// `state.zig`'s `TaskShow`.
+export struct task_show {
+  std::int64_t               id = 0;
+  std::optional<std::string> slug;
+  std::string                status;
+};
+
+/// @brief One task, adapted for `brief::brief_inputs::tasks`. Port target:
+/// `state.zig`'s `TaskEntry`.
+export struct task_entry {
+  std::int64_t               id      = 0;
+  std::int64_t               plan_id = 0;
+  std::string                title;
+  std::optional<std::string> slug;
+  std::string                status;
+};
+
+/// @brief One row of `planar task packet <id> --json`'s evidence arrays.
+/// Port target: `state.zig`'s `PacketEvidence`.
+export struct packet_evidence {
+  std::string  kind;
+  std::int64_t id = 0;
+  std::string  locator;
+  std::string  text;
+  std::string  display_label;
+  std::string  source_digest;
+  std::string  current_digest;
+  bool         required = false;
+  bool         covered  = false;
+  std::string  status;
+  std::string  provenance;
+  std::string  materializer_version;
+  std::string  current_materializer_version;
+  std::string  freshness = "current";
+};
+
+/// @brief The `input` object of `planar task packet <id> --json`. Port
+/// target: `state.zig`'s `TaskPacketInput`.
+export struct task_packet_input {
+  std::int64_t                 task_id = 0;
+  std::string                  status;
+  std::string                  title;
+  std::string                  body;
+  std::string                  next_action;
+  std::string                  acceptance_criteria;
+  std::vector<packet_evidence> owning_plans;
+  std::vector<packet_evidence> anchor_plans;
+  std::vector<packet_evidence> citations;
+  std::vector<packet_evidence> decisions;
+  std::vector<packet_evidence> questions;
+  std::vector<packet_evidence> scenarios;
+  std::vector<packet_evidence> dependencies;
+  std::vector<packet_evidence> touches;
+  std::vector<packet_evidence> claims;
+  std::vector<packet_evidence> validation_gates;
+  std::vector<packet_evidence> facts;
+};
+
+/// @brief The whole authoritative packet document. Port target:
+/// `state.zig`'s `TaskPacket`.
+export struct task_packet {
+  task_packet_input        input;
+  std::string              digest;
+  std::vector<std::string> reasons;
+
+  /// @brief Whether the packet is ready to compile a brief from.
+  /// @return `true` when `reasons` is empty, matching `TaskPacket.ready()`.
+  [[nodiscard]] auto ready() const -> bool {
+    return reasons.empty();
+  }
+};
+
+/// @brief Parse `planar plan show <id> --json`'s stdout.
+/// @param json The captured stdout.
+/// @return The decoded value, or `state_parse_error::malformed`.
+export auto parse_plan_show(std::string_view json) -> std::expected<plan_show, state_parse_error>;
+
+/// @brief Parse `planar task show <id> --json`'s stdout.
+/// @param json The captured stdout.
+/// @return The decoded value, or `state_parse_error::malformed`.
+export auto parse_task_show(std::string_view json) -> std::expected<task_show, state_parse_error>;
+
+/// @brief Parse `planar task packet <id> --json`'s stdout.
+/// @param json The captured stdout.
+/// @return The decoded value, or `state_parse_error::malformed`.
+export auto parse_task_packet(std::string_view json) -> std::expected<task_packet, state_parse_error>;
+
+} // namespace state
+
+// ---------------------------------------------------------------------------
+// schema — CLI schema ingestion (port target: schema.zig)
+// ---------------------------------------------------------------------------
+
+/// @brief Pure JSON-decode helpers over `<bin> schema`'s flat catalog.
+///
+/// Port target: `zig/src/cmd/planar-execute/schema.zig`. As with `state`
+/// above, the shelling is `host.cpp`'s job (`run_allowlisted(hs,
+/// "planar-agent", {"schema"})`); this namespace is the pure parse half.
+namespace schema {
+
+/// @brief Why a `schema::parse_raw_schema` call failed. See
+/// `state::state_parse_error` for the one-enumerator reasoning.
+export enum class schema_parse_error : std::uint8_t {
+  malformed,
+};
+
+/// @brief One flag on a command. Port target: `schema.zig`'s `FlagEntry`.
+///
+/// The Zig field name `long` is a C++ keyword; renamed `long_name` here —
+/// the JSON wire key stays `"long"` (see `parse_raw_schema`'s
+/// implementation).
+export struct flag_entry {
+  std::string                long_name;
+  std::vector<std::string>   aliases;
+  std::optional<std::string> short_name;
+  bool                       required = false;
+  std::string                description;
+};
+
+/// @brief One command entry. Port target: `schema.zig`'s `CommandEntry`.
+export struct command_entry {
+  std::string              name;
+  std::string              command;
+  std::vector<std::string> subcommands;
+  std::vector<flag_entry>  flags;
+  bool                     hidden = false;
+};
+
+/// @brief The top-level `<bin> schema` document. Port target: `schema.zig`'s
+/// `RawSchema`.
+export struct raw_schema {
+  std::uint32_t              schema_version = 0;
+  std::string                layout;
+  std::string                root;
+  std::vector<command_entry> commands;
+};
+
+/// @brief A queryable wrapper over a parsed `raw_schema`. Port target:
+/// `schema.zig`'s `BinSchema`.
+export class bin_schema {
+public:
+  bin_schema() = default;
+
+  /// @brief Wrap a decoded `raw_schema`.
+  /// @param raw The decoded document. Copied in (the C++ tree has no
+  /// arena-borrow lifetime to preserve — `RawSchema`'s Zig doc's "borrows
+  /// from the Parsed arena" caveat does not apply here).
+  explicit bin_schema(raw_schema raw) : raw_(std::move(raw)) {
+  }
+
+  /// @return The binary root name (e.g. `"planar-agent"`).
+  [[nodiscard]] auto root() const -> std::string const& {
+    return raw_.root;
+  }
+
+  /// @return The schema format version.
+  [[nodiscard]] auto schema_version() const -> std::uint32_t {
+    return raw_.schema_version;
+  }
+
+  /// @return The full flat command list.
+  [[nodiscard]] auto commands() const -> std::vector<command_entry> const& {
+    return raw_.commands;
+  }
+
+  /// @brief Look up a command by its full path string.
+  /// @param full_path e.g. `"planar-agent complete"`.
+  /// @return A pointer into `commands()`, or `nullptr` when absent.
+  [[nodiscard]] auto find_command(std::string_view full_path) const -> command_entry const* {
+    for (auto const& cmd : raw_.commands) {
+      if (cmd.command == full_path) {
+        return &cmd;
+      }
+    }
+    return nullptr;
+  }
+
+private:
+  raw_schema raw_;
+};
+
+/// @brief Parse `<bin> schema`'s stdout.
+/// @param json The captured stdout.
+/// @return The decoded value, or `schema_parse_error::malformed`.
+export auto parse_raw_schema(std::string_view json) -> std::expected<raw_schema, schema_parse_error>;
+
+} // namespace schema
+
+// ---------------------------------------------------------------------------
+// brief — the pure coder-brief compiler (port target: brief.zig)
+// ---------------------------------------------------------------------------
+
+/// @brief The pure, deterministic coder-brief compiler behind `ctx.brief`.
+///
+/// Port target: `zig/src/cmd/planar-execute/brief.zig`. `compile_brief`
+/// performs no subprocess call, no filesystem I/O and no DB access; every
+/// input is pre-gathered by the caller (`host.cpp`'s `host_ctx_brief`).
+namespace brief {
+
+/// @brief A single verbatim spec-section citation. Port target: `brief.zig`'s
+/// `SpecCitation`.
+export struct spec_citation {
+  std::string                path;
+  std::optional<std::string> verbatim_slice;
+};
+
+/// @brief A decision the coder must follow without re-litigating. Port
+/// target: `brief.zig`'s `LockedDecision`.
+export struct locked_decision {
+  std::string id;
+  std::string text;
+};
+
+/// @brief A single prior-stage context record. Port target: `brief.zig`'s
+/// `ContextRef`.
+export struct context_ref {
+  std::string kind;
+  std::string body;
+};
+
+/// @brief All inputs to `compile_brief`. Port target: `brief.zig`'s
+/// `BriefInputs`.
+export struct brief_inputs {
+  /// @brief When present, all implementation context is rendered from this
+  /// authoritative packet. The live `ctx.brief` caller always sets it.
+  std::optional<state::task_packet> authoritative_packet;
+
+  state::plan_show               plan;
+  std::vector<state::task_entry> tasks;
+
+  std::string claim_token;
+  std::string problem_statement;
+
+  std::vector<spec_citation>   spec_citations;
+  std::vector<locked_decision> locked_decisions;
+
+  schema::bin_schema agent_schema;
+
+  std::vector<std::string> gates;
+
+  std::optional<std::string> context_capsule;
+  std::vector<context_ref>   context_records;
+};
+
+/// @brief Why `compile_brief` refused to compile.
+export enum class brief_error : std::uint8_t {
+  /// @brief The caller's `plan` / `tasks` / `claim_token` do not match the
+  /// authoritative packet's identity. Port target: `brief.zig`'s
+  /// `error.AuthoritativeIdentityMismatch`.
+  authoritative_identity_mismatch,
+};
+
+/// @brief Assemble a methodology-compliant coder brief from `inputs`.
+/// @param inputs The pre-gathered inputs.
+/// @return The full brief text, or `brief_error::authoritative_identity_mismatch`.
+export auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, brief_error>;
+
+} // namespace brief
+
+// ---------------------------------------------------------------------------
 // Running a workflow
 // ---------------------------------------------------------------------------
 

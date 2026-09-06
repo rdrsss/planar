@@ -42,9 +42,13 @@
 /// function host surface and the run loop. Exit code 64 is gone from this
 /// binary — a `run` over a readable workflow now runs it.
 ///
-/// One host function's BODY remains unported and says so at the point of
-/// call: `ctx.brief` raises "the brief compiler is not ported yet". See
-/// src/lib/engine/execute/CMakeLists.txt.
+/// All twenty-five host functions are complete as of task 6125, including
+/// `ctx.brief`, whose body compiles a real coder brief from the ported
+/// `state`/`schema`/`brief` slice of the retired Zig harness's
+/// `state.zig`/`schema.zig`/`brief.zig`. See
+/// src/lib/engine/execute/CMakeLists.txt for exactly which slice — the
+/// harness-only helpers those files also carried are deliberately not
+/// ported (no consumer on this binary's host surface).
 ///
 /// ## What must NOT be added here later
 ///

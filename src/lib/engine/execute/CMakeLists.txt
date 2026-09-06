@@ -35,6 +35,14 @@
 #                (`append_json_string`). `flow.result` marshals a Lua table
 #                to JSON and needs exactly that; writing an eleventh escaper
 #                here was not an option (see json_text/CMakeLists.txt).
+#   json_dom   — added at task 6125 for the `state`/`schema` parse helpers
+#                behind `ctx.brief`: `planar plan show`/`task show`/`task
+#                packet --json` and `planar-agent schema` all need typed
+#                field extraction from a decoded document, and json_dom is
+#                the one JSON DOM in the tree (D19) rather than a twelfth
+#                bespoke recursive-descent reader. It is a layer-1 leaf with
+#                no db import of its own, so this does not touch the
+#                no-SQLite exception above.
 #
 # That is the whole list. No db. No cli — planar-execute parses argv by hand
 # and has no `schema` catalog, which is why zig's capability_boundary_test
@@ -54,15 +62,18 @@
 #
 # --- what is ported and what is not ---------------------------------------
 #
-# Twenty-four of the twenty-five host functions are complete. The exception
-# is `ctx.brief`, whose Zig original renders a coder brief out of
-# zig/src/cmd/planar-execute/{brief,schema,state}.zig — 3,600 lines of
-# authoritative-packet parsing, agent-schema loading and template rendering.
-# Deferred WITH its dependency, and REGISTERED rather than omitted: the
-# frozen manifest is a statement about the surface's shape, and a workflow
-# calling it gets "the brief compiler is not ported yet" rather than the
-# nil-field error an absent registration produces (which is indistinguishable
-# from a typo).
+# All twenty-five host functions are complete as of task 6125. `ctx.brief`
+# was the last: its Zig original renders a coder brief out of
+# zig/src/cmd/planar-execute/{brief,schema,state}.zig. Only the SLICE of
+# `state.zig`/`schema.zig` that `ctx.brief` actually consumes is ported
+# (`planShow`, `taskShow`, the `TaskPacket` family, `loadSchema`/`BinSchema`)
+# — see `execute.cppm`'s `state` namespace doc comment for why the oracle's
+# remaining `state.zig` helpers (`recommendStrategy`'s typed struct,
+# `contextList`, `claimStatus`, `testSpecStatus`, `questionAdd`,
+# `taskTouchesList`'s typed struct) serve ONLY `main.zig`'s retired
+# orchestration loop and have no consumer on this ported host surface;
+# porting them would be dead code behind the very re-entrant-harness door
+# plan 633 D5 exists to keep shut.
 #
 # STDOUT TERMINATOR CONTRACT (task 6114): `run_workflow` writes a COMPLETE
 # stdout payload — the JSON document plus its trailing newline — directly to
@@ -74,8 +85,12 @@ planar_module(engine_execute
   SOURCES
     manifest.cpp
     host.cpp
+    state.cpp
+    schema.cpp
+    brief.cpp
   DEPENDS
-    json_text)
+    json_text
+    json_dom)
 
 target_link_libraries(planar_engine_execute PRIVATE lua::lua)
 
