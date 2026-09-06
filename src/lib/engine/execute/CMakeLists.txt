@@ -62,15 +62,18 @@
 #
 # --- what is ported and what is not ---------------------------------------
 #
-# Twenty-four of the twenty-five host functions are complete. The exception
-# is `ctx.brief`, whose Zig original renders a coder brief out of
-# zig/src/cmd/planar-execute/{brief,schema,state}.zig — 3,600 lines of
-# authoritative-packet parsing, agent-schema loading and template rendering.
-# Deferred WITH its dependency, and REGISTERED rather than omitted: the
-# frozen manifest is a statement about the surface's shape, and a workflow
-# calling it gets "the brief compiler is not ported yet" rather than the
-# nil-field error an absent registration produces (which is indistinguishable
-# from a typo).
+# All twenty-five host functions are complete as of task 6125. `ctx.brief`
+# was the last: its Zig original renders a coder brief out of
+# zig/src/cmd/planar-execute/{brief,schema,state}.zig. Only the SLICE of
+# `state.zig`/`schema.zig` that `ctx.brief` actually consumes is ported
+# (`planShow`, `taskShow`, the `TaskPacket` family, `loadSchema`/`BinSchema`)
+# — see `execute.cppm`'s `state` namespace doc comment for why the oracle's
+# remaining `state.zig` helpers (`recommendStrategy`'s typed struct,
+# `contextList`, `claimStatus`, `testSpecStatus`, `questionAdd`,
+# `taskTouchesList`'s typed struct) serve ONLY `main.zig`'s retired
+# orchestration loop and have no consumer on this ported host surface;
+# porting them would be dead code behind the very re-entrant-harness door
+# plan 633 D5 exists to keep shut.
 #
 # STDOUT TERMINATOR CONTRACT (task 6114): `run_workflow` writes a COMPLETE
 # stdout payload — the JSON document plus its trailing newline — directly to
@@ -84,6 +87,7 @@ planar_module(engine_execute
     host.cpp
     state.cpp
     schema.cpp
+    brief.cpp
   DEPENDS
     json_text
     json_dom)

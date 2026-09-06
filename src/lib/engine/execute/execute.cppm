@@ -433,6 +433,77 @@ export auto parse_raw_schema(std::string_view json) -> std::expected<raw_schema,
 } // namespace schema
 
 // ---------------------------------------------------------------------------
+// brief — the pure coder-brief compiler (port target: brief.zig)
+// ---------------------------------------------------------------------------
+
+/// @brief The pure, deterministic coder-brief compiler behind `ctx.brief`.
+///
+/// Port target: `zig/src/cmd/planar-execute/brief.zig`. `compile_brief`
+/// performs no subprocess call, no filesystem I/O and no DB access; every
+/// input is pre-gathered by the caller (`host.cpp`'s `host_ctx_brief`).
+namespace brief {
+
+/// @brief A single verbatim spec-section citation. Port target: `brief.zig`'s
+/// `SpecCitation`.
+export struct spec_citation {
+  std::string                path;
+  std::optional<std::string> verbatim_slice;
+};
+
+/// @brief A decision the coder must follow without re-litigating. Port
+/// target: `brief.zig`'s `LockedDecision`.
+export struct locked_decision {
+  std::string id;
+  std::string text;
+};
+
+/// @brief A single prior-stage context record. Port target: `brief.zig`'s
+/// `ContextRef`.
+export struct context_ref {
+  std::string kind;
+  std::string body;
+};
+
+/// @brief All inputs to `compile_brief`. Port target: `brief.zig`'s
+/// `BriefInputs`.
+export struct brief_inputs {
+  /// @brief When present, all implementation context is rendered from this
+  /// authoritative packet. The live `ctx.brief` caller always sets it.
+  std::optional<state::task_packet> authoritative_packet;
+
+  state::plan_show               plan;
+  std::vector<state::task_entry> tasks;
+
+  std::string claim_token;
+  std::string problem_statement;
+
+  std::vector<spec_citation>   spec_citations;
+  std::vector<locked_decision> locked_decisions;
+
+  schema::bin_schema agent_schema;
+
+  std::vector<std::string> gates;
+
+  std::optional<std::string> context_capsule;
+  std::vector<context_ref>   context_records;
+};
+
+/// @brief Why `compile_brief` refused to compile.
+export enum class brief_error : std::uint8_t {
+  /// @brief The caller's `plan` / `tasks` / `claim_token` do not match the
+  /// authoritative packet's identity. Port target: `brief.zig`'s
+  /// `error.AuthoritativeIdentityMismatch`.
+  authoritative_identity_mismatch,
+};
+
+/// @brief Assemble a methodology-compliant coder brief from `inputs`.
+/// @param inputs The pre-gathered inputs.
+/// @return The full brief text, or `brief_error::authoritative_identity_mismatch`.
+export auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, brief_error>;
+
+} // namespace brief
+
+// ---------------------------------------------------------------------------
 // Running a workflow
 // ---------------------------------------------------------------------------
 
