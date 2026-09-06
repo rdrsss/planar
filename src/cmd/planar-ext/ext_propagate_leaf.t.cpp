@@ -317,11 +317,79 @@ TEST_CASE("ext propagate --dry-run builds no adapter, sends nothing, and reports
   CHECK(scalar(fx, "select count(*) from external_links") == 0);
 }
 
-TEST_CASE("ext propagate refuses a Jira system explicitly rather than mis-executing the parent-issue path",
-          "[cmd][ext][propagate][jira-refusal]") {
-  issue_counter                 counter;
-  planar::http::fixture::server remote(make_respond(counter, 422));
-  auto const                    fx = make_fixture("jira");
+TEST_CASE("ext propagate runs the generic jira-epic tree walk end to end, no longer refusing (task 6451)",
+          "[cmd][ext][propagate][jira-generic]") {
+  // A Jira-shaped 201 response for every issue create -- the generic
+  // per-entity loop (`propagate_one_entity`) is the SAME core
+  // `propagate-one` uses, so this is the same shape
+  // `ext_propagate_one_leaf.t.cpp`'s jira case exercises.
+  planar::http::fixture::server remote([](const planar::http::fixture::captured_request&) {
+    return planar::http::fixture::canned_response{
+        .status = 201, .body = R"({"key":"DEMO-77"})", .content_type = "application/json"};
+  });
+  auto const fx = make_fixture("jira");
+  migrate_fixture(fx);
+  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
+                        "--auth-env", "DEMO_TOKEN"})
+              .code == 0);
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
+  REQUIRE(conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (1, 'global', 1, 'Demo task')").has_value());
+  // `walk_tree` reaches a task only through a `derives-from` entity_links
+  // row, NOT `tasks.plan_id` -- see `descendants.cppm`'s header.
+  REQUIRE(conn->execute("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                        "values ('task', 1, 'plan', 1, 'derives-from')")
+              .has_value());
+
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo", "--json"});
+  CHECK(ran.code == 0);
+  CHECK(ran.err.empty());
+  CHECK(ran.out.contains(R"("strategy":"jira-epic")"));
+  CHECK(ran.out.contains(R"("created":2)"));
+  CHECK(ran.out.contains(R"("failed":0)"));
+  CHECK(remote.request_count() == 2);
+  CHECK(scalar(fx, "select count(*) from external_links") == 2);
+  // Only the ANCHOR caches the strategy.
+  CHECK(text_scalar(fx, "select config_json from external_links where entity_kind = 'plan' and entity_id = 1") ==
+        R"({"strategy":"jira-epic"})");
+  CHECK(text_scalar(fx, "select config_json from external_links where entity_kind = 'task' and entity_id = 1").empty());
+
+  // A repeat run over the SAME feature is idempotent: every entity already
+  // has a mirror link, so the generic loop's `propagate_one_entity` call
+  // hits the idempotency gate and reports "skipped", sending no new
+  // requests. This is the generic-loop counterpart of the dedicated
+  // `parent_issue` engine's own "a repeated ext propagate SKIPS every
+  // entity" case above -- the two paths share `propagate_one_entity`, but
+  // nothing here proved that WITHOUT this second run.
+  auto const repeat = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo", "--json"});
+  CHECK(repeat.code == 0);
+  CHECK(repeat.out.contains(R"("created":0)"));
+  CHECK(repeat.out.contains(R"("skipped":2)"));
+  CHECK(repeat.out.contains(R"("op":"skipped")"));
+  CHECK_FALSE(repeat.out.contains(R"("op":"created")"));
+  CHECK(remote.request_count() == 2); // unchanged -- the repeat sent nothing new.
+  CHECK(scalar(fx, "select count(*) from external_links") == 2);
+}
+
+TEST_CASE("ext propagate --dry-run on the generic jira-epic loop reports op:\"planned\", never \"failed\" (task 6451)",
+          "[cmd][ext][propagate][jira-generic][dry-run]") {
+  // Regression coverage for a real bug this cycle's own manual reproduction
+  // caught (the fast Catch2 suite had NO case exercising a dry-run generic
+  // loop, so this specific defect was invisible until the slow Zig oracle
+  // parity suite's "reimplemented ext propagate yields same results as
+  // iterating propagate-one" case failed): `op_text`'s switch had no arm
+  // for the new `parent_issue::op::planned` enumerator, so every dry-run
+  // row fell into the `failed`/`default` case and rendered `op:"failed"`
+  // with a `"<template-kind>"` external_id -- the exact SHAPE of a planned
+  // row, mislabeled. `remote.request_count() == 0` proves this is asserted
+  // under dry-run, where no create ever reaches the network.
+  planar::http::fixture::server remote(
+      [](const planar::http::fixture::captured_request&) -> planar::http::fixture::canned_response {
+        FAIL("dry-run must not contact the remote");
+        return {.status = 500, .body = "{}", .content_type = "application/json"};
+      });
+  auto const fx = make_fixture("jira-dryplanned");
   migrate_fixture(fx);
   REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
                         "--auth-env", "DEMO_TOKEN"})
@@ -330,12 +398,99 @@ TEST_CASE("ext propagate refuses a Jira system explicitly rather than mis-execut
   REQUIRE(conn.has_value());
   REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
 
-  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo"});
-  CHECK(ran.code == 2);
-  CHECK(ran.err.contains("jira-epic"));
-  CHECK(ran.err.contains("not yet implemented in planar-ext"));
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "jira-demo", "--dry-run", "--json"});
+  CHECK(ran.code == 0);
+  CHECK(ran.err.empty());
+  CHECK(ran.out.contains(R"("op":"planned")"));
+  CHECK_FALSE(ran.out.contains(R"("op":"failed")"));
+  CHECK(ran.out.contains(R"("external_id":"<epic>")"));
+  CHECK(ran.out.contains(R"("failed":0)"));
   CHECK(remote.request_count() == 0);
   CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+TEST_CASE("ext propagate --github-strategy overrides auto-selection: same fixture, two different outcomes (task 6451)",
+          "[cmd][ext][propagate][github-strategy]") {
+  // A zero-touched-repo GitHub feature auto-selects `github-zero-repo` (a
+  // generic-loop bucket, task 6451) and succeeds by posting through the
+  // SYSTEM's own registered project -- it never needs a touched repo at
+  // all. `--github-strategy parent-issue` forces the DIFFERENT, dedicated
+  // `parent_issue::propagate_parent_issue` engine instead, which DOES need
+  // one -- so the identical fixture must diverge: auto succeeds, override
+  // refuses. If the override were a no-op this pair would be identical.
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond(counter, 422));
+  auto const                    fx = make_fixture("ghstrategy");
+  migrate_fixture(fx);
+  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-strat", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"})
+              .code == 0);
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(
+      conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-strat'", remote.base_url()))
+          .has_value());
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
+
+  // Auto-selected: `github-zero-repo`, a generic-loop bucket -- succeeds.
+  auto const auto_ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-strat", "--json"});
+  CHECK(auto_ran.code == 0);
+  CHECK(auto_ran.out.contains(R"("strategy":"github-zero-repo")"));
+  CHECK(scalar(fx, "select count(*) from external_links") == 1);
+  REQUIRE(conn->execute("delete from external_links").has_value());
+
+  // Same fixture, `--github-strategy parent-issue`: forces the dedicated
+  // engine, which refuses on the missing touched repo instead.
+  auto const override_ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-strat", "--github-strategy", "parent-issue"});
+  CHECK(override_ran.code == 2);
+  CHECK(override_ran.err.contains("needs a touched repo"));
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+TEST_CASE("ext propagate --github-strategy projects-v2 refuses by decision 1001, never reaching the engine (task 6451)",
+          "[cmd][ext][propagate][github-strategy]") {
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond(counter, 422));
+  auto const                    fx = make_fixture("ghstratv2");
+  seed_single_repo(fx, remote.base_url());
+
+  auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--github-strategy", "projects-v2"});
+  CHECK(ran.code == 2);
+  CHECK(ran.err.contains("multiple repos"));
+  CHECK(ran.err.contains("decision 1001"));
+  CHECK(remote.request_count() == 0);
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+TEST_CASE("ext propagate --github-strategy validates its value, its system kind, and its exclusivity with --restrategize",
+          "[cmd][ext][propagate][github-strategy]") {
+  issue_counter                 counter;
+  planar::http::fixture::server remote(make_respond(counter, 422));
+  auto const                    fx = make_fixture("ghstratbad");
+  seed_single_repo(fx, remote.base_url());
+
+  auto const bad_value = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--github-strategy", "bogus"});
+  CHECK(bad_value.code == 2);
+  CHECK(bad_value.err.contains("invalid --github-strategy"));
+
+  auto const both_flags =
+      dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--github-strategy", "parent-issue", "--restrategize"});
+  CHECK(both_flags.code == 2);
+  CHECK(both_flags.err.contains("mutually exclusive"));
+
+  // A Jira system, told to use a GitHub-only override.
+  auto const              fx2 = make_fixture("ghstratjira");
+  migrate_fixture(fx2);
+  REQUIRE(dispatch(fx2, {"ext", "register", "jira", "jira-x", "--base-url", "https://x.atlassian.net", "--project", "X",
+                        "--auth-env", "DEMO_TOKEN"})
+              .code == 0);
+  auto conn2 = planar::db::connection::open(fx2.db_path.string());
+  REQUIRE(conn2.has_value());
+  REQUIRE(
+      conn2->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
+  auto const wrong_kind =
+      dispatch(fx2, {"ext", "propagate", "1", "--system", "jira-x", "--github-strategy", "parent-issue"});
+  CHECK(wrong_kind.code == 2);
+  CHECK(wrong_kind.err.contains("--github-strategy is only valid for github-issues systems"));
 }
 
 TEST_CASE("ext propagate refuses a multi-repo GitHub feature by name (projects-v2 was cut, decision 1001)",

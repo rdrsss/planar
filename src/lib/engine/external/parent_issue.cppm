@@ -67,10 +67,23 @@ import planar.engine.external.link;
 namespace planar::engine::external::parent_issue {
 
 /// @brief The per-entity outcome the engine reports.
+///
+/// `planned` is never produced by THIS engine — `propagate_parent_issue`'s
+/// own dry-run reports `created` (see `propagate_parent_issue.cpp`'s
+/// dry-run branch, faithfully reproducing the oracle's `parent_issue.zig`,
+/// which does the same). It exists here only so the `cmd` layer can reuse
+/// this same `op`/`report`/`entity_result` shape to render the GENERIC
+/// per-entity tree-walk strategies (`jira-epic`, `github-zero-repo`,
+/// `github-tracking-issue`) in `planar.cmd.planar_ext.handlers.propagate`,
+/// whose shared core (`propagate_one_entity`, ported from the oracle's
+/// `propagateOneEntity`) DOES report `"planned"` under `--dry-run` — see
+/// that function's header on why the oracle's two dry-run conventions
+/// genuinely disagree (task 6451).
 export enum class op : std::uint8_t {
   created,
   skipped,
   failed,
+  planned,
 };
 
 /// @brief One row in a `report`'s `results`.

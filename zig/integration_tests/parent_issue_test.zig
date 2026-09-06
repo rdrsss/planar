@@ -72,42 +72,32 @@ test "ext propagate --github-strategy parent-issue dispatches to the new engine 
     try std.testing.expect(std.mem.indexOf(u8, stderr, "needs a touched repo") != null);
 }
 
-test "ext propagate --github-strategy projects-v2 dry-run runs the engine (task 2349)" {
-    const gpa = std.testing.allocator;
-    var suite = harness.Suite.init(gpa);
-    defer suite.deinit();
-
-    var arena_backing = std.heap.ArenaAllocator.init(gpa);
-    defer arena_backing.deinit();
-    const arena = arena_backing.allocator();
-
-    const reg_out = suite.mustRunExt(&.{
-        "ext",       "register",  "github",     "gh-p2",
-        "--project", "acme/demo", "--auth-env", "PLANAR_TEST_GH_TOKEN",
-    });
-    gpa.free(reg_out);
-
-    const plan = suite.mustRunJSON(PlanJSON, arena, &.{
-        "plan", "create", "--json", "projects-v2 smoke plan",
-    });
-    const plan_id_s = try std.fmt.allocPrint(arena, "{d}", .{plan.id});
-
-    // Dry-run with no touched repos: the projects-v2 engine still runs and
-    // reports the anchor as a planned creation. We must NOT see the legacy
-    // NotImplemented message (Cycle B''' closure).
-    const out = suite.mustRunExtWith(
-        &.{
-            "ext",         "propagate", plan_id_s,
-            "--system",    "gh-p2",     "--github-strategy",
-            "projects-v2", "--dry-run",
-        },
-        &.{.{ .key = "PLANAR_TEST_GH_TOKEN", .value = "dummy-token" }},
-    );
-    defer gpa.free(out);
-
-    if (std.mem.indexOf(u8, out, "not yet ported") != null) {
-        std.debug.print("projects-v2 still rejected as not-yet-ported:\n{s}\n", .{out});
-        try std.testing.expect(false);
-    }
-    try std.testing.expect(std.mem.indexOf(u8, out, "github-projects-v2") != null);
+// RETIRED against decision 1001 (accepted; plan 1006, task 6451).
+//
+// This test asserted `ext propagate --github-strategy projects-v2 --dry-run`
+// RUNS the engine and reports the anchor as a planned creation -- the
+// pre-cutover oracle contract from task 2349. Decision 1001 permanently cut
+// the multi-repo `projects_v2` GitHub strategy from the C++ rewrite: Planar
+// does not replicate the context plane into a GitHub Projects board. The
+// C++ `planar-ext ext propagate` (`src/cmd/planar-ext/handlers/
+// propagate.cpp`) now refuses `github-strategy projects-v2` explicitly and
+// unconditionally, citing decision 1001 in its own error text -- that
+// refusal is the CORRECT, deliberate behavior, not a gap to close. This
+// test is not "fixed" to assert the refusal instead, because the point of
+// retiring it here (rather than converting it) is that the ORIGINAL claim
+// -- "the engine runs" -- is no longer a claim this codebase makes about
+// itself at all; asserting the negative in its place would silently reuse
+// a name that used to mean something else.
+//
+// The refusal itself IS covered, by
+// `ext_propagate_leaf.t.cpp`'s "ext propagate --github-strategy projects-v2
+// refuses by decision 1001, never reaching the engine (task 6451)" Catch2
+// case, run under `ctest -L cmd_planar_ext`. `select_strategy` still
+// REPORTS the `github-projects-v2` bucket name for a >=2-repo GitHub
+// feature (see `ext_strategy.cppm`'s header) precisely so `propagate.cpp`
+// can name the refusal reason instead of mis-executing or silently
+// downgrading the feature -- that reporting path is preserved and is
+// itself exercised by `ext_strategy_leaves.t.cpp`.
+test "ext propagate --github-strategy projects-v2 dry-run runs the engine (task 2349) -- RETIRED, decision 1001" {
+    return error.SkipZigTest;
 }

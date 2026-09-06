@@ -733,6 +733,11 @@ auto propagate_parent_issue_with_repo(db::connection& conn, gh_client& client, s
     case op::failed:
       ++rep.failed;
       break;
+    case op::planned:
+      // Unreachable from this engine — see `op`'s doc comment in
+      // parent_issue.cppm. Kept exhaustive rather than defaulted so a
+      // future genuine emitter here is forced to pick a bucket.
+      break;
     }
   }
   rep.results = std::move(results);
