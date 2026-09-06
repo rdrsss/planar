@@ -1,0 +1,278 @@
+name: Mt-KaHyPar Master CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  mt_kahypar_compiler_version_test:
+    name: Ubuntu Build
+    strategy:
+      matrix:
+        compiler: [ { os: ubuntu-22.04, cpp: g++-11, cc: gcc-11, install_cmd: g++-11 gcc-11 },
+                    { os: ubuntu-24.04, cpp: g++-14, cc: gcc-14, install_cmd: g++-14 gcc-14 },
+                    { os: ubuntu-24.04, cpp: clang++, cc: clang, install_cmd: clang }  ]
+
+    runs-on: ${{ matrix.compiler.os }}
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install libtbb-dev libhwloc-dev lcov gcovr ${{ matrix.compiler.install_cmd }}
+
+      - name: Install Mt-KaHyPar
+        env:
+          CC: ${{ matrix.compiler.cc }}
+          CXX: ${{ matrix.compiler.cpp }}
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=default -DKAHYPAR_CI_BUILD=ON
+          make -j4 MtKaHyPar
+
+  mt_kahypar_static_build:
+    name: Statically Linked Build
+    runs-on: ubuntu-24.04
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install libtbb-dev libhwloc-dev libudev-dev
+
+      - name: Install Mt-KaHyPar
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=minimal -DKAHYPAR_CI_BUILD=ON -DBUILD_SHARED_LIBS=OFF -DKAHYPAR_STATIC_LINK_DEPENDENCIES=ON
+          make -j4 MtKaHyPar
+          if [[ $(ldd mt-kahypar/application/MtKaHyPar | grep hwloc) ]]; then
+            echo "Error: hwloc is dynamically linked"
+            exit 1
+          fi
+          if [[ $(ldd mt-kahypar/application/MtKaHyPar | grep boost) ]]; then
+            echo "Error: boost is dynamically linked"
+            exit 1
+          fi
+
+  mt_kahypar_build_minimal_depencies:
+    name: Build With Minimal Dependencies
+    runs-on: ubuntu-24.04
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install libtbb-dev
+
+      - name: Install Mt-KaHyPar
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=default -DKAHYPAR_CI_BUILD=ON -DKAHYPAR_DISABLE_HWLOC=ON -DKAHYPAR_DISABLE_GROWT=ON -DKAHYPAR_DISABLE_PARLAY=ON -DKAHYPAR_PYTHON=ON
+          make -j4 MtKaHyPar
+          make -j4 mtkahypar
+          make -j4 mtkahypar_python
+
+  mt_kahypar_test_suite:
+    name: Test Suite
+    runs-on: ubuntu-22.04  # note: stay on 22.04 since lcov behaves weird on 24.04
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install libtbb-dev libhwloc-dev lcov gcovr
+
+      - name: Install Mt-KaHyPar Test Suite
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=dev -DCMAKE_BUILD_TYPE=DEBUG -DKAHYPAR_CI_BUILD=ON -DKAHYPAR_USE_GCOV=ON
+          make -j4 mtkahypar_tests
+
+      - name: Run Mt-KaHyPar Tests
+        run: |
+          cd build
+          ./tests/mtkahypar_tests
+
+      - name: Report Code Coverage
+        run: |
+          cd build
+          lcov --directory . --capture --output-file coverage.info --exclude '**/external_tools/**/*' --exclude '**/tests/**/*' --exclude '**/googletest-src/**/*' --exclude '**/_deps/**/*'
+          lcov --remove coverage.info '/usr/**/*' '**/external_tools/**/*' '**/tests/**/*' '**/_deps/**/*' --output-file coverage.info
+          lcov --list coverage.info
+          gcovr -r ../ -x > report.xml
+          cd ..
+          bash <(curl -s https://codecov.io/bash) || echo "Codecov did not collect coverage reports"
+
+  mt_kahypar_integration_tests:
+    name: Integration Tests
+    runs-on: ubuntu-24.04
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install libtbb-dev libhwloc-dev lcov gcovr
+
+      - name: Install Mt-KaHyPar Integration Tests
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=python -DKAHYPAR_CI_BUILD=ON
+          make -j4 MtKaHyPar
+          make -j4 VerifyPartition
+          make -j4 GridGraphGenerator
+          make -j4 FixedVertexFileGenerator
+
+      - name: Run Mt-KaHyPar Integration Tests
+        run: |
+          ./tests/end_to_end/integration_tests.py
+
+  mt_kahypar_c_interface_tests:
+    name: C Interface Tests
+    runs-on: ubuntu-24.04
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install libtbb-dev libhwloc-dev lcov gcovr
+
+      - name: Run Mt-KaHyPar C Library Interface Tests
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=dev -DKAHYPAR_CI_BUILD=ON
+          make -j4 mtkahypar_interface_test
+
+  mt_kahypar_python_interface_tests:
+    name: Python Interface Tests
+    runs-on: ubuntu-24.04
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install libtbb-dev libhwloc-dev lcov gcovr
+
+      - name: Build Mt-KaHyPar Python Interface
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=python -DKAHYPAR_CI_BUILD=ON
+          make mtkahypar_python -j2
+
+      - name: Run Mt-KaHyPar Python Interface Tests
+        run: |
+          cd python/tests
+          cp ../../build/python/mtkahypar*.so mtkahypar.so
+          python3 test_mtkahypar.py -v
+
+  mt_kahypar_windows_build:
+    name: Windows Build
+    runs-on: windows-latest
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          install: git make
+
+      - name: Install TBB
+        shell: msys2 {0}
+        run: |
+          pacman --noconfirm -S mingw-w64-x86_64-tbb mingw-w64-x86_64-cmake mingw-w64-x86_64-gcc
+
+      - name: Put MSYS2_MinGW64 on Path
+        run: |
+          echo "${{ runner.temp }}/msys64/mingw64" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Mt-KaHyPar Multilevel Tests
+        shell: msys2 {0}
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          export CMAKE_GENERATOR="MSYS Makefiles"
+          /mingw64/bin/cmake .. --preset=dev -DKAHYPAR_CI_BUILD=ON -DKAHYPAR_ENABLE_HIGHEST_QUALITY_FEATURES=OFF -DKAHYPAR_ENABLE_LARGE_K_PARTITIONING_FEATURES=OFF
+          make -j4 mtkahypar_tests
+
+      - name: Run Mt-KaHyPar Tests
+        shell: msys2 {0}
+        run: |
+          cd build
+          ./tests/mtkahypar_tests
+
+  mt_kahypar_macos_build:
+    name: MacOS Build
+    runs-on: macos-latest
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          brew install tbb hwloc lcov gcovr
+
+      - name: Install Mt-KaHyPar Multilevel Tests
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=dev -DKAHYPAR_CI_BUILD=ON
+          make -j3 mtkahypar_tests
+
+      - name: Run Mt-KaHyPar Tests
+        run: |
+          cd build
+          ./tests/mtkahypar_tests
