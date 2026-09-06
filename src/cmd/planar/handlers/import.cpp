@@ -423,7 +423,14 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
 } // namespace
 
 auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto const root = positional_string(args, "repo-root").value_or(std::string{});
+  auto const root_arg = positional_string(args, "repo-root").value_or(std::string{});
+  // A relative repo-root (the common `import .` shape) must be joined
+  // against the operator's PWD-preserving cwd, not the raw process cwd --
+  // a shell keeps a symlink-spelled PWD while getcwd()/std::filesystem::
+  // current_path() resolves it, and `im::run` reports whatever spelling it
+  // is handed verbatim (task 6453, plan 351 task 2378 parity).
+  auto const root =
+      root_arg.empty() || std::filesystem::path(root_arg).is_absolute() ? root_arg : (ctx.cwd() / root_arg).string();
   if (flag_bool(args, "--apply-removals") && !flag_bool(args, "--apply"))
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "--apply-removals requires --apply"));
   if (flag_bool(args, "--no-forward-specs") && flag_string(args, "--accept-spec").has_value())

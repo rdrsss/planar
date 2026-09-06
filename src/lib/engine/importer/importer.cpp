@@ -122,9 +122,18 @@ auto run(const std::filesystem::path& root, const std::filesystem::path& planar_
   auto const canonical = std::filesystem::canonical(root, ec);
   if (ec || !std::filesystem::is_directory(canonical, ec))
     return std::unexpected(error::not_found);
+  // Report the caller's own spelling of `root`, not the symlink-resolved
+  // `canonical` -- a shell keeps a symlink-spelled PWD, and the operator-
+  // facing repo_root/repo_slug must key off that spelling, not realpath(3)
+  // (task 6453, plan 351 task 2378). `canonical` remains the walk root
+  // below: iterating the resolved directory is correct either way, and
+  // guarantees this validated-existing directory is what gets scanned.
+  auto display_root = root.is_absolute() ? root.lexically_normal() : canonical;
+  if (display_root.filename().empty())
+    display_root = display_root.parent_path();
   request req;
-  req.repo_root    = canonical.string();
-  req.repo_slug    = slugify(canonical.filename().string());
+  req.repo_root    = display_root.string();
+  req.repo_slug    = slugify(display_root.filename().string());
   req.anchor_title = first_heading(canonical, req.repo_slug);
   std::vector<std::pair<std::string, std::string>> docs, guides;
   std::vector<std::string>                         tree;

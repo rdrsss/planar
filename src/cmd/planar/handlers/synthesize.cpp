@@ -508,7 +508,13 @@ auto literal(context& ctx, const cliapp::parsed_args& args, const std::filesyste
 } // namespace
 
 auto synthesize(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto root  = positional_string(args, "repo-root").value_or("");
+  auto const root_arg = positional_string(args, "repo-root").value_or("");
+  // A relative repo-root (the common `synthesize .` shape) must be joined
+  // against the operator's PWD-preserving cwd, not the raw process cwd --
+  // a shell keeps a symlink-spelled PWD while getcwd()/std::filesystem::
+  // current_path() resolves it (task 6453, plan 351 task 2378 parity).
+  auto root =
+      root_arg.empty() || std::filesystem::path(root_arg).is_absolute() ? root_arg : (ctx.cwd() / root_arg).string();
   bool apply = flag_bool(args, "--apply");
   if ((flag_bool(args, "--apply-removals") && !apply) ||
       (flag_bool(args, "--treat-as-greenfield") && flag_bool(args, "--treat-as-nongreenfield")) ||
