@@ -486,7 +486,12 @@ auto unported_paths() -> std::span<std::string_view const> {
   // remains declared-but-unported on this binary. `feed --follow` is a
   // FLAG on an otherwise-ported leaf, not a leaf of its own, so it does
   // not belong in this table (see `handlers::feed`'s own refusal).
-  return {};
+  //
+  // Keep the named initializer even when empty: the retirement evidence
+  // scanner reads this generated inventory directly rather than inferring
+  // absence from a bare span return.
+  static constexpr std::string_view k_unported[] = {std::string_view{}};
+  return std::span<std::string_view const>{k_unported}.first(0);
 }
 
 } // namespace planar::cmd::watch

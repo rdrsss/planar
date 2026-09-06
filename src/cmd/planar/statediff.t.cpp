@@ -1334,7 +1334,15 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   CHECK(process.out.contains("oracle-retirement: REFUSED"));
   auto const result = run_retirement_gate();
   CHECK_FALSE(result.ready);
-  CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("unported inventory"); }));
+  // Task 6448 landed `run list` / `run show` / `sync-events` on
+  // planar-watch, which was the last binary carrying an unported entry
+  // beyond `planar:explore`. The real unported-inventory criterion in
+  // `scripts/oracle-retirement-gate.sh` (`UNPORTED_COUNT -eq 1 &&
+  // UNPORTED == 'planar:explore ...'`) is now genuinely satisfied, so the
+  // gate no longer refuses for that reason -- only decision 963/982
+  // condition 3 (zero oracle-conditional parity skips) remains unmet.
+  // This CHECK used to assert the opposite; that shape predates the fix.
+  CHECK_FALSE(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("unported inventory"); }));
   CHECK(std::ranges::any_of(result.refusals, [](auto const& item) { return item.contains("oracle-conditional"); }));
   auto const live_unported = source_unported_inventory(target_source_root());
   REQUIRE(live_unported.has_value());
@@ -1353,7 +1361,11 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   // (which does not contribute to this cross-BINARY-SOURCE count at all —
   // it has no Zig oracle and so no `unported_paths()` of this shape).
   // Verified by running the test, not by arithmetic on this comment.
-  CHECK(live_unported->size() == 4);
+  // 4 -> 1 at task 6448: `run list` / `run show` / `sync-events` landed on
+  // planar-watch, dropping its cross-binary-source contribution to zero
+  // (see `unported_paths()` in `src/cmd/planar-watch/surface.cpp`); only
+  // `planar:explore` remains across all three ported binaries.
+  CHECK(live_unported->size() == 1);
 
   // 37 -> 35 at plan 996, task 6419: two whole `parity.t.cpp` TEST_CASEs
   // ("C++ and Zig agree byte-for-byte on the three ported ext leaves" and
@@ -1362,7 +1374,10 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   // and decision 999 makes the leaves they pinned structurally
   // incomparable now that they live on `planar-ext`, which has no Zig
   // oracle counterpart.
-  CHECK(source_oracle_skips(target_source_root()).size() == 35);
+  // 35 -> 36 at task 6125 (commit 6cdc8241, the brief-compiler port): one
+  // new `PLANAR_REQUIRE_ORACLE` landed in
+  // `src/cmd/planar-execute/parity.t.cpp`.
+  CHECK(source_oracle_skips(target_source_root()).size() == 36);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
   auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
   auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cpp");
@@ -1392,7 +1407,11 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
     INFO("landed agent path remained in unported inventory: " << landed);
     CHECK(std::ranges::find(*agent_unported, landed) == agent_unported->end());
   }
-  CHECK(watch_unported->size() == 3);
+  // 3 -> 0 at task 6448: `run list` / `run show` / `sync-events` landed,
+  // emptying planar-watch's k_unported inventory entirely (see
+  // `unported_paths()` in `src/cmd/planar-watch/surface.cpp`, which keeps
+  // the scanner-recognized named initializer despite the empty list).
+  CHECK(watch_unported->empty());
 
   CHECK(target_zig_tree_present());
 }

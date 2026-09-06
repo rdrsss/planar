@@ -595,13 +595,14 @@ TEST_CASE("closure-source is validated before the database and exists on only on
   // this task touched) rather than anything introduced here.
   //
   // What IS pinned is the part that agrees and that this leaf owns: the exit
-  // code, and the stream split. Measured on both binaries: a parser refusal
-  // writes its message to STDOUT and the error KIND to STDERR -- the
-  // opposite of the handler-level refusals above, which write to stderr and
-  // leave stdout empty.
+  // code, and the stream split. Decision 1004 (task 6271) moved every
+  // parse-failure diagnostic to stderr, matching the handler-level refusals
+  // above -- stdout stays empty on a parser refusal now too. This block used
+  // to pin the opposite split (message on stdout, kind on stderr) as
+  // load-bearing measured behavior; that shape predates the decision.
   auto const unknown = dispatch(fx, {"plan", "divergence", "3", "--closure-source", "derived", "--json"});
   CHECK(unknown.code == 2);
-  CHECK_FALSE(unknown.out.empty());
+  CHECK(unknown.out.empty());
   CHECK(unknown.err.contains("error:"));
   // The flag really is absent from this leaf and present on the sibling --
   // asserting the refusal alone would pass even if BOTH leaves rejected it.
