@@ -334,6 +334,105 @@ export auto parse_task_packet(std::string_view json) -> std::expected<task_packe
 } // namespace state
 
 // ---------------------------------------------------------------------------
+// schema — CLI schema ingestion (port target: schema.zig)
+// ---------------------------------------------------------------------------
+
+/// @brief Pure JSON-decode helpers over `<bin> schema`'s flat catalog.
+///
+/// Port target: `zig/src/cmd/planar-execute/schema.zig`. As with `state`
+/// above, the shelling is `host.cpp`'s job (`run_allowlisted(hs,
+/// "planar-agent", {"schema"})`); this namespace is the pure parse half.
+namespace schema {
+
+/// @brief Why a `schema::parse_raw_schema` call failed. See
+/// `state::state_parse_error` for the one-enumerator reasoning.
+export enum class schema_parse_error : std::uint8_t {
+  malformed,
+};
+
+/// @brief One flag on a command. Port target: `schema.zig`'s `FlagEntry`.
+///
+/// The Zig field name `long` is a C++ keyword; renamed `long_name` here —
+/// the JSON wire key stays `"long"` (see `parse_raw_schema`'s
+/// implementation).
+export struct flag_entry {
+  std::string                long_name;
+  std::vector<std::string>   aliases;
+  std::optional<std::string> short_name;
+  bool                       required = false;
+  std::string                description;
+};
+
+/// @brief One command entry. Port target: `schema.zig`'s `CommandEntry`.
+export struct command_entry {
+  std::string              name;
+  std::string              command;
+  std::vector<std::string> subcommands;
+  std::vector<flag_entry>  flags;
+  bool                     hidden = false;
+};
+
+/// @brief The top-level `<bin> schema` document. Port target: `schema.zig`'s
+/// `RawSchema`.
+export struct raw_schema {
+  std::uint32_t              schema_version = 0;
+  std::string                layout;
+  std::string                root;
+  std::vector<command_entry> commands;
+};
+
+/// @brief A queryable wrapper over a parsed `raw_schema`. Port target:
+/// `schema.zig`'s `BinSchema`.
+export class bin_schema {
+public:
+  bin_schema() = default;
+
+  /// @brief Wrap a decoded `raw_schema`.
+  /// @param raw The decoded document. Copied in (the C++ tree has no
+  /// arena-borrow lifetime to preserve — `RawSchema`'s Zig doc's "borrows
+  /// from the Parsed arena" caveat does not apply here).
+  explicit bin_schema(raw_schema raw) : raw_(std::move(raw)) {
+  }
+
+  /// @return The binary root name (e.g. `"planar-agent"`).
+  [[nodiscard]] auto root() const -> std::string const& {
+    return raw_.root;
+  }
+
+  /// @return The schema format version.
+  [[nodiscard]] auto schema_version() const -> std::uint32_t {
+    return raw_.schema_version;
+  }
+
+  /// @return The full flat command list.
+  [[nodiscard]] auto commands() const -> std::vector<command_entry> const& {
+    return raw_.commands;
+  }
+
+  /// @brief Look up a command by its full path string.
+  /// @param full_path e.g. `"planar-agent complete"`.
+  /// @return A pointer into `commands()`, or `nullptr` when absent.
+  [[nodiscard]] auto find_command(std::string_view full_path) const -> command_entry const* {
+    for (auto const& cmd : raw_.commands) {
+      if (cmd.command == full_path) {
+        return &cmd;
+      }
+    }
+    return nullptr;
+  }
+
+private:
+  raw_schema raw_;
+};
+
+/// @brief Parse `<bin> schema`'s stdout.
+/// @param json The captured stdout.
+/// @return The decoded value, or `schema_parse_error::malformed`.
+export auto parse_raw_schema(std::string_view json) -> std::expected<raw_schema, schema_parse_error>;
+
+} // namespace schema
+
+// ---------------------------------------------------------------------------
 // Running a workflow
 // ---------------------------------------------------------------------------
 

@@ -83,6 +83,7 @@ planar_module(engine_execute
     manifest.cpp
     host.cpp
     state.cpp
+    schema.cpp
   DEPENDS
     json_text
     json_dom)
