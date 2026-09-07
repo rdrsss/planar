@@ -1,19 +1,19 @@
-/// @file follow.t.cpp
-/// @brief Deterministic unit coverage for
-/// `planar.cmd.planar_watch.handlers.follow`'s pure/testable pieces
-/// (duration parsing, the SIGINT flag) plus one deterministic coverage
-/// case for the Tier-2 wake source's directory-watch fix (task 6450).
-///
-/// The wake source is inherently filesystem-dependent, but the LAST case
-/// below is not a "sleep and hope" test: the background thread's create
-/// (and immediate delete) of the `-wal` sibling is scheduled at a fixed
-/// offset chosen to fall INSIDE the old code's first 100ms blind-wait
-/// window (see that case's comment for the exact reasoning) — the
-/// assertion is a generous elapsed-time ceiling that separates "the wake
-/// fired" from "only the heartbeat fired," not a race whose outcome is
-/// left to chance. The broader end-to-end cross-process scenario (a real
-/// `planar-agent pull` against a real `feed --follow` child process) stays
-/// in the integration suite's four `feed --follow` scenarios (task 6449).
+// @file follow.t.cpp
+// @brief Deterministic unit coverage for
+// `planar.cmd.planar_watch.handlers.follow`'s pure/testable pieces
+// (duration parsing, the SIGINT flag) plus one deterministic coverage
+// case for the Tier-2 wake source's directory-watch fix (task 6450).
+//
+// The wake source is inherently filesystem-dependent, but the LAST case
+// below is not a "sleep and hope" test: the background thread's create
+// (and immediate delete) of the `-wal` sibling is scheduled at a fixed
+// offset chosen to fall INSIDE the old code's first 100ms blind-wait
+// window (see that case's comment for the exact reasoning) — the
+// assertion is a generous elapsed-time ceiling that separates "the wake
+// fired" from "only the heartbeat fired," not a race whose outcome is
+// left to chance. The broader end-to-end cross-process scenario (a real
+// `planar-agent pull` against a real `feed --follow` child process) stays
+// in the integration suite's four `feed --follow` scenarios (task 6449).
 #include <catch2/catch_test_macros.hpp>
 #include <csignal>
 

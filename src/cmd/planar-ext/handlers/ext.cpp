@@ -590,6 +590,27 @@ auto load_entity_title(db::connection& conn, std::string_view kind, std::int64_t
 
 } // namespace
 
+/// @brief Definition of the shared per-entity propagation body declared in
+/// `ext.cppm`; see that header for the full contract.
+///
+/// Documented again at the definition because Doxygen matches a declaration
+/// to its definition by written signature, and this one spells its parameter
+/// types through the `system_ns` / `link_ns` aliases rather than the fully
+/// qualified `engine::external::*` names the interface uses. The two forms
+/// name the same types but do not compare equal, so the interface's block
+/// does not carry over the way `templates_root_for`'s does.
+/// @param conn An open, migrated database connection.
+/// @param handle The built adapter handle, or `nullptr` under `dry_run`.
+/// @param sys The target external system.
+/// @param entity_kind `"plan"` or `"task"`.
+/// @param entity_id The local row id.
+/// @param role How the entity sits in the feature tree.
+/// @param strategy_kind The resolved strategy name, cached into the anchor's `config_json` on first link.
+/// @param template_kind The template kind to render, from `template_kind_for_entity`.
+/// @param direction The sync direction recorded on a newly created link.
+/// @param dry_run When true, no adapter is contacted and no row is written.
+/// @param templates_root The resolved templates root.
+/// @return The outcome, or the failure.
 auto propagate_one_entity(db::connection& conn, adapter_handle* handle, const system_ns::external_system& sys,
                           std::string_view entity_kind, std::int64_t entity_id, entity_role role, std::string_view strategy_kind,
                           std::string_view template_kind, link_ns::sync_direction direction, bool dry_run,

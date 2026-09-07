@@ -247,6 +247,18 @@ export struct propagate_one_outcome {
   std::string external_id; ///< The provider id — existing, placeholder (`"<template-kind>"` under dry-run), or freshly created.
 };
 
+/// @brief Resolve the operator's templates directory:
+/// `$PLANAR_TEMPLATES_DIR` > `[templates] dir` in the config file > the
+/// embedded default, tilde expanded.
+///
+/// Exported (task 6451) so `planar.cmd.planar_ext.handlers.propagate`'s
+/// generic per-entity tree-walk loop resolves the SAME root
+/// `ext_propagate_one` does, rather than re-deriving config/env resolution
+/// a second time.
+/// @param ctx The invocation context.
+/// @return The resolved root, or the exit-1 refusal.
+export auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error>;
+
 /// @brief The shared per-entity propagation body: idempotency check, render,
 /// POST, record `external_links` — ported from the oracle's
 /// `propagateOneEntity` (`propagate_one.zig`), which BOTH `ext propagate-one`
@@ -269,18 +281,6 @@ export struct propagate_one_outcome {
 /// @param dry_run When true, no adapter is contacted and no row is written.
 /// @param templates_root The resolved templates root.
 /// @return The outcome, or the failure.
-/// @brief Resolve the operator's templates directory:
-/// `$PLANAR_TEMPLATES_DIR` > `[templates] dir` in the config file > the
-/// embedded default, tilde expanded.
-///
-/// Exported (task 6451) so `planar.cmd.planar_ext.handlers.propagate`'s
-/// generic per-entity tree-walk loop resolves the SAME root
-/// `ext_propagate_one` does, rather than re-deriving config/env resolution
-/// a second time.
-/// @param ctx The invocation context.
-/// @return The resolved root, or the exit-1 refusal.
-export auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error>;
-
 export auto propagate_one_entity(db::connection& conn, adapter_handle* handle,
                                  const engine::external::system::external_system& sys, std::string_view entity_kind,
                                  std::int64_t entity_id, entity_role role, std::string_view strategy_kind,
