@@ -1392,8 +1392,11 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   //      `claim_token` per pull, millisecond wall-clock on every row
   //      timestamp). Pinning it would need a normalizer permissive enough
   //      to mask a real rendering regression, so task 6540 left it gated
-  //      rather than weaken it. Needs a frozen-clock/seeded-RNG harness or
-  //      an operator decision; it is NOT an oversight.
+  //      rather than weaken it. DECISION 1034 deletes that case in task
+  //      6045 alongside `zig/` (its subject is cross-implementation
+  //      agreement, which the cutover removes); task 6545 carries the
+  //      replacement rendering pin. This count therefore goes 3 -> 0 in the
+  //      cutover commit, not before.
   CHECK(source_oracle_skips(target_source_root()).size() == 3);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
   auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");

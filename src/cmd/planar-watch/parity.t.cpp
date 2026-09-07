@@ -322,9 +322,24 @@ TEST_CASE("planar-watch parity: the six read verbs agree with the oracle over a 
   // mask a real rendering regression behind it — worse than leaving the
   // case oracle-gated.
   //
-  // Left oracle-gated, NOT deleted and NOT weakened, pending an operator
-  // decision (a frozen clock/RNG seed harness is a bigger lift than this
-  // task's scope). See task 6540's report for the full transcript.
+  // DECISION 1034 (2026-09-07): this case is DELETED in task 6045, in the
+  // same commit that deletes `zig/` — the treatment decision 999 gave the
+  // `planar-ext` cases that became structurally incomparable.
+  //
+  // The reason is not determinism. The fixture is ONE arena, ONE seeded
+  // database, TWO readers: the nondeterministic values are identical for
+  // both because they are baked into the shared rows, which is why the
+  // narrow `normalize()` above suffices. The subject is cross-IMPLEMENTATION
+  // agreement, and after cutover there is no second implementation. A frozen
+  // clock/seeded RNG would enable a DIFFERENT test (a rendering
+  // characterization pin, task 6545), not preserve this one.
+  //
+  // Leaving it gated was rejected: it would skip silently forever under
+  // plain `ctest` (SKIP_RETURN_CODE 4) and fail permanently under
+  // `make test-cpp-strict` (PLANAR_PARITY_STRICT=1, --max-skips 0).
+  //
+  // It stays LIVE until then: while `zig/` builds, this is a real
+  // cross-implementation check. See task 6540's report for the measurement.
   PLANAR_REQUIRE_ORACLE(seed_oracle_available(),
                         "Zig oracle binaries not built (zig/zig-out/bin/{planar,planar-agent,planar-watch})");
 
