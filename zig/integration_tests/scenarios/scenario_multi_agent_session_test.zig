@@ -428,6 +428,46 @@ test "three planar-agent workers drain a shared queue with exactly-once + a watc
     }
 
     // -----------------------------------------------------------------
+    // Assertion 6's measurement, taken HERE rather than at parse time.
+    //
+    // This polls the watcher's own NDJSON log for its first byte, so the
+    // number it produces is "how long after barrier release did the watcher
+    // SURFACE anything" -- which is what assertion 6 claims to measure.
+    //
+    // It used to call monotonicNs() inside the parse loop far below, walking
+    // a file that had already been fully written after every worker exited.
+    // That measured barrier-release -> workers drain 6 tasks -> log read ->
+    // first line parsed: total scenario duration, with no watcher latency in
+    // it at all. It passed only because draining the queue happens to take
+    // just under the 2s budget on an idle machine, so any load at all tipped
+    // it over -- 2994ms under concurrent installer builds, 2012ms inside the
+    // full parity suite, and 2032ms on one idle run in five (task 6544).
+    //
+    // Cost in the healthy case is one poll interval, not the budget: the
+    // loop exits as soon as the first byte lands, and the workers are
+    // draining concurrently the whole time.
+    var first_event_at_ns: ?u64 = null;
+    {
+        // STAT, never read. The watcher is appending to this file the whole
+        // time we poll, and `readFileAlloc` on a growing file panics inside
+        // Zig 0.16's `sendFile` with an integer overflow -- it computes
+        // `size - pos` from a size sampled before the read, and the file
+        // outgrows it. Only the size is needed here anyway.
+        const first_event_deadline_ns = barrier_release_ns + first_event_budget_ms * std.time.ns_per_ms;
+        while (monotonicNs() <= first_event_deadline_ns) {
+            if (std.Io.Dir.cwd().statFile(std.testing.io, watch_log_path, .{})) |st| {
+                if (st.size > 0) {
+                    first_event_at_ns = monotonicNs();
+                    break;
+                }
+            } else |_| {
+                // Not created yet; the watcher opens it lazily on first write.
+            }
+            std.testing.io.sleep(std.Io.Duration.fromMilliseconds(10), std.Io.Clock.awake) catch {};
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Wait for every worker to exit. Bounded by scenario_budget_ms.
     // -----------------------------------------------------------------
     const scenario_deadline_ns = barrier_release_ns + scenario_budget_ms * std.time.ns_per_ms;
@@ -656,8 +696,6 @@ test "three planar-agent workers drain a shared queue with exactly-once + a watc
     var action_ended_count: usize = 0;
     var prev_at_buf: [64]u8 = undefined;
     var prev_at_len: usize = 0;
-    var first_event_at_ns: ?u64 = null;
-
     // Index claim_acquired events by claim_token so we can verify that
     // every `completed` event has a preceding acquire for the same token.
     var acquired_tokens = std.StringHashMap(void).init(gpa);
@@ -685,8 +723,6 @@ test "three planar-agent workers drain a shared queue with exactly-once + a watc
         }
         prev_at_len = @min(at.len, prev_at_buf.len);
         @memcpy(prev_at_buf[0..prev_at_len], at[0..prev_at_len]);
-
-        if (first_event_at_ns == null) first_event_at_ns = monotonicNs();
 
         if (std.mem.eql(u8, event, "claim_acquired")) {
             claim_acquired_count += 1;
@@ -771,8 +807,18 @@ test "three planar-agent workers drain a shared queue with exactly-once + a watc
             return error.FirstEventLatencyTooHigh;
         }
     } else {
-        std.debug.print("assertion (6) broken: watcher saw NO events\n", .{});
-        return error.WatcherSawNothing;
+        // The poll loop above timed out with the log still empty. That is
+        // NOT the same as "the watcher saw nothing" -- assertions 4 and 5
+        // below read the completed log and report whether events existed at
+        // all. Say which of the two this is, because a wrong diagnostic here
+        // sends the reader looking at the wrong subsystem.
+        std.debug.print(
+            "assertion (6) broken: no watcher event surfaced within {d}ms of barrier release " ++
+                "(the NDJSON log was still empty when the budget expired; see assertions 4-5 " ++
+                "for whether the watcher ever emitted anything)\n",
+            .{first_event_budget_ms},
+        );
+        return error.FirstEventLatencyTooHigh;
     }
 
     // Telemetry (drain_ms / first_event_ms / total_ms) is computed
