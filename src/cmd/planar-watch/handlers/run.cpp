@@ -28,16 +28,16 @@ namespace {
 /// `run_uid` -> `run_identifier`, and sets `pid = 0` / `repo_root = ""`
 /// (sentinels — neither column exists on `runs`).
 struct run_row {
-  std::int64_t                id       = 0;
-  std::int64_t                plan_id  = 0;
-  std::string                 workflow_name;
-  std::string                 run_identifier;
-  std::int64_t                pid      = 0;
-  std::string                 repo_root;
-  std::string                 started_at;
-  std::optional<std::string>  ended_at;
-  std::string                 status;
-  std::string_view            source; ///< `"wf"` or `"op"`.
+  std::int64_t               id      = 0;
+  std::int64_t               plan_id = 0;
+  std::string                workflow_name;
+  std::string                run_identifier;
+  std::int64_t               pid = 0;
+  std::string                repo_root;
+  std::string                started_at;
+  std::optional<std::string> ended_at;
+  std::string                status;
+  std::string_view           source; ///< `"wf"` or `"op"`.
 };
 
 /// @brief Build the `where` clause `list_workflow_runs` / `list_op_runs`
@@ -88,9 +88,9 @@ auto bind_filters(db::statement& stmt, std::optional<std::int64_t> plan_filter, 
 /// @return Rows ordered `started_at desc, id desc`, or the query failure.
 auto list_workflow_runs(db::connection& conn, std::optional<std::int64_t> plan_filter, std::optional<std::string> status_filter)
     -> std::expected<std::vector<run_row>, db::db_error> {
-  auto const sql = std::format("select id, plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status "
-                               "from workflow_runs{} order by started_at desc, id desc",
-                               where_clause(plan_filter, status_filter));
+  auto const sql  = std::format("select id, plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status "
+                                "from workflow_runs{} order by started_at desc, id desc",
+                                where_clause(plan_filter, status_filter));
   auto       stmt = conn.prepare(sql);
   if (!stmt) {
     return std::unexpected(stmt.error());
@@ -132,9 +132,9 @@ auto list_workflow_runs(db::connection& conn, std::optional<std::int64_t> plan_f
 /// @return Rows ordered `started_at desc, id desc`, or the query failure.
 auto list_op_runs(db::connection& conn, std::optional<std::int64_t> plan_filter, std::optional<std::string> status_filter)
     -> std::expected<std::vector<run_row>, db::db_error> {
-  auto const sql = std::format("select id, plan_id, arm, run_uid, started_at, ended_at, status from runs{} "
-                               "order by started_at desc, id desc",
-                               where_clause(plan_filter, status_filter));
+  auto const sql  = std::format("select id, plan_id, arm, run_uid, started_at, ended_at, status from runs{} "
+                                "order by started_at desc, id desc",
+                                where_clause(plan_filter, status_filter));
   auto       stmt = conn.prepare(sql);
   if (!stmt) {
     return std::unexpected(stmt.error());
@@ -267,8 +267,8 @@ auto run_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     // zig's `error.InvalidValue` is unmatched in `exit.zig`'s switch and
     // falls to the generic `else => 1` arm — NOT the 2 an `InvalidInput`
     // gets. Reproduced (D2): `generic_failure`, not `invalid_input`.
-    return std::unexpected(
-        error_from_body(domain_error_kind::generic_failure, std::format("run list: --arm must be wf, op, or all (got '{}')", arm)));
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           std::format("run list: --arm must be wf, op, or all (got '{}')", arm)));
   }
 
   auto const plan_filter   = cliapp::flag_int(args, "--plan");
@@ -341,8 +341,7 @@ auto run_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "run show: QueryFailed"));
   }
   if (!found->has_value()) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::not_found, std::format("run show: run {} not found", *run_id)));
+    return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("run show: run {} not found", *run_id)));
   }
   auto const& run = **found;
 
@@ -398,10 +397,11 @@ auto run_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
       current_stage = record.stage;
       out.append(std::format("  [stage: {}]\n", record.stage));
     }
-    constexpr std::size_t   preview_limit = 80;
-    std::string_view const  body_preview  = record.body.size() <= preview_limit ? std::string_view{record.body}
-                                                                                 : std::string_view{record.body}.substr(0, preview_limit);
-    std::string_view const  ellipsis      = record.body.size() > preview_limit ? "\xE2\x80\xA6" : "";
+    constexpr std::size_t  preview_limit = 80;
+    std::string_view const body_preview  = record.body.size() <= preview_limit
+                                               ? std::string_view{record.body}
+                                               : std::string_view{record.body}.substr(0, preview_limit);
+    std::string_view const ellipsis      = record.body.size() > preview_limit ? "\xE2\x80\xA6" : "";
     out.append(std::format("    record:{}  kind:{}  status:{}  created:{}\n"
                            "      body: {}{}\n",
                            record.id, record.kind, record.status, record.created_at, body_preview, ellipsis));

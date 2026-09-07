@@ -242,8 +242,8 @@ auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
                                .membership_created = !before->has_value() || !before->value().second});
   }
 
-  bool         pipeline_error       = false;
-  bool         layout_setup_failed  = false;
+  bool         pipeline_error      = false;
+  bool         layout_setup_failed = false;
   std::size_t  routing_projects = 0, routing_edges = 0;
   std::int64_t agents_bytes = 0;
   std::string  agents_path;

@@ -488,10 +488,10 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   std::string selected_kind;
   if (github_strategy_flag.has_value()) {
     if (sys->kind != system_ns::system_kind::github_issues) {
-      return std::unexpected(error_from_body(
-          domain_error_kind::invalid_input,
-          std::format("--github-strategy is only valid for github-issues systems; system '{}' has kind '{}'", sys->slug,
-                      kind_text)));
+      return std::unexpected(
+          error_from_body(domain_error_kind::invalid_input,
+                          std::format("--github-strategy is only valid for github-issues systems; system '{}' has kind '{}'",
+                                      sys->slug, kind_text)));
     }
     if (*github_strategy_flag == "parent-issue") {
       selected_kind = "github-parent-issue";
@@ -500,10 +500,10 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
     } else if (*github_strategy_flag == "tracking-issue") {
       selected_kind = "github-tracking-issue";
     } else {
-      return std::unexpected(error_from_body(
-          domain_error_kind::invalid_input,
-          std::format("invalid --github-strategy '{}'; accepted: parent-issue, projects-v2, tracking-issue",
-                      *github_strategy_flag)));
+      return std::unexpected(
+          error_from_body(domain_error_kind::invalid_input,
+                          std::format("invalid --github-strategy '{}'; accepted: parent-issue, projects-v2, tracking-issue",
+                                      *github_strategy_flag)));
     }
   } else {
     auto selected = select_strategy(**conn, *plan_id, kind_text);
@@ -640,8 +640,9 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
     // Missing-counterpart refusal takes priority, matching the oracle's
     // ordering (propagate.zig lines 480-485: missing check precedes failed).
     if (missing_count > 0 && !unlink_missing && !recreate_missing) {
-      return std::unexpected(error_from_body(domain_error_kind::invalid_input,
-                                             std::format("{} counterpart(s) missing during --verify-counterparts", missing_count)));
+      return std::unexpected(
+          error_from_body(domain_error_kind::invalid_input,
+                          std::format("{} counterpart(s) missing during --verify-counterparts", missing_count)));
     }
     if (rpt->failed > 0) {
       return std::unexpected(error_from_body(domain_error_kind::invalid_input,
@@ -694,10 +695,10 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   rpt.strategy = selected_kind;
   for (auto const& entry : *tree) {
     std::string_view const entity_kind_str = entry.kind == descendants::entry_kind::task ? "task" : "plan";
-    auto const              role           = entry.kind == descendants::entry_kind::plan_anchor ? entity_role::plan_anchor
-                                            : entry.kind == descendants::entry_kind::task        ? entity_role::task
-                                                                                                 : entity_role::plan_child;
-    auto const template_kind = template_kind_for_entity(kind_text, role);
+    auto const             role            = entry.kind == descendants::entry_kind::plan_anchor ? entity_role::plan_anchor
+                                             : entry.kind == descendants::entry_kind::task      ? entity_role::task
+                                                                                                : entity_role::plan_child;
+    auto const             template_kind   = template_kind_for_entity(kind_text, role);
     if (!template_kind) {
       rpt.results.push_back(parent_issue::entity_result{.entity_kind = std::string(entity_kind_str),
                                                         .entity_id   = entry.id,
@@ -718,9 +719,9 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
       ++rpt.failed;
       continue;
     }
-    parent_issue::op const op_val = outcome->op == "skipped"  ? parent_issue::op::skipped
-                                   : outcome->op == "planned" ? parent_issue::op::planned
-                                                              : parent_issue::op::created;
+    parent_issue::op const op_val = outcome->op == "skipped"   ? parent_issue::op::skipped
+                                    : outcome->op == "planned" ? parent_issue::op::planned
+                                                               : parent_issue::op::created;
     rpt.results.push_back(parent_issue::entity_result{.entity_kind = std::string(entity_kind_str),
                                                       .entity_id   = entry.id,
                                                       .title       = entry.title,
@@ -739,8 +740,8 @@ auto ext_propagate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   render(ctx, *plan_id, sys->slug, rpt, dry_run, as_json, abandoned_count, {}, unlink_missing, recreate_missing);
 
   if (rpt.failed > 0) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::invalid_input, std::format("{} entity/entities failed during propagation", rpt.failed)));
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input,
+                                           std::format("{} entity/entities failed during propagation", rpt.failed)));
   }
   return {};
 }

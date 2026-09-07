@@ -327,7 +327,7 @@ TEST_CASE("ext propagate runs the generic jira-epic tree walk end to end, no lon
     return planar::http::fixture::canned_response{
         .status = 201, .body = R"({"key":"DEMO-77"})", .content_type = "application/json"};
   });
-  auto const fx = make_fixture("jira");
+  auto const                    fx = make_fixture("jira");
   migrate_fixture(fx);
   REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", remote.base_url(), "--project", "DEMO",
                         "--auth-env", "DEMO_TOKEN"})
@@ -422,13 +422,12 @@ TEST_CASE("ext propagate --github-strategy overrides auto-selection: same fixtur
   planar::http::fixture::server remote(make_respond(counter, 422));
   auto const                    fx = make_fixture("ghstrategy");
   migrate_fixture(fx);
-  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-strat", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"})
-              .code == 0);
+  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-strat", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"}).code ==
+          0);
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
-  REQUIRE(
-      conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-strat'", remote.base_url()))
-          .has_value());
+  REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-strat'", remote.base_url()))
+              .has_value());
   REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
 
   // Auto-selected: `github-zero-repo`, a generic-loop bucket -- succeeds.
@@ -478,17 +477,15 @@ TEST_CASE("ext propagate --github-strategy validates its value, its system kind,
   CHECK(both_flags.err.contains("mutually exclusive"));
 
   // A Jira system, told to use a GitHub-only override.
-  auto const              fx2 = make_fixture("ghstratjira");
+  auto const fx2 = make_fixture("ghstratjira");
   migrate_fixture(fx2);
   REQUIRE(dispatch(fx2, {"ext", "register", "jira", "jira-x", "--base-url", "https://x.atlassian.net", "--project", "X",
-                        "--auth-env", "DEMO_TOKEN"})
+                         "--auth-env", "DEMO_TOKEN"})
               .code == 0);
   auto conn2 = planar::db::connection::open(fx2.db_path.string());
   REQUIRE(conn2.has_value());
-  REQUIRE(
-      conn2->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
-  auto const wrong_kind =
-      dispatch(fx2, {"ext", "propagate", "1", "--system", "jira-x", "--github-strategy", "parent-issue"});
+  REQUIRE(conn2->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor', 'anchor')").has_value());
+  auto const wrong_kind = dispatch(fx2, {"ext", "propagate", "1", "--system", "jira-x", "--github-strategy", "parent-issue"});
   CHECK(wrong_kind.code == 2);
   CHECK(wrong_kind.err.contains("--github-strategy is only valid for github-issues systems"));
 }

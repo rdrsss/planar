@@ -44,15 +44,15 @@ auto mode_name(im::outcome::mode mode) -> std::string_view {
 /// `applied` block -- previously both were hardcoded stubs that never
 /// reflected the actual database mutations (task 6453).
 struct apply_counts {
-  int plans_created      = 0;
-  int plans_updated      = 0;
-  int plans_abandoned    = 0;
-  int tasks_created      = 0;
-  int tasks_updated      = 0;
-  int tasks_cancelled    = 0;
-  int artifacts_created  = 0;
-  int artifacts_retired  = 0;
-  int decisions_created  = 0;
+  int plans_created        = 0;
+  int plans_updated        = 0;
+  int plans_abandoned      = 0;
+  int tasks_created        = 0;
+  int tasks_updated        = 0;
+  int tasks_cancelled      = 0;
+  int artifacts_created    = 0;
+  int artifacts_retired    = 0;
+  int decisions_created    = 0;
   int decisions_superseded = 0;
 };
 auto json(const im::outcome& out, std::optional<std::int64_t> anchor, const apply_counts& counts) -> std::string {
@@ -66,13 +66,12 @@ auto json(const im::outcome& out, std::optional<std::int64_t> anchor, const appl
       std::format(",\"docs_count\":{},\"guide_files_count\":{},\"tree_entry_count\":{},\"message\":{}", out.request_.docs_count,
                   out.request_.guide_count, out.request_.tree_count, json_text::json_string(out.message));
   if (anchor.has_value())
-    value += std::format(
-        ",\"applied\":{{\"anchor_plan_id\":{},\"plans_created\":{},\"plans_updated\":{},\"plans_abandoned\":{},"
-        "\"tasks_created\":{},\"tasks_updated\":{},\"tasks_cancelled\":{},\"artifacts_created\":{},\"artifacts_"
-        "retired\":{},\"decisions_created\":{},\"decisions_superseded\":{}}}",
-        *anchor, counts.plans_created, counts.plans_updated, counts.plans_abandoned, counts.tasks_created, counts.tasks_updated,
-        counts.tasks_cancelled, counts.artifacts_created, counts.artifacts_retired, counts.decisions_created,
-        counts.decisions_superseded);
+    value += std::format(",\"applied\":{{\"anchor_plan_id\":{},\"plans_created\":{},\"plans_updated\":{},\"plans_abandoned\":{},"
+                         "\"tasks_created\":{},\"tasks_updated\":{},\"tasks_cancelled\":{},\"artifacts_created\":{},\"artifacts_"
+                         "retired\":{},\"decisions_created\":{},\"decisions_superseded\":{}}}",
+                         *anchor, counts.plans_created, counts.plans_updated, counts.plans_abandoned, counts.tasks_created,
+                         counts.tasks_updated, counts.tasks_cancelled, counts.artifacts_created, counts.artifacts_retired,
+                         counts.decisions_created, counts.decisions_superseded);
   value += "}\n";
   return value;
 }

@@ -894,9 +894,10 @@ TEST_CASE("planar-watch run list --status filters both sources", "[cmd][watch][h
     REQUIRE(conn.has_value());
     exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
                 "values (1, 'wf-running', 'wf-run-3', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status) "
-                "values (1, 'wf-done', 'wf-run-4', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', "
-                "'2024-01-01T01:00:00.000Z', 'completed')");
+    exec(*conn,
+         "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status) "
+         "values (1, 'wf-done', 'wf-run-4', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', "
+         "'2024-01-01T01:00:00.000Z', 'completed')");
   }
 
   auto const running = dispatch(fx, {"run", "list", "--status", "running", "--json"});
@@ -935,7 +936,7 @@ TEST_CASE("planar-watch run list --plan restricts to the seeded plan's run only"
 }
 
 TEST_CASE("planar-watch run list --arm rejects an unrecognized value with exit 1, not 2",
-         "[cmd][watch][handlers][run][exitcode]") {
+          "[cmd][watch][handlers][run][exitcode]") {
   // Reproduced from the oracle's own `error.InvalidValue`, which its
   // `exit.zig` does NOT map to the 2 an `InvalidInput` gets — it falls
   // through to the generic `else => 1`.
@@ -948,8 +949,8 @@ TEST_CASE("planar-watch run list --arm rejects an unrecognized value with exit 1
 }
 
 TEST_CASE("planar-watch run show groups context_records by stage then created_at, id as tiebreak",
-         "[cmd][watch][handlers][run]") {
-  namespace aa = planar::engine::runtime::agentactivity;
+          "[cmd][watch][handlers][run]") {
+  namespace aa  = planar::engine::runtime::agentactivity;
   auto const fx = make_fixture("runshowstage");
   seed_plan_only(fx);
   {
@@ -993,7 +994,7 @@ TEST_CASE("planar-watch run show with an unknown id fails with not_found, not a 
 }
 
 TEST_CASE("planar-watch run show: a non-integer id is a distinct failure from an unknown id",
-         "[cmd][watch][handlers][run][exitcode]") {
+          "[cmd][watch][handlers][run][exitcode]") {
   auto const fx = make_fixture("runshowbadid");
   seed_empty_database(fx);
   auto const got = dispatch(fx, {"run", "show", "not-a-number", "--json"});
@@ -1010,7 +1011,7 @@ TEST_CASE("planar-watch sync-events --json on an empty table returns sync_events
 }
 
 TEST_CASE("planar-watch sync-events --outcome narrows; text count matches the filtered rows",
-         "[cmd][watch][handlers][syncevents]") {
+          "[cmd][watch][handlers][syncevents]") {
   auto const fx = make_fixture("synceventsoutcome");
   seed_empty_database(fx);
   {
@@ -1039,7 +1040,7 @@ TEST_CASE("planar-watch sync-events --outcome narrows; text count matches the fi
 }
 
 TEST_CASE("planar-watch sync-events --plan / --system / --entity filter through the external_links join",
-         "[cmd][watch][handlers][syncevents]") {
+          "[cmd][watch][handlers][syncevents]") {
   auto const fx = make_fixture("synceventsjoin");
   seed_plan_only(fx);
   {

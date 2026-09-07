@@ -557,9 +557,8 @@ TEST_CASE("close_session records the automatic commit harvest when repo_root/hea
   REQUIRE(base.has_value());
 
   std::string const repo_str = repo.get().string();
-  auto               s       = cap::open_session(conn, cap::open_args{.vendor = "cli"},
-                                                 cap::start_git_context{.repo_root          = repo_str,
-                                                                        .head_sha_at_start = *base});
+  auto              s        = cap::open_session(conn, cap::open_args{.vendor = "cli"},
+                                                 cap::start_git_context{.repo_root = repo_str, .head_sha_at_start = *base});
   REQUIRE(s.has_value());
 
   REQUIRE(fixture_sh(repo.get(), "git commit -q --allow-empty -m tracked"));
@@ -608,7 +607,7 @@ TEST_CASE("close_session degrades cleanly when the stamped repo_root can no long
   REQUIRE(base.has_value());
 
   std::string const repo_str = repo.get().string();
-  auto               s       = cap::open_session(
+  auto              s        = cap::open_session(
       conn, cap::open_args{.vendor = "cli"},
       cap::start_git_context{.repo_root = repo_str, .head_sha_at_start = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"});
   REQUIRE(s.has_value());

@@ -423,11 +423,11 @@ TEST_CASE("the text output echoes the --to flag verbatim, not the resolved slug"
 namespace {
 
 struct audit_row {
-  std::string              verb;
-  std::string              entity_kind;
-  std::int64_t             entity_id;
-  bool                     actor_is_null;
-  bool                     scope_is_null;
+  std::string                verb;
+  std::string                entity_kind;
+  std::int64_t               entity_id;
+  bool                       actor_is_null;
+  bool                       scope_is_null;
   std::optional<std::string> summary;
 };
 
@@ -439,11 +439,11 @@ auto last_audit_row(planar::db::connection& conn) -> audit_row {
   REQUIRE(step.has_value());
   REQUIRE(*step == planar::db::step_result::row);
   audit_row row{.verb          = stmt->column_text(0),
-               .entity_kind   = stmt->column_text(1),
-               .entity_id     = stmt->column_int64(2),
-               .actor_is_null = stmt->is_null(3),
-               .scope_is_null = stmt->is_null(4),
-               .summary       = std::nullopt};
+                .entity_kind   = stmt->column_text(1),
+                .entity_id     = stmt->column_int64(2),
+                .actor_is_null = stmt->is_null(3),
+                .scope_is_null = stmt->is_null(4),
+                .summary       = std::nullopt};
   if (!stmt->is_null(5)) {
     row.summary = stmt->column_text(5);
   }

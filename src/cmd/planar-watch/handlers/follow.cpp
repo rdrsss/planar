@@ -104,10 +104,10 @@ private:
   std::filesystem::path dir_path_;
 
 #if defined(PLANAR_WATCH_FOLLOW_KQUEUE)
-  int  kq_            = -1;
-  int  wal_fd_        = -1;
-  int  dir_fd_        = -1;
-  bool fresh_attach_  = false;
+  int  kq_           = -1;
+  int  wal_fd_       = -1;
+  int  dir_fd_       = -1;
+  bool fresh_attach_ = false;
 
   /// @brief Open the `-wal`'s parent directory (best-effort) and register
   /// an `EVFILT_VNODE` watch for `NOTE_WRITE` — fires the instant a
@@ -127,7 +127,7 @@ private:
     if (fd < 0)
       return;
     dir_fd_ = fd;
-    struct kevent ev {};
+    struct kevent ev{};
     EV_SET(&ev, static_cast<std::uintptr_t>(dir_fd_), EVFILT_VNODE, EV_ADD | EV_CLEAR, NOTE_WRITE, 0, nullptr);
     if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
       ::close(dir_fd_);
@@ -149,7 +149,7 @@ private:
     if (fd < 0)
       return;
     wal_fd_ = fd;
-    struct kevent ev {};
+    struct kevent ev{};
     EV_SET(&ev, static_cast<std::uintptr_t>(wal_fd_), EVFILT_VNODE, EV_ADD | EV_CLEAR,
            NOTE_WRITE | NOTE_EXTEND | NOTE_DELETE | NOTE_RENAME, 0, nullptr);
     if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
@@ -184,11 +184,11 @@ private:
     // creation that happens entirely within a one-shot writer's brief
     // lifetime is queued the instant it happens, not just when we
     // happen to sample at a 100ms slice boundary.
-    struct timespec ts {};
+    struct timespec ts{};
     ts.tv_sec  = static_cast<time_t>(timeout_ns / 1'000'000'000ULL);
     ts.tv_nsec = static_cast<long>(timeout_ns % 1'000'000'000ULL);
-    struct kevent out {};
-    int const n = kevent(kq_, nullptr, 0, &out, 1, &ts);
+    struct kevent out{};
+    int const     n = kevent(kq_, nullptr, 0, &out, 1, &ts);
     if (n < 0)
       return errno == EINTR ? wake_event::interrupted : wake_event::heartbeat;
     if (n == 0)
@@ -272,11 +272,9 @@ private:
       fresh_attach_ = false;
       return wake_event::wal_changed;
     }
-    struct pollfd pfd {
-      .fd = inotify_fd_, .events = POLLIN, .revents = 0
-    };
-    int const timeout_ms = static_cast<int>(std::min<std::uint64_t>(timeout_ns / 1'000'000ULL, 1'000'000));
-    int const rc         = ::poll(&pfd, 1, timeout_ms);
+    struct pollfd pfd{.fd = inotify_fd_, .events = POLLIN, .revents = 0};
+    int const     timeout_ms = static_cast<int>(std::min<std::uint64_t>(timeout_ns / 1'000'000ULL, 1'000'000));
+    int const     rc         = ::poll(&pfd, 1, timeout_ms);
     if (rc < 0)
       return errno == EINTR ? wake_event::interrupted : wake_event::heartbeat;
     if (rc == 0)
@@ -289,8 +287,8 @@ private:
     // IN_CREATE retries the file attach immediately (best odds of
     // catching a one-shot writer's brief `-wal` window).
     alignas(struct inotify_event) char buf[4096];
-    bool                              rotated       = false;
-    bool                              dir_signaled  = false;
+    bool                               rotated      = false;
+    bool                               dir_signaled = false;
     for (;;) {
       ssize_t const n = ::read(inotify_fd_, buf, sizeof(buf));
       if (n <= 0)
@@ -314,7 +312,7 @@ private:
 #endif
 
   auto wait_next_degraded(std::uint64_t timeout_ns) -> wake_event {
-    struct timespec ts {};
+    struct timespec ts{};
     ts.tv_sec  = static_cast<time_t>(timeout_ns / 1'000'000'000ULL);
     ts.tv_nsec = static_cast<long>(timeout_ns % 1'000'000'000ULL);
     if (::nanosleep(&ts, nullptr) < 0 && errno == EINTR)
@@ -354,9 +352,9 @@ private:
   }
 };
 
-std::atomic<bool>            g_interrupted{false};
-std::optional<wake_source>   g_wake;
-bool                         g_wake_init_failed = false;
+std::atomic<bool>          g_interrupted{false};
+std::optional<wake_source> g_wake;
+bool                       g_wake_init_failed = false;
 
 extern "C" void sigint_handler(int) {
   g_interrupted.store(true, std::memory_order_release);
@@ -372,7 +370,7 @@ auto parse_duration_ns(std::string_view text) -> std::optional<std::uint64_t> {
     ++i;
   if (i == 0)
     return std::nullopt;
-  std::uint64_t num = 0;
+  std::uint64_t num    = 0;
   auto const [ptr, ec] = std::from_chars(text.data(), text.data() + i, num);
   if (ec != std::errc{} || ptr != text.data() + i)
     return std::nullopt;
@@ -419,7 +417,7 @@ auto interval_or_default(std::optional<std::string> const& text) -> std::uint64_
 }
 
 auto install_sigint_handler() -> void {
-  struct sigaction act {};
+  struct sigaction act{};
   act.sa_handler = sigint_handler;
   sigemptyset(&act.sa_mask);
   act.sa_flags = 0;
@@ -446,7 +444,7 @@ auto interruptible_sleep(context& ctx, std::uint64_t ns) -> void {
     if (should_stop())
       return;
     std::uint64_t const this_slice = std::min(remaining, k_slice_ns);
-    auto const           ev        = g_wake->wait_next(this_slice);
+    auto const          ev         = g_wake->wait_next(this_slice);
     switch (ev) {
     case wake_event::wal_changed:
       static_cast<void>(ctx.refresh_db());

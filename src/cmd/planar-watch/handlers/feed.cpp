@@ -51,7 +51,7 @@ auto collect_events(context& ctx, const cliapp::parsed_args& args, std::optional
     return std::unexpected(failure(claims.error()));
 
   std::vector<event> events;
-  auto                include = [&](std::string_view at, std::string_view vendor, std::optional<std::int64_t> task) {
+  auto               include = [&](std::string_view at, std::string_view vendor, std::optional<std::int64_t> task) {
     if (auto filter = cliapp::flag_string(args, "--vendor"); filter.has_value() && vendor != *filter)
       return false;
     if (auto filter = cliapp::flag_int(args, "--task"); filter.has_value() && task != *filter)

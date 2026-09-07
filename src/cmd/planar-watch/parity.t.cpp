@@ -569,7 +569,7 @@ TEST_CASE("planar-watch parity: the catalog is BYTE-identical to the oracle's", 
 }
 
 TEST_CASE("planar-watch: `run list` / `run show` / `sync-events` are ported, not stubbed",
-         "[cmd][watch][parity][not-implemented]") {
+          "[cmd][watch][parity][not-implemented]") {
   // Task 6448 landed real handlers for all three. This case used to pin
   // their exit-64 stub refusal; it is rewritten (not deleted) to pin what
   // replaced it, so the suite keeps grading this surface rather than

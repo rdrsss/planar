@@ -408,11 +408,9 @@ namespace {
 /// nothing outside `record_claim_window_best_effort` calls this in the
 /// oracle either.
 auto walk_claim_window(const claim_window& window, const std::filesystem::path& primary_dir,
-                       std::optional<std::string_view> fallback_dir, std::string_view base_sha)
-    -> std::vector<commit_meta> {
-  auto const repo_root_view =
-      window.repo_root.has_value() ? std::optional<std::string_view>{*window.repo_root} : std::nullopt;
-  auto primary = walk_strict(primary_dir, base_sha, repo_root_view);
+                       std::optional<std::string_view> fallback_dir, std::string_view base_sha) -> std::vector<commit_meta> {
+  auto const repo_root_view = window.repo_root.has_value() ? std::optional<std::string_view>{*window.repo_root} : std::nullopt;
+  auto       primary        = walk_strict(primary_dir, base_sha, repo_root_view);
   if (primary) {
     return std::move(*primary);
   }

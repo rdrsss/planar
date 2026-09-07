@@ -771,7 +771,7 @@ TEST_CASE("evidence lacking provenance is refused even though it is otherwise cu
   citation.provenance     = ""; // <-- the defect under test
 
   pk::task_input input;
-  input.citations = {citation};
+  input.citations  = {citation};
   const auto names = reason_names(pk::compile_task(input));
   CHECK(std::ranges::find(names, "missing_provenance") != names.end());
 
@@ -803,7 +803,7 @@ TEST_CASE("a required scenario lacking provenance is refused even when covered",
   scenario.provenance     = ""; // <-- the defect under test
 
   pk::task_input input;
-  input.scenarios = {scenario};
+  input.scenarios  = {scenario};
   const auto names = reason_names(pk::compile_task(input));
   CHECK(std::ranges::find(names, "missing_provenance") != names.end());
 }

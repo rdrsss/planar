@@ -591,9 +591,9 @@ auto load_entity_title(db::connection& conn, std::string_view kind, std::int64_t
 } // namespace
 
 auto propagate_one_entity(db::connection& conn, adapter_handle* handle, const system_ns::external_system& sys,
-                          std::string_view entity_kind, std::int64_t entity_id, entity_role role,
-                          std::string_view strategy_kind, std::string_view template_kind, link_ns::sync_direction direction,
-                          bool dry_run, std::string_view templates_root) -> std::expected<propagate_one_outcome, domain_error> {
+                          std::string_view entity_kind, std::int64_t entity_id, entity_role role, std::string_view strategy_kind,
+                          std::string_view template_kind, link_ns::sync_direction direction, bool dry_run,
+                          std::string_view templates_root) -> std::expected<propagate_one_outcome, domain_error> {
   // THE IDEMPOTENCY GATE. It precedes the template load and the POST, which
   // is what makes a repeat send nothing — see ext.cppm on the three
   // different answers this tree gives to "it already exists".
@@ -605,15 +605,15 @@ auto propagate_one_entity(db::connection& conn, adapter_handle* handle, const sy
     return propagate_one_outcome{.op = "skipped", .external_id = *existing};
   }
 
-  auto const kind_text  = system_ns::system_kind_to_text(sys.kind);
-  auto       built_ctx  = entity_kind == "task" ? tmpl::build_task_context(conn, entity_id) : tmpl::build_plan_context(conn, entity_id);
+  auto const kind_text = system_ns::system_kind_to_text(sys.kind);
+  auto built_ctx = entity_kind == "task" ? tmpl::build_task_context(conn, entity_id) : tmpl::build_plan_context(conn, entity_id);
   if (!built_ctx) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext propagate-one: building render context"));
   }
   auto const entry = cfg::load_template("default", kind_text, template_kind, templates_root);
   if (!entry) {
-    return std::unexpected(error_from_body(
-        domain_error_kind::not_found, std::format("ext propagate-one: no template for {}/{}", kind_text, template_kind)));
+    return std::unexpected(error_from_body(domain_error_kind::not_found,
+                                           std::format("ext propagate-one: no template for {}/{}", kind_text, template_kind)));
   }
   auto const decoded = jd::parse_json(entry->raw);
   if (!decoded) {
@@ -622,8 +622,8 @@ auto propagate_one_entity(db::connection& conn, adapter_handle* handle, const sy
   }
   auto const rendered = tmpl::render_template(*decoded, *built_ctx);
   if (!rendered) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::generic_failure, std::format("rendering template: {}", tmpl::error_name(rendered.error()))));
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           std::format("rendering template: {}", tmpl::error_name(rendered.error()))));
   }
   // indent-2, matching the oracle's `Stringify.value(.. .indent_2)`. The
   // provider receives these exact bytes.
@@ -635,7 +635,8 @@ auto propagate_one_entity(db::connection& conn, adapter_handle* handle, const sy
 
   auto const created = create_remote(*handle, sys, payload);
   if (!created) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("ext propagate-one: {}", created.error())));
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("ext propagate-one: {}", created.error())));
   }
   auto const entity_kind_enum = link_ns::external_entity_kind_from_text(entity_kind);
   if (!entity_kind_enum) {

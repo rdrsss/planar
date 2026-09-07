@@ -95,7 +95,7 @@ auto record_session_window(db::connection& conn, std::int64_t session_id) -> std
   }
 
   std::filesystem::path const dir{*s->repo_root};
-  auto commits = sessioncommits::walk(dir, *s->head_sha_at_start, std::string_view{*s->repo_root});
+  auto                        commits = sessioncommits::walk(dir, *s->head_sha_at_start, std::string_view{*s->repo_root});
   if (commits.empty()) {
     return {};
   }

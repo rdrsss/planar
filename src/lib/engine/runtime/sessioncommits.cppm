@@ -223,11 +223,11 @@ export auto record_count(db::connection& conn, std::int64_t session_id, std::opt
 /// `agent_work_claims` row carries, handed in by the caller rather than
 /// re-read here.
 export struct claim_window {
-  std::int64_t                claim_id{};        ///< The claim the commits fall under.
-  std::int64_t                session_id{};      ///< The owning session.
-  std::optional<std::string>  worktree_path;     ///< Preferred walk directory, when the claim carries one.
-  std::optional<std::string>  repo_root;         ///< Fallback walk directory AND the value stamped onto every commit's `repo_root`.
-  std::optional<std::string>  head_sha_at_claim; ///< The range's exclusive lower bound. Unset means nothing to walk.
+  std::int64_t               claim_id{};    ///< The claim the commits fall under.
+  std::int64_t               session_id{};  ///< The owning session.
+  std::optional<std::string> worktree_path; ///< Preferred walk directory, when the claim carries one.
+  std::optional<std::string> repo_root;     ///< Fallback walk directory AND the value stamped onto every commit's `repo_root`.
+  std::optional<std::string> head_sha_at_claim; ///< The range's exclusive lower bound. Unset means nothing to walk.
 };
 
 /// @brief Best-effort automatic claim-window commit collection. Port of

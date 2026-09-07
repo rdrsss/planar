@@ -51,8 +51,7 @@ TEST_CASE("follow: parse_duration_ns rejects malformed input", "[cmd][watch][fol
   CHECK_FALSE(parse_duration_ns("-5s").has_value());
 }
 
-TEST_CASE("follow: parse_duration_ns rejects u64-nanosecond overflow rather than saturating",
-          "[cmd][watch][follow][duration]") {
+TEST_CASE("follow: parse_duration_ns rejects u64-nanosecond overflow rather than saturating", "[cmd][watch][follow][duration]") {
   CHECK_FALSE(parse_duration_ns("18446744073709551615h").has_value());
   CHECK_FALSE(parse_duration_ns("99999999999999999999s").has_value());
 }
@@ -123,8 +122,8 @@ TEST_CASE("follow: interruptible_sleep wakes on a transient -wal via the parent-
   using planar::cmd::watch::handlers::interruptible_sleep;
   using planar::cmd::watch::handlers::reset_for_testing;
 
-  auto const root = std::filesystem::temp_directory_path() /
-                     std::format("planar_watch_follow_wake_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  auto const      root = std::filesystem::temp_directory_path() /
+                         std::format("planar_watch_follow_wake_{}", std::chrono::steady_clock::now().time_since_epoch().count());
   std::error_code ec;
   std::filesystem::create_directories(root, ec);
   REQUIRE_FALSE(ec);
@@ -143,9 +142,12 @@ TEST_CASE("follow: interruptible_sleep wakes on a transient -wal via the parent-
 
   std::ostringstream out;
   std::ostringstream err;
-  context             ctx{std::vector<std::string>{"planar-watch"},
-                           map_env({{"PLANAR_HOME", (root / "home").string()}, {"HOME", (root / "fakehome").string()}}), root,
-                           db_path, out, err};
+  context            ctx{std::vector<std::string>{"planar-watch"},
+                         map_env({{"PLANAR_HOME", (root / "home").string()}, {"HOME", (root / "fakehome").string()}}),
+                         root,
+                         db_path,
+                         out,
+                         err};
 
   std::jthread writer([&wal_path] {
     std::this_thread::sleep_for(std::chrono::milliseconds(40));

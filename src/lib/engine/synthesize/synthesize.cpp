@@ -250,8 +250,8 @@ auto encode_request(const request& req) -> std::string {
 auto build_request(const std::filesystem::path& canonical, const std::filesystem::path& display_root, const options& opts)
     -> std::expected<request, error> {
   request req;
-  req.repo_root = display_root.string();
-  req.repo_slug = lower(display_root.filename().string().empty() ? "repo" : display_root.filename().string());
+  req.repo_root   = display_root.string();
+  req.repo_slug   = lower(display_root.filename().string().empty() ? "repo" : display_root.filename().string());
   req.code_layout = opts.code_layout.value_or("");
   std::map<std::string, std::pair<std::int64_t, std::int64_t>, std::less<>> counters;
   std::error_code                                                           ec;
@@ -338,11 +338,9 @@ auto build_request(const std::filesystem::path& canonical, const std::filesystem
   // constitute real production evidence). Mirrors the Zig oracle's
   // isAutoGreenfield (task 6453): a bare zero-files check missed the latter
   // case entirely.
-  auto const all_areas_zero_signal =
-      std::ranges::all_of(req.areas, [](auto const& area) { return area.signal_strength == 0.0; });
+  auto const all_areas_zero_signal = std::ranges::all_of(req.areas, [](auto const& area) { return area.signal_strength == 0.0; });
   req.greenfield = opts.treat_as_greenfield ||
-                   (!opts.treat_as_nongreenfield &&
-                    (req.total_files == 0 || req.total_lines == 0 || all_areas_zero_signal));
+                   (!opts.treat_as_nongreenfield && (req.total_files == 0 || req.total_lines == 0 || all_areas_zero_signal));
   std::string input;
   append_record(input, {"repo_slug", req.repo_slug});
   append_record(input, {"readme", req.readme});
