@@ -78,6 +78,14 @@ FORCE=0
 UNINSTALL=0
 NO_PRUNE=0                    # set with --no-prune to skip stale-vendor-file removal
 BUILD_PRESET="release"        # CMake preset
+# The installer builds in its OWN directory, never the developer's
+# build/<preset> (task 6537). Reusing it meant the install inherited whatever
+# flags the cache happened to hold -- a `make test-parity-cpp` run leaves
+# PLANAR_WITH_MTKAHYPAR=ON there, which silently produced a solver-linked
+# install -- and left PLANAR_VERSION_META=ON behind afterwards, invalidating
+# the whole build graph on every subsequent commit.
+BUILD_DIR=""                  # resolved below; override with --build-dir
+WITH_SOLVER=0                 # set with --with-solver (Mt-KaHyPar; needs tbb)
 VERBOSE=0                     # set with --verbose/-v for per-file detail
 DRY_RUN=0                     # set with --dry-run/-n to preview without changes
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
@@ -104,6 +112,12 @@ Options:
   --force            Overwrite existing symlinks / adopt a non-Planar prefix
   --no-prune         Skip removal of stale vendor files
   --preset NAME      CMake build preset: debug|release (default: release)
+  --build-dir DIR    Where to configure and build (default:
+                     build/install-<preset>). The installer never builds in
+                     the developer's build/<preset>.
+  --with-solver      Link the Mt-KaHyPar solver (needs tbb). Off by default;
+                     without it `groups recommend --solver mtkahypar`
+                     degrades to greedy and reports optimal_available:false.
   --dry-run, -n      Show what would happen without making any changes
   --verbose, -v      Per-file detail (default prints a summary)
   --uninstall        Tear down everything install.sh created
@@ -126,6 +140,8 @@ while [[ $# -gt 0 ]]; do
     --uninstall)  UNINSTALL=1; shift ;;
     --no-prune)   NO_PRUNE=1; shift ;;
     --preset)     BUILD_PRESET="$2"; shift 2 ;;
+    --build-dir)  BUILD_DIR="$2"; shift 2 ;;
+    --with-solver) WITH_SOLVER=1; shift ;;
     --verbose|-v) VERBOSE=1; shift ;;
     --dry-run|-n) DRY_RUN=1; shift ;;
     --version)
@@ -137,6 +153,13 @@ while [[ $# -gt 0 ]]; do
     *) printf 'install.sh: unknown flag: %s\n\n' "$1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+# The installer's own build directory. Deliberately NOT build/<preset>: that
+# one belongs to the developer, and sharing it is how an install picked up a
+# parity lane's solver flag and left version-metadata stamping switched on
+# behind it (task 6537). `--build-dir` overrides for callers that need to
+# place it elsewhere (the installer integration tests do).
+[[ -n "$BUILD_DIR" ]] || BUILD_DIR="$REPO_ROOT/build/install-$BUILD_PRESET"
 
 # ---------- output helpers ----------
 
@@ -467,6 +490,8 @@ log "PLANAR_HOME = $PLANAR_HOME"
 log "mode        = $MODE"
 log "vendors     = ${VENDORS:-(none)}"
 log "preset      = $BUILD_PRESET"
+log "build dir   = $BUILD_DIR"
+log "solver      = $( ((WITH_SOLVER)) && echo "mtkahypar (linked)" || echo "off (greedy only)" )"
 [[ "$DRY_RUN" -eq 1 ]] && log "dry-run     = yes (no changes will be made)"
 
 # Writability — the install writes into $PLANAR_HOME (or creates it). Fail with
@@ -534,7 +559,18 @@ mkdir -p "$PLANAR_HOME/bin"
 #
 # `PLANAR_VERSION_META=ON` stamps the install's git metadata. It stays off
 # for ordinary dev builds so commit/dirty changes do not invalidate the tree.
-( cd "$REPO_ROOT" && cmake --preset "$BUILD_PRESET" -DPLANAR_VERSION_META=ON && cmake --build "build/$BUILD_PRESET" && cmake --install "build/$BUILD_PRESET" --prefix "$PLANAR_HOME" )
+#
+# EVERY option this build depends on is pinned explicitly. A configure that
+# omits a flag does NOT reset it -- the cache wins -- so an unpinned
+# PLANAR_WITH_MTKAHYPAR was inherited from whatever last configured the
+# directory (task 6537). `--with-solver` is the only way to turn it on here,
+# and it requires the tbb preflight above.
+( cd "$REPO_ROOT" \
+  && cmake --preset "$BUILD_PRESET" -B "$BUILD_DIR" \
+       -DPLANAR_VERSION_META=ON \
+       -DPLANAR_WITH_MTKAHYPAR="$( ((WITH_SOLVER)) && echo ON || echo OFF )" \
+  && cmake --build "$BUILD_DIR" \
+  && cmake --install "$BUILD_DIR" --prefix "$PLANAR_HOME" )
 vlog "wrote $PLANAR_HOME/bin/planar"
 vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"

@@ -92,6 +92,27 @@ if(PLANAR_WITH_MTKAHYPAR AND TARGET MtKaHyPar::mtkahypar)
     target_compile_definitions(planar_engine_grouping_tests PRIVATE PLANAR_HAS_MTKAHYPAR)
     target_link_libraries(planar_engine_grouping_tests PRIVATE MtKaHyPar::mtkahypar)
   endif()
+
+  # SHIP THE SOLVER'S SHARED LIBRARY (task 6536).
+  #
+  # `MtKaHyPar::mtkahypar` is a SHARED library whose install_name is
+  # `@rpath/libmtkahypar.dylib`, and `planar_module()` installs executables
+  # only. Before this block, `cmake --install` produced a `planar` that could
+  # not start: CMake strips the build-tree RPATH on install, so dyld had
+  # nowhere left to look and the binary died with
+  # `Library not loaded: @rpath/libmtkahypar.dylib` (exit 134) -- measured
+  # against a scratch prefix, not inferred.
+  #
+  # The library goes next to the binaries' own lib dir and each executable
+  # gets a relative INSTALL_RPATH (see `planar_module()`), so the install
+  # tree is relocatable and does NOT depend on the source checkout surviving
+  # at its build-time path.
+  #
+  # TBB is deliberately NOT vendored here. Mt-KaHyPar's own CMakeLists
+  # `find_package(TBB)`s the Homebrew formula and TBB does not support static
+  # linking (decision 1006), so it stays an external runtime dependency that
+  # `install.sh` preflights as FATAL before reaching the build.
+  install(FILES "$<TARGET_FILE:MtKaHyPar::mtkahypar>" DESTINATION lib)
 elseif(PLANAR_WITH_MTKAHYPAR)
   message(WARNING
     "PLANAR_WITH_MTKAHYPAR=ON but the MtKaHyPar::mtkahypar target does not "

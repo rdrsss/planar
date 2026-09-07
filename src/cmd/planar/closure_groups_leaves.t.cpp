@@ -83,6 +83,7 @@ import planar.db;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
+import planar.engine.grouping.mtkahypar;
 
 namespace {
 
@@ -505,22 +506,40 @@ TEST_CASE("groups recommend accepts --solver mtkahypar and reports that the opti
     add_closure(conn, 1, "a.zig", "a.aaa", "modify", 10);
   }
 
-  // The mtkahypar arm is unported. Accepting the flag is NOT the inert-filter
-  // defect, because the degradation is REPORTED: `solver` names the
-  // partitioner that actually ran and `optimal_available` says the optimal
-  // one did not. That is byte-identical to what the oracle produces on a
-  // host with no solver binary installed — and on a host that HAS one the
-  // oracle differs, which is why this leaf's `--solver mtkahypar` is
-  // deliberately absent from parity.t.cpp.
+  // Accepting the flag is NOT the inert-filter defect, because the outcome is
+  // REPORTED either way: `solver` names the partitioner that actually ran and
+  // `optimal_available` says whether the optimal one could.
+  //
+  // WHICH answer is correct depends on the CONFIGURE, so this case branches on
+  // the same runtime probe the engine itself branches on rather than pinning
+  // one arm (task 6543). Before this, the case asserted the degraded arm
+  // unconditionally — correct while the solver was unported, and silently
+  // wrong once decision 1032 had the parity lane build with
+  // `PLANAR_WITH_MTKAHYPAR=ON`. It only kept passing because the test binary
+  // had not been relinked since the flag flipped; a genuine solver-ON `ctest`
+  // fails it.
   auto const asked = dispatch(fx, {"groups", "recommend", "1", "--solver", "mtkahypar", "--json"});
   CHECK(asked.code == 0);
-  CHECK(asked.out.contains("\"solver\":\"greedy\""));
-  CHECK(asked.out.contains("\"optimal_available\":false"));
-  CHECK(asked.out.contains("\"selected_greedy\":false"));
 
-  // ...and the answer is identical to an explicit `--solver greedy`, which is
-  // what "degraded" means here.
-  auto const greedy = dispatch(fx, {"groups", "recommend", "1", "--solver", "greedy", "--json"});
-  CHECK(greedy.code == 0);
-  CHECK(greedy.out == asked.out);
+  if (::planar::engine::grouping::mtkahypar::available()) {
+    // The solver is linked: the optimal arm really ran. `selected_greedy`
+    // still reports whether greedy WON on cost — the never-worse-than-greedy
+    // comparison in `grouping/load.cpp` — so it is not asserted here.
+    CHECK(asked.out.contains("\"solver\":\"mtkahypar\""));
+    CHECK(asked.out.contains("\"optimal_available\":true"));
+  } else {
+    // No solver linked: degrade to greedy and SAY SO. This is byte-identical
+    // to what the oracle produces on a host with no solver installed.
+    CHECK(asked.out.contains("\"solver\":\"greedy\""));
+    CHECK(asked.out.contains("\"optimal_available\":false"));
+    CHECK(asked.out.contains("\"selected_greedy\":false"));
+
+    // ...and the answer is identical to an explicit `--solver greedy`, which
+    // is what "degraded" means. This equality holds ONLY on the degraded arm:
+    // with the solver linked the two differ in `solver`/`optimal_available`
+    // by construction.
+    auto const greedy = dispatch(fx, {"groups", "recommend", "1", "--solver", "greedy", "--json"});
+    CHECK(greedy.code == 0);
+    CHECK(greedy.out == asked.out);
+  }
 }

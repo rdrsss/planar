@@ -58,7 +58,7 @@ fn writeAbsolute(path: []const u8, data: []const u8) !void {
 }
 
 test "scenario: fresh managed install is healthy and status checks are read-only" {
-    try installed_surface.runSelectedVendorInstallerLifecycle();
+    try installed_surface.runSelectedVendorInstallerLifecycle("install-test-skill-lifecycle");
 }
 
 test "scenario: rendered introspection lifecycle previews three vendors before approved triage" {

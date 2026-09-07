@@ -112,9 +112,25 @@ fn inheritedEnv(gpa: std.mem.Allocator) !std.process.Environ.Map {
     return environ.createMap(gpa);
 }
 
-fn runInstaller(gpa: std.mem.Allocator, repo_root: []const u8, home: []const u8, prefix: []const u8, codex_home: []const u8, fake_bin: []const u8, link: bool) !std.process.RunResult {
+/// `build_dir_slug` names a build directory THIS test owns, under
+/// `<repo>/build/`. Two things depend on it (task 6538):
+///
+///   - It must not be the developer's `build/<preset>`. Before install.sh
+///     grew `--build-dir` (task 6537) this test reconfigured and rebuilt that
+///     directory while the rest of the suite was executing binaries out of
+///     it, which manufactured failures elsewhere that read as regressions --
+///     a 2000ms watcher-latency budget blown at 2994ms in
+///     scenario_multi_agent_session_test, in the same run.
+///   - It must differ per installer test, so two of them never configure the
+///     same directory concurrently.
+///
+/// It is deliberately STABLE across runs rather than a fresh tmp dir: a cold
+/// C++ build per installer test would add many minutes to every suite run.
+fn runInstaller(gpa: std.mem.Allocator, repo_root: []const u8, home: []const u8, prefix: []const u8, codex_home: []const u8, fake_bin: []const u8, link: bool, build_dir_slug: []const u8) !std.process.RunResult {
     const install = try std.fs.path.join(gpa, &.{ repo_root, "install.sh" });
     defer gpa.free(install);
+    const build_dir = try std.fs.path.join(gpa, &.{ repo_root, "build", build_dir_slug });
+    defer gpa.free(build_dir);
     var env = try inheritedEnv(gpa);
     defer env.deinit();
     const path = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ fake_bin, env.get("PATH") orelse "" });
@@ -125,13 +141,18 @@ fn runInstaller(gpa: std.mem.Allocator, repo_root: []const u8, home: []const u8,
     try env.put("PATH", path);
     try env.put("NO_COLOR", "1");
     const argv: []const []const u8 = if (link)
-        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--link", "--preset", "debug" }
+        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--link", "--preset", "debug", "--build-dir", build_dir }
     else
-        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--preset", "debug" };
+        &.{ "bash", install, "--prefix", prefix, "--vendors", "codex", "--preset", "debug", "--build-dir", build_dir };
     return std.process.run(gpa, std.testing.io, .{ .argv = argv, .environ_map = &env });
 }
 
-pub fn runSelectedVendorInstallerLifecycle() !void {
+/// `build_dir_slug` is the caller's OWN build directory name; see
+/// `runInstaller`. Two different tests call this lifecycle, so the slug
+/// is a parameter rather than a constant -- sharing one directory between
+/// them would reintroduce exactly the concurrent-configure collision this
+/// change removes (task 6538).
+pub fn runSelectedVendorInstallerLifecycle(build_dir_slug: []const u8) !void {
     const gpa = std.testing.allocator;
     var suite = harness.Suite.init(gpa);
     defer suite.deinit();
@@ -178,7 +199,7 @@ pub fn runSelectedVendorInstallerLifecycle() !void {
     defer gpa.free(repo_root);
     const env = envFor(home, prefix, codex_home);
     inline for (.{ false, true }) |link| {
-        const installed = try runInstaller(gpa, repo_root, home, prefix, codex_home, fake_bin, link);
+        const installed = try runInstaller(gpa, repo_root, home, prefix, codex_home, fake_bin, link, build_dir_slug);
         defer gpa.free(installed.stdout);
         defer gpa.free(installed.stderr);
         if (installed.term != .exited or installed.term.exited != 0) {
@@ -224,7 +245,7 @@ pub fn runSelectedVendorInstallerLifecycle() !void {
 }
 
 test "selected-vendor installer lifecycle writes a fresh manifest in copy and link modes" {
-    try runSelectedVendorInstallerLifecycle();
+    try runSelectedVendorInstallerLifecycle("install-test-surface");
 }
 
 test "health reports fresh managed and unmanaged projections without degradation or writes" {
