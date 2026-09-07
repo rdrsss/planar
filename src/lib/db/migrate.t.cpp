@@ -244,62 +244,84 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
 }
 
 TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-for-row", "[db][migrate][parity]") {
-  const std::filesystem::path zig_bin{PLANAR_ZIG_BIN};
-  if (!std::filesystem::exists(zig_bin)) {
-    SKIP(std::format("zig reference binary not built at {} — build it under zig/ (zig build) first", zig_bin.string()));
-  }
-
-  scratch_db_path zig_scratch;
-  // Run from a NEUTRAL directory, not ctest's cwd.
+  // Retired off the Zig oracle by task 6541 (plan 996, decision 963/982's
+  // third gating condition: every oracle-conditional parity skip must be
+  // gone before `zig/` can be deleted). This case used to shell the Zig
+  // reference binary's `init` verb into a scratch database and compare its
+  // `schema_migrations` rows against a C++-migrated database's, live, at
+  // test time.
   //
-  // `init` is a planning verb, and the worktree gate refuses planning verbs
-  // whose cwd sits inside a linked git worktree (exit 8). The orchestrator
-  // dispatches coders into `.claude/worktrees/`, so ctest's cwd is inside one
-  // for every isolated cycle and this test failed there while passing in the
-  // main checkout — a deterministic red that looks unrelated to whatever the
-  // cycle changed (task 6144).
-  //
-  // `--skip-project` means the invocation registers no project and therefore
-  // has no use for the cwd at all, so relocating is honest rather than a
-  // bypass: the gate stays fully armed, and this test simply stops standing
-  // where it fires. Deliberately NOT solved with
-  // `PLANAR_DISABLE_WORKTREE_GATE` — that escape hatch is compiled into the
-  // C++ debug build only, and this line shells the ZIG reference binary.
-  //
-  // The `cd <dir> && env VAR=...` form is required: in this platform's
-  // /bin/sh, assignments that PRECEDE a `cd` do not survive the `&&`, so the
-  // older `PLANAR_DB=... cd x && bin` shape silently loses the variable and
-  // sends the reference binary at the operator's real database.
-  const auto neutral = std::filesystem::temp_directory_path().string();
-  const auto cmd = std::format("cd {} && env PLANAR_DB={} {} init --skip-project --allow-no-repo --json >/dev/null 2>&1", neutral,
-                               zig_scratch.path_.string(), zig_bin.string());
-  REQUIRE(std::system(cmd.c_str()) == 0);
-
-  auto zig_conn = planar::db::connection::open_read_only(zig_scratch.path_.string());
-  REQUIRE(zig_conn.has_value());
+  // `schema_migrations` is the public schema-version contract (see
+  // `docs/architecture.md` § schema contract and the Migrations checklist
+  // in CLAUDE.md): every migration's up script ends with exactly one
+  // `insert into schema_migrations (version, description) values (...)`,
+  // so the full (version, description) table below is not a derived
+  // artifact of either runtime — it is the literal content of
+  // `migrations/*.up.sql`, transcribed by reading those 33 files directly
+  // (not paraphrased from this test's prior behaviour), which is also
+  // exactly what the Zig oracle's own `init` used to embed and what this
+  // test confirmed row-for-row before this retirement. Pinning it here
+  // means the case still asserts the real contract — "the embedded C++
+  // migration chain produces the schema-version row set the project has
+  // actually authored" — without needing a second runtime to compare
+  // against. Runs without the oracle: an assertion about this binary, not
+  // a comparison.
+  static const std::vector<std::pair<std::int64_t, std::string>> k_expected{
+      {1, "initial schema"},
+      {2, "planning entities: plans, artifacts, decisions"},
+      {3, "work items: agents, tasks, questions, test_scenarios, plan_steps, active_scope"},
+      {4, "entity_links: typed cross-entity relationships"},
+      {5, "sessions, session_entries, context_snapshots, handoffs"},
+      {6, "external plane: external_systems, external_links, sync_events"},
+      {7, "workbench_sync_state: bidirectional workbench sync tracking"},
+      {8, "artifacts.kind: add research, getting_started, changelog_entry, glossary_term"},
+      {9, "drop active_scope table — cwd-primary scope resolution (plan 153)"},
+      {10, "task_reopens audit table — done/cancelled escape hatch (plan 215 M1)"},
+      {11, "slug refs + FTS5 search"},
+      {12, "annotations: line-anchored notes with FTS5 indexing and entity_links widening"},
+      {13, "artifacts.kind: add test_spec"},
+      {14, "audit_log: append-only data-plane mutation trail"},
+      {15, "agent activity tracking: agent_work_claims + agent_actions (with locality columns)"},
+      {16, "agent_actions metadata: nullable JSON-shaped text column for caller-attached per-action context"},
+      {17, "handoffs: add nullable worktree_path / repo_root / branch for cold-start resumer recovery"},
+      {18, "correct schema_migrations descriptions for versions 2-7"},
+      {19, "task_touch_paths: path-level task-touch declarations for the parallelizability rules"},
+      {20, "opt-in cli_invocations usage log"},
+      {21, "session_commits table plus sessions repo_root/head_sha_at_start for session commit attribution"},
+      {22, "workflow context plane: workflow_runs + context_records tables"},
+      {23, "agent_work_claims: nullable run_id (FK workflow_runs) + stage for planar-execute correlation"},
+      {24, "context_records: make claim_id nullable for run-keyed capsule writes (decision 456)"},
+      {25, "runs/run_events/run_touches: measurement-rig substrate for the decomposition experiment"},
+      {26, "closures: derived symbol-level closure snapshot per task (M2 extractor)"},
+      {27, "external sync per-field baseline for conflict detection"},
+      {28, "structured feedback triage for task and question findings"},
+      {29, "agent claim terminal failure categories"},
+      {30, "adaptive routing registry, facts, dispatch, experiments, and evidence"},
+      {31, "dispatch confirmation tokens"},
+      {32, "optional comparable latency and cost metrics on terminal samples"},
+      {33, "rename the blocks relationship to depends-on"},
+  };
+  REQUIRE(k_expected.size() == 33);
 
   scratch_db_path cpp_scratch;
   auto            cpp_conn = planar::db::connection::open(cpp_scratch.path_.string());
   REQUIRE(cpp_conn.has_value());
   REQUIRE(planar::db::apply_all(*cpp_conn));
 
-  auto zig_stmt = zig_conn->prepare("select version, description from schema_migrations order by version");
   auto cpp_stmt = cpp_conn->prepare("select version, description from schema_migrations order by version");
-  REQUIRE(zig_stmt.has_value());
   REQUIRE(cpp_stmt.has_value());
 
   std::size_t rows = 0;
   for (;;) {
-    auto zig_step = zig_stmt->step();
     auto cpp_step = cpp_stmt->step();
-    REQUIRE(zig_step.has_value());
     REQUIRE(cpp_step.has_value());
-    REQUIRE(*zig_step == *cpp_step);
-    if (*zig_step == planar::db::step_result::done) {
+    if (*cpp_step == planar::db::step_result::done) {
       break;
     }
-    REQUIRE(zig_stmt->column_int64(0) == cpp_stmt->column_int64(0));
-    REQUIRE(zig_stmt->column_text(1) == cpp_stmt->column_text(1));
+    REQUIRE(rows < k_expected.size());
+    INFO("row " << rows);
+    REQUIRE(cpp_stmt->column_int64(0) == k_expected[rows].first);
+    REQUIRE(cpp_stmt->column_text(1) == k_expected[rows].second);
     ++rows;
   }
   REQUIRE(rows == 33);

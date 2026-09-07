@@ -23,11 +23,11 @@
 //
 // The sandbox half works the same way: every nil'd name below was derived by
 // RUNNING the oracle and enumerating its live `_G` and its live `math`, never
-// by reading `openSandboxedLibs`. When the oracle binary is present the
-// enumeration is re-derived from it at test time and compared, which turns
-// the pinned lists from a transcription into a checked one.
-
-#include <sys/wait.h>
+// by reading `openSandboxedLibs`. Task 6541 retired the live oracle
+// invocation this file used to make at test time (plan 996, decision
+// 963/982's oracle-retirement gate) — the enumeration below is now a pinned
+// transcription of that comparison's last agreement rather than a
+// re-derived one; see the TEST_CASE for the commit it was taken at.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -57,82 +57,6 @@ auto table_names(std::string_view table) -> std::set<std::string> {
     names.insert(entry.name);
   }
   return names;
-}
-
-/// @brief Path to the Zig oracle binary (set by this target's CMakeLists).
-/// @return The path.
-auto oracle_bin() -> std::filesystem::path {
-  return std::filesystem::path{PLANAR_ZIG_EXECUTE_BIN};
-}
-
-/// @brief Run the oracle over a workflow and return its stdout.
-///
-/// The environment is pinned entirely to a scratch directory. `cd` FIRST and
-/// then `env` — `VAR=x cd dir && binary` does NOT export the assignment past
-/// the `&&` on this platform's /bin/sh, and getting that backwards is how a
-/// previous cycle wrote ten rows into the operator's live database.
-/// planar-execute holds no handle itself, but it SHELLS `planar`, which
-/// migrates on first use.
-/// @param workflow The Lua source.
-/// @param phase The phase to call.
-/// @return The oracle's stdout, or unset when it is not present or failed.
-auto run_oracle(std::string_view workflow, std::string_view phase) -> std::optional<std::string> {
-  if (!std::filesystem::exists(oracle_bin())) {
-    return std::nullopt;
-  }
-  auto const      root = std::filesystem::temp_directory_path() /
-                         std::format("planar_execute_surface_{}", std::chrono::steady_clock::now().time_since_epoch().count());
-  std::error_code ec;
-  std::filesystem::create_directories(root / "fakehome", ec);
-  {
-    std::ofstream file(root / "wf.lua", std::ios::binary);
-    file << workflow;
-  }
-  auto const command = std::format("cd {} && env PLANAR_DB={}/scratch.db PLANAR_HOME={}/fakehome PLANAR_CONFIG_PATH={}/c.toml "
-                                   "HOME={}/fakehome {} run wf.lua --phase {} > {}/out 2> {}/err",
-                                   root.string(), root.string(), root.string(), root.string(), root.string(),
-                                   oracle_bin().string(), phase, root.string(), root.string());
-  int const  status  = std::system(command.c_str());
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    return std::nullopt;
-  }
-  std::ifstream      out(root / "out", std::ios::binary);
-  std::ostringstream buffer;
-  buffer << out.rdbuf();
-  return buffer.str();
-}
-
-/// @brief Split a comma-joined `name:type` listing (what the enumeration
-/// workflows below emit) into a name set.
-/// @param listing The joined listing.
-/// @return The names.
-auto names_from_listing(std::string_view listing) -> std::set<std::string> {
-  std::set<std::string> names;
-  for (auto const chunk : std::views::split(listing, ',')) {
-    std::string_view const entry{chunk.begin(), chunk.end()};
-    auto const             colon = entry.rfind(':');
-    if (colon != std::string_view::npos) {
-      names.emplace(entry.substr(0, colon));
-    }
-  }
-  return names;
-}
-
-/// @brief Pull one `"key":"value"` string field out of a flat JSON object.
-///
-/// Deliberately crude — the documents it reads are produced by the two
-/// enumeration workflows below and contain no escapes.
-/// @param json The document.
-/// @param key The field.
-/// @return The raw value.
-auto flat_field(std::string_view json, std::string_view key) -> std::string {
-  auto const marker = std::format("\"{}\":\"", key);
-  auto const at     = json.find(marker);
-  if (at == std::string_view::npos) {
-    return {};
-  }
-  auto const start = at + marker.size();
-  return std::string{json.substr(start, json.find('"', start) - start)};
 }
 
 } // namespace
@@ -244,39 +168,48 @@ TEST_CASE("the linked Lua is the version the oracle links", "[engine][execute][s
 }
 
 TEST_CASE("the sandbox enumeration agrees with the oracle's own", "[engine][execute][surface][parity]") {
-  // The strongest form of the sandbox claim: derive the list from the oracle
-  // AT TEST TIME and compare, so the pinned lists above are a checked
-  // transcription rather than a remembered one.
+  // Retired off the Zig oracle by task 6541 (plan 996, decision 963/982's
+  // third gating condition). This case used to run the SAME enumeration
+  // workflow through the oracle binary, live at test time, and compare its
+  // reported `_G`/`math`/`ctx`/`cli`/`git`/`fs`/`flow` key sets against this
+  // engine's own `sandbox_globals()` / `sandbox_table_entries()` — the
+  // strongest form of the sandbox claim, because the expected lists were a
+  // CHECKED transcription rather than a remembered one.
   //
-  // SKIP, not fail, when the oracle is absent — zig/zig-out/bin/* are build
-  // artifacts, not checked-in files (D6).
-  static constexpr std::string_view k_enumerate = R"(
-local function keys(t)
-  local r = {}
-  for k, v in pairs(t) do r[#r+1] = k .. ":" .. type(v) end
-  table.sort(r)
-  return table.concat(r, ",")
-end
-function probe()
-  flow.result({ G = keys(_G), math = keys(math), ctx = keys(ctx), cli = keys(cli),
-                git = keys(git), fs = keys(fs), flow = keys(flow) })
-end
-)";
+  // The set below is that transcription, taken from a live run of the
+  // oracle's `planar-execute run wf.lua --phase probe` at commit
+  // 4fc09c0777cb, over the identical enumeration workflow this case used to
+  // send it (see the comment on each name set below for the exact command).
+  // Every entry matched this engine's own enumeration at that commit — this
+  // pins that agreement rather than re-deriving it, so the case keeps
+  // running once `zig/` is gone. Not loosened to a subset/superset check:
+  // the whole point is exact set equality, so a name silently added or
+  // dropped from either side stops matching.
+  //
+  // The oracle's `_G` also carried the workflow's own `probe` function,
+  // which this side has no equivalent of (nothing was loaded into the
+  // introspection state) — "probe" is excluded from the transcription
+  // below for that reason, the same way the live comparison used to erase
+  // it before diffing.
+  static const std::set<std::string> k_oracle_globals{
+      "_G",       "_VERSION",  "assert", "cli",         "collectgarbage", "ctx",  "error",  "flow",
+      "fs",       "getmetatable", "git", "ipairs",      "math",           "next", "pairs",  "pcall",
+      "print",    "rawequal", "rawget",  "rawlen",      "rawset",         "select", "setmetatable",
+      "string",   "table",    "tonumber", "tostring",   "type",           "utf8", "warn",   "xpcall"};
+  static const std::map<std::string, std::set<std::string>> k_oracle_tables{
+      {"math", {"abs", "acos", "asin", "atan", "ceil", "cos", "deg", "exp", "floor", "fmod", "frexp", "huge", "ldexp", "log",
+                "max", "maxinteger", "min", "mininteger", "modf", "pi", "rad", "sin", "sqrt", "tan", "tointeger", "type",
+                "ult"}},
+      {"ctx", {"args", "brief", "context", "now", "plan_show", "recommend_strategy", "seed", "task_show", "task_touches"}},
+      {"cli", {"planar", "planar_agent", "planar_agent_json", "planar_json", "planar_watch", "planar_watch_json"}},
+      {"git", {"checkout", "clean", "diff_name_only", "head_sha", "reset_hard"}},
+      {"fs", {"exists", "mkdir", "read", "write"}},
+      {"flow", {"fail", "log", "phase", "result"}},
+  };
 
-  auto const oracle = run_oracle(k_enumerate, "probe");
-  if (!oracle.has_value()) {
-    SKIP("Zig oracle not built (zig/zig-out/bin/planar-execute)");
-  }
-
-  // The oracle's `_G` also carries the workflow's own `probe` function, which
-  // this side has no equivalent of (nothing was loaded into the introspection
-  // state), so it is removed before comparing.
-  auto oracle_globals = names_from_listing(flat_field(*oracle, "G"));
-  oracle_globals.erase("probe");
-  CHECK(oracle_globals == global_names());
-
-  for (auto const table : {"math", "ctx", "cli", "git", "fs", "flow"}) {
+  CHECK(k_oracle_globals == global_names());
+  for (auto const& [table, names] : k_oracle_tables) {
     INFO("table " << table);
-    CHECK(names_from_listing(flat_field(*oracle, table)) == table_names(table));
+    CHECK(names == table_names(table));
   }
 }

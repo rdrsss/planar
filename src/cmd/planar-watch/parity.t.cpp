@@ -62,15 +62,6 @@ auto oracle_available() -> bool {
   return std::filesystem::exists(zig_bin());
 }
 
-/// @brief Run both binaries over `args` in separately-pinned scratch roots.
-/// @param tag A short discriminator naming the case.
-/// @param args The arguments (excluding argv[0]).
-/// @return The two captures, C++ first.
-auto both(std::string_view tag, std::vector<std::string> args) -> std::pair<capture, capture> {
-  auto const arena = make_arena(tag);
-  return {run_pinned(cpp_bin(), args, arena.cpp_root, "cpp"), run_pinned(zig_bin(), args, arena.zig_root, "zig")};
-}
-
 } // namespace
 
 TEST_CASE("planar-watch: leaf help pages are exact, and still cost nothing to render", "[cmd][watch][parity]") {
@@ -132,49 +123,60 @@ TEST_CASE("planar-watch: leaf help pages are exact, and still cost nothing to re
 
 TEST_CASE("planar-watch parity: completion's two failure paths keep their distinct exit codes",
           "[cmd][watch][parity][exitcode]") {
-  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-watch)");
+  // TASK 6540 RE-BASELINE. Both arms here used to be a live diff against
+  // the Zig oracle. Transcribed at this commit — the two binaries agreed
+  // byte for byte on both arms at transcription time — and pinned against
+  // the built binary alone from here on, following the same pattern task
+  // 6123 established in `the CLI surface is CLI11's now, and pinned`
+  // (src/cmd/planar/parity.t.cpp): captured from the BUILT binary exactly
+  // the way the oracle captures were taken, and pinned EXACTLY — trailing
+  // whitespace included, never loosened to a `contains` check.
+  //
+  // Runs without the oracle now — it is an assertion about this binary,
+  // not a comparison — so it stays live on a checkout with no zig/ build.
+  auto const arena = make_arena("completionfail");
 
-  // Handler-level refusal: exit 2, stderr only. STILL A TRUE ORACLE DIFF
-  // after task 6123 — this message comes from the HANDLER, not the parser,
-  // so the CLI11 swap does not touch it. Left as a byte-for-byte
-  // comparison deliberately: it is the control that shows the
-  // re-baselining below is confined to parser-produced bytes.
-  auto const [cpp_bad, zig_bad] = both("badshell", {"completion", "badshell"});
-  CHECK(cpp_bad.code == zig_bad.code);
-  CHECK(cpp_bad.code == 2);
-  CHECK(cpp_bad.out == zig_bad.out);
-  CHECK(cpp_bad.err == zig_bad.err);
+  // Handler-level refusal: exit 2, stderr only. This message comes from
+  // the HANDLER, not the parser, so the CLI11 swap never touched it — it
+  // was byte-identical to the oracle both before and after task 6123, and
+  // still is at transcription time.
+  auto const bad = run_pinned(cpp_bin(), std::vector<std::string>{"completion", "badshell"}, arena.cpp_root, "badshell");
+  CHECK(bad.code == 2);
+  CHECK(bad.out.empty());
+  CHECK(bad.err == "error: unsupported shell 'badshell'; supported: bash, zsh, fish\n");
 
   // Parser-level refusal: exit 1, stderr only (decision 1004, task 6271 —
   // was BOTH streams before this decision). Two different codes out of
   // one verb — a collapsed exit mapping cannot satisfy both cases, and
-  // THAT is what this case exists to prove.
+  // THAT is what this case exists to prove. This binary's own exit-code
+  // table says 1 here, where the operator binary's parser-refusal
+  // contract says 2 (see `the CLI surface is CLI11's now, and pinned`) —
+  // that asymmetry is preserved explicitly by the literal `1` below,
+  // not left as an artifact of a since-removed comparison.
   //
-  // The exit CODE is still diffed against the oracle, because the per-binary
-  // exit-code table is an operator contract task 6123 was required to
-  // preserve. The BYTES are not: CLI11 writes the parse-error wording now
-  // (task 6123), and decision 1004 moved it to stderr alone, dropping the
-  // CamelCase tag, so both are pinned against the built binary instead.
-  auto const [cpp_missing, zig_missing] = both("noshell", {"completion"});
-  CHECK(cpp_missing.code == zig_missing.code);
-  CHECK(cpp_missing.code == 1);
-  CHECK(cpp_missing.out.empty());
-  CHECK(cpp_missing.err == "error: shell is required\n");
+  // The BYTES are CLI11's now (task 6123), moved to stderr alone by
+  // decision 1004, dropping the CamelCase tag the oracle still emits.
+  auto const missing = run_pinned(cpp_bin(), std::vector<std::string>{"completion"}, arena.cpp_root, "noshell");
+  CHECK(missing.code == 1);
+  CHECK(missing.out.empty());
+  CHECK(missing.err == "error: shell is required\n");
 }
 
 TEST_CASE("planar-watch parity: an unknown verb still exits 1, matching the oracle", "[cmd][watch][parity]") {
-  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-watch)");
-
-  // As above: the exit CODE is still diffed against the oracle (exit 1
-  // here, where the operator binary exits 2 — the divergence task 6123 was
-  // required to preserve); the BYTES are CLI11's now, moved to stderr
-  // alone by decision 1004 (task 6271), and are pinned against the built
-  // binary.
-  auto const [cpp, zig] = both("unknownverb", {"nosuchverb"});
-  CHECK(cpp.code == zig.code);
-  CHECK(cpp.code == 1);
-  CHECK(cpp.out.empty());
-  CHECK(cpp.err == "error: planar-watch: The following argument was not expected: nosuchverb\n");
+  // TASK 6540 RE-BASELINE, same shape as above. This binary's exit-code
+  // table says 1 here, where the operator binary says 2 (see `the CLI
+  // surface is CLI11's now, and pinned`) — pinned explicitly below via the
+  // literal `1`, so the asymmetry stays visible rather than incidental to
+  // a dropped comparison.
+  //
+  // The BYTES are CLI11's now, moved to stderr alone by decision 1004
+  // (task 6271). Transcribed from the built binary at this commit; runs
+  // without the oracle from here on.
+  auto const arena = make_arena("unknownverb");
+  auto const got   = run_pinned(cpp_bin(), std::vector<std::string>{"nosuchverb"}, arena.cpp_root, "unknownverb");
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: planar-watch: The following argument was not expected: nosuchverb\n");
 }
 
 TEST_CASE("planar-watch: no ported invocation creates a database file", "[cmd][watch][parity][readonly]") {
@@ -296,6 +298,33 @@ auto normalize(std::string_view text) -> std::string {
 
 TEST_CASE("planar-watch parity: the six read verbs agree with the oracle over a seeded database",
           "[cmd][watch][parity][oracle]") {
+  // TASK 6540 ASSESSED, NOT RETIRED. Every other oracle-conditional case in
+  // this file transcribes exact bytes and pins them against the built
+  // binary alone (see the completion/unknown-verb/catalog cases above) —
+  // that pattern only works because the compared bytes are DETERMINISTIC
+  // given fixed argv: a help page, a schema catalog.
+  //
+  // This case's fixture is not. Re-seeding it with the CPP `planar` /
+  // `planar-agent` binaries (dropping the need for the oracle to build the
+  // fixture) and re-running it twice back to back — measured at this
+  // commit — showed every one of the 47 read-verb outputs differing
+  // between runs: `claim_token` is 32 fresh random hex characters per
+  // `pull`, and every row timestamp (`claimed_at`, `started_at`,
+  // `lease_expires_at`, `created_at`, and more, at millisecond precision)
+  // is the real wall clock at insert. `normalize()` below already strips
+  // the two fields that are nondeterministic BETWEEN TWO READERS of the
+  // SAME row (`generated_at`, `last_hb`) — that narrow scope works
+  // specifically because both readers agree on every other byte, since
+  // they read identical rows. It does not generalize to a literal pin
+  // against a single binary's own output captured on a DIFFERENT run: a
+  // full pin would need a generic normalizer for every timestamp field and
+  // for the claim token, which risks a normalizer permissive enough to
+  // mask a real rendering regression behind it — worse than leaving the
+  // case oracle-gated.
+  //
+  // Left oracle-gated, NOT deleted and NOT weakened, pending an operator
+  // decision (a frozen clock/RNG seed harness is a bigger lift than this
+  // task's scope). See task 6540's report for the full transcript.
   PLANAR_REQUIRE_ORACLE(seed_oracle_available(),
                         "Zig oracle binaries not built (zig/zig-out/bin/{planar,planar-agent,planar-watch})");
 
@@ -521,51 +550,62 @@ TEST_CASE("planar-watch: a read verb still creates no database file", "[cmd][wat
 }
 
 TEST_CASE("planar-watch parity: every command declares what the oracle declares", "[cmd][watch][parity][catalog]") {
-  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-watch)");
-  // TASK 6065. Before this task the tree carried nine of the oracle's
-  // thirteen leaves, so `schema` was explicitly excluded from the compared
-  // set (see this file's header). All thirteen are declared now, and this
-  // is the case that says so.
-  auto const [cpp, zig] = both("catalog", {"schema"});
-  REQUIRE(cpp.code == 0);
-  REQUIRE(zig.code == 0);
+  // TASK 6540 RE-BASELINE. Transcribed from the built binary at commit
+  // 4fc09c07, where this catalog was confirmed to declare exactly what the
+  // Zig oracle declares (task 6065's `diff_against_oracle` and
+  // `oracle_only_commands` both returned empty at that commit). The
+  // structural facts that comparison proved are pinned directly below
+  // instead of re-deriving them from a live diff every run.
+  //
+  // The byte-identical pin in the next case already subsumes this one
+  // structurally, but the case stays — same name, same purpose — because
+  // it names WHICH commands and WHY, which a byte diff does not.
+  //
+  // Runs without the oracle now: an assertion about this binary alone.
+  auto const arena = make_arena("catalog");
+  auto const got   = run_pinned(cpp_bin(), std::vector<std::string>{"schema"}, arena.cpp_root, "catalog");
+  REQUIRE(got.code == 0);
 
-  auto const mine = planar::cmd::parity::parse_catalog(cpp.out);
+  auto const mine = planar::cmd::parity::parse_catalog(got.out);
   REQUIRE(mine.has_value());
-  auto const theirs = planar::cmd::parity::parse_catalog(zig.out);
-  REQUIRE(theirs.has_value());
 
-  // Non-vacuous: an empty left-hand side, or a document that failed to
-  // parse, would otherwise look exactly like a clean comparison.
+  // Non-vacuous: an empty catalog, or a document that failed to parse,
+  // would otherwise look exactly like a clean assertion.
   CHECK(mine->size() == 15);
-  CHECK(theirs->size() == 15);
   CHECK(mine->contains("planar-watch ps"));
-  // The four this task declared and the previous one did not have at all.
+  // The four task 6065 declared that the previous tree did not have at all.
   CHECK(mine->contains("planar-watch feed"));
   CHECK(mine->contains("planar-watch sync-events"));
   CHECK(mine->contains("planar-watch run list"));
   CHECK(mine->contains("planar-watch run show"));
-
-  auto const problems = planar::cmd::parity::diff_against_oracle(*mine, *theirs);
-  INFO("declaration mismatches:\n" << std::format("{}", problems));
-  CHECK(problems.empty());
-
-  auto const missing = planar::cmd::parity::oracle_only_commands(*mine, *theirs);
-  INFO("declared by the oracle and NOT by this binary:\n" << std::format("{}", missing));
-  CHECK(missing.empty());
 }
 
 TEST_CASE("planar-watch parity: the catalog is BYTE-identical to the oracle's", "[cmd][watch][parity][catalog]") {
-  PLANAR_REQUIRE_ORACLE(oracle_available(), "Zig oracle not built (zig/zig-out/bin/planar-watch)");
-  // Everything `diff_against_oracle` leaves out — key order, `docs`,
-  // `flagGroups`, `hidden`, `deprecated`, `path`, `name`, and the `default`
-  // literal it deliberately skips — is covered here, for this binary, by
-  // comparing the whole document.
-  auto const [cpp, zig] = both("catalog-bytes", {"schema"});
-  REQUIRE(cpp.code == 0);
-  REQUIRE(zig.code == 0);
-  REQUIRE(cpp.out.size() > 20000); // Not two empty strings.
-  CHECK(cpp.out == zig.out);
+  // TASK 6540 RE-BASELINE. `diff_against_oracle` leaves out key order,
+  // `docs`, `flagGroups`, `hidden`, `deprecated`, `path`, `name`, and the
+  // `default` literal it deliberately skips. Before this task those were
+  // covered by a live byte diff against the Zig oracle; this binary's
+  // catalog was confirmed BYTE-IDENTICAL to the oracle's at commit
+  // 4fc09c07, so that whole document is transcribed here and pinned
+  // exactly instead, following the same pattern task 6123 established for
+  // the CLI11-rendered surface in `the CLI surface is CLI11's now, and
+  // pinned` (src/cmd/planar/parity.t.cpp).
+  //
+  // Pinned EXACTLY, byte for byte, including key order — loosening this to
+  // a structural comparison would stop catching a key-order or
+  // whitespace regression the oracle diff used to catch for free.
+  //
+  // Runs without the oracle now: an assertion about this binary alone.
+  auto const arena = make_arena("catalog-bytes");
+  auto const got   = run_pinned(cpp_bin(), std::vector<std::string>{"schema"}, arena.cpp_root, "catalog-bytes");
+  REQUIRE(got.code == 0);
+  REQUIRE(got.out.size() > 20000); // Not an empty string.
+
+  // clang-format off
+  std::string const expected = R"CATALOG({"schemaVersion":1,"layout":"flat","root":"planar-watch","commands":[{"name":"planar-watch","aliases":[],"hidden":false,"deprecated":null,"path":[],"command":"planar-watch","summary":"Read-only viewer for live agent activity (feed / ps / claims / actions / plans / log / tree / run).","description":"planar-watch is the human-facing live cockpit for agent activity.\n\n  The default invocation with no args is the activity feed.\n  Subcommands narrow the view; `--follow` turns each one into a\n  streaming view that emits new rows as the underlying tables\n  change. The binary opens the database in strict read-only mode\n  (SQLITE_OPEN_READONLY) — every write SQL string is rejected by\n  the SQLite driver itself, the second line of defense behind\n  this binary's `no write verbs registered` capability boundary.\n\n  `tree` renders the orchestrator → sub-agent forest by walking\n  agent_actions.parent_action_id chains.","subcommands":["feed","ps","claims","actions","plans","log","tree","run","sync-events","version","completion","schema"],"flags":[],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"feed","aliases":[],"hidden":false,"deprecated":null,"path":["feed"],"command":"planar-watch feed","summary":"Cross-cutting activity feed across all vendors (default verb).","description":"One event per claim transition, action transition, or task status\n  change, in occurrence-time order. The default planar-watch\n  invocation routes here.\n\n  Without --follow: print the initial snapshot up to --limit\n  events (default 100), newest first.\n  With --follow: print the snapshot, then stream new events as\n  they appear. Tier-1 poll; --interval defaults to 1s.\n\n  --tail N: emit the most-recent N events on first call (the\n  journalctl -f -n idiom). --tail 0 or negative exits with\n  InvalidValue. Combined with --follow: the tail emission comes\n  first, then only NEW events stream (no re-emit of tailed events).\n\n  Filters (--vendor / --plan / --task / --since) narrow both the\n  snapshot and the streaming view.\n\n  --json emits NDJSON — one JSON object per line, no surrounding\n  array, no trailing comma. Consumers can pipe through `jq -c`.","subcommands":[],"flags":[{"long":"--follow","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Stream new events until SIGINT","completion":{"kind":"none","values":[]},"env":null},{"long":"--vendor","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Vendor filter","completion":{"kind":"none","values":[]},"env":null},{"long":"--plan","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Plan id filter (matches plan-direct, task-on-plan, and plan_step-on-plan events)","completion":{"kind":"none","values":[]},"env":null},{"long":"--task","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Task id filter","completion":{"kind":"none","values":[]},"env":null},{"long":"--since","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Only events with at >= this ISO8601 timestamp","completion":{"kind":"none","values":[]},"env":null},{"long":"--limit","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Snapshot row cap (default 100)","completion":{"kind":"none","values":[]},"env":null},{"long":"--tail","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Return only the most-recent N events (must be > 0)","completion":{"kind":"none","values":[]},"env":null},{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Emit NDJSON","completion":{"kind":"none","values":[]},"env":null},{"long":"--interval","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Poll interval for --follow (default 1s)","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"ps","aliases":[],"hidden":false,"deprecated":null,"path":["ps"],"command":"planar-watch ps","summary":"Snapshot of active (and stale) agent claims.","description":"Lists every currently active agent claim — one row per claim_token.\n\n  --stale also includes claims whose lease has expired OR whose\n  status is `stale` (set by `planar-agent reconcile`).\n\n  --vendor / --plan narrow the result.\n\n  --sort-by heartbeat (default) orders by most-recently-heartbeated\n  first. --sort-by lease restores the pre-M3 claimed_at ordering.\n\n  --follow turns the snapshot into a streaming view (Tier-1 poll;\n  --interval defaults to 1s). Exits 0 on SIGINT.","subcommands":[],"flags":[{"long":"--vendor","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Filter by vendor (claude, codex, copilot, ...)","completion":{"kind":"none","values":[]},"env":null},{"long":"--plan","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter by plan id (matches plan-direct, task-on-plan, and plan_step-on-plan claims)","completion":{"kind":"none","values":[]},"env":null},{"long":"--stale","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Include stale + lease-expired claims","completion":{"kind":"none","values":[]},"env":null},{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"","completion":{"kind":"none","values":[]},"env":null},{"long":"--follow","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Stream snapshots until SIGINT","completion":{"kind":"none","values":[]},"env":null},{"long":"--interval","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Poll interval for --follow (default 1s; e.g. 100ms)","completion":{"kind":"none","values":[]},"env":null},{"long":"--sort-by","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Sort order for active claims: heartbeat (default) or lease","completion":{"kind":"none","values":[]},"env":null},{"long":"--group-by","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Group claims by dimension: role, scope, or vendor","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"claims","aliases":[],"hidden":false,"deprecated":null,"path":["claims"],"command":"planar-watch claims","summary":"List claims in the agent_work_claims ledger (filterable by status).","description":"Returns claim rows from agent_work_claims. The default is\n  --status active.\n\n  --status active : claim row is in 'active' state with an\n                    unexpired lease (default).\n  --status stale  : status='stale' OR an expired-lease active\n                    claim (matches `ps --stale`).\n  --status all    : every row (active, released, completed,\n                    aborted, stale) — the full claim ledger.","subcommands":[],"flags":[{"long":"--vendor","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Filter by vendor","completion":{"kind":"none","values":[]},"env":null},{"long":"--plan","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter by plan id (matches plan-direct, task-on-plan, and plan_step-on-plan claims)","completion":{"kind":"none","values":[]},"env":null},{"long":"--status","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"active (default) | stale | all","completion":{"kind":"none","values":[]},"env":null},{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"","completion":{"kind":"none","values":[]},"env":null},{"long":"--follow","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Stream snapshots until SIGINT","completion":{"kind":"none","values":[]},"env":null},{"long":"--interval","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Poll interval for --follow (default 1s)","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"actions","aliases":[],"hidden":false,"deprecated":null,"path":["actions"],"command":"planar-watch actions","summary":"List agent_actions rows with optional filters.","description":"Returns agent_actions rows ordered by started_at descending.\n\n  --kind     : action_kind filter (coder, reviewer, tool_call, etc.).\n  --entity   : restrict to one entity, `kind:id` form (e.g. `task:42`).\n  --plan     : restrict to actions on the plan, or on tasks/plan_steps belonging to it.\n  --task     : restrict to actions whose entity_kind=task, entity_id=N.\n  --vendor   : vendor filter.\n  --limit    : cap row count (default 100).","subcommands":[],"flags":[{"long":"--vendor","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Vendor filter","completion":{"kind":"none","values":[]},"env":null},{"long":"--kind","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"action_kind filter","completion":{"kind":"none","values":[]},"env":null},{"long":"--entity","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Restrict to one entity, kind:id form","completion":{"kind":"none","values":[]},"env":null},{"long":"--plan","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter by plan id","completion":{"kind":"none","values":[]},"env":null},{"long":"--task","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter by task id","completion":{"kind":"none","values":[]},"env":null},{"long":"--limit","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Row cap (default 100)","completion":{"kind":"none","values":[]},"env":null},{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"","completion":{"kind":"none","values":[]},"env":null},{"long":"--follow","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Stream snapshots until SIGINT","completion":{"kind":"none","values":[]},"env":null},{"long":"--interval","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Poll interval for --follow (default 1s)","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"plans","aliases":[],"hidden":false,"deprecated":null,"path":["plans"],"command":"planar-watch plans","summary":"List plans with in-flight agent work.","description":"Each row pairs a plan with its in-flight summary:\n    active_claims  — claims with status='active' and\n                     lease_expires_at >= now() targeting any task\n                     under the plan.\n    active_actions — agent_actions rows with ended_at IS NULL\n                     whose entity_kind/entity_id refer to a task\n                     under the plan.\n    last_event_at  — max of claim claimed_at / heartbeat /\n                     released_at and action started_at /\n                     ended_at across the plan's tasks; null\n                     when no events recorded.\n\n  --in-flight-only drops plans where active_claims=0 AND\n  active_actions=0.","subcommands":[],"flags":[{"long":"--in-flight-only","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Skip plans with no live work","completion":{"kind":"none","values":[]},"env":null},{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"","completion":{"kind":"none","values":[]},"env":null},{"long":"--follow","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Stream snapshots until SIGINT","completion":{"kind":"none","values":[]},"env":null},{"long":"--interval","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Poll interval for --follow (default 1s)","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"log","aliases":[],"hidden":false,"deprecated":null,"path":["log"],"command":"planar-watch log","summary":"Per-entity / per-claim history (union of agent actions and claim transitions).","description":"Streams the agent_actions + agent_work_claims history scoped to\n  one entity or one claim_token. Exactly one of\n  --task / --plan / --entity / --session / --claim is required.\n\n  Entries are emitted in occurrence-time order (oldest first)\n  as a discriminated union: each entry carries a `.kind` field\n  that is either `action` (full ActionRow payload) or\n  `claim_acquired` / `claim_heartbeat` / `claim_released` /\n  `claim_stale` (with ClaimRow payload).","subcommands":[],"flags":[{"long":"--task","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter to one task id","completion":{"kind":"none","values":[]},"env":null},{"long":"--plan","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter to one plan id (matches entity_kind=plan rows)","completion":{"kind":"none","values":[]},"env":null},{"long":"--entity","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Filter to one entity, kind:id form","completion":{"kind":"none","values":[]},"env":null},{"long":"--session","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter to one session_id","completion":{"kind":"none","values":[]},"env":null},{"long":"--claim","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Filter to one claim_token","completion":{"kind":"none","values":[]},"env":null},{"long":"--limit","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Row cap (default 100)","completion":{"kind":"none","values":[]},"env":null},{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"tree","aliases":[],"hidden":false,"deprecated":null,"path":["tree"],"command":"planar-watch tree","summary":"Render the orchestrator → sub-agent action forest.","description":"Walks agent_actions.parent_action_id chains and renders the\n  orchestrator → sub-agent forest. Root rows have parent_action_id IS NULL.\n  Each child is indented with unicode tree characters (├── / └── / │).\n\n  --root-session <id>  scope to one session's subtree (error if unknown).\n  --follow             stream; re-renders on WAL change (Tier-2 wake).\n  --interval           maximum poll cadence for --follow (default 1s).\n\n  Each row shows the claim's: scope vendor activity worktree branch last_hb.","subcommands":[],"flags":[{"long":"--root-session","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Scope output to one session's subtree (session id)","completion":{"kind":"none","values":[]},"env":null},{"long":"--follow","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"Stream re-renders until SIGINT","completion":{"kind":"none","values":[]},"env":null},{"long":"--interval","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Poll interval for --follow (default 1s; e.g. 100ms)","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"run","aliases":[],"hidden":false,"deprecated":null,"path":["run"],"command":"planar-watch run","summary":"Observe workflow runs and their context records.","description":"Read-only view of run tables. `list` covers both workflow_runs (wf)\nand the runs table (op-arm); `show` drills into wf-source runs only.\n\n  list  — list runs (--plan / --status / --arm filters).\n  show  — drill into one wf-source run's context records.","subcommands":["list","show"],"flags":[],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"list","aliases":[],"hidden":false,"deprecated":null,"path":["run","list"],"command":"planar-watch run list","summary":"List workflow runs (filterable by plan, status, and source arm).","description":"Returns runs ordered by started_at descending.\n\n  --plan <id>    restrict to runs for the given plan.\n  --status <s>   restrict by status: running | completed | failed |\n                 interrupted | abandoned. Default: all.\n  --arm <a>      source table: wf (workflow_runs / context-plane),\n                 op (runs / op-arm), or all (default, both).\n  --json         emit a single JSON object instead of human text.","subcommands":[],"flags":[{"long":"--plan","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter by plan id","completion":{"kind":"none","values":[]},"env":null},{"long":"--status","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Filter by status (default: all)","completion":{"kind":"none","values":[]},"env":null},{"long":"--arm","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Source arm: wf | op | all (default: all)","completion":{"kind":"none","values":[]},"env":null},{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"show","aliases":[],"hidden":false,"deprecated":null,"path":["run","show"],"command":"planar-watch run show","summary":"Show one workflow run plus its context_records grouped by stage.","description":"Returns the full workflow_runs row for <id> plus all\n  context_records for that run, grouped and ordered by\n  stage then created_at.\n\n  Exits non-zero when the run id is unknown.","subcommands":[],"flags":[{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[{"name":"id","kind":"string","required":true,"default":null,"description":"Workflow run id (integer)","completion":{"kind":"none","values":[]}}],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"sync-events","aliases":[],"hidden":false,"deprecated":null,"path":["sync-events"],"command":"planar-watch sync-events","summary":"List sync_events rows with optional filters (read-only).","description":"Returns sync_events rows ordered by `at` descending.\n\n  --plan     : restrict to events whose link belongs to the given plan id.\n  --system   : restrict to events via a link on the given external system slug.\n  --entity   : restrict to events via a link on one entity, `kind:id` form.\n  --outcome  : filter by outcome value (ok, conflict, error, noop, …).\n  --since    : only return rows with `at` >= this ISO8601 timestamp.\n  --limit    : cap row count (default 100).","subcommands":[],"flags":[{"long":"--plan","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Filter by plan id","completion":{"kind":"none","values":[]},"env":null},{"long":"--system","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Filter by external system slug","completion":{"kind":"none","values":[]},"env":null},{"long":"--entity","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Filter by entity, kind:id form (e.g. task:42)","completion":{"kind":"none","values":[]},"env":null},{"long":"--outcome","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Filter by outcome (ok, conflict, error, noop, …)","completion":{"kind":"none","values":[]},"env":null},{"long":"--since","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"string","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"VALUE","default":null,"description":"Only rows at >= this ISO8601 timestamp","completion":{"kind":"none","values":[]},"env":null},{"long":"--limit","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"int","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"N","default":null,"description":"Row cap (default 100)","completion":{"kind":"none","values":[]},"env":null},{"long":"--json","aliases":[],"hidden":false,"deprecated":null,"short":null,"kind":"bool","choices":[],"list":false,"count":false,"required":false,"source":"local","valueName":"","default":false,"description":"","completion":{"kind":"none","values":[]},"env":null}],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"version","aliases":[],"hidden":false,"deprecated":null,"path":["version"],"command":"planar-watch version","summary":"Print the planar-watch version, commit, and zig runtime.","description":"Print the planar-watch version, commit, and zig runtime.","subcommands":[],"flags":[],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"completion","aliases":[],"hidden":false,"deprecated":null,"path":["completion"],"command":"planar-watch completion","summary":"Generate the autocompletion script for the specified shell.","description":"Generate the autocompletion script for the specified shell.","subcommands":[],"flags":[],"flagGroups":[],"positionals":[{"name":"shell","kind":"string","required":true,"default":null,"description":"Shell: bash, zsh, or fish","completion":{"kind":"none","values":[]}}],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}},{"name":"schema","aliases":[],"hidden":false,"deprecated":null,"path":["schema"],"command":"planar-watch schema","summary":"Print the full command tree as a JSON catalog (flags, aliases, positionals).","description":"Print the full command tree as a JSON catalog (flags, aliases, positionals).","subcommands":[],"flags":[],"flagGroups":[],"positionals":[],"docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],"bugs":[],"authors":[],"homepage":"","license":"","copyright":"","version":"","sourceUrl":""}}]}
+)CATALOG";
+  // clang-format on
+  CHECK(got.out == expected);
 }
 
 TEST_CASE("planar-watch: `run list` / `run show` / `sync-events` are ported, not stubbed",

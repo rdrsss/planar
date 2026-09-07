@@ -1377,7 +1377,24 @@ TEST_CASE("oracle retirement: real state differential and live evidence refuse c
   // 35 -> 36 at task 6125 (commit 6cdc8241, the brief-compiler port): one
   // new `PLANAR_REQUIRE_ORACLE` landed in
   // `src/cmd/planar-execute/parity.t.cpp`.
-  CHECK(source_oracle_skips(target_source_root()).size() == 36);
+  //
+  // 36 -> 3 at tasks 6539-6542: thirty-three differential cases were
+  // converted into literal pins against the built binary, following the
+  // task-6123 pattern (`TEST_CASE("the CLI surface is CLI11's now, and
+  // pinned")`), so they now assert without an oracle instead of skipping
+  // once `zig/` is gone. Decision 963/982's third condition wants ZERO, and
+  // the three that remain are known and deliberate:
+  //
+  //   2  this file -- self-referential; they assert THIS gate refuses, so
+  //      they invert in the same commit that deletes `zig/` (task 6045).
+  //   1  planar-watch/parity.t.cpp -- the seeded read-verb fixture is
+  //      irreducibly nondeterministic between runs (a fresh 32-hex
+  //      `claim_token` per pull, millisecond wall-clock on every row
+  //      timestamp). Pinning it would need a normalizer permissive enough
+  //      to mask a real rendering regression, so task 6540 left it gated
+  //      rather than weaken it. Needs a frozen-clock/seeded-RNG harness or
+  //      an operator decision; it is NOT an oversight.
+  CHECK(source_oracle_skips(target_source_root()).size() == 3);
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
   auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
   auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cpp");
