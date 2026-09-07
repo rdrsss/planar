@@ -236,78 +236,91 @@ export enum class state_parse_error : std::uint8_t {
 /// @brief Minimal view of `planar plan show <id> --json`. Port target:
 /// `state.zig`'s `PlanShow`.
 export struct plan_show {
-  std::int64_t                id = 0;
-  std::string                 title;
-  std::string                 status;
-  std::optional<std::string>  slug;
-  std::optional<std::int64_t> parent_plan_id;
+  std::int64_t                id = 0;         ///< The plan's row id, as passed to `plan show`.
+  std::string                 title;          ///< The plan's human-readable title, quoted into the brief header.
+  std::string                 status;         ///< One of `draft`, `active`, `paused`, `done`, `abandoned`.
+  std::optional<std::string>  slug;           ///< The `"slug"` field; unset when the plan has none.
+  std::optional<std::int64_t> parent_plan_id; ///< The `"parent_plan_id"` field; unset for a top-level plan.
 };
 
 /// @brief Minimal view of `planar task show <id> --json`. Port target:
 /// `state.zig`'s `TaskShow`.
 export struct task_show {
-  std::int64_t               id = 0;
-  std::optional<std::string> slug;
-  std::string                status;
+  std::int64_t               id = 0; ///< The task's row id, as passed to `task show`.
+  std::optional<std::string> slug;   ///< The `"slug"` field; unset when the task has none.
+  std::string                status; ///< One of `todo`, `doing`, `blocked`, `done`, `cancelled`.
 };
 
 /// @brief One task, adapted for `brief::brief_inputs::tasks`. Port target:
 /// `state.zig`'s `TaskEntry`.
 export struct task_entry {
-  std::int64_t               id      = 0;
-  std::int64_t               plan_id = 0;
-  std::string                title;
-  std::optional<std::string> slug;
-  std::string                status;
+  std::int64_t               id      = 0; ///< The task's row id.
+  std::int64_t               plan_id = 0; ///< The `"plan_id"` field — the owning plan's id.
+  std::string                title;       ///< The task's human-readable title, rendered as the brief's work item.
+  std::optional<std::string> slug;        ///< The `"slug"` field; unset when the task has none.
+  std::string                status;      ///< One of `todo`, `doing`, `blocked`, `done`, `cancelled`.
 };
 
 /// @brief One row of `planar task packet <id> --json`'s evidence arrays.
 /// Port target: `state.zig`'s `PacketEvidence`.
 export struct packet_evidence {
-  std::string  kind;
-  std::int64_t id = 0;
-  std::string  locator;
-  std::string  text;
-  std::string  display_label;
-  std::string  source_digest;
-  std::string  current_digest;
-  bool         required = false;
-  bool         covered  = false;
-  std::string  status;
-  std::string  provenance;
-  std::string  materializer_version;
-  std::string  current_materializer_version;
-  std::string  freshness = "current";
+  std::string  kind;                 ///< The `"kind"` field — the evidence category, e.g. `"citation"`, `"decision"`, `"claim"`.
+  std::int64_t id = 0;               ///< The `"id"` field — the referenced entity's id within `kind`.
+  std::string  locator;              ///< The `"locator"` field — where the evidence lives (spec path, decision id, etc.).
+  std::string  text;                 ///< The `"text"` field — the verbatim evidence text quoted into the brief; for a claim
+                                     ///< row this is the claim token (see `compile_brief`'s claim-token match).
+  std::string  display_label;        ///< The `"display_label"` field; empty when the caller has no friendlier label
+                                     ///< than `text`/`locator` to show.
+  std::string  source_digest;        ///< The `"source_digest"` field — the evidence's digest as of packet materialization.
+  std::string  current_digest;       ///< The `"current_digest"` field — the evidence's digest as it stands now; differs
+                                     ///< from `source_digest` when the underlying source has drifted since materialization.
+  bool         required = false;     ///< The `"required"` field — whether the packet treats this row as mandatory
+                                     ///< for `task_packet::ready()`.
+  bool         covered  = false;     ///< The `"covered"` field — whether this row's coverage obligation is satisfied.
+  std::string  status;               ///< The `"status"` field; for a claim row, `"active"` marks the live claim
+                                     ///< (see `compile_brief`'s claim lookup).
+  std::string  provenance;           ///< The `"provenance"` field — where the row was materialized from.
+  std::string  materializer_version; ///< The `"materializer_version"` field; empty when absent on the wire.
+  std::string  current_materializer_version; ///< The `"current_materializer_version"` field; empty when absent.
+  std::string  freshness = "current";        ///< The `"freshness"` field; defaults to `"current"` when absent on the wire.
 };
 
 /// @brief The `input` object of `planar task packet <id> --json`. Port
 /// target: `state.zig`'s `TaskPacketInput`.
 export struct task_packet_input {
-  std::int64_t                 task_id = 0;
-  std::string                  status;
-  std::string                  title;
-  std::string                  body;
-  std::string                  next_action;
-  std::string                  acceptance_criteria;
-  std::vector<packet_evidence> owning_plans;
-  std::vector<packet_evidence> anchor_plans;
-  std::vector<packet_evidence> citations;
-  std::vector<packet_evidence> decisions;
-  std::vector<packet_evidence> questions;
-  std::vector<packet_evidence> scenarios;
-  std::vector<packet_evidence> dependencies;
-  std::vector<packet_evidence> touches;
-  std::vector<packet_evidence> claims;
-  std::vector<packet_evidence> validation_gates;
-  std::vector<packet_evidence> facts;
+  std::int64_t                 task_id = 0;         ///< The `"task_id"` field — must match the single dispatched
+                                                    ///< task's id for `compile_brief`'s identity check to pass.
+  std::string                  status;              ///< The `"status"` field — must match the dispatched task's own status.
+  std::string                  title;               ///< The `"title"` field — rendered as the brief's authoritative task title.
+  std::string                  body;                ///< The `"body"` field — rendered verbatim as the brief's task body.
+  std::string                  next_action;         ///< The `"next_action"` field — rendered verbatim as the brief's
+                                                    ///< "Exact next action".
+  std::string                  acceptance_criteria; ///< The `"acceptance_criteria"` field — rendered as the
+                                                    ///< brief's "Problem" section when the packet is authoritative.
+  std::vector<packet_evidence> owning_plans;        ///< The `"owning_plans"` array; must contain exactly one row whose
+                                                    ///< id matches the dispatched plan for the identity check to pass.
+  std::vector<packet_evidence> anchor_plans;        ///< The `"anchor_plans"` array — feature-anchor plan evidence rows.
+  std::vector<packet_evidence> citations;           ///< The `"citations"` array — spec-citation evidence rows.
+  std::vector<packet_evidence> decisions;           ///< The `"decisions"` array — locked-decision evidence rows.
+  std::vector<packet_evidence> questions;           ///< The `"questions"` array — open-question evidence rows.
+  std::vector<packet_evidence> scenarios;           ///< The `"scenarios"` array — test-scenario coverage rows.
+  std::vector<packet_evidence> dependencies;        ///< The `"dependencies"` array — task-dependency evidence rows.
+  std::vector<packet_evidence> touches;             ///< The `"touches"` array — touched-surface evidence rows.
+  std::vector<packet_evidence> claims;              ///< The `"claims"` array; `compile_brief` requires a row with
+                                                    ///< `status == "active"` matching the caller's claim token.
+  std::vector<packet_evidence> validation_gates;    ///< The `"validation_gates"` array — rendered as the brief's
+                                                    ///< named gates.
+  std::vector<packet_evidence> facts;               ///< The `"facts"` array — materialized-fact evidence rows.
 };
 
 /// @brief The whole authoritative packet document. Port target:
 /// `state.zig`'s `TaskPacket`.
 export struct task_packet {
-  task_packet_input        input;
-  std::string              digest;
-  std::vector<std::string> reasons;
+  task_packet_input        input;   ///< The `"input"` object — the dispatched task's full authoritative content.
+  std::string              digest;  ///< The `"digest"` field — the packet's content digest, rendered into the
+                                    ///< brief header so a reviewer can confirm the coder saw this exact packet.
+  std::vector<std::string> reasons; ///< The `"reasons"` array — why the packet is not ready; empty means ready
+                                    ///< (see `ready()` below).
 
   /// @brief Whether the packet is ready to compile a brief from.
   /// @return `true` when `reasons` is empty, matching `TaskPacket.ready()`.
@@ -356,29 +369,34 @@ export enum class schema_parse_error : std::uint8_t {
 /// the JSON wire key stays `"long"` (see `parse_raw_schema`'s
 /// implementation).
 export struct flag_entry {
-  std::string                long_name;
-  std::vector<std::string>   aliases;
-  std::optional<std::string> short_name;
-  bool                       required = false;
-  std::string                description;
+  std::string                long_name;        ///< The JSON `"long"` key's value (renamed — `long` is a C++ keyword).
+  std::vector<std::string>   aliases;          ///< The `"aliases"` array; empty when the flag has no aliases.
+  std::optional<std::string> short_name;       ///< The `"short"` field (e.g. `"v"` for `-v`); unset when the flag
+                                               ///< has no short form or the wire value was not a string.
+  bool                       required = false; ///< The `"required"` field; `false` when absent on the wire.
+  std::string                description;      ///< The `"description"` field; empty when absent on the wire.
 };
 
 /// @brief One command entry. Port target: `schema.zig`'s `CommandEntry`.
 export struct command_entry {
-  std::string              name;
-  std::string              command;
-  std::vector<std::string> subcommands;
-  std::vector<flag_entry>  flags;
-  bool                     hidden = false;
+  std::string              name;           ///< The `"name"` field — the command's short name.
+  std::string              command;        ///< The `"command"` field — the full invocation path, e.g.
+                                           ///< `"planar-agent complete"`; matched by `bin_schema::find_command`.
+  std::vector<std::string> subcommands;    ///< The `"subcommands"` array; empty when this is a leaf command.
+  std::vector<flag_entry>  flags;          ///< The `"flags"` array; empty when the command takes no flags.
+  bool                     hidden = false; ///< The `"hidden"` field; `false` when absent on the wire. A hidden
+                                           ///< command is skipped when `compile_brief` renders available verbs.
 };
 
 /// @brief The top-level `<bin> schema` document. Port target: `schema.zig`'s
 /// `RawSchema`.
 export struct raw_schema {
-  std::uint32_t              schema_version = 0;
-  std::string                layout;
-  std::string                root;
-  std::vector<command_entry> commands;
+  std::uint32_t              schema_version = 0; ///< The `"schemaVersion"` field.
+  std::string                layout;             ///< The `"layout"` field — the catalog's flattening shape.
+  std::string                root;               ///< The `"root"` field — the binary's root command name,
+                                                 ///< e.g. `"planar-agent"`; commands equal to this are skipped
+                                                 ///< when `compile_brief` renders available verbs.
+  std::vector<command_entry> commands;           ///< The `"commands"` array — the flat command list.
 };
 
 /// @brief A queryable wrapper over a parsed `raw_schema`. Port target:
@@ -446,22 +464,23 @@ namespace brief {
 /// @brief A single verbatim spec-section citation. Port target: `brief.zig`'s
 /// `SpecCitation`.
 export struct spec_citation {
-  std::string                path;
-  std::optional<std::string> verbatim_slice;
+  std::string                path;           ///< The spec section path, rendered as a "read firsthand" bullet.
+  std::optional<std::string> verbatim_slice; ///< A verbatim excerpt to block-quote under `path`; unset when the
+                                             ///< caller wants the coder to open the file rather than read a slice.
 };
 
 /// @brief A decision the coder must follow without re-litigating. Port
 /// target: `brief.zig`'s `LockedDecision`.
 export struct locked_decision {
-  std::string id;
-  std::string text;
+  std::string id;   ///< The decision's identifier, rendered bold ahead of `text`.
+  std::string text; ///< The decision's text, rendered verbatim.
 };
 
 /// @brief A single prior-stage context record. Port target: `brief.zig`'s
 /// `ContextRef`.
 export struct context_ref {
-  std::string kind;
-  std::string body;
+  std::string kind; ///< The record's kind (e.g. `"decision"`, `"handoff"`), rendered bold ahead of `body`.
+  std::string body; ///< The record's rendered body text.
 };
 
 /// @brief All inputs to `compile_brief`. Port target: `brief.zig`'s
@@ -471,21 +490,27 @@ export struct brief_inputs {
   /// authoritative packet. The live `ctx.brief` caller always sets it.
   std::optional<state::task_packet> authoritative_packet;
 
-  state::plan_show               plan;
-  std::vector<state::task_entry> tasks;
+  state::plan_show               plan;  ///< The dispatched plan; identity-checked against
+                                        ///< `authoritative_packet->input.owning_plans` when set.
+  std::vector<state::task_entry> tasks; ///< The dispatched task(s); with an authoritative packet this must be
+                                        ///< exactly one entry, identity-checked against the packet's `input`.
 
-  std::string claim_token;
-  std::string problem_statement;
+  std::string claim_token;       ///< The live claim token; rendered as the brief's claim token, and
+                                 ///< identity-checked against `authoritative_packet->input.claims` when set.
+  std::string problem_statement; ///< The freeform problem statement, rendered as the brief's "Problem" section
+                                 ///< when no authoritative packet is set.
 
-  std::vector<spec_citation>   spec_citations;
-  std::vector<locked_decision> locked_decisions;
+  std::vector<spec_citation>   spec_citations;   ///< Spec citations to render when no authoritative packet is set.
+  std::vector<locked_decision> locked_decisions; ///< Locked decisions to render when no authoritative packet is set.
 
-  schema::bin_schema agent_schema;
+  schema::bin_schema agent_schema; ///< The parsed `planar-agent schema` catalog, used to render the brief's
+                                   ///< "Available verbs" section.
 
-  std::vector<std::string> gates;
+  std::vector<std::string> gates; ///< Named validation gates to render when no authoritative packet is set.
 
-  std::optional<std::string> context_capsule;
-  std::vector<context_ref>   context_records;
+  std::optional<std::string> context_capsule; ///< A compiled prior-stage capsule; unset or empty means no
+                                              ///< capsule to render.
+  std::vector<context_ref>   context_records; ///< Prior-stage context records; empty means none to render.
 };
 
 /// @brief Why `compile_brief` refused to compile.
