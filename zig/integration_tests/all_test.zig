@@ -5,14 +5,12 @@
 //! available as `zig build test-integration-files` for failure isolation.
 
 comptime {
-    _ = @import("capability_boundary_test.zig");
     _ = @import("models_test.zig");
     _ = @import("models_registry_test.zig");
     _ = @import("opaque_model_string_test.zig");
     _ = @import("routing_packet_test.zig");
     _ = @import("routing_packet_cli_test.zig");
     _ = @import("dispatch_preview_confirm_test.zig");
-    _ = @import("no_db_side_effects_test.zig");
     _ = @import("routing_views_test.zig");
     _ = @import("dispatch_cancellation_test.zig");
     _ = @import("planar_execute_test.zig");
@@ -29,7 +27,6 @@ comptime {
     _ = @import("editflow_view_test.zig");
     _ = @import("editor_add_test.zig");
     _ = @import("editor_validation_test.zig");
-    _ = @import("ext_sync_test.zig");
     _ = @import("local_test.zig");
     _ = @import("m16_test.zig");
     _ = @import("m18_import_synthesize_test.zig");
@@ -97,7 +94,6 @@ comptime {
     // M0 seam-hardening primitives (plan 638)
     _ = @import("plan_descendants_test.zig");
     _ = @import("propagate_one_test.zig");
-    _ = @import("propagate_faithful_test.zig");
 
     _ = @import("bench_lifecycle_test.zig");
     _ = @import("closure_compute_show_test.zig");
@@ -110,26 +106,7 @@ comptime {
     _ = @import("workflow_run_test.zig");
     _ = @import("parallel_dispatch_workflow_test.zig");
 
-    _ = @import("scenarios/scenario_cockpit_entry_test.zig");
-    _ = @import("scenarios/scenario_annotations_test.zig");
-    _ = @import("scenarios/scenario_audit_trail_test.zig");
-    _ = @import("scenarios/scenario_cross_scope_polyrepo_test.zig");
-    _ = @import("scenarios/scenario_decision_workflow_test.zig");
-    _ = @import("scenarios/scenario_external_plane_test.zig");
     _ = @import("scenarios/scenario_feature_lifecycle_test.zig");
-    _ = @import("scenarios/scenario_handoff_resume_test.zig");
-    _ = @import("scenarios/scenario_multi_agent_session_test.zig");
-    _ = @import("scenarios/scenario_plan_progression_test.zig");
-    _ = @import("scenarios/scenario_promote_demote_test.zig");
-    _ = @import("scenarios/scenario_question_lifecycle_test.zig");
-    _ = @import("scenarios/scenario_templates_test.zig");
-    _ = @import("scenarios/scenario_test_spec_authoring_test.zig");
-    _ = @import("scenarios/scenario_workbench_sync_test.zig");
     _ = @import("scenarios/scenario_usage_introspection_test.zig");
-    _ = @import("scenarios/scenario_doctor_reconcile_test.zig");
-    _ = @import("scenarios/scenario_worktree_resume_test.zig");
-    _ = @import("scenarios/scenario_resumability_boundary_test.zig");
-    _ = @import("scenarios/scenario_worktree_scope_test.zig");
     _ = @import("scenarios/scenario_agent_skill_lifecycle_test.zig");
-    _ = @import("scenarios/scenario_unassociated_project_scope_test.zig");
 }
