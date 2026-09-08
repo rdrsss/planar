@@ -10,6 +10,8 @@ import planar.db;
 import planar.engine.config.effective;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
+import planar.cmd.planar.tree;
+import planar.cliapp.walk;
 
 namespace planar::cmd {
 
@@ -33,7 +35,31 @@ auto is_short_flag(std::string_view token) -> bool {
 
 } // namespace
 
+/// @brief Top-level verbs that HAVE subcommands, derived once from the live
+/// CLI tree.
+///
+/// DERIVED, NOT LISTED, and derived HERE rather than taken as a parameter.
+/// An earlier shape of this took the set as a defaulted argument, which made
+/// the function silently lossy for every direct caller that omitted it — the
+/// unit tests call `parse_args` directly, and `task add` collapsed to `task`.
+/// A default that degrades the result is a trap; deriving it internally means
+/// no caller can get it wrong.
+auto parent_verb_set() -> const std::set<std::string, std::less<>>& {
+  static const std::set<std::string, std::less<>> verbs = [] {
+    std::set<std::string, std::less<>> out;
+    auto const                         root = root_app();
+    for (auto const* child : cliapp::children(*root)) {
+      if (!cliapp::children(*child).empty()) {
+        out.insert(child->get_name());
+      }
+    }
+    return out;
+  }();
+  return verbs;
+}
+
 auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
+  auto const&                   parent_verbs = parent_verb_set();
   std::vector<std::string_view> verb_parts;
   std::vector<std::string_view> flag_names;
   std::size_t                   positional_count = 0;
@@ -91,10 +117,48 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
       continue;
     }
 
-    if (!past_verbs && verb_parts.size() < max_verb_depth) {
-      // The verb slot. RECORDED VERBATIM -- see cli_log.cppm's header,
-      // part 3: for `resume <id>` and `tree <ref>` this is the operator's
-      // argument, and matching the oracle means keeping it.
+    // The verb slot. Token 2 is RECORDED VERBATIM only when it is
+    // STRUCTURED — a bare id (`resume 6073`) or an entity ref
+    // (`tree plan:42`) — or when token 1 is a verb that has subcommands
+    // (`task add`). Free-text operands are dropped (task 6351).
+    //
+    // Three top-level verbs carry operator prose in that slot, and the leak
+    // was measured with cli_log enabled, not reasoned about:
+    //
+    //     search SECRET-MEDICAL-TERM
+    //     import /Users/private/clients/acme-secret
+    //     synthesize /Users/private/clients/acme-secret
+    //
+    // `introspect` selects this column verbatim into `[invocations]`,
+    // `[failure tail]` and the JSONL boundary of `planar report`, so a
+    // search term or a client directory name could leave the machine inside
+    // a diagnostic bundle.
+    //
+    // SHAPE, not a verb list. A list of "verbs whose positional is prose"
+    // is safe until someone adds a verb and forgets; matching the shape of
+    // the VALUE is safe by default, and `resume`/`tree` keep the verbatim
+    // capture cli_log.cppm's header documents as the oracle's boundary.
+    // `parent_verbs` is derived from the live CLI tree for the same reason.
+    auto const structured_operand = [](std::string_view t) {
+      if (t.empty()) {
+        return false;
+      }
+      auto const colon  = t.find(':');
+      auto const digits = [](std::string_view v) {
+        return !v.empty() && std::ranges::all_of(v, [](unsigned char c) { return std::isdigit(c) != 0; });
+      };
+      if (colon == std::string_view::npos) {
+        return digits(t);
+      }
+      auto const kind = t.substr(0, colon);
+      return !kind.empty() &&
+             std::ranges::all_of(kind, [](unsigned char c) { return std::isalpha(c) != 0 || c == '-' || c == '_'; }) &&
+             digits(t.substr(colon + 1));
+    };
+    const bool verb_slot_open =
+        !past_verbs && (verb_parts.empty() || (verb_parts.size() < max_verb_depth &&
+                                               (parent_verbs.contains(verb_parts.front()) || structured_operand(token))));
+    if (verb_slot_open) {
       verb_parts.push_back(token);
       continue;
     }

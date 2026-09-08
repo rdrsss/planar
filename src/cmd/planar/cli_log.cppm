@@ -105,6 +105,8 @@ export inline constexpr std::size_t max_verb_depth = 2;
 /// hostile argv rather than having to reach it through a process.
 /// @param argv_tail The argument vector with argv[0] already dropped.
 /// @return The verb path and the value-free argument shape.
+/// @param argv_tail Everything after argv[0].
+/// @return The shape.
 export auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape;
 
 /// @brief The `cli_invocations.error_category` value for a handler failure.
