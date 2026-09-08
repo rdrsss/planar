@@ -232,11 +232,11 @@ TEST_CASE("the no-database leaves are pinned", "[cmd][parity][cli-surface]") {
   // by pinning the C++ side rather than re-diffing it forever. Runs
   // without the oracle.
   struct leaf {
-    std::string_view         tag;   ///< Case discriminator.
-    std::vector<std::string> args;  ///< The argv tail.
-    int                      code;  ///< Expected exit code.
-    std::string_view         out;   ///< Expected stdout, transcribed from the oracle.
-    std::string_view         err;   ///< Expected stderr, transcribed from the oracle.
+    std::string_view         tag;  ///< Case discriminator.
+    std::vector<std::string> args; ///< The argv tail.
+    int                      code; ///< Expected exit code.
+    std::string_view         out;  ///< Expected stdout, transcribed from the oracle.
+    std::string_view         err;  ///< Expected stderr, transcribed from the oracle.
   };
   std::vector<leaf> const leaves{
       {"wl", {"workflow", "list"}, 0, "no shipped + sandbox workflows found\n", ""},
@@ -548,24 +548,26 @@ TEST_CASE("promote, demote and test-spec status are pinned", "[cmd][parity][cli-
       {"punk", {"promote", "plan:1", "--to", "nonexistent"}, 1, "", "error: no association with slug 'nonexistent'\n"},
       {"psame", {"promote", "plan:1", "--to", "project:proj"}, 1, "", "error: plan:1 is already at scope 'project:proj'\n"},
       {"dref", {"demote", "plan"}, 2, "", "error: invalid ref 'plan': expected kind:id\n"},
-      {"dslug",
-       {"demote", "plan:some-slug"},
-       2,
-       "",
-       "error: demote requires a numeric id (got slug 'plan:some-slug')\n"},
+      {"dslug", {"demote", "plan:some-slug"}, 2, "", "error: demote requires a numeric id (got slug 'plan:some-slug')\n"},
       {"dabsent", {"demote", "plan:999"}, 1, "", "error: reading entity scope: NotFound\n"},
       // --- successes, walking one row around the scope graph ---
-      {"pmove", {"promote", "plan:1", "--to", "org:acme"}, 0, "plan:1 promoted to association org:acme  (was: association:1)\n", ""},
+      {"pmove",
+       {"promote", "plan:1", "--to", "org:acme"},
+       0,
+       "plan:1 promoted to association org:acme  (was: association:1)\n",
+       ""},
       {"pmovej",
        {"promote", "plan:1", "--to", "project:proj", "--json"},
        0,
-       "{\"ok\":true,\"kind\":\"plan\",\"id\":1,\"scope_kind\":\"association\",\"scope_id\":1,\"previous_scope_kind\":\"association\","
+       "{\"ok\":true,\"kind\":\"plan\",\"id\":1,\"scope_kind\":\"association\",\"scope_id\":1,\"previous_scope_kind\":"
+       "\"association\","
        "\"previous_scope_id\":2}\n",
        ""},
       {"ddown",
        {"demote", "plan:1", "--json"},
        0,
-       "{\"ok\":true,\"kind\":\"plan\",\"id\":1,\"scope_kind\":\"global\",\"scope_id\":null,\"previous_scope_kind\":\"association\","
+       "{\"ok\":true,\"kind\":\"plan\",\"id\":1,\"scope_kind\":\"global\",\"scope_id\":null,\"previous_scope_kind\":"
+       "\"association\","
        "\"previous_scope_id\":1}\n",
        ""},
       {"dagain", {"demote", "plan:1"}, 1, "", "error: plan:1 is already at global scope\n"},
@@ -1132,9 +1134,16 @@ TEST_CASE("a seeded workbench feature tree is pinned", "[cmd][parity][cli-surfac
   // ORDERED against ONE tree: the filter counts only appear once a task is
   // cancelled, and `restore` only means anything after `archive`.
   std::vector<step> const steps{
-      {"wblist0", {"workbench", "list"}, 0, "p1-demo-feature                           draft       no-tree     project:demo\n", ""},
+      {"wblist0",
+       {"workbench", "list"},
+       0,
+       "p1-demo-feature                           draft       no-tree     project:demo\n",
+       ""},
       {"wbstat0", {"workbench", "status"}, 0, "no active features found\n", ""},
-      {"wbpush", {"workbench", "push", "1", "--verbose"}, 0, "workbench push: plan 1 (demo-feature)\n"
+      {"wbpush",
+       {"workbench", "push", "1", "--verbose"},
+       0,
+       "workbench push: plan 1 (demo-feature)\n"
        "  applied DB->FS: project_demo/p1-demo-feature/README.md\n"
        "  applied DB->FS: project_demo/p1-demo-feature/1-tech-spec-auth.md\n"
        "  applied DB->FS: project_demo/p1-demo-feature/decisions/1-use-sqlite.md\n"
@@ -1142,27 +1151,82 @@ TEST_CASE("a seeded workbench feature tree is pinned", "[cmd][parity][cli-surfac
        "  applied DB->FS: project_demo/p1-demo-feature/scenarios/1-round-trip.md\n"
        "  applied DB->FS: project_demo/p1-demo-feature/tasks/cross/1-first-task.md\n"
        "  applied DB->FS: project_demo/p1-demo-feature/tasks/cross/2-second-task.md\n"
-       "  applied DB->FS: project_demo/p1-demo-feature/plans/child-ms.md\n", ""},
-      {"wbpushj", {"workbench", "push", "1", "--json"}, 0, "{\"applied\":0,\"pending\":0,\"conflicts\":0,\"malformed\":0,\"malformed_files\":[],\"filtered\":0,\"pre_existing_terminal\":0,\"cleaned\":0,\"filter_mode\":\"failures\",\"entries\":[{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/README.md\",\"entity_kind\":\"plan\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/1-tech-spec-auth.md\",\"entity_kind\":\"artifact\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/decisions/1-use-sqlite.md\",\"entity_kind\":\"decision\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/questions/1-which-format.md\",\"entity_kind\":\"question\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/scenarios/1-round-trip.md\",\"entity_kind\":\"scenario\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/1-first-task.md\",\"entity_kind\":\"task\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/2-second-task.md\",\"entity_kind\":\"task\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/plans/child-ms.md\",\"entity_kind\":\"plan\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"}]}\n", ""},
+       "  applied DB->FS: project_demo/p1-demo-feature/plans/child-ms.md\n",
+       ""},
+      {"wbpushj",
+       {"workbench", "push", "1", "--json"},
+       0,
+       "{\"applied\":0,\"pending\":0,\"conflicts\":0,\"malformed\":0,\"malformed_files\":[],\"filtered\":0,\"pre_existing_"
+       "terminal\":0,\"cleaned\":0,\"filter_mode\":\"failures\",\"entries\":[{\"class\":\"no_op\",\"file_path\":\"project_demo/"
+       "p1-demo-feature/"
+       "README.md\",\"entity_kind\":\"plan\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\",\"file_"
+       "path\":\"project_demo/p1-demo-feature/"
+       "1-tech-spec-auth.md\",\"entity_kind\":\"artifact\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":"
+       "\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/decisions/"
+       "1-use-sqlite.md\",\"entity_kind\":\"decision\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_"
+       "op\",\"file_path\":\"project_demo/p1-demo-feature/questions/"
+       "1-which-format.md\",\"entity_kind\":\"question\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_"
+       "op\",\"file_path\":\"project_demo/p1-demo-feature/scenarios/"
+       "1-round-trip.md\",\"entity_kind\":\"scenario\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_"
+       "op\",\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/"
+       "1-first-task.md\",\"entity_kind\":\"task\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
+       "\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/"
+       "2-second-task.md\",\"entity_kind\":\"task\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
+       "\"file_path\":\"project_demo/p1-demo-feature/plans/"
+       "child-ms.md\",\"entity_kind\":\"plan\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"}]}\n",
+       ""},
       {"wbstat1", {"workbench", "status", "1", "--verbose"}, 0, "workbench status: plan 1 (demo-feature)\n", ""},
-      {"wblist1", {"workbench", "list", "--json"}, 0, "[{\"plan\":1,\"slug\":\"demo-feature\",\"status\":\"draft\",\"assoc\":\"project:demo\",\"plan_key\":\"p1\",\"has_fs_tree\":true}]\n", ""},
+      {"wblist1",
+       {"workbench", "list", "--json"},
+       0,
+       "[{\"plan\":1,\"slug\":\"demo-feature\",\"status\":\"draft\",\"assoc\":\"project:demo\",\"plan_key\":\"p1\",\"has_fs_"
+       "tree\":true}]\n",
+       ""},
       {"wblint", {"workbench", "lint", "1"}, 0, "8 files scanned, 0 errors, 0 warnings.\n", ""},
       {"wblintall", {"workbench", "lint", "--all"}, 0, "8 files scanned, 0 errors, 0 warnings.\n", ""},
-      {"wbgcdry", {"workbench", "gc", "1", "--dry-run"}, 0, "workbench gc (--dry-run): would remove 0, keep 8, drifted-skipped 0, errors 0 (mode=failures)\n", ""},
+      {"wbgcdry",
+       {"workbench", "gc", "1", "--dry-run"},
+       0,
+       "workbench gc (--dry-run): would remove 0, keep 8, drifted-skipped 0, errors 0 (mode=failures)\n",
+       ""},
       {"wbpull", {"workbench", "pull", "1", "--verbose"}, 0, "workbench pull: plan 1 (demo-feature)\n", ""},
       {"wbbadplan", {"workbench", "push", "999"}, 1, "", "error: plan not found: 999\n"},
       {"wbbadplan0", {"workbench", "push", "0"}, 2, "", "error: invalid plan '0'\n"},
       {"wbchild", {"workbench", "push", "2"}, 1, "", "error: plan not found: 2\n"},
-      {"wbbadmode", {"workbench", "push", "1", "--filter-mode", "nope"}, 2, "", "error: invalid --filter-mode 'nope' (expected 'failures' or 'all')\n"},
-      {"wbexcl", {"workbench", "push", "1", "--filter-mode", "all", "--apply-cleanup"}, 2, "", "error: --apply-cleanup is mutually exclusive with --filter-mode all\n"},
-      {"wblintnone", {"workbench", "lint"}, 2, "", "error: choose exactly one lint target: <plan>, --all, or --path <file-or-directory>\n"},
+      {"wbbadmode",
+       {"workbench", "push", "1", "--filter-mode", "nope"},
+       2,
+       "",
+       "error: invalid --filter-mode 'nope' (expected 'failures' or 'all')\n"},
+      {"wbexcl",
+       {"workbench", "push", "1", "--filter-mode", "all", "--apply-cleanup"},
+       2,
+       "",
+       "error: --apply-cleanup is mutually exclusive with --filter-mode all\n"},
+      {"wblintnone",
+       {"workbench", "lint"},
+       2,
+       "",
+       "error: choose exactly one lint target: <plan>, --all, or --path <file-or-directory>\n"},
       {"wbgcnoplan", {"workbench", "gc"}, 2, "", "error: plan argument required unless --all-scopes is set\n"},
       {"wbresbad", {"workbench", "resolve", "abc", "--prefer", "fs"}, 2, "", "error: event-id must be an integer, got 'abc'\n"},
       {"wbresnf", {"workbench", "resolve", "99", "--prefer", "fs"}, 1, "", "error: workbench resolve failed: NotFound\n"},
-      {"wbarch", {"workbench", "archive", "1", "--json"}, 0, "{\"archived\":true,\"plan\":1,\"feature_dir\":\"<ARENA>/workbench/project_demo/p1-demo-feature\"}\n", ""},
+      {"wbarch",
+       {"workbench", "archive", "1", "--json"},
+       0,
+       "{\"archived\":true,\"plan\":1,\"feature_dir\":\"<ARENA>/workbench/project_demo/p1-demo-feature\"}\n",
+       ""},
       {"wbarch2", {"workbench", "archive", "1"}, 0, "archived: <ARENA>/workbench/project_demo/p1-demo-feature (plan 1)\n", ""},
-      {"wbrest", {"workbench", "restore", "1", "--json"}, 0, "{\"restored\":true,\"plan\":1,\"feature_dir\":\"<ARENA>/workbench/project_demo/p1-demo-feature\"}\n", ""},
-      {"wbgcall", {"workbench", "gc", "--all-scopes", "--json"}, 0, "{\"removed\":0,\"kept\":8,\"drifted_skipped\":0,\"errors\":0,\"dry_run\":false,\"filter_mode\":\"failures\"}\n", ""},
+      {"wbrest",
+       {"workbench", "restore", "1", "--json"},
+       0,
+       "{\"restored\":true,\"plan\":1,\"feature_dir\":\"<ARENA>/workbench/project_demo/p1-demo-feature\"}\n",
+       ""},
+      {"wbgcall",
+       {"workbench", "gc", "--all-scopes", "--json"},
+       0,
+       "{\"removed\":0,\"kept\":8,\"drifted_skipped\":0,\"errors\":0,\"dry_run\":false,\"filter_mode\":\"failures\"}\n",
+       ""},
   };
   for (auto const& step : steps) {
     auto const mine = run_pinned(cpp_bin(), step.args, space.cpp_root, step.tag);
@@ -1422,7 +1486,8 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        {"init", "--json"},
        false,
        0,
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "{\"ok\":true,\"db\":\"$ROOT/"
+       "planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       {"initskip", {"init", "--skip-project"}, false, 0, "planar initialized\n  db:      $ROOT/planar.db\n  schema:  33\n"},
       {"initskipj",
@@ -1454,7 +1519,8 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        {"init", "--json"},
        true,
        0,
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "{\"ok\":true,\"db\":\"$ROOT/"
+       "planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\",\"git_remote\":\"git@github.com:example/repo.git\"}\n"},
       {"initremotetext",
        {"init"},
@@ -1527,18 +1593,21 @@ TEST_CASE("repeated init and --force are pinned", "[cmd][parity][cli-surface][in
   std::vector<step> const steps{
       {"i1",
        {"init", "--json"},
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "{\"ok\":true,\"db\":\"$ROOT/"
+       "planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       // Idempotent: `--name` is NOT applied on the second run, because the
       // insert is OR IGNORE.
       {"i2",
        {"init", "--name", "Ignored", "--json"},
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "{\"ok\":true,\"db\":\"$ROOT/"
+       "planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       // `--force` repoints the SAME row id rather than inserting a second.
       {"i3",
        {"init", "--force", "--name", "Renamed", "--json"},
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "{\"ok\":true,\"db\":\"$ROOT/"
+       "planar.db\",\"schema_version\":33,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"Renamed\",\"root_path\":\"$ROOT/proj\"}\n"},
       {"i4",
        {"init"},
@@ -1613,8 +1682,12 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
   std::vector<step> const steps{
       {"lclist0", {"local", "list"}, 0, "no sandbox installs recorded\n", ""},
       {"lclistj0", {"local", "list", "--json"}, 0, "", ""},
-      {"lclinkdry", {"local", "link", "--dry-run"}, 0, "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
-       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert to flat/SKILL.md\n"
+      {"lclinkdry",
+       {"local", "link", "--dry-run"},
+       0,
+       "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
+       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert "
+       "to flat/SKILL.md\n"
        "lint [warning] skill/nodesc.description: description is empty; vendors surface this as the skill summary\n"
        "nodesc (skill)\n"
        "  claude   dry-run [symlink]  ->  <ARENA>/localhome/.claude/commands/local-nodesc.md\n"
@@ -1627,9 +1700,14 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        "an-agent (agent)\n"
        "  agents   dry-run [symlink]  ->  <ARENA>/localhome/.planar/agents/local-an-agent.md\n"
        "\n"
-       "dry-run: 7 would-be installs across 3 source(s)\n", ""},
-      {"lclink", {"local", "link"}, 0, "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
-       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert to flat/SKILL.md\n"
+       "dry-run: 7 would-be installs across 3 source(s)\n",
+       ""},
+      {"lclink",
+       {"local", "link"},
+       0,
+       "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
+       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert "
+       "to flat/SKILL.md\n"
        "lint [warning] skill/nodesc.description: description is empty; vendors surface this as the skill summary\n"
        "nodesc (skill)\n"
        "  claude   created [symlink]  ->  <ARENA>/localhome/.claude/commands/local-nodesc.md\n"
@@ -1642,9 +1720,14 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        "an-agent (agent)\n"
        "  agents   created [symlink]  ->  <ARENA>/localhome/.planar/agents/local-an-agent.md\n"
        "\n"
-       "done: 7 linked, 0 unchanged, 0 skipped across 3 source(s)\n", ""},
-      {"lclink2", {"local", "link"}, 0, "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
-       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert to flat/SKILL.md\n"
+       "done: 7 linked, 0 unchanged, 0 skipped across 3 source(s)\n",
+       ""},
+      {"lclink2",
+       {"local", "link"},
+       0,
+       "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
+       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert "
+       "to flat/SKILL.md\n"
        "lint [warning] skill/nodesc.description: description is empty; vendors surface this as the skill summary\n"
        "nodesc (skill)\n"
        "  claude   unchanged [symlink]  ->  <ARENA>/localhome/.claude/commands/local-nodesc.md\n"
@@ -1657,68 +1740,188 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        "an-agent (agent)\n"
        "  agents   unchanged [symlink]  ->  <ARENA>/localhome/.planar/agents/local-an-agent.md\n"
        "\n"
-       "done: 0 linked, 7 unchanged, 0 skipped across 3 source(s)\n", ""},
-      {"lclinkj", {"local", "link", "--json"}, 0, "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/skills/nodesc/SKILL.md\",\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Frontmatter\":{\"Description\":\"\",\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[],\"Kind\":\"\"},\"Body\":\"No description, so this LINTS.\\n\"},\"Records\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/commands/local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/SKILL.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n"
-       "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\"Name\":\"three\",\"Kind\":\"skill\",\"Frontmatter\":{\"Description\":\"Three vendors.\",\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[\"claude\",\"codex\",\"copilot\"],\"Kind\":\"\"},\"Body\":\"B.\\n\"},\"Records\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/commands/local-three.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n"
-       "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/agents/an-agent.md\",\"Name\":\"an-agent\",\"Kind\":\"agent\",\"Frontmatter\":{\"Description\":\"An agent.\",\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[],\"Kind\":\"\"},\"Body\":\"A.\\n\"},\"Records\":[{\"vendor\":\"agents\",\"target_path\":\"<ARENA>/localhome/.planar/agents/local-an-agent.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/an-agent.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n", ""},
-      {"lclist1", {"local", "list"}, 0, "name          kind     vendor   status   target\n"
+       "done: 0 linked, 7 unchanged, 0 skipped across 3 source(s)\n",
+       ""},
+      {"lclinkj",
+       {"local", "link", "--json"},
+       0,
+       "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Frontmatter\":{\"Description\":\"\",\"ArgumentHint\":\"\",\"Tier\":"
+       "\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[],\"Kind\":\"\"},\"Body\":\"No description, so this "
+       "LINTS.\\n\"},\"Records\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/commands/"
+       "local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_"
+       "path\":\"<ARENA>/localhome/.codex/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "nodesc\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_"
+       "path\":\"<ARENA>/localhome/.copilot/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "nodesc\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n"
+       "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/skills/three/"
+       "SKILL.md\",\"Name\":\"three\",\"Kind\":\"skill\",\"Frontmatter\":{\"Description\":\"Three "
+       "vendors.\",\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[\"claude\",\"codex\","
+       "\"copilot\"],\"Kind\":\"\"},\"Body\":\"B.\\n\"},\"Records\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/"
+       ".claude/commands/local-three.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/"
+       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_"
+       "path\":\"<ARENA>/localhome/.codex/skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "three\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_path\":"
+       "\"<ARENA>/localhome/.copilot/skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "three\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n"
+       "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/agents/"
+       "an-agent.md\",\"Name\":\"an-agent\",\"Kind\":\"agent\",\"Frontmatter\":{\"Description\":\"An "
+       "agent.\",\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[],\"Kind\":\"\"},\"Body\":\"A."
+       "\\n\"},\"Records\":[{\"vendor\":\"agents\",\"target_path\":\"<ARENA>/localhome/.planar/agents/"
+       "local-an-agent.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/"
+       "an-agent.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n",
+       ""},
+      {"lclist1",
+       {"local", "list"},
+       0,
+       "name          kind     vendor   status   target\n"
        "nodesc        skill    claude   live     <ARENA>/localhome/.claude/commands/local-nodesc.md\n"
        "nodesc        skill    codex    live     <ARENA>/localhome/.codex/skills/local-nodesc\n"
        "nodesc        skill    copilot  live     <ARENA>/localhome/.copilot/skills/local-nodesc\n"
        "three         skill    claude   live     <ARENA>/localhome/.claude/commands/local-three.md\n"
        "three         skill    codex    live     <ARENA>/localhome/.codex/skills/local-three\n"
        "three         skill    copilot  live     <ARENA>/localhome/.copilot/skills/local-three\n"
-       "an-agent      agent    agents   live     <ARENA>/localhome/.planar/agents/local-an-agent.md\n", ""},
-      {"lclistj1", {"local", "list", "--json"}, 0, "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/commands/local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/SKILL.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/commands/local-three.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"an-agent\",\"Kind\":\"agent\",\"Record\":{\"vendor\":\"agents\",\"target_path\":\"<ARENA>/localhome/.planar/agents/local-an-agent.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/an-agent.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n", ""},
-      {"lclistv", {"local", "list", "--vendor", "codex"}, 0, "name          kind     vendor   status   target\n"
+       "an-agent      agent    agents   live     <ARENA>/localhome/.planar/agents/local-an-agent.md\n",
+       ""},
+      {"lclistj1",
+       {"local", "list", "--json"},
+       0,
+       "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/"
+       "commands/local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/"
+       "skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "nodesc\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/"
+       "skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "nodesc\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/"
+       "commands/local-three.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/"
+       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/"
+       "skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "three\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/"
+       "skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "three\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"an-agent\",\"Kind\":\"agent\",\"Record\":{\"vendor\":\"agents\",\"target_path\":\"<ARENA>/localhome/.planar/"
+       "agents/local-an-agent.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/"
+       "an-agent.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n",
+       ""},
+      {"lclistv",
+       {"local", "list", "--vendor", "codex"},
+       0,
+       "name          kind     vendor   status   target\n"
        "nodesc        skill    codex    live     <ARENA>/localhome/.codex/skills/local-nodesc\n"
-       "three         skill    codex    live     <ARENA>/localhome/.codex/skills/local-three\n", ""},
-      {"lclistvn", {"local", "list", "--vendor", "nope"}, 0, "name          kind     vendor   status   target\n"
-       "no rows matched filter\n", ""},
-      {"lclistve", {"local", "list", "--vendor", ""}, 0, "name          kind     vendor   status   target\n"
-       "no rows matched filter\n", ""},
-      {"lclinkone", {"local", "link", "three", "--vendor", "claude"}, 0, "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
-       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert to flat/SKILL.md\n"
+       "three         skill    codex    live     <ARENA>/localhome/.codex/skills/local-three\n",
+       ""},
+      {"lclistvn",
+       {"local", "list", "--vendor", "nope"},
+       0,
+       "name          kind     vendor   status   target\n"
+       "no rows matched filter\n",
+       ""},
+      {"lclistve",
+       {"local", "list", "--vendor", ""},
+       0,
+       "name          kind     vendor   status   target\n"
+       "no rows matched filter\n",
+       ""},
+      {"lclinkone",
+       {"local", "link", "three", "--vendor", "claude"},
+       0,
+       "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
+       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert "
+       "to flat/SKILL.md\n"
        "three (skill)\n"
        "  claude   unchanged [symlink]  ->  <ARENA>/localhome/.claude/commands/local-three.md\n"
        "  codex    skipped  ->  <ARENA>/localhome/.codex/skills/local-three\n"
        "  copilot  skipped  ->  <ARENA>/localhome/.copilot/skills/local-three\n"
        "\n"
-       "done: 0 linked, 1 unchanged, 2 skipped across 1 source(s)\n", ""},
-      {"lclinkmiss", {"local", "link", "nosuch"}, 1, "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
-       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert to flat/SKILL.md\n", "error: no sandbox source named \"nosuch\" under <ARENA>/localhome/.planar/local\n"},
+       "done: 0 linked, 1 unchanged, 2 skipped across 1 source(s)\n",
+       ""},
+      {"lclinkmiss",
+       {"local", "link", "nosuch"},
+       1,
+       "warning: <ARENA>/localhome/.planar/local/skills/broken/SKILL.md: skill directory missing SKILL.md\n"
+       "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert "
+       "to flat/SKILL.md\n",
+       "error: no sandbox source named \"nosuch\" under <ARENA>/localhome/.planar/local\n"},
       {"lcrecpos", {"local", "link", "--reconcile", "stray"}, 2, "", "error: --reconcile takes no positional arguments\n"},
-      {"lcmigdry", {"local", "migrate", "--dry-run"}, 0, "flat                  would migrate  <ARENA>/localhome/.planar/local/skills/flat.md -> <ARENA>/localhome/.planar/local/skills/flat/SKILL.md\n"
+      {"lcmigdry",
+       {"local", "migrate", "--dry-run"},
+       0,
+       "flat                  would migrate  <ARENA>/localhome/.planar/local/skills/flat.md -> "
+       "<ARENA>/localhome/.planar/local/skills/flat/SKILL.md\n"
        "\n"
-       "done: would migrate 1 skill(s); skipped 0\n", ""},
-      {"lcmig", {"local", "migrate"}, 0, "flat                  migrated  <ARENA>/localhome/.planar/local/skills/flat.md -> <ARENA>/localhome/.planar/local/skills/flat/SKILL.md\n"
+       "done: would migrate 1 skill(s); skipped 0\n",
+       ""},
+      {"lcmig",
+       {"local", "migrate"},
+       0,
+       "flat                  migrated  <ARENA>/localhome/.planar/local/skills/flat.md -> "
+       "<ARENA>/localhome/.planar/local/skills/flat/SKILL.md\n"
        "\n"
-       "done: migrated 1 skill(s); skipped 0\n", ""},
+       "done: migrated 1 skill(s); skipped 0\n",
+       ""},
       {"lcmig2", {"local", "migrate"}, 0, "migrate: no legacy flat skills found; sandbox is already dir-shape\n", ""},
       {"lcmigj", {"local", "migrate", "--json"}, 0, "{\"Migrated\":[],\"Skipped\":[]}\n", ""},
-      {"lcunlink", {"local", "unlink", "an-agent"}, 0, "an-agent (agent)\n"
-       "  agents   removed  <-  <ARENA>/localhome/.planar/agents/local-an-agent.md\n", ""},
-      {"lcunlink2", {"local", "unlink", "an-agent"}, 0, "no installs found for \"an-agent\" (already unlinked, or no such name)\n", ""},
-      {"lcunlinkj", {"local", "unlink", "nodesc", "--json"}, 0, "{\"result\":{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Removed\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/commands/local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/SKILL.md\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"}],\"PurgedFile\":\"\"}}\n", ""},
-      {"lcunlinkghost", {"local", "unlink", "ghost", "--purge"}, 0, "ghost (skill)\n"
+      {"lcunlink",
+       {"local", "unlink", "an-agent"},
+       0,
+       "an-agent (agent)\n"
+       "  agents   removed  <-  <ARENA>/localhome/.planar/agents/local-an-agent.md\n",
+       ""},
+      {"lcunlink2",
+       {"local", "unlink", "an-agent"},
+       0,
+       "no installs found for \"an-agent\" (already unlinked, or no such name)\n",
+       ""},
+      {"lcunlinkj",
+       {"local", "unlink", "nodesc", "--json"},
+       0,
+       "{\"result\":{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Removed\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/"
+       "localhome/.claude/commands/local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_path\":"
+       "\"<ARENA>/localhome/.codex/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "nodesc\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_path\":"
+       "\"<ARENA>/localhome/.copilot/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
+       "nodesc\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"}],\"PurgedFile\":\"\"}}\n",
+       ""},
+      {"lcunlinkghost",
+       {"local", "unlink", "ghost", "--purge"},
+       0,
+       "ghost (skill)\n"
        "  purged source file: <ARENA>/localhome/.planar/local/skills/ghost\n"
        "ghost (agent)\n"
        "  purged source file: <ARENA>/localhome/.planar/local/agents/ghost.md\n"
-       "no installs found for \"ghost\" (already unlinked, or no such name)\n", ""},
-      {"lcrecdry", {"local", "link", "--reconcile", "--dry-run"}, 0, "reconcile: manifest already consistent with the filesystem\n", ""},
+       "no installs found for \"ghost\" (already unlinked, or no such name)\n",
+       ""},
+      {"lcrecdry",
+       {"local", "link", "--reconcile", "--dry-run"},
+       0,
+       "reconcile: manifest already consistent with the filesystem\n",
+       ""},
       {"lcrec", {"local", "link", "--reconcile"}, 0, "reconcile: manifest already consistent with the filesystem\n", ""},
-      {"lclist2", {"local", "list"}, 0, "name          kind     vendor   status   target\n"
-       "three         skill    claude   live     <ARENA>/localhome/.claude/commands/local-three.md\n", ""},
-      {"lcimpbad", {"local", "import", "nope.md", "--kind", "bogus"}, 2, "", "error: --kind must be skill or agent, got \"bogus\"\n"},
-      {"lcimpmiss", {"local", "import", "nope.md"}, 0, "nope          skipped       reason: invalid-frontmatter\n"
+      {"lclist2",
+       {"local", "list"},
+       0,
+       "name          kind     vendor   status   target\n"
+       "three         skill    claude   live     <ARENA>/localhome/.claude/commands/local-three.md\n",
+       ""},
+      {"lcimpbad",
+       {"local", "import", "nope.md", "--kind", "bogus"},
+       2,
+       "",
+       "error: --kind must be skill or agent, got \"bogus\"\n"},
+      {"lcimpmiss",
+       {"local", "import", "nope.md"},
+       0,
+       "nope          skipped       reason: invalid-frontmatter\n"
        "\n"
-       "imported 0 file(s); skipped 1\n", ""},
+       "imported 0 file(s); skipped 1\n",
+       ""},
   };
 
   // `linked_at` is a wall-clock second stamp that reaches the `--json`
@@ -1810,7 +2013,11 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
   {
     auto const mine = manifests_of(space.cpp_root);
     REQUIRE(mine.at("skills") ==
-            "{\n  \"version\": 1,\n  \"entries\": [\n    {\n      \"name\": \"three\",\n      \"source_path\": \"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n      \"links\": [\n        {\n          \"vendor\": \"claude\",\n          \"target_path\": \"<ARENA>/localhome/.claude/commands/local-three.md\",\n          \"source_path\": \"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n          \"mode\": \"symlink\",\n          \"linked_at\": \"<STAMP>\"\n        }\n      ]\n    }\n  ]\n}\n");
+            "{\n  \"version\": 1,\n  \"entries\": [\n    {\n      \"name\": \"three\",\n      \"source_path\": "
+            "\"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n      \"links\": [\n        {\n          \"vendor\": "
+            "\"claude\",\n          \"target_path\": \"<ARENA>/localhome/.claude/commands/local-three.md\",\n          "
+            "\"source_path\": \"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n          \"mode\": \"symlink\",\n     "
+            "     \"linked_at\": \"<STAMP>\"\n        }\n      ]\n    }\n  ]\n}\n");
     REQUIRE(mine.at("agents") == "{\n  \"version\": 1,\n  \"entries\": []\n}\n");
   }
 
@@ -1931,7 +2138,8 @@ TEST_CASE("closure show and groups recommend over seeded rows are pinned", "[cmd
       REQUIRE(file.is_open());
       file << k_seed_sql;
     }
-    auto const line = std::format("sqlite3 {} < {}", shell_quote((space.cpp_root / "planar.db").string()), shell_quote(sql_path.string()));
+    auto const line =
+        std::format("sqlite3 {} < {}", shell_quote((space.cpp_root / "planar.db").string()), shell_quote(sql_path.string()));
     REQUIRE(std::system(line.c_str()) == 0);
   }
 
@@ -1943,47 +2151,145 @@ TEST_CASE("closure show and groups recommend over seeded rows are pinned", "[cmd
     std::string_view         err;  ///< Expected stderr.
   };
   std::vector<step> const steps{
-      {"cs1", {"closure", "show", "1"}, 0, "closure for task 1 (5 rows):\n"
+      {"cs1",
+       {"closure", "show", "1"},
+       0,
+       "closure for task 1 (5 rows):\n"
        "  [modify] a/first.zig::z.zzz  w=20\n"
        "  [modify] z/last.zig::a.aaa  w=10\n"
        "  [modify] z/last.zig::a.aaa  w=7\n"
        "  [reference] m/mid.zig::m.mmm  w=5\n"
-       "  [transitive] t/tr.zig::t.ttt  w=9000\n", ""},
-      {"cs1j", {"closure", "show", "1", "--json"}, 0, "{\"task_id\":1,\"rows\":[{\"id\":2,\"repo_id\":1,\"path\":\"a/first.zig\",\"symbol\":\"z.zzz\",\"role\":\"modify\",\"token_weight\":20,\"extractor_version\":\"m2-closure-0.1\",\"created_at\":\"2026-01-01T00:00:00.000Z\"},{\"id\":1,\"repo_id\":1,\"path\":\"z/last.zig\",\"symbol\":\"a.aaa\",\"role\":\"modify\",\"token_weight\":10,\"extractor_version\":\"m2-closure-0.1\",\"created_at\":\"2026-01-01T00:00:00.000Z\"},{\"id\":5,\"repo_id\":1,\"path\":\"z/last.zig\",\"symbol\":\"a.aaa\",\"role\":\"modify\",\"token_weight\":7,\"extractor_version\":\"m2-closure-0.2\",\"created_at\":\"2026-01-01T00:00:00.000Z\"},{\"id\":3,\"repo_id\":1,\"path\":\"m/mid.zig\",\"symbol\":\"m.mmm\",\"role\":\"reference\",\"token_weight\":5,\"extractor_version\":\"m2-closure-0.1\",\"created_at\":\"2026-01-01T00:00:00.000Z\"},{\"id\":4,\"repo_id\":1,\"path\":\"t/tr.zig\",\"symbol\":\"t.ttt\",\"role\":\"transitive\",\"token_weight\":9000,\"extractor_version\":\"m2-closure-0.1\",\"created_at\":\"2026-01-01T00:00:00.000Z\"}]}\n", ""},
-      {"cs4", {"closure", "show", "4"}, 0, "closure for task 4 (1 rows):\n"
-       "  [modify] d/four.zig::d.ddd  w=5000\n", ""},
-      {"cs999", {"closure", "show", "999"}, 0, "closure for task 999 (0 rows):\n"
-       "  (none — run `planar closure compute 999` first)\n", ""},
+       "  [transitive] t/tr.zig::t.ttt  w=9000\n",
+       ""},
+      {"cs1j",
+       {"closure", "show", "1", "--json"},
+       0,
+       "{\"task_id\":1,\"rows\":[{\"id\":2,\"repo_id\":1,\"path\":\"a/"
+       "first.zig\",\"symbol\":\"z.zzz\",\"role\":\"modify\",\"token_weight\":20,\"extractor_version\":\"m2-closure-0.1\","
+       "\"created_at\":\"2026-01-01T00:00:00.000Z\"},{\"id\":1,\"repo_id\":1,\"path\":\"z/"
+       "last.zig\",\"symbol\":\"a.aaa\",\"role\":\"modify\",\"token_weight\":10,\"extractor_version\":\"m2-closure-0.1\","
+       "\"created_at\":\"2026-01-01T00:00:00.000Z\"},{\"id\":5,\"repo_id\":1,\"path\":\"z/"
+       "last.zig\",\"symbol\":\"a.aaa\",\"role\":\"modify\",\"token_weight\":7,\"extractor_version\":\"m2-closure-0.2\","
+       "\"created_at\":\"2026-01-01T00:00:00.000Z\"},{\"id\":3,\"repo_id\":1,\"path\":\"m/"
+       "mid.zig\",\"symbol\":\"m.mmm\",\"role\":\"reference\",\"token_weight\":5,\"extractor_version\":\"m2-closure-0.1\","
+       "\"created_at\":\"2026-01-01T00:00:00.000Z\"},{\"id\":4,\"repo_id\":1,\"path\":\"t/"
+       "tr.zig\",\"symbol\":\"t.ttt\",\"role\":\"transitive\",\"token_weight\":9000,\"extractor_version\":\"m2-closure-0.1\","
+       "\"created_at\":\"2026-01-01T00:00:00.000Z\"}]}\n",
+       ""},
+      {"cs4",
+       {"closure", "show", "4"},
+       0,
+       "closure for task 4 (1 rows):\n"
+       "  [modify] d/four.zig::d.ddd  w=5000\n",
+       ""},
+      {"cs999",
+       {"closure", "show", "999"},
+       0,
+       "closure for task 999 (0 rows):\n"
+       "  (none — run `planar closure compute 999` first)\n",
+       ""},
       {"cs999j", {"closure", "show", "999", "--json"}, 0, "{\"task_id\":999,\"rows\":[]}\n", ""},
       {"csbad", {"closure", "show", "notanint"}, 2, "", "error: task id must be an integer, got 'notanint'\n"},
-      {"cssep", {"closure", "show", "1_0"}, 0, "closure for task 10 (0 rows):\n"
-       "  (none — run `planar closure compute 10` first)\n", ""},
-      {"cspad", {"closure", "show", "007"}, 0, "closure for task 7 (0 rows):\n"
-       "  (none — run `planar closure compute 7` first)\n", ""},
-      {"csplus", {"closure", "show", "+12"}, 0, "closure for task 12 (0 rows):\n"
-       "  (none — run `planar closure compute 12` first)\n", ""},
-      {"csovf", {"closure", "show", "9223372036854775808"}, 2, "", "error: task id must be an integer, got '9223372036854775808'\n"},
-      {"csmax", {"closure", "show", "9223372036854775807"}, 0, "closure for task 9223372036854775807 (0 rows):\n"
-       "  (none — run `planar closure compute 9223372036854775807` first)\n", ""},
-      {"gr1", {"groups", "recommend", "1"}, 0, "plan:1  budget:128000  open:3  solver:greedy  optimal_available:false  selected_greedy:false  slices:2  total_cost:105\n"
+      {"cssep",
+       {"closure", "show", "1_0"},
+       0,
+       "closure for task 10 (0 rows):\n"
+       "  (none — run `planar closure compute 10` first)\n",
+       ""},
+      {"cspad",
+       {"closure", "show", "007"},
+       0,
+       "closure for task 7 (0 rows):\n"
+       "  (none — run `planar closure compute 7` first)\n",
+       ""},
+      {"csplus",
+       {"closure", "show", "+12"},
+       0,
+       "closure for task 12 (0 rows):\n"
+       "  (none — run `planar closure compute 12` first)\n",
+       ""},
+      {"csovf",
+       {"closure", "show", "9223372036854775808"},
+       2,
+       "",
+       "error: task id must be an integer, got '9223372036854775808'\n"},
+      {"csmax",
+       {"closure", "show", "9223372036854775807"},
+       0,
+       "closure for task 9223372036854775807 (0 rows):\n"
+       "  (none — run `planar closure compute 9223372036854775807` first)\n",
+       ""},
+      {"gr1",
+       {"groups", "recommend", "1"},
+       0,
+       "plan:1  budget:128000  open:3  solver:greedy  optimal_available:false  selected_greedy:false  slices:2  total_cost:105\n"
        "slice 1  cost:65  tasks:[1, 2]\n"
        "    - a.aaa\n"
        "    - b.bbb\n"
        "    - m.mmm\n"
        "    - z.zzz\n"
        "slice 2  cost:40  tasks:[3]\n"
-       "    - c.ccc\n", ""},
-      {"gr1j", {"groups", "recommend", "1", "--json"}, 0, "{\"plan_id\":1,\"budget\":128000,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":false,\"slices\":[{\"task_ids\":[1,2],\"union_symbols\":[\"a.aaa\",\"b.bbb\",\"m.mmm\",\"z.zzz\"],\"cost\":65},{\"task_ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":2,\"total_cost\":105}}\n", ""},
-      {"grb", {"groups", "recommend", "1", "--budget", "25", "--json"}, 0, "{\"plan_id\":1,\"budget\":25,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":false,\"slices\":[{\"task_ids\":[1],\"union_symbols\":[\"a.aaa\",\"m.mmm\",\"z.zzz\"],\"cost\":35},{\"task_ids\":[2],\"union_symbols\":[\"b.bbb\"],\"cost\":30},{\"task_ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":3,\"total_cost\":105}}\n", ""},
-      {"grb0", {"groups", "recommend", "1", "--budget", "0", "--json"}, 0, "{\"plan_id\":1,\"budget\":0,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":false,\"slices\":[{\"task_ids\":[1],\"union_symbols\":[\"a.aaa\",\"m.mmm\",\"z.zzz\"],\"cost\":35},{\"task_ids\":[2],\"union_symbols\":[\"b.bbb\"],\"cost\":30},{\"task_ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":3,\"total_cost\":105}}\n", ""},
-      {"grbmax", {"groups", "recommend", "1", "--budget", "4294967295", "--json"}, 0, "{\"plan_id\":1,\"budget\":4294967295,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":false,\"slices\":[{\"task_ids\":[1,2],\"union_symbols\":[\"a.aaa\",\"b.bbb\",\"m.mmm\",\"z.zzz\"],\"cost\":65},{\"task_ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":2,\"total_cost\":105}}\n", ""},
-      {"grbovf", {"groups", "recommend", "1", "--budget", "4294967296"}, 2, "", "error: --budget must be a non-negative integer, got '4294967296'\n"},
-      {"grbneg", {"groups", "recommend", "1", "--budget", "-1"}, 2, "", "error: --budget must be a non-negative integer, got '-1'\n"},
-      {"grbbad", {"groups", "recommend", "1", "--budget", "xyz"}, 2, "", "error: --budget must be a non-negative integer, got 'xyz'\n"},
+       "    - c.ccc\n",
+       ""},
+      {"gr1j",
+       {"groups", "recommend", "1", "--json"},
+       0,
+       "{\"plan_id\":1,\"budget\":128000,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":"
+       "false,\"slices\":[{\"task_ids\":[1,2],\"union_symbols\":[\"a.aaa\",\"b.bbb\",\"m.mmm\",\"z.zzz\"],\"cost\":65},{\"task_"
+       "ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":2,\"total_cost\":105}}\n",
+       ""},
+      {"grb",
+       {"groups", "recommend", "1", "--budget", "25", "--json"},
+       0,
+       "{\"plan_id\":1,\"budget\":25,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":"
+       "false,\"slices\":[{\"task_ids\":[1],\"union_symbols\":[\"a.aaa\",\"m.mmm\",\"z.zzz\"],\"cost\":35},{\"task_ids\":[2],"
+       "\"union_symbols\":[\"b.bbb\"],\"cost\":30},{\"task_ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{"
+       "\"slices\":3,\"total_cost\":105}}\n",
+       ""},
+      {"grb0",
+       {"groups", "recommend", "1", "--budget", "0", "--json"},
+       0,
+       "{\"plan_id\":1,\"budget\":0,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":false,"
+       "\"slices\":[{\"task_ids\":[1],\"union_symbols\":[\"a.aaa\",\"m.mmm\",\"z.zzz\"],\"cost\":35},{\"task_ids\":[2],\"union_"
+       "symbols\":[\"b.bbb\"],\"cost\":30},{\"task_ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":"
+       "3,\"total_cost\":105}}\n",
+       ""},
+      {"grbmax",
+       {"groups", "recommend", "1", "--budget", "4294967295", "--json"},
+       0,
+       "{\"plan_id\":1,\"budget\":4294967295,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_"
+       "greedy\":false,\"slices\":[{\"task_ids\":[1,2],\"union_symbols\":[\"a.aaa\",\"b.bbb\",\"m.mmm\",\"z.zzz\"],\"cost\":65},{"
+       "\"task_ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":2,\"total_cost\":105}}\n",
+       ""},
+      {"grbovf",
+       {"groups", "recommend", "1", "--budget", "4294967296"},
+       2,
+       "",
+       "error: --budget must be a non-negative integer, got '4294967296'\n"},
+      {"grbneg",
+       {"groups", "recommend", "1", "--budget", "-1"},
+       2,
+       "",
+       "error: --budget must be a non-negative integer, got '-1'\n"},
+      {"grbbad",
+       {"groups", "recommend", "1", "--budget", "xyz"},
+       2,
+       "",
+       "error: --budget must be a non-negative integer, got 'xyz'\n"},
       {"grmiss", {"groups", "recommend", "999"}, 1, "", "error: plan 999 not found\n"},
       {"grbadid", {"groups", "recommend", "abc"}, 2, "", "error: plan id must be an integer, got 'abc'\n"},
-      {"grsolverbad", {"groups", "recommend", "1", "--solver", "bogus"}, 2, "", "error: --solver must be 'greedy' or 'mtkahypar', got 'bogus'\n"},
-      {"grsolvergreedy", {"groups", "recommend", "1", "--solver", "greedy", "--json"}, 0, "{\"plan_id\":1,\"budget\":128000,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":false,\"slices\":[{\"task_ids\":[1,2],\"union_symbols\":[\"a.aaa\",\"b.bbb\",\"m.mmm\",\"z.zzz\"],\"cost\":65},{\"task_ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":2,\"total_cost\":105}}\n", ""},
+      {"grsolverbad",
+       {"groups", "recommend", "1", "--solver", "bogus"},
+       2,
+       "",
+       "error: --solver must be 'greedy' or 'mtkahypar', got 'bogus'\n"},
+      {"grsolvergreedy",
+       {"groups", "recommend", "1", "--solver", "greedy", "--json"},
+       0,
+       "{\"plan_id\":1,\"budget\":128000,\"open_tasks\":3,\"solver\":\"greedy\",\"optimal_available\":false,\"selected_greedy\":"
+       "false,\"slices\":[{\"task_ids\":[1,2],\"union_symbols\":[\"a.aaa\",\"b.bbb\",\"m.mmm\",\"z.zzz\"],\"cost\":65},{\"task_"
+       "ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":2,\"total_cost\":105}}\n",
+       ""},
       // `--solver mtkahypar` is DELIBERATELY ABSENT (see the configure note
       // above): every step here already runs on the greedy path regardless
       // of whether the solver is compiled in.
@@ -2000,10 +2306,12 @@ TEST_CASE("closure show and groups recommend over seeded rows are pinned", "[cmd
   // NON-VACUITY. Both leaves are read-only, so a seed that silently failed
   // would make every comparison above a trivially-equal pair of empty
   // answers. This asserts the fixture actually reached the binary.
-  auto const populated = run_pinned(cpp_bin(), std::vector<std::string>{"closure", "show", "1", "--json"}, space.cpp_root, "cgnonvac");
+  auto const populated =
+      run_pinned(cpp_bin(), std::vector<std::string>{"closure", "show", "1", "--json"}, space.cpp_root, "cgnonvac");
   CHECK(populated.out.contains("\"symbol\":\"z.zzz\""));
   CHECK(populated.out.contains("\"role\":\"transitive\""));
-  auto const grouped = run_pinned(cpp_bin(), std::vector<std::string>{"groups", "recommend", "1", "--json"}, space.cpp_root, "cgnonvac2");
+  auto const grouped =
+      run_pinned(cpp_bin(), std::vector<std::string>{"groups", "recommend", "1", "--json"}, space.cpp_root, "cgnonvac2");
   CHECK(grouped.out.contains("\"open_tasks\":3"));
   // ...and the two filters this fixture exists to exercise really do exclude.
   CHECK_FALSE(grouped.out.contains("t.ttt"));
@@ -2081,7 +2389,7 @@ TEST_CASE("extract-questions and the workbench edit round trip are pinned", "[cm
 
   // A STUB EDITOR. It records its argv and then mutates the body so the
   // trailing `pull` has something real to apply.
-  auto const    script = space.cpp_root / "stub-editor";
+  auto const script = space.cpp_root / "stub-editor";
   {
     std::ofstream file(script, std::ios::binary | std::ios::trunc);
     REQUIRE(file.good());
@@ -2103,7 +2411,10 @@ TEST_CASE("extract-questions and the workbench edit round trip are pinned", "[cm
     std::string_view         err;  ///< Expected stderr.
   };
   std::vector<step> const steps{
-      {"eqtext", {"workbench", "extract-questions", "1"}, 0, "1-bullet-spec.md (artifact 1): 3 question(s)\n"
+      {"eqtext",
+       {"workbench", "extract-questions", "1"},
+       0,
+       "1-bullet-spec.md (artifact 1): 3 question(s)\n"
        "  [line 12] Should we cache the result? — It would help a lot on repeated reads and we think it matter…\n"
        "  [line 13] What about eviction?\n"
        "  [line 14] nested bullet counts too\n"
@@ -2111,10 +2422,26 @@ TEST_CASE("extract-questions and the workbench edit round trip are pinned", "[cm
        "  [line 12] Which serializer? — JSON is the default.\n"
        "It has two lines.\n"
        "  [line 17] Do we version the payload? — Yes, probably.\n"
-       "3-empty-spec.md (artifact 3): 0 question(s)\n", ""},
-      {"eqjson", {"workbench", "extract-questions", "1", "--json"}, 0, "[{\"artifact_id\":1,\"file\":\"1-bullet-spec.md\",\"questions\":[{\"title\":\"Should we cache the result?\",\"body\":\"It would help a lot on repeated reads and we think it matters.\",\"source_line\":12},{\"title\":\"What about eviction?\",\"body\":\"\",\"source_line\":13},{\"title\":\"nested bullet counts too\",\"body\":\"\",\"source_line\":14}]},{\"artifact_id\":2,\"file\":\"2-h3-spec.md\",\"questions\":[{\"title\":\"Which serializer?\",\"body\":\"JSON is the default.\\nIt has two lines.\",\"source_line\":12},{\"title\":\"Do we version the payload?\",\"body\":\"Yes, probably.\",\"source_line\":17}]},{\"artifact_id\":3,\"file\":\"3-empty-spec.md\",\"questions\":[]}]\n", ""},
+       "3-empty-spec.md (artifact 3): 0 question(s)\n",
+       ""},
+      {"eqjson",
+       {"workbench", "extract-questions", "1", "--json"},
+       0,
+       "[{\"artifact_id\":1,\"file\":\"1-bullet-spec.md\",\"questions\":[{\"title\":\"Should we cache the "
+       "result?\",\"body\":\"It would help a lot on repeated reads and we think it "
+       "matters.\",\"source_line\":12},{\"title\":\"What about eviction?\",\"body\":\"\",\"source_line\":13},{\"title\":\"nested "
+       "bullet counts "
+       "too\",\"body\":\"\",\"source_line\":14}]},{\"artifact_id\":2,\"file\":\"2-h3-spec.md\",\"questions\":[{\"title\":\"Which "
+       "serializer?\",\"body\":\"JSON is the default.\\nIt has two lines.\",\"source_line\":12},{\"title\":\"Do we version the "
+       "payload?\",\"body\":\"Yes, "
+       "probably.\",\"source_line\":17}]},{\"artifact_id\":3,\"file\":\"3-empty-spec.md\",\"questions\":[]}]\n",
+       ""},
       // An unpushed plan HINTS at exit 0 rather than failing.
-      {"eqnotree", {"workbench", "extract-questions", "2"}, 0, "workbench tree not found for plan 2; run 'workbench push 2' first\n", ""},
+      {"eqnotree",
+       {"workbench", "extract-questions", "2"},
+       0,
+       "workbench tree not found for plan 2; run 'workbench push 2' first\n",
+       ""},
       {"eqmissing", {"workbench", "extract-questions", "999"}, 1, "", "error: plan not found: 999\n"},
       {"eqinvalid", {"workbench", "extract-questions", "0"}, 2, "", "error: invalid plan '0'\n"},
       {"edmissing", {"workbench", "edit", "999"}, 1, "", "error: plan not found: 999\n"},
@@ -2130,7 +2457,8 @@ TEST_CASE("extract-questions and the workbench edit round trip are pinned", "[cm
 
   // NON-VACUITY, asserted on the PAYLOAD directly rather than only via
   // the pinned bytes above.
-  auto const text = run_pinned(cpp_bin(), std::vector<std::string>{"workbench", "extract-questions", "1"}, space.cpp_root, "eqnonvac");
+  auto const text =
+      run_pinned(cpp_bin(), std::vector<std::string>{"workbench", "extract-questions", "1"}, space.cpp_root, "eqnonvac");
   CHECK(text.out.contains("1-bullet-spec.md (artifact 1): 3 question(s)"));
   CHECK(text.out.contains("2-h3-spec.md (artifact 2): 2 question(s)"));
   CHECK(text.out.contains("3-empty-spec.md (artifact 3): 0 question(s)"));
@@ -2147,8 +2475,8 @@ TEST_CASE("extract-questions and the workbench edit round trip are pinned", "[cm
   // does not carry, so it is prefixed onto the argv by running the binary
   // THROUGH `env`.
   {
-    std::vector<std::string> const args{std::format("PLANAR_EDITOR={}", script.string()), cpp_bin().string(),
-                                        "workbench", "edit", "1"};
+    std::vector<std::string> const args{std::format("PLANAR_EDITOR={}", script.string()), cpp_bin().string(), "workbench", "edit",
+                                        "1"};
     auto const                     ran = run_pinned("/usr/bin/env", args, space.cpp_root, "wbedit");
     INFO("edit -> " << ran.err);
     CHECK(ran.code == 0);

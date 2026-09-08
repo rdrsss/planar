@@ -178,7 +178,7 @@ auto seed_and_push(const std::filesystem::path& work) -> void {
 /// a `run_pinned` call is therefore how a scripted, non-interactive editor
 /// reaches the spawned child.
 struct scoped_env {
-  std::string        name;    ///< The variable name.
+  std::string                name;  ///< The variable name.
   std::optional<std::string> prior; ///< Its prior value, if it had one.
 
   explicit scoped_env(std::string var_name, std::string_view value) : name(std::move(var_name)) {
@@ -211,13 +211,13 @@ TEST_CASE("task 6546: artifact edit rewrites the title through a scripted $EDITO
 
   auto const stub = space.cpp_root / "rewrite-title.sh";
   write_script(stub, "#!/bin/sh\n"
-                      "sed -e 's/^title: .*/title: New Artifact Title/' \"$1\" > \"$1.new\"\n"
-                      "mv \"$1.new\" \"$1\"\n"
-                      "exit 0\n");
+                     "sed -e 's/^title: .*/title: New Artifact Title/' \"$1\" > \"$1.new\"\n"
+                     "mv \"$1.new\" \"$1\"\n"
+                     "exit 0\n");
 
   {
     scoped_env const editor("PLANAR_EDITOR", stub.string());
-    auto const edited = run_pinned(cpp_bin(), std::array<std::string, 3>{"artifact", "edit", "1"}, space.cpp_root, "aedit");
+    auto const       edited = run_pinned(cpp_bin(), std::array<std::string, 3>{"artifact", "edit", "1"}, space.cpp_root, "aedit");
     CHECK(edited.code == 0);
     CHECK(edited.out.empty());
     CHECK(edited.err.empty()); // a clean title-only edit is SILENT
@@ -239,9 +239,9 @@ TEST_CASE("task 6546: artifact edit rewrites the title through a scripted $EDITO
   // A non-zero editor exit aborts WITHOUT writing -- exit 0, not a failure.
   auto const fail = space.cpp_root / "fail-editor.sh";
   write_script(fail, "#!/bin/sh\n"
-                      "sed -e 's/^title: .*/title: SHOULD-NOT-LAND/' \"$1\" > \"$1.new\"\n"
-                      "mv \"$1.new\" \"$1\"\n"
-                      "exit 1\n");
+                     "sed -e 's/^title: .*/title: SHOULD-NOT-LAND/' \"$1\" > \"$1.new\"\n"
+                     "mv \"$1.new\" \"$1\"\n"
+                     "exit 1\n");
   {
     scoped_env const editor("PLANAR_EDITOR", fail.string());
     auto const aborted = run_pinned(cpp_bin(), std::array<std::string, 3>{"artifact", "edit", "1"}, space.cpp_root, "aabort");
@@ -322,15 +322,15 @@ TEST_CASE("task 6546: artifact review reports the diff-shaped preview, the JSON 
         "false,\"persistence\":\"none\"}\n");
 
   // Refusal: both verdicts together, at exit 2, BEFORE the database opens.
-  auto const mutex = run_pinned(
-      cpp_bin(), std::array<std::string, 5>{"artifact", "review", "1", "--approve", "--request-changes"}, space.cpp_root, "armutex");
+  auto const mutex =
+      run_pinned(cpp_bin(), std::array<std::string, 5>{"artifact", "review", "1", "--approve", "--request-changes"},
+                 space.cpp_root, "armutex");
   CHECK(mutex.code == 2);
   CHECK(mutex.out.empty());
   CHECK(mutex.err == "error: --approve and --request-changes are mutually exclusive\n");
 
   // Refusal: an unlinked id.
-  auto const no_link =
-      run_pinned(cpp_bin(), std::array<std::string, 3>{"artifact", "review", "999"}, space.cpp_root, "arnolink");
+  auto const no_link = run_pinned(cpp_bin(), std::array<std::string, 3>{"artifact", "review", "999"}, space.cpp_root, "arnolink");
   CHECK(no_link.code == 1);
   CHECK(no_link.err == "error: artifact 999 is not linked to a plan; cannot resolve anchor plan\n");
 
@@ -378,8 +378,7 @@ TEST_CASE("task 6546: decision view writes the canonical file and refuses an unr
   // The rendered file itself is the real product (view writes it as a side
   // effect, then spawns a pager over it) -- assert the bytes ON DISK too,
   // not only what reached this process's captured stdout.
-  auto const rendered_path =
-      space.cpp_root / "workbench" / "project_demo" / "p1-demo-feature" / "decisions" / "1-use-sqlite.md";
+  auto const rendered_path = space.cpp_root / "workbench" / "project_demo" / "p1-demo-feature" / "decisions" / "1-use-sqlite.md";
   CHECK(read_all(rendered_path) == viewed.out);
 
   // Refusal: `view` is LENIENT about the id shape (0 parses), but an
@@ -387,7 +386,7 @@ TEST_CASE("task 6546: decision view writes the canonical file and refuses an unr
   auto const not_found = run_pinned(cpp_bin(), std::array<std::string, 3>{"decision", "view", "999"}, space.cpp_root, "dviewnf");
   CHECK(not_found.code == 1);
   CHECK(not_found.err == "error: cannot resolve anchor plan for decision 999: NoPlanLink\n"
-                        "error: NoPlanLink\n");
+                         "error: NoPlanLink\n");
 }
 
 // ===========================================================================
@@ -464,15 +463,14 @@ TEST_CASE("task 6546: scenario view writes the canonical file and refuses an unr
                       "\n"
                       "**Status:** draft\n");
 
-  auto const rendered_path =
-      space.cpp_root / "workbench" / "project_demo" / "p1-demo-feature" / "scenarios" / "1-round-trip.md";
+  auto const rendered_path = space.cpp_root / "workbench" / "project_demo" / "p1-demo-feature" / "scenarios" / "1-round-trip.md";
   CHECK(read_all(rendered_path) == viewed.out);
 
   // Refusal: `scenario view 999` -- lenient id, unlinked entity, bare tag.
   auto const not_found = run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "view", "999"}, space.cpp_root, "sviewnf");
   CHECK(not_found.code == 1);
   CHECK(not_found.err == "error: cannot resolve anchor plan for scenario 999: NoPlanLink\n"
-                        "error: NoPlanLink\n");
+                         "error: NoPlanLink\n");
 
   // Refusal: a non-integer id, at exit 2.
   auto const bad_id = run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "view", "abc"}, space.cpp_root, "sviewbadid");
@@ -542,8 +540,8 @@ TEST_CASE("task 6546: scenario review reports the diff, the JSON envelope for bo
   // `view` dirties the file the same way it does for `decision`, so
   // `--approve --json` after it reports `has_changes: true`.
   REQUIRE(run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "view", "1"}, space.cpp_root, "srview").code == 0);
-  auto const approve_json = run_pinned(
-      cpp_bin(), std::array<std::string, 5>{"scenario", "review", "1", "--approve", "--json"}, space.cpp_root, "srapprovejson");
+  auto const approve_json = run_pinned(cpp_bin(), std::array<std::string, 5>{"scenario", "review", "1", "--approve", "--json"},
+                                       space.cpp_root, "srapprovejson");
   CHECK(approve_json.code == 0);
   CHECK(normalize_arena(approve_json.out, space.cpp_root) ==
         "{\"entity\":\"scenario\",\"id\":1,\"anchor_plan_id\":1,\"workbench_path\":\"<ARENA>/workbench/project_demo/"
@@ -551,8 +549,9 @@ TEST_CASE("task 6546: scenario review reports the diff, the JSON envelope for bo
         "\"persistence\":\"none\"}\n");
 
   // Refusal: both verdicts together.
-  auto const mutex = run_pinned(
-      cpp_bin(), std::array<std::string, 5>{"scenario", "review", "1", "--approve", "--request-changes"}, space.cpp_root, "srmutex");
+  auto const mutex =
+      run_pinned(cpp_bin(), std::array<std::string, 5>{"scenario", "review", "1", "--approve", "--request-changes"},
+                 space.cpp_root, "srmutex");
   CHECK(mutex.code == 2);
   CHECK(mutex.err == "error: --approve and --request-changes are mutually exclusive\n");
 
@@ -561,8 +560,7 @@ TEST_CASE("task 6546: scenario review reports the diff, the JSON envelope for bo
   CHECK(bad_id.code == 2);
   CHECK(bad_id.err == "error: scenario id must be a positive integer, got 0\n");
 
-  auto const no_link =
-      run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "review", "999"}, space.cpp_root, "srnolink");
+  auto const no_link = run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "review", "999"}, space.cpp_root, "srnolink");
   CHECK(no_link.code == 1);
   CHECK(no_link.err == "error: scenario 999 is not linked to a plan; cannot resolve anchor plan\n");
 }
@@ -582,7 +580,8 @@ TEST_CASE("task 6546: workbench sync applies both directions in one pass, and re
   // for `task`, unlike every other kind; see `sync.cpp`'s `pull_to_db`),
   // and a status-only mutation in the database (`decision accept`,
   // proposed -> accepted) that never touched the pushed file.
-  auto const task_file = space.cpp_root / "workbench" / "project_demo" / "p1-demo-feature" / "tasks" / "cross" / "2-second-task.md";
+  auto const task_file =
+      space.cpp_root / "workbench" / "project_demo" / "p1-demo-feature" / "tasks" / "cross" / "2-second-task.md";
   {
     auto const before = read_all(task_file);
     REQUIRE_FALSE(before.empty());
@@ -644,7 +643,8 @@ TEST_CASE("task 6546: workbench sync applies both directions in one pass, and re
   // A second sync over the now-clean tree is a true no-op: 0 applied, 0
   // pending, 0 conflicts -- proving the first sync's writes actually
   // reconciled both sides rather than merely reporting that they would.
-  auto const settled = run_pinned(cpp_bin(), std::array<std::string, 4>{"workbench", "sync", "1", "--json"}, space.cpp_root, "wbsettled");
+  auto const settled =
+      run_pinned(cpp_bin(), std::array<std::string, 4>{"workbench", "sync", "1", "--json"}, space.cpp_root, "wbsettled");
   CHECK(settled.code == 0);
   CHECK(settled.out == "{\"applied\":0,\"pending\":0,\"conflicts\":0,\"malformed\":0,\"malformed_files\":[],"
                        "\"filtered\":0,\"pre_existing_terminal\":0,\"cleaned\":0,\"filter_mode\":\"failures\","
@@ -668,15 +668,18 @@ TEST_CASE("task 6546: workbench sync applies both directions in one pass, and re
   // Refusal: `sync` shares `run_sync_verb` with `push`/`pull`, so it shares
   // their plan-resolution refusals byte-for-byte -- not found, invalid
   // shape, and a non-anchor (child) plan.
-  auto const not_found = run_pinned(cpp_bin(), std::array<std::string, 3>{"workbench", "sync", "999"}, space.cpp_root, "wbsyncnf");
+  auto const not_found =
+      run_pinned(cpp_bin(), std::array<std::string, 3>{"workbench", "sync", "999"}, space.cpp_root, "wbsyncnf");
   CHECK(not_found.code == 1);
   CHECK(not_found.err == "error: plan not found: 999\n");
 
-  auto const invalid_shape = run_pinned(cpp_bin(), std::array<std::string, 3>{"workbench", "sync", "0"}, space.cpp_root, "wbsync0");
+  auto const invalid_shape =
+      run_pinned(cpp_bin(), std::array<std::string, 3>{"workbench", "sync", "0"}, space.cpp_root, "wbsync0");
   CHECK(invalid_shape.code == 2);
   CHECK(invalid_shape.err == "error: invalid plan '0'\n");
 
-  auto const child_plan = run_pinned(cpp_bin(), std::array<std::string, 3>{"workbench", "sync", "2"}, space.cpp_root, "wbsyncchild");
+  auto const child_plan =
+      run_pinned(cpp_bin(), std::array<std::string, 3>{"workbench", "sync", "2"}, space.cpp_root, "wbsyncchild");
   CHECK(child_plan.code == 1);
   CHECK(child_plan.err == "error: plan not found: 2\n");
 
@@ -684,9 +687,9 @@ TEST_CASE("task 6546: workbench sync applies both directions in one pass, and re
   // both sides between syncs. `sync` reports it and exits 3, and does NOT
   // resolve it unilaterally -- the operator must `workbench resolve`.
   {
-    auto const before = read_all(decision_file);
-    std::string after = before;
-    auto const  pos   = after.find("We use SQLite.");
+    auto const  before = read_all(decision_file);
+    std::string after  = before;
+    auto const  pos    = after.find("We use SQLite.");
     REQUIRE(pos != std::string::npos);
     after.replace(pos, std::string_view{"We use SQLite."}.size(), "We use SQLite for real.");
     std::ofstream out(decision_file, std::ios::binary | std::ios::trunc);

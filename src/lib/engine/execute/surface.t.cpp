@@ -192,14 +192,14 @@ TEST_CASE("the sandbox enumeration agrees with the oracle's own", "[engine][exec
   // below for that reason, the same way the live comparison used to erase
   // it before diffing.
   static const std::set<std::string> k_oracle_globals{
-      "_G",       "_VERSION",  "assert", "cli",         "collectgarbage", "ctx",  "error",  "flow",
-      "fs",       "getmetatable", "git", "ipairs",      "math",           "next", "pairs",  "pcall",
-      "print",    "rawequal", "rawget",  "rawlen",      "rawset",         "select", "setmetatable",
-      "string",   "table",    "tonumber", "tostring",   "type",           "utf8", "warn",   "xpcall"};
+      "_G",    "_VERSION",     "assert",   "cli",    "collectgarbage", "ctx",    "error",        "flow",
+      "fs",    "getmetatable", "git",      "ipairs", "math",           "next",   "pairs",        "pcall",
+      "print", "rawequal",     "rawget",   "rawlen", "rawset",         "select", "setmetatable", "string",
+      "table", "tonumber",     "tostring", "type",   "utf8",           "warn",   "xpcall"};
   static const std::map<std::string, std::set<std::string>> k_oracle_tables{
-      {"math", {"abs", "acos", "asin", "atan", "ceil", "cos", "deg", "exp", "floor", "fmod", "frexp", "huge", "ldexp", "log",
-                "max", "maxinteger", "min", "mininteger", "modf", "pi", "rad", "sin", "sqrt", "tan", "tointeger", "type",
-                "ult"}},
+      {"math", {"abs",  "acos",  "asin", "atan",  "ceil", "cos", "deg",        "exp",  "floor",
+                "fmod", "frexp", "huge", "ldexp", "log",  "max", "maxinteger", "min",  "mininteger",
+                "modf", "pi",    "rad",  "sin",   "sqrt", "tan", "tointeger",  "type", "ult"}},
       {"ctx", {"args", "brief", "context", "now", "plan_show", "recommend_strategy", "seed", "task_show", "task_touches"}},
       {"cli", {"planar", "planar_agent", "planar_agent_json", "planar_json", "planar_watch", "planar_watch_json"}},
       {"git", {"checkout", "clean", "diff_name_only", "head_sha", "reset_hard"}},
