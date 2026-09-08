@@ -614,17 +614,17 @@ planar_binary(planar
     engine_workspace)
 
 if(TARGET planar_cmd_planar_tests)
-  # parity.t.cpp shells the built binary and diffs its stdout, stderr and
-  # exit code against the Zig oracle's. It needs to know where both live:
-  # PLANAR_CPP_BIN is this target's own output, PLANAR_ZIG_BIN the reference.
-  # Absent oracle => those cases SKIP, the same posture db/migrate.t.cpp and
-  # cli/help.t.cpp already take (D6: the zig/ tree is the oracle until M10).
+  # parity.t.cpp shells the built binary and pins its stdout, stderr and
+  # exit code against expectations transcribed from the Zig oracle before
+  # the M10 cutover deleted it (decisions 963/982), so only this target's
+  # own output path is needed. PLANAR_TARGET_SOURCE_ROOT is separate and
+  # still live: surface_generator.t.cpp reads the CHECKED-IN
+  # `src/cmd/*/surface.cpp` files and re-runs `scripts/gen-cli-surface.py`
+  # against a scratch tree, and must resolve those against this checkout
+  # rather than the process's cwd.
   target_compile_definitions(planar_cmd_planar_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\""
-    "PLANAR_ZIG_BIN=\"${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar\""
-    "PLANAR_TARGET_SOURCE_ROOT=\"${CMAKE_SOURCE_DIR}\""
-    "PLANAR_RETIREMENT_GATE=\"${CMAKE_SOURCE_DIR}/scripts/oracle-retirement-gate.sh\""
-    "PLANAR_STATE_TEST_BIN=\"$<TARGET_FILE:planar_cmd_planar_tests>\"")
+    "PLANAR_TARGET_SOURCE_ROOT=\"${CMAKE_SOURCE_DIR}\"")
   add_dependencies(planar_cmd_planar_tests planar_cmd_planar)
 endif()
 

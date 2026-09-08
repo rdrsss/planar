@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00033_rename_blocks_to_depends_on.up.sql`. Every "schema effects" section below cites real columns from those migrations. As of this milestone the CLI surface is served by C++26 binaries built via CMake (see [docs/architecture.md](architecture.md) and [docs/toolchain-parity.md](toolchain-parity.md)); the Zig implementation under `zig/` remains buildable only as the port's parity oracle. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00033_rename_blocks_to_depends_on.up.sql`. Every "schema effects" section below cites real columns from those migrations. The CLI surface is served by C++26 binaries built via CMake (see [docs/architecture.md](architecture.md) and [docs/toolchain-parity.md](toolchain-parity.md)); the Zig implementation under `zig/`, retained through the port as its parity oracle, was deleted at the M10 cutover. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -201,7 +201,7 @@ Initializes the Planar database and registers the current directory as a project
 planar init [--name <text>] [--skip-project] [--allow-no-repo] [--force]
 ```
 
-**Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at build time from `migrations/` via `tools/gen_migrations.zig`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Human output names the `assoc create` and `assoc add` commands that establish the project's planning scope; `--json` retains the stable initialization result shape without prose guidance. Order: ensure config → apply migrations → create project row.
+**Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at configure time from `migrations/` via `cmake/generate_migrations.cmake`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Human output names the `assoc create` and `assoc add` commands that establish the project's planning scope; `--json` retains the stable initialization result shape without prose guidance. Order: ensure config → apply migrations → create project row.
 
 **Workspace-shape guardrail:** when cwd has no `.git` of its own but contains one or more immediate child directories that do, `planar init` refuses with a hint pointing at `planar workspace init`. A bare init in a polyrepo workspace directory would otherwise register a semantically-wrong project row for the workspace itself. Pass `--allow-no-repo` (alias `--force`) to override and register the non-repo cwd as a standalone project anyway. See [Domain: `workspace`](#domain-workspace) and [concepts.md § Workspace](concepts.md#workspace).
 
@@ -4877,7 +4877,7 @@ link 7: sync_direction read-only → write-back
 
 ## Domain: `help`
 
-**Note:** `planar help` and `planar <command> --help` are rendered by the [etcli-zig](https://github.com/rdrsss/etcli-zig) help layer (vendored under `vendor/etcli-zig/src/cli/help.zig`); this section is preserved for discoverability.
+**Note:** `planar help` and `planar <command> --help` are rendered by Planar's own help renderer in `src/lib/cliapp/` (decision 948: CLI11 handles tokenization and value coercion only, because the help text is an oracle-pinned parity surface); this section is preserved for discoverability.
 
 ---
 
@@ -6148,7 +6148,7 @@ bounded planning-state blast radius.
 
 ## Binary: `planar-watch`
 
-`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third of Planar's now-five binaries to be added (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit is `planar explore` in the Zig oracle (bare `planar` on a TTY) — it is registered but not yet implemented in the C++ tree (decision 980; see [docs/architecture.md § Interactive cockpit](architecture.md#interactive-cockpit--embedded-in-planar-zig-oracle-only-not-yet-ported)) — see [Domain: `explore`](#domain-explore).
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third of Planar's now-five binaries to be added (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit `planar explore` (bare `planar` on a TTY) is registered but NOT implemented — decision 980 records it as a rewrite candidate rather than a port, and the Zig implementation that used to provide it was deleted with `zig/` at the M10 cutover (decision 982; see [docs/architecture.md § Interactive cockpit](architecture.md#interactive-cockpit--specified-not-implemented)) — see [Domain: `explore`](#domain-explore).
 
 Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
 
@@ -6437,7 +6437,7 @@ planar-watch schema
 planar-ext schema
 ```
 
-The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig oracle's `tools/cli_usage_lint.zig` at task 6402). The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone.
+The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig tree's `tools/cli_usage_lint.zig` at task 6402). The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone.
 
 ---
 
@@ -6684,15 +6684,21 @@ planar report --days 14 --json
 
 ## Domain: `explore`
 
-> **Not yet implemented in the C++ tree.** `explore` is registered in the
-> C++ `planar` binary's command surface but its handler is a stub — decision
-> 980 records the cockpit as a rewrite candidate, not a straight port (its
-> screen output has no byte-level contract for the parity harness / state
-> differential / break-probes this milestone's verification relies on), and
-> decision 982 excludes it from the zig-deletion gate for that reason. The
-> section below documents the Zig oracle's live cockpit (`zig/`); it does
-> not describe current behavior when `planar` is built from this repo's
-> CMake project.
+> **NOT IMPLEMENTED — and no longer implemented anywhere.** `explore` is
+> registered in the `planar` binary's command surface, but its handler is a
+> stub that exits 64 with "not implemented in this build"; it is the only
+> entry in that binary's `unported_paths()` inventory, pinned by
+> `src/cmd/planar/surface_generator.t.cpp`. Decision 980 records the cockpit
+> as a rewrite candidate rather than a straight port (its screen output has
+> no byte-level contract for the pins, state differential, or break-probes
+> the port's verification relied on), and decision 982 excluded it from the
+> zig-deletion gate for that reason — so the Zig implementation that
+> provided it was deleted with `zig/` at the M10 cutover without a
+> replacement.
+>
+> **The section below is therefore a SPECIFICATION, not a description of
+> anything you can run.** It documents the cockpit the Zig tree used to
+> ship, retained as the design record for the eventual rewrite.
 
 ### `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`
 

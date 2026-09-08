@@ -6,12 +6,20 @@
 # ## Why this exists
 #
 # `catch_discover_tests` sets SKIP_RETURN_CODE 4 (cmake/module.cmake), so a
-# skipped case is not a failure and `ctest` still exits 0. That is the right
-# default — a developer who has not built `zig/` should not be blocked — but
-# it means a run where the entire differential lane was skipped reports the
-# same way as one where all of it passed. "1743 tests passed" and "1717
-# passed, 26 skipped" are very different claims about what was verified, and
-# only the second one is visible if you go looking for it.
+# skipped case is not a failure and `ctest` still exits 0. That was the right
+# default while a case could legitimately be unrunnable on a given checkout,
+# but it means a run where an entire lane was skipped reports the same way as
+# one where all of it passed. "1743 tests passed" and "1717 passed, 26
+# skipped" are very different claims about what was verified, and only the
+# second one is visible if you go looking for it.
+#
+# AS OF THE M10 CUTOVER (task 6045, decisions 963/982) THE EXPECTED TALLY IS
+# ZERO. Every skip this repo ever reported was oracle-conditional, and there
+# is no oracle any more: the last such case, `planar-watch parity: the six
+# read verbs agree with the oracle over a seeded database`, was deleted by
+# decision 1034 in the same commit. A nonzero tally now means a NEW skip was
+# introduced, which is exactly what this script is for. Run it with
+# `--max-skips 0` to make that a failure.
 #
 # This wrapper always PRINTS the tally, names the skipped cases, and (with
 # --max-skips) can fail when there are more than expected. It does not change
@@ -24,10 +32,10 @@
 #   --build-dir DIR   default: build/debug
 #   --max-skips N     exit non-zero if more than N cases skipped
 #
-# To make a missing oracle a hard FAILURE rather than a skip, set
-# PLANAR_PARITY_STRICT=1 (see src/cmd/parity_strict.hpp). The two mechanisms
-# are complementary: the env var refuses at the case, this script reports at
-# the run.
+# `PLANAR_PARITY_STRICT` and `src/cmd/parity_strict.hpp` are GONE (task
+# 6045). They existed to turn an absent oracle from a skip into a failure at
+# the case; with the oracle deleted there is nothing for them to refuse, and
+# `--max-skips 0` covers the remaining need at the run.
 set -uo pipefail
 
 BUILD_DIR=build/debug
@@ -61,9 +69,9 @@ echo "skipped: $SKIPPED_COUNT"
 if [ "$SKIPPED_COUNT" -gt 0 ]; then
   printf '%s\n' "$SKIPPED_LINES" | sed 's/^/  /'
   echo
-  echo "A skipped case asserted NOTHING. If these are oracle-gated, build the"
-  echo "reference with 'make build' and re-run, or set PLANAR_PARITY_STRICT=1"
-  echo "to make an absent oracle a failure instead."
+  echo "A skipped case asserted NOTHING. Since the M10 cutover (task 6045) the"
+  echo "expected tally is ZERO — every historical skip was oracle-conditional"
+  echo "and the oracle is deleted. Investigate each case above."
 fi
 
 echo "ctest exit: $CTEST_RC"

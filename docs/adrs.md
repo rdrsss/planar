@@ -21,9 +21,9 @@ a one-paragraph summary of each decision.
 | 0004 | Rust as runtime                                                 | Superseded by ADR-0005  |
 | 0005 | Go as runtime                                                   | Superseded by ADR-0009  |
 | 0006 | GitHub operational-plane feature mapping                        | Active                  |
-| 0007 | Internal package bucket grouping                                | Active (carried into Zig) |
-| 0008 | `cmd/planar` subpackage buckets                                 | Active (carried into Zig) |
-| 0009 | Zig as runtime                                                  | Active                  |
+| 0007 | Internal package bucket grouping                                | Active (Go → Zig → C++26) |
+| 0008 | `cmd/planar` subpackage buckets                                 | Active (Go → Zig → C++26) |
+| 0009 | Zig as runtime                                                  | Superseded by plan 996  |
 
 ## ADR-0001 — Plugin extensibility as a future concern
 
@@ -113,8 +113,21 @@ registration in `src/cmd/planar/main.zig`.*
 
 ## ADR-0009 — Zig as runtime
 
-*Active. Supersedes ADR-0005 in full; supersedes ADR-0002's runtime
-choice of sqlx-cli library mode.* The Go implementation (ADR-0005)
+*Superseded by plan 996 (the C++26 rewrite), 2026-09. Supersedes
+ADR-0005 in full; supersedes ADR-0002's runtime choice of sqlx-cli
+library mode.*
+
+> **SUPERSEDED.** Zig was the runtime from M1–M19 of the Go→Zig port
+> through the C++26 port's M9 parity gate. Planar is C++26 now: the
+> CMake tree at the repo root is the only build, and the Zig tree under
+> `zig/` — kept buildable through the port as its parity ORACLE, never
+> as a shipped toolchain — was deleted at the M10 cutover (task 6045,
+> decisions 963/982) once its state-differential evidence came back
+> clean. Everything below is the historical record of why Zig was
+> chosen and what it delivered; none of its file paths, build commands,
+> or test counts describe the current tree. The C++26 decision itself
+> is recorded as plan 996's decision set (D1–D18) rather than as a
+> numbered ADR here. The Go implementation (ADR-0005)
 reached M1–M19 feature-complete and exposed two structural costs that
 did not surface at adoption time: (1) cgo-free SQLite via
 `modernc.org/sqlite` paid a measurable per-query overhead and made

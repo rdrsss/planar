@@ -206,7 +206,7 @@ binary capability boundary; the cue changes transcript visibility only.
 
 ## Binary architecture
 
-Planar ships four executables. Three are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by integration tests (`integration_tests/capability_boundary_test.zig`). The fourth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
+Planar ships four executables. Three are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by the `src/cmd/*/capability.t.cpp` tests. The fourth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
 
 - `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `doc`, `spec`, `templates`, `ext`, `sync`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
 - `planar-agent` — agent-callable coordination binary. Read-write only to its

@@ -52,8 +52,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "parity_strict.hpp"
-
 #include <sys/wait.h>
 
 import std;
@@ -1564,58 +1562,6 @@ TEST_CASE("repeated init and --force are pinned", "[cmd][parity][cli-surface][in
   // The row id never moved: three registrations, one project.
   CHECK(scrub(read_all(space.cpp_root / "i3.out"), space.cpp_root)
             .contains(R"("project_id":1,"project_slug":"proj","project_name":"Renamed")"));
-}
-
-// --- the parity strictness switch (task 6071) ----------------------------
-
-TEST_CASE("PLANAR_PARITY_STRICT turns an absent oracle from a skip into a failure", "[cmd][parity][strictness]") {
-  // The switch itself, tested rather than assumed. Its whole purpose is to
-  // stop a run of twenty-six oracle-gated cases from reporting as a clean
-  // pass when the oracle was never consulted -- and at the M10 cutover,
-  // when zig/ is deleted, that is the permanent state of every one of them.
-  //
-  // Only `strict_mode()` is exercised directly. The macro around it cannot
-  // be: it expands to Catch2's SKIP or FAIL, both of which act on the
-  // RUNNING case, so a test that called it would skip or fail ITSELF rather
-  // than report what it did. The macro is two lines of dispatch over this
-  // predicate; the predicate is where a mistake would hide.
-  //
-  // Mutating the environment is safe because catch_discover_tests runs each
-  // TEST_CASE as its own process, and it is restored regardless.
-  char const* const original = std::getenv("PLANAR_PARITY_STRICT");
-  std::string const saved    = original == nullptr ? std::string{} : std::string{original};
-  bool const        was_set  = original != nullptr;
-
-  ::unsetenv("PLANAR_PARITY_STRICT");
-  bool const when_unset = ::planar::parity::strict_mode();
-
-  REQUIRE(::setenv("PLANAR_PARITY_STRICT", "1", 1) == 0);
-  bool const when_one = ::planar::parity::strict_mode();
-
-  // `0` and the empty string are explicitly OFF, so a CI job that exports
-  // the variable unconditionally can turn it off BY VALUE rather than
-  // having to unset it.
-  REQUIRE(::setenv("PLANAR_PARITY_STRICT", "0", 1) == 0);
-  bool const when_zero = ::planar::parity::strict_mode();
-  REQUIRE(::setenv("PLANAR_PARITY_STRICT", "", 1) == 0);
-  bool const when_empty = ::planar::parity::strict_mode();
-
-  // Anything else truthy counts, so `PLANAR_PARITY_STRICT=yes` is not a
-  // silent no-op.
-  REQUIRE(::setenv("PLANAR_PARITY_STRICT", "yes", 1) == 0);
-  bool const when_word = ::planar::parity::strict_mode();
-
-  if (was_set) {
-    ::setenv("PLANAR_PARITY_STRICT", saved.c_str(), 1);
-  } else {
-    ::unsetenv("PLANAR_PARITY_STRICT");
-  }
-
-  CHECK_FALSE(when_unset);
-  CHECK(when_one);
-  CHECK_FALSE(when_zero);
-  CHECK_FALSE(when_empty);
-  CHECK(when_word);
 }
 
 TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surface][local]") {

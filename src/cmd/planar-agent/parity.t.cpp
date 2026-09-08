@@ -59,8 +59,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "parity_strict.hpp"
-
 // The claim-ritual cases below normalise volatile fields with a regex, and
 // read the two arenas' final row state back through `planar.db`.
 #include <regex>

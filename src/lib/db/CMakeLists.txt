@@ -44,13 +44,4 @@ target_link_libraries(planar_db PRIVATE SQLite::SQLite3)
 # vendored amalgamation.
 if(TARGET planar_db_tests)
   target_link_libraries(planar_db_tests PRIVATE SQLite::SQLite3)
-
-  # migrate.t.cpp's parity test shells the Zig reference binary (D6, the
-  # integration suite / zig/ tree is the parity oracle until M10 cutover)
-  # to produce a Zig-migrated fixture database and compares schema_migrations
-  # row-for-row against the C++-migrated equivalent. The test itself SKIPs
-  # (rather than fails) when this path does not exist, e.g. before `zig
-  # build` has run under zig/.
-  target_compile_definitions(planar_db_tests PRIVATE
-    PLANAR_ZIG_BIN="${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar")
 endif()

@@ -243,6 +243,11 @@ LOG_ROOT="${BENCH_LOG_ROOT:-}"   # resolved lazily below after BENCH_HOME is sta
 #     Uses ${VAR-default} (no colon) so empty-string export disables the filter. ---
 # Use ${VAR-default} (no colon) so an explicit BENCH_HARVEST_EXCLUDE=""
 # disables the filter entirely; unset uses the default; empty-but-set = off.
+# `zig-cache/*`, `.zig-cache/*` and `zig-out/*` are retained AFTER the M10
+# cutover deleted `zig/` (task 6045): this is a NOISE FILTER over harvested
+# touch paths from any corpus repo, and BENCH_CORPUS_REPO can point at a Zig
+# checkout. A stale exclusion here filters nothing and costs nothing; a
+# missing one corrupts a precision/recall measurement.
 BENCH_HARVEST_EXCLUDE="${BENCH_HARVEST_EXCLUDE-*.bak:*.orig:vendor/*:zig-cache/*:.zig-cache/*:zig-out/*:*.o:*.a}"
 
 # ---------------------------------------------------------------------------
@@ -716,7 +721,8 @@ spawn_agent() {
   # agent the cycle worktree; cwd is the worktree so relative paths resolve.
   # --dangerously-skip-permissions bypasses ALL permission prompts (file edits
   # AND bash commands). The worktree is an isolated, throwaway, internet-free
-  # sandbox — the coder MUST be able to run zig build / zig fmt / git without
+  # sandbox — the coder MUST be able to run the corpus build/format/git
+  # commands without
   # interactive approval, otherwise it cannot verify the objective gate and will
   # self-classify as "no work needed" rather than actually implementing the task.
   #
@@ -743,7 +749,8 @@ spawn_agent() {
   _AGENT_TIMEOUT_FLAG="$_timeout_flag"
   AGENT_TIMED_OUT=0
   # Coder gets --dangerously-skip-permissions: full bash + edit access in the
-  # isolated throwaway worktree so it can run zig build / zig fmt / git.
+  # isolated throwaway worktree so it can run the corpus build/format/git
+  # commands.
   raw="$(spawn_agent_watchdog "$model" "$worktree" "$brief" "--dangerously-skip-permissions")" || _wd_rc=$?
   if [ -f "$_timeout_flag" ]; then AGENT_TIMED_OUT=1; fi
   rm -f "$_timeout_flag" 2>/dev/null || true
@@ -1100,9 +1107,12 @@ ANTI-SPRAWL CONSTRAINTS (violation corrupts the precision/recall measurement):
     change, STOP — you are out of scope. Breadth is penalized, not rewarded.
 
 OBJECTIVE GATE — verify YOUR change builds; do not repair unrelated code:
-  1. Run \`zig build\` to confirm YOUR change compiles (warnings are errors).
-  2. Run \`zig fmt\` to confirm YOUR change is formatted.
-  3. Run the test suite to confirm YOUR change does not regress existing tests.
+  1. Build the corpus repo to confirm YOUR change compiles (warnings are
+     errors). In the Planar corpus that is \`cmake --build build/debug\`.
+  2. Run the corpus repo's formatter over YOUR change. In the Planar corpus
+     that is \`make fmt-check\`.
+  3. Run the test suite to confirm YOUR change does not regress existing
+     tests. In the Planar corpus that is \`ctest --test-dir build/debug\`.
   If the pre-existing base fails to build for reasons UNRELATED to your task,
   note it and proceed — do NOT repair unrelated code to make other things pass.
 
@@ -1122,7 +1132,7 @@ state. Uncommitted work is invisible to the measurement.
 SCOPE DISCIPLINE (load-bearing — the measurement counts every file you touch):
 Do NOT create backup files (no .bak copies, no file.orig). Edit source files
 in place. Stay within the subsystem of the named files; do not modify vendored
-dependencies under vendor/ or build outputs (zig-out/, zig-cache/). Touches
+dependencies under vendor/ or build outputs (build/). Touches
 outside the declared subsystem inflate the actual-touch set and corrupt the
 precision/recall measurement.
 EOF

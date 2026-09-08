@@ -203,8 +203,9 @@ on_err() {
 }
 trap 'on_err $? $LINENO' ERR
 
-# The D13 install freeze ended at the M9 parity gate: `install.sh` now ships
-# the CMake-built binaries while `zig/` remains available only as the oracle.
+# The D13 install freeze ended at the M9 parity gate, and the M10 cutover
+# (task 6045, decisions 963/982) deleted `zig/`: the CMake build is the only
+# build, and the binaries this script installs are its output.
 # check_deps "<tier label>" <fatal:0|1> "cmd|brewpkg|what it's for" …
 # Checks every entry and reports ALL missing tools at once (not one-at-a-time),
 # with a `brew install …` hint built from the entries that have a Homebrew

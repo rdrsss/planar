@@ -5,9 +5,10 @@
 #
 # The C++ implementation is built with the debug/release CMake presets.
 # `cli_usage_lint` and `surface_lint` (src/tools/, plan 996 task 6402) are
-# CMake targets in the same build as every other binary — no `zig` build
-# line is invoked here any more (the M10 cutover deletes `zig/` outright and
-# a residual zig build-exe line here would fail loudly the moment it does).
+# CMake targets in the same build as every other binary. NOTHING in this
+# file shells `zig` any more: the M10 cutover (task 6045, decisions 963/982)
+# deleted `zig/` outright, and the targets that drove it were removed rather
+# than stubbed — see the note above `test-cpp-report`.
 
 BINARY        := planar
 AGENT_BINARY  := planar-agent
@@ -21,19 +22,11 @@ WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
 
-ZIG         ?= zig
 PREFIX      ?= $(HOME)/.local
 
-# zig/ tree — see the relocation note above. ZIGBUILD invokes the relocated
-# build.zig by absolute path so every recipe below can keep running from the
-# repo root (Makefile's own invocation directory) without a `cd`.
-ZIG_DIR       := $(CURDIR)/zig
-ZIG_BUILD_FILE := $(ZIG_DIR)/build.zig
-ZIGBUILD      := $(ZIG) build --build-file $(ZIG_BUILD_FILE)
-
-# CMake parity build output — the C++ tree lands binaries here per the
-# tech-spec's CMakePresets (`build/<preset>`). Override to point the parity
-# lane at a different build directory.
+# CMake build output — binaries land under `build/<preset>/bin` per
+# CMakePresets.json. Override to point a target at a different build
+# directory.
 CPP_BIN_DIR   ?= build/debug/bin
 CPP_BIN_ABS   := $(abspath $(CPP_BIN_DIR))
 CPP_RELEASE_BIN_DIR ?= build/release/bin
@@ -44,18 +37,6 @@ SURFACE_LINT := $(CPP_BUILD_DIR)/src/tools/surface_lint/surface_lint
 
 # Extra args forwarded to the relevant underlying build command.
 ARGS        ?=
-
-# Share one Zig local cache between the main checkout and every git worktree
-# of this repo, so worktree builds (agent dispatch, cycle branches) start warm
-# instead of recompiling the vendored C deps and the full module graph from
-# scratch. Zig's cache is lock-protected; concurrent builds are safe. Resolves
-# to the main checkout's .zig-cache — in the main checkout itself this is
-# identical to the default. Outside a git checkout the variable is left unset
-# and zig falls back to ./.zig-cache.
-GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-ifneq ($(GIT_COMMON_DIR),)
-export ZIG_LOCAL_CACHE_DIR ?= $(patsubst %/.git,%,$(GIT_COMMON_DIR))/.zig-cache
-endif
 
 .DEFAULT_GOAL := help
 
@@ -103,20 +84,22 @@ uninstall-full: ## Remove the legacy full install (preserves ~/.planar/planar.db
 #
 # A from-source binary resolves $PLANAR_DB, falling back to the operator's real
 # ~/.planar/planar.db — and it applies its pending migrations AUTOMATICALLY on
-# first use. So one bare `zig build run` from a branch carrying a new migration
-# silently pushes the live database past every installed binary's supported
-# version and breaks every other agent on the machine. Always smoke against
-# this instead.
-SMOKE_DB ?= $(ZIG_DIR)/.zig-cache/smoke/planar.db
+# first use. So one bare run of a freshly built binary from a branch carrying a
+# new migration silently pushes the live database past every installed binary's
+# supported version and breaks every other agent on the machine. Always smoke
+# against this instead.
+SMOKE_DB ?= $(CPP_BUILD_DIR)/.smoke/planar.db
 
 .PHONY: run
-run: ## Run the CLI from source AGAINST THE REAL DB (use `make smoke` for a throwaway one)
-	$(ZIGBUILD) run -- $(ARGS)
+run: ## Run the CLI from the debug build AGAINST THE REAL DB (use `make smoke` for a throwaway one)
+	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar
+	$(CPP_BIN_ABS)/$(BINARY) $(ARGS)
 
 .PHONY: smoke
-smoke: ## Run the CLI from source against a throwaway build-dir DB: make smoke ARGS="task list"
+smoke: ## Run the CLI from the debug build against a throwaway DB: make smoke ARGS="task list"
+	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar
 	@mkdir -p $(dir $(SMOKE_DB))
-	PLANAR_DB=$(SMOKE_DB) $(ZIGBUILD) run -- $(ARGS)
+	PLANAR_DB=$(SMOKE_DB) $(CPP_BIN_ABS)/$(BINARY) $(ARGS)
 
 .PHONY: smoke-reset
 smoke-reset: ## Delete the throwaway smoke database
@@ -137,29 +120,20 @@ test: test-install-manifest test-install-deps ## Run unit tests
 	ctest --test-dir build/debug --output-on-failure $(ARGS)
 
 .PHONY: test-vendor-mtkahypar-offline
-test-vendor-mtkahypar-offline: ## Recurrence guard (task 6461): -DPLANAR_WITH_MTKAHYPAR=ON must configure offline from the committed vendor cache. macOS/sandbox-exec only; not part of test-all (slow, platform-specific) -- run after touching cmake/dependencies.cmake's mtkahypar block, or wire into make test-parity-cpp when that lane configures with the solver ON (task 6532).
+test-vendor-mtkahypar-offline: ## Recurrence guard (task 6461): -DPLANAR_WITH_MTKAHYPAR=ON must configure offline from the committed vendor cache. macOS/sandbox-exec only; not part of test-all (slow, platform-specific) -- run after touching cmake/dependencies.cmake's mtkahypar block, or wire into make test-cpp-solver, the lane that configures with the solver ON (task 6532).
 	bash scripts/vendor-mtkahypar-offline-test.sh
 
-.PHONY: oracle-retirement-gate
-oracle-retirement-gate: ## Fail-closed evidence required before retiring zig/
-	cmake --preset debug
-	cmake --build build/debug --target planar_cmd_planar_tests $(ARGS)
-	scripts/oracle-retirement-gate.sh
-
-.PHONY: test-integration
-# -Dtest-binary=true: rebuild the binary with the test-binary flag enabled.
-# This activates the PLANAR_DISABLE_WORKTREE_GATE env-var bypass in the
-# worktree gate (plan 297 t#2937). The production binary (make build) is
-# compiled without this flag and ignores the env var entirely.
-# No `build` prerequisite: build.zig points the harness (PLANAR_BIN etc.) at
-# the Debug -Dtest-binary=true binaries it installs into zig-out itself, so a
-# ReleaseSafe ./bin pre-build would be dead weight the suite never executes.
-test-integration: ## Run the integration suite (builds its own Debug test binaries)
-	$(ZIGBUILD) test-integration -Dtest-binary=true $(ARGS)
-
-.PHONY: test-integration-files
-test-integration-files: ## Run integration tests as one executable per test file
-	$(ZIGBUILD) test-integration-files -Dtest-binary=true $(ARGS)
+# THE ZIG-HARNESS TARGETS ARE GONE (plan 996, task 6045; decisions 963/982,
+# 1035). `oracle-retirement-gate`, `test-integration`,
+# `test-integration-files` and `test-parity-cpp` all shelled `zig build`
+# against `zig/`, which this commit deletes. They are removed rather than
+# stubbed: a target that runs nothing and exits 0 is the exact failure mode
+# the retired gate existed to prevent. Their coverage moved before the
+# deletion, not with it — task 6546 gave the eight uncovered CLI leaves
+# black-box coverage, task 6547 ported the irreplaceable cross-process cases
+# onto `parity_harness.hpp`'s `run_pinned()`, and task 6436 re-pointed
+# `scripts/coverage-check.sh` at the C++ corpus, so `make coverage` still
+# grades leaf coverage.
 
 .PHONY: cpp-lint
 # ── C++26 rewrite lint gate (M0 boundary review, plan 996 task 6049 F3) ──
@@ -206,10 +180,10 @@ define require_pinned_llvm
 endef
 
 # First-party C++ file list: everything under src/ and
-# scripts/toolchain-probes/, excluding vendor/, zig/, and any build output —
+# scripts/toolchain-probes/, excluding vendor/ and any build output —
 # find-based so newly added files are picked up without editing this list.
 CPP_FILES := $(shell find src scripts/toolchain-probes -type f \( -name '*.cppm' -o -name '*.cpp' \) \
-	-not -path '*/vendor/*' -not -path '*/zig/*' -not -path '*/build/*' 2>/dev/null)
+	-not -path '*/vendor/*' -not -path '*/build/*' 2>/dev/null)
 
 cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C++ (docs/toolchain-parity.md)
 	$(call require_pinned_llvm,$(CLANG_FORMAT_BIN))
@@ -245,26 +219,22 @@ cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C+
 test-cpp-report: ## Run the C++ ctest suite and REPORT its skip tally (a skipped case asserted nothing)
 	scripts/ctest-report.sh --build-dir build/debug $(ARGS)
 
-.PHONY: test-cpp-strict
-test-cpp-strict: ## Same, but an absent Zig oracle FAILS the differential cases instead of skipping them
-	PLANAR_PARITY_STRICT=1 scripts/ctest-report.sh --build-dir build/debug --max-skips 0 $(ARGS)
-
-.PHONY: test-parity-cpp
-test-parity-cpp: ## Run the zig-side integration suite against CPP_BIN_DIR binaries (parity lane; fails until C++ binaries exist)
+.PHONY: test-cpp-solver
+test-cpp-solver: ## Run the ctest suite against a solver-ON build (decision 1032)
 	cmake --preset debug -DPLANAR_WITH_MTKAHYPAR=ON
 	cmake --build $(CPP_BUILD_DIR)
-	PLANAR_BIN=$(CPP_BIN_ABS)/$(BINARY) \
-	PLANAR_AGENT_BIN=$(CPP_BIN_ABS)/$(AGENT_BINARY) \
-	PLANAR_WATCH_BIN=$(CPP_BIN_ABS)/$(WATCH_BINARY) \
-	PLANAR_EXECUTE_BIN=$(CPP_BIN_ABS)/$(EXECUTE_BINARY) \
-	PLANAR_EXT_BIN=$(CPP_BIN_ABS)/$(EXT_BINARY) \
-	$(ZIGBUILD) test-integration -Dtest-binary=true $(ARGS)
+	ctest --test-dir $(CPP_BUILD_DIR) --output-on-failure $(ARGS)
 
-# The parity lane builds WITH the solver (decision 1032): groups_recommend's
+# This lane builds WITH the solver (decision 1032): groups_recommend's
 # task-4247 test hard-asserts optimal_available, and the developer default
-# keeps PLANAR_WITH_MTKAHYPAR OFF so nobody builds the 330MB library. The ON
-# build is hermetic since task 6461 pinned CPM's cache key; verify with
-# `make test-vendor-mtkahypar-offline`.
+# keeps PLANAR_WITH_MTKAHYPAR OFF so nobody builds the 330MB library. It
+# inherited the solver-ON posture from the retired `test-parity-cpp` target,
+# which was the only lane that configured it. The ON build is hermetic since
+# task 6461 pinned CPM's cache key; verify with
+# `make test-vendor-mtkahypar-offline`. Task 6536: a solver-ON build can
+# produce binaries that pass every in-process test and still fail to launch
+# (`Library not loaded: @rpath/libmtkahypar.dylib`), so the install smoke in
+# `install.sh` — not this target — is what catches that class.
 
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
@@ -306,27 +276,37 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 # $(CPP_BUILD_DIR) already configured, and clang-tidy needs the module
 # BMIs materialized (see the note in the cpp-lint target itself), so
 # composing it in would make `make test-all` configure and build the
-# entire C++ tree on a checkout where the Zig tree is still the shipped
-# implementation. That stays wrong until the C++ tree IS the
-# implementation (post-M9, D13) — at which point test-all's C++ members
-# have to build it anyway and the precondition costs nothing. Compose it
-# in then, and add the same gate to CI at the same time (this repo has no
-# .github/workflows at all today, so until then C++ format/tidy drift
-# rides on operator discipline).
+# entire C++ tree before the cheap gates run. That reason is now WEAKER
+# than it was: since the M10 cutover (task 6045) the C++ tree is the only
+# implementation, so `make test` builds it anyway and the precondition
+# costs nothing at the point cpp-lint would run. What still argues against
+# composing it in is clang-tidy's runtime over the whole module graph, and
+# that it is advisory (no --warnings-as-errors; 105 residual findings, task
+# 6439). Revisit together with adding the gate to CI — this repo has no
+# .github/workflows at all today, so until then C++ format/tidy drift rides
+# on operator discipline plus `make fmt-check`.
 .PHONY: test-all
-test-all: test test-integration coverage cli-usage-check ## Run unit + integration suites, coverage, and composed authored-surface gates
+test-all: test coverage cli-usage-check ## Run the unit suite, coverage, and the composed authored-surface gates
 
+# RE-POINTED AT clang-format (plan 996, task 6045). These ran `zig fmt` over
+# `zig/`. With that tree deleted the formatter of record is the PINNED LLVM's
+# clang-format, resolved exactly the way `cpp-lint` resolves it — see
+# CLANG_FORMAT_BIN above and docs/toolchain-parity.md. `fmt-check` is the
+# same check `cpp-lint` runs first; it exists separately so the cheap
+# formatting gate can run without clang-tidy's build-and-BMI precondition.
 .PHONY: fmt
-fmt: ## Run zig fmt on the source tree
-	$(ZIG) fmt $(ZIG_DIR)/build.zig $(ZIG_DIR)/src $(ZIG_DIR)/tools $(ZIG_DIR)/integration_tests
+fmt: ## Reformat first-party C++ in place with the pinned clang-format
+	$(call require_pinned_llvm,$(CLANG_FORMAT_BIN))
+	$(CLANG_FORMAT_BIN) -i $(CPP_FILES)
 
 .PHONY: fmt-check
-fmt-check: ## Verify zig fmt is clean (CI gate)
-	$(ZIG) fmt --check $(ZIG_DIR)/build.zig $(ZIG_DIR)/src $(ZIG_DIR)/tools $(ZIG_DIR)/integration_tests
+fmt-check: ## Verify clang-format is clean (no build required, unlike cpp-lint)
+	$(call require_pinned_llvm,$(CLANG_FORMAT_BIN))
+	$(CLANG_FORMAT_BIN) --dry-run --Werror $(CPP_FILES)
 
 .PHONY: clean
 clean: ## Remove build artifacts
-	rm -rf $(BIN_DIR) $(ZIG_DIR)/zig-out $(ZIG_DIR)/.zig-cache $(ZIG_DIR)/zig-cache
+	rm -rf $(BIN_DIR) build
 
 .PHONY: docs-manifest
 docs-manifest: ## Regenerate the docs/.manifest-docs Merkle index

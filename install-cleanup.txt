@@ -1,7 +1,7 @@
 # install-cleanup.txt — artifacts that older Planar versions installed into
 # $PLANAR_HOME but current Planar no longer ships. On every run, install.sh
 # removes each listed path (if present) so a re-install over an old tree is
-# clean: `zig build --prefix` overwrites the targets it builds but never
+# clean: `cmake --install` overwrites the targets it builds but never
 # deletes files left behind by a prior install.
 #
 # Format: one path per line, RELATIVE to $PLANAR_HOME. Blank lines and lines

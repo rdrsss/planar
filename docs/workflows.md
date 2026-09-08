@@ -295,7 +295,7 @@ tasks: [44, 45, 46]
 /pl-orchestrator 42 --barrel-bypass
 ```
 
-No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` **twice** + `scriptorium check` against an out-of-tree staging dir + any remaining relevant validators) are the entire signal.
+No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` **twice** + `make coverage` + `make cli-usage-check` + `scriptorium check` against an out-of-tree staging dir + any remaining relevant validators) are the entire signal.
 
 Audit-trail excerpt:
 ```

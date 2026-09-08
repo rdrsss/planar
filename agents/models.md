@@ -239,7 +239,7 @@ Every installable agent under `agents/`, its authored `tier:` (the source of
 truth — see §Conventions), its `capability:` (which drives the Codex
 `sandbox_mode` and the Claude tool grant), and its primary work. Rows marked †
 are the six **runtime-resolvable roles** whose tier is *also* carried in
-`[roles]` of `zig/src/engine/config/defaults.toml` for the plan-540 model resolver;
+`[roles]` of `src/lib/engine/config/defaults.toml` for the plan-540 model resolver;
 those two copies MUST agree. Every other agent resolves its model straight from
 this frontmatter via the render path.
 

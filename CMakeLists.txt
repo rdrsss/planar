@@ -8,10 +8,10 @@
 # `cmake -S . -B build` invocation works but skips the pins the presets
 # carry.
 #
-# The Zig implementation lives under zig/ and remains the buildable parity
-# reference until M10 cutover (D3). This file does not touch zig/, and
-# CMake is invoked directly via presets — it is not yet wired into the
-# Makefile (that happens at M10 cutover, not here).
+# This is the only build. The Zig implementation under zig/, kept buildable
+# as the port's parity oracle, was deleted at the M10 cutover (task 6045,
+# decisions 963/982); the Makefile now wraps these presets rather than
+# shelling `zig build`.
 
 cmake_minimum_required(VERSION 4.3)
 
@@ -225,83 +225,6 @@ _planar_add_architecture_guard_test(nontarget-dep-caught fail
   MESSAGES "D15 violation" "-lplanar_scop_ref")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-
-# ---------------------------------------------------------------------------
-# PLANAR_ORACLE_ROOT — where the Zig parity oracle lives (plan 996, task 6333)
-#
-# Every parity test resolves its reference binary under `zig/zig-out/bin/`.
-# That directory is a BUILD ARTIFACT and is gitignored, so it exists only in
-# the main checkout — never in a fresh `git worktree`. Resolving it against
-# CMAKE_SOURCE_DIR therefore pointed at a path that does not exist for every
-# worktree dispatch, and because the parity cases SKIP rather than fail on an
-# absent oracle, the suite reported `100% tests passed` with the entire
-# oracle comparison switched off. Sixteen worktree cycles ran that way before
-# anyone noticed, because a silent skip is indistinguishable from a pass.
-#
-# `git rev-parse --git-common-dir` yields the MAIN checkout's `.git` from
-# inside any worktree, which is the same trick the Makefile already uses to
-# share ZIG_LOCAL_CACHE_DIR. Strip the trailing `/.git` and that is the
-# checkout root. Falls back to CMAKE_SOURCE_DIR outside a git tree (a release
-# tarball), where the skip is correct because there is no oracle to find.
-execute_process(
-  COMMAND git rev-parse --path-format=absolute --git-common-dir
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  OUTPUT_VARIABLE _planar_git_common_dir
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  ERROR_QUIET)
-if(_planar_git_common_dir)
-  cmake_path(GET _planar_git_common_dir PARENT_PATH PLANAR_ORACLE_ROOT)
-else()
-  set(PLANAR_ORACLE_ROOT "${CMAKE_SOURCE_DIR}")
-endif()
-
-# Say so out loud. The failure this replaces was silent in both directions:
-# the oracle was missing AND nothing said the comparison had stopped running.
-if(EXISTS "${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar")
-  message(STATUS "planar: parity oracle found at ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin")
-else()
-  message(WARNING
-    "planar: NO parity oracle at ${PLANAR_ORACLE_ROOT}/zig/zig-out/bin — "
-    "every [parity] case will SKIP and the suite will still report success. "
-    "Build it with `make -C zig build` (or `zig build` in zig/), or set "
-    "PLANAR_PARITY_STRICT=1 to make the absence fail instead of skip.")
-endif()
-
-# STALENESS CHECK (plan 996, task 6414, moved to TEST TIME by task 6424).
-#
-# A stale oracle does NOT get the SKIP treatment the missing-oracle case
-# gets above. Absent is a normal, everyday state (nobody has run `zig
-# build` yet) and SKIP is the right, cheap answer to it — that is what
-# PLANAR_REQUIRE_ORACLE / PLANAR_PARITY_STRICT already do at the test call
-# sites. Stale is a different shape of problem: the oracle IS present, the
-# case WILL run, and it will report a pass or a fail that compares against
-# a Zig reference that no longer matches the tree. A pass in that state is
-# not evidence of parity — it is false confidence, manufactured rather
-# than absent, and unlike a skip it does not announce that anything is
-# wrong. That is worse than a failing test, so it gets the same posture
-# task 6402 gave `schema.t.cpp`'s `[lint-parity]` case (SKIP -> FAIL,
-# because a quiet outcome hid a broken dependency edge while ctest still
-# reported green): every oracle-gated case FAILS, unconditionally,
-# whenever the oracle is stale, never gated behind PLANAR_PARITY_STRICT.
-#
-# task 6414 detected this here at CONFIGURE time, comparing the oracle
-# binary's mtime against the most recent COMMITTED change under zig/ and
-# baking the answer into a global PLANAR_ORACLE_STALE compile definition.
-# That worked for the case it was built to catch (a stale oracle nobody
-# had rebuilt) but was itself STALE by construction: rebuilding the
-# oracle with `zig build` changes the binary's mtime but does not
-# re-invoke CMake, so the baked-in flag stayed TRUE — every oracle-gated
-# case then FAILED on a tree that was actually fine, and the warning's own
-# remediation ("rebuild with `zig build`") did not fix the failure it
-# named. Fixed by task 6424 by moving the comparison to `oracle_stale()`
-# in src/cmd/parity_strict.hpp, which re-reads both timestamps on every
-# test-process invocation — see that function's doc comment for the full
-# account. PLANAR_ORACLE_ROOT is still resolved here, at configure time,
-# and handed to the runtime check as a compile definition: THAT fact
-# (where the checkout root lives relative to this build) is genuinely
-# configure-time, unlike staleness, which depends on wall-clock state that
-# changes between configures.
-add_compile_definitions(PLANAR_ORACLE_ROOT="${PLANAR_ORACLE_ROOT}")
 
 include(dependencies)   # CPM + vendored packages (cmake/dependencies.cmake)
 include(module)         # planar_module() (cmake/module.cmake)

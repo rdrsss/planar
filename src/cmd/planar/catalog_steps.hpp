@@ -1,11 +1,27 @@
 // @file catalog_steps.hpp
-// @brief Catalog-to-argv conversion for the state-differential lane.
+// @brief Catalog-to-argv conversion, and the inventory gate over it.
 //
-// The state lane must never manufacture a command name.  Its generated
-// invocations are derived from the two installed `planar schema` documents,
-// and are admitted only when the catalog says no argument is required.  The
-// ordered, data-dependent part of the lane stays in statediff.t.cpp: a
-// catalog cannot know which id a preceding mutation created.
+// The rule this enforces is that nothing may manufacture a command name.
+// Invocations are DERIVED from a `planar schema` document and are admitted
+// only when the catalog says no argument is required; `verify_inventory`
+// then refuses any argv that is not itself a catalog leaf, and
+// `verify_partition` refuses an inventory that double-counts or omits one.
+//
+// ## Provenance (plan 996, task 6045; decisions 963/982)
+//
+// This header was written for `statediff.t.cpp`, the C++/Zig DATABASE-STATE
+// differential lane, and its two-catalog signature comes from that lane
+// comparing the C++ tree's `schema` output against the oracle's. That lane
+// and its oracle were deleted at the M10 cutover. The header SURVIVED it:
+// none of these functions ever ran a binary, read `oracle_available()`, or
+// knew what produced the bytes it parses. The second catalog is simply "the
+// document the first must agree with" — its live callers, in
+// `surface_generator.t.cpp`, pass hand-built fixtures.
+//
+// The alternative was folding it into that one test file. It is 400 lines
+// of parsing and set algebra with its own failure vocabulary, exercised by
+// six cases that each reach a different arm; inlining it would have buried
+// the subject inside its own tests.
 #pragma once
 
 #include <glaze/glaze.hpp>
@@ -125,15 +141,15 @@ inline auto exclusion_reason(std::span<const std::string> path) -> std::optional
   // remains checked and reported by `excluded_steps`; adding an omission here
   // therefore cannot make it disappear from the catalog evidence.
   //
-  // Plan 996, task 6419 deliberately does NOT add an entry here for the
-  // `ext`/`sync` leaves that moved to `planar-ext`: unlike `explore` (which
-  // exists, unexecuted, on BOTH sides), those leaves now exist ONLY in the
-  // oracle's catalog — `excluded_steps` requires `cpp_excluded ==
-  // zig_excluded` exactly, so a one-sided entry here would fail that
-  // partition check rather than pass it. The state-differential tests
-  // strip those catalog entries out of the oracle's JSON before ever
-  // reaching this function; see `strip_moved_ext_sync_leaves` in
-  // `statediff.t.cpp`.
+  // A PORT-SCOPE CARVEOUT DOES NOT BELONG HERE, and the reason outlives the
+  // oracle that made it concrete. Plan 996, task 6419 wanted an entry for
+  // the `ext`/`sync` leaves that had moved to `planar-ext`. Adding one
+  // would have BROKEN the check rather than relaxed it: `excluded_steps`
+  // requires `cpp_excluded == other_excluded` exactly, and those leaves
+  // were one-sided (present in only one of the two catalogs), so the
+  // partition check would have failed on the asymmetry. One-sided leaves
+  // are stripped from the input document by the caller, never excused
+  // here.
   const auto is = [&](std::initializer_list<std::string_view> wanted) {
     return path.size() == wanted.size() && std::ranges::equal(path, wanted);
   };
@@ -160,35 +176,38 @@ inline auto eligible(const leaf& candidate) -> bool {
 
 /// @brief Derive the complete eligible inventory from both schema catalogs.
 /// @param cpp_json The C++ binary's `schema` stdout.
-/// @param zig_json The Zig oracle's `schema` stdout.
+/// @param other_json A second `schema` catalog document that must declare
+/// the same eligible inventory. Historically the Zig oracle's; after the M10
+/// cutover (decisions 963/982) callers pass a fixture, or the same document
+/// twice, and the parameter survives as the disagreement arm's input.
 /// @param error Receives a refusal suitable for a test diagnostic.
 /// @return Generated argv steps, or unset before either subject binary runs.
-inline auto generated_steps(std::string_view cpp_json, std::string_view zig_json, std::string& error)
+inline auto generated_steps(std::string_view cpp_json, std::string_view other_json, std::string& error)
     -> std::optional<std::vector<step>> {
   error.clear();
   auto cpp = detail::leaves(cpp_json, error);
   if (!cpp) {
     return std::nullopt;
   }
-  auto zig = detail::leaves(zig_json, error);
-  if (!zig) {
+  auto other = detail::leaves(other_json, error);
+  if (!other) {
     return std::nullopt;
   }
 
   std::set<std::string, std::less<>> cpp_eligible;
-  std::set<std::string, std::less<>> zig_eligible;
+  std::set<std::string, std::less<>> other_eligible;
   for (auto const& [key, leaf] : *cpp) {
     if (detail::eligible(leaf)) {
       cpp_eligible.insert(key);
     }
   }
-  for (auto const& [key, leaf] : *zig) {
+  for (auto const& [key, leaf] : *other) {
     if (detail::eligible(leaf)) {
-      zig_eligible.insert(key);
+      other_eligible.insert(key);
     }
   }
-  if (cpp_eligible != zig_eligible) {
-    error = std::format("eligible catalog inventory differs: cpp={} zig={}", cpp_eligible, zig_eligible);
+  if (cpp_eligible != other_eligible) {
+    error = std::format("eligible catalog inventory differs: cpp={} other={}", cpp_eligible, other_eligible);
     return std::nullopt;
   }
 
@@ -206,21 +225,21 @@ inline auto generated_steps(std::string_view cpp_json, std::string_view zig_json
 }
 
 /// @brief Report every catalog-valid no-input leaf intentionally excluded from state execution.
-/// @return Matching C++/Zig exclusions, or unset if the catalogs disagree.
-inline auto excluded_steps(std::string_view cpp_json, std::string_view zig_json, std::string& error)
+/// @return The matching exclusions, or unset if the two catalogs disagree.
+inline auto excluded_steps(std::string_view cpp_json, std::string_view other_json, std::string& error)
     -> std::optional<std::vector<exclusion>> {
   error.clear();
   auto cpp = detail::leaves(cpp_json, error);
   if (!cpp) {
     return std::nullopt;
   }
-  auto zig = detail::leaves(zig_json, error);
-  if (!zig) {
+  auto other = detail::leaves(other_json, error);
+  if (!other) {
     return std::nullopt;
   }
 
   std::map<std::string, exclusion, std::less<>> cpp_excluded;
-  std::map<std::string, exclusion, std::less<>> zig_excluded;
+  std::map<std::string, exclusion, std::less<>> other_excluded;
   const auto                                    collect = [&](const auto& leaves, auto& out) -> bool {
     for (auto const& [key, candidate] : leaves) {
       if (candidate.has_required_input) {
@@ -234,16 +253,16 @@ inline auto excluded_steps(std::string_view cpp_json, std::string_view zig_json,
     }
     return true;
   };
-  if (!collect(*cpp, cpp_excluded) || !collect(*zig, zig_excluded)) {
+  if (!collect(*cpp, cpp_excluded) || !collect(*other, other_excluded)) {
     return std::nullopt;
   }
   const auto same_exclusions = [&] {
-    if (cpp_excluded.size() != zig_excluded.size()) {
+    if (cpp_excluded.size() != other_excluded.size()) {
       return false;
     }
     for (auto const& [key, item] : cpp_excluded) {
-      auto const found = zig_excluded.find(key);
-      if (found == zig_excluded.end() || item.path != found->second.path || item.reason != found->second.reason) {
+      auto const found = other_excluded.find(key);
+      if (found == other_excluded.end() || item.path != found->second.path || item.reason != found->second.reason) {
         return false;
       }
     }
@@ -265,12 +284,12 @@ inline auto excluded_steps(std::string_view cpp_json, std::string_view zig_json,
 /// @brief Verify that every reported generated argv exactly matches its catalog leaf.
 /// @param steps The argv steps actually scheduled for the state lane.
 /// @param cpp_json The C++ binary's catalog.
-/// @param zig_json The Zig oracle's catalog.
+/// @param other_json The second catalog to agree with (see `generated_steps`).
 /// @param error Receives invented or missing paths.
 /// @return `true` only for an exact bijection.
-inline auto verify_inventory(std::span<const step> steps, std::string_view cpp_json, std::string_view zig_json,
+inline auto verify_inventory(std::span<const step> steps, std::string_view cpp_json, std::string_view other_json,
                              std::string& error) -> bool {
-  auto expected = generated_steps(cpp_json, zig_json, error);
+  auto expected = generated_steps(cpp_json, other_json, error);
   if (!expected) {
     return false;
   }
@@ -343,8 +362,8 @@ inline auto stateful_leaf(std::span<const std::string> args, std::span<const ste
 /// eligible leaf at all.  The first two partitions must cover every eligible
 /// catalog leaf exactly once.
 inline auto verify_partition(std::span<const step> generated, std::span<const step> stateful, std::span<const step> malformed,
-                             std::string_view cpp_json, std::string_view zig_json, std::string& error) -> bool {
-  auto expected = generated_steps(cpp_json, zig_json, error);
+                             std::string_view cpp_json, std::string_view other_json, std::string& error) -> bool {
+  auto expected = generated_steps(cpp_json, other_json, error);
   if (!expected) {
     return false;
   }

@@ -111,16 +111,18 @@ endif()
 # SQLITE_ENABLE_FTS5, SQLITE_ENABLE_JSON1, SQLITE_DQS=0,
 # SQLITE_DEFAULT_FOREIGN_KEYS=1, SQLITE_USE_URI=1.
 #
-# Pinned to 3.50.2 — matching zig/vendor/sqlite's own pin (zig/vendor/
-# manifest.zon) exactly, since zig/ remains the parity oracle through M9
-# (D13). An earlier cycle bumped this to 3.53.4 ahead of the Zig tree,
-# which breaks the parity premise (both trees must open the same on-disk
-# format under test). SHA256 re-verified independently against
-# https://www.sqlite.org/2025/sqlite-amalgamation-3500200.zip (task 6049,
-# F7) — matches zig's pinned hash. The deliberate post-cutover bump path:
-# once the C++ tree is the sole implementation (post-M10, zig/ deleted),
-# sqlite is free to move independently again — re-verify a fresh SHA256
-# against sqlite.org before bumping.
+# Pinned to 3.50.2. The pin ORIGINALLY matched zig/vendor/sqlite's own
+# (zig/vendor/manifest.zon) exactly, because the parity premise required
+# both trees to open the same on-disk format under test — an earlier cycle
+# bumped this to 3.53.4 ahead of the Zig tree and broke that. SHA256 was
+# re-verified independently against
+# https://www.sqlite.org/2025/sqlite-amalgamation-3500200.zip (task 6049, F7).
+#
+# THAT CONSTRAINT IS NOW LIFTED: the M10 cutover (task 6045) deleted zig/,
+# so there is no second tree to stay format-compatible with and sqlite is
+# free to move independently. The version is held here only because nothing
+# yet needs a newer one — re-verify a fresh SHA256 against sqlite.org before
+# bumping.
 CPMAddPackage(
   NAME sqlite
   VERSION 3.50.2
@@ -270,12 +272,14 @@ CPMAddPackage(
 # every other application dependency here — and, like SQLite, DOWNLOAD_ONLY,
 # because Lua ships a hand-written Makefile and no CMake build of its own.
 #
-# ## The version is derived, not chosen
+# ## The version was derived, not chosen
 #
 # Pinned to 5.5.0 to match `zig/vendor/manifest.zon`'s Lua entry EXACTLY
 # (same URL, same SHA256 — re-verified independently here with
-# `shasum -a 256` against the downloaded archive). zig/ is the parity oracle
-# through M9 (D13), and the sandbox's observable surface is version-sensitive
+# `shasum -a 256` against the downloaded archive). That oracle was deleted at
+# the M10 cutover (task 6045), but the pin STAYS: the version is now load-
+# bearing on its own account, because the sandbox's observable surface —
+# pinned by `planar-execute`'s own tests — is version-sensitive
 # in ways that are easy to miss: the oracle's live `_VERSION` reads
 # "Lua 5.5", its `math` table carries `acos`/`asin`/`atan`/`frexp`/`ldexp`
 # (absent from a default 5.4 build) and its `table` carries `create` (new in

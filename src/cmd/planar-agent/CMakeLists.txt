@@ -170,12 +170,12 @@ if(TARGET planar_cmd_planar_agent_tests)
 endif()
 
 if(TARGET planar_cmd_planar_agent_tests)
-  # parity.t.cpp shells the built binary and diffs its stdout, stderr and
-  # exit code against the Zig oracle's. Absent oracle => those cases SKIP
-  # (D6: the zig/ tree is the oracle until M10).
+  # parity.t.cpp shells the built binary and pins its stdout, stderr and
+  # exit code against expectations transcribed from the Zig oracle before
+  # the M10 cutover deleted it (decisions 963/982). Only this binary's own
+  # path is needed now; nothing here shells a second implementation.
   target_compile_definitions(planar_cmd_planar_agent_tests PRIVATE
-    "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
-    "PLANAR_ZIG_BIN=\"${PLANAR_ORACLE_ROOT}/zig/zig-out/bin/planar-agent\"")
+    "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\"")
   target_include_directories(planar_cmd_planar_agent_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
   add_dependencies(planar_cmd_planar_agent_tests planar_cmd_planar_agent)
 endif()

@@ -10,19 +10,18 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 Planar is a local-first tool built as five binaries: `planar` (operator surface), `planar-agent` (agent-coordination writes), `planar-watch` (read-only viewer), `planar-execute` (the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface), and `planar-ext` (the operational-plane binary — Jira and GitHub Issues adapters; opens SQLite directly, read-only on planning tables and read-write on exactly `external_links` / `external_systems` / `sync_events`). The schema has thirty-three migrations, through `migrations/00033_rename_blocks_to_depends_on.up.sql`; the C++ runtime embeds and applies them at startup. Vendored SQLite is compiled from its pinned amalgamation; no system SQLite library is required.
 
-**History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`. Planar then ported from Go to Zig, and is now mid-port from Zig to C++26 (branch `rewrite/cpp26`, M10 cutover in progress); the canonical implementation being built and installed today is C++26. The Zig implementation remains buildable under `zig/` in this same repo strictly as the port's parity oracle — it is not deleted by reaching any particular milestone number, only once the state-differential evidence for the ported leaves is clean (see [docs/architecture.md](docs/architecture.md)).
+**History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`. Planar then ported from Go to Zig, and from Zig to C++26 (branch `rewrite/cpp26`). **The M10 cutover has landed:** the Zig tree under `zig/`, kept buildable as the port's parity oracle, was deleted once its state-differential evidence came back clean, and C++26 is now the only implementation (see [docs/architecture.md](docs/architecture.md)).
 
 ## Prerequisites
 
 Planar shells out to a small set of external tools. On macOS, install them via Homebrew:
 
 ```bash
-brew install cmake ninja llvm zig git gh jq ripgrep tbb
+brew install cmake ninja llvm git gh jq ripgrep tbb
 ```
 
 - `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries. `install.sh` preflights the exact preset compilers, `/opt/homebrew/opt/llvm/bin/clang` and `/opt/homebrew/opt/llvm/bin/clang++`, before it invokes CMake. Use the repository's `debug` and `release` presets; see [toolchain parity](docs/toolchain-parity.md).
 - `tbb` (>= 2021.5) — **required to build**, since `cmake/dependencies.cmake` vendors Mt-KaHyPar (decision 1006, task 6459) as a pinned CPM source block and Mt-KaHyPar's own CMake `find_package(TBB)`s it. Unlike every other third-party dependency this tree takes, TBB is **not** vendored as source: upstream states TBB does not support static linking, so this is a deliberately accepted dynamic system dependency rather than a hermetic one. `install.sh` preflights `brew --prefix tbb` and fails fast if it is missing, matching CMake's own `find_package(TBB)` failure.
-- `zig` — retained during the port solely as the behavior oracle: it builds the `zig/` tree that the C++ integration suite is graded against and that `capability_boundary_test.zig` still locks. It is **not** needed to build, install, or run Planar — `install.sh` never invokes it, and the authored-surface lint utilities (`cli_usage_lint`, `surface_lint`) are C++ tools under `src/tools/` today, not Zig ones.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
 - `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
@@ -300,7 +299,7 @@ plus `planar skills render --check` against an out-of-tree staging directory.
 
 ## Repository layout
 
-The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json` sit at the top level alongside the C++ module tree (`src/`), build-support CMake modules (`cmake/`), the CPM-cached vendor sources (`vendor/`), and the tool sources (`src/tools/`). The Zig implementation this project is porting from lives entirely under `zig/`, kept buildable there only as the port's parity oracle — it is not part of the CMake project and is not required to build, install, or run Planar.
+The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json` sit at the top level alongside the C++ module tree (`src/`), build-support CMake modules (`cmake/`), the CPM-cached vendor sources (`vendor/`), and the tool sources (`src/tools/`). There is no second implementation tree — `zig/` was deleted at the M10 cutover.
 
 | Path | Role |
 |------|------|
@@ -311,8 +310,7 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `cmake/dependencies.cmake` | Every third-party dependency as a pinned `CPMAddPackage(...)` (release archive + SHA256, cached under `vendor/`) |
 | `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/` and `templates/defaults/` into generated modules the runtime embeds |
 | `vendor/` | CPM's committed source cache — pinned release archives only, no `git clone`/submodule vendoring |
-| `zig/` | The Zig implementation, kept buildable as the parity oracle for the C++ port. Not part of the CMake build. |
-| `integration_tests/` | End-to-end integration suites (from the Zig oracle) exercising whichever built binary `$PLANAR_BIN` points at via the `harness.zig` runner — runs against either the Zig or the CMake build's output |
+| `src/cmd/parity_harness.hpp` | The cross-process (black-box) test harness — `run_pinned()` execs a built binary over fixed argv in a scratch environment with its own `PLANAR_DB` and `HOME`. Cases live in `src/cmd/*/parity.t.cpp` and `src/cmd/planar/cross_process.t.cpp` |
 | `migrations/` | SQLite migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`) — single authoritative source |
 | `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `jira/`); embedded at build time |
 | `templates/doc-prompts/`, `templates/defaults/`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install |
@@ -322,8 +320,8 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `$PLANAR_HOME/copilot-skills/`, `copilot/` | Generated Copilot staging tree + checked-in authored instructions/prompts |
 | `agents/` | Vendor-neutral Planar agent role specs |
 | `docs/` | User-facing reference docs (architecture, CLI, skills, concepts, workflows) |
-| `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of either build |
-| `Makefile` | Thin wrapper around `cmake --preset` / `cmake --build` / `ctest` invocations, plus a handful of Zig-oracle-only targets |
+| `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of the build |
+| `Makefile` | Thin wrapper around `cmake --preset` / `cmake --build` / `ctest` invocations |
 | `install.sh` | Source-checkout installer; builds and installs the C++ binaries via CMake |
 
 ## Documentation
