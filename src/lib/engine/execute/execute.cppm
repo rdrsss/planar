@@ -409,29 +409,29 @@ public:
   /// @param raw The decoded document. Copied in (the C++ tree has no
   /// arena-borrow lifetime to preserve — `RawSchema`'s Zig doc's "borrows
   /// from the Parsed arena" caveat does not apply here).
-  explicit bin_schema(raw_schema raw) : raw_(std::move(raw)) {
+  explicit bin_schema(raw_schema raw) : _raw(std::move(raw)) {
   }
 
   /// @return The binary root name (e.g. `"planar-agent"`).
   [[nodiscard]] auto root() const -> std::string const& {
-    return raw_.root;
+    return _raw.root;
   }
 
   /// @return The schema format version.
   [[nodiscard]] auto schema_version() const -> std::uint32_t {
-    return raw_.schema_version;
+    return _raw.schema_version;
   }
 
   /// @return The full flat command list.
   [[nodiscard]] auto commands() const -> std::vector<command_entry> const& {
-    return raw_.commands;
+    return _raw.commands;
   }
 
   /// @brief Look up a command by its full path string.
   /// @param full_path e.g. `"planar-agent complete"`.
   /// @return A pointer into `commands()`, or `nullptr` when absent.
   [[nodiscard]] auto find_command(std::string_view full_path) const -> command_entry const* {
-    for (auto const& cmd : raw_.commands) {
+    for (auto const& cmd : _raw.commands) {
       if (cmd.command == full_path) {
         return &cmd;
       }
@@ -440,7 +440,7 @@ public:
   }
 
 private:
-  raw_schema raw_;
+  raw_schema _raw;
 };
 
 /// @brief Parse `<bin> schema`'s stdout.

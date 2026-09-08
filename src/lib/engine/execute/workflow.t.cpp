@@ -55,25 +55,25 @@ auto run(std::string_view source, std::string_view phase = "p") -> outcome {
 class scratch {
 public:
   scratch()
-      : path_(std::filesystem::temp_directory_path() /
+      : _path(std::filesystem::temp_directory_path() /
               std::format("planar_execute_wf_{}", std::chrono::steady_clock::now().time_since_epoch().count())) {
     std::error_code ec;
-    std::filesystem::create_directories(path_, ec);
+    std::filesystem::create_directories(_path, ec);
   }
   scratch(scratch const&)                    = delete;
   auto operator=(scratch const&) -> scratch& = delete;
   ~scratch() {
     std::error_code ec;
-    std::filesystem::remove_all(path_, ec);
+    std::filesystem::remove_all(_path, ec);
   }
   /// @brief The directory.
   /// @return Its path.
   [[nodiscard]] auto path() const -> std::filesystem::path const& {
-    return path_;
+    return _path;
   }
 
 private:
-  std::filesystem::path path_;
+  std::filesystem::path _path;
 };
 
 } // namespace

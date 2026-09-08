@@ -71,10 +71,10 @@ constexpr std::uint64_t k_slice_ns = 100'000'000ULL; // 100ms
 class wake_source {
 public:
   explicit wake_source(std::filesystem::path db_path)
-      : wal_path_(db_path.string() + "-wal"),
-        dir_path_(db_path.has_parent_path() ? db_path.parent_path() : std::filesystem::path(".")) {
+      : _wal_path(db_path.string() + "-wal"),
+        _dir_path(db_path.has_parent_path() ? db_path.parent_path() : std::filesystem::path(".")) {
 #if defined(PLANAR_WATCH_FOLLOW_KQUEUE)
-    kq_ = kqueue();
+    _kq = kqueue();
     try_attach_dir();
 #elif defined(PLANAR_WATCH_FOLLOW_INOTIFY)
     inotify_fd_ = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
@@ -100,14 +100,14 @@ public:
   }
 
 private:
-  std::string           wal_path_;
-  std::filesystem::path dir_path_;
+  std::string           _wal_path;
+  std::filesystem::path _dir_path;
 
 #if defined(PLANAR_WATCH_FOLLOW_KQUEUE)
-  int  kq_           = -1;
-  int  wal_fd_       = -1;
-  int  dir_fd_       = -1;
-  bool fresh_attach_ = false;
+  int  _kq           = -1;
+  int  _wal_fd       = -1;
+  int  _dir_fd       = -1;
+  bool _fresh_attach = false;
 
   /// @brief Open the `-wal`'s parent directory (best-effort) and register
   /// an `EVFILT_VNODE` watch for `NOTE_WRITE` — fires the instant a
@@ -117,21 +117,21 @@ private:
   /// at construction. See the class doc "The attach-race fix" for why
   /// this is necessary at all.
   auto try_attach_dir() -> void {
-    if (kq_ < 0 || dir_fd_ >= 0)
+    if (_kq < 0 || _dir_fd >= 0)
       return;
 #if defined(O_EVTONLY)
-    int const fd = ::open(dir_path_.c_str(), O_RDONLY | O_EVTONLY | O_CLOEXEC);
+    int const fd = ::open(_dir_path.c_str(), O_RDONLY | O_EVTONLY | O_CLOEXEC);
 #else
-    int const fd = ::open(dir_path_.c_str(), O_RDONLY | O_CLOEXEC);
+    int const fd = ::open(_dir_path.c_str(), O_RDONLY | O_CLOEXEC);
 #endif
     if (fd < 0)
       return;
-    dir_fd_ = fd;
+    _dir_fd = fd;
     struct kevent ev{};
-    EV_SET(&ev, static_cast<std::uintptr_t>(dir_fd_), EVFILT_VNODE, EV_ADD | EV_CLEAR, NOTE_WRITE, 0, nullptr);
-    if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
-      ::close(dir_fd_);
-      dir_fd_ = -1;
+    EV_SET(&ev, static_cast<std::uintptr_t>(_dir_fd), EVFILT_VNODE, EV_ADD | EV_CLEAR, NOTE_WRITE, 0, nullptr);
+    if (kevent(_kq, &ev, 1, nullptr, 0, nullptr) < 0) {
+      ::close(_dir_fd);
+      _dir_fd = -1;
     }
   }
 
@@ -139,22 +139,22 @@ private:
   /// only creates it on the first write) and register an `EVFILT_VNODE`
   /// watch for writes, extends, and rotation (delete/rename).
   auto try_attach() -> void {
-    if (kq_ < 0 || wal_fd_ >= 0)
+    if (_kq < 0 || _wal_fd >= 0)
       return;
 #if defined(O_EVTONLY)
-    int const fd = ::open(wal_path_.c_str(), O_RDONLY | O_EVTONLY | O_CLOEXEC);
+    int const fd = ::open(_wal_path.c_str(), O_RDONLY | O_EVTONLY | O_CLOEXEC);
 #else
-    int const fd = ::open(wal_path_.c_str(), O_RDONLY | O_CLOEXEC);
+    int const fd = ::open(_wal_path.c_str(), O_RDONLY | O_CLOEXEC);
 #endif
     if (fd < 0)
       return;
-    wal_fd_ = fd;
+    _wal_fd = fd;
     struct kevent ev{};
-    EV_SET(&ev, static_cast<std::uintptr_t>(wal_fd_), EVFILT_VNODE, EV_ADD | EV_CLEAR,
+    EV_SET(&ev, static_cast<std::uintptr_t>(_wal_fd), EVFILT_VNODE, EV_ADD | EV_CLEAR,
            NOTE_WRITE | NOTE_EXTEND | NOTE_DELETE | NOTE_RENAME, 0, nullptr);
-    if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
-      ::close(wal_fd_);
-      wal_fd_ = -1;
+    if (kevent(_kq, &ev, 1, nullptr, 0, nullptr) < 0) {
+      ::close(_wal_fd);
+      _wal_fd = -1;
       return;
     }
     // Just transitioned from "not attached" to "attached": a write that
@@ -162,23 +162,23 @@ private:
     // registration is invisible to the edge-triggered watch. Surface a
     // synthetic wal_changed so the caller re-queries and catches it (the
     // "attach-gap race", plan 85 t#2623).
-    fresh_attach_ = true;
+    _fresh_attach = true;
   }
 
   auto wait_next_kqueue(std::uint64_t timeout_ns) -> wake_event {
-    if (kq_ < 0)
+    if (_kq < 0)
       return wait_next_degraded(timeout_ns);
-    if (wal_fd_ < 0)
+    if (_wal_fd < 0)
       try_attach();
-    if (dir_fd_ < 0)
+    if (_dir_fd < 0)
       try_attach_dir();
-    if (fresh_attach_) {
-      fresh_attach_ = false;
+    if (_fresh_attach) {
+      _fresh_attach = false;
       return wake_event::wal_changed;
     }
     // Single wait covers whichever of {wal fd, dir fd} is currently
-    // registered on kq_ — kqueue reports an event from ANY filter
-    // attached to this kq, so there is no need to branch on wal_fd_'s
+    // registered on _kq — kqueue reports an event from ANY filter
+    // attached to this kq, so there is no need to branch on _wal_fd's
     // state here. This is what closes the attach-race: the directory
     // watch is already live (registered at construction), so a `-wal`
     // creation that happens entirely within a one-shot writer's brief
@@ -188,20 +188,20 @@ private:
     ts.tv_sec  = static_cast<time_t>(timeout_ns / 1'000'000'000ULL);
     ts.tv_nsec = static_cast<long>(timeout_ns % 1'000'000'000ULL);
     struct kevent out{};
-    int const     n = kevent(kq_, nullptr, 0, &out, 1, &ts);
+    int const     n = kevent(_kq, nullptr, 0, &out, 1, &ts);
     if (n < 0)
       return errno == EINTR ? wake_event::interrupted : wake_event::heartbeat;
     if (n == 0)
       return wake_event::heartbeat;
-    if (wal_fd_ >= 0 && out.ident == static_cast<std::uintptr_t>(wal_fd_)) {
+    if (_wal_fd >= 0 && out.ident == static_cast<std::uintptr_t>(_wal_fd)) {
       if ((out.fflags & (NOTE_DELETE | NOTE_RENAME)) != 0u) {
         // Rotation: the sibling was unlinked/renamed out from under us
         // (e.g. PRAGMA wal_checkpoint(TRUNCATE), or a one-shot writer's
         // own close-time cleanup). Drop the stale fd; the next
         // wait_next call re-attaches (and surfaces the synthetic
         // wal_changed for the attach-gap race above).
-        ::close(wal_fd_);
-        wal_fd_ = -1;
+        ::close(_wal_fd);
+        _wal_fd = -1;
       }
       return wake_event::wal_changed;
     }
@@ -212,10 +212,10 @@ private:
     // the caller's re-query is the meaningful side effect either way,
     // and a spurious re-query on an unrelated directory write is
     // harmless.
-    if (wal_fd_ < 0)
+    if (_wal_fd < 0)
       try_attach();
-    if (fresh_attach_)
-      fresh_attach_ = false;
+    if (_fresh_attach)
+      _fresh_attach = false;
     return wake_event::wal_changed;
   }
 #endif
@@ -243,7 +243,7 @@ private:
   auto try_attach_dir() -> void {
     if (inotify_fd_ < 0 || dir_wd_ >= 0)
       return;
-    int const wd = ::inotify_add_watch(inotify_fd_, dir_path_.c_str(), IN_CREATE);
+    int const wd = ::inotify_add_watch(inotify_fd_, _dir_path.c_str(), IN_CREATE);
     if (wd < 0)
       return;
     dir_wd_ = wd;
@@ -252,14 +252,14 @@ private:
   auto try_attach() -> void {
     if (inotify_fd_ < 0 || watch_fd_ >= 0)
       return;
-    int const wd = ::inotify_add_watch(inotify_fd_, wal_path_.c_str(), IN_MODIFY | IN_DELETE_SELF | IN_MOVE_SELF);
+    int const wd = ::inotify_add_watch(inotify_fd_, _wal_path.c_str(), IN_MODIFY | IN_DELETE_SELF | IN_MOVE_SELF);
     if (wd < 0)
       return;
     watch_fd_     = wd;
-    fresh_attach_ = true;
+    _fresh_attach = true;
   }
 
-  bool fresh_attach_ = false;
+  bool _fresh_attach = false;
 
   auto wait_next_inotify(std::uint64_t timeout_ns) -> wake_event {
     if (inotify_fd_ < 0)
@@ -268,8 +268,8 @@ private:
       try_attach();
     if (dir_wd_ < 0)
       try_attach_dir();
-    if (fresh_attach_) {
-      fresh_attach_ = false;
+    if (_fresh_attach) {
+      _fresh_attach = false;
       return wake_event::wal_changed;
     }
     struct pollfd pfd{.fd = inotify_fd_, .events = POLLIN, .revents = 0};
@@ -322,17 +322,17 @@ private:
 
   auto close_all() -> void {
 #if defined(PLANAR_WATCH_FOLLOW_KQUEUE)
-    if (wal_fd_ >= 0) {
-      ::close(wal_fd_);
-      wal_fd_ = -1;
+    if (_wal_fd >= 0) {
+      ::close(_wal_fd);
+      _wal_fd = -1;
     }
-    if (dir_fd_ >= 0) {
-      ::close(dir_fd_);
-      dir_fd_ = -1;
+    if (_dir_fd >= 0) {
+      ::close(_dir_fd);
+      _dir_fd = -1;
     }
-    if (kq_ >= 0) {
-      ::close(kq_);
-      kq_ = -1;
+    if (_kq >= 0) {
+      ::close(_kq);
+      _kq = -1;
     }
 #endif
 #if defined(PLANAR_WATCH_FOLLOW_INOTIFY)

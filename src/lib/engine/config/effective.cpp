@@ -304,13 +304,13 @@ auto assoc_str(const toml_map& file_map, std::optional<std::string_view> slug, s
 } // namespace
 
 auto env_view::get(std::string_view name) const -> std::optional<std::string> {
-  if (auto it = vars_.find(name); it != vars_.end()) {
+  if (auto it = _vars.find(name); it != _vars.end()) {
     return it->second.empty() ? std::nullopt : std::optional<std::string>{it->second};
   }
   // A from_lookup() view answers from its delegate, with the same
   // empty-is-unset rule the map and process arms apply.
-  if (lookup_) {
-    auto value = lookup_(name);
+  if (_lookup) {
+    auto value = _lookup(name);
     if (!value.has_value() || value->empty()) {
       return std::nullopt;
     }
@@ -318,9 +318,9 @@ auto env_view::get(std::string_view name) const -> std::optional<std::string> {
   }
   // Fall back to the real process environment ONLY for from_process()
   // views. empty(), the explicit-map constructor and from_lookup() all
-  // leave consult_process_env_ false, so a hermetic view stays hermetic on
+  // leave _consult_process_env false, so a hermetic view stays hermetic on
   // a miss instead of silently reading the developer's real environment.
-  if (!consult_process_env_) {
+  if (!_consult_process_env) {
     return std::nullopt;
   }
   const char* raw = std::getenv(std::string(name).c_str()); // NOLINT(concurrency-mt-unsafe) — single-threaded CLI startup path.

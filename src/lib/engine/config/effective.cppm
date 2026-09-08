@@ -213,17 +213,17 @@ public:
   using lookup_fn = std::function<std::optional<std::string>(std::string_view)>;
 
 private:
-  std::map<std::string, std::string, std::less<>> vars_;
-  /// Whether `get()` falls back to `std::getenv` on a `vars_` miss. Always
+  std::map<std::string, std::string, std::less<>> _vars;
+  /// Whether `get()` falls back to `std::getenv` on a `_vars` miss. Always
   /// `false` for `empty()`, the explicit-map constructor and
   /// `from_lookup()` — the whole point of all three is hermeticity — and
   /// `true` only for `from_process()`.
-  bool consult_process_env_ = false;
-  /// The delegate installed by `from_lookup()`, consulted on a `vars_`
+  bool _consult_process_env = false;
+  /// The delegate installed by `from_lookup()`, consulted on a `_vars`
   /// miss and before the (disabled) process fallback. Empty otherwise.
-  lookup_fn lookup_;
+  lookup_fn _lookup;
 
-  explicit env_view(bool consult_process_env) : consult_process_env_(consult_process_env) {
+  explicit env_view(bool consult_process_env) : _consult_process_env(consult_process_env) {
   }
 
 public:
@@ -233,7 +233,7 @@ public:
   /// falls back to the real process environment on a miss — a test that
   /// wants a specific var absent must be able to trust that absence.
   /// @param vars The "NAME" → value pairs this view reports.
-  explicit env_view(std::map<std::string, std::string, std::less<>> vars) : vars_(std::move(vars)) {
+  explicit env_view(std::map<std::string, std::string, std::less<>> vars) : _vars(std::move(vars)) {
   }
 
   /// @brief A view reporting no variables at all — the "no env" test case.
@@ -278,7 +278,7 @@ public:
   /// @return A view reading through `lookup`, never `std::getenv`.
   static auto from_lookup(lookup_fn lookup) -> env_view {
     env_view view{/*consult_process_env=*/false};
-    view.lookup_ = std::move(lookup);
+    view._lookup = std::move(lookup);
     return view;
   }
 

@@ -17,6 +17,21 @@ Checks: >
   -*,
   readability-identifier-naming
 CheckOptions:
+  # LEADING underscore on private/protected data members: `_timeout`, never
+  # `timeout_`. OPERATOR-DECIDED at task 6577, and the codebase was brought
+  # to it in the same change (17 members across 7 files renamed).
+  #
+  # This rule arrived from tabula at M0 (decision D16) and, being advisory,
+  # never gated anything — so the M1/M3/M4 engine ports were written against
+  # it in the trailing style while the later cmd/ext ports happened to match
+  # it, and `lib/db/db.cppm` ended up carrying both. The rule is unchanged;
+  # what changed is that the code now agrees with it and CLAUDE.md § C++
+  # Style states it, so the next reader does not have to infer it.
+  #
+  # Public members — including every field of a plain `struct`, which is most
+  # of this codebase — are bare snake_case and fall through to VariableCase.
+  # Task 6438 removed tabula's PublicMemberSuffix rule for exactly that
+  # reason; do not reintroduce a suffix rule here.
   - key: readability-identifier-naming.PrivateMemberPrefix
     value: '_'
   - key: readability-identifier-naming.ProtectedMemberPrefix

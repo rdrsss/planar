@@ -58,27 +58,27 @@ auto shape_of(std::initializer_list<std::string_view> tokens) -> pc::parsed_args
 class scratch_db {
 public:
   scratch_db()
-      : dir_(std::filesystem::temp_directory_path() /
+      : _dir(std::filesystem::temp_directory_path() /
              std::format("planar_cli_log_{}", std::chrono::steady_clock::now().time_since_epoch().count())) {
     std::error_code ec;
-    std::filesystem::create_directories(dir_, ec);
+    std::filesystem::create_directories(_dir, ec);
   }
   scratch_db(const scratch_db&)                    = delete;
   auto operator=(const scratch_db&) -> scratch_db& = delete;
   ~scratch_db() {
     std::error_code ec;
-    std::filesystem::remove_all(dir_, ec);
+    std::filesystem::remove_all(_dir, ec);
   }
 
   /// @brief The database path.
   /// @return Its path.
   [[nodiscard]] auto path() const -> std::filesystem::path {
-    return dir_ / "planar.db";
+    return _dir / "planar.db";
   }
   /// @brief The scratch directory.
   /// @return Its path.
   [[nodiscard]] auto dir() const -> const std::filesystem::path& {
-    return dir_;
+    return _dir;
   }
 
   /// @brief Open and migrate the database.
@@ -91,7 +91,7 @@ public:
   }
 
 private:
-  std::filesystem::path dir_;
+  std::filesystem::path _dir;
 };
 
 /// @brief Every `verb_path` and `args_shape` currently in the table, joined

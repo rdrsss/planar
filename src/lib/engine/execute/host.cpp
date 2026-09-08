@@ -254,7 +254,7 @@ class json_reader {
 public:
   /// @brief Construct over the document text.
   /// @param text The JSON.
-  explicit json_reader(std::string_view text) : text_(text) {
+  explicit json_reader(std::string_view text) : _text(text) {
   }
 
   /// @brief Parse the whole document and leave exactly one value on the
@@ -264,33 +264,33 @@ public:
     skip_ws();
     push_value(L, 0);
     skip_ws();
-    if (pos_ != text_.size()) {
+    if (_pos != _text.size()) {
       fail("host returned non-JSON output");
     }
   }
 
 private:
-  std::string_view text_;
-  std::size_t      pos_ = 0;
+  std::string_view _text;
+  std::size_t      _pos = 0;
 
   auto skip_ws() -> void {
-    while (pos_ < text_.size() && (text_[pos_] == ' ' || text_[pos_] == '\t' || text_[pos_] == '\n' || text_[pos_] == '\r')) {
-      ++pos_;
+    while (_pos < _text.size() && (_text[_pos] == ' ' || _text[_pos] == '\t' || _text[_pos] == '\n' || _text[_pos] == '\r')) {
+      ++_pos;
     }
   }
 
   auto peek() const -> char {
-    if (pos_ >= text_.size()) {
+    if (_pos >= _text.size()) {
       fail("host returned non-JSON output");
     }
-    return text_[pos_];
+    return _text[_pos];
   }
 
   auto expect(std::string_view literal) -> void {
-    if (text_.substr(pos_, literal.size()) != literal) {
+    if (_text.substr(_pos, literal.size()) != literal) {
       fail("host returned non-JSON output");
     }
-    pos_ += literal.size();
+    _pos += literal.size();
   }
 
   auto push_value(lua_State* L, int depth) -> void {
@@ -331,11 +331,11 @@ private:
   }
 
   auto push_object(lua_State* L, int depth) -> void {
-    ++pos_; // '{'
+    ++_pos; // '{'
     lua_createtable(L, 0, 0);
     skip_ws();
     if (peek() == '}') {
-      ++pos_;
+      ++_pos;
       return;
     }
     while (true) {
@@ -348,7 +348,7 @@ private:
       if (peek() != ':') {
         fail("host returned non-JSON output");
       }
-      ++pos_;
+      ++_pos;
       skip_ws();
       push_value(L, depth + 1);
       // A JSON null value would push nil, which erases the key rather than
@@ -358,11 +358,11 @@ private:
       lua_settable(L, -3);
       skip_ws();
       if (peek() == ',') {
-        ++pos_;
+        ++_pos;
         continue;
       }
       if (peek() == '}') {
-        ++pos_;
+        ++_pos;
         return;
       }
       fail("host returned non-JSON output");
@@ -370,11 +370,11 @@ private:
   }
 
   auto push_array(lua_State* L, int depth) -> void {
-    ++pos_; // '['
+    ++_pos; // '['
     lua_createtable(L, 0, 0);
     skip_ws();
     if (peek() == ']') {
-      ++pos_;
+      ++_pos;
       return;
     }
     lua_Integer index = 1;
@@ -385,11 +385,11 @@ private:
       ++index;
       skip_ws();
       if (peek() == ',') {
-        ++pos_;
+        ++_pos;
         continue;
       }
       if (peek() == ']') {
-        ++pos_;
+        ++_pos;
         return;
       }
       fail("host returned non-JSON output");
@@ -405,13 +405,13 @@ private:
     if (peek() != '"') {
       fail("host returned non-JSON output");
     }
-    ++pos_;
+    ++_pos;
     std::string out;
     while (true) {
-      if (pos_ >= text_.size()) {
+      if (_pos >= _text.size()) {
         fail("host returned non-JSON output");
       }
-      char const c = text_[pos_++];
+      char const c = _text[_pos++];
       if (c == '"') {
         return out;
       }
@@ -419,10 +419,10 @@ private:
         out.push_back(c);
         continue;
       }
-      if (pos_ >= text_.size()) {
+      if (_pos >= _text.size()) {
         fail("host returned non-JSON output");
       }
-      switch (char const esc = text_[pos_++]) {
+      switch (char const esc = _text[_pos++]) {
       case '"':
         out.push_back('"');
         break;
@@ -458,12 +458,12 @@ private:
   }
 
   auto read_hex4() -> std::uint32_t {
-    if (pos_ + 4 > text_.size()) {
+    if (_pos + 4 > _text.size()) {
       fail("host returned non-JSON output");
     }
     std::uint32_t value = 0;
     for (int i = 0; i < 4; ++i) {
-      char const    c     = text_[pos_++];
+      char const    c     = _text[_pos++];
       std::uint32_t digit = 0;
       if (c >= '0' && c <= '9') {
         digit = static_cast<std::uint32_t>(c - '0');
@@ -485,10 +485,10 @@ private:
       return first;
     }
     // High surrogate: a low surrogate must follow, or the text is malformed.
-    if (text_.substr(pos_, 2) != "\\u") {
+    if (_text.substr(_pos, 2) != "\\u") {
       fail("host returned non-JSON output");
     }
-    pos_ += 2;
+    _pos += 2;
     std::uint32_t const second = read_hex4();
     if (second < 0xDC00 || second > 0xDFFF) {
       fail("host returned non-JSON output");
@@ -515,23 +515,23 @@ private:
   }
 
   auto push_number(lua_State* L) -> void {
-    std::size_t const start = pos_;
-    if (pos_ < text_.size() && (text_[pos_] == '-' || text_[pos_] == '+')) {
-      ++pos_;
+    std::size_t const start = _pos;
+    if (_pos < _text.size() && (_text[_pos] == '-' || _text[_pos] == '+')) {
+      ++_pos;
     }
     bool floating = false;
-    while (pos_ < text_.size()) {
-      char const c = text_[pos_];
+    while (_pos < _text.size()) {
+      char const c = _text[_pos];
       if (c >= '0' && c <= '9') {
-        ++pos_;
+        ++_pos;
       } else if (c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') {
         floating = floating || (c == '.' || c == 'e' || c == 'E');
-        ++pos_;
+        ++_pos;
       } else {
         break;
       }
     }
-    std::string_view const token = text_.substr(start, pos_ - start);
+    std::string_view const token = _text.substr(start, _pos - start);
     if (token.empty()) {
       fail("host returned non-JSON output");
     }
@@ -914,17 +914,17 @@ auto run_git(host_state& hs, std::vector<std::string> const& git_args) -> std::s
 class confined_parent {
 public:
   confined_parent() = default;
-  confined_parent(int fd, std::string leaf) : fd_(fd), leaf_(std::move(leaf)) {
+  confined_parent(int fd, std::string leaf) : _fd(fd), _leaf(std::move(leaf)) {
   }
   confined_parent(confined_parent const&)                    = delete;
   auto operator=(confined_parent const&) -> confined_parent& = delete;
-  confined_parent(confined_parent&& other) noexcept : fd_(std::exchange(other.fd_, -1)), leaf_(std::move(other.leaf_)) {
+  confined_parent(confined_parent&& other) noexcept : _fd(std::exchange(other._fd, -1)), _leaf(std::move(other._leaf)) {
   }
   auto operator=(confined_parent&& other) noexcept -> confined_parent& {
     if (this != &other) {
       reset();
-      fd_   = std::exchange(other.fd_, -1);
-      leaf_ = std::move(other.leaf_);
+      _fd   = std::exchange(other._fd, -1);
+      _leaf = std::move(other._leaf);
     }
     return *this;
   }
@@ -935,23 +935,23 @@ public:
   /// @brief The directory descriptor.
   /// @return The fd.
   [[nodiscard]] auto fd() const -> int {
-    return fd_;
+    return _fd;
   }
   /// @brief The final path component.
   /// @return The leaf name.
   [[nodiscard]] auto leaf() const -> std::string const& {
-    return leaf_;
+    return _leaf;
   }
 
 private:
   auto reset() -> void {
-    if (fd_ >= 0) {
-      ::close(fd_);
-      fd_ = -1;
+    if (_fd >= 0) {
+      ::close(_fd);
+      _fd = -1;
     }
   }
-  int         fd_ = -1;
-  std::string leaf_;
+  int         _fd = -1;
+  std::string _leaf;
 };
 
 /// @brief Why a confined open failed.
@@ -1642,23 +1642,23 @@ auto report_lua_error(lua_State* L, std::string_view stage, std::ostream& err) -
 /// @brief A `lua_State` that closes itself.
 class lua_state_handle {
 public:
-  lua_state_handle() : state_(luaL_newstate()) {
+  lua_state_handle() : _state(luaL_newstate()) {
   }
   lua_state_handle(lua_state_handle const&)                    = delete;
   auto operator=(lua_state_handle const&) -> lua_state_handle& = delete;
   ~lua_state_handle() {
-    if (state_ != nullptr) {
-      lua_close(state_);
+    if (_state != nullptr) {
+      lua_close(_state);
     }
   }
   /// @brief The state.
   /// @return The pointer, null when creation failed.
   [[nodiscard]] auto get() const -> lua_State* {
-    return state_;
+    return _state;
   }
 
 private:
-  lua_State* state_ = nullptr;
+  lua_State* _state = nullptr;
 };
 
 /// @brief Build a state with the sandbox and the host surface installed,
