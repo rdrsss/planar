@@ -28,9 +28,11 @@
 // gotten wrong once and must never be gotten wrong again — the pinned
 // environment. See `run_pinned`.
 //
-// SKIP, not fail, when an oracle binary is absent: `zig/zig-out/bin/*` are
-// build artifacts, not checked-in files. Same posture src/lib/db/migrate.t.cpp
-// already takes (D6: the zig/ tree is the parity oracle until M10).
+// The SKIP-when-the-oracle-is-absent posture this header used to describe is
+// GONE with its subject: `zig/` was deleted at the M10 cutover (task 6045)
+// and `PLANAR_REQUIRE_ORACLE` / `parity_strict.hpp` went with it. Nothing
+// here skips any more, and the expected ctest skip tally is ZERO — a nonzero
+// one means a NEW skip was introduced, not an unbuilt oracle.
 #pragma once
 
 #include <sys/wait.h>
@@ -252,11 +254,27 @@ inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::st
 /// not load-bearing for correctness.
 ///
 /// Streams go to `work/<tag>.out` / `work/<tag>.err` directly rather than
-/// through the `cat` pipe `run_pinned` uses. That pipe defends the ZIG
-/// runtime's positional-write corruption (see above); a detached child cannot
-/// be piped without leaving `cat` processes to reap, and every binary this
-/// launcher is used with is a C++ one whose `std::ostream` writes are
-/// sequential. Do not point this at a `zig/zig-out/bin/*` binary.
+/// through the `cat` pipe `run_pinned` uses. That pipe defended the Zig
+/// runtime's positional-write corruption (see above) and is now vestigial —
+/// `zig/` was deleted at the M10 cutover (task 6045) and no such binary
+/// exists to point this at. It is kept here only because a detached child
+/// cannot be piped without leaving `cat` processes to reap, which is a
+/// reason of its own.
+///
+/// REAPING IS THE CALLER'S SCRIPT'S JOB, AND NOTHING ENFORCES IT. This
+/// returns `void`: no pid, no handle, so a caller that backgrounds a binary
+/// directly instead of through a self-reaping driver has no way to stop it,
+/// and `make_arena`'s destructor removes the directory out from under a
+/// process that keeps running. `cross_process.t.cpp`'s driver does this
+/// correctly — `kill -INT "$WPID"` then `wait` before it writes its `done`
+/// sentinel — and that is the pattern to copy.
+///
+/// The failure mode is not hypothetical. During task 6547's development a
+/// PROTOTYPE launcher (not the committed test) left a driver script and a
+/// `planar-watch feed --follow` running for NINE AND A HALF HOURS, polling a
+/// scratch database every 200ms and quietly loading every measurement taken
+/// in that window. It was found by `ps`, not by any gate. If you are
+/// prototyping against this, reap what you start.
 /// @param bin The binary to run.
 /// @param args The arguments.
 /// @param work The scratch root; `work/proj` is also the working directory.
