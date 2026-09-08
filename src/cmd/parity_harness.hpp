@@ -77,6 +77,29 @@ inline auto shell_quote(std::string_view value) -> std::string {
   return quoted;
 }
 
+/// @brief The `env VAR=... ` prefix every pinned invocation runs behind.
+///
+/// EXTRACTED, NOT COPIED (plan 996, task 6547). `run_pinned` below and
+/// `launch_pinned_detached` further down must pin the SAME set of roots, and
+/// the whole point of this header's existence is that the set lives in one
+/// place. A second spelling of it is the exact defect the `run_pinned`
+/// comment above spends forty lines warning about: a redirect that misses one
+/// root writes into the operator's live state while every assertion still
+/// passes. So the map is built here once and both entry points consume it.
+/// @param work The scratch root.
+/// @return A shell fragment ending in a trailing space, ready for a binary.
+inline auto pinned_env_prefix(const std::filesystem::path& work) -> std::string {
+  std::string child = "env";
+  child += std::format(" PLANAR_DB={}", shell_quote((work / "planar.db").string()));
+  child += std::format(" PLANAR_HOME={}", shell_quote((work / "home").string()));
+  child += std::format(" PLANAR_CONFIG_PATH={}", shell_quote((work / "config.toml").string()));
+  child += std::format(" PLANAR_LOCAL_HOME={}", shell_quote((work / "localhome").string()));
+  child += std::format(" PLANAR_WORKBENCH_ROOT={}", shell_quote((work / "workbench").string()));
+  child += std::format(" HOME={}", shell_quote((work / "fakehome").string()));
+  child += std::format(" PWD={} ", shell_quote((work / "proj").string()));
+  return child;
+}
+
 /// @brief Run `bin` with `args` inside `work`, under an environment pinned
 /// entirely to `work`.
 ///
@@ -173,14 +196,7 @@ inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::st
   std::error_code discard;
   std::filesystem::remove(code_path, discard);
 
-  std::string child = "env";
-  child += std::format(" PLANAR_DB={}", shell_quote((work / "planar.db").string()));
-  child += std::format(" PLANAR_HOME={}", shell_quote((work / "home").string()));
-  child += std::format(" PLANAR_CONFIG_PATH={}", shell_quote((work / "config.toml").string()));
-  child += std::format(" PLANAR_LOCAL_HOME={}", shell_quote((work / "localhome").string()));
-  child += std::format(" PLANAR_WORKBENCH_ROOT={}", shell_quote((work / "workbench").string()));
-  child += std::format(" HOME={}", shell_quote((work / "fakehome").string()));
-  child += std::format(" PWD={} ", shell_quote((work / "proj").string()));
+  std::string child = pinned_env_prefix(work);
   child += shell_quote(bin.string());
   for (auto const& arg : args) {
     child += " " + shell_quote(arg);
@@ -207,6 +223,85 @@ inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::st
     code = parsed;
   }
   return capture{.code = code, .out = read_all(out_path), .err = read_all(err_path)};
+}
+
+/// @brief Start `bin` with `args` inside `work` under the same pinned
+/// environment `run_pinned` uses, and return WITHOUT waiting for it.
+///
+/// WHY A SECOND ENTRY POINT EXISTS AT ALL (plan 996, task 6547, decision
+/// 1035). `run_pinned` is synchronous, and a synchronous runner cannot
+/// express the one thing the Zig integration suite covers that no in-process
+/// test can reach: several real processes contending on one database while a
+/// fourth watches. That scenario needs a parent that is still executing while
+/// the children run — to release a barrier and to sample a clock AT the event
+/// rather than after the fact.
+///
+/// THE PROCESS MODEL IS `/bin/sh`, NOT C++. Catch2 has none, and this header
+/// is not the place to grow one. The caller writes a driver script, launches
+/// it here, and the script owns backgrounding and `wait`. The C++ side owns
+/// only the two things it must own: dropping the barrier file, and taking the
+/// timestamps. That split is deliberate — task 6544 is the standing example
+/// of a latency assertion that measured the wrong interval because the sample
+/// was taken while parsing an already-complete log instead of at the event.
+///
+/// DETERMINISM. Nothing here waits on a sleep-and-hope. The caller polls the
+/// filesystem for an explicit sentinel with a bounded deadline and fails
+/// loudly when it expires, and every invariant asserted downstream
+/// (exactly-once claiming, per-worker exit status, event ordering) holds for
+/// ANY interleaving — the barrier only widens the contention window, it is
+/// not load-bearing for correctness.
+///
+/// Streams go to `work/<tag>.out` / `work/<tag>.err` directly rather than
+/// through the `cat` pipe `run_pinned` uses. That pipe defends the ZIG
+/// runtime's positional-write corruption (see above); a detached child cannot
+/// be piped without leaving `cat` processes to reap, and every binary this
+/// launcher is used with is a C++ one whose `std::ostream` writes are
+/// sequential. Do not point this at a `zig/zig-out/bin/*` binary.
+/// @param bin The binary to run.
+/// @param args The arguments.
+/// @param work The scratch root; `work/proj` is also the working directory.
+/// @param tag A discriminator so each launch gets its own capture files.
+inline auto launch_pinned_detached(const std::filesystem::path& bin, std::span<const std::string> args,
+                                   const std::filesystem::path& work, std::string_view tag) -> void {
+  std::string child = pinned_env_prefix(work);
+  child += shell_quote(bin.string());
+  for (auto const& arg : args) {
+    child += " " + shell_quote(arg);
+  }
+
+  // The whole pipeline runs inside `( ... ) &` so the outer `sh` this
+  // `std::system` call spawns exits at once and `std::system` returns.
+  std::string const line = std::format("( cd {} && {} > {} 2> {} ) &", shell_quote((work / "proj").string()), child,
+                                       shell_quote((work / std::format("{}.out", tag)).string()),
+                                       shell_quote((work / std::format("{}.err", tag)).string()));
+  static_cast<void>(std::system(line.c_str()));
+}
+
+/// @brief Poll for `path` to exist (and, when `nonempty`, to have bytes) and
+/// return the steady-clock instant at which it did.
+///
+/// THE RETURNED INSTANT IS SAMPLED AT THE EVENT. That is the entire reason
+/// this is a function and not an inline loop: task 6544's wake-latency
+/// assertion read its timestamp while parsing a log that had already been
+/// fully written, so the interval it reported was the whole scenario's
+/// duration and it failed only under load. A caller that wants "how long
+/// after X did Y first appear" must take both samples at X and at Y, and this
+/// returns the second one.
+/// @param path The sentinel to wait for.
+/// @param nonempty Require a non-zero size, not merely existence.
+/// @param budget How long to wait before giving up.
+/// @return The instant the condition first held, or nullopt on timeout.
+inline auto await_sentinel(const std::filesystem::path& path, bool nonempty, std::chrono::milliseconds budget)
+    -> std::optional<std::chrono::steady_clock::time_point> {
+  auto const deadline = std::chrono::steady_clock::now() + budget;
+  while (std::chrono::steady_clock::now() <= deadline) {
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec) && (!nonempty || std::filesystem::file_size(path, ec) > 0)) {
+      return std::chrono::steady_clock::now();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return std::nullopt;
 }
 
 /// @brief A pair of scratch roots — one per binary — seeded identically.

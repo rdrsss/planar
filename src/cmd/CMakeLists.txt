@@ -35,3 +35,35 @@ add_subdirectory(planar-agent)
 add_subdirectory(planar-watch)
 add_subdirectory(planar-execute)
 add_subdirectory(planar-ext)
+
+# --- cross-binary black-box coverage (plan 996, task 6547, decision 1035) ---
+#
+# `planar/cross_process.t.cpp` ports the part of the Zig integration suite
+# that no in-process test can reach: several REAL processes contending on one
+# database while a fourth watches, and every built binary's ability to START
+# at all (task 6536 — a solver-ON build produced a `planar` that died at
+# dyld with exit 134 while all 3,422 in-process tests passed).
+#
+# It therefore needs the paths of its four SIBLING binaries, which is why the
+# block lives here rather than in `planar/CMakeLists.txt`: at that point in
+# the configure the sibling targets do not exist yet, so `add_dependencies`
+# below would FATAL.
+#
+# THIS CREATES NO `cmd_* -> cmd_*` LINK EDGE, and that distinction is what
+# keeps D18 satisfied. cmake/architecture.cmake's walk reads exactly two
+# target properties — LINK_LIBRARIES and INTERFACE_LINK_LIBRARIES. A compile
+# definition carrying a `$<TARGET_FILE:...>` path is a string, and
+# add_dependencies() is an order-only build edge; neither appears in either
+# property. The test target still only ever LINKS its own binary's modules.
+if(TARGET planar_cmd_planar_tests)
+  target_compile_definitions(planar_cmd_planar_tests PRIVATE
+    "PLANAR_AGENT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
+    "PLANAR_WATCH_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_watch>\""
+    "PLANAR_EXECUTE_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_execute>\""
+    "PLANAR_EXT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_ext>\"")
+  add_dependencies(planar_cmd_planar_tests
+    planar_cmd_planar_agent
+    planar_cmd_planar_watch
+    planar_cmd_planar_execute
+    planar_cmd_planar_ext)
+endif()
