@@ -33,7 +33,10 @@
 // only comparable when two readers share one database. With one
 // implementation there is no second reader; a normalizer permissive enough
 // to pin it against a fresh run would mask the rendering regressions the
-// case existed to catch. Task 6545 carries the replacement rendering pin.
+// case existed to catch. `readpin.t.cpp` beside this file carries the
+// replacement (task 6545): it freezes the fixture's volatile COLUMNS after
+// seeding through the CLI, so the six verbs' rendered bytes become literals
+// with nothing blanked.
 
 #include <catch2/catch_test_macros.hpp>
 
