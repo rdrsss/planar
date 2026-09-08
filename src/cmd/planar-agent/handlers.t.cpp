@@ -333,7 +333,7 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // EXACTLY (trailing spaces included) rather than loosened to a
   // `contains` check. Task 6123 re-baselined these bytes from the oracle's
   // renderer onto CLI11's; the reason to pin them did not change.
-  CHECK(leaf_help.out == "Print the planar-agent version, commit, and zig runtime.\n"
+  CHECK(leaf_help.out == "Print the planar-agent version, commit, and C++ toolchain.\n"
                          "\n"
                          "\n"
                          "version [OPTIONS]\n"

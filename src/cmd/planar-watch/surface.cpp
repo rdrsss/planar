@@ -428,7 +428,7 @@ auto surface_nodes() -> std::vector<node_spec> {
        .positionals = {},
        .group       = false},
       {.path        = k_path_9,
-       .description = "Print the planar-watch version, commit, and zig runtime.",
+       .description = "Print the planar-watch version, commit, and C++ toolchain.",
        .flags       = {},
        .positionals = {},
        .group       = false},
@@ -474,7 +474,7 @@ auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_vi
       {"planar-watch run list", "List workflow runs (filterable by plan, status, and source arm)."},
       {"planar-watch run show", "Show one workflow run plus its context_records grouped by stage."},
       {"planar-watch sync-events", "List sync_events rows with optional filters (read-only)."},
-      {"planar-watch version", "Print the planar-watch version, commit, and zig runtime."},
+      {"planar-watch version", "Print the planar-watch version, commit, and C++ toolchain."},
       {"planar-watch completion", "Generate the autocompletion script for the specified shell."},
       {"planar-watch schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals)."},
   };

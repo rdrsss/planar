@@ -166,7 +166,7 @@ export auto workspace_routing_show(context& ctx, const cliapp::parsed_args& args
 ///
 /// ## `--enrich` is an accepted no-op, and its warning goes to STDOUT
 ///
-/// The oracle prints `warning: --enrich is not yet implemented in Zig;
+/// The oracle prints `warning: --enrich is not yet implemented;
 /// skipping enrichment pass` on STDOUT — not stderr — and only when `--json`
 /// is absent. `enrich_enabled` and `enrich_misses` are hardcoded `false` and
 /// `0` in the JSON arm regardless. All three captured. Reproduced as-is

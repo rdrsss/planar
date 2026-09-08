@@ -515,7 +515,7 @@ auto workspace_routing_build(context& ctx, const cliapp::parsed_args& args) -> h
   // The warning precedes the result line and goes to STDOUT, not stderr.
   // Both captured.
   if (flag_bool(args, "--enrich")) {
-    ctx.out() << "warning: --enrich is not yet implemented in Zig; skipping enrichment pass\n";
+    ctx.out() << "warning: --enrich is not yet implemented; skipping enrichment pass\n";
   }
   ctx.out() << std::format("built {} ({} projects, {} cross-repo deps)\n", path, projects, edges);
   return {};

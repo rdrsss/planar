@@ -1289,7 +1289,7 @@ TEST_CASE("workspace routing show renders a decoded table", "[cmd][handlers][par
 //     exit 0, stdout b'{"path":"<path>","projects":3,"dependency_edges":2,
 //                       "enrich_enabled":false,"enrich_misses":0}\n'
 //   $Z workspace routing build --enrich
-//     exit 0, stdout b'warning: --enrich is not yet implemented in Zig;
+//     exit 0, stdout b'warning: --enrich is not yet implemented;
 //                       skipping enrichment pass\nbuilt <path> (...)\n'
 //     -- the warning is on STDOUT, and it PRECEDES the result line
 //   $Z workspace routing build --enrich --json
@@ -1451,7 +1451,7 @@ TEST_CASE("workspace routing build --enrich warns on STDOUT, before the result, 
   CHECK(text.code == 0);
   // STDOUT, not stderr — stderr stays empty.
   CHECK(text.err.empty());
-  CHECK(text.out == std::format("warning: --enrich is not yet implemented in Zig; skipping enrichment pass\n"
+  CHECK(text.out == std::format("warning: --enrich is not yet implemented; skipping enrichment pass\n"
                                 "built {} (0 projects, 0 cross-repo deps)\n",
                                 expected));
 

@@ -523,7 +523,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // A bare `planar` must render root help rather than fail.
   app->require_subcommand(0);
 
-  app->add_subcommand("version", "Print the planar version, commit, and zig runtime.");
+  app->add_subcommand("version", "Print the planar version, commit, and C++ toolchain.");
   add_workflow(*app);
   add_annotate(*app);
   add_unlink(*app);

@@ -112,7 +112,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
                                         "planar-agent");
   app->require_subcommand(0);
 
-  app->add_subcommand("version", "Print the planar-agent version, commit, and zig runtime.");
+  app->add_subcommand("version", "Print the planar-agent version, commit, and C++ toolchain.");
 
   // --- pull ---------------------------------------------------------------
   CLI::App* pull = app->add_subcommand("pull", "Atomically pick the next eligible task, claim it, and flip status to doing.");

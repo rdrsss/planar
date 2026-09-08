@@ -935,7 +935,7 @@ constexpr positional_spec k_pos_2[] = {
 auto surface_nodes() -> std::vector<node_spec> {
   return {
       {.path        = k_path_0,
-       .description = "Print the planar-agent version, commit, and zig runtime.",
+       .description = "Print the planar-agent version, commit, and C++ toolchain.",
        .flags       = {},
        .positionals = {},
        .group       = false},
@@ -1081,7 +1081,7 @@ auto surface_nodes() -> std::vector<node_spec> {
 auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_view> const> {
   static constexpr std::pair<std::string_view, std::string_view> k_summaries[] = {
       {"planar-agent", "Agent-callable coordination binary (pull / claim / complete / heartbeat / reconcile)."},
-      {"planar-agent version", "Print the planar-agent version, commit, and zig runtime."},
+      {"planar-agent version", "Print the planar-agent version, commit, and C++ toolchain."},
       {"planar-agent pull", "Atomically pick the next eligible task, claim it, and flip status to doing."},
       {"planar-agent peek", "Read-only what's-next selector (same query as pull, no writes)."},
       {"planar-agent complete", "Atomically end the work session: task → done, claim → completed."},

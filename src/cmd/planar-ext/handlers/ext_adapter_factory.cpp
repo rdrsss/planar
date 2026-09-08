@@ -218,13 +218,13 @@ auto factory_error_message(factory_error err, const engine::external::system::ex
   case factory_error::gh_cli_empty_token:
     return error_from_body(domain_error_kind::invalid_input, "gh-cli auth: `gh auth token` returned empty output");
   case factory_error::unsupported_system_kind:
-    // "in the zig port" is the ORACLE'S wording and is reproduced verbatim
-    // even though this binary is not the zig port. parity.t.cpp diffs these
-    // bytes against the oracle, so "correcting" the sentence would BREAK
-    // parity rather than improve it. It is a wording item for after M10
-    // deletes zig/, not a port-time fix.
-    return error_from_body(domain_error_kind::invalid_input, std::format("system kind '{}' is not supported in the zig port",
-                                                                         system_ns::system_kind_to_text(sys.kind)));
+    // Was `... is not supported in the zig port`, reproduced verbatim from
+    // the oracle while parity.t.cpp diffed these bytes against it. The
+    // oracle is gone (task 6045), the sentence named a tree that no longer
+    // exists, and this is the post-cutover correction the wording item
+    // (task 6264) was held open for.
+    return error_from_body(domain_error_kind::invalid_input,
+                           std::format("system kind '{}' is not supported", system_ns::system_kind_to_text(sys.kind)));
   }
   return error_from_body(domain_error_kind::generic_failure, "ext test: building adapter");
 }

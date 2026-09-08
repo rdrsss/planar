@@ -214,7 +214,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_int(*forest, "--root-session", "Scope output to one session's subtree (session id)");
   add_follow(*forest, "Stream re-renders until SIGINT", "Poll interval for --follow (default 1s; e.g. 100ms)");
 
-  app->add_subcommand("version", "Print the planar-watch version, commit, and zig runtime.");
+  app->add_subcommand("version", "Print the planar-watch version, commit, and C++ toolchain.");
 
   CLI::App* completion = app->add_subcommand("completion", "Generate the autocompletion script for the specified shell.");
   completion->add_option("shell")->description("Shell: bash, zsh, or fish")->required();
