@@ -610,7 +610,7 @@ TEST_CASE("the conflict evidence blob matches the captured oracle bytes in shape
   REQUIRE(conflict.context_json.has_value());
   auto const& blob = *conflict.context_json;
 
-  auto const [_, __, updated_at] = read_task(fixture.conn, fixture.task_id);
+  auto const [ignored_title, ignored_status, updated_at] = read_task(fixture.conn, fixture.task_id);
   auto const token = sync_ns::evidence_token(fixture.row.id, "Local edit", "doing", updated_at, "Remote edit 2", "blocked",
                                              "2026-07-13T15:00:00Z");
 
@@ -660,7 +660,7 @@ auto seed_conflict(rig& fixture, stub_adapter& provider) -> seeded_conflict {
 
   auto const events = sync_ns::events_for_link(fixture.conn, fixture.row.id);
   REQUIRE(events.has_value());
-  auto const [_, __, updated_at] = read_task(fixture.conn, fixture.task_id);
+  auto const [ignored_title, ignored_status, updated_at] = read_task(fixture.conn, fixture.task_id);
   return {.event_id = events->back().id,
           .token    = sync_ns::evidence_token(fixture.row.id, "Local edit", "doing", updated_at, "Remote edit 2", "blocked",
                                               "2026-07-13T15:00:00Z"),
@@ -794,8 +794,8 @@ TEST_CASE("D5: guard 4 — a versionless provider can never authorize a resoluti
   REQUIRE(sync_ns::pull_link(fixture.conn, fixture.row, provider).has_value());
   fixture.reload();
 
-  auto const events              = sync_ns::events_for_link(fixture.conn, fixture.row.id);
-  auto const [_, __, updated_at] = read_task(fixture.conn, fixture.task_id);
+  auto const events                                      = sync_ns::events_for_link(fixture.conn, fixture.row.id);
+  auto const [ignored_title, ignored_status, updated_at] = read_task(fixture.conn, fixture.task_id);
   auto const token = sync_ns::evidence_token(fixture.row.id, "Local edit", "doing", updated_at, "Remote edit 2", "blocked", "");
 
   auto const refused =

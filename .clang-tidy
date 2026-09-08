@@ -46,4 +46,37 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.TypeTemplateParameterCase
     value: CamelCase
+
+  # ---------------------------------------------------------------------
+  # Task 6439: two conventions this codebase holds DELIBERATELY, which
+  # `lower_case` rejects categorically. Both were measured, not assumed —
+  # together they were 111 of the 114 distinct findings (97%), the same
+  # config/codebase disagreement shape task 6438 found in the inherited
+  # `PublicMemberSuffix` rule. Renaming to satisfy the rule would make the
+  # code worse in both cases.
+  #
+  # 1. `L` — the Lua C API's universal name for `lua_State*`. 48 findings,
+  #    all in engine/execute/host.cpp. Every Lua binding and every page of
+  #    upstream Lua documentation calls it `L`; `l` would break that
+  #    recognizability for a naming rule's benefit.
+  #
+  # 2. A TRAILING UNDERSCORE, which here is FORCED rather than chosen.
+  #    `namespace import_ = engine::local::import_;` exists because
+  #    `import` is a C++20 keyword and cannot name a namespace. `is_`,
+  #    `profile_`, `run_`, `tier_`, `code_`, `error_` and friends
+  #    disambiguate an alias, parameter or member against a type or member
+  #    of the same name. The pattern is anchored (`..._$`) so it permits a
+  #    trailing underscore and nothing else — a leading underscore stays a
+  #    private/protected member per the Prefix rules above, and a DOUBLE
+  #    underscore anywhere stays an error, which is correct: it is reserved
+  #    to the implementation by [lex.name]/3. Three such variables were
+  #    real defects and were renamed in this same change.
+  - key: readability-identifier-naming.ParameterIgnoredRegexp
+    value: '^(L|[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_)$'
+  - key: readability-identifier-naming.VariableIgnoredRegexp
+    value: '^(L|[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_)$'
+  - key: readability-identifier-naming.NamespaceIgnoredRegexp
+    value: '^[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_$'
+  - key: readability-identifier-naming.EnumConstantIgnoredRegexp
+    value: '^[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_$'
 ...
