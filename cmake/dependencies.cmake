@@ -533,7 +533,27 @@ CPMAddPackage(
   SYSTEM YES
   PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/mtkahypar-vendor-network.patch"
   OPTIONS
-    "CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE}"
+    # ALWAYS Release, even under a Debug Planar build (task 6425).
+    #
+    # This dependency was built at ${CMAKE_BUILD_TYPE}, which made a 311MB
+    # DEBUG `libmtkahypar.dylib`, and dyld maps it on EVERY exec of `planar`.
+    # Measured on one quiet machine, three binaries from the SAME Debug
+    # build, so build type is controlled out and the only variable is
+    # whether the binary links this library:
+    #
+    #     planar         36M   links mtkahypar   573 ms/spawn
+    #     planar-agent   10M   no                 25 ms/spawn
+    #     planar-watch  9.5M   no                 22 ms/spawn
+    #
+    # 23x, paid by every black-box case that execs `planar` — and
+    # `cmd_planar` is 83% of the ctest suite's wall time.
+    #
+    # Safe because the seam is a C ABI: `mtkahypar.h` is confined to
+    # `src/lib/engine/grouping/mtkahypar.cpp`'s translation unit, and the
+    # pinned toolchain enables no libc++ hardening or _GLIBCXX_DEBUG mode
+    # that would change a layout across the boundary. Nobody debugs into
+    # this library; it is SYSTEM and EXCLUDE_FROM_ALL for the same reason.
+    "CMAKE_BUILD_TYPE Release"
     "KAHYPAR_ENABLE_TESTING OFF"
     "KAHYPAR_INSTALL_CLI OFF"
     "KAHYPAR_DOWNLOAD_TBB OFF"
