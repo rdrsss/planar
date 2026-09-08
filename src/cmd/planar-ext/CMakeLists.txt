@@ -70,6 +70,7 @@ planar_binary(planar_ext
     handlers/sync.cpp
     dispatch.cpp
   DEPENDS
+    core
     cliapp
     db
     adapter

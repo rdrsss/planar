@@ -23,5 +23,6 @@ planar_module(engine_introspection_adapters
   INTERFACE introspection_adapters.cppm
   SOURCES introspection_adapters.cpp
   DEPENDS
+    core
     json_dom
     introspection_preview)

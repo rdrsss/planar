@@ -23,6 +23,7 @@ module;
 module planar.cmd.planar_ext.handlers.ext_adapter_factory;
 
 import std;
+import planar.core.check;
 import planar.process;
 import planar.adapter;
 import planar.http;
@@ -186,20 +187,20 @@ auto adapter_handle::create_issue(std::string_view owner, std::string_view repo,
   // GitHub-only: the parent-issue strategy never builds a handle over a
   // Jira system, so `_kind` is always `github` here. See this method's
   // header.
-  assert(_kind == adapter_kind::github);
+  check(_kind == adapter_kind::github, "_kind == adapter_kind::github");
   return static_cast<const engine::extsync::github::github_adapter&>(*_adapter).create_issue(owner, repo, title, body, labels);
 }
 
 auto adapter_handle::link_sub_issue(std::string_view owner, std::string_view repo, std::int64_t parent_number,
                                     std::int64_t child_number) const -> std::expected<void, adapter::adapter_error> {
-  assert(_kind == adapter_kind::github);
+  check(_kind == adapter_kind::github, "_kind == adapter_kind::github");
   return static_cast<const engine::extsync::github::github_adapter&>(*_adapter).link_sub_issue(owner, repo, parent_number,
                                                                                                child_number);
 }
 
 auto adapter_handle::link_sub_issue_probe(std::string_view owner, std::string_view repo) const
     -> std::expected<void, adapter::adapter_error> {
-  assert(_kind == adapter_kind::github);
+  check(_kind == adapter_kind::github, "_kind == adapter_kind::github");
   return static_cast<const engine::extsync::github::github_adapter&>(*_adapter).link_sub_issue_probe(owner, repo);
 }
 

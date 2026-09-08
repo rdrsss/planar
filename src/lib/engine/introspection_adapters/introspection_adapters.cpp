@@ -2,13 +2,10 @@
 /// @brief Implementation of `planar.engine.introspection_adapters` (plan
 /// 996, tasks 6102 and 6352). See introspection_adapters.cppm for scope.
 
-module;
-
-#include <cassert>
-
 module planar.engine.introspection_adapters;
 
 import std;
+import planar.core.check;
 import planar.json_dom;
 import planar.introspection_preview;
 
@@ -801,7 +798,7 @@ auto collect_preview(std::span<const raw_source> sources) -> preview {
         break;
       }
     }
-    assert(coverage_accounted(cov));
+    check(coverage_accounted(cov), "coverage_accounted(cov)");
     coverage.push_back(cov);
   }
 
