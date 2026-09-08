@@ -608,6 +608,39 @@ target-specific commands.
 - [ ] No references to files that have been renamed or deleted (grep for
       all file paths cited in changed documents).
 
+## Failures that impersonate regressions
+
+Some failures are environmental, look exactly like a code regression, and
+invite a reflex that makes things worse. Three cost real debugging time in
+this repo before anyone checked the environment instead of the diff (tasks
+6311, 6315, 6350). **Check the environment before you bisect.**
+
+| Signature | Actual cause | The tell |
+|-----------|--------------|----------|
+| Mass `conn.has_value() == false`, reading as a database-layer regression | Disk exhaustion — the suite had leaked temp arenas until the volume filled (task 6311) | `df` the volume. A real DB regression does not fail every connection in the suite at once. |
+| Exit 138, zero diagnostics, reading as "the known flake" | A doxygen SIGBUS retry loop masking a genuine failure — it hid one three times (task 6315) | Signal death is not a lint verdict. Distinguish a signal exit from a non-zero *diagnostic* exit before retrying. |
+| `39 failed`, large `NOT_BUILT` population | Two builds racing in one build directory; `clang-scan-deps` lost a temp-file rename to a concurrent ninja (task 6350) | **Which exit code is non-zero.** `BUILD_EXIT != 0` with `NOT_BUILT` tests means the suite never ran. A real regression gives `CTEST_EXIT != 0` with *named* failing tests. |
+
+The third one generalizes past its own signature, and that is the part worth
+carrying forward. A historical variant — two `test-parity-cpp` runs sharing
+one `.zig-cache`, both since deleted at the M10 cutover — built cleanly, ran,
+and reported `276 CRASH` out of 652 where the truth on the same commit was 18.
+There was **no exit-code tell at all**, and the reflex it invited was not
+re-running but bisecting, or reverting a merge that was never at fault.
+
+So do not treat the `BUILD_EXIT` tell as the general rule. It is the tell for
+one variant. The general rule is the operational one:
+
+**One build at a time per build directory.** That covers `make cpp-lint`
+(it builds) against `ctest` (it builds), either against
+`scripts/break-probe.sh` (it rebuilds per mutation), and any of those against
+an orchestrator running its own verification in the same worktree. The last is
+the one that actually bit: the coder and the orchestrator were both running
+gates against one tree. Pick one — either the lane reports its number and the
+orchestrator re-measures after merge on a quiet tree, or the orchestrator
+tells the lane not to run the gate at all. See also
+[Probes come before gates, and never beside them](#probes-come-before-gates-and-never-beside-them).
+
 ## Break-probe discipline
 
 A break-probe is the standing evidence that a new test discriminates:
