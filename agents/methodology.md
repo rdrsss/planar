@@ -654,6 +654,24 @@ which enforces all five checks around one probe and reports
 `killed` (exit 0) / `SURVIVOR` (exit 1) / `INERT` (exit 3), with exit 2
 reserved for a broken probe. Prefer it over a hand-run sequence.
 
+### Probes come before gates, and never beside them
+
+Break-probes are the one piece of evidence only the coder can produce; the
+validation gates are reproducible by anyone downstream. Ordering them the
+other way round is what actually loses the evidence. A full gate pass here is
+roughly 25 minutes, so a coder that runs gates in the foreground and blocks
+runs out of turn before it reaches its probes — five coder stops across tasks
+6339 and 6343 were all that shape (task 6346). The orchestrator then inherits
+tests with unproven discriminating power, and on 6339 the reviewer ran the
+probe itself: the right outcome from the wrong role, because a reviewer judges
+evidence rather than manufacturing it.
+
+Run probes first, then background the long gates and keep working. Do NOT run
+the two concurrently against one build directory: a probe rebuilds, the suite
+reads what it rebuilt, and the resulting failures look real while carrying no
+exit-code tell (task 6350). Give the probes their own build directory or
+sequence them strictly before the suite starts.
+
 ## Dispatch Granularity
 
 Tasks created by the ingestor are deliberately fine-grained: one roadmap bullet → one task row. That granularity is correct for *tracking* but is often wrong as a coder→reviewer iteration unit — eight tasks that all touch the same helper file are naturally a single PR, not eight separate review cycles. Conversely, some users want strict one-task-per-commit history for easy bisect and rollback. The right shape is a per-feature judgement call, not a fixed policy.
