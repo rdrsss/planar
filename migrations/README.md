@@ -2,7 +2,7 @@
 
 SQL schema migrations for Planar. Authored in plain SQL, applied with
 [`sqlx-cli`](https://github.com/launchbadge/sqlx/tree/main/sqlx-cli) at
-operational time and embedded into the Zig binary at build time.
+operational time and embedded into the binary at build time.
 
 ## File format
 
@@ -65,12 +65,14 @@ This creates the next-numbered up/down pair. Edit the files, then run the
 up/down/up roundtrip test before committing:
 
 ```bash
-cd src-zig && zig build test
+make test
 ```
 
-The build pipeline auto-discovers new migrations via the codegen step in
-`src-zig/build.zig` (`tools/gen_migrations.zig`). No manual manifest
-update is required.
+The build pipeline auto-discovers new migrations via configure-time CMake
+codegen (`cmake/generate_migrations.cmake`), which `#embed`s each up/down
+pair into the generated `planar.db.migrations` module. Its `file(GLOB
+CONFIGURE_DEPENDS)` re-runs configure when the set changes, so no manual
+manifest update is required.
 
 ## Applying migrations
 
@@ -80,13 +82,20 @@ update is required.
 sqlx migrate run --source migrations --database-url sqlite://./planar.db
 ```
 
-**Inside the Zig binary** (`src-zig/src/db/migrate.zig`):
+**Inside the binary** (`src/lib/db/migrate.cppm`) — `planar init` owns
+migration; the other binaries consume an already-migrated database and
+deliberately do NOT call `apply_all` (see `src/cmd/planar-agent/context.cpp`
+and `src/cmd/planar-ext/context.cpp`):
 
-```zig
-const db = @import("db");
-var conn = try db.sqlite.Db.open("planar.db");
-defer conn.close();
-try db.migrate.applyAll(&conn, allocator);
+```cpp
+import planar.db;
+import planar.db.migrate;
+
+// The convenience overload applies planar::db::migrations() — the real
+// embedded chain. Every fallible boundary returns std::expected.
+if (auto applied = db::apply_all(conn); !applied) {
+  return std::unexpected(applied.error());
+}
 ```
 
 The binary embeds every up and down SQL string at compile time, so it has
@@ -97,14 +106,17 @@ no runtime dependency on the `migrations/` directory.
 - **Linter** — `.sqlfluff` at the repo root pins dialect to `sqlite` and
   enforces lowercase keywords / 2-space indent. Run `sqlfluff lint
   migrations/` to check.
-- **Test** — `src-zig/src/db/migrate.zig` contains the up/down/up roundtrip
-  test that runs under `zig build test`.
+- **Test** — `src/lib/db/migrate.t.cpp` contains the up/down/up roundtrip
+  test, which runs under `make test` (ctest) against the real embedded
+  migrations.
 
 ## Why this layout
 
-- `migrations/` at the repo root (not under `src-zig/`) keeps SQL out of
-  the Zig source tree and matches sqlx-cli's default expectation. See the
-  rationale captured in this session's design discussion.
+- `migrations/` at the repo root keeps SQL out of the C++ source tree and
+  matches sqlx-cli's default expectation. It sat at the root under the Zig
+  implementation for the same reason, and survived the M10 cutover (task
+  6045) unchanged — the codegen that consumes it was swapped, not the
+  layout.
 - 5-digit zero-padded prefix leaves headroom past 9999 migrations and
   keeps every existing version visually aligned.
 - `.up.sql` / `.down.sql` pairs are sqlx-cli's reversible-migration

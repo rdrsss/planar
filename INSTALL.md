@@ -169,7 +169,7 @@ make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + 
 
 For dev-mode install where edits to the source repo are picked up live by the binary's siblings (skills, agents, commands) and vendor surfaces, use `./install.sh --link`. Note that binary edits still require a rebuild (`make build` or re-running `install.sh`).
 
-**Developer-only note.** The Zig implementation this project ported from remains buildable under `zig/` strictly as the port's parity oracle (`zig build`, `zig build test`, `zig build test-integration`) — it is not part of the shipped toolchain, is not required to build or install Planar, and `install.sh` never touches it. See [docs/toolchain-parity.md](docs/toolchain-parity.md) and `CLAUDE.md`'s Source Layout section if you need to work with it.
+**Developer-only note.** The Zig implementation this project ported from is GONE. It lived under `zig/` as the port's parity oracle and was deleted at the M10 cutover (task 6045) once decision 963/982's evidence conditions were met. Nothing here builds, tests, installs, or lints against it; its history is in `git log`.
 
 For authoring or inspecting migrations:
 
