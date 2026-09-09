@@ -575,6 +575,42 @@ TEST_CASE("spec ingest --apply rolls back every planning write after a mid-apply
 // --strict
 // ===========================================================================
 
+// Task 6664, closing the other live member of the gate blind spot class task
+// 6661 catalogued: `declare_spec`'s trailing `ingest->add_option("extra-plans")
+// ->expected(0, -1)->group("")` (handlers/spec_ingest.cpp) is hidden from
+// help AND the schema catalog by the empty group — `cliapp::walk.cppm`'s
+// visibility rule prunes anything in it — so `make surface-check` cannot see
+// whether the line exists at all. Wave 6's Probe C deleted it and the gate
+// stayed clean at 312 points with all 3430 cases passing (`grep -rn
+// extra-plans src/` finds only the handler and its own comments) while
+// operator behaviour genuinely changed: extra positional plan names stopped
+// reaching the handler and CLI11 rejected them itself instead.
+//
+//     with the option:     every plan name — first AND every extra — reaches
+//                          spec_ingest and is looked up
+//     without the option:  `error: ingest: The following arguments were not
+//                          expected: <extras...>` (CLI11's own refusal)
+//
+// This case proves the FIRST behaviour by using plan names that do not
+// exist: each one must produce its own `not found` line, which only happens
+// if `cliapp::positional_strings(args, "extra-plans")` actually received
+// them. A version of this case that used real plans would still pass if the
+// extras were silently dropped, since `spec ingest <plan>` alone succeeds —
+// using guaranteed-missing names makes every extra's arrival independently
+// observable.
+TEST_CASE("spec ingest accepts the trailing hidden `extra-plans` positional and reaches the handler with all of them",
+          "[cmd][spec][ingest][extra-plans]") {
+  auto const fx = make_fixture("extraplans");
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+
+  auto const res = dispatch(fx, {"spec", "ingest", "no-such-plan-1", "no-such-plan-2", "no-such-plan-3"});
+  CHECK(res.code != 0);
+  CHECK(res.err == "plan 'no-such-plan-1' not found: NotFound\n"
+                   "plan 'no-such-plan-2' not found: NotFound\n"
+                   "plan 'no-such-plan-3' not found: NotFound\n"
+                   "error: one or more plans failed to ingest\n");
+}
+
 TEST_CASE("spec ingest --strict refuses on an uncovered task slug", "[cmd][spec][ingest][strict]") {
   auto const fx = make_fixture("strict");
   REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);

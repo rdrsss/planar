@@ -418,6 +418,45 @@ TEST_CASE("use / pop / clear refuse at exit 2 WITHOUT opening SQLite", "[cmd][sc
   CHECK_FALSE(std::filesystem::exists(fx.db_path));
 }
 
+// Task 6664, closing the gate blind spot task 6661 found: `make
+// surface-check` hashes only the schema catalog and every `--help` page, and
+// `allow_extras` (cliapp/surface.cppm:98) appears in NEITHER — the catalog
+// emitter never writes it and no help renderer prints it. Task 6635's Probe C
+// deleted all three `set_allow_extras` calls in `declare_scope` and the gate
+// stayed clean at 312 points with every existing Catch2 case (including the
+// one just above) still passing, because that case never hands the three
+// verbs a token CLI11 itself would otherwise reject. THIS case does: an
+// unrecognized flag is exactly the shape `set_allow_extras` exists to
+// swallow before the handler's own `removed_in_m5` refusal ever gets a
+// chance to run.
+//
+//     with allow_extras:    the plan-153-M5 removal paragraph (below)
+//     without allow_extras: `error: <verb>: The following arguments were
+//                           not expected: --stack-name bar` (CLI11's own
+//                           message, not the handler's)
+//
+// Both refuse at exit 2, which is precisely why exit status cannot stand in
+// for the message: this case asserts the byte-for-byte paragraph, not just
+// "it failed".
+TEST_CASE("use / pop / clear swallow an unrecognized flag into the SAME removal paragraph",
+          "[cmd][scope][removed][allow_extras]") {
+  auto const fx = make_fixture("removed-extras");
+
+  for (auto const& verb : {"use", "pop", "clear"}) {
+    INFO("allow_extras leaf: scope " << verb);
+    auto const got = dispatch(fx, {"scope", std::string{verb}, "somescope", "--stack-name", "bar"});
+    CHECK(got.code == 2);
+    CHECK(got.out.empty());
+    CHECK(got.err == std::format("error: `planar scope {}` was removed in plan 153 M5; the active scope stack is gone. "
+                                 "Pass --scope <slug> to individual verbs, or cd into a registered scope. Run `planar "
+                                 "scope show` to inspect the cwd-derived scope.\n",
+                                 verb));
+    CHECK_FALSE(got.db_open);
+  }
+
+  CHECK_FALSE(std::filesystem::exists(fx.db_path));
+}
+
 TEST_CASE("reason_from_source maps the four known sources and passes anything else through", "[engine][scope][suggest][reason]") {
   namespace id = planar::engine::identity;
   // Literal expectations on both sides. Deriving either side from the
