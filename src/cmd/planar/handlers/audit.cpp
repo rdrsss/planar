@@ -5,6 +5,7 @@
 module planar.cmd.planar.handlers.audit;
 
 import std;
+import cli11;
 import planar.adapter;
 import planar.cliapp.args;
 import planar.db;
@@ -25,6 +26,7 @@ import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.scope;
 import planar.cmd.planar.handlers.ext_adapter_factory;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -1285,6 +1287,42 @@ auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> ha
   }
   ctx.out() << std::format("decision {} published: {} comment(s) posted\n", *decision_id, posted);
   return {};
+}
+
+auto declare_audit(CLI::App& root) -> void {
+  CLI::App* audit =
+      root.add_subcommand("audit", "Cross-plane audit trail commands.\n\n  Subcommands inspect external-link history, query "
+                                   "attributed session\n  commits, recompute decision publication targets, render session\n  "
+                                   "timelines, and walk the full audit trail for any external link.");
+  audit->require_subcommand(0);
+
+  CLI::App* trail = audit->add_subcommand(
+      "trail", "Show audit history for an entity (audit_log + entity_links) or an external link (external_links + sync_events).");
+  add_string(*trail, "--kind");
+  add_string(*trail, "--grep");
+  add_string(*trail, "--link", "External link id; switches to link-scoped (external_links + sync_events) form");
+  add_json(*trail);
+  add_positional_optional(*trail, "entity-id");
+
+  CLI::App* commits = audit->add_subcommand("commits", "List commits attributed to sessions and claims.");
+  add_int(*commits, "--session");
+  add_int(*commits, "--task");
+  add_json(*commits);
+  add_bool(*commits, "--shas");
+
+  CLI::App* session = audit->add_subcommand("session", "Show the timeline for a session.");
+  add_json(*session);
+  add_positional(*session, "session-id");
+
+  CLI::App* publish_decision =
+      audit->add_subcommand("publish-decision", "Post the decision body to linked operational-plane targets.");
+  add_string(*publish_decision, "--scope");
+  add_json(*publish_decision);
+  add_positional(*publish_decision, "decision-id");
+
+  CLI::App* handoff_readiness = audit->add_subcommand("handoff-readiness", "Check resume-readiness for all in-flight tasks.");
+  add_int_default(*handoff_readiness, "--threshold", "90");
+  add_json(*handoff_readiness);
 }
 
 } // namespace planar::cmd::handlers

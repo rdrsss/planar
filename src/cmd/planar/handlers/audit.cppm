@@ -127,6 +127,7 @@ module;
 export module planar.cmd.planar.handlers.audit;
 
 import std;
+import cli11;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
@@ -279,5 +280,19 @@ export auto audit_handoff_readiness(context& ctx, const cliapp::parsed_args& arg
 /// @return Success after posting (even when zero links exist to post to),
 /// or the load/scope refusal.
 export auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Declare the `audit` command tree on `root`.
+///
+/// The CLI declaration for every `audit` node, colocated with the
+/// `audit_*` handlers above (plan 1051, M11.3e — decision 1068). None was
+/// hand-declared in `tree.cpp`.
+///
+/// `trail`'s `--link` is the wave's one flag carrying its own description,
+/// and it is load-bearing rather than decorative: supplying it switches
+/// the verb from the entity-scoped form (`audit_log` + `entity_links`) to
+/// the link-scoped one (`external_links` + `sync_events`), which is what
+/// the help line states.
+/// @param root The root app to attach the `audit` group to.
+export auto declare_audit(CLI::App& root) -> void;
 
 } // namespace planar::cmd::handlers

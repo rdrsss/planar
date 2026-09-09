@@ -141,4 +141,18 @@ export auto entity_link_verb(context& ctx, const cliapp::parsed_args& args, engi
                              std::string_view id_positional, std::string_view id_label, std::string_view json_key,
                              std::string_view verb, bool unicode_arrow) -> handler_result;
 
+/// @brief Declare the `links` command tree on `root`.
+///
+/// The CLI declaration for every `links` node, colocated with the
+/// `links_*` handlers above (plan 1051, M11.3e — decision 1068). None was
+/// hand-declared in `tree.cpp`.
+///
+/// Distinct from the top-level `link` / `unlink` leaves, which live in
+/// `handlers/link.cpp` and `handlers/unlink.cpp` and address EXTERNAL
+/// ticket linkage; this group addresses internal `entity_links` rows. The
+/// two are neighbours in the catalog (`link` 15th, `unlink` 16th, `links`
+/// 17th) and the group's own description says so.
+/// @param root The root app to attach the `links` group to.
+export auto declare_links(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

@@ -485,4 +485,33 @@ auto declare_bench(CLI::App& root) -> void {
   add_positional(*show, "run-uid");
 }
 
+auto declare_run(CLI::App& root) -> void {
+  CLI::App* run = root.add_subcommand(
+      "run", "Record operational run traces emitted by workflows.\n\n  Arm defaults to 'op' (or the workflow name when "
+             "--workflow is given).\n  Statuses: running, completed, aborted, error.\n\n  Workflow: run start → run event "
+             "(repeat) → run finish → run show --json.\n\n  See `planar bench` for the measurement-rig surface "
+             "(strict/eligibility/\n  grouped arms, declared/actual touch tracking, git-diff harvest).");
+  run->require_subcommand(0);
+
+  CLI::App* start = run->add_subcommand("start", "Mint a new operational run record and print its run_uid as JSON.");
+  add_int_required(*start, "--plan");
+  add_string(*start, "--workflow");
+  add_json(*start);
+
+  CLI::App* event = run->add_subcommand("event", "Append a journal event to a run (seq auto-incremented).");
+  add_string_required(*event, "--kind");
+  add_string(*event, "--payload");
+  add_json(*event);
+  add_positional(*event, "run-uid");
+
+  CLI::App* finish = run->add_subcommand("finish", "Set the terminal status on a run.");
+  add_string_required(*finish, "--status");
+  add_json(*finish);
+  add_positional(*finish, "run-uid");
+
+  CLI::App* show = run->add_subcommand("show", "Show a run's full state (header + events).");
+  add_json(*show);
+  add_positional(*show, "run-uid");
+}
+
 } // namespace planar::cmd::handlers

@@ -66,4 +66,17 @@ export auto feedback_triage_show(context& ctx, const cliapp::parsed_args& args) 
 /// @return Success, or the failure to report.
 export auto feedback_triage_set(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `feedback` command tree on `root`.
+///
+/// The CLI declaration for every `feedback` node, colocated with the
+/// `feedback_*` handlers above (plan 1051, M11.3e — decision 1068). None
+/// was hand-declared in `tree.cpp`.
+///
+/// The wave's only NESTED group: `feedback` carries exactly one child,
+/// `triage`, which carries the three leaves. Both group levels are
+/// declared here as one contiguous list, because a group's sibling order
+/// is only correct when nothing else appends to it.
+/// @param root The root app to attach the `feedback` group to.
+export auto declare_feedback(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

@@ -15,6 +15,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.editor;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -588,6 +589,31 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
 
   ctx.out() << "config validate: ok\n";
   return {};
+}
+
+auto declare_config(CLI::App& root) -> void {
+  CLI::App* config = root.add_subcommand(
+      "config",
+      "Read, inspect, and validate the Planar configuration file.\n\n  The configuration file lives at ~/.planar/config.toml by "
+      "default.\n  Set $PLANAR_CONFIG_PATH to use a different path.\n  Resolution order (highest to lowest priority):\n    1. "
+      "Explicit --config-path flag\n    2. $PLANAR_CONFIG_PATH\n    3. ~/.planar/config.toml");
+  config->require_subcommand(0);
+
+  CLI::App* show = config->add_subcommand("show", "Print the resolved configuration.");
+  add_bool(*show, "--effective");
+  add_bool(*show, "--raw");
+  add_bool(*show, "--defaults");
+  add_string(*show, "--scope");
+  add_string_default(*show, "--format", "text");
+  add_json(*show);
+
+  config->add_subcommand("edit", "Edit the configuration file in $EDITOR.");
+
+  config->add_subcommand("validate", "Validate configuration file syntax.");
+
+  config->add_subcommand("init", "Initialize the configuration file.");
+
+  config->add_subcommand("path", "Show the configuration file path.");
 }
 
 } // namespace planar::cmd::handlers

@@ -11,14 +11,20 @@ import planar.cmd.planar.surface;
 import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.assoc;
 import planar.cmd.planar.handlers.artifact;
+import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.capture;
+import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.decision;
+import planar.cmd.planar.handlers.feedback;
 import planar.cmd.planar.handlers.handoff;
+import planar.cmd.planar.handlers.links;
+import planar.cmd.planar.handlers.local;
 import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.runs;
 import planar.cmd.planar.handlers.scenario;
+import planar.cmd.planar.handlers.scope;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.workbench;
@@ -197,14 +203,16 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // ORDER. While `surface.cpp` still holds entries, `apply_surface`'s
   // `reorder_children` pass below rewrites the root's child order from the
   // spec list, so these calls' position is not yet what the catalog shows --
-  // the fifteen retained ORDERING ANCHORS in `surface.cpp` are (see that
+  // the twenty-two retained ORDERING ANCHORS in `surface.cpp` are (see that
   // file). When the LAST wave deletes `surface.cpp` and with it the
   // `apply_surface` call, this call order becomes authoritative. The block
-  // below is ALREADY in catalog order among itself (assoc 3rd, plan 4th,
-  // task 5th, question 6th, scenario 7th, decision 8th, artifact 9th,
-  // annotate 10th, workbench 13th, workspace 14th, handoff 19th, capture
-  // 20th, models 23rd, templates 28th, bench 39th), so the last wave
-  // interleaves the remaining verbs into it rather than resequencing it.
+  // below is ALREADY in catalog order among itself (scope 2nd, assoc 3rd,
+  // plan 4th, task 5th, question 6th, scenario 7th, decision 8th,
+  // artifact 9th, annotate 10th, workbench 13th, workspace 14th, links
+  // 17th, handoff 19th, capture 20th, audit 21st, models 23rd, config
+  // 27th, templates 28th, local 31st, bench 39th, run 41st, feedback
+  // 45th), so the last wave interleaves the remaining verbs into it
+  // rather than resequencing it.
   //
   // WHAT EACH WAVE FOUND WHEN IT FOLDED, because the shape differs and the
   // difference is the interesting part:
@@ -234,6 +242,15 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   //           receive their three parent flags BEFORE their own here where
   //           `apply_surface` would append them after. The hand order is
   //           what ships, and the fold keeps it.
+  //   M11.3e  scope, audit, config, local, links, run, feedback. Wave 3's
+  //           shape again: NONE of its 39 nodes was hand-declared here,
+  //           verified by re-reading every `add_subcommand` call site
+  //           under `src/cmd/planar/` rather than assuming. `run` moved
+  //           into `handlers/runs.cpp` beside the `bench` group M11.3d
+  //           folded there, as its OWN function -- the two share an engine
+  //           but are separate top-level verbs at separate catalog
+  //           positions.
+  handlers::declare_scope(*app);
   handlers::declare_assoc(*app);
   handlers::declare_plan(*app);
   handlers::declare_task(*app);
@@ -244,11 +261,17 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_annotate(*app);
   handlers::declare_workbench(*app);
   handlers::declare_workspace(*app);
+  handlers::declare_links(*app);
   handlers::declare_handoff(*app);
   handlers::declare_capture(*app);
+  handlers::declare_audit(*app);
   handlers::declare_models(*app);
+  handlers::declare_config(*app);
   handlers::declare_templates(*app);
+  handlers::declare_local(*app);
   handlers::declare_bench(*app);
+  handlers::declare_run(*app);
+  handlers::declare_feedback(*app);
 
   app->add_subcommand("version", "Print the planar version, commit, and C++ toolchain.");
   add_workflow(*app);

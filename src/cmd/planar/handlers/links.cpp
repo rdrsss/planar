@@ -11,6 +11,7 @@ import planar.engine.entitylink;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -391,6 +392,32 @@ auto entity_link_verb(context& ctx, const cliapp::parsed_args& args, engine::ent
     ctx.out() << el::render_entity_link_text(subject_kind, *subject_id, *created, *rel_flag);
   }
   return {};
+}
+
+auto declare_links(CLI::App& root) -> void {
+  CLI::App* links = root.add_subcommand(
+      "links", "Manage internal cross-cutting entity_links relationships.\n\n  Entity links record typed relationships between "
+               "any two Planar\n  entities (e.g. a task cites an artifact, a plan blocks another\n  plan). This domain is "
+               "distinct from the top-level link/unlink\n  commands, which operate on external-system ticket linkage.");
+  links->require_subcommand(0);
+
+  CLI::App* add = links->add_subcommand("add", "Create an entity_links row between two entities.");
+  add_string_required(*add, "--relationship");
+  add_json(*add);
+  add_positional(*add, "from-ref");
+  add_positional(*add, "to-ref");
+
+  CLI::App* list = links->add_subcommand("list", "List entity_links where the given entity is source or target.");
+  add_json(*list);
+  add_positional(*list, "ref");
+
+  CLI::App* remove = links->add_subcommand("remove", "Delete an entity_links row by its id.");
+  add_json(*remove);
+  add_positional(*remove, "link-id");
+
+  CLI::App* trail = links->add_subcommand("trail", "Show the audit trail for an entity_links row.");
+  add_json(*trail);
+  add_positional(*trail, "link-id");
 }
 
 } // namespace planar::cmd::handlers

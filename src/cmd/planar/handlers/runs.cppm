@@ -182,4 +182,18 @@ export auto run_show(context& ctx, const cliapp::parsed_args& args) -> handler_r
 /// @param root The root app to attach the `bench` group to.
 export auto declare_bench(CLI::App& root) -> void;
 
+/// @brief Declare the `run` command tree on `root`.
+///
+/// The CLI declaration for every `run` node, colocated with the `run_*`
+/// handlers above (plan 1051, M11.3e — decision 1068). None was
+/// hand-declared in `tree.cpp`.
+///
+/// Separate from `declare_bench` on purpose. The two groups share this
+/// module because they share an engine, but they are separate top-level
+/// verbs at separate catalog positions (`bench` 39th, `run` 41st) with
+/// separate descriptions, and one function declaring both would have to
+/// be called twice from two places in the root's order.
+/// @param root The root app to attach the `run` group to.
+export auto declare_run(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

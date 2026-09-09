@@ -181,4 +181,21 @@ export auto config_init(context& ctx, const cliapp::parsed_args& args) -> handle
 /// database.
 export auto config_path(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `config` command tree on `root`.
+///
+/// The CLI declaration for every `config` node, colocated with the
+/// `config_*` handlers above (plan 1051, M11.3e — decision 1068). None was
+/// hand-declared in `tree.cpp`.
+///
+/// Four of the five leaves — `edit`, `validate`, `init`, `path` — declare
+/// NOTHING: no flag, not even `--json`. They are written without a local
+/// `CLI::App*` for that reason, since naming a pointer nothing then uses
+/// is a warning rather than documentation.
+///
+/// `show --format` carries the declared default `text` that the catalog
+/// reports; as config.cppm's header records, the handler ignores the flag's
+/// value. The declaration keeps it because the surface is the contract.
+/// @param root The root app to attach the `config` group to.
+export auto declare_config(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

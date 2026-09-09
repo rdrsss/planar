@@ -12,6 +12,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -343,6 +344,30 @@ auto scope_clear(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   static_cast<void>(ctx);
   static_cast<void>(args);
   return std::unexpected(removed_in_m5("scope clear"));
+}
+
+auto declare_scope(CLI::App& root) -> void {
+  CLI::App* scope = root.add_subcommand(
+      "scope", "Inspect the scope Planar will resolve for the current working\n  directory.\n\n  Plan 153 removed the active "
+               "scope stack; scope is now derived from\n  cwd and overridden by passing --scope <slug> to individual verbs.");
+  scope->require_subcommand(0);
+
+  CLI::App* show = scope->add_subcommand("show", "Show the cwd-derived scope (and any --scope override).");
+  add_string(*show, "--scope");
+  add_json(*show);
+
+  CLI::App* suggest = scope->add_subcommand("suggest", "Suggest scope associations based on cwd.");
+  add_json(*suggest);
+
+  CLI::App* use = scope->add_subcommand("use", "Removed in plan 153 M5 — see `planar scope show`.");
+  set_allow_extras(*use);
+  add_positional_optional(*use, "slug");
+
+  CLI::App* pop = scope->add_subcommand("pop", "Removed in plan 153 M5 — see `planar scope show`.");
+  set_allow_extras(*pop);
+
+  CLI::App* clear = scope->add_subcommand("clear", "Removed in plan 153 M5 — see `planar scope show`.");
+  set_allow_extras(*clear);
 }
 
 } // namespace planar::cmd::handlers

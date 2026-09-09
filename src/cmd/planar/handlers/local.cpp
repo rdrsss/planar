@@ -12,6 +12,7 @@ import planar.engine.local;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -296,6 +297,42 @@ auto local_migrate(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // byte for byte; preserved rather than corrected.
   ctx.out() << (cliapp::flag_bool(args, "--json") ? render::migrate_json(outcome) : render::migrate_text(outcome, dry_run));
   return {};
+}
+
+auto declare_local(CLI::App& root) -> void {
+  CLI::App* local = root.add_subcommand(
+      "local", "Manage the operator's local sandbox for personal skills and agents.\n\n  Authors a single source file per skill "
+               "or agent under\n  ~/.planar/local/ and creates per-vendor symlinks (with copy\n  fallback) into each vendor's "
+               "install directory.\n  Edits to the source file propagate immediately to every vendor.");
+  local->require_subcommand(0);
+
+  CLI::App* list = local->add_subcommand("list", "List locally-installed skills and agents.");
+  add_string(*list, "--vendor");
+  add_json(*list);
+
+  CLI::App* link = local->add_subcommand("link", "Create or reuse symlinks from vendor paths to local source.");
+  add_bool(*link, "--dry-run");
+  add_string(*link, "--vendor");
+  add_bool(*link, "--reconcile");
+  add_json(*link);
+  add_positional_optional(*link, "name");
+
+  CLI::App* unlink = local->add_subcommand("unlink", "Remove symlinks from vendor paths.");
+  add_bool(*unlink, "--purge");
+  add_json(*unlink);
+  add_positional(*unlink, "name");
+
+  CLI::App* import_leaf = local->add_subcommand("import", "Import a skill or agent from an external directory.");
+  add_string(*import_leaf, "--kind");
+  add_bool(*import_leaf, "--force");
+  add_bool(*import_leaf, "--dry-run");
+  add_bool(*import_leaf, "--no-link");
+  add_json(*import_leaf);
+  add_positional(*import_leaf, "path");
+
+  CLI::App* migrate = local->add_subcommand("migrate", "Migrate skills/agents to new Planar version.");
+  add_bool(*migrate, "--dry-run");
+  add_json(*migrate);
 }
 
 } // namespace planar::cmd::handlers

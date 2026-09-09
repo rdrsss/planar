@@ -17,8 +17,10 @@
 /// `annotate` and `workbench` (task 6632), then the drafting quartet
 /// `question`, `scenario`, `decision` and `artifact` (task 6633), then
 /// `assoc`, `workspace`, `handoff`, `capture`, `templates` and `bench`
-/// (task 6634); their entries are gone except for fifteen ORDERING ANCHORS
-/// in `surface_nodes()`, which that function's own comment explains. The
+/// (task 6634), then `scope`, `audit`, `config`, `local`, `links`, `run`
+/// and `feedback` (task 6635); their entries are gone except for
+/// twenty-two ORDERING ANCHORS in `surface_nodes()`, which that function's
+/// own comment explains. The
 /// LAST wave deletes this file once
 /// `surface_nodes()` is empty; `surface_summaries()`,
 /// `surface_empty_string_defaults()` and `unported_paths()` move to
@@ -85,48 +87,16 @@ constexpr std::string_view k_path_43[]  = {"groups"};
 constexpr std::string_view k_path_44[]  = {"explore"};
 constexpr std::string_view k_path_45[]  = {"workflow"};
 constexpr std::string_view k_path_46[]  = {"feedback"};
-constexpr std::string_view k_path_47[]  = {"scope", "show"};
-constexpr std::string_view k_path_48[]  = {"scope", "suggest"};
-constexpr std::string_view k_path_49[]  = {"scope", "use"};
-constexpr std::string_view k_path_50[]  = {"scope", "pop"};
-constexpr std::string_view k_path_51[]  = {"scope", "clear"};
-constexpr std::string_view k_path_166[] = {"links", "add"};
-constexpr std::string_view k_path_167[] = {"links", "list"};
-constexpr std::string_view k_path_168[] = {"links", "remove"};
-constexpr std::string_view k_path_169[] = {"links", "trail"};
 constexpr std::string_view k_path_174[] = {"resume", "validate"};
-constexpr std::string_view k_path_188[] = {"audit", "trail"};
-constexpr std::string_view k_path_189[] = {"audit", "commits"};
-constexpr std::string_view k_path_190[] = {"audit", "session"};
-constexpr std::string_view k_path_191[] = {"audit", "publish-decision"};
-constexpr std::string_view k_path_192[] = {"audit", "handoff-readiness"};
 constexpr std::string_view k_path_193[] = {"health", "hygiene"};
 constexpr std::string_view k_path_199[] = {"spec", "ingest"};
 constexpr std::string_view k_path_200[] = {"test-spec", "status"};
-constexpr std::string_view k_path_201[] = {"config", "show"};
-constexpr std::string_view k_path_202[] = {"config", "edit"};
-constexpr std::string_view k_path_203[] = {"config", "validate"};
-constexpr std::string_view k_path_204[] = {"config", "init"};
-constexpr std::string_view k_path_205[] = {"config", "path"};
-constexpr std::string_view k_path_212[] = {"local", "list"};
-constexpr std::string_view k_path_213[] = {"local", "link"};
-constexpr std::string_view k_path_214[] = {"local", "unlink"};
-constexpr std::string_view k_path_215[] = {"local", "import"};
-constexpr std::string_view k_path_216[] = {"local", "migrate"};
 constexpr std::string_view k_path_223[] = {"closure", "compute"};
 constexpr std::string_view k_path_224[] = {"closure", "show"};
-constexpr std::string_view k_path_225[] = {"run", "start"};
-constexpr std::string_view k_path_226[] = {"run", "event"};
-constexpr std::string_view k_path_227[] = {"run", "finish"};
-constexpr std::string_view k_path_228[] = {"run", "show"};
 constexpr std::string_view k_path_229[] = {"groups", "recommend"};
 constexpr std::string_view k_path_230[] = {"workflow", "list"};
 constexpr std::string_view k_path_231[] = {"workflow", "show"};
 constexpr std::string_view k_path_232[] = {"workflow", "run"};
-constexpr std::string_view k_path_233[] = {"feedback", "triage"};
-constexpr std::string_view k_path_257[] = {"feedback", "triage", "list"};
-constexpr std::string_view k_path_258[] = {"feedback", "triage", "show"};
-constexpr std::string_view k_path_259[] = {"feedback", "triage", "set"};
 
 constexpr flag_spec k_flags_0[] = {
     {.name          = "--name",
@@ -425,58 +395,10 @@ constexpr flag_spec k_flags_44[] = {
      .default_value = {},
      .description   = "Fall back to help/usage instead of launching the cockpit"},
 };
-constexpr flag_spec k_flags_47[] = {
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_48[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
 // k_flags_161-165 (ext list/test/create/propagate-one/propagate) removed
 // at plan 996, task 6419 — moved to `planar-ext`.
-constexpr flag_spec k_flags_166[] = {
-    {.name = "--relationship", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_167[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_168[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_169[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
 // k_flags_170-173 (sync pull/push/status/resolve) removed at plan 996,
 // task 6419 — moved to `planar-ext`.
-constexpr flag_spec k_flags_188[] = {
-    {.name = "--kind", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--grep", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name          = "--link",
-     .kind          = "string",
-     .required      = false,
-     .list          = false,
-     .default_value = {},
-     .description   = "External link id; switches to link-scoped (external_links + sync_events) form"},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_189[] = {
-    {.name = "--session", .kind = "int", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--task", .kind = "int", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--shas", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_190[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_191[] = {
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_192[] = {
-    {.name = "--threshold", .kind = "int", .required = false, .list = false, .default_value = "90", .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
 constexpr flag_spec k_flags_193[] = {
     {.name          = "--scope",
      .kind          = "string",
@@ -508,61 +430,11 @@ constexpr flag_spec k_flags_199[] = {
 constexpr flag_spec k_flags_200[] = {
     {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
 };
-constexpr flag_spec k_flags_201[] = {
-    {.name = "--effective", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--raw", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--defaults", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--format", .kind = "string", .required = false, .list = false, .default_value = "text", .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_212[] = {
-    {.name = "--vendor", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_213[] = {
-    {.name = "--dry-run", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--vendor", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--reconcile", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_214[] = {
-    {.name = "--purge", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_215[] = {
-    {.name = "--kind", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--force", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--dry-run", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--no-link", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_216[] = {
-    {.name = "--dry-run", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
 constexpr flag_spec k_flags_223[] = {
     {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
     {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
 };
 constexpr flag_spec k_flags_224[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_225[] = {
-    {.name = "--plan", .kind = "int", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name = "--workflow", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_226[] = {
-    {.name = "--kind", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name = "--payload", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_227[] = {
-    {.name = "--status", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_228[] = {
     {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
 };
 constexpr flag_spec k_flags_229[] = {
@@ -611,24 +483,6 @@ constexpr flag_spec k_flags_232[] = {
 };
 // k_flags_245/246 (ext register jira/github) removed at plan 996, task
 // 6419 — moved to `planar-ext`.
-constexpr flag_spec k_flags_257[] = {
-    {.name = "--plan", .kind = "int", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--severity", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--disposition", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_258[] = {
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
-constexpr flag_spec k_flags_259[] = {
-    {.name = "--severity", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name = "--disposition", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name = "--reproduction", .kind = "string", .required = true, .list = false, .default_value = {}, .description = ""},
-    {.name = "--duplicate-of", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--evidence", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--scope", .kind = "string", .required = false, .list = false, .default_value = {}, .description = ""},
-    {.name = "--json", .kind = "bool", .required = false, .list = false, .default_value = {}, .description = ""},
-};
 
 constexpr positional_spec k_pos_10[] = {
     {.name = "ref", .required = true, .description = "Entity ref (kind:id)"},
@@ -657,37 +511,12 @@ constexpr positional_spec k_pos_35[] = {
 constexpr positional_spec k_pos_37[] = {
     {.name = "shell", .required = true, .description = "Shell: bash, zsh, or fish"},
 };
-constexpr positional_spec k_pos_49[] = {
-    {.name = "slug", .required = false, .description = ""},
-};
 // k_pos_162-165 (ext test/create/propagate-one/propagate) removed at plan
 // 996, task 6419 — moved to `planar-ext`.
-constexpr positional_spec k_pos_166[] = {
-    {.name = "from-ref", .required = true, .description = ""},
-    {.name = "to-ref", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_167[] = {
-    {.name = "ref", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_168[] = {
-    {.name = "link-id", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_169[] = {
-    {.name = "link-id", .required = true, .description = ""},
-};
 // k_pos_170/171/173 (sync pull/push/resolve) removed at plan 996, task
 // 6419 — moved to `planar-ext`.
 constexpr positional_spec k_pos_174[] = {
     {.name = "task-id", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_188[] = {
-    {.name = "entity-id", .required = false, .description = ""},
-};
-constexpr positional_spec k_pos_190[] = {
-    {.name = "session-id", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_191[] = {
-    {.name = "decision-id", .required = true, .description = ""},
 };
 constexpr positional_spec k_pos_199[] = {
     {.name = "plan", .required = true, .description = ""},
@@ -695,29 +524,11 @@ constexpr positional_spec k_pos_199[] = {
 constexpr positional_spec k_pos_200[] = {
     {.name = "plan", .required = true, .description = "Plan slug or numeric id"},
 };
-constexpr positional_spec k_pos_213[] = {
-    {.name = "name", .required = false, .description = ""},
-};
-constexpr positional_spec k_pos_214[] = {
-    {.name = "name", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_215[] = {
-    {.name = "path", .required = true, .description = ""},
-};
 constexpr positional_spec k_pos_223[] = {
     {.name = "task-id", .required = true, .description = ""},
 };
 constexpr positional_spec k_pos_224[] = {
     {.name = "task-id", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_226[] = {
-    {.name = "run-uid", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_227[] = {
-    {.name = "run-uid", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_228[] = {
-    {.name = "run-uid", .required = true, .description = ""},
 };
 constexpr positional_spec k_pos_229[] = {
     {.name = "plan-id", .required = true, .description = ""},
@@ -730,12 +541,6 @@ constexpr positional_spec k_pos_232[] = {
 };
 // k_pos_245/246 (ext register jira/github) removed at plan 996, task 6419
 // — moved to `planar-ext`.
-constexpr positional_spec k_pos_258[] = {
-    {.name = "finding", .required = true, .description = ""},
-};
-constexpr positional_spec k_pos_259[] = {
-    {.name = "finding", .required = true, .description = ""},
-};
 
 } // namespace
 
@@ -756,21 +561,18 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = k_flags_0,
        .positionals = {},
        .group       = false},
-      {.path = k_path_1,
-       .description =
-           "Inspect the scope Planar will resolve for the current working\n  directory.\n\n  Plan 153 removed the active scope "
-           "stack; scope is now derived from\n  cwd and overridden by passing --scope <slug> to individual verbs.",
-       .flags       = {},
-       .positionals = {},
-       .group       = true},
+      // ORDERING ANCHOR for `scope` (M11.3e, task 6635) -- see the block
+      // below, above `plan`'s anchor, for what this entry is and is not.
+      {.path = k_path_1, .description = {}, .flags = {}, .positionals = {}, .group = true},
       // ORDERING ANCHOR for `assoc` (M11.3d, task 6634) -- see the block
       // below, above `plan`'s anchor, for what this entry is and is not.
       {.path = k_path_2, .description = {}, .flags = {}, .positionals = {}, .group = true},
-      // ORDERING ANCHORS (M11.3, tasks 6631-6634). `plan` and `task`
-      // (here), and `assoc` (just above), and `question`, `scenario`,
-      // `decision`, `artifact`, `annotate`, `workbench`, `workspace`,
-      // `handoff`, `capture`, `models`, `templates` and `bench` (further
-      // down, at their own catalog positions) are declared by hand next to
+      // ORDERING ANCHORS (M11.3, tasks 6631-6635). `plan` and `task`
+      // (here), and `scope` and `assoc` (just above), and `question`,
+      // `scenario`, `decision`, `artifact`, `annotate`, `workbench`,
+      // `workspace`, `links`, `handoff`, `capture`, `audit`, `models`,
+      // `config`, `templates`, `local`, `bench`, `run` and `feedback`
+      // (further down, at their own catalog positions) are declared by hand next to
       // handlers, so `apply_surface` finds them already present and its
       // find-or-create arm skips these entries entirely. They carry NO
       // payload for that reason -- were the hand declaration ever lost, a
@@ -782,22 +584,24 @@ auto surface_nodes() -> std::vector<node_spec> {
       // rebuilds each parent's child order from THIS list, and a name
       // missing from it is never re-appended, so it drifts to the front of
       // the root's children -- which would move each folded domain off its
-      // catalog position (assoc 3rd, plan 4th, task 5th, question 6th,
-      // scenario 7th, decision 8th, artifact 9th, annotate 10th, workbench
-      // 13th, workspace 14th, handoff 19th, capture 20th, models 23rd,
-      // templates 28th, bench 39th) and change the pinned surface. Each remaining
+      // catalog position (scope 2nd, assoc 3rd, plan 4th, task 5th,
+      // question 6th, scenario 7th, decision 8th, artifact 9th, annotate
+      // 10th, workbench 13th, workspace 14th, links 17th, handoff 19th,
+      // capture 20th, audit 21st, models 23rd, config 27th, templates
+      // 28th, local 31st, bench 39th, run 41st, feedback 45th) and change
+      // the pinned surface. Each remaining
       // M11.3 wave must retain its top-level entry the same way; the last
       // wave deletes this file, and with it the `apply_surface` call, at
       // which point `tree.cpp`'s declaration order is authoritative.
       //
       // An anchor is needed at every depth a fold empties, not just the
       // root -- but only where a SURVIVING sibling list would otherwise
-      // lose a member. `models registry` and `workspace routing` keep NO
-      // anchor because `models` and `workspace` are folded whole, so
-      // nothing in this list names a child of either and
-      // `reorder_children` never visits those parents. A domain folded
-      // only PARTIALLY would need child-level anchors too; no wave has
-      // done that.
+      // lose a member. `models registry`, `workspace routing` and
+      // `feedback triage` keep NO anchor because `models`, `workspace` and
+      // `feedback` are folded whole, so nothing in this list names a child
+      // of any of them and `reorder_children` never visits those parents.
+      // A domain folded only PARTIALLY would need child-level anchors too;
+      // no wave has done that.
       {.path = k_path_3, .description = {}, .flags = {}, .positionals = {}, .group = true},
       {.path = k_path_4, .description = {}, .flags = {}, .positionals = {}, .group = true},
       // ORDERING ANCHORS for the drafting quartet (M11.3c, task 6633) --
@@ -854,14 +658,9 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = k_flags_16,
        .positionals = k_pos_16,
        .group       = false},
-      {.path = k_path_17,
-       .description =
-           "Manage internal cross-cutting entity_links relationships.\n\n  Entity links record typed relationships between any "
-           "two Planar\n  entities (e.g. a task cites an artifact, a plan blocks another\n  plan). This domain is distinct from "
-           "the top-level link/unlink\n  commands, which operate on external-system ticket linkage.",
-       .flags       = {},
-       .positionals = {},
-       .group       = true},
+      // ORDERING ANCHOR for `links` (M11.3e, task 6635) -- see the block
+      // above `plan`'s anchor for what this entry is and is not.
+      {.path = k_path_17, .description = {}, .flags = {}, .positionals = {}, .group = true},
       // k_path_18 ("sync" group) removed at plan 996, task 6419 — the whole
       // family moved to `planar-ext`.
       {.path = k_path_19,
@@ -882,13 +681,8 @@ auto surface_nodes() -> std::vector<node_spec> {
       // described here, and `apply_surface` skipped this half entirely.
       {.path = k_path_20, .description = {}, .flags = {}, .positionals = {}, .group = true},
       {.path = k_path_21, .description = {}, .flags = {}, .positionals = {}, .group = true},
-      {.path        = k_path_22,
-       .description = "Cross-plane audit trail commands.\n\n  Subcommands inspect external-link history, query attributed "
-                      "session\n  commits, recompute decision publication targets, render session\n  timelines, and walk the "
-                      "full audit trail for any external link.",
-       .flags       = {},
-       .positionals = {},
-       .group       = true},
+      // ORDERING ANCHOR for `audit` (M11.3e, task 6635).
+      {.path = k_path_22, .description = {}, .flags = {}, .positionals = {}, .group = true},
       {.path = k_path_23,
        .description =
            "Check database reachability, schema version currency, SQLite\n  integrity, in-flight task resumability, pending "
@@ -925,14 +719,8 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = {},
        .positionals = {},
        .group       = true},
-      {.path = k_path_28,
-       .description =
-           "Read, inspect, and validate the Planar configuration file.\n\n  The configuration file lives at "
-           "~/.planar/config.toml by default.\n  Set $PLANAR_CONFIG_PATH to use a different path.\n  Resolution order (highest "
-           "to lowest priority):\n    1. Explicit --config-path flag\n    2. $PLANAR_CONFIG_PATH\n    3. ~/.planar/config.toml",
-       .flags       = {},
-       .positionals = {},
-       .group       = true},
+      // ORDERING ANCHOR for `config` (M11.3e, task 6635).
+      {.path = k_path_28, .description = {}, .flags = {}, .positionals = {}, .group = true},
       // ORDERING ANCHOR for `templates` (M11.3d, task 6634) -- see the block
       // above `plan`'s anchor for what this entry is and is not.
       {.path = k_path_29, .description = {}, .flags = {}, .positionals = {}, .group = true},
@@ -950,13 +738,8 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = k_flags_31,
        .positionals = k_pos_31,
        .group       = false},
-      {.path        = k_path_32,
-       .description = "Manage the operator's local sandbox for personal skills and agents.\n\n  Authors a single source file per "
-                      "skill or agent under\n  ~/.planar/local/ and creates per-vendor symlinks (with copy\n  fallback) into "
-                      "each vendor's install directory.\n  Edits to the source file propagate immediately to every vendor.",
-       .flags       = {},
-       .positionals = {},
-       .group       = true},
+      // ORDERING ANCHOR for `local` (M11.3e, task 6635).
+      {.path = k_path_32, .description = {}, .flags = {}, .positionals = {}, .group = true},
       {.path        = k_path_33,
        .description = "The unified skill source tree under skills/src/ is rendered by the\n  external scriptorium binary (plan "
                       "918). Planar no longer renders vendor\n  projections nor tracks their install-drift in-band; use "
@@ -1018,14 +801,10 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = {},
        .positionals = {},
        .group       = true},
-      {.path        = k_path_42,
-       .description = "Record operational run traces emitted by workflows.\n\n  Arm defaults to 'op' (or the workflow name when "
-                      "--workflow is given).\n  Statuses: running, completed, aborted, error.\n\n  Workflow: run start → run "
-                      "event (repeat) → run finish → run show --json.\n\n  See `planar bench` for the measurement-rig surface "
-                      "(strict/eligibility/\n  grouped arms, declared/actual touch tracking, git-diff harvest).",
-       .flags       = {},
-       .positionals = {},
-       .group       = true},
+      // ORDERING ANCHOR for `run` (M11.3e, task 6635). `run` and `bench`
+      // share `handlers/runs.cpp` but are separate top-level verbs; only
+      // `run` was folded by this wave.
+      {.path = k_path_42, .description = {}, .flags = {}, .positionals = {}, .group = true},
       {.path = k_path_43,
        .description =
            "Form **slices** — groups of a plan's open (todo) tasks that share a\ncontext window — by minimizing the duplicated "
@@ -1057,88 +836,18 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = {},
        .positionals = {},
        .group       = true},
-      {.path = k_path_46, .description = "Manage structured feedback.", .flags = {}, .positionals = {}, .group = true},
-      {.path        = k_path_47,
-       .description = "Show the cwd-derived scope (and any --scope override).",
-       .flags       = k_flags_47,
-       .positionals = {},
-       .group       = false},
-      {.path        = k_path_48,
-       .description = "Suggest scope associations based on cwd.",
-       .flags       = k_flags_48,
-       .positionals = {},
-       .group       = false},
-      {.path         = k_path_49,
-       .description  = "Removed in plan 153 M5 — see `planar scope show`.",
-       .flags        = {},
-       .positionals  = k_pos_49,
-       .group        = false,
-       .allow_extras = true},
-      {.path         = k_path_50,
-       .description  = "Removed in plan 153 M5 — see `planar scope show`.",
-       .flags        = {},
-       .positionals  = {},
-       .group        = false,
-       .allow_extras = true},
-      {.path         = k_path_51,
-       .description  = "Removed in plan 153 M5 — see `planar scope show`.",
-       .flags        = {},
-       .positionals  = {},
-       .group        = false,
-       .allow_extras = true},
+      // ORDERING ANCHOR for `feedback` (M11.3e, task 6635). Its nested
+      // `triage` group needs no anchor of its own: `feedback` folds whole,
+      // so nothing in this list names a `feedback` child and
+      // `reorder_children` never visits that parent.
+      {.path = k_path_46, .description = {}, .flags = {}, .positionals = {}, .group = true},
       // k_path_160-165 (ext register group, list, test, create,
       // propagate-one, propagate) removed at plan 996, task 6419. The first
       // five moved to `planar-ext`; `propagate` was never wired here (see
       // `unported_paths`'s header) and is not wired on either binary yet.
-      {.path        = k_path_166,
-       .description = "Create an entity_links row between two entities.",
-       .flags       = k_flags_166,
-       .positionals = k_pos_166,
-       .group       = false},
-      {.path        = k_path_167,
-       .description = "List entity_links where the given entity is source or target.",
-       .flags       = k_flags_167,
-       .positionals = k_pos_167,
-       .group       = false},
-      {.path        = k_path_168,
-       .description = "Delete an entity_links row by its id.",
-       .flags       = k_flags_168,
-       .positionals = k_pos_168,
-       .group       = false},
-      {.path        = k_path_169,
-       .description = "Show the audit trail for an entity_links row.",
-       .flags       = k_flags_169,
-       .positionals = k_pos_169,
-       .group       = false},
       // k_path_170-173 (sync pull/push/status/resolve) removed at plan 996,
       // task 6419 — moved to `planar-ext`.
       {.path = k_path_174, .description = "Check if a task is resumable.", .flags = {}, .positionals = k_pos_174, .group = false},
-      {.path = k_path_188,
-       .description =
-           "Show audit history for an entity (audit_log + entity_links) or an external link (external_links + sync_events).",
-       .flags       = k_flags_188,
-       .positionals = k_pos_188,
-       .group       = false},
-      {.path        = k_path_189,
-       .description = "List commits attributed to sessions and claims.",
-       .flags       = k_flags_189,
-       .positionals = {},
-       .group       = false},
-      {.path        = k_path_190,
-       .description = "Show the timeline for a session.",
-       .flags       = k_flags_190,
-       .positionals = k_pos_190,
-       .group       = false},
-      {.path        = k_path_191,
-       .description = "Post the decision body to linked operational-plane targets.",
-       .flags       = k_flags_191,
-       .positionals = k_pos_191,
-       .group       = false},
-      {.path        = k_path_192,
-       .description = "Check resume-readiness for all in-flight tasks.",
-       .flags       = k_flags_192,
-       .positionals = {},
-       .group       = false},
       {.path        = k_path_193,
        .description = "Find draft plans with zero tasks or only terminal tasks, tasks\n  left doing beyond a threshold, and "
                       "questions left open beyond a\n  threshold. Suggested repair commands are reported but never run.\n\n  "
@@ -1156,44 +865,6 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = k_flags_200,
        .positionals = k_pos_200,
        .group       = false},
-      {.path        = k_path_201,
-       .description = "Print the resolved configuration.",
-       .flags       = k_flags_201,
-       .positionals = {},
-       .group       = false},
-      {.path        = k_path_202,
-       .description = "Edit the configuration file in $EDITOR.",
-       .flags       = {},
-       .positionals = {},
-       .group       = false},
-      {.path = k_path_203, .description = "Validate configuration file syntax.", .flags = {}, .positionals = {}, .group = false},
-      {.path = k_path_204, .description = "Initialize the configuration file.", .flags = {}, .positionals = {}, .group = false},
-      {.path = k_path_205, .description = "Show the configuration file path.", .flags = {}, .positionals = {}, .group = false},
-      {.path        = k_path_212,
-       .description = "List locally-installed skills and agents.",
-       .flags       = k_flags_212,
-       .positionals = {},
-       .group       = false},
-      {.path        = k_path_213,
-       .description = "Create or reuse symlinks from vendor paths to local source.",
-       .flags       = k_flags_213,
-       .positionals = k_pos_213,
-       .group       = false},
-      {.path        = k_path_214,
-       .description = "Remove symlinks from vendor paths.",
-       .flags       = k_flags_214,
-       .positionals = k_pos_214,
-       .group       = false},
-      {.path        = k_path_215,
-       .description = "Import a skill or agent from an external directory.",
-       .flags       = k_flags_215,
-       .positionals = k_pos_215,
-       .group       = false},
-      {.path        = k_path_216,
-       .description = "Migrate skills/agents to new Planar version.",
-       .flags       = k_flags_216,
-       .positionals = {},
-       .group       = false},
       {.path        = k_path_223,
        .description = "Run the extractor over a task's seeds and persist the closure.",
        .flags       = k_flags_223,
@@ -1203,26 +874,6 @@ auto surface_nodes() -> std::vector<node_spec> {
        .description = "Read back a task's persisted closure rows.",
        .flags       = k_flags_224,
        .positionals = k_pos_224,
-       .group       = false},
-      {.path        = k_path_225,
-       .description = "Mint a new operational run record and print its run_uid as JSON.",
-       .flags       = k_flags_225,
-       .positionals = {},
-       .group       = false},
-      {.path        = k_path_226,
-       .description = "Append a journal event to a run (seq auto-incremented).",
-       .flags       = k_flags_226,
-       .positionals = k_pos_226,
-       .group       = false},
-      {.path        = k_path_227,
-       .description = "Set the terminal status on a run.",
-       .flags       = k_flags_227,
-       .positionals = k_pos_227,
-       .group       = false},
-      {.path        = k_path_228,
-       .description = "Show a run's full state (header + events).",
-       .flags       = k_flags_228,
-       .positionals = k_pos_228,
        .group       = false},
       {.path        = k_path_229,
        .description = "Recommend closure-minimizing task slices for a plan.",
@@ -1247,20 +898,8 @@ auto surface_nodes() -> std::vector<node_spec> {
        .flags       = k_flags_232,
        .positionals = k_pos_232,
        .group       = false},
-      {.path = k_path_233, .description = "Review structured feedback triage.", .flags = {}, .positionals = {}, .group = true},
       // k_path_245/246 (ext register jira/github) removed at plan 996, task
       // 6419 — moved to `planar-ext`.
-      {.path = k_path_257, .description = "List triaged findings.", .flags = k_flags_257, .positionals = {}, .group = false},
-      {.path        = k_path_258,
-       .description = "Show a triaged finding.",
-       .flags       = k_flags_258,
-       .positionals = k_pos_258,
-       .group       = false},
-      {.path        = k_path_259,
-       .description = "Set operator-confirmed triage fields.",
-       .flags       = k_flags_259,
-       .positionals = k_pos_259,
-       .group       = false},
   };
 }
 

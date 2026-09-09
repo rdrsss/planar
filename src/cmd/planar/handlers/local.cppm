@@ -108,4 +108,16 @@ export auto local_import(context& ctx, const cliapp::parsed_args& args) -> handl
 /// cannot be resolved.
 export auto local_migrate(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `local` command tree on `root`.
+///
+/// The CLI declaration for every `local` node, colocated with the
+/// `local_*` handlers above (plan 1051, M11.3e — decision 1068). None was
+/// hand-declared in `tree.cpp`.
+///
+/// `import`'s `--no-link` is a genuine flag name, not a negation:
+/// `planar.cliapp.surface::add_bool_flag` synthesizes `--no-no-link` as
+/// ITS negation, so the two never collide.
+/// @param root The root app to attach the `local` group to.
+export auto declare_local(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

@@ -36,14 +36,15 @@
 /// drafting quartet) needed no new primitive at all; M11.3d (`capture`,
 /// `assoc`, `workspace`, `handoff`, `templates`, `bench`) added
 /// `add_string_list` for `bench start --task`, the surface's first
-/// repeatable flag.
+/// repeatable flag; M11.3e (`scope`, `audit`, `config`, `local`, `links`,
+/// `run`, `feedback`) added `set_allow_extras` for `scope use|pop|clear`,
+/// the only three leaves in the tree that take one.
 ///
 /// Shapes that are still UNBUILT because no folded spec has needed one
-/// yet: positionals carrying their own description, groups declaring
-/// `allow_extras` (`scope use|pop|clear`), and REQUIRED bool flags. Each
-/// later wave adds the primitives its own specs need; a wave that finds no
-/// primitive for a shape should add one here rather than inline the raw
-/// CLI11 call.
+/// yet: positionals carrying their own description, and REQUIRED bool
+/// flags. Each later wave adds the primitives its own specs need; a wave
+/// that finds no primitive for a shape should add one here rather than
+/// inline the raw CLI11 call.
 ///
 /// ## The shapes are transcribed, not invented
 ///
@@ -166,5 +167,35 @@ export auto add_positional(CLI::App& app, std::string_view name) -> void;
 /// @param app The node to declare it on.
 /// @param name The positional's name.
 export auto add_positional_optional(CLI::App& app, std::string_view name) -> void;
+
+/// @brief Let a leaf accept ANY unrecognized flag or positional.
+///
+/// The one NODE-level primitive here; everything else declares an option.
+/// It mirrors `apply_surface`'s `spec.allow_extras` arm, and it exists for
+/// exactly three leaves: `scope use`, `scope pop` and `scope clear`, all
+/// removed in plan 153 M5. Their handlers answer with the same fixed
+/// refusal whatever the input, and the oracle tolerated the arbitrary
+/// legacy flags and positionals a pre-M5 caller would still be passing —
+/// so CLI11 must hand those through rather than refuse them at parse time,
+/// which would change both the message and the exit code.
+///
+/// Named `set_` rather than `add_` deliberately: it toggles a property of
+/// the node instead of appending to its option list, and every call site
+/// should read as the exception it is.
+///
+/// THIS PROPERTY IS UNGUARDED, and it is the only thing M11.3e folded that
+/// is. Two break-probes at task 6635 established it: ADDING
+/// `set_allow_extras` to a leaf that has none (`config path`) left
+/// `scripts/surface-snapshot.sh verify` clean at 312 points, and REMOVING
+/// all three of `scope`'s left both that gate clean AND all 861
+/// `cmd_planar` Catch2 cases green. The property appears in neither the
+/// `schema` catalog nor any `--help` page, which is all the gate hashes,
+/// and the difference it makes is a MESSAGE difference at the same exit
+/// code — `error: use: The following arguments were not expected:
+/// --stack-name bar` instead of the plan-153-M5 removal paragraph, both
+/// exit 2. Treat a change to any of the three calls as unverifiable by the
+/// gate and check `planar scope use <slug> --<stale-flag>` by hand.
+/// @param app The leaf to relax.
+export auto set_allow_extras(CLI::App& app) -> void;
 
 } // namespace planar::cmd

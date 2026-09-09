@@ -13,6 +13,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -250,6 +251,34 @@ auto feedback_triage_set(context& ctx, const cliapp::parsed_args& args) -> handl
   }
   emit(ctx, args, *row);
   return {};
+}
+
+auto declare_feedback(CLI::App& root) -> void {
+  CLI::App* feedback = root.add_subcommand("feedback", "Manage structured feedback.");
+  feedback->require_subcommand(0);
+
+  CLI::App* triage = feedback->add_subcommand("triage", "Review structured feedback triage.");
+  triage->require_subcommand(0);
+
+  CLI::App* list = triage->add_subcommand("list", "List triaged findings.");
+  add_int(*list, "--plan");
+  add_string(*list, "--severity");
+  add_string(*list, "--disposition");
+  add_json(*list);
+
+  CLI::App* show = triage->add_subcommand("show", "Show a triaged finding.");
+  add_json(*show);
+  add_positional(*show, "finding");
+
+  CLI::App* set = triage->add_subcommand("set", "Set operator-confirmed triage fields.");
+  add_string_required(*set, "--severity");
+  add_string_required(*set, "--disposition");
+  add_string_required(*set, "--reproduction");
+  add_string(*set, "--duplicate-of");
+  add_string(*set, "--evidence");
+  add_string(*set, "--scope");
+  add_json(*set);
+  add_positional(*set, "finding");
 }
 
 } // namespace planar::cmd::handlers

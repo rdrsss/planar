@@ -106,4 +106,21 @@ export auto scope_pop(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// @return Always the refusal (exit 2).
 export auto scope_clear(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `scope` command tree on `root`.
+///
+/// The CLI declaration for every `scope` node, colocated with the
+/// `scope_*` handlers above (plan 1051, M11.3e — decision 1068). Nothing
+/// under `scope` was ever hand-declared in `tree.cpp`, so all six came
+/// from `surface.cpp`'s generated table and no shadowed pair had to be
+/// reconciled.
+///
+/// `use`, `pop` and `clear` are the tree's ONLY three `allow_extras`
+/// leaves, which is why `planar.cmd.planar.declare` grew
+/// `set_allow_extras` for this wave. See that function's header for what
+/// the property buys: all three were removed in plan 153 M5 and answer
+/// with a fixed refusal whatever a pre-M5 caller still passes them, so
+/// CLI11 must not refuse the stale arguments at parse time first.
+/// @param root The root app to attach the `scope` group to.
+export auto declare_scope(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers
