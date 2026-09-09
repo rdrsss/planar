@@ -514,7 +514,6 @@ planar_binary(planar
     worktree_gate.cpp
     tree.cpp
     declare.cpp
-    surface.cpp
     handlers/version.cpp
     handlers/catalog.cpp
     handlers/workflow.cpp
@@ -621,9 +620,12 @@ if(TARGET planar_cmd_planar_tests)
   # the M10 cutover deleted it (decisions 963/982), so only this target's
   # own output path is needed. PLANAR_TARGET_SOURCE_ROOT is separate and
   # still live: surface_generator.t.cpp reads the CHECKED-IN
-  # `src/cmd/*/surface.cpp` files and re-runs `scripts/gen-cli-surface.py`
+  # `src/cmd/*/surface.cppm` files and re-runs `scripts/gen-cli-surface.py`
   # against a scratch tree, and must resolve those against this checkout
-  # rather than the process's cwd.
+  # rather than the process's cwd. (`.cppm`, not `.cpp`: plan 1051 M11
+  # folded every generated `node_spec` table away and left each binary
+  # with a single-file `surface.cppm` -- `planar-watch` at task 6613,
+  # `planar-agent` at 6614, `planar` at 6636.)
   target_compile_definitions(planar_cmd_planar_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\""
     "PLANAR_TARGET_SOURCE_ROOT=\"${CMAKE_SOURCE_DIR}\"")

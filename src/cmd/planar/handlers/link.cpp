@@ -14,6 +14,7 @@ import planar.engine.external;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -157,6 +158,27 @@ auto link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   ctx.out() << std::format("linked {}:{} \xe2\x86\x92 {}:{}  (link id: {}, {} {})\n", ref->kind, ref->id, target->slug,
                            target->external_id, stored->id, sync_text, role_text);
   return {};
+}
+
+/// @brief Declare the `link` leaf.
+///
+/// `link` (singular) writes `external_links`; `links` (plural, in
+/// `links.cpp`) writes `entity_links`. The two spellings mirror
+/// `planar link` vs `planar links add`, and they are NOT the same
+/// domain — see this binary's CMakeLists for the same note.
+/// @param root The root app to attach it to.
+auto declare_link(CLI::App& root) -> void {
+  CLI::App* link = root.add_subcommand(
+      "link", "Manually record an external_links row linking a local entity to\n  an already-existing external ticket. Use this "
+              "when the external\n  ticket was created outside of 'ext create'. Does not push any data\n  to the external "
+              "system.\n\n  <kind:id> is a local entity reference, e.g. task:42, plan:7.");
+  add_string_required(*link, "--to", "<system-slug>:<external-id>");
+  add_string(*link, "--role", "Link role: mirror, parent, child, reference (default: reference)");
+  add_string(*link, "--sync", "Sync direction: read-only, write-back, two-way (default: read-only)");
+  add_bool(*link, "--propagate", "Propagate feature after linking (M10)");
+  add_string(*link, "--scope");
+  add_json(*link);
+  add_positional_described(*link, "ref", "Entity ref (kind:id)");
 }
 
 } // namespace planar::cmd::handlers

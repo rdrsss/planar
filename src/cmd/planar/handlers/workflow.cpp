@@ -12,6 +12,7 @@ import planar.process;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -136,6 +137,47 @@ auto workflow_run(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   auto failed             = error_from_rendered(domain_error_kind::generic_failure, std::string{});
   failed.passthrough_code = *code;
   return std::unexpected(std::move(failed));
+}
+
+/// @brief Declare the `workflow` group and its three leaves.
+///
+/// THE LAST PARTIAL FOLD, closed. `list` and `show` were
+/// hand-written in `tree.cpp` since task 6105 while `run` came from a
+/// `node_spec`; the two hand-written halves agreed with their generated
+/// twins field for field. Folding all three together is what keeps the
+/// sibling order correct as ONE contiguous list and is why no
+/// child-level ordering anchor was ever needed here.
+///
+/// `run` shells `planar-execute` rather than executing a workflow
+/// itself; see the handler for the resolution order.
+/// @param root The root app to attach it to.
+auto declare_workflow(CLI::App& root) -> void {
+  CLI::App* workflow = root.add_subcommand(
+      "workflow", "Enumerate, inspect, and invoke shipped and sandbox Lua workflows.\n\n  Shipped workflows live at "
+                  "$PLANAR_HOME/workflows/ (default\n  ~/.planar/workflows/).  Sandbox workflows live at\n  "
+                  "~/.planar/local/workflows/ and are marked `local`.\n\n  These commands are READ-ONLY w.r.t. SQLite.  `run` "
+                  "delegates\n  execution to `planar-execute` and forwards its output + exit code.");
+  workflow->require_subcommand(0);
+
+  CLI::App* list = workflow->add_subcommand("list", "List shipped and sandbox workflows.");
+  add_bool(*list, "--local");
+  add_json(*list);
+
+  CLI::App* show = workflow->add_subcommand("show", "Show @meta and source path for a named workflow.");
+  add_json(*show);
+  add_positional(*show, "name");
+
+  CLI::App* run = workflow->add_subcommand(
+      "run", "Resolve <name> across shipped and sandbox workflows, then exec\n  `planar-execute run <path> --phase <phase> "
+             "[--args <json>]\n  [--worktree <dir>] [--sandbox-root <dir>]`.  The workflow's\n  flow.result JSON streams to "
+             "stdout; the exit code is forwarded\n  exactly (non-zero on flow.fail or engine error).\n\n  planar-execute "
+             "resolution order: $PLANAR_EXECUTE_BIN →\n  sibling of argv[0] → PATH.");
+  add_string_required(*run, "--phase", "Phase function to invoke inside the workflow.");
+  add_string(*run, "--args", "JSON args blob forwarded to planar-execute --args.");
+  add_string(*run, "--worktree", "Worktree directory forwarded to planar-execute --worktree.");
+  add_string(*run, "--sandbox-root", "Sandbox root forwarded to planar-execute --sandbox-root.");
+  add_bool(*run, "--local", "Restrict resolution to sandbox (local) workflows only.");
+  add_positional(*run, "name");
 }
 
 } // namespace planar::cmd::handlers

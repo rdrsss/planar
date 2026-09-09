@@ -83,6 +83,10 @@ auto add_positional_optional(CLI::App& app, std::string_view name) -> void {
   app.add_option(std::string{name});
 }
 
+auto add_positional_described(CLI::App& app, std::string_view name, std::string_view desc) -> void {
+  app.add_option(std::string{name})->description(std::string{desc})->required();
+}
+
 auto set_allow_extras(CLI::App& app) -> void {
   app.allow_extras();
 }

@@ -38,13 +38,15 @@
 /// `add_string_list` for `bench start --task`, the surface's first
 /// repeatable flag; M11.3e (`scope`, `audit`, `config`, `local`, `links`,
 /// `run`, `feedback`) added `set_allow_extras` for `scope use|pop|clear`,
-/// the only three leaves in the tree that take one.
+/// the only three leaves in the tree that take one; M11.3f (the
+/// thirty-three remaining singletons) added `add_positional_described`.
 ///
-/// Shapes that are still UNBUILT because no folded spec has needed one
-/// yet: positionals carrying their own description, and REQUIRED bool
-/// flags. Each later wave adds the primitives its own specs need; a wave
-/// that finds no primitive for a shape should add one here rather than
-/// inline the raw CLI11 call.
+/// The only shape still UNBUILT is a REQUIRED BOOL flag, and it is
+/// unbuilt because the surface contains none — `apply_surface`'s
+/// `declare_flag` has the arm, and nothing in the tree ever took it.
+/// M11.3f was the last wave, so a NEW primitive here now means a NEW
+/// verb rather than one more transcription; add it here rather than
+/// inlining the raw CLI11 call.
 ///
 /// ## The shapes are transcribed, not invented
 ///
@@ -167,6 +169,24 @@ export auto add_positional(CLI::App& app, std::string_view name) -> void;
 /// @param app The node to declare it on.
 /// @param name The positional's name.
 export auto add_positional_optional(CLI::App& app, std::string_view name) -> void;
+
+/// @brief A required positional argument carrying its own DESCRIPTION.
+///
+/// Seven of the surface's positionals declare help text of their own
+/// (`promote`/`demote`/`link`'s `ref`, `unlink`'s `link-id`, `search`'s
+/// `query`, `completion`'s `shell`, `test-spec status`'s `plan`); the
+/// other twenty-odd declare none, and CLI11 renders an empty description
+/// column for them. Split from `add_positional` rather than folded into
+/// it with a defaulted parameter for the same reason `add_positional` and
+/// `add_positional_optional` are separate: the call site should say which
+/// shape it means.
+///
+/// Every described positional in the tree is REQUIRED, so there is no
+/// optional counterpart. Add one only when a spec needs it.
+/// @param app The node to declare it on.
+/// @param name The positional's name.
+/// @param desc The help line.
+export auto add_positional_described(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief Let a leaf accept ANY unrecognized flag or positional.
 ///

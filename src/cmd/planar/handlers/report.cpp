@@ -14,6 +14,8 @@ import planar.cmd.planar.cli_log;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -128,6 +130,25 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? intro::render_json(*bundle) : intro::render_text(*bundle));
   return {};
+}
+
+/// @brief Declare the `report` leaf.
+///
+/// `--json` carries a description here, so it is `add_bool` rather
+/// than `add_json`; `init` is the only other such site.
+/// @param root The root app to attach it to.
+auto declare_report(CLI::App& root) -> void {
+  CLI::App* report = root.add_subcommand(
+      "report",
+      "Reads the cli_invocations capture log and the always-on observability\ntables (agent_actions, sync_events, "
+      "agent_work_claims, handoffs) and\nrenders a diagnostic bundle.\n\nInvocation and failure sections render \"logging "
+      "disabled\" when\n[introspection].cli_log is off; the always-on sections (actions, sync,\nclaims, claim failure "
+      "categories, handoffs, health) render normally in\neither case.\n\nThe bundle is structurally redacted: queries select "
+      "only counts,\ncategories, verb paths, statuses, and timestamps — never entity text.\n\nExit codes:\n  0   bundle rendered "
+      "successfully.\n  2   invalid flag value (--days or --tail must be a positive integer).\n  1   database error.");
+  add_int_default(*report, "--days", "30", "Window in days (must be > 0, default 30).");
+  add_int_default(*report, "--tail", "20", "Number of failure-tail rows (must be > 0, default 20).");
+  add_bool(*report, "--json", "Emit stable machine-readable JSON.");
 }
 
 } // namespace planar::cmd::handlers

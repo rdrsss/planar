@@ -12,6 +12,7 @@ import planar.engine.runtime.resumecheck;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -176,6 +177,49 @@ auto resume_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     return std::unexpected(error_from_body(kind_t::not_found, std::format("task {} is not resumable", *task_id)));
   }
   return {};
+}
+
+/// @brief Declare the `resume` group — a DUAL node (subcommands AND
+/// its own handler).
+///
+/// MOVED HERE FROM `tree.cpp` at M11.3f. The parent's handler is a
+/// `not_implemented` placeholder: the 8-section packet is deferred with
+/// its four unported layer-2 dependencies. It is still DECLARED, its
+/// `task-id` positional included, so the catalog reports the surface the
+/// oracle declared and so the bare verb fails at exit 64 rather than
+/// silently rendering a help page.
+///
+/// THE ONE PLACE THE TWO HALVES DISAGREED. `surface.cpp`'s
+/// `node_spec` for `resume validate` declared NO flags; the hand-written
+/// declaration this replaces declares `--json` locally. The hand half is
+/// what shipped — `apply_surface` skips a node already present — and it
+/// is kept. The catalog labels the flag `"source":"inherited"` either
+/// way, because `render_flags` dedupes a child flag whose name a parent
+/// also declares; only the DECLARATION differs, and dropping it would
+/// have removed `--json` from the leaf outright.
+///
+/// `validate`'s `task-id` shares a name with the parent's. That is
+/// why `apply_surface`'s ancestor-flag pass redeclares FLAGS ONLY and
+/// never positionals: a shared positional name aborted every invocation
+/// of the binary at tree-build time, not just the affected verb. See
+/// `declare_handoff`'s header.
+/// @param root The root app to attach it to.
+auto declare_resume(CLI::App& root) -> void {
+  CLI::App* resume = root.add_subcommand(
+      "resume",
+      "Produce a structured 8-section resume packet for the specified\n  task.\n\n  The packet contains:\n    1. Identity       "
+      "— task id, plan id, title, scope\n    2. State          — status, next_action, last action\n    3. Plan position  — "
+      "parent plan, completed/current/remaining steps\n    4. Operational    — external_links for the task; refreshed if stale\n "
+      "   5. Recent activity — session entries from recent sessions\n    6. Decisions and questions\n    7. Linked artifacts\n   "
+      " 8. Audit footer   — previous session vendor and timestamp, plus\n                        the active claim's worktree "
+      "path (when held)\n                        so the resumer can prepend `cd <path>`");
+  resume->require_subcommand(0);
+  add_json(*resume);
+  add_positional_optional(*resume, "task-id");
+
+  CLI::App* validate = resume->add_subcommand("validate", "Check if a task is resumable.");
+  add_json(*validate);
+  add_positional(*validate, "task-id");
 }
 
 } // namespace planar::cmd::handlers

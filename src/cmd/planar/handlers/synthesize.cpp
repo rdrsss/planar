@@ -16,6 +16,8 @@ import planar.engine.workbench.terminal;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 namespace sy = engine::synthesize;
@@ -567,4 +569,26 @@ auto synthesize(context& ctx, const cliapp::parsed_args& args) -> handler_result
     ctx.out() << staged->message << '\n';
   return {};
 }
+/// @brief Declare the `synthesize` leaf.
+/// @param root The root app to attach it to.
+auto declare_synthesize(CLI::App& root) -> void {
+  CLI::App* synthesize = root.add_subcommand(
+      "synthesize", "synthesize reads a repository's existing planning docs, source\n  code, and git history AS INPUT for an LLM "
+                    "synthesis pass. It\n  produces fresh product-spec / tech-spec / roadmap artifacts (NOT a\n  verbatim "
+                    "transcription) and proposes them via the same workbench\n  pipeline as the planner agent.");
+  add_bool(*synthesize, "--apply");
+  add_bool(*synthesize, "--apply-removals");
+  add_string(*synthesize, "--scope");
+  add_string(*synthesize, "--code-layout");
+  add_bool(*synthesize, "--treat-as-greenfield");
+  add_bool(*synthesize, "--treat-as-nongreenfield");
+  add_string(*synthesize, "--threshold", "Similarity threshold, e.g. 0.7");
+  add_bool(*synthesize, "--literal");
+  add_string(*synthesize, "--accept-spec", "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'");
+  add_bool(*synthesize, "--no-forward-specs", "Skip forward-spec processing entirely");
+  add_bool(*synthesize, "--dry-run");
+  add_json(*synthesize);
+  add_positional(*synthesize, "repo-root");
+}
+
 } // namespace planar::cmd::handlers

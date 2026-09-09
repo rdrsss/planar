@@ -49,4 +49,9 @@ namespace planar::cmd::handlers {
 /// `--solver`, or a `generic_failure` (exit 1) when the plan does not exist.
 export auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `groups` group. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_groups(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

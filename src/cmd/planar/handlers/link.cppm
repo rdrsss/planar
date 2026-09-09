@@ -123,4 +123,9 @@ namespace planar::cmd::handlers {
 /// `--sync`; or `slug_conflict` (exit 6) when the link already exists.
 export auto link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `link` leaf. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_link(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

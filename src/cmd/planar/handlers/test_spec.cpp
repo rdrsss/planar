@@ -10,6 +10,8 @@ import planar.engine.planning.test_spec_status;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -43,6 +45,20 @@ auto test_spec_status(context& ctx, const cliapp::parsed_args& args) -> handler_
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? tss_ns::render_json(*report) : tss_ns::render_text(anchor->slug, *report));
   return {};
+}
+
+/// @brief Declare the `test-spec` group and its `status` leaf.
+/// @param root The root app to attach it to.
+auto declare_test_spec(CLI::App& root) -> void {
+  CLI::App* test_spec = root.add_subcommand(
+      "test-spec", "Commands for inspecting test-spec coverage of a plan's tasks.\n\n  'test-spec status' prints a per-milestone "
+                   "breakdown of which tasks\n  have verifying scenarios. This is a read-only complement to the\n  ingest-time "
+                   "coverage gate (see `planar spec ingest --strict`).");
+  test_spec->require_subcommand(0);
+
+  CLI::App* status = test_spec->add_subcommand("status", "Print per-milestone test-spec coverage for an anchor plan.");
+  add_json(*status);
+  add_positional_described(*status, "plan", "Plan slug or numeric id");
 }
 
 } // namespace planar::cmd::handlers

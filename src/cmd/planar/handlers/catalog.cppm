@@ -70,4 +70,14 @@ export auto schema(context& ctx, const cliapp::parsed_args& args, const CLI::App
 /// `unsupported shell '<x>'; supported: bash, zsh, fish` body.
 export auto completion(context& ctx, const cliapp::parsed_args& args, const CLI::App& root) -> handler_result;
 
+/// @brief Declare the `completion` leaf. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_completion(CLI::App& root) -> void;
+
+/// @brief Declare the `schema` leaf. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_schema(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

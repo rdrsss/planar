@@ -14,6 +14,8 @@ import planar.engine.runtime.agentrender;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -249,6 +251,20 @@ auto dashboard(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   }
   ctx.out() << out;
   return {};
+}
+
+/// @brief Declare the `dashboard` leaf.
+/// @param root The root app to attach it to.
+auto declare_dashboard(CLI::App& root) -> void {
+  CLI::App* dashboard = root.add_subcommand(
+      "dashboard", "Roll-up of in-flight plans in the current scope.\n\n  --agents folds in the live claim state from "
+                   "agent_work_claims —\n  active claims, stale claims, and the per-plan 'next available'\n  task list. Without "
+                   "--agents the dashboard is a plain plan summary.\n\n  This is the operator's read surface for agent activity; "
+                   "the\n  `planar agent` subcommand namespace does not exist by design.\n  See `planar-agent` for the ritual "
+                   "(claim/heartbeat/complete) and\n  `planar-watch` for the live streaming view.");
+  add_string(*dashboard, "--scope", "Limit to a single scope slug");
+  add_bool(*dashboard, "--agents", "Fold in live claim state + next-available-work per plan");
+  add_json(*dashboard);
 }
 
 } // namespace planar::cmd::handlers

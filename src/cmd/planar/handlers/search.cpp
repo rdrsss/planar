@@ -13,6 +13,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.scope;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -263,6 +265,22 @@ auto search(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? render_json(hits) : se::render_list_text(hits));
   return {};
+}
+
+/// @brief Declare the `search` leaf.
+/// @param root The root app to attach it to.
+auto declare_search(CLI::App& root) -> void {
+  CLI::App* search = root.add_subcommand(
+      "search", "Run a full-text search across every searchable entity kind.\n\n  Queries are passed to SQLite's FTS5 MATCH "
+                "operator directly.\n  Multi-word queries are AND'd unless the operator is given\n  explicitly (OR, NOT, NEAR, "
+                "\"phrase\"). Tokens are unicode61-folded\n  (case-insensitive, diacritic-stripped).");
+  add_string(*search, "--kind", "Restrict to a single kind");
+  add_string(*search, "--status", "Restrict to a single status");
+  add_string(*search, "--scope", "Restrict to a scope slug");
+  add_int(*search, "--plan", "Restrict to a plan id");
+  add_int_default(*search, "--limit", "50", "Max results");
+  add_json(*search);
+  add_positional_described(*search, "query", "FTS5 query string");
 }
 
 } // namespace planar::cmd::handlers

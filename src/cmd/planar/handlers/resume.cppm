@@ -147,4 +147,9 @@ export auto resume_packet(context& ctx, const cliapp::parsed_args& args) -> hand
 /// payload has already been written.
 export auto resume_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `resume` group. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_resume(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

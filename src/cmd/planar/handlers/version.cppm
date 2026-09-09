@@ -34,4 +34,9 @@ namespace planar::cmd::handlers {
 /// @return Success; this leaf has no failure path.
 export auto version(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `version` leaf. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_version(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

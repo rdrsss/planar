@@ -13,6 +13,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.scope;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -98,6 +99,27 @@ auto closure_show(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   // complete payloads; this layer appends nothing.
   ctx.out() << (cliapp::flag_bool(args, "--json") ? store::render_show_json(*id, *rows) : store::render_show_text(*id, *rows));
   return {};
+}
+
+/// @brief Declare the `closure` group and its two leaves.
+/// @param root The root app to attach it to.
+auto declare_closure(CLI::App& root) -> void {
+  CLI::App* closure = root.add_subcommand(
+      "closure",
+      "Compute the *derived* closure of a task — the symbols it must hold\nresident, computed by static analysis from the task's "
+      "declared seed\npaths (task_touch_paths), partitioned by role:\n\n  modify     — the seed's own edited symbols.\n  "
+      "reference  — the interfaces the seed depends on.\n  transitive — deeper hops (stored, but excluded from the effective\n   "
+      "            closure by default).\n\n  Workflow: closure compute <task-id> → closure show <task-id> --json.");
+  closure->require_subcommand(0);
+
+  CLI::App* compute = closure->add_subcommand("compute", "Run the extractor over a task's seeds and persist the closure.");
+  add_string(*compute, "--scope");
+  add_json(*compute);
+  add_positional(*compute, "task-id");
+
+  CLI::App* show = closure->add_subcommand("show", "Read back a task's persisted closure rows.");
+  add_json(*show);
+  add_positional(*show, "task-id");
 }
 
 } // namespace planar::cmd::handlers

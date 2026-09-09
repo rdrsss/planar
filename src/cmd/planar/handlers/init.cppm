@@ -75,18 +75,26 @@
 /// byte-identical output. Reproducing the no-op is D2; adding the refusal
 /// the help text implies would refuse a case the oracle accepts.
 ///
-/// ## The declaration stays generated
+/// ## The declaration used to stay generated. It does not any more.
 ///
-/// Unlike the seven verbs hand-transcribed into `tree.cpp`, `init`'s node
-/// keeps coming from `planar.cmd.planar.surface`'s generated inventory —
-/// only its entry in `unported_paths()` is dropped, so the
-/// `not_implemented` binding gives way to this handler. `apply_surface`
-/// skips nodes that already exist, so either placement dispatches
-/// identically; the generated one is derived from the oracle's own
-/// `schema` catalog and is what `catalog_parity` checks continuously,
-/// whereas hand-transcribing six flags and their help strings would
-/// reintroduce exactly the transcription risk the generator exists to
-/// remove.
+/// This header used to argue that `init`'s node should keep coming from
+/// `planar.cmd.planar.surface`'s generated inventory rather than be
+/// hand-transcribed like the seven verbs in `tree.cpp`: the generated
+/// entry was derived from the oracle's own `schema` catalog, and
+/// hand-transcribing six flags and their help strings would reintroduce
+/// exactly the transcription risk the generator existed to remove.
+///
+/// That argument was sound while the generator could still RUN. It cannot
+/// — the oracle was deleted at the M10 cutover (task 6045) and the table
+/// had been hand-maintained since task 6267 — so the choice stopped being
+/// "generated vs. transcribed" and became "one declaration site or two".
+/// Decision 1068 settled it, and task 6636 folded this node into
+/// `declare_init` below, next to the handler. The transcription risk was
+/// answered mechanically instead: the fold was emitted from the parsed
+/// `node_spec` data rather than retyped, its subcommand / flag /
+/// positional counts were asserted against the source table, and every
+/// folded node was diffed field-by-field against the SHIPPED binary's
+/// `schema` output before the edit.
 module;
 
 export module planar.cmd.planar.handlers.init;
@@ -95,6 +103,7 @@ import std;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
+import cli11;
 
 namespace planar::cmd::handlers {
 
@@ -116,5 +125,10 @@ export auto init(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 /// @param dir The directory to probe, passed to git as `-C`.
 /// @return The trimmed remote URL, or unset.
 export auto probe_git_origin(const std::filesystem::path& dir) -> std::optional<std::string>;
+
+/// @brief Declare the `init` leaf. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_init(CLI::App& root) -> void;
 
 } // namespace planar::cmd::handlers

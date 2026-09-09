@@ -10,6 +10,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.scope;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -117,6 +119,27 @@ auto tree(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? tree_engine::render_json(roots) : tree_engine::render_text(roots));
   return {};
+}
+
+/// @brief Declare the `tree` leaf.
+///
+/// The VERB `tree`, declared in the handler module
+/// `planar.cmd.planar.handlers.tree`. Not to be confused with
+/// `planar.cmd.planar.tree`, the module that builds the whole root app
+/// and calls this function.
+/// @param root The root app to attach it to.
+auto declare_tree(CLI::App& root) -> void {
+  CLI::App* tree =
+      root.add_subcommand("tree", "Render a hierarchical view of Planar entities for one or all\n  scopes.\n\n  Walks plans (via "
+                                  "parent_plan_id), tasks (via plan_id and\n  parent_task_id), and entity_links(derives-from) to "
+                                  "gather\n  artifacts, decisions, scenarios, and questions linked to each plan.");
+  add_string(*tree, "--scope", "Limit to a single scope slug");
+  add_bool(*tree, "--all-scopes", "Include every scope");
+  add_int_default(*tree, "--depth", "-1", "Max tree depth (-1 = unbounded)");
+  add_string(*tree, "--kind", "Restrict to a single kind");
+  add_string(*tree, "--status", "Restrict to a single status");
+  add_string(*tree, "--sort", "Sort key");
+  add_json(*tree);
 }
 
 } // namespace planar::cmd::handlers

@@ -13,6 +13,7 @@ import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -131,6 +132,31 @@ auto unlink(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     ctx.out() << std::format("unlinked: external link {} removed\n", *link_id);
   }
   return {};
+}
+
+/// @brief Declare the `unlink` leaf.
+///
+/// MOVED HERE FROM `tree.cpp` at M11.3f; it was hand-written there
+/// since task 6106 and separately described by a `node_spec` that
+/// `apply_surface` skipped. The two halves agreed field for field.
+///
+/// `<link-id>` is a plain STRING positional with no validator,
+/// deliberately: the oracle declared `.kind = .string` and its handler
+/// converted with Zig's `parseInt`, so `unlink abc` reaches the
+/// HANDLER's refusal (exit 1) rather than a parse error (exit 2).
+/// Attaching `zig_int_validator` here would move that failure a layer
+/// earlier and change both the message and the exit code. The parity
+/// suite pins the whole `1_0` / `007` / `+12` / `_10` / `10_` / `0x10`
+/// / overflow table through this leaf.
+/// @param root The root app to attach it to.
+auto declare_unlink(CLI::App& root) -> void {
+  CLI::App* unlink = root.add_subcommand(
+      "unlink",
+      "Remove an external_links row by its link id.\n\n  Associated sync_events rows are detached by setting link_id to null\n  "
+      "rather than cascade-deleted; they are no longer reachable through\n  the deleted link's audit trail.");
+  add_string(*unlink, "--scope", "Scope for the cross-scope guard (currently informational)");
+  add_json(*unlink);
+  add_positional_described(*unlink, "link-id", "External-link id (integer)");
 }
 
 } // namespace planar::cmd::handlers

@@ -54,6 +54,7 @@ import std;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
+import cli11;
 
 namespace planar::cmd::handlers {
 
@@ -64,5 +65,10 @@ namespace planar::cmd::handlers {
 /// @param args The parsed command line.
 /// @return Success after writing the payload, or the refusal.
 export auto search(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Declare the `search` leaf. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_search(CLI::App& root) -> void;
 
 } // namespace planar::cmd::handlers

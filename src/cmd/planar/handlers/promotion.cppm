@@ -53,6 +53,7 @@ import std;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
+import cli11;
 
 namespace planar::cmd::handlers {
 
@@ -67,5 +68,15 @@ export auto promote(context& ctx, const cliapp::parsed_args& args) -> handler_re
 /// @param args The parsed arguments.
 /// @return Nothing on success, or the refusal.
 export auto demote(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Declare the `promote` leaf. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_promote(CLI::App& root) -> void;
+
+/// @brief Declare the `demote` leaf. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_demote(CLI::App& root) -> void;
 
 } // namespace planar::cmd::handlers

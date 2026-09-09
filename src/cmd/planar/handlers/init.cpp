@@ -13,6 +13,7 @@ import planar.engine.config.init;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -112,6 +113,25 @@ auto init(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 
   ctx.out() << (json ? cfg::render_init_json(result) : cfg::render_init_text(result));
   return {};
+}
+
+/// @brief Declare the `init` leaf.
+///
+/// A LEAF, not a group. `--json` carries a DESCRIPTION here, unlike
+/// the ninety-odd bare `--json` flags elsewhere in the tree, so it is
+/// `add_bool` rather than `add_json` — `report` is the only other
+/// such site.
+/// @param root The root app to attach it to.
+auto declare_init(CLI::App& root) -> void {
+  CLI::App* init = root.add_subcommand("init", "Initialize the Planar database and register the current directory as a project.");
+  add_string(*init, "--name", "Project name (defaults to repo dir)");
+  add_string(*init, "--slug",
+             "Explicit project slug (defaults to a slug derived from the directory name); with --force, targets that "
+             "registration for repoint");
+  add_bool(*init, "--skip-project", "Only init the DB; skip project registration");
+  add_bool(*init, "--allow-no-repo", "Allow initialization outside a git repo");
+  add_bool(*init, "--force", "Overwrite an existing project registration");
+  add_bool(*init, "--json", "Emit machine-readable output");
 }
 
 } // namespace planar::cmd::handlers

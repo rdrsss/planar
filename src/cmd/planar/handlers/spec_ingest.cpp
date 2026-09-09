@@ -17,6 +17,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.scope;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -1456,6 +1458,57 @@ auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "one or more plans failed to ingest"));
   }
   return {};
+}
+
+/// @brief Declare the `spec` group and its `ingest` leaf.
+///
+/// MOVED HERE FROM `tree.cpp` at M11.3f, and the `extra-plans` line
+/// is moved BYTE-FOR-BYTE rather than expressed through a `declare`
+/// primitive, because it is the one declaration in this binary that no
+/// gate and no test can see.
+///
+/// `spec ingest <p1> <p2> <p3>` batches every argument (the oracle's
+/// `rest_field = "extra_plans"`), so `plan` is REQUIRED and a second,
+/// HIDDEN positional takes `expected(0, -1)` to catch the rest.
+/// `->group("")` is what hides it, and `planar.cliapp.walk` treats an
+/// empty group as hidden and PRUNES THE SUBTREE — so the option appears
+/// neither in the `schema` catalog nor on any help page, which are the
+/// only three things `scripts/surface-snapshot.sh` hashes. Nothing in
+/// the test suite mentions `extra-plans` either. Verify it by hand
+/// (`planar spec ingest <plan> <extra>` must still accept the trailing
+/// positional); see task 6661 for the class this belongs to.
+///
+/// Its one sibling in that class, `capture commits shas`, is defended
+/// from both directions and lives in `handlers/capture.cpp`.
+///
+/// ONE NORMALIZATION, recorded because it is the only call below that is
+/// not a mechanical transcription. `tree.cpp` declared `--format` with
+/// CLI11's `default_val("text")`; this uses `add_string_default`, which
+/// is `default_str`. That is the mechanism `apply_surface`'s
+/// `declare_flag` used for every OTHER declared default in the tree, so
+/// it is the convention rather than a deviation, and the catalog reports
+/// `"default":"text"` either way (verified byte-identical). It is
+/// unobservable at runtime as well: the handler reads the flag as
+/// `flag_string(args, "--format").value_or("text")` and never depends on
+/// CLI11 filling the value in.
+/// @param root The root app to attach it to.
+auto declare_spec(CLI::App& root) -> void {
+  CLI::App* spec = root.add_subcommand(
+      "spec",
+      "Commands for the planning pipeline spec surface.\n\n  'spec ingest' decomposes workbench planning documents into a\n  "
+      "structured task graph in the database.\n  'spec draft' generates initial spec artifacts from a goal statement.");
+  spec->require_subcommand(0);
+
+  CLI::App* ingest = spec->add_subcommand("ingest", "Decompose workbench spec documents into the task graph.");
+  add_bool(*ingest, "--apply");
+  add_bool(*ingest, "--apply-removals");
+  add_string_default(*ingest, "--format", "text");
+  add_string(*ingest, "--scope");
+  add_bool(*ingest, "--strict");
+  add_json(*ingest);
+  add_positional(*ingest, "plan");
+  // Hidden variadic "rest" positional -- see this function's header.
+  ingest->add_option("extra-plans")->expected(0, -1)->group("");
 }
 
 } // namespace planar::cmd::handlers

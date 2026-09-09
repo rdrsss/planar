@@ -12,6 +12,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.surface;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -55,6 +56,23 @@ auto completion(context& ctx, const cliapp::parsed_args& args, const CLI::App& r
   // with `writeAll` and appends nothing, so neither does this.
   ctx.out() << cliapp::generate_script(root, *target);
   return {};
+}
+
+/// @brief Declare the `completion` leaf.
+///
+/// `completion` and `schema` are separate top-level verbs at
+/// adjacent catalog positions (36th and 37th) sharing this module, so
+/// each gets its own function — see `declare_promote`.
+/// @param root The root app to attach it to.
+auto declare_completion(CLI::App& root) -> void {
+  CLI::App* completion = root.add_subcommand("completion", "Generate the autocompletion script for the specified shell.");
+  add_positional_described(*completion, "shell", "Shell: bash, zsh, or fish");
+}
+
+/// @brief Declare the `schema` leaf. See `declare_completion`.
+/// @param root The root app to attach it to.
+auto declare_schema(CLI::App& root) -> void {
+  root.add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
 }
 
 } // namespace planar::cmd::handlers

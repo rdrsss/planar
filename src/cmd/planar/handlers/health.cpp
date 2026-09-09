@@ -13,6 +13,8 @@ import planar.installed_surface;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -216,6 +218,45 @@ auto health_hygiene(context& ctx, const cliapp::parsed_args& args) -> handler_re
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? render_json(*report) : he::render_hygiene_text(*report));
   return {};
+}
+
+/// @brief Declare the `health` group and its `hygiene` child.
+///
+/// THE LAST ANCESTOR-FLAGS SITE, and the reason this one is written
+/// as a single contiguous list with `--json` declared LAST on `hygiene`.
+///
+/// `health` was the only generated parent in the tree that both
+/// carried a flag and had a child, so `apply_surface`'s ANCESTOR FLAGS
+/// block fired here and nowhere else: it declared `hygiene`'s own three
+/// flags first and APPENDED the inherited `--json` after them. The
+/// schema catalog cannot see that order (`render_flags` emits inherited
+/// flags first regardless), but `hygiene --help` can, and
+/// `scripts/surface-snapshot.sh` hashes every leaf's help page. So the
+/// `--json` call below must stay where it is — moving it above
+/// `--scope` is a real, gate-caught change to the shipped help page.
+///
+/// This is the mirror image of `declare_handoff`, where the hand half
+/// declared inherited flags FIRST and the fold preserved that. Both
+/// orders ship somewhere; neither is a convention.
+/// @param root The root app to attach it to.
+auto declare_health(CLI::App& root) -> void {
+  CLI::App* health = root.add_subcommand(
+      "health", "Check database reachability, schema version currency, SQLite\n  integrity, in-flight task resumability, pending "
+                "handoff staleness,\n  and manifest-owned installed projection freshness. This command is\n  read-only; recovery "
+                "commands are reported but never run.\n\n  Exit codes:\n    0  all checks pass\n    1  degraded (in-flight tasks "
+                "not resumable, stale handoffs, stale\n       or missing managed projections, integrity errors, etc.)");
+  health->require_subcommand(0);
+  add_json(*health);
+
+  CLI::App* hygiene = health->add_subcommand(
+      "hygiene", "Find draft plans with zero tasks or only terminal tasks, tasks\n  left doing beyond a threshold, and questions "
+                 "left open beyond a\n  threshold. Suggested repair commands are reported but never run.\n\n  This reporter "
+                 "always exits 0 when the report is produced, even when\n  findings are present.");
+  add_string(*hygiene, "--scope", "Limit findings to one association slug");
+  add_int_default(*hygiene, "--stale-doing", "7", "Doing-task age threshold in days");
+  add_int_default(*hygiene, "--stale-open", "30", "Open-question age threshold in days");
+  // Inherited from `health`, and LAST — see this function's header.
+  add_json(*hygiene);
 }
 
 } // namespace planar::cmd::handlers

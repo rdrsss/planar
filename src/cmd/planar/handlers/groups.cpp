@@ -10,6 +10,7 @@ import planar.engine.grouping;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -71,6 +72,29 @@ auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? load::render_json(*rec) : load::render_text(*rec));
   return {};
+}
+
+/// @brief Declare the `groups` group and its `recommend` leaf.
+/// @param root The root app to attach it to.
+auto declare_groups(CLI::App& root) -> void {
+  CLI::App* groups = root.add_subcommand(
+      "groups",
+      "Form **slices** — groups of a plan's open (todo) tasks that share a\ncontext window — by minimizing the duplicated "
+      "closure across slices,\nsubject to a per-slice token budget. Read-only sibling to\n`plan recommend-strategy`: it reports "
+      "a recommendation, writing nothing.\n\nEach slice reports its member task ids, its unioned effective closure\n(the "
+      "distinct symbols the slice must hold resident, role modify ∪\nreference), and that union's token cost. No slice's cost "
+      "exceeds the\nbudget, and the slice-DAG induced by the task `blocks` dependencies is\nalways schedulable (no slice is "
+      "grouped across a dependency violation).\n\n  --solver greedy|mtkahypar  (default greedy) selects the partitioner.\n  "
+      "`mtkahypar` is the optional external hypergraph solver: when its binary\n  is absent or fails, the verb degrades to "
+      "greedy and reports\n  `optimal_available:false` (it never errors on a missing optional dep).\n\n  Workflow: closure "
+      "compute <task> (per task) → groups recommend <plan>.");
+  groups->require_subcommand(0);
+
+  CLI::App* recommend = groups->add_subcommand("recommend", "Recommend closure-minimizing task slices for a plan.");
+  add_string(*recommend, "--budget");
+  add_string(*recommend, "--solver");
+  add_json(*recommend);
+  add_positional(*recommend, "plan-id");
 }
 
 } // namespace planar::cmd::handlers

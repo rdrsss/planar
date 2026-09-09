@@ -10,7 +10,7 @@
 /// The dispatching brief for this task said to port "the artifact engine
 /// and wire its nine leaves". Nine is the right leaf COUNT — `artifact
 /// add | show | list | update | edit | view | diff | review | link`, and
-/// `src/cmd/planar/surface.cpp` declares exactly those — but only five of
+/// `declare_artifact` below declares exactly those — but only five of
 /// them reach an engine. `edit`, `view`, `diff` and `review` are the
 /// workbench DRAFTING quartet, and they do not call
 /// `planar.engine.planning.artifact` at all: each is a ~20-line zig

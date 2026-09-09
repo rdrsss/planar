@@ -12,6 +12,8 @@ import planar.engine.promotion;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -212,6 +214,36 @@ auto demote(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   ctx.out() << (cliapp::flag_bool(args, "--json") ? prom_ns::render_scope_change_json(ref->kind, ref->id, *current, *previous)
                                                   : prom_ns::render_demote_text(ref->kind, ref->id, *previous));
   return {};
+}
+
+/// @brief Declare the `promote` leaf.
+///
+/// `promote` and `demote` are separate TOP-LEVEL verbs at separate
+/// catalog positions (11th and 12th) that happen to share this handler
+/// module, so each gets its own declaration function rather than one
+/// shared function declaring both — the shape `run` and `bench`
+/// already take in `runs.cpp`.
+/// @param root The root app to attach it to.
+auto declare_promote(CLI::App& root) -> void {
+  CLI::App* promote = root.add_subcommand(
+      "promote", "Promote an entity from its current scope to a named association.\n\n  Valid entity kinds: plan, task, "
+                 "question, test_scenario (alias:\n  scenario), artifact, decision.\n\n  Examples:\n    planar promote task:42 "
+                 "--to org:acme\n    planar promote plan:7 --to project:planar");
+  add_string_required(*promote, "--to", "Target association slug");
+  add_json(*promote);
+  add_positional_described(*promote, "ref", "Entity ref (kind:id)");
+}
+
+/// @brief Declare the `demote` leaf. See `declare_promote`.
+/// @param root The root app to attach it to.
+auto declare_demote(CLI::App& root) -> void {
+  CLI::App* demote = root.add_subcommand(
+      "demote", "Reverse a promotion — move an entity back to global personal scope.\n\n  The destination is always global; the "
+                "optional --from flag names the\n  source association slug for clarity. Association-to-association\n  "
+                "transitions go through promote.\n\n  Example:\n    planar demote task:42 --from project:planar");
+  add_string(*demote, "--from", "Source association slug");
+  add_json(*demote);
+  add_positional_described(*demote, "ref", "Entity ref (kind:id)");
 }
 
 } // namespace planar::cmd::handlers

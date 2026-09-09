@@ -15,6 +15,8 @@ import planar.engine.workbench.terminal;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import cli11;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 namespace im = engine::importer;
@@ -508,4 +510,32 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     ctx.out() << result->message << '\n';
   return {};
 }
+/// @brief Declare the `import` leaf.
+///
+/// The local is named `importer`, not `import`: a line beginning with
+/// the token `import` is a module-import directive, and naming the
+/// variable after its verb invites a future edit to move it to the
+/// start of a line.
+/// @param root The root app to attach it to.
+auto declare_import(CLI::App& root) -> void {
+  CLI::App* importer = root.add_subcommand(
+      "import", "import translates the planning artefacts of an existing\n  repository into Planar's data model. It discovers\n  "
+                "tech specs, roadmap milestones, ADRs, and backlog files,\n  infers completion status from checkbox state and "
+                "git history,\n  and produces an ImportPlan for review before committing.");
+  add_bool(*importer, "--from-github", "Pull source from GitHub issues");
+  add_bool(*importer, "--dry-run");
+  add_bool(*importer, "--strict");
+  add_string(*importer, "--threshold", "Similarity threshold, e.g. 0.7");
+  add_string(*importer, "--roadmap", "Path to a roadmap source");
+  add_bool(*importer, "--apply");
+  add_bool(*importer, "--apply-removals");
+  add_bool(*importer, "--no-status-inference");
+  add_bool(*importer, "--interpret");
+  add_string(*importer, "--accept-spec", "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'");
+  add_bool(*importer, "--no-forward-specs", "Skip forward-spec processing entirely");
+  add_string(*importer, "--scope");
+  add_json(*importer);
+  add_positional(*importer, "repo-root");
+}
+
 } // namespace planar::cmd::handlers

@@ -63,6 +63,7 @@ import std;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
+import cli11;
 
 namespace planar::cmd::handlers {
 
@@ -72,5 +73,10 @@ namespace planar::cmd::handlers {
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
 export auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Declare the `spec` group. Folded out of the generated
+/// `surface.cpp` at M11.3f (task 6636, decision 1068).
+/// @param root The root app to attach it to.
+export auto declare_spec(CLI::App& root) -> void;
 
 } // namespace planar::cmd::handlers

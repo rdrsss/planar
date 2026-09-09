@@ -24,7 +24,7 @@
 // leaf landed.
 //
 // `planar:explore` is the only entry the tree still carries, deferred by
-// decision 980 rather than pending — see `src/cmd/planar/surface.cpp`.
+// decision 980 rather than pending — see `src/cmd/planar/surface.cppm`.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -153,19 +153,20 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   // (decision 963/982, condition 2: "the unported inventory contains only
   // `explore`"). The gate is retired with its subject, but the FACT it
   // gated is a standing property of this tree and is pinned here directly.
-  auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
-  // Neither `planar-agent` nor `planar-watch` ships a generated
-  // `surface.cpp` any more — task 6613 (M11.1) folded `planar-watch`'s
-  // `node_spec` table into `tree.cpp` and task 6614 (M11.2) did the same
-  // for `planar-agent`, each moving the functions this parser actually
-  // cares about (`surface_summaries` where it survives, `unported_paths`
-  // always) into a self-contained `surface.cppm`, in the exact same
-  // scanner-recognized empty-array shape `generated_unported` parses.
+  // NO binary ships a generated `surface.cpp` any more — task 6613 (M11.1)
+  // folded `planar-watch`'s `node_spec` table into `tree.cpp`, task 6614
+  // (M11.2) did the same for `planar-agent`, and task 6636 (M11.3f)
+  // finished `planar` by folding its last thirty-three entries out to the
+  // handlers. Each moved the functions this parser actually cares about
+  // (`surface_summaries` where it survives, `unported_paths` always) into
+  // a self-contained `surface.cppm`, in the exact same
+  // scanner-recognized array shape `generated_unported` parses.
   // Repointed rather than dropped: the property being pinned (nothing
-  // remains declared-but-unported on either binary) still holds and is
-  // still worth catching a regression on.
-  auto const agent_unported = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
-  auto const watch_unported = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cppm");
+  // beyond decision 980's deferred leaf remains declared-but-unported on
+  // any binary) still holds and is still worth catching a regression on.
+  auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cppm");
+  auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
+  auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cppm");
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
   REQUIRE(watch_unported.has_value());
