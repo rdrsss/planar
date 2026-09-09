@@ -10,6 +10,7 @@ import planar.engine.identity;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -336,6 +337,42 @@ auto assoc_detect(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     ctx.out() << id::render_detect_text(proposals);
   }
   return {};
+}
+
+auto declare_assoc(CLI::App& root) -> void {
+  CLI::App* assoc =
+      root.add_subcommand("assoc", "Manage associations — the many-to-many tags that group repos into\n  named scopes.\n\n  Both "
+                                   "'assoc' and 'association' are valid subcommand names.\n  User-creatable kinds: org, project, "
+                                   "client, personal, ad-hoc.\n  Auto-detected kinds (via 'assoc detect'): host, path, lang.");
+  assoc->require_subcommand(0);
+
+  CLI::App* list = assoc->add_subcommand("list", "List all known associations.");
+  add_string(*list, "--kind");
+  add_json(*list);
+
+  CLI::App* create = assoc->add_subcommand("create", "Create a new association.");
+  add_string(*create, "--name");
+  add_string(*create, "--kind");
+  add_json(*create);
+  add_positional(*create, "slug");
+
+  CLI::App* add = assoc->add_subcommand("add", "Add a repo to an association.");
+  add_json(*add);
+  add_positional(*add, "slug");
+  add_positional(*add, "repo-path");
+
+  CLI::App* remove = assoc->add_subcommand("remove", "Remove a repo from an association.");
+  add_json(*remove);
+  add_positional(*remove, "slug");
+  add_positional(*remove, "repo-path");
+
+  CLI::App* members = assoc->add_subcommand("members", "List all project members of an association.");
+  add_json(*members);
+  add_positional(*members, "slug");
+
+  CLI::App* detect = assoc->add_subcommand("detect", "Propose (or apply) auto-detected associations for the current directory.");
+  add_bool(*detect, "--apply");
+  add_json(*detect);
 }
 
 } // namespace planar::cmd::handlers

@@ -234,4 +234,18 @@ export auto assoc_remove(context& ctx, const cliapp::parsed_args& args) -> handl
 /// registered project at the cwd or any engine call fails.
 export auto assoc_detect(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `assoc` command tree on `root`.
+///
+/// The CLI declaration for every `assoc` node, colocated with the handlers
+/// above (plan 1051, M11.3d — decision 1068). No `assoc` node was ever
+/// hand-declared in `tree.cpp`, so all seven came from `surface.cpp`'s
+/// generated table and nothing here had to be reconciled against a
+/// shadowing hand declaration.
+///
+/// The group answers to `association` as well as `assoc`, but that alias
+/// is resolved ABOVE the tree — see `planar.cmd.planar.dispatch` — so it
+/// is deliberately not declared here.
+/// @param root The root app to attach the `assoc` group to.
+export auto declare_assoc(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

@@ -4,6 +4,7 @@
 module planar.cmd.planar.handlers.runs;
 
 import std;
+import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.engine.runs.lifecycle;
@@ -12,6 +13,7 @@ import planar.engine.runs.harvest;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -431,6 +433,56 @@ auto run_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // from the output looks like a rendering bug.
   ctx.out() << (wants_json(args) ? rend::render_run_show_json(*found, *events) : rend::render_run_show_text(*found, *events));
   return {};
+}
+
+auto declare_bench(CLI::App& root) -> void {
+  CLI::App* bench = root.add_subcommand(
+      "bench", "Record measurement-rig data for the vertical-slice decomposition experiment.\n\n  Arms: strict, eligibility, "
+               "grouped (or any free-text pilot value).\n  Statuses: running, completed, aborted, error.\n  Touch kinds: "
+               "declared, actual.\n\n  Workflow: bench start → bench event (repeat) → bench touch (repeat)\n            → bench "
+               "harvest → bench finish → bench show --json.");
+  bench->require_subcommand(0);
+
+  CLI::App* start = bench->add_subcommand(
+      "start",
+      "Mint a new run record and print its run_uid.\n\n  --task <id> (repeatable): limit the declared-touch snapshot to\n  the "
+      "given task ids. When omitted, all plan tasks are snapshotted\n  (backward-compatible default). Use when the arm only "
+      "dispatches\n  a known subset of tasks and meta-tasks with no touches would\n  otherwise inflate the declared set.");
+  add_int_required(*start, "--plan");
+  add_string_required(*start, "--arm");
+  add_string_required(*start, "--base-sha");
+  add_string_required(*start, "--config-hash");
+  add_string(*start, "--config-json");
+  add_string(*start, "--corpus-repo");
+  add_string_list(*start, "--task", "Limit declared-touch snapshot to this task id (repeatable).");
+  add_positional(*start, "run-uid");
+
+  CLI::App* event = bench->add_subcommand("event", "Append a journal event to a run.");
+  add_string_required(*event, "--kind");
+  add_int_required(*event, "--seq");
+  add_string(*event, "--payload");
+  add_positional(*event, "run-uid");
+
+  CLI::App* touch = bench->add_subcommand("touch", "Record a declared or actual file touch for a run.");
+  add_int_required(*touch, "--task");
+  add_string_required(*touch, "--path");
+  add_string_required(*touch, "--kind");
+  add_positional(*touch, "run-uid");
+
+  CLI::App* harvest = bench->add_subcommand("harvest", "Harvest git diff as actual touches for a run/task.");
+  add_int_required(*harvest, "--task");
+  add_string_required(*harvest, "--worktree");
+  add_string(*harvest, "--base");
+  add_string(*harvest, "--head");
+  add_positional(*harvest, "run-uid");
+
+  CLI::App* finish = bench->add_subcommand("finish", "Set the terminal status on a run.");
+  add_string_required(*finish, "--status");
+  add_positional(*finish, "run-uid");
+
+  CLI::App* show = bench->add_subcommand("show", "Show a run's full state (header + events + touches).");
+  add_json(*show);
+  add_positional(*show, "run-uid");
 }
 
 } // namespace planar::cmd::handlers

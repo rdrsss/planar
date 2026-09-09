@@ -367,9 +367,10 @@ TEST_CASE("a generated child accepts a flag declared only on its parent", "[clia
   // `error: ExtrasError`, exit 2, where the oracle answers exit 0 (task
   // 6139).
   //
-  // Pinned on a GENERATED node on purpose. `tree.cpp`'s `add_handoff` solves
-  // the same problem BY HAND for the hand-written `handoff`, and a test that
-  // only covered that one would have stayed green through the entire defect.
+  // Pinned on a GENERATED node on purpose. `declare_handoff`, in
+  // `src/cmd/planar/handlers/handoff.cpp`, solves the same problem BY HAND
+  // for the hand-declared `handoff`, and a test that only covered that one
+  // would have stayed green through the entire defect.
   auto const inherited = parse_generated({"group", "leaf", "--json"});
   REQUIRE(inherited.has_value());
   CHECK(planar::cliapp::flag_bool(*inherited, "--json"));

@@ -23,13 +23,23 @@
 ///
 /// ## THE SET IS INCOMPLETE AND GROWS PER WAVE
 ///
-/// What is exported below covers the 87 specs folded by M11.3a
-/// (`plan` + `task`) and M11.3b (`models` + `annotate` + `workbench`) and
-/// nothing more. It is NOT the surface's full primitive vocabulary. M11.3b
-/// added `add_string_required` and `add_positional_optional`, the two
-/// shapes its own 45 specs needed. The remaining 159 specs are already
-/// known to need at least: list-valued flags (`expected(1, -1)`),
-/// positionals carrying their own description, groups declaring
+/// What is exported below covers exactly the shapes the waves folded SO
+/// FAR needed, and nothing more; it is NOT the surface's full primitive
+/// vocabulary. Deliberately stated without a folded/remaining COUNT: two
+/// such counts went stale within one wave of being written, and the live
+/// number is a `git grep -c` away (`surface_nodes()`'s entries, minus its
+/// stripped ordering anchors, are what remain).
+///
+/// Wave by wave: M11.3a (`plan`, `task`) needed only the bool / int /
+/// string / positional shapes; M11.3b (`models`, `annotate`, `workbench`)
+/// added `add_string_required` and `add_positional_optional`; M11.3c (the
+/// drafting quartet) needed no new primitive at all; M11.3d (`capture`,
+/// `assoc`, `workspace`, `handoff`, `templates`, `bench`) added
+/// `add_string_list` for `bench start --task`, the surface's first
+/// repeatable flag.
+///
+/// Shapes that are still UNBUILT because no folded spec has needed one
+/// yet: positionals carrying their own description, groups declaring
 /// `allow_extras` (`scope use|pop|clear`), and REQUIRED bool flags. Each
 /// later wave adds the primitives its own specs need; a wave that finds no
 /// primitive for a shape should add one here rather than inline the raw
@@ -106,6 +116,18 @@ export auto add_string_default(CLI::App& app, std::string_view name, std::string
 /// @param name The canonical long name.
 /// @param desc The help line, or empty for none.
 export auto add_string_required(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+
+/// @brief A REPEATABLE string flag.
+///
+/// `expected(1, -1)` is CLI11's unbounded form, and it is what makes the
+/// catalog report `"list":true` as well as what lets the flag be supplied
+/// more than once. `bench start --task` is the only site today; the shape
+/// carries no default and is never required, so those two parameters are
+/// deliberately absent rather than defaulted.
+/// @param app The node to declare it on.
+/// @param name The canonical long name.
+/// @param desc The help line, or empty for none.
+export auto add_string_list(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
 
 /// @brief An integer flag.
 /// @param app The node to declare it on.

@@ -76,7 +76,8 @@ export struct parsed_args {
   /// "rest" positional — `capture commits`'s trailing SHA list is the
   /// only one this repo declares today (plan 996, task 6358), mirroring
   /// the oracle's etcli-zig `rest_field` mechanism. It is declared
-  /// `->group("")`-hidden (see `tree.cpp`'s `add_capture`) precisely
+  /// `->group("")`-hidden (see `declare_capture` in
+  /// `src/cmd/planar/handlers/capture.cpp`) precisely
   /// because `rest_field` is NOT a real positional and never appears in
   /// the oracle's own `schema` catalog — confirmed against a live oracle
   /// run, whose `capture commits` node reports `"positionals":[]`.

@@ -122,4 +122,37 @@ export auto handoff_list(context& ctx, const cliapp::parsed_args& args) -> handl
 /// @return Success, or the failure.
 export auto handoff_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `handoff` command tree on `root`.
+///
+/// The CLI declaration for every `handoff` node, colocated with the
+/// handlers above (plan 1051, M11.3d — decision 1068). All seven were
+/// SHADOWED before this fold — hand-declared in `tree.cpp` AND described
+/// by a `node_spec` `apply_surface` skipped — and the two agreed on every
+/// name, kind, default and description.
+///
+/// They did NOT agree on the order the three parent flags reach each
+/// CHILD, and that difference is visible in `--help` even though the
+/// `schema` catalog hides it (`render_flags` emits inherited flags first
+/// regardless of declaration order). The hand declaration puts them first;
+/// `apply_surface` appends ancestor flags AFTER the child's own. The hand
+/// order is what ships, so it is what this declaration keeps.
+///
+/// A DUAL node: six subcommands AND its own `<task-id>` positional and
+/// handler. `require_subcommand(0)` allows the bare form and
+/// `planar.cmd.planar.dispatch` routes it to the parent's handler.
+///
+/// ## Inherited flags: redeclared on every child
+///
+/// `handoff` is the first group in this tree whose PARENT carries flags.
+/// etcli inherited a parent's flags into every child both in the catalog
+/// AND at parse time; CLI11 does neither. `fallthrough()` fixes parsing
+/// but also exposes the parent's POSITIONAL on every child, and on
+/// `resume validate` — whose own positional is also named `task-id` — it
+/// threw `OptionAlreadyAdded` while the tree was still being BUILT,
+/// aborting every invocation of the binary, `planar version` included. So
+/// the flags are redeclared on each child instead. The duplicate that
+/// creates in the catalog is deduped by `planar.cliapp.schema`.
+/// @param root The root app to attach the `handoff` group to.
+export auto declare_handoff(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

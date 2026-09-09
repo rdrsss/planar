@@ -14,6 +14,7 @@ import planar.engine.runtime.snapshot;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -415,6 +416,62 @@ auto capture_commits(context& ctx, const cliapp::parsed_args& args) -> handler_r
     ctx.out() << cap::render_commits_text(*result);
   }
   return {};
+}
+
+auto declare_capture(CLI::App& root) -> void {
+  CLI::App* capture = root.add_subcommand(
+      "capture",
+      "Capture commands manage explicit session management and context\n  capture.\n\n  Automatic capture happens on every write "
+      "command; use these\n  subcommands for explicit session management, narrative notes,\n  command history, and snapshots.");
+  capture->require_subcommand(0);
+
+  CLI::App* session =
+      capture->add_subcommand("session", "Open or reuse a session for the current (vendor, vendor-session-id) tuple.");
+  add_string(*session, "--vendor");
+  add_string(*session, "--vendor-session-id");
+  add_string(*session, "--model");
+  add_int(*session, "--task");
+  add_json(*session);
+
+  CLI::App* commits = capture->add_subcommand("commits", "Record explicit git commits into a session.");
+  add_int(*commits, "--session");
+  add_string(*commits, "--repo");
+  add_string(*commits, "--since");
+  add_json(*commits);
+  // Hidden variadic "rest" positional -- see `declare_capture`'s header
+  // in capture.cppm.
+  commits->add_option("shas")->expected(0, -1)->group("");
+
+  CLI::App* end = capture->add_subcommand("end", "End the active or specified session.");
+  add_int(*end, "--session");
+  add_string(*end, "--summary");
+  add_json(*end);
+  add_positional_optional(*end, "session-id");
+
+  CLI::App* note = capture->add_subcommand("note", "Append a narrative note to the active session.");
+  add_int(*note, "--session");
+  add_json(*note);
+  add_positional(*note, "body");
+
+  CLI::App* command = capture->add_subcommand("command", "Append a command to the active session.");
+  add_int(*command, "--session");
+  add_string(*command, "--outcome");
+  add_json(*command);
+  add_positional(*command, "command");
+
+  CLI::App* file = capture->add_subcommand("file", "Attach a file to the active session.");
+  add_int(*file, "--session");
+  add_string(*file, "--role");
+  add_json(*file);
+  add_positional(*file, "path");
+
+  CLI::App* snapshot = capture->add_subcommand("snapshot", "Create a context snapshot.");
+  add_int(*snapshot, "--session");
+  add_int(*snapshot, "--task");
+  add_string(*snapshot, "--note");
+  add_string(*snapshot, "--next-action");
+  add_json(*snapshot);
+  add_positional_optional(*snapshot, "body");
 }
 
 } // namespace planar::cmd::handlers

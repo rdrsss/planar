@@ -147,4 +147,17 @@ export auto templates_path(context& ctx, const cliapp::parsed_args& args) -> han
 /// @return The resolved root, or the exit-1 refusal.
 export auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error>;
 
+/// @brief Declare the `templates` command tree on `root`.
+///
+/// The CLI declaration for every `templates` node, colocated with the
+/// handlers above (plan 1051, M11.3d — decision 1068). No `templates` node
+/// was ever hand-declared in `tree.cpp`, so all seven came from
+/// `surface.cpp`'s generated table.
+///
+/// `show`, `render` and `validate` each take the same three REQUIRED
+/// positionals in the same order — `<set> <system> <kind>` — which is the
+/// template plane's three-level address and not a repetition to collapse.
+/// @param root The root app to attach the `templates` group to.
+export auto declare_templates(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

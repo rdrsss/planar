@@ -345,10 +345,11 @@ auto apply_surface(CLI::App& root, std::span<node_spec const> nodes) -> std::vec
     //
     // Two constraints, and both are load-bearing:
     //
-    //   FLAGS ONLY, never positionals. `tree.cpp`'s `add_handoff` header
-    //   records what the other choice costs: a shared POSITIONAL name
-    //   (`resume validate`) aborted every invocation of the binary at
-    //   tree-build time, not just the affected verb.
+    //   FLAGS ONLY, never positionals. `declare_handoff`'s header, in
+    //   `src/cmd/planar/handlers/handoff.cppm`, records what the other
+    //   choice costs: a shared POSITIONAL name (`resume validate`)
+    //   aborted every invocation of the binary at tree-build time, not
+    //   just the affected verb.
     //
     //   SKIP A NAME THE CHILD ALREADY DECLARES. The child's own declaration
     //   is authoritative -- it may differ in kind, default or description --

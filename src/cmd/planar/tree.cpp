@@ -9,14 +9,20 @@ import planar.cliapp.surface;
 import planar.cmd.planar.declare;
 import planar.cmd.planar.surface;
 import planar.cmd.planar.handlers.annotate;
+import planar.cmd.planar.handlers.assoc;
 import planar.cmd.planar.handlers.artifact;
+import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.decision;
+import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.question;
+import planar.cmd.planar.handlers.runs;
 import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.task;
+import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.workbench;
+import planar.cmd.planar.handlers.workspace;
 
 namespace planar::cmd {
 
@@ -110,201 +116,6 @@ auto add_skills(CLI::App& root) -> void {
                                 "  check`/`scriptorium status` instead. This command has no subcommands.");
 }
 
-/// @brief The `workspace` group — transcribed from
-/// zig/src/cmd/planar/handlers/workspace/cmd.zig. TWO of its four
-/// subcommands are ported (`doctor` and `routing show`), so this group's
-/// own help page lists two commands where the oracle lists four, and the
-/// nested `routing` group lists one child where the oracle lists two.
-///
-/// `routing` is registered as a GROUP even though only one of its two
-/// children is ported, which is the same rule the rest of the tree follows:
-/// omit the unported CHILD (`build`), not the group that would otherwise
-/// have nowhere to hang `show`.
-/// @param root The root app to attach the group to.
-auto add_workspace(CLI::App& root) -> void {
-  CLI::App* workspace =
-      root.add_subcommand("workspace", "Workspace administration.\n\n"
-                                       "  A workspace is identified by an associations row of kind=org. Each\n"
-                                       "  workspace owns a state directory under\n"
-                                       "  ${PLANAR_HOME:-~/.planar}/workspaces/<org_id>/ holding the canonical\n"
-                                       "  AGENTS.md surface for the org.");
-  workspace->require_subcommand(0);
-  CLI::App* doctor = workspace->add_subcommand("doctor", "Scan and fix workspace registration and state consistency.");
-  add_json(*doctor);
-
-  CLI::App* routing = workspace->add_subcommand("routing", "Manage workspace routing table.");
-  routing->require_subcommand(0);
-  CLI::App* show = routing->add_subcommand("show", "Display current routing table.");
-  // The OPTIONAL `[workspace]` selector every workspace leaf takes: an id, a
-  // slug, either with an `org:` prefix, or absent for "the only one".
-  show->add_option("workspace");
-  add_json(*show);
-}
-
-/// @brief The `capture` group — transcribed from
-/// zig/src/cmd/planar/handlers/capture/cmd.zig. All seven leaves are
-/// declared as of task 6358, which added `commits`.
-///
-/// `end`'s `<session-id>` positional is declared as a STRING even though
-/// it names an integer. That is deliberate and load-bearing: the oracle
-/// parses it in the handler and answers `session id must be an integer,
-/// got 'x'` with exit 2, and a `zig_int_validator()` here would answer
-/// CLI11's `ValidationError` wording instead.
-///
-/// `commits`'s trailing SHA list is declared `->group("")`-HIDDEN, not as
-/// an ordinary visible positional. That is not a style choice — see
-/// `parsed_args::positional_lists`'s header for the full reasoning, but
-/// the load-bearing fact is: the oracle's own `rest_field` mechanism
-/// (etcli-zig) is NOT a real positional and never appears in the oracle's
-/// `schema` catalog (confirmed against a live oracle run: `capture
-/// commits` reports `"positionals":[]`). Declaring this as a VISIBLE
-/// positional would add a catalog entry `catalog_parity.hpp` cannot find
-/// in the oracle and fail the parity gate. `group("")` hides it from
-/// `schema`/`--help`/completion the same way CLI11 hides `--help` itself
-/// (see `walk.cppm`'s `visible`), while `harvest()` still collects it —
-/// visibility is a rendering concern, not a parsing one.
-/// @param root The root app to attach the group to.
-auto add_capture(CLI::App& root) -> void {
-  CLI::App* capture = root.add_subcommand("capture", "Capture commands manage explicit session management and context\n"
-                                                     "  capture.\n\n"
-                                                     "  Automatic capture happens on every write command; use these\n"
-                                                     "  subcommands for explicit session management, narrative notes,\n"
-                                                     "  command history, and snapshots.");
-  capture->require_subcommand(0);
-
-  CLI::App* session = capture->add_subcommand("session", "Open or reuse a session for the current (vendor, "
-                                                         "vendor-session-id) tuple.");
-  add_string(*session, "--vendor");
-  add_string(*session, "--vendor-session-id");
-  add_string(*session, "--model");
-  add_int(*session, "--task");
-  add_json(*session);
-
-  CLI::App* commits = capture->add_subcommand("commits", "Record explicit git commits into a session.");
-  add_int(*commits, "--session");
-  add_string(*commits, "--repo");
-  add_string(*commits, "--since");
-  add_json(*commits);
-  // Hidden variadic "rest" positional -- see this function's header.
-  commits->add_option("shas")->expected(0, -1)->group("");
-
-  CLI::App* end = capture->add_subcommand("end", "End the active or specified session.");
-  add_int(*end, "--session");
-  add_string(*end, "--summary");
-  end->add_option("session-id");
-  add_json(*end);
-
-  CLI::App* note = capture->add_subcommand("note", "Append a narrative note to the active session.");
-  add_int(*note, "--session");
-  note->add_option("body")->required();
-  add_json(*note);
-
-  CLI::App* command = capture->add_subcommand("command", "Append a command to the active session.");
-  add_int(*command, "--session");
-  add_string(*command, "--outcome");
-  command->add_option("command")->required();
-  add_json(*command);
-
-  CLI::App* file = capture->add_subcommand("file", "Attach a file to the active session.");
-  add_int(*file, "--session");
-  add_string(*file, "--role");
-  file->add_option("path")->required();
-  add_json(*file);
-
-  CLI::App* snapshot = capture->add_subcommand("snapshot", "Create a context snapshot.");
-  add_int(*snapshot, "--session");
-  add_int(*snapshot, "--task");
-  add_string(*snapshot, "--note");
-  add_string(*snapshot, "--next-action");
-  snapshot->add_option("body");
-  add_json(*snapshot);
-}
-
-/// @brief The `handoff` group — transcribed from
-/// zig/src/cmd/planar/handlers/handoff/cmd.zig.
-///
-/// A DUAL node: it has six subcommands AND its own `<task-id>` positional
-/// and handler. `require_subcommand(0)` allows the bare form, and
-/// `planar.cmd.planar.dispatch` routes it to the parent's handler because
-/// the table has an entry for `"handoff"` — see that module's header.
-///
-/// ## Inherited flags: redeclared on every child
-///
-/// `handoff` is the FIRST group in this tree whose PARENT carries flags,
-/// so it is the first to meet a CLI11/etcli difference that `workflow`,
-/// `annotate`, `workspace` and `workbench` never could. etcli inherits a
-/// parent's flags into every child both in the `schema` catalog AND at
-/// parse time; CLI11 does neither.
-///
-/// Two mechanisms were tried and only one survives:
-///
-///   `fallthrough()`   Lets an unknown option on the child fall back to the
-///                     parent, which fixes PARSING — but CLI11 then also
-///                     exposes the parent's options ON the child, so the
-///                     catalog gained duplicate flags AND the parent's
-///                     `task-id` POSITIONAL appeared on every child. Worse,
-///                     on `resume validate` — whose own positional is also
-///                     named `task-id` — CLI11 threw `OptionAlreadyAdded`
-///                     while the tree was still being BUILT, aborting every
-///                     invocation of the binary, `planar version` included.
-///   redeclaration     Declaring the parent's flags on each child fixes
-///                     parsing with no positional bleed. It DOES make the
-///                     flag appear twice in the catalog — once inherited,
-///                     once local — and that duplication is a
-///                     `planar.cliapp.schema` bug, now fixed there (see its
-///                     `render_flags`) rather than worked around here.
-///
-/// So: declared on the parent AND on every child. Any future group with
-/// parent-level flags needs the same.
-/// @param root The root app to attach the group to.
-auto add_handoff(CLI::App& root) -> void {
-  CLI::App* handoff =
-      root.add_subcommand("handoff", "Capture a context snapshot for the current session and atomically:\n"
-                                     "    1. Insert a context_snapshots row.\n"
-                                     "    2. Insert a handoffs row with status='pending'.\n"
-                                     "    3. Validate the handoff (pending \xe2\x86\x92 validated, validated_at set).\n\n"
-                                     "  Subcommands manage the handoff lifecycle: create / validate /\n"
-                                     "  consume / abandon / list / show.");
-  handoff->require_subcommand(0);
-  add_string(*handoff, "--vendor");
-  add_string(*handoff, "--note");
-  add_json(*handoff);
-  handoff->add_option("task-id");
-
-  // The two parent flags every child redeclares, plus --json. See above.
-  auto inherited = [](CLI::App& app) {
-    add_string(app, "--vendor");
-    add_string(app, "--note");
-    add_json(app);
-  };
-
-  CLI::App* create = handoff->add_subcommand("create", "Create a handoff from an existing snapshot.");
-  inherited(*create);
-  create->add_option("snapshot-id")->required();
-
-  CLI::App* validate = handoff->add_subcommand("validate", "Validate a pending handoff.");
-  inherited(*validate);
-  validate->add_option("handoff-id")->required();
-
-  CLI::App* consume = handoff->add_subcommand("consume", "Mark a handoff as consumed.");
-  inherited(*consume);
-  add_int(*consume, "--session");
-  consume->add_option("handoff-id")->required();
-
-  CLI::App* abandon = handoff->add_subcommand("abandon", "Abandon a non-terminal handoff.");
-  inherited(*abandon);
-  add_string(*abandon, "--reason");
-  abandon->add_option("handoff-id")->required();
-
-  CLI::App* list = handoff->add_subcommand("list", "List handoffs.");
-  inherited(*list);
-  add_string(*list, "--status");
-
-  CLI::App* show = handoff->add_subcommand("show", "Show a handoff's details.");
-  inherited(*show);
-  show->add_option("handoff-id")->required();
-}
-
 /// @brief The `resume` group — transcribed from
 /// zig/src/cmd/planar/handlers/resume/cmd.zig. Also a DUAL node.
 ///
@@ -317,7 +128,8 @@ auto add_handoff(CLI::App& root) -> void {
 /// @param root The root app to attach the group to.
 /// @brief The `spec ingest` leaf (plan 996, task 6365).
 ///
-/// Hand-wired, like `add_capture`'s `commits`, because CLI11's declarative
+/// Hand-wired, like `declare_capture`'s `commits` (now in
+/// handlers/capture.cpp), because CLI11's declarative
 /// surface table has no variadic-positional primitive: `spec ingest <p1>
 /// <p2> <p3>` batches every argument (`zig`'s `rest_field = "extra_plans"`),
 /// so `plan` is REQUIRED and a second, hidden `extra-plans` positional takes
@@ -385,32 +197,44 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // ORDER. While `surface.cpp` still holds entries, `apply_surface`'s
   // `reorder_children` pass below rewrites the root's child order from the
   // spec list, so these calls' position is not yet what the catalog shows --
-  // the five retained ORDERING ANCHORS in `surface.cpp` are (see that
+  // the fifteen retained ORDERING ANCHORS in `surface.cpp` are (see that
   // file). When the LAST wave deletes `surface.cpp` and with it the
-  // `apply_surface` call, this call order becomes authoritative and must
-  // then read in catalog order: init, scope, assoc, plan, task, question,
-  // ... . `plan` and `task` are placed first because every verb already
-  // hand-written below follows them in that order; M11.3c's drafting
-  // quartet and M11.3b's three domains follow them in THEIR catalog order
-  // (question 6th, scenario 7th, decision 8th, artifact 9th, annotate
-  // 10th, workbench 13th, models 23rd), so the block already reads in the
-  // sequence the last wave will need.
+  // `apply_surface` call, this call order becomes authoritative. The block
+  // below is ALREADY in catalog order among itself (assoc 3rd, plan 4th,
+  // task 5th, question 6th, scenario 7th, decision 8th, artifact 9th,
+  // annotate 10th, workbench 13th, workspace 14th, handoff 19th, capture
+  // 20th, models 23rd, templates 28th, bench 39th), so the last wave
+  // interleaves the remaining verbs into it rather than resequencing it.
   //
-  // M11.3b also RETIRED `add_annotate`, `add_workbench` and the
-  // `add_filter_mode` helper the workbench group shared with nothing else.
-  // Those ten workbench children and two annotate children were SHADOWED --
-  // hand-declared here and separately described by a `node_spec` that
-  // `apply_surface`'s find-or-create arm skipped. The hand and generated
-  // declarations were compared field by field before the fold and agreed
-  // exactly on all twelve, so nothing was decided by which one won; the
-  // folded declaration carries one merged list, in catalog order.
+  // WHAT EACH WAVE FOUND WHEN IT FOLDED, because the shape differs and the
+  // difference is the interesting part:
   //
-  // M11.3c's quartet (`question`, `scenario`, `decision`, `artifact`) had
-  // the opposite shape: NONE of their 44 nodes was hand-declared here, so
-  // all 44 came from `surface.cpp` alone and no reconciliation was needed.
-  // Their `edit`/`view`/`diff`/`review` leaves are handled in
-  // `handlers/drafting.cpp` but are declared with their own domain, since
-  // a group's sibling order is only correct as one contiguous list.
+  //   M11.3a  plan, task -- nothing was shadowed.
+  //   M11.3b  models, annotate, workbench. RETIRED `add_annotate`,
+  //           `add_workbench` and the `add_filter_mode` helper the
+  //           workbench group shared with nothing else. Twelve nodes were
+  //           SHADOWED -- hand-declared here AND separately described by a
+  //           `node_spec` that `apply_surface`'s find-or-create arm
+  //           skipped -- and the two halves agreed field for field.
+  //   M11.3c  question, scenario, decision, artifact. The opposite shape:
+  //           NONE of their 44 nodes was hand-declared here. Their
+  //           `edit`/`view`/`diff`/`review` leaves are handled in
+  //           `handlers/drafting.cpp` but are declared with their own
+  //           domain, since a group's sibling order is only correct as one
+  //           contiguous list.
+  //   M11.3d  assoc, workspace, handoff, capture, templates, bench.
+  //           RETIRED `add_workspace`, `add_capture` and `add_handoff`.
+  //           The most shadowed wave: 19 of its 43 nodes were declared
+  //           here as well as in `surface.cpp` (all of `capture`, all of
+  //           `handoff`, and four of `workspace`'s seven). Every field the
+  //           two halves both described agreed. The ONE thing they
+  //           disagreed on was ordering, in two places, and both are
+  //           recorded where they now live: `workspace` had three children
+  //           only the generated half named, and `handoff`'s children
+  //           receive their three parent flags BEFORE their own here where
+  //           `apply_surface` would append them after. The hand order is
+  //           what ships, and the fold keeps it.
+  handlers::declare_assoc(*app);
   handlers::declare_plan(*app);
   handlers::declare_task(*app);
   handlers::declare_question(*app);
@@ -419,15 +243,17 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_artifact(*app);
   handlers::declare_annotate(*app);
   handlers::declare_workbench(*app);
+  handlers::declare_workspace(*app);
+  handlers::declare_handoff(*app);
+  handlers::declare_capture(*app);
   handlers::declare_models(*app);
+  handlers::declare_templates(*app);
+  handlers::declare_bench(*app);
 
   app->add_subcommand("version", "Print the planar version, commit, and C++ toolchain.");
   add_workflow(*app);
   add_unlink(*app);
   add_skills(*app);
-  add_workspace(*app);
-  add_capture(*app);
-  add_handoff(*app);
   add_resume(*app);
   add_spec(*app);
   // Everything above is hand-transcribed and lands WITH its handler. This

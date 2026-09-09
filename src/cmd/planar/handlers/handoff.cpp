@@ -18,6 +18,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.capture;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -437,6 +438,54 @@ auto handoff_show(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return std::unexpected(error_from_body(kind_t::generic_failure, "handoff show: QueryFailed"));
   }
   return emit_one(ctx, args, *found);
+}
+
+auto declare_handoff(CLI::App& root) -> void {
+  CLI::App* handoff = root.add_subcommand(
+      "handoff",
+      "Capture a context snapshot for the current session and atomically:\n    1. Insert a context_snapshots row.\n    2. Insert "
+      "a handoffs row with status='pending'.\n    3. Validate the handoff (pending → validated, validated_at set).\n\n  "
+      "Subcommands manage the handoff lifecycle: create / validate /\n  consume / abandon / list / show.");
+  handoff->require_subcommand(0);
+  add_string(*handoff, "--vendor");
+  add_string(*handoff, "--note");
+  add_json(*handoff);
+  add_positional_optional(*handoff, "task-id");
+
+  // The two parent flags every child redeclares, plus --json -- see
+  // `declare_handoff`'s header in handoff.cppm for why redeclaration
+  // rather than CLI11's `fallthrough()`.
+  auto inherited = [](CLI::App& app) {
+    add_string(app, "--vendor");
+    add_string(app, "--note");
+    add_json(app);
+  };
+
+  CLI::App* create = handoff->add_subcommand("create", "Create a handoff from an existing snapshot.");
+  inherited(*create);
+  add_positional(*create, "snapshot-id");
+
+  CLI::App* validate = handoff->add_subcommand("validate", "Validate a pending handoff.");
+  inherited(*validate);
+  add_positional(*validate, "handoff-id");
+
+  CLI::App* consume = handoff->add_subcommand("consume", "Mark a handoff as consumed.");
+  inherited(*consume);
+  add_int(*consume, "--session");
+  add_positional(*consume, "handoff-id");
+
+  CLI::App* abandon = handoff->add_subcommand("abandon", "Abandon a non-terminal handoff.");
+  inherited(*abandon);
+  add_string(*abandon, "--reason");
+  add_positional(*abandon, "handoff-id");
+
+  CLI::App* list = handoff->add_subcommand("list", "List handoffs.");
+  inherited(*list);
+  add_string(*list, "--status");
+
+  CLI::App* show = handoff->add_subcommand("show", "Show a handoff's details.");
+  inherited(*show);
+  add_positional(*show, "handoff-id");
 }
 
 } // namespace planar::cmd::handlers

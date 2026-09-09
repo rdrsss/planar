@@ -82,6 +82,7 @@ module;
 export module planar.cmd.planar.handlers.runs;
 
 import std;
+import cli11;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
@@ -163,5 +164,22 @@ export auto run_finish(context& ctx, const cliapp::parsed_args& args) -> handler
 /// @param args The parsed arguments.
 /// @return Success, or the refusal.
 export auto run_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Declare the `bench` command tree on `root`.
+///
+/// The CLI declaration for every `bench` node, colocated with the
+/// `bench_*` handlers above (plan 1051, M11.3d — decision 1068). No
+/// `bench` node was ever hand-declared in `tree.cpp`, so all seven came
+/// from `surface.cpp`'s generated table.
+///
+/// `bench` and `run` share this module because they share their engine,
+/// but they are separate top-level groups at separate catalog positions
+/// (`bench` 39th, `run` 41st) and `run` is folded by a later wave; this
+/// function declares `bench` ONLY.
+///
+/// `start --task` is the surface's first REPEATABLE flag and the reason
+/// `planar.cmd.planar.declare` grew `add_string_list`.
+/// @param root The root app to attach the `bench` group to.
+export auto declare_bench(CLI::App& root) -> void;
 
 } // namespace planar::cmd::handlers

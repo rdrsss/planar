@@ -70,7 +70,7 @@
 /// terms: etcli-zig's `rest_field` mechanism captures leftover argv into a
 /// named slice without ever appearing in the `positionals` array the
 /// oracle's `schema` catalog renders (confirmed against a live oracle
-/// run). `tree.cpp`'s `add_capture` mirrors that by declaring a
+/// run). `declare_capture` below mirrors that by declaring a
 /// `->group("")`-hidden positional; see its header.
 module;
 
@@ -148,5 +148,33 @@ export struct vendor_tuple {
 /// @param env The environment to read.
 /// @return The resolved tuple.
 export auto resolve_vendor_tuple(const env_lookup& env) -> vendor_tuple;
+
+/// @brief Declare the `capture` command tree on `root`.
+///
+/// The CLI declaration for every `capture` node, colocated with the
+/// handlers above (plan 1051, M11.3d — decision 1068). All eight were
+/// SHADOWED before this fold: hand-declared in `tree.cpp` AND separately
+/// described by a `node_spec` that `apply_surface`'s find-or-create arm
+/// skipped. The two were compared field by field first and agreed on
+/// every one, so the merge below decided nothing by picking a winner.
+///
+/// `commits`'s trailing SHA list is the one thing only the hand
+/// declaration ever carried, because the generated table cannot express
+/// it: it is declared `->group("")`-HIDDEN rather than as an ordinary
+/// positional. That is not a style choice. The oracle's own `rest_field`
+/// mechanism was not a real positional and never appeared in its `schema`
+/// catalog (`capture commits` reports `"positionals":[]`), so declaring
+/// this visibly would add a catalog entry with no counterpart. `group("")`
+/// hides it from `schema`/`--help`/completion the same way CLI11 hides
+/// `--help` itself, while `harvest()` still collects it — visibility is a
+/// rendering concern, not a parsing one. See `parsed_args::positional_lists`.
+///
+/// `end`'s `<session-id>` is declared a STRING even though it names an
+/// integer, and that is load-bearing: the handler parses it and answers
+/// `session id must be an integer, got 'x'` with exit 2, where an
+/// `add_int`-style validator would answer CLI11's `ValidationError`
+/// wording instead.
+/// @param root The root app to attach the `capture` group to.
+export auto declare_capture(CLI::App& root) -> void;
 
 } // namespace planar::cmd::handlers

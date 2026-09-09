@@ -220,4 +220,29 @@ export auto workspace_routing_build(context& ctx, const cliapp::parsed_args& arg
 /// @return Success, or one of the refusals above.
 export auto workspace_regenerate(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `workspace` command tree on `root`.
+///
+/// The CLI declaration for every `workspace` node, colocated with the
+/// handlers above (plan 1051, M11.3d — decision 1068). FOUR of the seven
+/// were SHADOWED before this fold — `workspace`, `doctor`, `routing` and
+/// `routing show` were hand-declared in `tree.cpp` while `init`,
+/// `regenerate` and `routing build` came only from `surface.cpp`'s
+/// generated table — and every field the two halves both described agreed.
+/// That split is exactly why the fold is a MERGE INTO ONE LIST rather than
+/// a move of the hand-written block: the generated half held three
+/// children the hand-written half never named, and the sibling order
+/// (`init`, `doctor`, `routing`, `regenerate`; `build` before `show`) is
+/// only correct as one contiguous list.
+///
+/// The hand-written block carried a comment claiming this group's help
+/// page lists two commands where the oracle lists four, and that `routing`
+/// lists one child where the oracle lists two. That was wrong at the time
+/// it was written: `apply_surface` declared the other three from the
+/// generated table, so the binary's catalog has always reported all four
+/// children and both `routing` children. What is true is narrower — every
+/// node here HAS a handler, so none of them is one of the exit-64 declared
+/// -but-unported leaves.
+/// @param root The root app to attach the `workspace` group to.
+export auto declare_workspace(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

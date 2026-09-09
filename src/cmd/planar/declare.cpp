@@ -45,6 +45,13 @@ auto add_string_required(CLI::App& app, std::string_view name, std::string_view 
   opt->required();
 }
 
+auto add_string_list(CLI::App& app, std::string_view name, std::string_view desc) -> void {
+  CLI::Option* opt = app.add_option(std::string{name})->expected(1, -1);
+  if (!desc.empty()) {
+    opt->description(std::string{desc});
+  }
+}
+
 auto add_int(CLI::App& app, std::string_view name, std::string_view desc) -> void {
   CLI::Option* opt = app.add_option(std::string{name})->check(cliapp::zig_int_validator());
   if (!desc.empty()) {

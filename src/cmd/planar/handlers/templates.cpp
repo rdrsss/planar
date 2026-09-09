@@ -17,6 +17,7 @@ import planar.cmd.planar.cli_log;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -390,6 +391,49 @@ auto templates_path(context& ctx, const cliapp::parsed_args& args) -> handler_re
 
 auto templates_root_for(context& ctx) -> std::expected<std::string, domain_error> {
   return resolve_templates_root(ctx);
+}
+
+auto declare_templates(CLI::App& root) -> void {
+  CLI::App* templates = root.add_subcommand(
+      "templates", "Manage the template plane: list available templates, show their\n  raw JSON, render them against a DB entity "
+                   "(dry run), validate\n  syntax, initialise the default set on disk, and print resolution\n  paths.\n\n  "
+                   "Templates resolve via a three-level fallback chain:\n    1. ~/.planar/templates/<kind>/<slug>.json (operator "
+                   "overrides)\n    2. ~/.planar/templates/defaults/<kind>/<slug>.json (default copies)\n    3. "
+                   "templates/defaults/<kind>/<slug>.json (embedded in the binary)");
+  templates->require_subcommand(0);
+
+  CLI::App* list = templates->add_subcommand("list", "List available templates.");
+  add_string(*list, "--system");
+  add_string(*list, "--set");
+  add_json(*list);
+
+  CLI::App* show = templates->add_subcommand("show", "Show a template's raw JSON.");
+  add_json(*show);
+  add_positional(*show, "set");
+  add_positional(*show, "system");
+  add_positional(*show, "kind");
+
+  CLI::App* render = templates->add_subcommand("render", "Render a template against a database entity (dry run; no writes).");
+  add_string_required(*render, "--entity", "Entity ref (kind:id) — task:42, plan:7, scenario:3");
+  add_json(*render);
+  add_positional(*render, "set");
+  add_positional(*render, "system");
+  add_positional(*render, "kind");
+
+  CLI::App* validate = templates->add_subcommand("validate", "Validate template syntax.");
+  add_json(*validate);
+  add_positional(*validate, "set");
+  add_positional(*validate, "system");
+  add_positional(*validate, "kind");
+
+  CLI::App* init = templates->add_subcommand("init", "Extract default templates to disk.");
+  add_bool(*init, "--force");
+  add_json(*init);
+
+  CLI::App* path = templates->add_subcommand("path", "Show template resolution paths.");
+  add_string(*path, "--system");
+  add_string(*path, "--set");
+  add_json(*path);
 }
 
 } // namespace planar::cmd::handlers

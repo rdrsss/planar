@@ -14,6 +14,7 @@ import planar.json_text;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -565,6 +566,56 @@ auto workspace_regenerate(context& ctx, const cliapp::parsed_args& args) -> hand
   ctx.out() << std::format("regenerated AGENTS.md for org:{} ({} projects, {} bytes)\n", org->slug, outcome->project_count,
                            outcome->bytes_written);
   return {};
+}
+
+namespace {
+
+/// @brief Declare the nested `workspace routing` group and its children.
+///
+/// A file-local helper rather than an inline block so that `show`, a
+/// child name this tree uses at several depths, is scoped to the group
+/// it belongs to.
+/// @param workspace The `workspace` group node.
+auto declare_workspace_routing(CLI::App& workspace) -> void {
+  CLI::App* routing = workspace.add_subcommand("routing", "Manage workspace routing table.");
+  routing->require_subcommand(0);
+
+  CLI::App* build = routing->add_subcommand("build", "Build routing table from workspace membership.");
+  add_bool(*build, "--enrich");
+  add_json(*build);
+  add_positional_optional(*build, "workspace");
+
+  CLI::App* show = routing->add_subcommand("show", "Display current routing table.");
+  add_json(*show);
+  add_positional_optional(*show, "workspace");
+}
+
+} // namespace
+
+auto declare_workspace(CLI::App& root) -> void {
+  CLI::App* workspace = root.add_subcommand(
+      "workspace", "Workspace administration.\n\n  A workspace is identified by an associations row of kind=org. Each\n  "
+                   "workspace owns a state directory under\n  ${PLANAR_HOME:-~/.planar}/workspaces/<org_id>/ holding the "
+                   "canonical\n  AGENTS.md surface for the org.");
+  workspace->require_subcommand(0);
+
+  CLI::App* init = workspace->add_subcommand("init", "Initialize a workspace (org-level association).");
+  add_string(*init, "--name");
+  add_string(*init, "--slug");
+  add_int_default(*init, "--scan", "1");
+  add_bool(*init, "--meta-repo");
+  add_bool(*init, "--no-scan");
+  add_bool(*init, "--enrich");
+  add_json(*init);
+
+  CLI::App* doctor = workspace->add_subcommand("doctor", "Scan and fix workspace registration and state consistency.");
+  add_json(*doctor);
+
+  declare_workspace_routing(*workspace);
+
+  CLI::App* regenerate = workspace->add_subcommand("regenerate", "Regenerate AGENTS.md from current state.");
+  add_json(*regenerate);
+  add_positional_optional(*regenerate, "workspace");
 }
 
 } // namespace planar::cmd::handlers
