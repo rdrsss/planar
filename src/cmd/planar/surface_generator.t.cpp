@@ -1,28 +1,27 @@
 // @file surface_generator.t.cpp
-// @brief The `scripts/gen-cli-surface.py` generator and the shape of the
-// `k_unported` inventories it writes into each binary's `surface.cpp`.
+// @brief The shape of the `k_unported` inventories each binary's
+// `surface.cppm` carries.
 //
 // ## Provenance
 //
-// This case used to live in `statediff.t.cpp`, the C++/Zig DATABASE-STATE
-// differential lane. That lane and its oracle were deleted at the M10
-// cutover (task 6045, decisions 963/982) — with one implementation there is
-// no differential to run. This case survived the deletion because its
-// subject is NOT cross-implementation agreement: it is the generator's own
-// two output branches, exercised over synthetic catalogs it writes itself.
-// It never read the oracle and does not need one.
+// This file used to also carry a case exercising `scripts/gen-cli-surface.py`
+// itself — copying the script into a synthetic temp-dir fixture, running it
+// against hand-built catalogs, and pinning its two `k_unported` output
+// branches (empty and non-empty). Plan 1051 M11 folded away every generated
+// `node_spec` table the script fed (`planar-watch` at task 6613, `planar-agent`
+// at 6614, `planar` across tasks 6631-6636), so the script had no more output
+// to generate, and task 6616 deleted it along with `cliapp::apply_surface`,
+// the mechanism it fed. That case tested the script and nothing else, so it
+// was deleted with it rather than repointed.
+//
+// The case that remains pins a property of the checked-in tree, not of the
+// generator: see its own comment for what it inherited from the retired
+// `statediff.t.cpp` oracle-retirement gate.
 //
 // ## What it pins
 //
 // `unported_paths()` is what makes a declared-but-unported leaf exit 64 with
-// "not implemented in this build" rather than crash or silently succeed. The
-// generator has two branches for it, and the EMPTY one is the one that broke:
-// a bare `return k_unported` over a zero-length array is ill-formed, so the
-// generator emits a one-element array narrowed with `.first(0)` instead.
-// Nothing else in the tree checks that the empty branch stays well-formed,
-// and a regression there would not surface until some binary's last unported
-// leaf landed.
-//
+// "not implemented in this build" rather than crash or silently succeed.
 // `planar:explore` is the only entry the tree still carries, deferred by
 // decision 980 rather than pending — see `src/cmd/planar/surface.cppm`.
 
@@ -92,60 +91,6 @@ auto generated_unported(const std::filesystem::path& source) -> std::optional<st
 }
 
 } // namespace
-
-TEST_CASE("cli surface generator emits safe empty inventories and preserves non-empty ones", "[cmd][generator]") {
-  auto const      root = std::filesystem::temp_directory_path() /
-                         std::format("planar_surface_generator_{}", std::chrono::steady_clock::now().time_since_epoch().count());
-  std::error_code discard;
-  std::filesystem::create_directories(root / "scripts", discard);
-  for (auto const& binary : {"planar", "planar-agent", "planar-watch"}) {
-    std::filesystem::create_directories(root / "src" / "cmd" / binary, discard);
-    std::ofstream dispatch(root / "src" / "cmd" / binary / "dispatch.cpp");
-    dispatch << "namespace x { void f() {} }\n";
-  }
-  REQUIRE(std::filesystem::copy_file(target_source_root() / "scripts/gen-cli-surface.py", root / "scripts/gen-cli-surface.py",
-                                     std::filesystem::copy_options::overwrite_existing, discard));
-  auto const catalog_dir = root / "catalog";
-  std::filesystem::create_directories(catalog_dir, discard);
-  auto write_catalog = [&](std::string_view binary, std::string_view command, std::string_view leaf) {
-    std::ofstream out(catalog_dir / ("oracle-" + std::string{binary} + ".json"));
-    out << "{\"commands\":[{\"command\":\"" << command
-        << "\",\"summary\":\"root\",\"description\":\"root\",\"path\":[],\"flags\":[],\"positionals\":[],\"subcommands\":[]},{"
-           "\"command\":\""
-        << command << " " << leaf << "\",\"summary\":\"leaf\",\"description\":\"leaf\",\"path\":[\"" << leaf
-        << "\"],\"flags\":[],\"positionals\":[],\"subcommands\":[]}] }";
-  };
-  write_catalog("planar", "planar", "ported");
-  write_catalog("planar-agent", "planar-agent", "ported");
-  write_catalog("planar-watch", "planar-watch", "pending");
-  // `pending` is intentionally absent from dispatch, while `ported` is
-  // registered below. This distinguishes the generator's empty and
-  // non-empty branches without any live DB.
-  for (auto const& binary : {"planar", "planar-agent"}) {
-    std::ofstream dispatch(root / "src" / "cmd" / binary / "dispatch.cpp", std::ios::app);
-    dispatch << "table.emplace(\"ported\", f);\n";
-  }
-  auto const command =
-      std::format("cd '{}' && python3 scripts/gen-cli-surface.py '{}' >/dev/null", root.string(), catalog_dir.string());
-  REQUIRE(std::system(command.c_str()) == 0);
-  auto const empty   = source_text(root / "src/cmd/planar-agent/surface.cpp");
-  auto const pending = source_text(root / "src/cmd/planar-watch/surface.cpp");
-  // Both live under this test's own synthetic `root`, written by the
-  // generator invocation above — unrelated to the real repository's
-  // `src/cmd/planar-watch/surface.cpp`, which task 6613 (M11.1) deleted.
-  // This case never reads the real tree, so that deletion does not touch
-  // it; see the next TEST_CASE for the one that does.
-  REQUIRE(empty.has_value());
-  REQUIRE(pending.has_value());
-  CHECK(empty->contains("k_unported[] = {std::string_view{}}"));
-  CHECK(empty->contains(".first(0)"));
-  CHECK(generated_unported(root / "src/cmd/planar-agent/surface.cpp") == std::vector<std::string>{});
-  CHECK(pending->contains("\"pending\""));
-  CHECK(generated_unported(root / "src/cmd/planar-watch/surface.cpp") == std::vector<std::string>{"pending"});
-  // Break probe: the prior bare `return k_unported` branch cannot emit the
-  // zero-length span string this test pins, so this case fails if restored.
-  std::filesystem::remove_all(root, discard);
-}
 
 TEST_CASE("the checked-in unported inventories carry only decision-980's deferred leaf", "[cmd][generator]") {
   // The live half of the same subject. `statediff.t.cpp` used to assert
