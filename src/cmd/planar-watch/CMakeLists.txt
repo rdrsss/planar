@@ -88,10 +88,10 @@
 # test for those five.
 #
 # The root help page now lists all twelve subcommands (CLI11's own
-# generated SUBCOMMANDS block, via `cliapp::apply_surface` for the two
-# still-unported ones), but is CLI11-formatted rather than transcribed
-# byte for byte, so leaf pages are pinned and the root page stays
-# not oracle-comparable.
+# generated SUBCOMMANDS block; every one of them hand-declared directly in
+# `tree.cpp` since task 6613 folded `surface.cpp`'s generated `node_spec`
+# table in), but is CLI11-formatted rather than transcribed byte for byte,
+# so leaf pages are pinned and the root page stays not oracle-comparable.
 
 planar_binary(planar_watch
   MAIN
@@ -116,7 +116,6 @@ planar_binary(planar_watch
   SOURCES
     context.cpp
     tree.cpp
-    surface.cpp
     handlers/format.cpp
     handlers/version.cpp
     handlers/schema.cpp

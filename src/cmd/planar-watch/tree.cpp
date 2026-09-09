@@ -7,7 +7,6 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.cliapp.surface;
-import planar.cmd.planar_watch.surface;
 
 namespace planar::cmd::watch {
 
@@ -17,10 +16,10 @@ namespace {
 ///
 /// `feed`'s carries a description (`"Emit NDJSON"`) and every other verb's
 /// is bare — an asymmetry in the oracle's own declarations, transcribed
-/// rather than harmonised. `feed`'s node is generated (see
-/// `cliapp::apply_surface` below) rather than hand-transcribed here, so
-/// only the bare form used by the hand-transcribed verbs appears in this
-/// helper.
+/// rather than harmonised. `feed`'s `--json` is declared directly at its
+/// own call site (not through this helper) precisely because it needs
+/// that non-bare description; only the bare form used by the other
+/// hand-transcribed verbs appears here.
 /// @param app The node to declare it on.
 auto add_json(CLI::App& app) -> void {
   cliapp::add_bool_flag(app, "--json");
@@ -89,14 +88,18 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // that has children, but none of them" as a help request.
   app->require_subcommand(0);
 
-  // Declaration ORDER matches the oracle's `handlers/cmd.zig` registry,
-  // minus `feed`, `run` and `sync-events`, whose nodes come from generated
-  // surface data below rather than being hand-transcribed here (`feed`'s
-  // handler is real; `run` and `sync-events` still refuse at exit 64). Each
-  // description is the oracle node's LONG description transcribed verbatim
-  // — `CLI::App` carries one description string, and this tree's settled
-  // choice is that the longer operator-facing one survives (see the root's
-  // note above, and `src/cmd/planar/tree.cpp`'s `workbench`).
+  // Declaration ORDER matches the oracle's `handlers/cmd.zig` registry:
+  // feed, ps, claims, actions, plans, log, tree, run, sync-events, version,
+  // completion, schema — `feed`, `run` (+ its two children) and
+  // `sync-events` used to come from generated surface data applied after
+  // this block (`cliapp::apply_surface`), folded in here directly at task
+  // 6613 (M11.1) so there is exactly one declaration site per node. Every
+  // leaf below has a real handler (`dispatch.cpp`'s table); none refuses at
+  // exit 64. Each description is the oracle node's LONG description
+  // transcribed verbatim — `CLI::App` carries one description string, and
+  // this tree's settled choice is that the longer operator-facing one
+  // survives (see the root's note above, and `src/cmd/planar/tree.cpp`'s
+  // `workbench`).
   //
   // TRANSCRIPTION INCLUDES THE `--follow` SENTENCES, which promise a
   // streaming arm this build refuses (exit 64). Left verbatim rather than
@@ -105,6 +108,33 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // and the runtime refusal is loud rather than silent. A reader who
   // follows the help page gets an explicit "not implemented in this build",
   // not a snapshot pretending to be a stream.
+
+  // --- feed -----------------------------------------------------------------
+  // Folded in from `surface.cpp`'s generated `k_path_0` at task 6613 (M11.1).
+  // Was previously declared via `cliapp::apply_surface` below, alongside
+  // `run`/`sync-events`/`run list`/`run show`; `dispatch.cpp` already
+  // registers a real handler for it (`handlers::feed`), so this is a pure
+  // declaration-site move, not a behavior change. Verified byte-identical
+  // against the prior generated description before this edit landed.
+  CLI::App* feed = app->add_subcommand(
+      "feed", "One event per claim transition, action transition, or task status\n  change, in occurrence-time order. The "
+              "default planar-watch\n  invocation routes here.\n\n  Without --follow: print the initial snapshot up to "
+              "--limit\n  events (default 100), newest first.\n  With --follow: print the snapshot, then stream new events "
+              "as\n  they appear. Tier-1 poll; --interval defaults to 1s.\n\n  --tail N: emit the most-recent N events on "
+              "first call (the\n  journalctl -f -n idiom). --tail 0 or negative exits with\n  InvalidValue. Combined with "
+              "--follow: the tail emission comes\n  first, then only NEW events stream (no re-emit of tailed events).\n\n  "
+              "Filters (--vendor / --plan / --task / --since) narrow both the\n  snapshot and the streaming view.\n\n  "
+              "--json emits NDJSON \xe2\x80\x94 one JSON object per line, no surrounding\n  array, no trailing comma. "
+              "Consumers can pipe through `jq -c`.");
+  cliapp::add_bool_flag(*feed, "--follow", "Stream new events until SIGINT");
+  add_vendor(*feed, "Vendor filter");
+  add_int(*feed, "--plan", "Plan id filter (matches plan-direct, task-on-plan, and plan_step-on-plan events)");
+  add_int(*feed, "--task", "Task id filter");
+  feed->add_option("--since")->description("Only events with at >= this ISO8601 timestamp");
+  add_int(*feed, "--limit", "Snapshot row cap (default 100)");
+  add_int(*feed, "--tail", "Return only the most-recent N events (must be > 0)");
+  cliapp::add_bool_flag(*feed, "--json", "Emit NDJSON");
+  feed->add_option("--interval")->description("Poll interval for --follow (default 1s)");
 
   // --- ps -----------------------------------------------------------------
   CLI::App* ps = app->add_subcommand("ps", "Lists every currently active agent claim \xe2\x80\x94 one row per claim_token.\n"
@@ -214,6 +244,50 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_int(*forest, "--root-session", "Scope output to one session's subtree (session id)");
   add_follow(*forest, "Stream re-renders until SIGINT", "Poll interval for --follow (default 1s; e.g. 100ms)");
 
+  // --- run ------------------------------------------------------------
+  // Folded in from `surface.cpp`'s generated `k_path_7/12/13` at task 6613
+  // (M11.1). `run list`/`run show` are real handlers —
+  // `dispatch.cpp` registers `handlers::run_list` / `handlers::run_show`.
+  // The group node itself carries no flags and no handler; a bare
+  // `planar-watch run` renders its own help page (`require_subcommand(0)`),
+  // matching the prior `apply_surface`-declared shape.
+  CLI::App* run = app->add_subcommand(
+      "run", "Read-only view of run tables. `list` covers both workflow_runs (wf)\nand the runs table (op-arm); `show` "
+             "drills into wf-source runs only.\n\n  list  \xe2\x80\x94 list runs (--plan / --status / --arm filters).\n  "
+             "show  \xe2\x80\x94 drill into one wf-source run's context records.");
+  run->require_subcommand(0);
+
+  CLI::App* run_list = run->add_subcommand(
+      "list", "Returns runs ordered by started_at descending.\n\n  --plan <id>    restrict to runs for the given plan.\n  "
+              "--status <s>   restrict by status: running | completed | failed |\n                 interrupted | abandoned. "
+              "Default: all.\n  --arm <a>      source table: wf (workflow_runs / context-plane),\n                 op (runs "
+              "/ op-arm), or all (default, both).\n  --json         emit a single JSON object instead of human text.");
+  add_int(*run_list, "--plan", "Filter by plan id");
+  run_list->add_option("--status")->description("Filter by status (default: all)");
+  run_list->add_option("--arm")->description("Source arm: wf | op | all (default: all)");
+  add_json(*run_list);
+
+  CLI::App* run_show = run->add_subcommand(
+      "show", "Returns the full workflow_runs row for <id> plus all\n  context_records for that run, grouped and ordered "
+              "by\n  stage then created_at.\n\n  Exits non-zero when the run id is unknown.");
+  add_json(*run_show);
+  run_show->add_option("id")->description("Workflow run id (integer)")->required();
+
+  // --- sync-events ----------------------------------------------------
+  CLI::App* sync_events = app->add_subcommand(
+      "sync-events", "Returns sync_events rows ordered by `at` descending.\n\n  --plan     : restrict to events whose link "
+                     "belongs to the given plan id.\n  --system   : restrict to events via a link on the given external "
+                     "system slug.\n  --entity   : restrict to events via a link on one entity, `kind:id` form.\n  "
+                     "--outcome  : filter by outcome value (ok, conflict, error, noop, \xe2\x80\xa6).\n  --since    : only "
+                     "return rows with `at` >= this ISO8601 timestamp.\n  --limit    : cap row count (default 100).");
+  add_int(*sync_events, "--plan", "Filter by plan id");
+  sync_events->add_option("--system")->description("Filter by external system slug");
+  sync_events->add_option("--entity")->description("Filter by entity, kind:id form (e.g. task:42)");
+  sync_events->add_option("--outcome")->description("Filter by outcome (ok, conflict, error, noop, \xe2\x80\xa6)");
+  sync_events->add_option("--since")->description("Only rows at >= this ISO8601 timestamp");
+  add_int(*sync_events, "--limit", "Row cap (default 100)");
+  add_json(*sync_events);
+
   app->add_subcommand("version", "Print the planar-watch version, commit, and C++ toolchain.");
 
   CLI::App* completion = app->add_subcommand("completion", "Generate the autocompletion script for the specified shell.");
@@ -221,15 +295,15 @@ auto root_app() -> std::unique_ptr<CLI::App> {
 
   app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
 
-  // Everything above is hand-transcribed. This fills in the remaining four
-  // leaves — `feed`, `sync-events` and both `run` verbs — from generated
-  // data, skipping every node declared above. `feed` lands real behaviour
-  // (dispatch.cpp registers its own handler ahead of the generated
-  // not-implemented table, and `emplace` on an existing key is a no-op);
-  // `sync-events` and the two `run` leaves still refuse at exit 64. See
-  // `planar.cmd.planar_watch.surface`, including the bare-invocation
-  // divergence it does NOT close.
-  (void)cliapp::apply_surface(*app, surface_nodes());
+  // Every node above (including `feed`, `run`/`run list`/`run show` and
+  // `sync-events`) is now hand-transcribed here — task 6613 (M11.1) folded
+  // `surface.cpp`'s generated `node_spec` table in, matching the
+  // `planar-ext` shape (one declaration site per node, no
+  // `cliapp::apply_surface` precedence rule). `planar.cmd.planar_watch.surface`
+  // still exists but now holds only the summary-vs-description divergence
+  // table (`surface_summaries`, consumed by `handlers::schema`) and the
+  // (currently empty) unported-leaf inventory `dispatch.cpp` still reads —
+  // neither is a second declaration of a node this tree already owns.
 
   // Help renders the same page it rendered before every bool flag gained
   // its `--no-X` negation — see `planar.cliapp.surface::hide_negations_in_help`.

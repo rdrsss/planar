@@ -130,6 +130,11 @@ TEST_CASE("cli surface generator emits safe empty inventories and preserves non-
   REQUIRE(std::system(command.c_str()) == 0);
   auto const empty   = source_text(root / "src/cmd/planar-agent/surface.cpp");
   auto const pending = source_text(root / "src/cmd/planar-watch/surface.cpp");
+  // Both live under this test's own synthetic `root`, written by the
+  // generator invocation above — unrelated to the real repository's
+  // `src/cmd/planar-watch/surface.cpp`, which task 6613 (M11.1) deleted.
+  // This case never reads the real tree, so that deletion does not touch
+  // it; see the next TEST_CASE for the one that does.
   REQUIRE(empty.has_value());
   REQUIRE(pending.has_value());
   CHECK(empty->contains("k_unported[] = {std::string_view{}}"));
@@ -150,7 +155,15 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   // gated is a standing property of this tree and is pinned here directly.
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
   auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
-  auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cpp");
+  // `planar-watch` no longer ships a generated `surface.cpp` at all — task
+  // 6613 (M11.1) folded its `node_spec` table into `tree.cpp` and moved
+  // the two functions this parser actually cares about here
+  // (`surface_summaries`, `unported_paths`) into a self-contained
+  // `surface.cppm`, in the exact same scanner-recognized empty-array shape
+  // `generated_unported` parses. Repointed rather than dropped: the
+  // property being pinned (nothing remains declared-but-unported on this
+  // binary) still holds and is still worth catching a regression on.
+  auto const watch_unported = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cppm");
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
   REQUIRE(watch_unported.has_value());
