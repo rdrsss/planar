@@ -249,6 +249,24 @@ surface-lint: ## Validate authored links, contracts, capabilities, commands, and
 	cmake --build $(CPP_BUILD_DIR) --target surface_lint
 	$(SURFACE_LINT) $(CURDIR)
 
+.PHONY: surface-check
+# Fast local gate for the CLI colocation refactor (task 6401/6612, decision
+# 1068): diffs each binary's `schema` catalog, root --help, and every leaf's
+# --help against scripts/surface-baseline.txt. The refactor moves 260
+# declared paths between files and is supposed to change NOTHING a binary
+# exposes; this fails in seconds when it does. Run it in the same recipe
+# position as cli-usage-check — at every commit during the refactor, not
+# just at the end.
+#
+# A DELIBERATE surface change (an intended new/removed/renamed leaf or flag)
+# requires re-running `scripts/surface-snapshot.sh capture` in its OWN commit
+# with the resulting baseline diff reviewed on purpose — never absorbed
+# silently into an unrelated commit as a side effect of a passing gate.
+surface-check: ## Diff each binary's live schema/help surface against scripts/surface-baseline.txt
+	cmake --preset debug
+	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext
+	scripts/surface-snapshot.sh verify
+
 .PHONY: coverage
 coverage: build ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt
 	scripts/coverage-check.sh
@@ -286,7 +304,7 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 # .github/workflows at all today, so until then C++ format/tidy drift rides
 # on operator discipline plus `make fmt-check`.
 .PHONY: test-all
-test-all: test coverage cli-usage-check ## Run the unit suite, coverage, and the composed authored-surface gates
+test-all: test coverage cli-usage-check surface-check ## Run the unit suite, coverage, and the composed authored-surface gates
 
 # RE-POINTED AT clang-format (plan 996, task 6045). These ran `zig fmt` over
 # `zig/`. With that tree deleted the formatter of record is the PINNED LLVM's
