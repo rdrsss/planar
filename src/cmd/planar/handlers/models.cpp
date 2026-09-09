@@ -4,6 +4,7 @@
 module planar.cmd.planar.handlers.models;
 
 import std;
+import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.json_text;
@@ -18,6 +19,7 @@ import planar.engine.models.views;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -757,6 +759,146 @@ auto models_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_re
 
   ctx.out() << (wants_json(args) ? resolve_json(resolution, readiness) : resolve_text(resolution, readiness));
   return {};
+}
+
+namespace {
+
+/// @brief Declare every child of the `models registry` group, in catalog order.
+/// @param registry The `models registry` group node.
+auto declare_models_registry(CLI::App& registry) -> void {
+  CLI::App* list = registry.add_subcommand("list", "List registrations, bindings, and latest observations.");
+  add_json(*list);
+
+  CLI::App* add = registry.add_subcommand("add", "Register one exact opaque candidate identifier.");
+  add_string_required(*add, "--vendor");
+  add_string_required(*add, "--id");
+  add_int_required(*add, "--order");
+  add_bool(*add, "--disabled");
+
+  CLI::App* update = registry.add_subcommand("update", "Update enabled state and deterministic fallback order.");
+  add_int_required(*update, "--candidate");
+  add_int_required(*update, "--order");
+  add_bool(*update, "--disabled");
+
+  CLI::App* remove = registry.add_subcommand("remove", "Remove a candidate when no immutable evidence references it.");
+  add_int_required(*remove, "--candidate");
+
+  CLI::App* bind = registry.add_subcommand("bind", "Allow one role and tier for a candidate.");
+  add_int_required(*bind, "--candidate");
+  add_string_required(*bind, "--role");
+  add_string_required(*bind, "--tier");
+
+  CLI::App* unbind = registry.add_subcommand("unbind", "Remove one explicit role and tier binding.");
+  add_int_required(*unbind, "--candidate");
+  add_string_required(*unbind, "--role");
+  add_string_required(*unbind, "--tier");
+
+  CLI::App* observe = registry.add_subcommand("observe", "Append an exact, versioned host capability observation.");
+  add_int_required(*observe, "--candidate");
+  add_string_required(*observe, "--host");
+  add_int_required(*observe, "--version");
+  add_string_required(*observe, "--availability");
+  add_string_required(*observe, "--spawn-verification");
+  add_string_required(*observe, "--evidence-ref");
+  add_string_required(*observe, "--captured-at");
+  add_string_required(*observe, "--expires-at");
+
+  CLI::App* eligibility =
+      registry.add_subcommand("eligibility", "Report every independent eligibility gate and named exclusion reason.");
+  add_int_required(*eligibility, "--candidate");
+  add_string_required(*eligibility, "--host");
+  add_string_required(*eligibility, "--role");
+  add_string_required(*eligibility, "--tier");
+  add_string_required(*eligibility, "--now");
+  add_bool(*eligibility, "--override-supported");
+  add_bool(*eligibility, "--policy-permits");
+
+  CLI::App* verify_identity =
+      registry.add_subcommand("verify-identity", "Compare requested and actual spawn identity without aliasing.");
+  add_int_required(*verify_identity, "--candidate");
+  add_string_required(*verify_identity, "--actual-vendor");
+  add_string_required(*verify_identity, "--actual-id");
+
+  CLI::App* export_cmd = registry.add_subcommand("export", "Export the versioned registry compatibility document.");
+  add_json(*export_cmd);
+}
+
+/// @brief Declare every child of the `models` group, in catalog order.
+/// @param models The `models` group node.
+auto declare_models_children(CLI::App& models) -> void {
+  CLI::App* evals = models.add_subcommand(
+      "evals",
+      "Evidence-backed candidate ranking over declared-experiment\n  terminal samples in the exact cohort (plan 950 task "
+      "5530). Supply the\n  cohort flags to rank: results report sample and success counts, the raw\n  rate, the 95% Wilson "
+      "lower bound, gate-failure rate, and expected excess\n  iterations. Candidates under --min-samples are labelled "
+      "insufficient_data\n  and are never ranked or recommended; candidates below --quality-floor are\n  excluded before "
+      "any iteration or gate-failure ordering, so a fast-but-wrong\n  candidate cannot outrank a slower correct one.\n\n  "
+      "Without cohort flags this falls back to the LEGACY note-convention\n  scorecard below, which remains inspectable but "
+      "is not evidence-backed:\n  it predates the routing evidence plane and carries no cohort or\n  independent-quality "
+      "guarantee.\n\n  Legacy: read-only aggregation (plan 898/904, tech-spec 520 D8) over the\n  `dispatch_shape` / "
+      "`model_choice` note convention in `session_entries`\n  (agents/orchestrator.md step 8a), joined with "
+      "`agent_work_claims`\n  (terminal disposition) and `agent_actions` (test-coder expansion\n  outcome). Emits a "
+      "per-(work-type, candidate) scorecard and a\n  recommended routing-map change. A pair with no completed-dispatch\n  "
+      "history reports insufficient-data rather than a fabricated score.\n  Writes nothing: no routing-map mutation, no "
+      "database write. Applying\n  a recommendation is a separate, explicit operator-gated action.");
+  add_string(*evals, "--vendor", "Cohort vendor; enables evidence-backed ranking");
+  add_string(*evals, "--role", "Cohort role");
+  add_string(*evals, "--tier", "Cohort tier (small|medium|large)");
+  add_string(*evals, "--work-type", "Cohort work type");
+  add_string(*evals, "--complexity", "Cohort complexity (bounded|standard|high-risk)");
+  add_string(*evals, "--project", "Cohort project id");
+  add_string(*evals, "--validation-policy", "Cohort validation policy version");
+  add_string(*evals, "--routing-policy", "Cohort routing policy version");
+  add_string(*evals, "--min-samples", "Minimum samples before a candidate is ranked (default 5)");
+  add_string(*evals, "--quality-floor", "Wilson lower-bound floor (default 0.5)");
+  add_json(*evals);
+
+  CLI::App* resolve = models.add_subcommand(
+      "resolve",
+      "Read-only. Answers \"what tier should this role run at, and is that\n  answer backed by anything?\". Task-bound "
+      "roles (coder, test-coder,\n  reviewer, research, janitor) resolve from the task's compiled profile;\n  pre-task "
+      "roles (planner, spec-reviewer, ingestor, orchestrator) resolve\n  from a planning packet, which establishes "
+      "readiness but classifies no\n  work because no unit of work exists yet.\n\n  When the authoritative packet is absent "
+      "or unready the result reports\n  the configured static fallback AND the reason, and never a derived work\n  type — a "
+      "tier shown without provenance reads identically to one derived\n  from real evidence.");
+  add_string_required(*resolve, "--role",
+                      "planner|spec-reviewer|ingestor|orchestrator|coder|test-coder|reviewer|research|janitor");
+  add_string(*resolve, "--task", "Task id (required for task-bound roles)");
+  add_string(*resolve, "--plan", "Anchor plan id (pre-task roles)");
+  add_string(*resolve, "--fallback-tier", "Configured static fallback tier (default medium)");
+  add_json(*resolve);
+
+  CLI::App* experiments = models.add_subcommand(
+      "experiments", "Read-only. Shows each experiment's frozen manifest identity (the\n  cohort it governs, its manifest "
+                     "digest, and when an operator approved\n  it) alongside how many terminal samples it has produced and how "
+                     "many\n  of those count toward a recommendation. The two counts differ whenever\n  a run was recorded but "
+                     "excluded; reporting only the eligible count\n  would understate what actually ran.");
+  add_json(*experiments);
+
+  CLI::App* outcomes = models.add_subcommand(
+      "outcomes", "Read-only. Excluded samples are shown deliberately: they are the\n  audit trail of the evidence boundary. "
+                  "Hiding them would make the\n  evidence look thinner than it is and leave no way to check the\n  boundary "
+                  "was applied correctly, and showing them without a named\n  reason would look like a bug.");
+  add_string(*outcomes, "--limit", "Maximum rows to show (default 50)");
+  add_json(*outcomes);
+
+  CLI::App* registry = models.add_subcommand("registry", "Manage opaque operator candidates and host observations.");
+  registry->require_subcommand(0);
+  declare_models_registry(*registry);
+}
+
+} // namespace
+
+auto declare_models(CLI::App& root) -> void {
+  CLI::App* models = root.add_subcommand(
+      "models",
+      "Probe the supported provider CLIs (claude, codex) for\n  installed-state + version, and report their curated model\n "
+      " catalogs and the default role→tier→model routing.\n\n  The provider CLIs do not expose a machine-readable model "
+      "list,\n  so the per-vendor model catalog is curated in-repo; discovery\n  confirms which CLIs are callable on this "
+      "machine.\n\n  Subcommands:\n    list       Probe + print (read-only).\n    refresh    Probe + print, and write the "
+      "cache to\n               ${PLANAR_HOME:-~/.planar}/models/catalog.json.");
+  models->require_subcommand(0);
+  declare_models_children(*models);
 }
 
 } // namespace planar::cmd::handlers

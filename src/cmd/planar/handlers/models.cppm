@@ -99,6 +99,7 @@ module;
 export module planar.cmd.planar.handlers.models;
 
 import std;
+import cli11;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.handler;
@@ -206,5 +207,21 @@ export auto models_outcomes(context& ctx, const cliapp::parsed_args& args) -> ha
 /// @param args The parsed arguments.
 /// @return Success, or the refusal.
 export auto models_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Declare the `models` command tree on `root`.
+///
+/// The CLI declaration for every `models` node, colocated with the handlers
+/// above (plan 1051, M11.3b — decision 1068's one-declaration-site-per-node
+/// target, sited per task 6401 next to the handler rather than in a second
+/// central file). `planar.cmd.planar.tree` calls this while building the
+/// root app.
+///
+/// The order of the `add_subcommand` calls IS the order the `--help` page
+/// and the `schema` catalog list the children in — the ONE invariant this
+/// hand declaration carries that the compiler cannot check. `models` is the
+/// only domain in this wave with a depth-3 group (`models registry`), whose
+/// ten children are declared by a file-local helper.
+/// @param root The root app to attach the `models` group to.
+export auto declare_models(CLI::App& root) -> void;
 
 } // namespace planar::cmd::handlers

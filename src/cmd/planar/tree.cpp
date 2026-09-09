@@ -8,8 +8,11 @@ import cli11;
 import planar.cliapp.surface;
 import planar.cmd.planar.declare;
 import planar.cmd.planar.surface;
+import planar.cmd.planar.handlers.annotate;
+import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.task;
+import planar.cmd.planar.handlers.workbench;
 
 namespace planar::cmd {
 
@@ -21,13 +24,6 @@ namespace {
 // primitives, and a second private copy of them is the "too spread out"
 // shape M11 exists to remove. Call sites below are unchanged --
 // unqualified lookup finds them in the enclosing `planar::cmd`.
-
-/// @brief The `--filter-mode` flag, declared identically on `push`,
-/// `archive`, `restore` and `gc`.
-/// @param app The node to declare it on.
-auto add_filter_mode(CLI::App& app) -> void {
-  app.add_option("--filter-mode")->description("Terminal-status filter: 'failures' (default) or 'all'");
-}
 
 /// @brief The `workflow` group — transcribed from
 /// zig/src/cmd/planar/handlers/workflow/cmd.zig. `run` is absent: it is
@@ -51,44 +47,6 @@ auto add_workflow(CLI::App& root) -> void {
   CLI::App* show = workflow->add_subcommand("show", "Show @meta and source path for a named workflow.");
   add_json(*show);
   show->add_option("name")->required();
-}
-
-/// @brief The `annotate` group — transcribed from
-/// zig/src/cmd/planar/handlers/annotate/cmd.zig. Two of its fourteen
-/// subcommands are ported here.
-/// @param root The root app to attach the group to.
-auto add_annotate(CLI::App& root) -> void {
-  CLI::App* annotate =
-      root.add_subcommand("annotate", "Manage line-anchored annotations on source code.\n\n"
-                                      "  Status lifecycle: active \xe2\x86\x92 resolved / dismissed / archived.");
-  annotate->require_subcommand(0);
-
-  CLI::App* add = annotate->add_subcommand("add", "Create a new annotation.");
-  add_string(*add, "--anchor-path");
-  add_int(*add, "--line-start");
-  add_int(*add, "--line-end");
-  add_string(*add, "--commit-sha");
-  add_string(*add, "--text-hash");
-  add_string(*add, "--text");
-  add_string(*add, "--title");
-  add_string(*add, "--slug");
-  add_string(*add, "--body");
-  add_string(*add, "--vendor");
-  add_int(*add, "--plan");
-  add_int(*add, "--task");
-  add_string(*add, "--tags");
-  add_string(*add, "--scope");
-  add_json(*add);
-
-  CLI::App* list = annotate->add_subcommand("list", "List annotations.");
-  add_string(*list, "--anchor-path");
-  add_string(*list, "--status");
-  add_int(*list, "--plan");
-  add_int(*list, "--task");
-  add_string(*list, "--vendor");
-  add_string(*list, "--tag");
-  add_string(*list, "--scope");
-  add_json(*list);
 }
 
 /// @brief The `unlink` leaf — transcribed from
@@ -177,88 +135,6 @@ auto add_workspace(CLI::App& root) -> void {
   // slug, either with an `org:` prefix, or absent for "the only one".
   show->add_option("workspace");
   add_json(*show);
-}
-
-/// @brief The `workbench` group — transcribed from
-/// zig/src/cmd/planar/handlers/workbench/cmd.zig.
-///
-/// TEN of its thirteen subcommands are ported, so this group's own help
-/// page lists ten where the oracle lists thirteen — the same accounted-for
-/// divergence `workflow` and `workspace` already carry, and the same rule
-/// (omit an unported child rather than register a stub). `publish` waits on
-/// the external adapters, `edit` on a process-spawn seam, and
-/// `extract-questions` is deferred on size.
-///
-/// `archive` and `restore` still declare `--filter-mode` even though the
-/// engine's `archive` ignores it (it has no write set to filter) —
-/// dropping it would be a visible divergence for a flag the oracle accepts.
-/// @param root The root app to attach the group to.
-auto add_workbench(CLI::App& root) -> void {
-  CLI::App* workbench = root.add_subcommand("workbench", "Manage the bidirectional sync surface between the workbench\n"
-                                                         "  filesystem and the Planar database.\n\n"
-                                                         "  The workbench root resolution order (highest to lowest priority):\n"
-                                                         "    1. $PLANAR_WORKBENCH_ROOT env var\n"
-                                                         "    2. workbench.root in $PLANAR_CONFIG_PATH or ~/.planar/config.toml\n"
-                                                         "    3. Default: ~/.planar/workbench/");
-  workbench->require_subcommand(0);
-
-  CLI::App* lint = workbench->add_subcommand("lint", "Validate workbench Markdown frontmatter without syncing.");
-  add_bool(*lint, "--all", "Validate every workbench tree");
-  lint->add_option("--path")->description("Validate one Markdown file or directory");
-  add_json(*lint);
-  lint->add_option("plan");
-
-  CLI::App* pull = workbench->add_subcommand("pull", "Apply FS\xe2\x86\x92"
-                                                     "DB changes; report DB\xe2\x86\x92"
-                                                     "FS drift.");
-  add_bool(*pull, "--verbose");
-  add_json(*pull);
-  pull->add_option("plan")->required();
-
-  CLI::App* push = workbench->add_subcommand("push", "Apply DB\xe2\x86\x92"
-                                                     "FS changes atomically; report FS\xe2\x86\x92"
-                                                     "DB drift.");
-  add_bool(*push, "--verbose");
-  add_json(*push);
-  add_filter_mode(*push);
-  add_bool(*push, "--apply-cleanup", "Remove pre-existing FS files for entities this push would have filtered");
-  push->add_option("plan")->required();
-
-  CLI::App* status = workbench->add_subcommand("status", "Show drift and conflicts without writing.");
-  add_bool(*status, "--verbose");
-  add_json(*status);
-  status->add_option("plan");
-
-  CLI::App* resolve = workbench->add_subcommand("resolve", "Settle a sync conflict by choosing FS or DB.");
-  resolve->add_option("--prefer")->description("Which side to prefer (fs|db)")->required();
-  add_json(*resolve);
-  resolve->add_option("event-id")->required();
-
-  CLI::App* sync = workbench->add_subcommand("sync", "Atomically apply FS and DB changes via a unified sync.");
-  add_bool(*sync, "--verbose");
-  add_json(*sync);
-  sync->add_option("plan")->required();
-
-  CLI::App* archive = workbench->add_subcommand("archive", "Archive a feature's workbench filesystem tree.");
-  add_json(*archive);
-  add_filter_mode(*archive);
-  archive->add_option("plan")->required();
-
-  CLI::App* restore = workbench->add_subcommand("restore", "Restore an archived feature's workbench tree.");
-  add_json(*restore);
-  add_filter_mode(*restore);
-  restore->add_option("plan")->required();
-
-  CLI::App* gc = workbench->add_subcommand("gc", "Remove FS files whose backing entity is terminal in the DB.");
-  add_bool(*gc, "--dry-run", "Preview only; do not touch disk");
-  add_bool(*gc, "--yes", "Discard FS-content drift; remove drifted files anyway");
-  add_filter_mode(*gc);
-  add_bool(*gc, "--all-scopes", "Walk every plan's workbench tree");
-  add_json(*gc);
-  gc->add_option("plan");
-
-  CLI::App* list = workbench->add_subcommand("list", "List features with workbench trees.");
-  add_json(*list);
 }
 
 /// @brief The `capture` group — transcribed from
@@ -505,22 +381,35 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // ORDER. While `surface.cpp` still holds entries, `apply_surface`'s
   // `reorder_children` pass below rewrites the root's child order from the
   // spec list, so these calls' position is not yet what the catalog shows --
-  // the retained `plan` / `task` ORDERING ANCHORS in `surface.cpp` are (see
-  // that file). When the LAST wave deletes `surface.cpp` and with it the
+  // the five retained ORDERING ANCHORS in `surface.cpp` are (see that
+  // file). When the LAST wave deletes `surface.cpp` and with it the
   // `apply_surface` call, this call order becomes authoritative and must
   // then read in catalog order: init, scope, assoc, plan, task, question,
   // ... . `plan` and `task` are placed first because every verb already
-  // hand-written below follows them in that order.
+  // hand-written below follows them in that order; M11.3b's three domains
+  // follow them in THEIR catalog order (annotate 10th, workbench 13th,
+  // models 25th), so the block already reads in the sequence the last wave
+  // will need.
+  //
+  // M11.3b also RETIRED `add_annotate`, `add_workbench` and the
+  // `add_filter_mode` helper the workbench group shared with nothing else.
+  // Those ten workbench children and two annotate children were SHADOWED --
+  // hand-declared here and separately described by a `node_spec` that
+  // `apply_surface`'s find-or-create arm skipped. The hand and generated
+  // declarations were compared field by field before the fold and agreed
+  // exactly on all twelve, so nothing was decided by which one won; the
+  // folded declaration carries one merged list, in catalog order.
   handlers::declare_plan(*app);
   handlers::declare_task(*app);
+  handlers::declare_annotate(*app);
+  handlers::declare_workbench(*app);
+  handlers::declare_models(*app);
 
   app->add_subcommand("version", "Print the planar version, commit, and C++ toolchain.");
   add_workflow(*app);
-  add_annotate(*app);
   add_unlink(*app);
   add_skills(*app);
   add_workspace(*app);
-  add_workbench(*app);
   add_capture(*app);
   add_handoff(*app);
   add_resume(*app);

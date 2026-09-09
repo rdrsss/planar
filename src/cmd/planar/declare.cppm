@@ -23,15 +23,17 @@
 ///
 /// ## THE SET IS INCOMPLETE AND GROWS PER WAVE
 ///
-/// What is exported below covers the 42 specs folded by M11.3a
-/// (`plan` + `task`) and nothing more. It is NOT the surface's full
-/// primitive vocabulary. The remaining 204 specs are already known to need
-/// at least: list-valued flags (`expected(1, -1)`), OPTIONAL positionals
-/// (`k_pos_243`'s `workspace` is `.required = false`), positionals
-/// carrying their own description, groups declaring `allow_extras`
-/// (`scope use|pop|clear`), and REQUIRED bool flags. Each later wave adds
-/// the primitives its own specs need; a wave that finds no primitive for a
-/// shape should add one here rather than inline the raw CLI11 call.
+/// What is exported below covers the 87 specs folded by M11.3a
+/// (`plan` + `task`) and M11.3b (`models` + `annotate` + `workbench`) and
+/// nothing more. It is NOT the surface's full primitive vocabulary. M11.3b
+/// added `add_string_required` and `add_positional_optional`, the two
+/// shapes its own 45 specs needed. The remaining 159 specs are already
+/// known to need at least: list-valued flags (`expected(1, -1)`),
+/// positionals carrying their own description, groups declaring
+/// `allow_extras` (`scope use|pop|clear`), and REQUIRED bool flags. Each
+/// later wave adds the primitives its own specs need; a wave that finds no
+/// primitive for a shape should add one here rather than inline the raw
+/// CLI11 call.
 ///
 /// ## The shapes are transcribed, not invented
 ///
@@ -93,6 +95,17 @@ export auto add_string(CLI::App& app, std::string_view name, std::string_view de
 export auto add_string_default(CLI::App& app, std::string_view name, std::string_view default_value, std::string_view desc = {})
     -> void;
 
+/// @brief A REQUIRED string flag.
+///
+/// `models registry`'s ten leaves are where this shape concentrates: every
+/// one of them declares its selectors required, so the refusal for a
+/// missing `--candidate` / `--role` is CLI11's parse error rather than a
+/// handler-level check.
+/// @param app The node to declare it on.
+/// @param name The canonical long name.
+/// @param desc The help line, or empty for none.
+export auto add_string_required(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+
 /// @brief An integer flag.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
@@ -115,14 +128,20 @@ export auto add_int_required(CLI::App& app, std::string_view name, std::string_v
 
 /// @brief A required positional argument.
 ///
-/// Every positional in M11.3a's 42 specs is required and carries no help
-/// line of its own, so this is the only positional primitive so far. The
-/// surface as a whole DOES have optional and described positionals (see
-/// the module header); each needs its own primitive rather than a
-/// defaulted parameter here, so that the call site keeps saying which
-/// shape it means.
+/// Kept SEPARATE from `add_positional_optional` rather than collapsed into
+/// one function with a defaulted `required` parameter, so that every call
+/// site keeps saying which shape it means. The distinction is visible
+/// behaviour: `workbench pull <plan>` refuses a bare invocation at parse
+/// time where `workbench status` renders the whole workbench.
 /// @param app The node to declare it on.
 /// @param name The positional's name.
 export auto add_positional(CLI::App& app, std::string_view name) -> void;
+
+/// @brief An OPTIONAL positional argument.
+///
+/// See `add_positional` for why the two are separate primitives.
+/// @param app The node to declare it on.
+/// @param name The positional's name.
+export auto add_positional_optional(CLI::App& app, std::string_view name) -> void;
 
 } // namespace planar::cmd

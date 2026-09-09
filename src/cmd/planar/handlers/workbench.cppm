@@ -178,4 +178,23 @@ export auto workbench_edit(context& ctx, const cliapp::parsed_args& args) -> han
 /// @return Success, or the failure.
 export auto workbench_publish(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `workbench` command tree on `root`.
+///
+/// The CLI declaration for every `workbench` node, colocated with the
+/// handlers above (plan 1051, M11.3b — decision 1068). Ten of the thirteen
+/// children were hand-declared in `tree.cpp` and three (`publish`,
+/// `extract-questions`, `edit`) came from `surface.cpp`'s generated table;
+/// the two halves are ONE list here, in catalog order.
+///
+/// `edit` is declared here even though `workbench_edit` is handled in
+/// `handlers/drafting.cpp`: colocation is PER DOMAIN, so a domain's sibling
+/// order stays one contiguous list.
+///
+/// `tree.cpp`'s `add_filter_mode` helper came with this group — it was
+/// shared by `push`, `archive`, `restore` and `gc` and by nothing else — so
+/// its four call sites are now four `add_string` calls carrying the same
+/// description.
+/// @param root The root app to attach the `workbench` group to.
+export auto declare_workbench(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

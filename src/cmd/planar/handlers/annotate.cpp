@@ -12,6 +12,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -636,6 +637,124 @@ auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_re
     ctx.out() << ann::render_sweep_text(since_days, *swept) << '\n';
   }
   return {};
+}
+
+namespace {
+
+/// @brief Declare every child of the `annotate` group, in catalog order.
+/// @param annotate The `annotate` group node.
+auto declare_annotate_children(CLI::App& annotate) -> void {
+  CLI::App* add = annotate.add_subcommand("add", "Create a new annotation.");
+  add_string(*add, "--anchor-path");
+  add_int(*add, "--line-start");
+  add_int(*add, "--line-end");
+  add_string(*add, "--commit-sha");
+  add_string(*add, "--text-hash");
+  add_string(*add, "--text");
+  add_string(*add, "--title");
+  add_string(*add, "--slug");
+  add_string(*add, "--body");
+  add_string(*add, "--vendor");
+  add_int(*add, "--plan");
+  add_int(*add, "--task");
+  add_string(*add, "--tags");
+  add_string(*add, "--scope");
+  add_json(*add);
+
+  CLI::App* show = annotate.add_subcommand("show", "Show an annotation.");
+  add_json(*show);
+  add_positional(*show, "annotation-id");
+
+  CLI::App* list = annotate.add_subcommand("list", "List annotations.");
+  add_string(*list, "--anchor-path");
+  add_string(*list, "--status");
+  add_int(*list, "--plan");
+  add_int(*list, "--task");
+  add_string(*list, "--vendor");
+  add_string(*list, "--tag");
+  add_string(*list, "--scope");
+  add_json(*list);
+
+  CLI::App* update = annotate.add_subcommand("update", "Update an annotation.");
+  add_string(*update, "--title");
+  add_string(*update, "--slug");
+  add_string(*update, "--body");
+  add_string(*update, "--status");
+  add_int(*update, "--plan");
+  add_int(*update, "--task");
+  add_string(*update, "--scope");
+  add_json(*update);
+  add_positional(*update, "annotation-id");
+
+  CLI::App* remove = annotate.add_subcommand("remove", "Remove an annotation.");
+  add_json(*remove);
+  add_positional(*remove, "annotation-id");
+
+  CLI::App* tag = annotate.add_subcommand("tag", "Add or remove a tag on an annotation.");
+  add_bool(*tag, "--remove");
+  add_json(*tag);
+  add_positional(*tag, "annotation-id");
+  add_positional(*tag, "tag");
+
+  CLI::App* resolve = annotate.add_subcommand("resolve", "Mark an annotation as resolved.");
+  add_json(*resolve);
+  add_positional(*resolve, "annotation-id");
+
+  CLI::App* dismiss = annotate.add_subcommand("dismiss", "Dismiss an annotation.");
+  add_json(*dismiss);
+  add_positional(*dismiss, "annotation-id");
+
+  CLI::App* archive = annotate.add_subcommand("archive", "Archive an annotation.");
+  add_json(*archive);
+  add_positional(*archive, "annotation-id");
+
+  CLI::App* bulk_resolve = annotate.add_subcommand("bulk-resolve", "Resolve every active annotation matching the filter.");
+  add_string(*bulk_resolve, "--anchor-path");
+  add_int(*bulk_resolve, "--plan");
+  add_int(*bulk_resolve, "--task");
+  add_string(*bulk_resolve, "--vendor");
+  add_string(*bulk_resolve, "--tag");
+  add_string(*bulk_resolve, "--scope");
+  add_json(*bulk_resolve);
+
+  CLI::App* bulk_dismiss = annotate.add_subcommand("bulk-dismiss", "Dismiss every active annotation matching the filter.");
+  add_string(*bulk_dismiss, "--anchor-path");
+  add_int(*bulk_dismiss, "--plan");
+  add_int(*bulk_dismiss, "--task");
+  add_string(*bulk_dismiss, "--vendor");
+  add_string(*bulk_dismiss, "--tag");
+  add_string(*bulk_dismiss, "--scope");
+  add_json(*bulk_dismiss);
+
+  CLI::App* bulk_archive =
+      annotate.add_subcommand("bulk-archive", "Archive every annotation matching the filter (including non-active rows).");
+  add_string(*bulk_archive, "--anchor-path");
+  add_int(*bulk_archive, "--plan");
+  add_int(*bulk_archive, "--task");
+  add_string(*bulk_archive, "--vendor");
+  add_string(*bulk_archive, "--tag");
+  add_string(*bulk_archive, "--scope");
+  add_json(*bulk_archive);
+
+  CLI::App* verify = annotate.add_subcommand("verify", "Verify annotation anchors against workspace state.");
+  add_string(*verify, "--anchor-path");
+  add_string(*verify, "--scope");
+  add_json(*verify);
+
+  CLI::App* sweep = annotate.add_subcommand("sweep", "Sweep stale annotations (resolved/dismissed older than --since-days).");
+  add_int_default(*sweep, "--since-days", "30");
+  add_string(*sweep, "--scope");
+  add_json(*sweep);
+}
+
+} // namespace
+
+auto declare_annotate(CLI::App& root) -> void {
+  CLI::App* annotate = root.add_subcommand(
+      "annotate",
+      "Manage line-anchored annotations on source code.\n\n  Status lifecycle: active → resolved / dismissed / archived.");
+  annotate->require_subcommand(0);
+  declare_annotate_children(*annotate);
 }
 
 } // namespace planar::cmd::handlers

@@ -203,4 +203,14 @@ export auto annotate_verify(context& ctx, const cliapp::parsed_args& args) -> ha
 /// @return Success, or the mapped engine failure.
 export auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `annotate` command tree on `root`.
+///
+/// The CLI declaration for every `annotate` node, colocated with the
+/// handlers above (plan 1051, M11.3b — decision 1068). `add` and `list`
+/// were previously hand-declared in `tree.cpp` and the other twelve came
+/// from `surface.cpp`'s generated table; the two halves are ONE list here,
+/// in catalog order, which is the invariant this declaration carries.
+/// @param root The root app to attach the `annotate` group to.
+export auto declare_annotate(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

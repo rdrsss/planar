@@ -18,6 +18,7 @@ import planar.cmd.planar.editor;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.ext_adapter_factory;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -790,6 +791,92 @@ auto workbench_publish(context& ctx, const cliapp::parsed_args& args) -> handler
                              created->external_id);
   }
   return {};
+}
+
+namespace {
+
+/// @brief Declare every child of the `workbench` group, in catalog order.
+/// @param workbench The `workbench` group node.
+auto declare_workbench_children(CLI::App& workbench) -> void {
+  CLI::App* lint = workbench.add_subcommand("lint", "Validate workbench Markdown frontmatter without syncing.");
+  add_bool(*lint, "--all", "Validate every workbench tree");
+  add_string(*lint, "--path", "Validate one Markdown file or directory");
+  add_json(*lint);
+  add_positional_optional(*lint, "plan");
+
+  CLI::App* pull = workbench.add_subcommand("pull", "Apply FS→DB changes; report DB→FS drift.");
+  add_bool(*pull, "--verbose");
+  add_json(*pull);
+  add_positional(*pull, "plan");
+
+  CLI::App* push = workbench.add_subcommand("push", "Apply DB→FS changes atomically; report FS→DB drift.");
+  add_bool(*push, "--verbose");
+  add_json(*push);
+  add_string(*push, "--filter-mode", "Terminal-status filter: 'failures' (default) or 'all'");
+  add_bool(*push, "--apply-cleanup", "Remove pre-existing FS files for entities this push would have filtered");
+  add_positional(*push, "plan");
+
+  CLI::App* status = workbench.add_subcommand("status", "Show drift and conflicts without writing.");
+  add_bool(*status, "--verbose");
+  add_json(*status);
+  add_positional_optional(*status, "plan");
+
+  CLI::App* resolve = workbench.add_subcommand("resolve", "Settle a sync conflict by choosing FS or DB.");
+  add_string_required(*resolve, "--prefer", "Which side to prefer (fs|db)");
+  add_json(*resolve);
+  add_positional(*resolve, "event-id");
+
+  CLI::App* sync = workbench.add_subcommand("sync", "Atomically apply FS and DB changes via a unified sync.");
+  add_bool(*sync, "--verbose");
+  add_json(*sync);
+  add_positional(*sync, "plan");
+
+  CLI::App* archive = workbench.add_subcommand("archive", "Archive a feature's workbench filesystem tree.");
+  add_json(*archive);
+  add_string(*archive, "--filter-mode", "Terminal-status filter: 'failures' (default) or 'all'");
+  add_positional(*archive, "plan");
+
+  CLI::App* restore = workbench.add_subcommand("restore", "Restore an archived feature's workbench tree.");
+  add_json(*restore);
+  add_string(*restore, "--filter-mode", "Terminal-status filter: 'failures' (default) or 'all'");
+  add_positional(*restore, "plan");
+
+  CLI::App* gc = workbench.add_subcommand("gc", "Remove FS files whose backing entity is terminal in the DB.");
+  add_bool(*gc, "--dry-run", "Preview only; do not touch disk");
+  add_bool(*gc, "--yes", "Discard FS-content drift; remove drifted files anyway");
+  add_string(*gc, "--filter-mode", "Terminal-status filter: 'failures' (default) or 'all'");
+  add_bool(*gc, "--all-scopes", "Walk every plan's workbench tree");
+  add_json(*gc);
+  add_positional_optional(*gc, "plan");
+
+  CLI::App* list = workbench.add_subcommand("list", "List features with workbench trees.");
+  add_json(*list);
+
+  CLI::App* publish = workbench.add_subcommand("publish", "Render and push workbench files to external system.");
+  add_string_required(*publish, "--system");
+  add_json(*publish);
+  add_positional(*publish, "plan");
+
+  CLI::App* extract_questions =
+      workbench.add_subcommand("extract-questions", "Parse Open questions from top-level workbench specs (read-only).");
+  add_json(*extract_questions);
+  add_positional(*extract_questions, "plan");
+
+  CLI::App* edit = workbench.add_subcommand("edit", "Edit a feature's workbench files in $EDITOR.");
+  add_string(*edit, "--editor");
+  add_json(*edit);
+  add_positional(*edit, "plan");
+}
+
+} // namespace
+
+auto declare_workbench(CLI::App& root) -> void {
+  CLI::App* workbench = root.add_subcommand(
+      "workbench", "Manage the bidirectional sync surface between the workbench\n  filesystem and the Planar database.\n\n  The "
+                   "workbench root resolution order (highest to lowest priority):\n    1. $PLANAR_WORKBENCH_ROOT env var\n    2. "
+                   "workbench.root in $PLANAR_CONFIG_PATH or ~/.planar/config.toml\n    3. Default: ~/.planar/workbench/");
+  workbench->require_subcommand(0);
+  declare_workbench_children(*workbench);
 }
 
 } // namespace planar::cmd::handlers

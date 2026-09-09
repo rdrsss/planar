@@ -37,6 +37,14 @@ auto add_string_default(CLI::App& app, std::string_view name, std::string_view d
   opt->default_str(std::string{default_value});
 }
 
+auto add_string_required(CLI::App& app, std::string_view name, std::string_view desc) -> void {
+  CLI::Option* opt = app.add_option(std::string{name});
+  if (!desc.empty()) {
+    opt->description(std::string{desc});
+  }
+  opt->required();
+}
+
 auto add_int(CLI::App& app, std::string_view name, std::string_view desc) -> void {
   CLI::Option* opt = app.add_option(std::string{name})->check(cliapp::zig_int_validator());
   if (!desc.empty()) {
@@ -62,6 +70,10 @@ auto add_int_required(CLI::App& app, std::string_view name, std::string_view des
 
 auto add_positional(CLI::App& app, std::string_view name) -> void {
   app.add_option(std::string{name})->required();
+}
+
+auto add_positional_optional(CLI::App& app, std::string_view name) -> void {
+  app.add_option(std::string{name});
 }
 
 } // namespace planar::cmd
