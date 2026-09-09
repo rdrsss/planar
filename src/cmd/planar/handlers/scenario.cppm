@@ -158,4 +158,16 @@ export auto scenario_retire(context& ctx, const cliapp::parsed_args& args) -> ha
 /// `generic_failure` (exit 1) for a duplicate link or a missing endpoint.
 export auto scenario_link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `scenario` command tree on `root`.
+///
+/// The CLI declaration for every `scenario` node, colocated with the
+/// handlers above (plan 1051, M11.3c — decision 1068). All eleven came from
+/// `surface.cpp`'s generated table; none was hand-declared in `tree.cpp`.
+/// `edit`, `view`, `diff` and `review` are handled in
+/// `handlers/drafting.cpp` but are DECLARED here, with their domain — the
+/// sibling order this list carries is the invariant, and it is only correct
+/// as one contiguous list.
+/// @param root The root app to attach the `scenario` group to.
+export auto declare_scenario(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

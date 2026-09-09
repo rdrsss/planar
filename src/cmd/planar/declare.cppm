@@ -97,8 +97,9 @@ export auto add_string_default(CLI::App& app, std::string_view name, std::string
 
 /// @brief A REQUIRED string flag.
 ///
-/// `models registry`'s ten leaves are where this shape concentrates: every
-/// one of them declares its selectors required, so the refusal for a
+/// `models registry`'s ten leaves are where this shape concentrates: eight
+/// of its ten leaves declare their selectors required (`list` and `export`
+/// declare only `--json` and carry no required flag), so the refusal for a
 /// missing `--candidate` / `--role` is CLI11's parse error rather than a
 /// handler-level check.
 /// @param app The node to declare it on.

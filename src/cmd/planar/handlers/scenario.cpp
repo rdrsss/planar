@@ -14,6 +14,7 @@ import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -385,6 +386,80 @@ auto scenario_link(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // which is what appears in the rendered line and in `entity_links`.
   return entity_link_verb(ctx, args, engine::entitylink::entity_kind::test_scenario, "scenario-id", "scenario", "scenario_id",
                           "scenario link", false);
+}
+
+namespace {
+
+/// @brief Declare every child of the `scenario` group, in catalog order.
+/// @param scenario The `scenario` group node.
+auto declare_scenario_children(CLI::App& scenario) -> void {
+  CLI::App* add = scenario.add_subcommand("add", "Create a new test scenario.");
+  add_string(*add, "--body");
+  add_string(*add, "--scope");
+  add_int(*add, "--related");
+  add_int(*add, "--plan");
+  add_bool(*add, "--editor");
+  add_json(*add);
+  add_positional(*add, "title");
+
+  CLI::App* edit = scenario.add_subcommand("edit", "Edit a scenario in $EDITOR (editor-first flow).");
+  add_bool(*edit, "--no-pull");
+  add_json(*edit);
+  add_positional(*edit, "scenario-id");
+
+  CLI::App* view = scenario.add_subcommand("view", "View scenario's workbench file.");
+  add_positional(*view, "scenario-id");
+
+  CLI::App* diff = scenario.add_subcommand("diff", "Diff scenario against database version.");
+  add_positional(*diff, "scenario-id");
+
+  CLI::App* review = scenario.add_subcommand("review", "Reviewer entry point for scenario diff.");
+  add_bool(*review, "--approve");
+  add_bool(*review, "--request-changes");
+  add_json(*review);
+  add_positional(*review, "scenario-id");
+
+  CLI::App* verify = scenario.add_subcommand(
+      "verify", "Record a test run for a scenario (--outcome pass|fail|error|skipped; defaults to pass).");
+  add_string(*verify, "--outcome");
+  add_string(*verify, "--summary");
+  add_json(*verify);
+  add_positional(*verify, "scenario-id");
+
+  CLI::App* retire = scenario.add_subcommand("retire", "Mark a scenario as retired.");
+  add_string(*retire, "--reason");
+  add_json(*retire);
+  add_positional(*retire, "scenario-id");
+
+  CLI::App* list = scenario.add_subcommand("list", "List scenarios.");
+  add_string(*list, "--scope");
+  add_string(*list, "--status");
+  add_int(*list, "--related");
+  add_string(*list, "--touches");
+  add_json(*list);
+
+  CLI::App* show = scenario.add_subcommand("show", "Show a scenario's details.");
+  add_json(*show);
+  add_positional(*show, "scenario-id");
+
+  CLI::App* link = scenario.add_subcommand("link", "Create an entity link from a scenario to another entity.");
+  add_string(*link, "--relationship");
+  add_string(*link, "--scope");
+  add_json(*link);
+  add_positional(*link, "scenario-id");
+  add_positional(*link, "ref");
+}
+
+} // namespace
+
+auto declare_scenario(CLI::App& root) -> void {
+  CLI::App* scenario = root.add_subcommand(
+      "scenario",
+      "Manage test scenarios — verification artifacts tied to specs,\n  plans, or tasks.\n\n  Planar records scenarios and their "
+      "outcomes; it does not execute\n  them.\n  Status lifecycle: draft → ready → verified / failing → retired.\n  Transitions: "
+      "`scenario verify` (draft→verified via auto-ready, or ready→verified),\n  `scenario retire` (any→retired).");
+  scenario->require_subcommand(0);
+  declare_scenario_children(*scenario);
 }
 
 } // namespace planar::cmd::handlers

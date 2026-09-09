@@ -15,6 +15,7 @@ import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -476,6 +477,80 @@ auto artifact_link(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // `false`: the ASCII `->`. Only `plan link` uses the unicode arrow.
   return entity_link_verb(ctx, args, engine::entitylink::entity_kind::artifact, "artifact-id", "artifact", "artifact_id",
                           "artifact link", false);
+}
+
+namespace {
+
+/// @brief Declare every child of the `artifact` group, in catalog order.
+/// @param artifact The `artifact` group node.
+auto declare_artifact_children(CLI::App& artifact) -> void {
+  CLI::App* add = artifact.add_subcommand("add", "Register a new artifact.");
+  add_string(*add, "--body");
+  add_string_required(*add, "--kind");
+  add_string(*add, "--from-file");
+  add_string(*add, "--source-path");
+  add_string(*add, "--scope");
+  add_string_default(*add, "--status", "draft");
+  add_int(*add, "--plan");
+  add_bool_default_true(*add, "--editor");
+  add_json(*add);
+  add_positional(*add, "title");
+
+  CLI::App* show = artifact.add_subcommand("show", "Show an artifact's metadata and body.");
+  add_json(*show);
+  add_positional(*show, "artifact-id");
+
+  CLI::App* list = artifact.add_subcommand("list", "List artifacts.");
+  add_string(*list, "--kind");
+  add_string(*list, "--scope");
+  add_string(*list, "--status");
+  add_int(*list, "--plan");
+  add_json(*list);
+
+  CLI::App* update = artifact.add_subcommand("update", "Update mutable fields on an artifact.");
+  add_string(*update, "--title");
+  add_string(*update, "--body");
+  add_string(*update, "--source-path");
+  add_string(*update, "--status");
+  add_string(*update, "--scope");
+  add_json(*update);
+  add_positional(*update, "artifact-id");
+
+  CLI::App* edit = artifact.add_subcommand("edit", "Edit an artifact in $EDITOR (editor-first flow).");
+  add_bool(*edit, "--no-pull");
+  add_json(*edit);
+  add_positional(*edit, "artifact-id");
+
+  CLI::App* view = artifact.add_subcommand("view", "View the artifact's workbench file in $PAGER.");
+  add_positional(*view, "artifact-id");
+
+  CLI::App* diff =
+      artifact.add_subcommand("diff", "Show a unified diff between the DB's artifact content and the workbench file.");
+  add_positional(*diff, "artifact-id");
+
+  CLI::App* review = artifact.add_subcommand("review", "Reviewer entry point for artifact diff.");
+  add_bool(*review, "--approve");
+  add_bool(*review, "--request-changes");
+  add_json(*review);
+  add_positional(*review, "artifact-id");
+
+  CLI::App* link = artifact.add_subcommand("link", "Create an entity link from an artifact to another entity.");
+  add_string(*link, "--relationship");
+  add_string(*link, "--scope");
+  add_json(*link);
+  add_positional(*link, "artifact-id");
+  add_positional(*link, "ref");
+}
+
+} // namespace
+
+auto declare_artifact(CLI::App& root) -> void {
+  CLI::App* artifact = root.add_subcommand(
+      "artifact", "Manage artifacts — durable documents that crystallize from work.\n\n  Kinds: tech_spec, adr, design_note, "
+                  "summary, readme, generated,\n  other, product_spec, roadmap, research, getting_started,\n  changelog_entry, "
+                  "glossary_term.\n  Status lifecycle: draft → active → superseded/retired.");
+  artifact->require_subcommand(0);
+  declare_artifact_children(*artifact);
 }
 
 } // namespace planar::cmd::handlers

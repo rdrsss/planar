@@ -145,4 +145,15 @@ export auto artifact_update(context& ctx, const cliapp::parsed_args& args) -> ha
 /// @return Success, or the failure to report.
 export auto artifact_link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `artifact` command tree on `root`.
+///
+/// The CLI declaration for every `artifact` node, colocated with the
+/// handlers above (plan 1051, M11.3c — decision 1068). All ten came from
+/// `surface.cpp`'s generated table; none was hand-declared in `tree.cpp`.
+/// `edit`, `view`, `diff` and `review` are handled in
+/// `handlers/drafting.cpp` and declared here with their domain, after
+/// `update`, in catalog order.
+/// @param root The root app to attach the `artifact` group to.
+export auto declare_artifact(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

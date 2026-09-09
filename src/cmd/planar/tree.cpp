@@ -9,8 +9,12 @@ import planar.cliapp.surface;
 import planar.cmd.planar.declare;
 import planar.cmd.planar.surface;
 import planar.cmd.planar.handlers.annotate;
+import planar.cmd.planar.handlers.artifact;
+import planar.cmd.planar.handlers.decision;
 import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
+import planar.cmd.planar.handlers.question;
+import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.workbench;
 
@@ -386,10 +390,11 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // `apply_surface` call, this call order becomes authoritative and must
   // then read in catalog order: init, scope, assoc, plan, task, question,
   // ... . `plan` and `task` are placed first because every verb already
-  // hand-written below follows them in that order; M11.3b's three domains
-  // follow them in THEIR catalog order (annotate 10th, workbench 13th,
-  // models 25th), so the block already reads in the sequence the last wave
-  // will need.
+  // hand-written below follows them in that order; M11.3c's drafting
+  // quartet and M11.3b's three domains follow them in THEIR catalog order
+  // (question 6th, scenario 7th, decision 8th, artifact 9th, annotate
+  // 10th, workbench 13th, models 23rd), so the block already reads in the
+  // sequence the last wave will need.
   //
   // M11.3b also RETIRED `add_annotate`, `add_workbench` and the
   // `add_filter_mode` helper the workbench group shared with nothing else.
@@ -399,8 +404,19 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   // declarations were compared field by field before the fold and agreed
   // exactly on all twelve, so nothing was decided by which one won; the
   // folded declaration carries one merged list, in catalog order.
+  //
+  // M11.3c's quartet (`question`, `scenario`, `decision`, `artifact`) had
+  // the opposite shape: NONE of their 44 nodes was hand-declared here, so
+  // all 44 came from `surface.cpp` alone and no reconciliation was needed.
+  // Their `edit`/`view`/`diff`/`review` leaves are handled in
+  // `handlers/drafting.cpp` but are declared with their own domain, since
+  // a group's sibling order is only correct as one contiguous list.
   handlers::declare_plan(*app);
   handlers::declare_task(*app);
+  handlers::declare_question(*app);
+  handlers::declare_scenario(*app);
+  handlers::declare_decision(*app);
+  handlers::declare_artifact(*app);
   handlers::declare_annotate(*app);
   handlers::declare_workbench(*app);
   handlers::declare_models(*app);

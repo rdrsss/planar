@@ -122,4 +122,18 @@ export auto question_wontfix(context& ctx, const cliapp::parsed_args& args) -> h
 /// `generic_failure` (exit 1) for a duplicate link or a missing endpoint.
 export auto question_link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `question` command tree on `root`.
+///
+/// The CLI declaration for every `question` node, colocated with the
+/// handlers above (plan 1051, M11.3c — decision 1068). No `question` node
+/// was ever hand-declared in `tree.cpp`, so all eleven came from
+/// `surface.cpp`'s generated table and nothing here had to be reconciled
+/// against a shadowing hand declaration. `edit`, `view`, `diff` and
+/// `review` are handled in `handlers/drafting.cpp` but are DECLARED here,
+/// with their domain: a group's sibling order is one contiguous list even
+/// when its handlers live elsewhere, and that order is the invariant this
+/// declaration carries.
+/// @param root The root app to attach the `question` group to.
+export auto declare_question(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

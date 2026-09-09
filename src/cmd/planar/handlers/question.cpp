@@ -15,6 +15,7 @@ import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.links;
 import planar.engine.entitylink;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -416,6 +417,74 @@ auto question_link(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // see handlers/links.cppm's header.
   return entity_link_verb(ctx, args, engine::entitylink::entity_kind::question, "question-id", "question", "question_id",
                           "question link", false);
+}
+
+namespace {
+
+/// @brief Declare every child of the `question` group, in catalog order.
+/// @param question The `question` group node.
+auto declare_question_children(CLI::App& question) -> void {
+  CLI::App* add = question.add_subcommand("add", "Create a new question.");
+  add_string(*add, "--body");
+  add_string(*add, "--scope");
+  add_int(*add, "--plan");
+  add_bool(*add, "--editor");
+  add_json(*add);
+  add_positional(*add, "title");
+
+  CLI::App* edit = question.add_subcommand("edit", "Edit a question in $EDITOR (editor-first flow).");
+  add_bool(*edit, "--no-pull");
+  add_json(*edit);
+  add_positional(*edit, "question-id");
+
+  CLI::App* view = question.add_subcommand("view", "View question's workbench file.");
+  add_positional(*view, "question-id");
+
+  CLI::App* diff = question.add_subcommand("diff", "Diff question against database version.");
+  add_positional(*diff, "question-id");
+
+  CLI::App* review = question.add_subcommand("review", "Reviewer entry point for question diff.");
+  add_bool(*review, "--approve");
+  add_bool(*review, "--request-changes");
+  add_json(*review);
+  add_positional(*review, "question-id");
+
+  CLI::App* answer = question.add_subcommand("answer", "Record an answer to a question.");
+  add_string(*answer, "--answer");
+  add_json(*answer);
+  add_positional(*answer, "question-id");
+
+  CLI::App* wontfix = question.add_subcommand("wontfix", "Mark a question as wontfix.");
+  add_string(*wontfix, "--reason");
+  add_json(*wontfix);
+  add_positional(*wontfix, "question-id");
+
+  CLI::App* list = question.add_subcommand("list", "List questions.");
+  add_string(*list, "--scope");
+  add_string(*list, "--status");
+  add_string(*list, "--touches");
+  add_int(*list, "--plan");
+  add_json(*list);
+
+  CLI::App* show = question.add_subcommand("show", "Show a question's details.");
+  add_json(*show);
+  add_positional(*show, "question-id");
+
+  CLI::App* link = question.add_subcommand("link", "Create an entity link from a question to another entity.");
+  add_string(*link, "--relationship");
+  add_string(*link, "--scope");
+  add_json(*link);
+  add_positional(*link, "question-id");
+  add_positional(*link, "ref");
+}
+
+} // namespace
+
+auto declare_question(CLI::App& root) -> void {
+  CLI::App* question = root.add_subcommand("question", "Manage questions — open uncertainties surfaced during work.\n\n  Status "
+                                                       "lifecycle: open → answered (via 'question answer') / wontfix.");
+  question->require_subcommand(0);
+  declare_question_children(*question);
 }
 
 } // namespace planar::cmd::handlers

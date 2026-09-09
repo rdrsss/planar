@@ -15,6 +15,7 @@ import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -412,6 +413,81 @@ auto decision_link(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // see handlers/links.cppm's header.
   return entity_link_verb(ctx, args, engine::entitylink::entity_kind::decision, "decision-id", "decision", "decision_id",
                           "decision link", false);
+}
+
+namespace {
+
+/// @brief Declare every child of the `decision` group, in catalog order.
+/// @param decision The `decision` group node.
+auto declare_decision_children(CLI::App& decision) -> void {
+  CLI::App* add = decision.add_subcommand("add", "Create a new decision record.");
+  add_string(*add, "--body");
+  add_string(*add, "--rationale");
+  add_int(*add, "--plan");
+  add_string(*add, "--scope");
+  add_bool(*add, "--editor");
+  add_json(*add);
+  add_positional(*add, "title");
+
+  CLI::App* show = decision.add_subcommand("show", "Show a decision's details.");
+  add_json(*show);
+  add_positional(*show, "decision-id");
+
+  CLI::App* list = decision.add_subcommand("list", "List decisions.");
+  add_string(*list, "--scope");
+  add_string(*list, "--status");
+  add_int(*list, "--plan");
+  add_json(*list);
+
+  CLI::App* accept = decision.add_subcommand("accept", "Accept a proposed decision.");
+  add_string(*accept, "--scope");
+  add_json(*accept);
+  add_positional(*accept, "decision-id");
+
+  CLI::App* supersede = decision.add_subcommand("supersede", "Mark a decision as superseded by a newer decision.");
+  add_int_required(*supersede, "--by");
+  add_string(*supersede, "--scope");
+  add_json(*supersede);
+  add_positional(*supersede, "decision-id");
+
+  CLI::App* withdraw = decision.add_subcommand("withdraw", "Withdraw a decision.");
+  add_string(*withdraw, "--scope");
+  add_json(*withdraw);
+  add_positional(*withdraw, "decision-id");
+
+  CLI::App* edit = decision.add_subcommand("edit", "Edit a decision in $EDITOR (editor-first flow).");
+  add_bool(*edit, "--no-pull");
+  add_json(*edit);
+  add_positional(*edit, "decision-id");
+
+  CLI::App* view = decision.add_subcommand("view", "View decision's workbench file.");
+  add_positional(*view, "decision-id");
+
+  CLI::App* diff = decision.add_subcommand("diff", "Diff decision against database version.");
+  add_positional(*diff, "decision-id");
+
+  CLI::App* review = decision.add_subcommand("review", "Reviewer entry point for decision diff.");
+  add_bool(*review, "--approve");
+  add_bool(*review, "--request-changes");
+  add_json(*review);
+  add_positional(*review, "decision-id");
+
+  CLI::App* link = decision.add_subcommand("link", "Create an entity link from a decision to another entity.");
+  add_string(*link, "--relationship");
+  add_string(*link, "--scope");
+  add_json(*link);
+  add_positional(*link, "decision-id");
+  add_positional(*link, "ref");
+}
+
+} // namespace
+
+auto declare_decision(CLI::App& root) -> void {
+  CLI::App* decision = root.add_subcommand(
+      "decision", "Manage decision records — rationale for choices made during work.\n\n  Status lifecycle: proposed → accepted "
+                  "/ superseded / withdrawn.\n  Terminal statuses: superseded, withdrawn.");
+  decision->require_subcommand(0);
+  declare_decision_children(*decision);
 }
 
 } // namespace planar::cmd::handlers

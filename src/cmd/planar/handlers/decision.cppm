@@ -132,4 +132,15 @@ export auto decision_supersede(context& ctx, const cliapp::parsed_args& args) ->
 /// `generic_failure` (exit 1) for a duplicate link or a missing endpoint.
 export auto decision_link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `decision` command tree on `root`.
+///
+/// The CLI declaration for every `decision` node, colocated with the
+/// handlers above (plan 1051, M11.3c — decision 1068). All twelve came from
+/// `surface.cpp`'s generated table; none was hand-declared in `tree.cpp`.
+/// Note the order: `edit`, `view`, `diff` and `review` sit AFTER
+/// `withdraw`, not next to `add`, because that is where the catalog puts
+/// them — they are handled in `handlers/drafting.cpp` and declared here.
+/// @param root The root app to attach the `decision` group to.
+export auto declare_decision(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers
