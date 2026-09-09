@@ -7,7 +7,6 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.cliapp.surface;
-import planar.cmd.planar_agent.surface;
 
 namespace planar::cmd::agent {
 
@@ -241,6 +240,13 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   action_end->add_option("--summary")->description("Optional free-text summary recorded on the action");
   add_json(*action_end);
 
+  // --- ingest ---------------------------------------------------------------
+  CLI::App* ingest = app->add_subcommand(
+      "ingest", "Translate a vendor hook event into store primitives (claude + copilot adapters wired; codex reserved).");
+  ingest->add_option("--vendor")->description("Vendor tag (claude|copilot wired; codex reserved)")->required();
+  ingest->add_option("--event")->description("Event JSON: @<file> reads from path; @- reads from stdin")->required();
+  add_json(*ingest);
+
   // --- reconcile / abort --------------------------------------------------
   CLI::App* reconcile =
       app->add_subcommand("reconcile", "Operator recovery: mark expired claims stale, close orphaned actions, abandon dead "
@@ -278,12 +284,117 @@ auto root_app() -> std::unique_ptr<CLI::App> {
 
   app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
 
-  // The claim ritual is hand-transcribed above. `ingest`, both `run` verbs,
-  // both `dispatch` verbs, and all four `context` verbs are declared from
-  // the generated oracle surface and wired to real handlers in dispatch.cpp.
-  // Keeping their declaration data-driven preserves the catalog while the
-  // handler table remains the single implementation inventory.
-  (void)cliapp::apply_surface(*app, surface_nodes());
+  // --- run start / end -----------------------------------------------------
+  CLI::App* run = app->add_subcommand(
+      "run", "Workflow run lifecycle (start / end). Used by an external workflow harness to stay DB-handle-free.");
+  run->require_subcommand(0);
+  CLI::App* run_start = run->add_subcommand("start", "Insert a workflow_runs row in running status.");
+  run_start->add_option("--plan")->description("Plan id the run belongs to")->required();
+  run_start->add_option("--workflow")->description("Workflow name (e.g. isolated-sequential)")->required();
+  run_start->add_option("--run-id")->description("Unique run identifier (run-<pid>-<nanos>)")->required();
+  run_start->add_option("--pid")->description("PID of the external workflow harness process")->required();
+  run_start->add_option("--repo-root")->description("Absolute path of the repo root the harness is driving")->required();
+  add_json(*run_start);
+
+  CLI::App* run_end =
+      run->add_subcommand("end", "Close a workflow_runs row with a terminal status (completed|failed|interrupted).");
+  run_end->add_option("--run-id")->description("The run identifier (run-<pid>-<nanos>) returned by run start")->required();
+  run_end->add_option("--status")->description("Terminal status: completed | failed | interrupted")->required();
+  add_json(*run_end);
+
+  // --- dispatch preview / confirm -------------------------------------------
+  CLI::App* dispatch = app->add_subcommand(
+      "dispatch", "Routing dispatch authorization (preview / confirm). Binds current state to a single-use token.");
+  dispatch->require_subcommand(0);
+  CLI::App* dispatch_preview =
+      dispatch->add_subcommand("preview", "Bind current routing state to a single-use, expiry-bound confirmation token.");
+  dispatch_preview->add_option("--task")->description("Task id this dispatch targets");
+  dispatch_preview->add_option("--work-item")->description("Logical work item id")->required();
+  dispatch_preview->add_option("--project")->description("Project id")->required();
+  dispatch_preview->add_option("--validation-policy")->description("Validation policy version")->required();
+  dispatch_preview->add_option("--routing-policy")->description("Routing policy version")->required();
+  dispatch_preview->add_option("--profile-rule")->description("Profile rule version")->required();
+  dispatch_preview->add_option("--vendor")->description("Vendor (opaque)")->required();
+  dispatch_preview->add_option("--role")->description("Role (opaque)")->required();
+  dispatch_preview->add_option("--tier")->description("small|medium|large")->required();
+  dispatch_preview->add_option("--work-type")->description("schema|engine|architectural|cli|feature|mechanical")->required();
+  dispatch_preview->add_option("--complexity")->description("bounded|standard|high-risk")->required();
+  dispatch_preview->add_option("--packet-digest")->description("Digest of the authoritative packet")->required();
+  dispatch_preview->add_option("--profile-digest")->description("Digest of the compiled profile")->required();
+  dispatch_preview->add_option("--policy-digest")->description("Digest of the policy snapshot")->required();
+  dispatch_preview->add_option("--capability-digest")->description("Digest of the host capability snapshot")->required();
+  dispatch_preview->add_option("--candidate")->description("Requested candidate row id")->required();
+  dispatch_preview->add_option("--host")->description("Host id whose capability snapshot was consulted")->required();
+  dispatch_preview->add_option("--class")->description("fallback|default|override|declared_experiment")->required();
+  dispatch_preview->add_option("--experiment")->description("Experiment id (required for declared_experiment)");
+  dispatch_preview->add_option("--claim")->description("Claim token this dispatch is bound to");
+  dispatch_preview->add_option("--claim-status")->description("Claim status observed at preview time");
+  dispatch_preview->add_option("--evidence-state")->description("evidential|observational")->required();
+  dispatch_preview->add_option("--expires-at")->description("RFC3339 instant after which the token is dead")->required();
+  add_json(*dispatch_preview);
+
+  CLI::App* dispatch_confirm = dispatch->add_subcommand(
+      "confirm", "Revalidate a preview token against current state and atomically write the dispatch snapshot.");
+  dispatch_confirm->add_option("--token")->description("Preview token to spend")->required();
+  dispatch_confirm->add_option("--dispatch-key")->description("Unique key for the resulting dispatch")->required();
+  dispatch_confirm->add_option("--now")->description("RFC3339 instant to evaluate expiry against")->required();
+  dispatch_confirm->add_option("--packet-digest")->description("Currently observed packet digest")->required();
+  dispatch_confirm->add_option("--profile-digest")->description("Currently observed profile digest")->required();
+  dispatch_confirm->add_option("--policy-digest")->description("Currently observed policy digest")->required();
+  dispatch_confirm->add_option("--capability-digest")->description("Currently observed capability digest")->required();
+  dispatch_confirm->add_option("--candidate")->description("Currently resolved candidate row id")->required();
+  dispatch_confirm->add_option("--vendor")->description("Currently resolved vendor")->required();
+  dispatch_confirm->add_option("--role")->description("Currently resolved role")->required();
+  dispatch_confirm->add_option("--tier")->description("Currently resolved tier")->required();
+  dispatch_confirm->add_option("--work-type")->description("Currently resolved work type")->required();
+  dispatch_confirm->add_option("--complexity")->description("Currently resolved complexity")->required();
+  dispatch_confirm->add_option("--validation-policy")->description("Currently active validation policy version")->required();
+  dispatch_confirm->add_option("--routing-policy")->description("Currently active routing policy version")->required();
+  dispatch_confirm->add_option("--claim")->description("Currently held claim token");
+  dispatch_confirm->add_option("--claim-status")->description("Currently observed claim status");
+  dispatch_confirm->add_option("--reviewer")->description("Reviewer disposition to record (default required)");
+  dispatch_confirm->add_option("--decision")->description("confirmed|overridden (default confirmed)");
+  add_json(*dispatch_confirm);
+
+  // --- context add / capsule / list / resolve -------------------------------
+  CLI::App* context = app->add_subcommand(
+      "context", "Run-scoped working-memory records (add / list / resolve / capsule). Used by an external workflow harness.");
+  context->require_subcommand(0);
+  CLI::App* context_add =
+      context->add_subcommand("add", "Write a context_records row stamped from the claim's run_id, stage, session_id.");
+  context_add->add_option("--claim")->description("Claim token that owns this context record")->required();
+  context_add->add_option("--kind")->description("Record kind: finding|risk|artifact|followup|summary|capsule")->required();
+  context_add->add_option("--body")->description("Record body text")->required();
+  context_add->add_option("--compiled-from")
+      ->description("Comma-separated context_record ids this capsule was compiled from (capsule kind only)");
+  add_json(*context_add);
+
+  CLI::App* context_capsule = context->add_subcommand(
+      "capsule", "Write a compiled capsule context_records row, run-keyed (claim_id=NULL, decision 456).");
+  context_capsule->add_option("--run")->description("workflow_runs.id \xE2\x80\x94 the run that owns this capsule")->required();
+  context_capsule->add_option("--stage")->description("Stage name this capsule distills (e.g. 'plan', 'code')")->required();
+  context_capsule->add_option("--body")->description("Compiled capsule body text")->required();
+  context_capsule->add_option("--compiled-from")
+      ->description("Comma-separated context_record ids this capsule distills (provenance)");
+  context_capsule->add_option("--session")
+      ->description("session_id (integer). Optional \xE2\x80\x94 an ephemeral session is created when omitted.");
+  add_json(*context_capsule);
+
+  CLI::App* context_list =
+      context->add_subcommand("list", "List context_records for a run, with optional stage/status/kind filters.");
+  context_list->add_option("--run")->description("Run id (integer) to query")->required();
+  context_list->add_option("--stage")->description("Filter to records from this stage");
+  context_list->add_option("--status")->description("Filter by status: active|consumed|superseded");
+  context_list->add_option("--kind")->description("Filter by kind: finding|risk|artifact|followup|summary|capsule");
+  add_json(*context_list);
+
+  CLI::App* context_resolve = context->add_subcommand(
+      "resolve", "Transition context_records active \xE2\x86\x92 consumed|superseded (single record or bulk stage sweep).");
+  context_resolve->add_option("--id")->description("Single record id to transition");
+  context_resolve->add_option("--run")->description("Run id for bulk stage sweep (use with --stage)");
+  context_resolve->add_option("--stage")->description("Stage name for bulk sweep (use with --run)");
+  context_resolve->add_option("--status")->description("Target status: consumed|superseded")->required();
+  add_json(*context_resolve);
 
   // Help renders the same page it rendered before every bool flag gained
   // its `--no-X` negation — see `planar.cliapp.surface::hide_negations_in_help`.

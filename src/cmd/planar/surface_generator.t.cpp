@@ -154,15 +154,17 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   // `explore`"). The gate is retired with its subject, but the FACT it
   // gated is a standing property of this tree and is pinned here directly.
   auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cpp");
-  auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cpp");
-  // `planar-watch` no longer ships a generated `surface.cpp` at all — task
-  // 6613 (M11.1) folded its `node_spec` table into `tree.cpp` and moved
-  // the two functions this parser actually cares about here
-  // (`surface_summaries`, `unported_paths`) into a self-contained
-  // `surface.cppm`, in the exact same scanner-recognized empty-array shape
-  // `generated_unported` parses. Repointed rather than dropped: the
-  // property being pinned (nothing remains declared-but-unported on this
-  // binary) still holds and is still worth catching a regression on.
+  // Neither `planar-agent` nor `planar-watch` ships a generated
+  // `surface.cpp` any more — task 6613 (M11.1) folded `planar-watch`'s
+  // `node_spec` table into `tree.cpp` and task 6614 (M11.2) did the same
+  // for `planar-agent`, each moving the functions this parser actually
+  // cares about (`surface_summaries` where it survives, `unported_paths`
+  // always) into a self-contained `surface.cppm`, in the exact same
+  // scanner-recognized empty-array shape `generated_unported` parses.
+  // Repointed rather than dropped: the property being pinned (nothing
+  // remains declared-but-unported on either binary) still holds and is
+  // still worth catching a regression on.
+  auto const agent_unported = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
   auto const watch_unported = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cppm");
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
@@ -175,7 +177,7 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   // The generated empty inventory must retain a scanner-recognized named
   // initializer while exposing no runtime elements. This protects the
   // generator's zero-list branch from regressing to an ill-formed array.
-  auto const agent_surface = source_text(target_source_root() / "src/cmd/planar-agent/surface.cpp");
+  auto const agent_surface = source_text(target_source_root() / "src/cmd/planar-agent/surface.cppm");
   REQUIRE(agent_surface.has_value());
   CHECK(agent_surface->contains("k_unported[] = {std::string_view{}}"));
   CHECK(agent_surface->contains("std::span<std::string_view const>{k_unported}.first(0)"));

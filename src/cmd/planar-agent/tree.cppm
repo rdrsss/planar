@@ -28,8 +28,13 @@
 /// `ingest` normalizes the Claude and Copilot hook envelopes at layer 3,
 /// then composes the runtime session/action primitives atomically.  `run`,
 /// `dispatch`, and `context` land through their corresponding runtime and
-/// routing stores.  The generated surface remains the schema-catalog source
-/// of truth, while this tree owns the exact CLI11 declaration order.
+/// routing stores.  Task 6614 folded the nine verbs that used to be
+/// declared from a generated `node_spec` table (`ingest`, both `run`
+/// leaves, both `dispatch` leaves, all four `context` leaves) directly
+/// into this function — one declaration site per node, matching the
+/// `planar-ext` shape. This tree is now the single source of truth for
+/// the schema catalog; `planar.cmd.planar_agent.surface` survives only for
+/// its `unported_paths()` inventory (see that module's header).
 module;
 
 export module planar.cmd.planar_agent.tree;

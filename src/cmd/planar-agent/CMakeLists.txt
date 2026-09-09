@@ -139,7 +139,6 @@ planar_binary(planar_agent
     locality.cpp
     policy.cpp
     tree.cpp
-    surface.cpp
     handlers/version.cpp
     handlers/schema.cpp
     handlers/claims.cpp
