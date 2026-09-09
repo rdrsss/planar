@@ -23,6 +23,7 @@ import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.links;
 import planar.engine.entitylink;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -1366,6 +1367,214 @@ auto task_link(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   // `false`: the ASCII `->`. Only `plan link` uses the unicode arrow —
   // see handlers/links.cppm's header.
   return entity_link_verb(ctx, args, engine::entitylink::entity_kind::task, "task-id", "task", "task_id", "task link", false);
+}
+
+// ---------------------------------------------------------------------------
+// CLI DECLARATION (plan 1051, M11.3a, task 6631)
+//
+// The `task` command tree, declared HERE rather than as `node_spec` data in
+// `surface.cpp`. Decision 1068's target is one declaration site per node;
+// task 6401's ask is that the site be next to the handler, which for this
+// domain is this file.
+//
+// Transcribed mechanically from the `node_spec` entries this commit removes,
+// so the emitted `schema` catalog is byte-identical -- `scripts/
+// surface-snapshot.sh verify` is the acceptance signal and it hashes the
+// whole catalog.
+//
+// THE ONE INVARIANT THIS SHAPE MUST HAND-CARRY, which `apply_surface` used
+// to do for free and which every remaining M11.3 wave must keep doing by
+// hand:
+//
+//   SIBLING ORDER. CLI11 renders help and this repo's catalog emitter both
+//   walk children in INSERTION order, so the order of the `add_subcommand`
+//   calls below IS the catalog's `subcommands` array. `apply_surface`'s
+//   `reorder_children` pass used to impose it from the spec list.
+//
+// NOT an invariant, despite appearances: the `require_subcommand(0)` call
+// on every group node below is INERT. CLI11's `require_subcommand_min_`
+// already defaults to 0, so deleting it leaves a bare `planar task`
+// rendering its help page and exiting 0, and the catalog unchanged
+// (break-probed at task 6631 iteration 1). The calls are kept as an
+// explicit, defensive statement of intent, matching tree.cpp's root node
+// and the planar-agent fold -- not because anything depends on them.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Declare the `task touches` subcommands.
+///
+/// Its own function only because the child names collide with `task`'s
+/// own (`add`/`list`); the call site below fixes where the group itself
+/// sits among its siblings.
+/// @param touches The `task touches` group node.
+auto declare_task_touches(CLI::App& touches) -> void {
+  CLI::App* add = touches.add_subcommand(
+      "add", "Declare that a task touches a repo (and, with --path, a specific file).\n\n  Without --path: writes the repo-level "
+             "entity_links 'touches' edge\n  (task -> repo). This is the coarse signal used by `task list --touches`.\n\n  With "
+             "--path <p>: writes a path-level task_touch_paths row (task, repo,\n  path) AND the repo-level edge \xe2\x80\x94 a "
+             "path-touch implies the repo-touch, so\n  the repo-level signal stays consistent. <p> is a repo-relative file "
+             "path.\n  The parallelizability rules (`plan recommend-strategy`) read these\n  path-level declarations for rules "
+             "2/3/4 (disjoint touches, migration\n  touched, singleton file touched). Declare path touches per file (repeat\n  "
+             "the verb), not as a list.");
+  add_string(*add, "--path");
+  add_string(*add, "--scope");
+  add_json(*add);
+  add_positional(*add, "task-id");
+  add_positional(*add, "repo-slug");
+
+  CLI::App* infer = touches.add_subcommand(
+      "infer",
+      "Extract path-shaped tokens from a task's title, body, and next_action\n  and resolve them against a repo checkout, "
+      "proposing task_touch_paths\n  rows. PREVIEW BY DEFAULT \xe2\x80\x94 without --apply nothing is written.\n\n  Each "
+      "candidate is classified: 'resolved' (exact file), 'directory'\n  (expanded to its files), 'basename' (every matching "
+      "path), 'unresolved'\n  (path-shaped but unplaceable) or 'too_broad' (expansion too large).\n\n  Only 'resolved' is "
+      "written by default. The wide classifications \xe2\x80\x94\n  directory and basename \xe2\x80\x94 are shown with their "
+      "expansion size and\n  withheld unless --wide is passed. Measured over 46 tasks in six real\n  plans, including them "
+      "yielded FEWER parallel-eligible tasks (13) than\n  resolved-only (14): a wide set intersects peers, and rule 2 drops "
+      "both\n  sides of an overlap, so one loose directory mention can remove tasks\n  that were otherwise eligible.\n\n  "
+      "Proposal still resolves ambiguity wide (decision 906) \xe2\x80\x94 a directory\n  expands, a basename yields every match, "
+      "nothing unplaceable is\n  invented. What --wide controls is which proposals are WRITTEN.\n\n  --repo <slug> names the "
+      "checkout to resolve against; without it the repo\n  is derived from the current directory (longest matching root_path).");
+  add_string(*infer, "--repo");
+  add_bool(*infer, "--apply");
+  add_bool(*infer, "--wide");
+  add_json(*infer);
+  add_positional(*infer, "task-id");
+
+  CLI::App* list = touches.add_subcommand("list", "List the repo- and path-level touches declared on a task.");
+  add_json(*list);
+  add_positional(*list, "task-id");
+
+  CLI::App* remove = touches.add_subcommand(
+      "remove", "Withdraw a touch declaration.\n\n  Without --path: removes the repo-level entity_links 'touches' edge.\n\n  "
+                "With --path <p>: removes ONE path-level task_touch_paths row and leaves\n  the repo edge in place. Deliberately "
+                "not symmetric with `touches add`,\n  where a path-touch implies the repo-touch \xe2\x80\x94 withdrawing one "
+                "file should\n  not silently drop a repo claim that may carry other paths.\n\n  Removing the repo edge is not a "
+                "substitute for --path: the parallel\n  eligibility rules read task_touch_paths directly, so orphaned path "
+                "rows\n  keep driving eligibility after their edge is gone.");
+  add_string(*remove, "--path");
+  add_string(*remove, "--scope");
+  add_json(*remove);
+  add_positional(*remove, "task-id");
+  add_positional(*remove, "repo-slug");
+}
+
+/// @brief Declare every child of the `task` group, in catalog order.
+/// @param task The `task` group node.
+auto declare_task_children(CLI::App& task) -> void {
+  CLI::App* add = task.add_subcommand("add", "Create a new task.");
+  add_string(*add, "--body");
+  add_string(*add, "--scope");
+  add_string(*add, "--next-action");
+  add_string(*add, "--due");
+  add_int(*add, "--plan");
+  add_int(*add, "--parent");
+  add_string(*add, "--slug");
+  add_int_default(*add, "--priority", "100");
+  add_bool_default_true(*add, "--editor");
+  add_bool(*add, "--no-auto-promote");
+  add_json(*add);
+  add_positional(*add, "title");
+
+  CLI::App* show = task.add_subcommand("show", "Show full task details.");
+  add_json(*show);
+  add_positional(*show, "task-id");
+
+  CLI::App* packet = task.add_subcommand("packet", "Compile the authoritative current routing packet for a task.");
+  add_json(*packet);
+  add_positional(*packet, "task-id");
+
+  CLI::App* list = task.add_subcommand("list", "List tasks.");
+  add_string(*list, "--scope");
+  add_string(*list, "--status");
+  add_int(*list, "--plan");
+  add_int(*list, "--priority-max");
+  add_string(*list, "--touches");
+  add_json(*list);
+
+  CLI::App* update = task.add_subcommand("update", "Update mutable fields on a task.");
+  add_string(*update, "--title");
+  add_string(*update, "--body");
+  add_string(*update, "--status");
+  add_string(*update, "--next-action");
+  add_string(*update, "--due");
+  add_int(*update, "--priority");
+  add_int(*update, "--plan");
+  add_string(*update, "--slug");
+  add_string(*update, "--scope");
+  add_bool(*update, "--force");
+  add_string(*update, "--reason");
+  add_bool(*update, "--no-auto-promote");
+  add_bool(*update, "--editor");
+  add_json(*update);
+  add_positional(*update, "task-id");
+
+  CLI::App* edit = task.add_subcommand("edit", "Edit a task in $EDITOR (editor-first flow).");
+  add_bool(*edit, "--no-pull");
+  add_json(*edit);
+  add_positional(*edit, "task-id");
+
+  CLI::App* view = task.add_subcommand("view", "View task's workbench file.");
+  add_positional(*view, "task-id");
+
+  CLI::App* diff = task.add_subcommand("diff", "Diff task against its database-stored version.");
+  add_positional(*diff, "task-id");
+
+  CLI::App* review = task.add_subcommand("review", "Reviewer entry point for task diff.");
+  add_bool(*review, "--approve");
+  add_bool(*review, "--request-changes");
+  add_json(*review);
+  add_positional(*review, "task-id");
+
+  CLI::App* done = task.add_subcommand("done", "Mark a task as done (single-arg form; Go supports variadic).");
+  add_string(*done, "--scope");
+  add_bool(*done, "--force", "Override active-claim guard and flip status anyway.");
+  add_json(*done);
+  add_positional(*done, "task-id");
+
+  CLI::App* cancel = task.add_subcommand("cancel", "Cancel a task (single-arg form; Go supports variadic).");
+  add_string(*cancel, "--scope");
+  add_json(*cancel);
+  add_positional(*cancel, "task-id");
+
+  CLI::App* block = task.add_subcommand("block", "Mark a task as blocked and record the blocking relationship.");
+  add_int_required(*block, "--on", "Blocking task id");
+  add_string(*block, "--reason");
+  add_string(*block, "--scope");
+  add_bool(*block, "--force", "Override active-claim guard and flip status anyway.");
+  add_json(*block);
+  add_positional(*block, "task-id");
+
+  CLI::App* link = task.add_subcommand("link", "Create an entity link from a task to another entity.");
+  add_string(*link, "--relationship");
+  add_string(*link, "--scope");
+  add_json(*link);
+  add_positional(*link, "task-id");
+  add_positional(*link, "ref");
+
+  CLI::App* reopen = task.add_subcommand("reopen", "Reopen a done or cancelled task with an audit-trail entry.");
+  add_string(*reopen, "--status");
+  add_string(*reopen, "--reason");
+  add_string(*reopen, "--scope");
+  add_bool(*reopen, "--force", "Override active-claim guard and flip status anyway.");
+  add_json(*reopen);
+  add_positional(*reopen, "task-id");
+
+  CLI::App* touches = task.add_subcommand("touches", "Manage repo-touches links on a task.");
+  touches->require_subcommand(0);
+  declare_task_touches(*touches);
+}
+
+} // namespace
+
+auto declare_task(CLI::App& root) -> void {
+  CLI::App* task = root.add_subcommand(
+      "task", "Manage tasks \xe2\x80\x94 the discrete units of work.\n\n  Tasks may belong to a plan (--plan) or another task "
+              "(--parent), and\n  carry the next_action field required by resume validate.\n  Status lifecycle: todo "
+              "\xe2\x86\x92 doing \xe2\x86\x92 done / cancelled; blocked is set\n  via task block.");
+  task->require_subcommand(0);
+  declare_task_children(*task);
 }
 
 } // namespace planar::cmd::handlers

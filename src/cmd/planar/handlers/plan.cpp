@@ -18,6 +18,7 @@ import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.links;
 import planar.engine.entitylink;
 import planar.cmd.planar.scope;
+import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
 
@@ -1138,6 +1139,208 @@ auto plan_closeout(context& ctx, const cliapp::parsed_args& args) -> handler_res
                         std::format("plan {} is not ready to close ({} reason(s))", *id, result->blocked_by.size())));
   }
   return {};
+}
+
+// ---------------------------------------------------------------------------
+// CLI DECLARATION (plan 1051, M11.3a, task 6631)
+//
+// The `plan` command tree, declared HERE rather than as `node_spec` data in
+// `surface.cpp`. Decision 1068's target is one declaration site per node;
+// task 6401's ask is that the site be next to the handler, which for this
+// domain is this file.
+//
+// Transcribed mechanically from the `node_spec` entries this commit removes,
+// so the emitted `schema` catalog is byte-identical -- `scripts/
+// surface-snapshot.sh verify` is the acceptance signal and it hashes the
+// whole catalog.
+//
+// THE ONE INVARIANT THIS SHAPE MUST HAND-CARRY, which `apply_surface` used
+// to do for free and which every remaining M11.3 wave must keep doing by
+// hand:
+//
+//   SIBLING ORDER. CLI11 renders help and this repo's catalog emitter both
+//   walk children in INSERTION order, so the order of the `add_subcommand`
+//   calls below IS the catalog's `subcommands` array. `apply_surface`'s
+//   `reorder_children` pass used to impose it from the spec list.
+//
+// NOT an invariant, despite appearances: the `require_subcommand(0)` call
+// on every group node below is INERT. CLI11's `require_subcommand_min_`
+// already defaults to 0, so deleting it leaves a bare `planar plan`
+// rendering its help page and exiting 0, and the catalog unchanged
+// (break-probed at task 6631 iteration 1). The calls are kept as an
+// explicit, defensive statement of intent, matching tree.cpp's root node
+// and the planar-agent fold -- not because anything depends on them.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Declare the `plan step` subcommands.
+///
+/// Its own function only because the child names collide with `plan`'s
+/// own (`add`/`list`/`link`); the call site below fixes where the group
+/// itself sits among its siblings.
+/// @param step The `plan step` group node.
+auto declare_plan_step(CLI::App& step) -> void {
+  CLI::App* add = step.add_subcommand("add", "Append a new step to a plan.");
+  add_int(*add, "--after");
+  add_string(*add, "--scope");
+  add_json(*add);
+  add_positional(*add, "plan-id");
+  add_positional(*add, "body");
+
+  CLI::App* list = step.add_subcommand("list", "List steps of a plan.");
+  add_json(*list);
+  add_positional(*list, "plan-id");
+
+  CLI::App* done = step.add_subcommand("done", "Mark a plan step as done.");
+  add_string(*done, "--scope");
+  add_json(*done);
+  add_positional(*done, "step-id");
+
+  CLI::App* skip = step.add_subcommand("skip", "Mark a plan step as skipped.");
+  add_string(*skip, "--scope");
+  add_json(*skip);
+  add_positional(*skip, "step-id");
+
+  CLI::App* link = step.add_subcommand("link", "Associate a plan step with the task that materializes it.");
+  add_string(*link, "--scope");
+  add_json(*link);
+  add_positional(*link, "step-id");
+  add_positional(*link, "task-id");
+}
+
+/// @brief Declare every child of the `plan` group, in catalog order.
+/// @param plan The `plan` group node.
+auto declare_plan_children(CLI::App& plan) -> void {
+  CLI::App* create = plan.add_subcommand("create", "Create a new plan.");
+  add_string(*create, "--summary");
+  add_string(*create, "--slug");
+  add_string(*create, "--scope");
+  add_string_default(*create, "--status", "draft");
+  add_int(*create, "--parent");
+  add_json(*create);
+  add_positional(*create, "title");
+
+  CLI::App* show = plan.add_subcommand("show", "Show a plan's details, steps, and child plans.");
+  add_json(*show);
+  add_positional(*show, "plan-id");
+
+  CLI::App* list = plan.add_subcommand("list", "List plans.");
+  add_string(*list, "--scope");
+  add_string(*list, "--status");
+  add_int(*list, "--parent");
+  add_string(*list, "--touches");
+  add_json(*list);
+
+  CLI::App* update = plan.add_subcommand("update", "Update mutable fields on a plan.");
+  add_string(*update, "--title");
+  add_string(*update, "--slug");
+  add_string(*update, "--summary");
+  add_string(*update, "--status");
+  add_int(*update, "--parent");
+  add_string(*update, "--scope");
+  add_json(*update);
+  add_positional(*update, "plan-id");
+
+  CLI::App* edit = plan.add_subcommand("edit", "Edit a plan in $EDITOR (editor-first flow).");
+  add_bool(*edit, "--no-pull");
+  add_json(*edit);
+  add_positional(*edit, "plan-id");
+
+  CLI::App* view = plan.add_subcommand("view", "View a plan's workbench file.");
+  add_positional(*view, "plan-id");
+
+  CLI::App* diff = plan.add_subcommand("diff", "Diff plan against database version.");
+  add_positional(*diff, "plan-id");
+
+  CLI::App* review = plan.add_subcommand("review", "Reviewer entry point for plan diff.");
+  add_bool(*review, "--approve");
+  add_bool(*review, "--request-changes");
+  add_json(*review);
+  add_positional(*review, "plan-id");
+
+  CLI::App* link = plan.add_subcommand("link", "Create an entity link from a plan to another entity.");
+  add_string(*link, "--relationship");
+  add_string(*link, "--scope");
+  add_json(*link);
+  add_positional(*link, "plan-id");
+  add_positional(*link, "ref");
+
+  CLI::App* next = plan.add_subcommand(
+      "next", "Bucketed claim-aware view of next work on a plan.\n\n  Buckets:\n    available  task is todo (or doing without an "
+              "active claim)\n               and ready to be pulled\n    claimed    task has an active unexpired claim\n    "
+              "stale      task has a stale claim (reconcile or lease-expired)\n    blocked    task status is blocked\n\n  "
+              "Without --include-claimed / --include-stale the text rendering\n  shows only the available + blocked buckets "
+              "\xe2\x80\x94 the JSON shape always\n  carries every bucket.");
+  add_bool(*next, "--include-claimed", "Show the claimed bucket in text mode (JSON always includes it).");
+  add_bool(*next, "--include-stale", "Show the stale bucket in text mode (JSON always includes it).");
+  add_json(*next);
+  add_positional(*next, "plan-id");
+
+  CLI::App* recommend_strategy = plan.add_subcommand(
+      "recommend-strategy",
+      "Recommend an execution strategy for a plan's open (todo) tasks.\n\n  Applies the six parallel-eligibility rules (decision "
+      "370) and\n  reports the parallel-eligible subset plus the serialized remainder\n  with per-task exclusion reasons:\n    "
+      "1. no blocked_by chain to a not-done task\n    2. disjoint task_touches (empty touches = touches-everything)\n    3. no "
+      "schema migration touched\n    4. no singleton authoritative file touched\n    5. no open question linked\n    6. no "
+      "proposed decision linked\n\n  --closure-source selects the signal rule 2's overlap test reads\n  (decision D4): "
+      "'declared' (default) uses the declared task_touches and\n  is byte-for-byte the pre-D4 behavior; 'derived' uses the "
+      "computed\n  symbol-level closure (closures table) so two tasks overlap when their\n  derived closures share a symbol even "
+      "when their declared files differ.\n\n  READ-ONLY: computes and reports; writes nothing. fan_out_available\n  is true when "
+      ">= 2 tasks are eligible.");
+  add_string_default(*recommend_strategy, "--closure-source", "declared",
+                     "Rule-2 overlap signal: 'declared' (default, task_touches) or 'derived' (computed closure).");
+  add_json(*recommend_strategy);
+  add_positional(*recommend_strategy, "plan-id");
+
+  CLI::App* divergence = plan.add_subcommand(
+      "divergence",
+      "Report the declared-vs-derived closure divergence for a plan's open tasks.\n\n  For every unordered pair of open (todo) "
+      "tasks, compares whether the two\n  tasks overlap under the DECLARED touch set vs. the DERIVED closure set.\n  A pair "
+      "whose verdict differs between sources is a FLIP \xe2\x80\x94 the two sources\n  disagree about whether those tasks can "
+      "run in parallel.\n\n  Jaccard distance = flips / |declared_overlaps \xe2\x88\xaa derived_overlaps|.\n  0.0 = sources "
+      "agree on every pair; 1.0 = no overlapping pair in common.\n\n  READ-ONLY: computes and reports; writes nothing.");
+  add_json(*divergence);
+  add_positional(*divergence, "plan-id");
+
+  CLI::App* recompute_status =
+      plan.add_subcommand("recompute-status", "Recompute a plan's roll-up status (--plan <id> or --all).");
+  add_int(*recompute_status, "--plan", "Recompute one plan by id.");
+  add_bool(*recompute_status, "--all", "Recompute every plan in the DB.");
+  add_json(*recompute_status);
+
+  CLI::App* closeout = plan.add_subcommand(
+      "closeout",
+      "Evaluate the DB-hard gate (all tasks terminal, all descendants terminal, no live claims)\n  and advisory git-evidence for "
+      "a plan. In apply mode (no --dry-run), marks the plan\n  done when the hard gate passes. Cancelled tasks are terminal "
+      "\xe2\x80\x94 they do not block.\n\n  Hard gate failures produce a non-zero exit in both dry-run and apply modes.\n\n  "
+      "--check-merge adds an advisory epic-branch merge roll-up: for each contributing\n  branch from agent_work_claims, reports "
+      "how many are merged to the target branch.\n  Never blocks; absent branches are inconclusive.");
+  add_bool(*closeout, "--dry-run", "Evaluate and report only; never writes.");
+  add_bool(*closeout, "--check-merge", "Include advisory epic-branch merge roll-up in the output.");
+  add_json(*closeout);
+  add_positional(*closeout, "plan-id");
+
+  CLI::App* step = plan.add_subcommand("step", "Manage plan steps.");
+  step->require_subcommand(0);
+  declare_plan_step(*step);
+
+  CLI::App* descendants = plan.add_subcommand(
+      "descendants", "Emit the anchor plan's full subtree (child plans + tasks) in\n  dependency-topological order (anchor "
+                     "\xe2\x86\x92 child plans \xe2\x86\x92 tasks).\n\n  READ-ONLY: queries and reports; writes nothing.");
+  add_json(*descendants);
+  add_positional(*descendants, "plan-id");
+}
+
+} // namespace
+
+auto declare_plan(CLI::App& root) -> void {
+  CLI::App* plan =
+      root.add_subcommand("plan", "Manage plans \xe2\x80\x94 the top-level structured intent for a body of work.\n\n  Plans may "
+                                  "be hierarchical (--parent) and contain ordered steps\n  (plan step add).\n  Status lifecycle: "
+                                  "draft \xe2\x86\x92 active \xe2\x86\x92 paused / done / abandoned.");
+  plan->require_subcommand(0);
+  declare_plan_children(*plan);
 }
 
 } // namespace planar::cmd::handlers

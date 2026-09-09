@@ -334,4 +334,18 @@ export auto plan_divergence(context& ctx, const cliapp::parsed_args& args) -> ha
 /// (exit 1) on a query or audit-write failure.
 export auto plan_closeout(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `plan` command tree on `root`.
+///
+/// The CLI declaration for every `plan` node, colocated with the handlers
+/// above (plan 1051, M11.3a — decision 1068's one-declaration-site-per-node
+/// target, sited per task 6401 next to the handler rather than in a second
+/// central file). `planar.cmd.planar.tree` calls this while building the
+/// root app.
+///
+/// The order of the `add_subcommand` calls IS the order the `--help` page
+/// and the `schema` catalog list the children in; every group node sets
+/// `require_subcommand(0)` so a bare group renders help at exit 0.
+/// @param root The root app to attach the `plan` group to.
+export auto declare_plan(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers

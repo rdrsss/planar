@@ -5,47 +5,22 @@ module planar.cmd.planar.tree;
 
 import std;
 import cli11;
-import planar.cliapp.args;
 import planar.cliapp.surface;
+import planar.cmd.planar.declare;
 import planar.cmd.planar.surface;
+import planar.cmd.planar.handlers.plan;
+import planar.cmd.planar.handlers.task;
 
 namespace planar::cmd {
 
 namespace {
 
-/// @brief The `--json` flag every ported leaf declares.
-/// @param app The node to declare it on.
-auto add_json(CLI::App& app) -> void {
-  cliapp::add_bool_flag(app, "--json");
-}
-
-/// @brief A plain string flag with no default.
-/// @param app The node to declare it on.
-/// @param name The canonical long name.
-auto add_string(CLI::App& app, std::string name) -> void {
-  app.add_option(std::move(name));
-}
-
-/// @brief An integer flag.
-///
-/// `zig_int_validator` is what keeps Zig's `std.fmt.parseInt` semantics
-/// (underscore digit separators, a leading `+`) enforced at PARSE time
-/// rather than degrading into a silent "absent" at the handler — see
-/// `planar.cliapp.args`.
-/// @param app The node to declare it on.
-/// @param name The canonical long name.
-auto add_int(CLI::App& app, std::string name) -> void {
-  app.add_option(std::move(name))->check(cliapp::zig_int_validator());
-}
-
-/// @brief A boolean flag — the shape every `--verbose` / `--dry-run` /
-/// `--yes` node in the `workbench` group declares.
-/// @param app The node to declare it on.
-/// @param name The canonical long name.
-/// @param desc The help line, or empty.
-auto add_bool(CLI::App& app, std::string name, std::string desc = {}) -> void {
-  cliapp::add_bool_flag(app, name, desc);
-}
+// `add_json`, `add_string`, `add_int` and `add_bool` used to be declared
+// here. They moved to `planar.cmd.planar.declare` at M11.3a (task 6631):
+// the folded per-domain declarations under `handlers/` need the same
+// primitives, and a second private copy of them is the "too spread out"
+// shape M11 exists to remove. Call sites below are unchanged --
+// unqualified lookup finds them in the enclosing `planar::cmd`.
 
 /// @brief The `--filter-mode` flag, declared identically on `push`,
 /// `archive`, `restore` and `gc`.
@@ -522,6 +497,22 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   auto app = std::make_unique<CLI::App>("Planning + agent operations CLI.", "planar");
   // A bare `planar` must render root help rather than fail.
   app->require_subcommand(0);
+
+  // FOLDED PER-DOMAIN DECLARATIONS (M11.3, decision 1068). Each of these
+  // lives next to its handlers under `handlers/`; `surface.cpp` no longer
+  // carries a `node_spec` for any node beneath them.
+  //
+  // ORDER. While `surface.cpp` still holds entries, `apply_surface`'s
+  // `reorder_children` pass below rewrites the root's child order from the
+  // spec list, so these calls' position is not yet what the catalog shows --
+  // the retained `plan` / `task` ORDERING ANCHORS in `surface.cpp` are (see
+  // that file). When the LAST wave deletes `surface.cpp` and with it the
+  // `apply_surface` call, this call order becomes authoritative and must
+  // then read in catalog order: init, scope, assoc, plan, task, question,
+  // ... . `plan` and `task` are placed first because every verb already
+  // hand-written below follows them in that order.
+  handlers::declare_plan(*app);
+  handlers::declare_task(*app);
 
   app->add_subcommand("version", "Print the planar version, commit, and C++ toolchain.");
   add_workflow(*app);

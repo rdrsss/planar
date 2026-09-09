@@ -452,6 +452,7 @@ planar_binary(planar
     handler.cppm
     scope.cppm
     tree.cppm
+    declare.cppm
     surface.cppm
     handlers/version.cppm
     handlers/catalog.cppm
@@ -512,6 +513,7 @@ planar_binary(planar
     verb_classification.cpp
     worktree_gate.cpp
     tree.cpp
+    declare.cpp
     surface.cpp
     handlers/version.cpp
     handlers/catalog.cpp

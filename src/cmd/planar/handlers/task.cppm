@@ -273,4 +273,18 @@ export auto task_touches_remove(context& ctx, const cliapp::parsed_args& args) -
 /// `generic_failure` (exit 1) for a duplicate link or a missing endpoint.
 export auto task_link(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Declare the `task` command tree on `root`.
+///
+/// The CLI declaration for every `task` node, colocated with the handlers
+/// above (plan 1051, M11.3a — decision 1068's one-declaration-site-per-node
+/// target, sited per task 6401 next to the handler rather than in a second
+/// central file). `planar.cmd.planar.tree` calls this while building the
+/// root app.
+///
+/// The order of the `add_subcommand` calls IS the order the `--help` page
+/// and the `schema` catalog list the children in; every group node sets
+/// `require_subcommand(0)` so a bare group renders help at exit 0.
+/// @param root The root app to attach the `task` group to.
+export auto declare_task(CLI::App& root) -> void;
+
 } // namespace planar::cmd::handlers
