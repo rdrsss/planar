@@ -30,6 +30,125 @@ namespace planar::db {
 /// SQLite failure as a `db_error` for any other kind of failure.
 export auto current_version(connection& conn) -> std::expected<std::uint32_t, db_error>;
 
+/// @brief The verdict of the schema-version handshake between a live
+/// database and the migration chain a binary embeds.
+///
+/// ## DECISION RECORD — the schema-version guard (task 6058)
+///
+/// `schema_migrations` is Planar's public schema-version contract
+/// (CLAUDE.md § Migrations, docs/architecture.md § schema contract,
+/// migrations/README.md). Five binaries share one SQLite file and each
+/// embeds its own copy of the chain, so "which schema is on disk, and does
+/// this binary understand it" has to be answered before any binary reads a
+/// column. This enum is the single home for that answer; the four
+/// `src/cmd/*/context.cpp` `ensure_db()` implementations render it into
+/// their own binary's message and exit code rather than each re-deriving
+/// the comparison. Four questions were open when this landed, and these
+/// are the answers:
+///
+/// **(1) What counts as incompatible?** `ahead` always. `behind` depends
+/// on the binary (see (2)) — a database behind the binary is not corrupt,
+/// it is un-migrated, and un-migrated is a repairable state. `gap` is a
+/// third case that neither direction covers and that nothing detected
+/// before this task: `apply_all` decides what to run from
+/// `max(version)` alone, so a database whose applied set has a HOLE (row
+/// 5 deleted, rows 1-20 otherwise present) is indistinguishable from a
+/// healthy version-20 database. Migration 5 never re-runs, `max` still
+/// reports 20, and every binary proceeds believing it has structure that
+/// was never created. That is why `gap` outranks `behind` and `current`
+/// in the ordering below.
+///
+/// **(2) What does each binary do?** Unchanged by this task and recorded
+/// here because it is the reason this is a verdict and not a boolean:
+/// `planar` owns migration, so it APPLIES the pending chain and then
+/// refuses only `ahead`; `planar-agent`, `planar-watch` and `planar-ext`
+/// consume the schema and refuse BOTH directions (`behind` means "run
+/// `planar init`"). `planar-execute` holds no SQLite handle and is out of
+/// scope entirely. `planar-watch`'s refusal on `behind` is the one arm
+/// that is arguably too strict — a read-only viewer could show what it
+/// can understand rather than lock the operator out at the moment they
+/// most want to look — but it is pinned by
+/// `src/cmd/planar-watch/context.t.cpp` and predates this task, so
+/// changing it is an OPERATOR decision, not this guard's.
+///
+/// **(3) Refuse, or warn?** `ahead` and `behind` refuse: the binary
+/// cannot read the schema correctly and continuing would misread columns
+/// silently. `gap` WARNS and proceeds. A hard refusal on `gap` would lock
+/// the operator out of exactly the diagnostic verbs (`planar health`,
+/// `planar-watch ps`) that a corrupt applied-set needs, and unlike a
+/// version skew a hole is self-announcing — the first query against the
+/// missing structure fails loudly with a SQLite error naming the object.
+/// Warning keeps the diagnosis reachable while making the corruption
+/// visible; refusing would trade a loud failure for a locked door.
+///
+/// **(4) Exit code and message?** No new code: `exit_schema_version` (7)
+/// already exists in every `src/cmd/*/exit.cppm`, and `gap` does not
+/// refuse so it needs none. The per-binary wording is unchanged and stays
+/// at each `ensure_db()`, because it is pinned by
+/// `src/cmd/*/context.t.cpp` and names that binary's own remediation.
+export enum class schema_compatibility : std::uint8_t {
+  current, ///< Live version equals the embedded maximum. Proceed.
+  behind,  ///< Live version is lower: migrations are pending.
+  ahead,   ///< Live version is higher: a newer binary migrated this file.
+  gap,     ///< The applied set is not exactly `1..live` — a row is missing.
+};
+
+/// @brief The outcome of `assert_schema_compatible`: both versions that
+/// were compared, plus the verdict, so a caller can render a message
+/// without re-querying.
+export struct schema_state {
+  std::uint32_t        live_         = 0; ///< `max(version)` in `schema_migrations` (0 on a fresh database).
+  std::uint32_t        embedded_max_ = 0; ///< The highest version in the chain the binary embeds.
+  schema_compatibility verdict_      = schema_compatibility::current; ///< The handshake verdict.
+};
+
+/// @brief The highest version in `chain`.
+/// @param chain The migration chain to measure.
+/// @return The highest version, or 0 for an empty chain.
+export auto embedded_max(std::span<migration_record const> chain) -> std::uint32_t;
+
+/// @brief The highest version in the embedded chain (`migrations()`).
+/// @return The highest embedded version.
+export auto embedded_max() -> std::uint32_t;
+
+/// @brief Rejects a migration chain whose versions are not exactly
+/// `1, 2, ... n` in order.
+///
+/// Strict monotonicity is NOT enough, and the difference is the whole
+/// point: a chain of 1, 2, 5 is strictly increasing, applies cleanly, and
+/// leaves `max(version) = 5` on a database where migrations 3 and 4 never
+/// ran. Every later handshake then reads "version 5" and believes the
+/// database has structure it does not have — the same silent misread the
+/// `gap` verdict exists to catch, except originating in the BINARY rather
+/// than in the file. Contiguity can only be violated by a build defect
+/// (a mis-generated `planar.db.migrations`, a hand-edited chain), never
+/// by anything an operator does, so refusing is safe: it cannot lock
+/// anyone out of a correctly built binary.
+/// @param chain The migration chain to validate.
+/// @return Success, or a `db_error` naming the first offending version.
+export auto require_contiguous(std::span<migration_record const> chain) -> std::expected<void, db_error>;
+
+/// @brief Compares the live database's schema version against `chain` and
+/// reports the verdict. Does not write, does not migrate, and does not
+/// decide policy — the caller (each binary's `ensure_db()`) turns the
+/// verdict into a refusal, a warning, or a migrate.
+///
+/// A missing or unreadable `schema_migrations` table reports live version
+/// 0 rather than a failure: a fresh database never touched by `planar
+/// init` is a normal state whose answer is "run `planar init`", not a
+/// SQLite diagnostic. A genuine step failure on an existing table IS
+/// surfaced.
+/// @param conn The connection to inspect.
+/// @param chain The chain this binary embeds.
+/// @return The handshake state, or the SQLite failure as a `db_error`.
+export auto assert_schema_compatible(connection& conn, std::span<migration_record const> chain)
+    -> std::expected<schema_state, db_error>;
+
+/// @brief Convenience overload comparing against the embedded chain.
+/// @param conn The connection to inspect.
+/// @return The handshake state, or the SQLite failure as a `db_error`.
+export auto assert_schema_compatible(connection& conn) -> std::expected<schema_state, db_error>;
+
 /// @brief Applies every migration in `chain` whose version exceeds the
 /// database's current version, in ascending order, each inside its own
 /// explicit transaction begun with `lock_mode::immediate`

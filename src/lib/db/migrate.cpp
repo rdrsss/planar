@@ -31,6 +31,99 @@ auto current_version(connection& conn) -> std::expected<std::uint32_t, db_error>
   return static_cast<std::uint32_t>(stmt->column_int64(0));
 }
 
+namespace {
+
+/// @brief SQLite's `SQLITE_MISUSE`. Spelled here rather than included:
+/// this module has no `<sqlite3.h>` in its global module fragment, and
+/// migrate.t.cpp sets the precedent of naming the constant locally. It is
+/// the right code for the one failure below — a malformed migration chain
+/// is the CALLER misusing the runner, not the database failing.
+constexpr int k_sqlite_misuse = 21;
+
+} // namespace
+
+auto embedded_max(std::span<migration_record const> chain) -> std::uint32_t {
+  std::uint32_t highest = 0;
+  for (auto const& record : chain) {
+    highest = std::max(highest, record.version_);
+  }
+  return highest;
+}
+
+auto embedded_max() -> std::uint32_t {
+  return embedded_max(migrations());
+}
+
+auto require_contiguous(std::span<migration_record const> chain) -> std::expected<void, db_error> {
+  for (std::size_t i = 0; i < chain.size(); ++i) {
+    auto const expected_version = static_cast<std::uint32_t>(i + 1);
+    if (chain[i].version_ != expected_version) {
+      return std::unexpected(db_error{
+          .code_    = k_sqlite_misuse,
+          .message_ = std::format("migration chain is not contiguous: position {} holds version {} where version {} was "
+                                  "expected (chain must be 1..n with no holes)",
+                                  i, chain[i].version_, expected_version),
+      });
+    }
+  }
+  return {};
+}
+
+auto assert_schema_compatible(connection& conn, std::span<migration_record const> chain)
+    -> std::expected<schema_state, db_error> {
+  schema_state state{.live_ = 0, .embedded_max_ = embedded_max(chain), .verdict_ = schema_compatibility::current};
+
+  // One query answers both questions: `max` is the live version, and
+  // (`count`, `min`) is what distinguishes a healthy 1..max from a set
+  // with a hole in it. `version` is `integer primary key` (migration
+  // 00001), so versions are unique — which is what makes
+  // `count == max && min == 1` equivalent to "exactly 1..max".
+  auto stmt = conn.prepare("select coalesce(max(version), 0), count(*), coalesce(min(version), 0) from schema_migrations");
+  if (!stmt) {
+    // No `schema_migrations` table: a fresh database. Version 0, and the
+    // verdict falls out of the comparison below (`behind` whenever the
+    // binary embeds anything at all) — see this function's declaration
+    // for why that is not reported as a read failure.
+    state.verdict_ = state.embedded_max_ > 0 ? schema_compatibility::behind : schema_compatibility::current;
+    return state;
+  }
+
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(step.error());
+  }
+  if (*step != step_result::row) {
+    state.verdict_ = state.embedded_max_ > 0 ? schema_compatibility::behind : schema_compatibility::current;
+    return state;
+  }
+
+  state.live_         = static_cast<std::uint32_t>(stmt->column_int64(0));
+  auto const applied  = static_cast<std::uint32_t>(stmt->column_int64(1));
+  auto const lowest   = static_cast<std::uint32_t>(stmt->column_int64(2));
+  auto const has_hole = state.live_ > 0 && (applied != state.live_ || lowest != 1);
+
+  // ORDER IS THE POLICY, and it is deliberate (see `schema_compatibility`):
+  // `ahead` first because a newer schema is the case the binary can say
+  // the most about and the operator can act on immediately; `gap` next
+  // because a hole makes the remaining comparison meaningless — applying
+  // the "pending" tail on top of a broken base would compound it; only
+  // then the ordinary behind/current split.
+  if (state.live_ > state.embedded_max_) {
+    state.verdict_ = schema_compatibility::ahead;
+  } else if (has_hole) {
+    state.verdict_ = schema_compatibility::gap;
+  } else if (state.live_ < state.embedded_max_) {
+    state.verdict_ = schema_compatibility::behind;
+  } else {
+    state.verdict_ = schema_compatibility::current;
+  }
+  return state;
+}
+
+auto assert_schema_compatible(connection& conn) -> std::expected<schema_state, db_error> {
+  return assert_schema_compatible(conn, migrations());
+}
+
 auto apply_all(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {
   auto current = current_version(conn);
   if (!current) {
@@ -78,7 +171,19 @@ auto apply_all(connection& conn, std::span<migration_record const> chain) -> std
 }
 
 auto apply_all(connection& conn) -> std::expected<void, db_error> {
-  return apply_all(conn, migrations());
+  // Contiguity is checked HERE and not in the span overload on purpose.
+  // The invariant belongs to the EMBEDDED chain — the thing
+  // `cmake/generate_migrations.cmake` produces from `migrations/` — and
+  // the span overload is documented as a test seam that deliberately
+  // injects partial and synthetic chains (a lone version-34 record, a
+  // `subspan(0, i + 1)` prefix). Enforcing it there would reject the
+  // seam's whole purpose while adding nothing: a caller that hands over
+  // its own chain already knows what it built.
+  auto const chain = migrations();
+  if (auto const contiguous = require_contiguous(chain); !contiguous) {
+    return std::unexpected(contiguous.error());
+  }
+  return apply_all(conn, chain);
 }
 
 auto rollback_all(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {

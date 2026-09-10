@@ -424,3 +424,105 @@ TEST_CASE("the down chain from head deletes schema_migrations rows in strict des
   REQUIRE(leftover->step().value() == planar::db::step_result::row);
   REQUIRE(leftover->column_int64(0) == 0);
 }
+
+TEST_CASE("the embedded migration chain is CONTIGUOUS, not merely monotonic", "[db][migrations][guard]") {
+  // Monotonic is not contiguous (task 6058 acceptance criterion 2). A
+  // chain of 1,2,5 is strictly increasing and would pass the monotonicity
+  // case above, yet applying it produces a schema no version number
+  // describes: `max(version)` reports 5 while migrations 3 and 4 never
+  // ran, so every later handshake reads "version 5" and believes the
+  // database has structure it does not have.
+  REQUIRE(planar::db::require_contiguous(planar::db::migrations()).has_value());
+
+  const std::array<planar::db::migration_record, 3> holed{
+      planar::db::migration_record{.version_ = 1, .name_ = "a", .up_sql_ = "", .down_sql_ = ""},
+      planar::db::migration_record{.version_ = 2, .name_ = "b", .up_sql_ = "", .down_sql_ = ""},
+      planar::db::migration_record{.version_ = 5, .name_ = "c", .up_sql_ = "", .down_sql_ = ""},
+  };
+  auto const rejected = planar::db::require_contiguous(holed);
+  REQUIRE_FALSE(rejected.has_value());
+  REQUIRE(rejected.error().message_.contains("version 5"));
+
+  // Not-starting-at-1 is the same defect at the other end of the chain.
+  const std::array<planar::db::migration_record, 1> offset{
+      planar::db::migration_record{.version_ = 7, .name_ = "a", .up_sql_ = "", .down_sql_ = ""},
+  };
+  REQUIRE_FALSE(planar::db::require_contiguous(offset).has_value());
+}
+
+TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[db][migrate][guard]") {
+  auto const head = planar::db::embedded_max();
+  REQUIRE(head == 33);
+
+  SECTION("a fresh, never-initialized database is BEHIND at version 0") {
+    scratch_db_path scratch;
+    auto            conn = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(conn.has_value());
+
+    auto const state = planar::db::assert_schema_compatible(*conn);
+    REQUIRE(state.has_value());
+    CHECK(state->live_ == 0);
+    CHECK(state->embedded_max_ == head);
+    CHECK(state->verdict_ == planar::db::schema_compatibility::behind);
+  }
+
+  SECTION("a fully migrated database is CURRENT") {
+    scratch_db_path scratch;
+    auto            conn = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::db::apply_all(*conn));
+
+    auto const state = planar::db::assert_schema_compatible(*conn);
+    REQUIRE(state.has_value());
+    CHECK(state->live_ == head);
+    CHECK(state->verdict_ == planar::db::schema_compatibility::current);
+  }
+
+  SECTION("a database migrated by a newer binary is AHEAD") {
+    scratch_db_path scratch;
+    auto            conn = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::db::apply_all(*conn));
+    REQUIRE(conn->execute(std::format("insert into schema_migrations (version, description) values ({}, 'newer');", head + 1)));
+
+    auto const state = planar::db::assert_schema_compatible(*conn);
+    REQUIRE(state.has_value());
+    CHECK(state->live_ == head + 1);
+    CHECK(state->verdict_ == planar::db::schema_compatibility::ahead);
+  }
+
+  SECTION("a hole in the applied set is a GAP, and outranks BEHIND") {
+    // The failure this arm exists for: `apply_all` decides what to run
+    // from `max(version)` alone, so a database missing migration 5 but
+    // carrying rows up to 20 looks exactly like a healthy version-20
+    // database. Nothing re-runs 5, and the binary proceeds against a
+    // schema that is missing whatever 5 created.
+    scratch_db_path scratch;
+    auto            conn = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::db::apply_all(*conn, planar::db::migrations().subspan(0, 20)));
+    REQUIRE(conn->execute("delete from schema_migrations where version = 5;"));
+
+    auto const state = planar::db::assert_schema_compatible(*conn);
+    REQUIRE(state.has_value());
+    CHECK(state->live_ == 20);
+    CHECK(state->verdict_ == planar::db::schema_compatibility::gap);
+  }
+
+  SECTION("a gap ALSO outranks current, and AHEAD outranks a gap") {
+    scratch_db_path scratch;
+    auto            conn = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::db::apply_all(*conn));
+    REQUIRE(conn->execute("delete from schema_migrations where version = 5;"));
+
+    auto const gapped = planar::db::assert_schema_compatible(*conn);
+    REQUIRE(gapped.has_value());
+    CHECK(gapped->verdict_ == planar::db::schema_compatibility::gap);
+
+    REQUIRE(conn->execute(std::format("insert into schema_migrations (version, description) values ({}, 'newer');", head + 1)));
+    auto const ahead = planar::db::assert_schema_compatible(*conn);
+    REQUIRE(ahead.has_value());
+    CHECK(ahead->verdict_ == planar::db::schema_compatibility::ahead);
+  }
+}
