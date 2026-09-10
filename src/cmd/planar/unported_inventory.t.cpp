@@ -1,6 +1,11 @@
-// @file surface_generator.t.cpp
+// @file unported_inventory.t.cpp
 // @brief The shape of the `k_unported` inventories each binary's
 // `surface.cppm` carries.
+//
+// Renamed from `surface_generator.t.cpp` (task 6672): `scripts/gen-cli-surface.py`
+// is deleted, so this file tests no generator. It never did test the
+// generator's OUTPUT SHAPE either, strictly speaking — see Provenance below
+// for the one case that did, and why it was deleted rather than repointed.
 //
 // ## Provenance
 //
@@ -28,6 +33,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
+import planar.cmd.planar_watch.surface;
 
 namespace {
 
@@ -104,21 +110,29 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   // finished `planar` by folding its last thirty-three entries out to the
   // handlers. Each moved the functions this parser actually cares about
   // (`surface_summaries` where it survives, `unported_paths` always) into
-  // a self-contained `surface.cppm`, in the exact same
-  // scanner-recognized array shape `parsed_unported` parses.
+  // a self-contained `surface.cppm`.
+  //
+  // `planar` and `planar-agent` are still checked by TEXT SCAN, in the
+  // exact scanner-recognized array shape `parsed_unported` parses — both
+  // binaries live in a different CMake target, and pulling their whole
+  // module tree into this one to make a direct call is not worth it for a
+  // single-function check. `planar-watch` is checked by a DIRECT CALL to
+  // `planar::cmd::watch::unported_paths()` instead (task 6626): once task
+  // 6616 deleted the generator, nothing HAD to keep imitating its output
+  // shape — `unported_paths()` is self-contained (`import std;` only) and
+  // cheap to compile a second time into this test target (see
+  // `CMakeLists.txt`'s `target_sources` block for that binary-local edge).
   // Repointed rather than dropped: the property being pinned (nothing
   // beyond decision 980's deferred leaf remains declared-but-unported on
   // any binary) still holds and is still worth catching a regression on.
   auto const planar_unported = parsed_unported(target_source_root() / "src/cmd/planar/surface.cppm");
   auto const agent_unported  = parsed_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
-  auto const watch_unported  = parsed_unported(target_source_root() / "src/cmd/planar-watch/surface.cppm");
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
-  REQUIRE(watch_unported.has_value());
 
   CHECK(*planar_unported == std::vector<std::string>{"explore"});
   CHECK(agent_unported->empty());
-  CHECK(watch_unported->empty());
+  CHECK(planar::cmd::watch::unported_paths().empty());
 
   // The empty inventory must retain a scanner-recognized named initializer
   // while exposing no runtime elements. This protects the zero-list branch

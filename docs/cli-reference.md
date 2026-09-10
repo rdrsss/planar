@@ -6698,7 +6698,7 @@ planar report --days 14 --json
 > registered in the `planar` binary's command surface, but its handler is a
 > stub that exits 64 with "not implemented in this build"; it is the only
 > entry in that binary's `unported_paths()` inventory, pinned by
-> `src/cmd/planar/surface_generator.t.cpp`. Decision 980 records the cockpit
+> `src/cmd/planar/unported_inventory.t.cpp`. Decision 980 records the cockpit
 > as a rewrite candidate rather than a straight port (its screen output has
 > no byte-level contract for the pins, state differential, or break-probes
 > the port's verification relied on), and decision 982 excluded it from the

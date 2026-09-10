@@ -24,6 +24,23 @@
 /// is why `tree.cpp`'s call order is now the root's AUTHORITATIVE child
 /// order — see `root_app`'s header for what that changed.
 ///
+/// ## One deliberate asymmetry the fold leaves standing (task 6667)
+///
+/// `handlers/handoff.cppm`'s `declare_handoff` (wave 6634) and
+/// `handlers/health.cpp`'s `declare_health` (wave 6635) encode OPPOSITE
+/// orders for where a group's inherited flags land relative to a child's
+/// own: `handoff` puts the parent's flags first, `health` appends them
+/// after `hygiene`'s own. Both are correct — each faithfully reproduces
+/// what shipped before the fold, from a different generated-tree
+/// precedent (`apply_surface`'s ancestor-flags pass fired only on
+/// `health`) — and both sites carry a header that cross-references the
+/// other and says neither order is a convention. Recorded again here, at
+/// the fold's own retrospective, because the two are pinned only by a
+/// per-leaf `--help` hash invisible in the `schema` catalog
+/// (`render_flags` dedupes to inherited-first regardless), and that kind
+/// of silent asymmetry is exactly what a future author "harmonizes" once
+/// its two call sites stop being read together.
+///
 /// The functions below are defined directly in this interface unit rather
 /// than in a separate `surface.cpp` — the same single-file-module shape
 /// `planar.cmd.planar_agent.surface` and `planar.cmd.planar_watch.surface`
@@ -397,7 +414,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
 /// IMPLEMENTED — every unported leaf, plus the unported dual nodes.
 ///
 /// `explore` is the sole surviving entry (decisions 980 and 1003: the
-/// cockpit is not ported), and `surface_generator.t.cpp` pins exactly
+/// cockpit is not ported), and `unported_inventory.t.cpp` pins exactly
 /// that.
 /// @return The inventory, sorted.
 export auto unported_paths() -> std::span<std::string_view const> {
