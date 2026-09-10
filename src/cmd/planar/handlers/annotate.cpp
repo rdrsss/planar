@@ -50,6 +50,12 @@ auto zig_error_name(ann::annotation_error err) -> std::string_view {
     // zig `policy.audit.Error` has the single member `WriteFailed`, which
     // the Zig call sites `try` straight out of the engine module.
     return "WriteFailed";
+  case ann::annotation_error::invalid_anchor:
+    return "InvalidAnchor";
+  case ann::annotation_error::target_not_found:
+    return "TargetNotFound";
+  case ann::annotation_error::target_scope_mismatch:
+    return "TargetScopeMismatch";
   }
   return "Unknown";
 }
@@ -576,6 +582,9 @@ auto annotate_verify(context& ctx, const cliapp::parsed_args& args) -> handler_r
   std::vector<ann::verify_row> rows;
   rows.reserve(items->size());
   for (auto const& a : *items) {
+    if (a.anchor_kind_ == ann::anchor_kind::entity) {
+      continue;
+    }
     // Relative to the OPERATOR CWD, not the association root — see this
     // leaf's declaration for the experiment that settled it. An absolute
     // stored path wins on its own, which is what `operator/` does.
