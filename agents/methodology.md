@@ -611,15 +611,16 @@ target-specific commands.
 ## Failures that impersonate regressions
 
 Some failures are environmental, look exactly like a code regression, and
-invite a reflex that makes things worse. Three cost real debugging time in
+invite a reflex that makes things worse. Four cost real debugging time in
 this repo before anyone checked the environment instead of the diff (tasks
-6311, 6315, 6350). **Check the environment before you bisect.**
+6311, 6315, 6350, 6662). **Check the environment before you bisect.**
 
 | Signature | Actual cause | The tell |
 |-----------|--------------|----------|
 | Mass `conn.has_value() == false`, reading as a database-layer regression | Disk exhaustion — the suite had leaked temp arenas until the volume filled (task 6311) | `df` the volume. A real DB regression does not fail every connection in the suite at once. |
 | Exit 138, zero diagnostics, reading as "the known flake" | A doxygen SIGBUS retry loop masking a genuine failure — it hid one three times (task 6315) | Signal death is not a lint verdict. Distinguish a signal exit from a non-zero *diagnostic* exit before retrying. |
 | `39 failed`, large `NOT_BUILT` population | Two builds racing in one build directory; `clang-scan-deps` lost a temp-file rename to a concurrent ninja (task 6350) | **Which exit code is non-zero.** `BUILD_EXIT != 0` with `NOT_BUILT` tests means the suite never ran. A real regression gives `CTEST_EXIT != 0` with *named* failing tests. |
+| A backgrounded `ctest` reads as an incomplete or truncated suite, or as nothing at all | The OS OOM-killed the ctest process for low memory; no verdict was ever reached (task 6662, M11 wave 5) | **No summary line at all.** A real run — pass or fail — always prints `N tests failed out of M`. Absence of that line means the suite did not finish, not that it finished badly. Re-run; do not investigate the code. Long-lived orchestrations that keep a build directory hot for hours (many `clang++` processes, shrinking free disk) are exactly the workload that meets this one. |
 
 The third one generalizes past its own signature, and that is the part worth
 carrying forward. A historical variant — two `test-parity-cpp` runs sharing
@@ -640,6 +641,40 @@ gates against one tree. Pick one — either the lane reports its number and the
 orchestrator re-measures after merge on a quiet tree, or the orchestrator
 tells the lane not to run the gate at all. See also
 [Probes come before gates, and never beside them](#probes-come-before-gates-and-never-beside-them).
+
+**The rule also binds at DISPATCH time, not only during gate runs (task
+6627).** Task 6350 above is about two lanes racing their own gates; a later
+M11 plan opened three further contention windows in its first three cycles
+by obeying the rule for the orchestrator's *own* gate runs and then breaking
+it at dispatch: starting the next coder (which immediately builds) while the
+previous coder's backgrounded ctest, or the reviewer's independent ctest,
+was still running. None produced a visible artifact — every run still
+returned a clean count — but that was luck, not control, and (per the table
+above) this failure class has no exit-code tell.
+
+Root cause: a subagent's background work outlives its final report. A
+completion notification means "the agent stopped", not "its processes
+exited." Two things follow:
+
+- Gate dispatch of the next build-touching agent (coder, test-coder,
+  reviewer) on the coder's **final report**, not on the notification and not
+  merely on a quiet process table. A live instance of this same plan showed
+  why a quiet process table is not enough either: the orchestrator ran the
+  surface-snapshot gate against a tree where the coder was PAUSED — zero
+  processes running — with a break-probe mutation still applied, and the
+  gate correctly reported drift at exactly the three points the probe later
+  named. The gate and the reading were both right; the precondition was
+  wrong. Only the final report asserts the tree is in its delivered state —
+  re-verify `git status --short` against the report's stated change set
+  before running anything.
+- Scope the quiet-tree check to this repo's own build directory, not to
+  build tooling in general. `clangd` reads the compile database continuously
+  and never exits, so a bare `clang` pattern reports "never quiet"; a bare
+  `clang++` pattern also matches an unrelated project's build on the same
+  host (observed: another project compiling while `build/debug` sat idle).
+  Both false positives block dispatch on a tree that is actually quiet. Use:
+
+      pgrep -f "ctest --test-dir $PWD/build|ninja -C $PWD/build|clang.*$PWD/build"
 
 ## Break-probe discipline
 
@@ -704,6 +739,45 @@ the two concurrently against one build directory: a probe rebuilds, the suite
 reads what it rebuilt, and the resulting failures look real while carrying no
 exit-code tell (task 6350). Give the probes their own build directory or
 sequence them strictly before the suite starts.
+
+## Verify a commit's contents; do not trust that `git add` did what was intended
+
+A gate can be entirely correct and the commit it approves can still be
+wrong, because gates run against the WORKING TREE and a commit's contents
+are a separate question (task 6674). An orchestrator ran:
+
+    git add -A src/lib/cliapp src/cmd/planar scripts/gen-cli-surface.py
+
+where the third path had already been deleted by the coder. `git add` fails
+as a UNIT when any path argument is invalid — nothing from that invocation
+was staged. The commit still succeeded and was pushed, because the coder
+had separately `git rm --cached` the same deletion earlier, so the index
+was non-empty. The result: a commit titled after a five-file removal that
+in fact contained only that one already-staged deletion. Every gate that
+ran — build, ctest, surface, cli-usage-check — was measuring the correct,
+complete working tree and reported clean; none of those numbers were
+wrong. What was wrong is that HEAD did not contain what the numbers
+described. It surfaced two cycles later, caught by the next task's diff
+showing five files that a prior commit should already have carried.
+
+The tell was already in output that got read and not parsed:
+`git status --short` after the `add` showed
+
+    D  scripts/gen-cli-surface.py     <- staged (no leading space)
+     M src/lib/cliapp/surface.cpp     <- UNSTAGED — note the leading space
+     M src/lib/cliapp/surface.cppm
+
+A single leading space in that column means unstaged. Two rules follow:
+
+- **Never pass a deleted path to `git add`.** Use `git rm <path>` (or
+  `git add -u` for a whole tree of removals) instead of listing it beside
+  live paths in one `git add`. A stale path in the list can silently fail
+  the entire invocation.
+- **Check the staged column before committing, not after.** After staging,
+  read `git status --short` and confirm every intended path carries no
+  leading space, or run `git show --stat` against the commit once made and
+  confirm it matches the intended file list. Trust the commit's own
+  contents, not the add command that was supposed to produce them.
 
 ## Dispatch Granularity
 
@@ -937,11 +1011,56 @@ Every coder brief MUST:
   cited scenario IDs separately in the brief — the reviewer compares
   the diff against them. When no scenarios are cited the test-spec
   reference can be omitted.
+- **State the commit disposition explicitly, every cycle.** Say in the
+  brief itself whether the coder may commit or must leave the change set
+  uncommitted for the orchestrator to commit after review. Do not let this
+  carry forward by omission: one M11 wave's brief dropped the line two
+  prior waves had carried, and that wave's coder committed its own work
+  (task 6653). Nothing about the resulting commit was wrong — right branch,
+  correctly scoped, unpushed, reviewed normally — but the point of the
+  orchestrator owning the commit is that the reviewer always sees a change
+  set BEFORE it becomes history, and the terminal-verb/diff-fencing
+  contract should read the same in every brief rather than being permitted
+  by silence in some of them. Restate it every time, not just the first.
 
 The dispatcher does not paraphrase the spec into the brief. The brief
 is a pointer to the spec, not a substitute for it. A coder who works
 from the brief alone inherits the dispatcher's compression of the spec,
 and the reviewer cannot recover the loss after the fact.
+
+### Verify an inherited claim before it goes in the next brief
+
+The blind-read contract (above) keeps the *reviewer* from inheriting a
+coder's framing. Nothing structurally stops the *orchestrator* from doing
+the same thing across cycles — carrying a prior coder's claim into the next
+brief, or into its own report to the operator, without having checked it.
+Two independent instances of exactly this happened in one plan (M11):
+
+- **A count.** A coder reported 26 call sites for a helper; the tree had 21
+  (task 6650). The code was right; only the number in the report was wrong.
+  Call-site counts, "specs folded," "tests touched" — any reported COUNT is
+  a claim, not a fact, for the same reason a break-probe's "all mutants
+  killed" is a claim: both are self-reported by the agent that did the work.
+  Spot-check before relaying either downstream.
+- **An invariant.** Wave 1's coder asserted "sibling order is the only
+  invariant a passing gate might not catch." The orchestrator repeated that
+  line into waves 2 and 3's briefs as settled fact. A reviewer probing in
+  the permissive direction later proved it false — three independent probes
+  showed sibling order WAS gate-caught (task 6652; see
+  `scripts/surface-snapshot.sh`'s header for the mechanism and what is and
+  is not observable). It was the second overstated invariant the
+  orchestrator had propagated in that plan; the first was a
+  `require_subcommand(0)` claim at wave 1, also only caught because a
+  reviewer probed it.
+
+The general rule both instances share: **probe or spot-check an inherited
+claim before it becomes "required reading" in the next brief.** A plausible
+coder-authored sentence, once repeated by the orchestrator across two or
+three subsequent briefs, reads as settled doctrine to every coder that
+receives it — and nothing re-derives it once it's in that position. Treat a
+coder's self-reported count, invariant, or "the gate can't catch X" claim as
+a hypothesis until it has been checked once, independently, the same way the
+reviewer treats the coder's diff.
 
 ## Reviewer Decisions
 
