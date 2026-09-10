@@ -82,22 +82,42 @@ export auto json_string(std::string_view text) -> std::string;
 // Doubles (plan 1006, tasks 6072/6186/6261)
 // =========================================================================
 //
-// The tree carried THREE independent transcriptions of the same
-// shortest-round-trip-in-fixed-notation algorithm, plus one site that had
-// never implemented it at all:
+// The tree carried FOUR independent transcriptions of the same
+// shortest-round-trip-in-fixed-notation algorithm, plus a fifth site that
+// had never implemented it at all. ONLY ONE OF THEM WAS CORRECT:
 //
-//   src/cmd/planar/handlers/search.cpp   `format_zig_float`   (correct)
 //   src/lib/engine/execute/manifest.cpp  `format_double`      (correct)
+//   src/cmd/planar/handlers/search.cpp   `format_zig_float`   (WRONG --
+//       it never stripped the `+` from `to_chars(scientific)`'s `e+NN`,
+//       and `std::from_chars` REJECTS a leading `+` rather than skipping
+//       it, so EVERY value with a non-negative exponent failed the parse
+//       and fell through to `return std::string{sci}` -- raw scientific.
+//       Measured on the pre-consolidation binary: `"rank":1.4048523...e+01`
+//       and `"rank":6.588114215686955e+00`. `rank` is `-bm25()`, routinely
+//       >= 1, so this was the COMMON case and not an edge; task 6261)
 //   src/lib/json_dom/json_dom.cpp        `format_double`      (WRONG --
-//       plain `std::to_chars` default, so `1.375e-06` where every other
+//       plain `std::to_chars` default, so `1.375e-06` where the correct
 //       site prints `0.000001375`; task 6261)
 //   src/lib/engine/models/render.cpp     `json_number`        (WRONG --
 //       `std::format("{}", v)`, scientific notation AND a bare `inf`;
 //       tasks 6186/6261)
+//   src/lib/engine/models/legacy.cpp     `json_number`        (WRONG --
+//       the same `std::format("{}", v)` body; feeds `approval_rate` and
+//       `avg_iterations`. Non-finite is unreachable there (the
+//       denominator is a dispatch count of at least one), so it was not a
+//       VALIDITY bug like render.cpp's -- but it is the same divergence
+//       class, and it is routed through this module for that reason
+//       rather than left as a fifth copy.)
 //
 // `search.cpp`'s copy carried a standing note that json_dom "has the same
-// divergence ... NOT reused here, and not fixed here either". That is the
-// exact D19 shape json_text was extracted for. There is one definition now.
+// divergence ... NOT reused here, and not fixed here either" -- written as
+// if search.cpp were the healthy site. It was not. Consolidating these
+// FIXED A LIVE DEFECT in `search --json` rather than merely deduplicating.
+// That is the exact D19 shape json_text was extracted for, and the reason
+// duplicated algorithms are worth ending: four copies drifted, and the
+// copy everyone cited as the reference was among the broken ones.
+//
+// There is one definition now.
 
 /// @brief Format `value` as shortest-round-trip digits in FIXED notation.
 ///

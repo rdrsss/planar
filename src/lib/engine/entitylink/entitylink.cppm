@@ -368,10 +368,18 @@ export auto render_link_list_text(std::span<const directed_link> rows, entity_ki
 /// behaviour rather than a fourth invention. 6257 and 6326 moved onto it;
 /// this file is the reference, not the exception.
 ///
-/// The silent-degradation argument still applies to the empty listing and
-/// is answered rather than dismissed: the EXIT CODE distinguishes the two,
-/// and the text form (`no links for <ref>`) says it in words for the
-/// operator who is reading rather than parsing.
+/// The silent-degradation argument -- that a consumer cannot tell "no
+/// results" from "the command broke" -- is answered rather than dismissed,
+/// and NOT by the exit code, which does not distinguish the two: `links
+/// list` exits 0 for an empty listing and would exit 0 for a broken
+/// emission too. The real answer is the one decision 1090 records. That
+/// objection was correct WHEN FILED (task 6270) because the severe half of
+/// it was real: POPULATED listings were emitting zero bytes, so empty
+/// output genuinely did mean the command had broken. That half is fixed.
+/// Zero bytes on empty now AGREES with the true answer, and an emitter that
+/// is empty when the answer is empty is not degraded. For the operator who
+/// is reading rather than parsing, the text form says it in words (`no
+/// links for <ref>`).
 /// @param rows The merged listing.
 /// @return The complete stdout payload, empty for an empty listing.
 export auto render_link_list_json(std::span<const directed_link> rows) -> std::string;

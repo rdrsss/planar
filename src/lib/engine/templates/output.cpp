@@ -163,8 +163,10 @@ auto validate_ok(std::string_view set_name, std::string_view system, std::string
   //
   // A set name is a DIRECTORY NAME under `~/.planar/templates/`, so every
   // byte POSIX allows in a path reaches here. Reproducing that was correct
-  // while the oracle existed to be diffed against; decision 1067 retired
-  // that rule for divergences with real consequences, and emitting invalid
+  // while the oracle existed to be diffed against; decision 1090 authorises
+  // the fix for this row (6213 is one of the eight it names), on the
+  // reasoning 1067 applied to its own nine -- with the oracle deleted D2's
+  // rule no longer decides divergences with real consequences. Emitting invalid
   // JSON from the one flag whose entire contract is "this parses" is one.
   std::string out{R"({"ok":true,"set":)"};
   append_json_string(out, set_name);

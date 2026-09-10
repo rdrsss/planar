@@ -32,8 +32,10 @@
 // under a key no populated invocation ever produced, so a consumer written
 // against either shape broke on the other — and the empty case is the one
 // people write their parser against first, because it is the easy fixture.
-// Decision 1067 retired D2's bug-for-bug rule for defects with real
-// consequences; task 6257 is one, and the rule chosen for the whole
+// Decision 1090 authorises this pin rewrite, applying to task 6257 the
+// reasoning decision 1067 applied to its own nine rows: with the oracle
+// deleted there is nothing left to reproduce bug-for-bug against, so D2's
+// rule no longer decides defects with real consequences. 6257 is one, and the rule chosen for the whole
 // shape-split family (6257 / 6270 / 6326) is NDJSON-with-zero-lines,
 // because it leaves the POPULATED shape — the one field consumers actually
 // read — byte-identical, and it is what `links list --json` already did.
@@ -542,4 +544,46 @@ TEST_CASE("scope show/suggest --json ESCAPE cwd, slug, name and reason", "[cmd][
 
   // The TEXT forms are unchanged; they are not JSON and never escaped.
   CHECK(dispatch(fx, {"scope", "suggest"}).out == "suggested scope based on cwd:\n  ev\"il  (explicit member)\n");
+}
+
+TEST_CASE("scope show --json escapes the REPO arm's slug", "[cmd][scope][json][escape]") {
+  // THE THIRD ARM of `json_row`. The case above reaches the ASSOCIATION
+  // arm (via `--scope`, so the specificity contest cannot pick the repo)
+  // and the `cwd` tail. It never renders a `"kind":"repo"` row, so a
+  // break-probe that reverted ONLY the repo arm to raw `std::format`
+  // interpolation SURVIVED it -- the whole suite stayed green with the
+  // defect back in place. This case closes that hole.
+  //
+  // Repo rows are not hypothetical: `resolve_read_scope_set` returns one
+  // whenever the cwd is inside a registered project but not at an
+  // association root, and its `slug` is `projects.slug` -- operator-
+  // supplied through `init --slug`, so every byte the operator types
+  // reaches the renderer.
+  auto const fx = make_fixture("escaperepo");
+  CHECK(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+
+  // A project, and NO association bound to it, so the read set resolves to
+  // the repo row alone rather than letting an association outrank it.
+  auto const      repo = fx.root / "proj";
+  std::error_code ec;
+  std::filesystem::create_directories(repo, ec);
+  REQUIRE_FALSE(ec);
+  auto const registered = dispatch_at(fx, repo, {"init", "--slug", R"(ev"il\repo)", "--allow-no-repo", "--force", "--json"});
+  CHECK(registered.code == 0);
+
+  auto const shown = dispatch_at(fx, repo, {"scope", "show", "--json"});
+  CHECK(shown.code == 0);
+
+  // THE VACUITY GUARD. Without a repo row present, every assertion below
+  // is about a document that does not contain the arm under test.
+  REQUIRE(shown.out.find(R"("kind":"repo")") != std::string::npos);
+
+  // Both bytes escaped, and the raw form absent. The raw-form check is the
+  // one that fails under the reverted arm; a bare substring search for the
+  // escaped form would also match inside the malformed document.
+  CHECK(shown.out.find(R"("slug":"ev\"il\\repo")") != std::string::npos);
+  CHECK(shown.out.find(R"("slug":"ev"il)") == std::string::npos);
+
+  // And the envelope PARSES, which is the contract `--json` actually makes.
+  CHECK(glz::validate_json(shown.out).ec == glz::error_code::none);
 }

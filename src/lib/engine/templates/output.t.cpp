@@ -299,8 +299,9 @@ TEST_CASE("validate_summary and not_found_message are BODIES with no prefix or t
 // REPLACES a deleted `[oracle-defect]` pin, `"validate_issues json does NOT
 // escape set/system/kind — reproduced defect"`, which asserted
 // `out.find(R"("set":"bad"set")") != npos` — that is, it asserted the
-// MALFORMED bytes as the contract. Decision 1067 retired D2's bug-for-bug
-// rule for divergences with real consequences and named this cost
+// MALFORMED bytes as the contract. Decision 1090 authorises deleting that
+// pin EXPLICITLY -- it is the one pin it calls out by name, precisely
+// because the assertion WAS the malformed bytes -- and it names this cost
 // explicitly: the pins it authorises cannot be re-derived, because the
 // reference that produced them is gone, so the new expectation comes from
 // judgment about what is correct. The judgment here is narrow — a `--json`

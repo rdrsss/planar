@@ -439,8 +439,9 @@ TEST_CASE("assoc detect: the empty answer is a different SHAPE in each arm", "[c
   // ZERO BYTES, exit 0 (task 6326). It used to be `{"proposals":[]}` — an
   // object naming a key the non-empty payload never emits, so one flag had
   // two shapes. `--json` here is NDJSON, and an empty NDJSON stream has no
-  // lines in it. Decision 1067 authorises the pin rewrite; the rule is the
-  // one applied across 6257 / 6270 / 6326.
+  // lines in it. Decision 1090 authorises the pin rewrite and states the
+  // NDJSON shape rule as a cross-verb contract; the rule is the one applied
+  // across 6257 / 6270 / 6326.
   CHECK(json.out.empty());
 
   auto const text = dispatch(fx, {"assoc", "detect"});

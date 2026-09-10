@@ -900,8 +900,9 @@ TEST_CASE("models evals --quality-floor honours Zig's float contract", "[cmd][mo
   // Hex float literals with a `p` exponent.
   CHECK(floor_of("0x1p-1") == "0.5");
   CHECK(floor_of("0X1P-1") == "0.5");
-  // NON-FINITE VALUES ARE REFUSED (task 6186; decision 1067 authorises the
-  // rewrite of this pin). The oracle ACCEPTED all four and echoed them
+  // NON-FINITE VALUES ARE REFUSED (task 6186; decision 1090 authorises the
+  // rewrite of this pin -- 6186 is one of the eight rows it names, and it
+  // is NOT among 1067's nine). The oracle ACCEPTED all four and echoed them
   // ASYMMETRICALLY — bare `inf` / `-inf`, quoted `"nan"` with the sign
   // dropped. The quoted arm is valid JSON of the wrong TYPE; the bare arm
   // is not JSON at all, so `models evals --json`, whose entire purpose is

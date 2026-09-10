@@ -29,16 +29,38 @@ auto trim(std::string_view text, std::string_view chars) -> std::string_view {
   return text.substr(first, text.find_last_not_of(chars) - first + 1);
 }
 
-/// @brief Render a double the way `std.json.Stringify` does: shortest
-/// round-trippable, with no forced fractional part.
+/// @brief Render a double as a JSON number, through the tree's single
+/// shared float formatter.
 ///
-/// The consequence is visible in the oracle capture: an approval rate of 1.0
-/// serialises as `1`, not `1.0`, while 0.5 stays `0.5`. Note that the
-/// RATIONALE string uses `{:.2}` and therefore always shows two decimals, so
-/// the same value appears as `1` in the JSON number and `1.00` in the prose
-/// beside it. That disagreement is the oracle's and is deliberate.
+/// Shortest round-trippable, with no forced fractional part: an approval
+/// rate of 1.0 serialises as `1`, not `1.0`, while 0.5 stays `0.5` — the
+/// contract the oracle capture pinned, and unchanged by the delegation.
+/// Note that the RATIONALE string uses `{:.2}` and therefore always shows
+/// two decimals, so the same value appears as `1` in the JSON number and
+/// `1.00` in the prose beside it. That disagreement is the oracle's and is
+/// deliberate.
+///
+/// THE FIFTH FLOAT SITE (task 6261). This body used to be
+/// `std::format("{}", value)` — byte-for-byte the body deleted from
+/// `render.cpp` — which switches to SCIENTIFIC notation for small and
+/// large magnitudes where every other float site in this tree writes fixed.
+/// Unlike render.cpp's copy it was never a VALIDITY bug: both callers below
+/// divide by a dispatch count of at least one (see `denominator` in the
+/// scorecard grouping), so non-finite input is unreachable here and the
+/// bare `inf` that made render.cpp's copy emit non-JSON could not occur.
+///
+/// It is routed through `planar.json_text` anyway, because it is the same
+/// divergence class 6261 exists to close and because leaving it would have
+/// made json_text.cppm's inventory claim — "there is one definition now" —
+/// false the moment it was written. Correcting the claim instead would have
+/// documented a duplicate rather than removed one, which is the outcome D19
+/// is against. `json_double` rather than `format_double_fixed`: this is a
+/// JSON emitter, so the emitter is total by construction rather than by an
+/// unreachability argument that a future caller could quietly invalidate.
+/// @param value The value to render.
+/// @return The number's bytes, or `null` if `value` is not finite.
 auto json_number(double value) -> std::string {
-  return std::format("{}", value);
+  return planar::json_text::json_double(value);
 }
 
 /// @brief Left-pad to `width`; never truncates.

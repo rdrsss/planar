@@ -514,8 +514,9 @@ export auto render_detect_text(std::span<const proposal> proposals) -> std::stri
 /// different shape entirely, naming a key the non-empty form never emits.
 /// Both shapes were probed directly against the oracle and reproduced under
 /// D2, whose reason to exist was the runtime differential lane. Decision
-/// 1067 retired that rule for divergences with real consequences once the
-/// oracle was deleted, and task 6326 is one: a consumer written against
+/// 1090 authorises the change here, applying the reasoning 1067 applied to
+/// its own nine rows: once the oracle was deleted D2's rule no longer
+/// decides divergences with real consequences, and task 6326 is one: a consumer written against
 /// either shape broke on the other, and the empty case is the one people
 /// write their parser against first because it is the easy fixture. The
 /// same rule was applied to `scope suggest --json` (6257) and confirmed on

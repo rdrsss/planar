@@ -415,21 +415,19 @@ auto write_indent(std::string& out, std::size_t level) -> void {
   out.append(level * 2, ' ');
 }
 
-/// @brief Format a `double` the way zig's `{d}` does: shortest
-/// round-trippable decimal.
-/// @param value The number.
-/// @return The formatted text.
 /// @brief Render a `floating` value the way `std.json.Stringify` does.
 ///
 /// Delegates to `planar.json_text` (task 6261). This function used to ask
 /// `std::to_chars` for its DEFAULT format, which switches to scientific
 /// notation for small and large magnitudes -- so `0.000001375` came back
-/// out as `1.375e-06` while `search.cpp` and `engine/execute/manifest.cpp`,
-/// both of which had transcribed the fixed-notation algorithm correctly,
-/// wrote the same value as `0.000001375`. `search.cpp` carried a standing
-/// note that this module "has the same divergence ... NOT reused here, and
-/// not fixed here either", which is the exact D19 shape `json_text` exists
-/// to end. There is one definition now.
+/// out as `1.375e-06` while `engine/execute/manifest.cpp`, which had
+/// transcribed the fixed-notation algorithm correctly, wrote the same value
+/// as `0.000001375`. `search.cpp` carried a standing note that this module
+/// "has the same divergence ... NOT reused here, and not fixed here
+/// either" -- written as if search.cpp were the healthy site, which it was
+/// NOT: its own copy emitted raw scientific for every non-negative
+/// exponent. manifest.cpp was the only correct one of the four. That is the
+/// exact D19 shape `json_text` exists to end. There is one definition now.
 ///
 /// Non-finite input never reaches here: `parse_number` diverts an infinity
 /// to the `number_raw` arm (a token that overflows is re-emitted verbatim,

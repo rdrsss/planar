@@ -43,9 +43,10 @@
 /// `slug` and `reason`, so a path or an association slug containing a
 /// double quote or a backslash emitted malformed JSON. This port
 /// reproduced that byte-for-byte under D2, whose reason to exist was the
-/// runtime differential lane against the oracle. Decision 1067 retired that
-/// rule for divergences with real consequences once the oracle was deleted,
-/// and emitting unparseable output from the one flag whose entire contract
+/// runtime differential lane against the oracle. Decision 1090 authorises
+/// the fix and the pin rewrite for this row, applying the reasoning 1067
+/// applied to its own nine: once the oracle was deleted D2's rule no longer
+/// decides divergences with real consequences, and emitting unparseable output from the one flag whose entire contract
 /// is "this parses" is one — on Windows, or any path carrying a backslash,
 /// it was broken by default rather than as an edge case.
 ///

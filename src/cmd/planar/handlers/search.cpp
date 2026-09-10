@@ -32,8 +32,27 @@ namespace {
 //
 // Fixing json_dom was task 6261's job and it is done, which would have left
 // this the fourth of four transcriptions of one algorithm -- the exact D19
-// shape `json_text` exists to end. See json_text.cppm for the inventory of
-// all four, two of them correct and two not.
+// shape `json_text` exists to end. See json_text.cppm for the inventory.
+//
+// THE DELETED COPY WAS ITSELF BROKEN, and this is not a cleanup that
+// preserved behaviour. `format_zig_float` asked `to_chars` for
+// `chars_format::scientific`, which spells its exponent `e+NN` for a
+// non-negative exponent, and then handed that exponent text to
+// `std::from_chars` -- which REJECTS a leading `+` rather than skipping
+// it. The parse failed and the function fell through its own
+// `return std::string{sci}` guard, emitting the RAW SCIENTIFIC form.
+// Measured on the pre-consolidation installed binary:
+//
+//     "rank":1.4048523469614144e+01     "rank":6.588114215686955e+00
+//
+// `rank` is `-bm25()` and is routinely >= 1, so the broken path was the
+// COMMON case; only ranks below 1 (a term appearing in nearly every row,
+// where IDF collapses) took the negative exponent that `from_chars`
+// accepts and came out correctly fixed. `manifest.cpp` was the only
+// correct transcription of the four. So this consolidation FIXES A LIVE
+// DEFECT in `search --json` -- it does not merely deduplicate -- and the
+// pin in search_health_audit_leaves.t.cpp now asserts the absence of `e+`
+// against a rank above 1, which is what would have caught it.
 //
 // `append_json_double` rather than `format_double_fixed`, because this IS a
 // JSON emitter: a non-finite rank is `null`, not a bare `inf`. It stays
