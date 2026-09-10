@@ -148,6 +148,26 @@ TEST_CASE("list: default filter excludes done/cancelled tasks", "[task][crud]") 
   CHECK((*r)[0].id == open->id);
 }
 
+TEST_CASE("update: a task with an entity annotation cannot change scope", "[task][entity-annotation][scope]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            t    = create_task(conn, task_create_args{.title = "Anchored"});
+  REQUIRE(t.has_value());
+  REQUIRE(conn.execute("insert into associations (slug, name, kind) values ('destination', 'destination', 'org')"));
+  REQUIRE(conn.execute(std::format("insert into annotations "
+                                   "(scope_kind, anchor_kind, target_kind, target_id, body, task_id) "
+                                   "values ('global', 'entity', 'task', {}, 'durable note', {})",
+                                   t->id, t->id)));
+
+  auto moved = update_task(conn, t->id, task_update_args{.scope = "assoc:destination"});
+  REQUIRE_FALSE(moved.has_value());
+  CHECK(moved.error() == task_error::query_failed);
+  auto unchanged = show_task(conn, t->id);
+  REQUIRE(unchanged.has_value());
+  CHECK(unchanged->scope_kind == planar::engine::planning::task_scope_kind::global);
+  CHECK_FALSE(unchanged->scope_id.has_value());
+}
+
 // --- status transition rules (bare update) ---------------------------------
 
 TEST_CASE("update: legal task transition todo -> doing succeeds", "[task][transitions]") {

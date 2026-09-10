@@ -125,6 +125,26 @@ TEST_CASE("update: no-op patch is a successful read-only show", "[plan][crud]") 
   CHECK(updated->title == "Untouched");
 }
 
+TEST_CASE("update: a plan with an entity annotation cannot change scope", "[plan][entity-annotation][scope]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            p    = create_plan(conn, plan_create_args{.title = "Anchored"});
+  REQUIRE(p.has_value());
+  REQUIRE(conn.execute("insert into associations (slug, name, kind) values ('destination', 'destination', 'org')"));
+  REQUIRE(conn.execute(std::format("insert into annotations "
+                                   "(scope_kind, anchor_kind, target_kind, target_id, body, plan_id) "
+                                   "values ('global', 'entity', 'plan', {}, 'durable note', {})",
+                                   p->id, p->id)));
+
+  auto moved = update_plan(conn, p->id, plan_update_args{.scope = "assoc:destination"});
+  REQUIRE_FALSE(moved.has_value());
+  CHECK(moved.error() == plan_error::query_failed);
+  auto unchanged = show_plan(conn, p->id);
+  REQUIRE(unchanged.has_value());
+  CHECK(unchanged->scope_kind == planar::engine::planning::plan_scope_kind::global);
+  CHECK_FALSE(unchanged->scope_id.has_value());
+}
+
 TEST_CASE("update: parent cycle is refused", "[plan][crud]") {
   scratch_db_path scratch;
   auto            conn  = open_migrated(scratch);

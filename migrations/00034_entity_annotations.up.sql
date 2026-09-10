@@ -123,6 +123,23 @@ begin
   select raise(abort, 'cannot delete task with entity annotations; remove annotations explicitly first');
 end;
 
+-- An entity annotation's scope is the target's exact scope. Refuse a target
+-- scope move while it has annotations rather than leaving the durable anchor
+-- mismatched. Explicit annotation removal is the disposition that permits a
+-- later scope move.
+create trigger plans_reject_entity_annotation_scope_update before update of scope_kind, scope_id on plans
+when (new.scope_kind is not old.scope_kind or new.scope_id is not old.scope_id)
+ and exists (select 1 from annotations where anchor_kind = 'entity' and target_kind = 'plan' and target_id = old.id)
+begin
+  select raise(abort, 'cannot change plan scope with entity annotations; remove annotations explicitly first');
+end;
+create trigger tasks_reject_entity_annotation_scope_update before update of scope_kind, scope_id on tasks
+when (new.scope_kind is not old.scope_kind or new.scope_id is not old.scope_id)
+ and exists (select 1 from annotations where anchor_kind = 'entity' and target_kind = 'task' and target_id = old.id)
+begin
+  select raise(abort, 'cannot change task scope with entity annotations; remove annotations explicitly first');
+end;
+
 -- A source UUID is created exactly once per database and never derived from
 -- its pathname. Operation receipts are introduced with the model so a later
 -- transactional writer cannot silently make entity notes non-recoverable.

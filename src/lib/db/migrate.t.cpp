@@ -382,16 +382,27 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(identity.has_value());
   REQUIRE(identity->step().value() == planar::db::step_result::row);
   CHECK(identity->column_text(0).size() == 32);
+  REQUIRE(identity->step().value() == planar::db::step_result::done);
 
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
   REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
                         "values ('global', 'entity', null, 'plan', 1, 'durable note', 1);"));
   REQUIRE_FALSE(conn->execute(chain[33].down_sql_).has_value());
+  auto guard = conn->prepare("select count(*) from sqlite_master where type = 'table' and name = 'annotation_rollback_guard'");
+  REQUIRE(guard.has_value());
+  REQUIRE(guard->step().value() == planar::db::step_result::row);
+  CHECK(guard->column_int64(0) == 0);
+  REQUIRE(guard->step().value() == planar::db::step_result::done);
 
   auto version = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(version.has_value());
   REQUIRE(version->step().value() == planar::db::step_result::row);
   CHECK(version->column_int64(0) == 34);
+  REQUIRE(version->step().value() == planar::db::step_result::done);
+
+  REQUIRE(conn->execute("delete from annotations where anchor_kind = 'entity'"));
+  REQUIRE(conn->execute(chain[33].down_sql_));
+  REQUIRE(planar::db::apply_all(*conn));
 }
 
 TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db][migrate][roundtrip]") {

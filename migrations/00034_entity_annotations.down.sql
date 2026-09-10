@@ -1,14 +1,19 @@
 -- Entity annotations and operation receipts cannot be represented by the
 -- previous schema. Export them before rollback; this guard deliberately
 -- refuses loss rather than detaching notes or reopening receipt replay.
-create table annotation_rollback_guard (value integer check (value = 0));
-insert into annotation_rollback_guard(value)
-select 1 where exists (select 1 from annotations where anchor_kind = 'entity')
-   or exists (select 1 from annotation_operation_receipts);
-drop table annotation_rollback_guard;
+-- `abs(INT64_MIN)` is SQLite's documented integer-overflow error. CASE is
+-- lazy, so this has no schema side effect on either a successful rollback or
+-- a refusal, making a post-disposition retry safe even though rollback_all
+-- does not wrap each down migration in a transaction.
+select case when exists (select 1 from annotations where anchor_kind = 'entity')
+                   or exists (select 1 from annotation_operation_receipts)
+            then abs(-9223372036854775808)
+            else 0 end;
 
 drop trigger if exists plans_reject_entity_annotation_delete;
 drop trigger if exists tasks_reject_entity_annotation_delete;
+drop trigger if exists plans_reject_entity_annotation_scope_update;
+drop trigger if exists tasks_reject_entity_annotation_scope_update;
 drop trigger if exists annotations_entity_target_insert;
 drop trigger if exists annotations_entity_target_update;
 drop trigger if exists annotations_search_insert;
