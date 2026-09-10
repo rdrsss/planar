@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.json_text;
 import planar.engine.identity;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -165,14 +166,31 @@ void print_text_row(context& ctx, const decorated& row) {
 /// @param row The decorated member.
 /// @return The object's bytes.
 auto json_row(const decorated& row) -> std::string {
+  // Every string goes through `planar.json_text` (task 6254). These fields
+  // used to be interpolated raw, so an association slug carrying a quote
+  // emitted `"slug":"ev"il"` -- malformed, from the one flag whose entire
+  // contract is that its output parses.
   switch (row.kind) {
   case id::scope_kind::global:
+    // The global arm hard-codes all four values, so there is nothing here
+    // that could need escaping. Left as a literal.
     return R"({"kind":"global","id":0,"slug":"","name":"","kind_label":"global"})";
-  case id::scope_kind::association:
-    return std::format(R"({{"kind":"association","id":{},"slug":"{}","name":"{}","kind_label":"{}"}})", row.row_id, row.slug,
-                       row.name, row.kind_label);
-  case id::scope_kind::repo:
-    return std::format(R"({{"kind":"repo","id":{},"slug":"{}","name":"","kind_label":"repo"}})", row.row_id, row.slug);
+  case id::scope_kind::association: {
+    std::string out{std::format(R"({{"kind":"association","id":{},"slug":)", row.row_id)};
+    json_text::append_json_string(out, row.slug);
+    out += R"(,"name":)";
+    json_text::append_json_string(out, row.name);
+    out += R"(,"kind_label":)";
+    json_text::append_json_string(out, row.kind_label);
+    out += '}';
+    return out;
+  }
+  case id::scope_kind::repo: {
+    std::string out{std::format(R"({{"kind":"repo","id":{},"slug":)", row.row_id)};
+    json_text::append_json_string(out, row.slug);
+    out += R"(,"name":"","kind_label":"repo"})";
+    return out;
+  }
   }
   return {};
 }
@@ -225,7 +243,15 @@ auto scope_show(context& ctx, const cliapp::parsed_args& args) -> handler_result
       }
       ctx.out() << json_row((*rows)[i]);
     }
-    ctx.out() << std::format(R"(],"source":"{}","cwd":"{}"}})", source, cwd) << '\n';
+    // `cwd` is a FILESYSTEM PATH, so a backslash reaches this by accident
+    // rather than by malice -- it is legal in a POSIX path component and it
+    // is every separator on Windows, where the raw interpolation this
+    // replaces made `scope show --json` broken by default rather than as an
+    // edge case (task 6254).
+    std::string tail{std::format(R"(],"source":"{}","cwd":)", source)};
+    json_text::append_json_string(tail, cwd);
+    tail += '}';
+    ctx.out() << tail << '\n';
     return {};
   }
 
@@ -305,14 +331,19 @@ auto scope_suggest(context& ctx, const cliapp::parsed_args& args) -> handler_res
   }
 
   if (cliapp::flag_bool(args, "--json")) {
-    if (suggestions->empty()) {
-      // The one place this key appears. See this module's header.
-      ctx.out() << R"({"proposals":[]})" << '\n';
-      return {};
-    }
+    // NDJSON, INCLUDING WHEN EMPTY (task 6257). There is no empty branch:
+    // the loop below runs zero times and the verb writes zero bytes. It
+    // used to short-circuit to `{"proposals":[]}` -- a key no populated
+    // invocation ever emitted, wrapping an array it never produced, so a
+    // consumer written against either shape broke on the other. See this
+    // module's header for the family-wide rule.
     for (auto const& s : *suggestions) {
-      ctx.out() << std::format(R"({{"slug":"{}","association_id":{},"reason":"{}"}})", s.slug, s.association_id, s.reason)
-                << '\n';
+      std::string line{R"({"slug":)"};
+      json_text::append_json_string(line, s.slug); // task 6254
+      line += std::format(R"(,"association_id":{},"reason":)", s.association_id);
+      json_text::append_json_string(line, s.reason);
+      line += '}';
+      ctx.out() << line << '\n';
     }
     return {};
   }

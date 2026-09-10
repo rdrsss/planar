@@ -17,30 +17,32 @@ using json_text::append_json_string;
 
 namespace {
 
-/// @brief Render a double the way `std.json.Stringify` does: shortest
-/// round-trippable, with no forced fractional part.
+/// @brief Render a double as a JSON number, through the tree's single
+/// shared float formatter.
 ///
-/// NaN is the one case `std::format` alone gets wrong, and it is
-/// OPERATOR-REACHABLE: `models evals --quality-floor nan` is accepted by
-/// Zig's `parseFloat` and the value is echoed back in the `gates` object.
-/// The oracle writes it as the QUOTED string `"nan"` while writing the
-/// infinities BARE — `inf` and `-inf`, neither of which is valid JSON
-/// either. Captured:
+/// TWO defects lived in this one function's former body,
+/// `std::format("{}", value)` with a NaN special case:
 ///
-///   --quality-floor nan   -> "gates":{...,"quality_floor":"nan"}
-///   --quality-floor -nan  -> "gates":{...,"quality_floor":"nan"}   (sign dropped)
-///   --quality-floor inf   -> "gates":{...,"quality_floor":inf}
-///   --quality-floor -inf  -> "gates":{...,"quality_floor":-inf}
+///   - task 6186, NON-FINITE. `models evals --quality-floor` accepted
+///     `inf` / `nan` (Zig's float contract takes both) and this echoed
+///     them back into the `gates` object ASYMMETRICALLY: quoted `"nan"`
+///     with the sign dropped, BARE `inf` and `-inf`. The bare arm is not
+///     JSON, from a verb whose whole point is machine-readable routing
+///     advice. The flag now REFUSES non-finite input at parse
+///     (handlers/models.cpp), and `append_json_double` writes `null`
+///     behind that refusal so the emitter is total either way.
 ///
-/// This asymmetry is not a rule anyone would guess, and it was invisible
-/// until `models evals` was wired at layer 3 (plan 996, task 6149) — no
-/// engine test reached this function with a non-finite value, because no
-/// caller could yet supply one. Reproduced, not "fixed" (D2).
+///   - task 6261, SCIENTIFIC NOTATION. `std::format("{}", 1.375e-06)`
+///     writes `1.375e-06`; every other float site in this tree writes
+///     `0.000001375`. `--quality-floor 0.000001375` is enough to reach it.
+///
+/// Both are gone by delegating to `planar.json_text`, which is now the
+/// tree's ONE definition of shortest-round-trip-in-fixed-notation. See
+/// json_text.cppm for the four sites it replaced.
+/// @param value The value to render.
+/// @return The number's bytes, or `null` if `value` is not finite.
 auto json_number(double value) -> std::string {
-  if (std::isnan(value)) {
-    return "\"nan\"";
-  }
-  return std::format("{}", value);
+  return json_text::json_double(value);
 }
 
 /// @brief Append `"key":` — a quoted key plus its colon.

@@ -36,24 +36,37 @@
 /// under a DIFFERENT heading (`from --scope flag` vs `from cwd`). The
 /// heading is the only place the text form records provenance.
 ///
-/// ## `scope show --json` does NOT escape `cwd`, and this port preserves it
+/// ## Every `--json` string is escaped through `planar.json_text` (task 6254)
 ///
-/// The oracle interpolates the working directory into the JSON payload with
-/// a raw `{s}` — `"cwd":"{s}"` — so a path containing a double quote or a
-/// backslash emits malformed JSON. This port reproduces that byte-for-byte
-/// rather than fixing it, per D2: the fix is a behaviour change, it is
-/// observable to any consumer that currently tolerates the raw form, and it
-/// belongs to a task that can run the oracle and decide. Recorded as an
-/// oracle defect in this cycle's report; the same raw interpolation applies
-/// to the `slug` / `reason` fields of `scope suggest --json`.
+/// It did not used to be. The oracle interpolated the working directory
+/// with a raw `{s}` — `"cwd":"{s}"` — and `scope suggest` did the same to
+/// `slug` and `reason`, so a path or an association slug containing a
+/// double quote or a backslash emitted malformed JSON. This port
+/// reproduced that byte-for-byte under D2, whose reason to exist was the
+/// runtime differential lane against the oracle. Decision 1090 authorises
+/// the fix and the pin rewrite for this row, applying the reasoning 1067
+/// applied to its own nine: once the oracle was deleted D2's rule no longer
+/// decides divergences with real consequences, and emitting unparseable output from the one flag whose entire contract
+/// is "this parses" is one — on Windows, or any path carrying a backslash,
+/// it was broken by default rather than as an edge case.
 ///
-/// ## `scope suggest --json` disagrees with itself on the empty case
+/// ## `scope suggest --json` is NDJSON, including when empty (task 6257)
 ///
 /// Populated, it emits ONE JSON OBJECT PER LINE with no wrapper. Empty, it
-/// emits a single `{"proposals":[]}` object — a key that appears on NO other
-/// path, wrapping an array the populated form never produces. A consumer
-/// written against either shape breaks on the other. Captured from the
-/// oracle, reproduced verbatim, and pinned in `scope_leaves.t.cpp`.
+/// emits NOTHING — zero bytes, exit 0. N lines for N results, and N may be
+/// zero.
+///
+/// It used to emit a single `{"proposals":[]}` object when empty — a key
+/// that appeared on NO other path, wrapping an array the populated form
+/// never produced — so a consumer written against either shape broke on the
+/// other, and the empty case is the one people write their parser against
+/// first because it is the easy fixture. The rule chosen for the whole
+/// shape-split family (6257 `scope suggest`, 6270 `links list`, 6326 `assoc
+/// detect`, which disagreed with each other AND with themselves) is
+/// NDJSON-with-zero-lines, for two reasons: it leaves the POPULATED bytes —
+/// the shape field consumers actually read — untouched, and it is what
+/// `links list --json` already did, so it is the majority behaviour rather
+/// than a fourth invention. Pinned in `scope_leaves.t.cpp`.
 ///
 /// ## `scope suggest` matches the project root EXACTLY
 ///

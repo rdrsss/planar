@@ -158,7 +158,28 @@ auto build_cohort(const cliapp::parsed_args& args) -> std::expected<std::pair<ra
   }
   if (auto const raw = cliapp::flag_string(args, "--quality-floor"); raw && !raw->empty()) {
     auto const parsed = cliapp::parse_float_zig(*raw);
-    if (!parsed) {
+    // NON-FINITE IS REFUSED (task 6186). Zig's float contract accepts
+    // `inf` / `-inf` / `Infinity` / `nan`, and the oracle echoed all four
+    // straight back into the `gates` object ASYMMETRICALLY -- bare `inf`
+    // and `-inf`, quoted `"nan"` with the sign dropped. The quoted arm is
+    // valid JSON of the wrong TYPE; the bare arm is not JSON at all, so a
+    // verb whose entire purpose is machine-readable routing advice handed
+    // its consumer a parse error at exit 0. Invisible until `models evals`
+    // was wired at layer 3, because until then no caller could supply one.
+    //
+    // Refusing rather than encoding, because neither value is a meaningful
+    // gate: at `inf` every candidate is below the floor and nothing can
+    // ever be recommended, and at `nan` every comparison is false so the
+    // gate silently never fires. Both are answers an operator would read
+    // as "your cohort is empty" rather than "your floor is nonsense" --
+    // which is the silent-degradation shape, not a loud one.
+    //
+    // The wording is this flag's EXISTING parse refusal, reused verbatim
+    // rather than invented, so the fix adds no new pinned byte. The
+    // emitter is hardened too (`json_text::append_json_double` writes
+    // `null` for non-finite), but that is the total-function safety net
+    // behind this refusal, not a substitute for it.
+    if (!parsed || !std::isfinite(*parsed)) {
       return std::unexpected(error_from_body(kind_t::invalid_input, std::format("invalid --quality-floor '{}'", *raw)));
     }
     gate_config.quality_floor = *parsed;

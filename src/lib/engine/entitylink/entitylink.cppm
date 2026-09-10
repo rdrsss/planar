@@ -347,9 +347,39 @@ export auto render_link_list_text(std::span<const directed_link> rows, entity_ki
 ///
 /// This renderer OWNS its terminators, unlike `planar.engine.planning`'s
 /// `render_list_json` (a fragment the caller terminates). The reason is the
-/// empty case: the oracle emits ZERO BYTES for an empty `--json` listing,
-/// and a fragment contract would force the caller to write a bare `"\n"`.
-/// Write the result verbatim; append nothing.
+/// empty case: an empty `--json` listing is ZERO BYTES, and a fragment
+/// contract would force the caller to write a bare `"\n"`. Write the result
+/// verbatim; append nothing.
+///
+/// TASK 6270, and why nothing changed here. That row was filed as "`links
+/// list --json` emits zero bytes for an entity that HAS an `entity_links`
+/// row", ranked above the malformed-JSON defects because it fails SILENTLY
+/// -- a consumer cannot tell "no links" from a broken command. The headline
+/// was already resolved by the time it was triaged: a populated listing
+/// emits one NDJSON object per row. What survived was the EMPTY case, which
+/// is this contract, and which is the same shape-split family as 6257
+/// (`scope suggest`) and 6326 (`assoc detect`).
+///
+/// The three verbs disagreed with each other AND with themselves, so one
+/// rule had to be chosen for all three. It is the one this renderer already
+/// implemented -- NDJSON with N lines for N results, N allowed to be zero
+/// -- because it leaves every POPULATED payload, the shape field consumers
+/// actually read, byte-identical, and because it was already the majority
+/// behaviour rather than a fourth invention. 6257 and 6326 moved onto it;
+/// this file is the reference, not the exception.
+///
+/// The silent-degradation argument -- that a consumer cannot tell "no
+/// results" from "the command broke" -- is answered rather than dismissed,
+/// and NOT by the exit code, which does not distinguish the two: `links
+/// list` exits 0 for an empty listing and would exit 0 for a broken
+/// emission too. The real answer is the one decision 1090 records. That
+/// objection was correct WHEN FILED (task 6270) because the severe half of
+/// it was real: POPULATED listings were emitting zero bytes, so empty
+/// output genuinely did mean the command had broken. That half is fixed.
+/// Zero bytes on empty now AGREES with the true answer, and an emitter that
+/// is empty when the answer is empty is not degraded. For the operator who
+/// is reading rather than parsing, the text form says it in words (`no
+/// links for <ref>`).
 /// @param rows The merged listing.
 /// @return The complete stdout payload, empty for an empty listing.
 export auto render_link_list_json(std::span<const directed_link> rows) -> std::string;
