@@ -208,12 +208,11 @@ export auto inherited_flags(const CLI::App& root, std::span<std::string const> p
 /// `return pname_;` arm once `all_options` is false -- but `get_name`
 /// carries an UNCONDITIONAL early return, `if (get_group().empty()) return
 /// {};`, that fires before that arm is ever reached. A `->group("")`-hidden
-/// positional (the mechanism `handlers/capture.cpp`'s `declare_capture`
-/// uses to keep
-/// `capture commits`'s trailing SHA list out of the `schema` catalog, since
-/// the oracle's own `rest_field` never appears there either) therefore
-/// canonicalized to the EMPTY STRING, and `harvest()` in `args.cppm` keyed
-/// every parsed SHA into `positional_lists[""]` instead of
+/// positional (the mechanism `handlers/capture.cpp`'s `declare_capture` uses
+/// to keep `capture commits`'s trailing SHA list out of the `schema`
+/// catalog, since the oracle's own `rest_field` never appears there either)
+/// therefore canonicalized to the EMPTY STRING, and `harvest()` in
+/// `args.cppm` keyed every parsed SHA into `positional_lists[""]` instead of
 /// `positional_lists["shas"]` -- silently dropping every commit SHA the
 /// operator passed. `positional_string(args, "shas")` came back empty, the
 /// handler's `since.has_value() == shas.empty()` both-absent check fired,

@@ -48,15 +48,15 @@ auto source_text(const std::filesystem::path& path) -> std::optional<std::string
   return std::string{std::istreambuf_iterator<char>{input}, {}};
 }
 
-/// @brief Parse the generated `k_unported` initializer, ignoring comments.
+/// @brief Parse the hand-authored `k_unported` initializer, ignoring comments.
 ///
 /// Deliberately scans the whole initializer rather than one line at a time:
-/// the generator is allowed to coalesce entries onto a single line, and a
-/// line-oriented parser silently read only the first of them once.
-/// @param source The generated `surface.cpp` to parse.
+/// entries may be coalesced onto a single line, and a line-oriented parser
+/// silently read only the first of them once.
+/// @param source The hand-authored `surface.cppm` to parse.
 /// @return The declared paths in sorted order, or `std::nullopt` on a
 /// malformed or duplicate-bearing initializer.
-auto generated_unported(const std::filesystem::path& source) -> std::optional<std::vector<std::string>> {
+auto parsed_unported(const std::filesystem::path& source) -> std::optional<std::vector<std::string>> {
   auto text = source_text(source);
   if (!text) {
     return std::nullopt;
@@ -92,7 +92,7 @@ auto generated_unported(const std::filesystem::path& source) -> std::optional<st
 
 } // namespace
 
-TEST_CASE("the checked-in unported inventories carry only decision-980's deferred leaf", "[cmd][generator]") {
+TEST_CASE("the checked-in unported inventories carry only decision-980's deferred leaf", "[cmd][surface]") {
   // The live half of the same subject. `statediff.t.cpp` used to assert
   // these counts as one of the oracle-retirement gate's three conditions
   // (decision 963/982, condition 2: "the unported inventory contains only
@@ -105,13 +105,13 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   // handlers. Each moved the functions this parser actually cares about
   // (`surface_summaries` where it survives, `unported_paths` always) into
   // a self-contained `surface.cppm`, in the exact same
-  // scanner-recognized array shape `generated_unported` parses.
+  // scanner-recognized array shape `parsed_unported` parses.
   // Repointed rather than dropped: the property being pinned (nothing
   // beyond decision 980's deferred leaf remains declared-but-unported on
   // any binary) still holds and is still worth catching a regression on.
-  auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cppm");
-  auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
-  auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cppm");
+  auto const planar_unported = parsed_unported(target_source_root() / "src/cmd/planar/surface.cppm");
+  auto const agent_unported  = parsed_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
+  auto const watch_unported  = parsed_unported(target_source_root() / "src/cmd/planar-watch/surface.cppm");
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
   REQUIRE(watch_unported.has_value());
@@ -120,9 +120,9 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   CHECK(agent_unported->empty());
   CHECK(watch_unported->empty());
 
-  // The generated empty inventory must retain a scanner-recognized named
-  // initializer while exposing no runtime elements. This protects the
-  // generator's zero-list branch from regressing to an ill-formed array.
+  // The empty inventory must retain a scanner-recognized named initializer
+  // while exposing no runtime elements. This protects the zero-list branch
+  // from regressing to an ill-formed array.
   auto const agent_surface = source_text(target_source_root() / "src/cmd/planar-agent/surface.cppm");
   REQUIRE(agent_surface.has_value());
   CHECK(agent_surface->contains("k_unported[] = {std::string_view{}}"));
