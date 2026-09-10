@@ -351,22 +351,47 @@ TEST_CASE("create --related an EXISTING artifact stores the id") {
   CHECK(sql_text_or_null(conn, "select related_artifact_id from test_scenarios where id = 1") == "1");
 }
 
-TEST_CASE("create --plan a NONEXISTENT plan SUCCEEDS and leaves a dangling edge") {
+TEST_CASE("create --plan a NONEXISTENT plan refuses and writes NOTHING") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  // The 6197 shape, checked at the ENDPOINT rather than inherited: this
-  // verb genuinely does NOT validate the plan, where `question add --plan`
-  // does. Oracle-captured at exit 0. If a future migration adds an FK here,
-  // this case fails and someone decides deliberately.
+  // Task 6197, checked at the ENDPOINT rather than inherited from a
+  // sibling. This verb used to exit 0 here and leave an `entity_links` edge
+  // to a plan that never existed, where `question add --plan` refused; the
+  // old pin said "if a future migration adds an FK here, this case fails
+  // and someone decides deliberately". The decision went the other way: no
+  // migration, an explicit engine-side existence check, matching
+  // `create_question` and `create_artifact`.
+  //
+  // Compare `--related` two cases up, which refuses for a STRUCTURAL
+  // reason: `related_artifact_id references artifacts(id)` is a real FK and
+  // SQLite does the refusing. `entity_links` has no FK to its target table,
+  // so this endpoint had to be checked in code or not at all — which is why
+  // one verb contradicted itself on its two reference flags.
   auto created = create_scenario(conn, scenario_create_args{.title = "P-only", .plan_id = 4242});
-  REQUIRE(created.has_value());
+  REQUIRE_FALSE(created.has_value());
+  CHECK(created.error() == scenario_error::not_found);
 
-  // The edge is REALLY there, and its `from_kind` is `test_scenario` — the
-  // spelling editflow's anchor resolver queries. `scenario` would not
-  // resolve and would break `scenario view` once editflow lands.
-  CHECK(edge_rows(conn) == "test_scenario|1|plan|4242|derives-from");
-  CHECK(sql_int(conn, "select count(*) from plans") == 0);
+  // The after-state carries the contract: the original defect exited 0, so
+  // an error-only assertion could not have seen it.
+  CHECK(edge_rows(conn).empty());
+  CHECK(scenario_rows(conn).empty());
+  CHECK(audit_rows(conn).empty());
+}
+
+TEST_CASE("create --plan an EXISTING plan still writes the test_scenario edge") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn,
+       "insert into plans (scope_kind, scope_id, title, slug, status) values ('global', null, 'anchor', 'anchor', 'draft')");
+
+  // The positive half: the refusal above must not have been bought by
+  // breaking the working path. The edge's `from_kind` is `test_scenario` —
+  // the spelling editflow's anchor resolver queries; `scenario` would not
+  // resolve and would break `scenario view`.
+  auto created = create_scenario(conn, scenario_create_args{.title = "P-only", .plan_id = 1});
+  REQUIRE(created.has_value());
+  CHECK(edge_rows(conn) == "test_scenario|1|plan|1|derives-from");
   // Exactly ONE audit row, and its verb is `create` — the edge gets no
   // `link` row of its own.
   CHECK(audit_rows(conn) == "create|scenario|1|create scenario 'P-only'|<NULL>|<NULL>");

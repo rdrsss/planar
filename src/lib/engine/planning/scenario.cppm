@@ -55,11 +55,12 @@
 ///    with `scenario add: QueryFailed` and writes NO row — not even a
 ///    partial one, since the failure is the insert.
 ///  - `plan_id` becomes an `entity_links` row, and `entity_links` carries
-///    no FK on its polymorphic column pair. Oracle-captured: `scenario add
-///    x --plan 4242` exits 0 and leaves a DANGLING edge to a plan that does
-///    not exist — the same shape `decision add --plan 9999` has, and the
-///    opposite of `question add --plan 9999`, which refuses. Reproduced
-///    rather than fixed (D2).
+///    no FK on its polymorphic column pair, so the schema refuses nothing.
+///    The existence check is therefore done IN CODE, before the insert:
+///    `scenario add x --plan 4242` exits 1 with `scenario add: NotFound`
+///    and writes no row and no edge (task 6197). Until 6197 it exited 0 and
+///    left a dangling edge — so this one verb answered its two reference
+///    flags differently, for a structural reason rather than a policy one.
 ///
 /// The edge's `from_kind` MUST be `test_scenario` (not `scenario`): the
 /// oracle's editflow anchor resolver queries that spelling, and it is what
@@ -176,9 +177,10 @@ export struct scenario_create_args {
   /// `entity_links` (`test_scenario -> plan`, relationship `derives-from`)
   /// edge.
   ///
-  /// @warning NOT checked for existence: `scenario add x --plan 4242`
-  /// succeeds at exit 0 and leaves a DANGLING edge (oracle-captured). See
-  /// this file's header for why that differs from `--related`.
+  /// CHECKED for existence before anything is written: a nonexistent id
+  /// yields `scenario_error::not_found` and leaves no row, no audit row and
+  /// no edge (task 6197). See this file's header for why the check is in
+  /// code here and in the schema for `--related`.
   std::optional<std::int64_t> plan_id;
   std::optional<std::string>  scope; ///< Scope slug accepted by `planar.scope_ref::resolve`.
 };
@@ -234,19 +236,22 @@ export enum class scenario_error : std::uint8_t {
 /// @brief Create a new scenario. Status is always `draft` (the column's
 /// default) — there is no create-time status argument.
 ///
-/// Order of operations is the oracle's and is observable: resolve the scope
-/// (an unresolvable slug refuses BEFORE any write), INSERT, `create` audit
-/// row, then the optional `--plan` edge. The edge write does NOT get its
+/// Order of operations is observable: resolve the scope (an unresolvable
+/// slug refuses BEFORE any write), check `--plan` exists (task 6197 — also
+/// before any write), INSERT, `create` audit row, then the optional
+/// `--plan` edge. The edge write does NOT get its
 /// own `link` audit row — `scenario add --plan` writes exactly one
 /// `audit_log` row and its verb is `create`, with summary `create scenario
 /// '<title>'`.
 /// @param conn An open, migrated database connection.
 /// @param args The scenario's title (required) plus optional
 /// body/related/plan/scope.
-/// @return The created row, or `slug_not_found` / `unsupported_scope`
-/// (unresolvable `scope`), `audit_write_failed`, or `query_failed` (which
-/// is also what a nonexistent `--related` artifact produces, via the
-/// column's foreign key).
+/// @return The created row, or `not_found` (the `--plan` id names no
+/// `plans` row — checked in code, see this file's header),
+/// `slug_not_found` / `unsupported_scope` (unresolvable `scope`),
+/// `audit_write_failed`, or `query_failed` (which is also what a
+/// nonexistent `--related` artifact produces, via the column's foreign
+/// key).
 export auto create_scenario(db::connection& conn, const scenario_create_args& args) -> std::expected<scenario, scenario_error>;
 
 /// @brief Look up a scenario by id.

@@ -432,6 +432,33 @@ auto create_scenario(db::connection& conn, const scenario_create_args& args) -> 
     return std::unexpected(scope.error());
   }
 
+  // `--plan` is validated BEFORE the INSERT, so a dangling plan id leaves
+  // neither a `test_scenarios` row, nor an `audit_log` row, nor an
+  // `entity_links` edge (task 6197).
+  //
+  // This verb used to answer its two reference flags DIFFERENTLY: `--related
+  // 77` refused, because `related_artifact_id references artifacts(id)` is a
+  // real foreign key and SQLite did the refusing, while `--plan 4242` exited
+  // 0 and left a dangling edge, because `entity_links` carries no foreign key
+  // to its target table. The difference was structural rather than a policy
+  // choice, which is why it is closed in code rather than by a migration.
+  if (args.plan_id.has_value()) {
+    auto stmt = conn.prepare("select count(*) from plans where id = ?");
+    if (!stmt) {
+      return std::unexpected(scenario_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(1, *args.plan_id); !b) {
+      return std::unexpected(scenario_error::query_failed);
+    }
+    auto step = stmt->step();
+    if (!step || *step != db::step_result::row) {
+      return std::unexpected(scenario_error::query_failed);
+    }
+    if (stmt->column_int64(0) == 0) {
+      return std::unexpected(scenario_error::not_found);
+    }
+  }
+
   std::int64_t id = 0;
   {
     // `status` is NOT in the column list: the row takes the column's own
