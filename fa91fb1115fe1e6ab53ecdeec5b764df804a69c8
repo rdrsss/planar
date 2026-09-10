@@ -1,0 +1,27 @@
+CORRECTION to this commit's message.
+
+It claims nine rows were addressed. Four were NOT changed by this commit,
+and the message overstates them:
+
+  6649  ALREADY CORRECT before this cycle -- declare.cppm's add_string_required
+        doc already read 'eight of its ten leaves'. Fixed in-flight during M11
+        wave 3, which carried the caveat as its first work item.
+  6651  ALREADY IMPLEMENTED -- declare.cppm's header already stated the set
+        without absolute counts, naming what each wave added instead. That IS
+        the structural answer; it landed during M11.
+  6654  MOOT -- add_resume and add_spec no longer exist. Task 6636 retired
+        both when folding resume and spec into their own handler modules, and
+        the orphaned Doxygen block went with them.
+  6665  NO PERSISTED ARTIFACT -- '55 live entries and 22 anchors' appears
+        nowhere in the tree, the workbench, or git history. It was a transient
+        subagent report line, not something that reached the repository. The
+        row should not have been filed against the tree.
+
+Actually changed by this commit: 6629 (rename + tag), 6630 (nine->twelve),
+6656 (walk.cppm reflow only; its tree.cpp half is also moot), 6670
+(six->eight waves).
+
+The orchestrator wrote the message before reading the coder's full report and
+conflated 'closed' with 'repaired' -- the exact hazard it had flagged one
+message earlier, about 6647. Recorded here rather than rewritten because the
+commit is pushed and the branch has work on top of it.
