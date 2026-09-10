@@ -10,19 +10,17 @@ Plus [uninstall](#uninstall), [troubleshooting](#troubleshooting), and the [inst
 
 ## Prerequisites
 
-- **Zig 0.16.0 or later.** Verify with `zig version`. Required for all install paths. Minimum version is declared in `build.zig.zon`.
-- **Git.** Required for the full install (clones the source repo).
+- **CMake >= 4.3, Ninja, and the pinned LLVM toolchain.** Required for all install paths — these configure and build the C++26 binaries. `install.sh` preflights the exact preset compilers (`/opt/homebrew/opt/llvm/bin/clang` / `clang++` on macOS/Homebrew) before invoking CMake. See [docs/toolchain-parity.md](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
+- **Git, >= 2.31.** Required for the full install (clones the source repo) and at runtime for repo discovery; see `docs/toolchain-parity.md`'s git row for why the 2.31 floor is load-bearing.
 - *Optional:* **`gh` CLI** — only if you plan to authenticate against GitHub Issues via `--auth gh-cli` (instead of an env-var token).
 - *Optional:* **`sqlx-cli`** — only if you want to author new migration pairs ad-hoc. `cargo install sqlx-cli --no-default-features --features sqlite`.
 
-No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; `build.zig` compiles it into a static library that statically links into the binary — no platform-specific build flags, no system library dependency.
+No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
 
 ## Quick install (`make install`)
 
-The shortest path. Builds and installs Planar's four executables into
+The shortest path. Builds and installs Planar's five executables into
 `~/.local/bin` and nothing else.
-
-There is no zig equivalent to a remote `module@version` install, so clone the repo and build directly into your install prefix:
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
@@ -48,13 +46,15 @@ templates are embedded, so the CLI works in isolation. It does not stage or
 wire the legacy vendor surfaces; for those, use the
 [full install](#full-install-installsh).
 
-If you want a non-default optimize mode, set `OPTIMIZE`:
+`make install` always builds the `release` CMake preset with version metadata
+stamped in (`-DPLANAR_VERSION_META=ON`). For a debug build instead, configure
+and build by hand:
 
 ```bash
-make install OPTIMIZE=ReleaseFast
+cmake --preset debug
+cmake --build build/debug
+cmake --install build/debug --prefix ~/.local
 ```
-
-Optimize modes follow Zig conventions: `Debug` (default), `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`.
 
 ## Full install (`install.sh`)
 
@@ -70,7 +70,7 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 
 That's it. The script:
 
-- Builds `planar` from source by running `zig build -Doptimize=ReleaseSafe --prefix "$HOME/.planar"` from the repo root, which writes `~/.planar/bin/planar`.
+- Builds all five binaries from source by running `cmake --preset release -DPLANAR_VERSION_META=ON`, `cmake --build build/release`, and `cmake --install build/release --prefix "$HOME/.planar"` from the repo root, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`.
 - Copies `agents/`, `commands/`, `skills/`, `migrations/`, `scripts/`, and (if present) `copilot/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen).
 - Symlinks 31 surfaces per vendor into the vendor harness dirs.
 - Atomically writes `~/.planar/install-manifest.json` after the selected vendor
@@ -118,7 +118,7 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | `--no-vendor` | Skip vendor symlinks entirely; install Planar core only. |
 | `--link` | Symlink artifacts from the source repo into `~/.planar/` instead of copying. **Dev mode** — edits to the repo propagate immediately. |
 | `--force` | Overwrite existing symlinks at the destinations. |
-| `--optimize MODE` | Zig optimize mode passed to `zig build -Doptimize=<mode>` (default `ReleaseSafe`). |
+| `--preset NAME` | CMake build preset: `debug`\|`release` (default `release`). |
 | `--with-mtkahypar` | Install the optional hash-locked native Mt-KaHyPar wheel and Planar CLI adapter under the selected prefix. |
 | `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db` unless `--force` is also given. |
 
@@ -147,29 +147,29 @@ The default database lives at `~/.planar/planar.db`. Override it with the `PLANA
 
 If you want to develop on Planar or contribute back:
 
-The Zig package root IS the repo root (`build.zig` and `build.zig.zon` sit at the top level), so all build invocations run from the repo root:
+The repo root IS the CMake project root (`CMakeLists.txt` and `CMakePresets.json` sit at the top level), so all build invocations run from the repo root:
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
 cd planar
-zig build                          # writes zig-out/bin/planar
-zig build test                     # 1,700+ unit tests
-zig build test-integration         # 570+ integration tests
-zig fmt --check build.zig src tools integration_tests
+cmake --preset debug                                    # or --preset release
+cmake --build build/debug
+ctest --test-dir build/debug --output-on-failure         # Catch2 unit tests
 ```
 
 The repo also ships a `Makefile` with the common targets:
 
 ```bash
-make build              # build the binary into ./bin/planar (ReleaseSafe)
-make test               # run the unit test suite
-make test-integration   # build + run integration suite (sets PLANAR_BIN)
-make test-all           # unit + integration
-make fmt                # zig fmt the source tree
-make fmt-check          # CI gate — verify zig fmt is clean
+make build              # cmake --preset release; copies all 5 binaries into ./bin/
+make test               # cmake --preset debug; cmake --build; ctest
+make test-integration   # runs the Zig-oracle's black-box suite (integration_tests/)
+make test-all           # unit (ctest) + integration + coverage + cli-usage-check
+make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
 ```
 
 For dev-mode install where edits to the source repo are picked up live by the binary's siblings (skills, agents, commands) and vendor surfaces, use `./install.sh --link`. Note that binary edits still require a rebuild (`make build` or re-running `install.sh`).
+
+**Developer-only note.** The Zig implementation this project ported from is GONE. It lived under `zig/` as the port's parity oracle and was deleted at the M10 cutover (task 6045) once decision 963/982's evidence conditions were met. Nothing here builds, tests, installs, or lints against it; its history is in `git log`.
 
 For authoring or inspecting migrations:
 
@@ -177,10 +177,11 @@ For authoring or inspecting migrations:
 cargo install sqlx-cli --no-default-features --features sqlite
 sqlx migrate add -r <name> --source migrations
 # Edit migrations/NNNNN_<name>.up.sql and migrations/NNNNN_<name>.down.sql.
-zig build                          # codegen picks up the new files
+cmake --build build/debug          # cmake/generate_migrations.cmake re-runs configure
+                                    # automatically and picks up the new files
 ```
 
-(The runtime applies migrations automatically from an embedded `migrations` Zig module produced by `tools/gen_migrations.zig` at build time; the sqlx CLI is only needed for ad-hoc developer work against an out-of-band database or for authoring new migration pairs.)
+(The runtime applies migrations automatically from a generated `planar.db.migrations` module, `#embed`-produced at CMake configure time by `cmake/generate_migrations.cmake`; the sqlx CLI is only needed for ad-hoc developer work against an out-of-band database or for authoring new migration pairs.)
 
 To smoke a single migration as raw SQL against a scratch database:
 
@@ -233,9 +234,16 @@ export PATH="$HOME/.planar/bin:$PATH"
 fish_add_path ~/.planar/bin
 ```
 
-**`zig: command not found` during install.**
+**A pinned LLVM tool is not found, or CMake fails to configure.**
 
-Install Zig 0.16.0 or later. On macOS: `brew install zig`. On Linux, fetch the latest tarball from [ziglang.org/download](https://ziglang.org/download/). Verify with `zig version`.
+`install.sh` (and the CMake presets) pin an exact LLVM toolchain path — see [docs/toolchain-parity.md](docs/toolchain-parity.md) for the pinned versions and prefixes. On macOS: `brew install cmake ninja llvm`. Verify the pinned compilers resolve:
+
+```bash
+/opt/homebrew/opt/llvm/bin/clang++ --version
+cmake --version   # must be >= 4.3
+```
+
+On a non-Homebrew-ARM-macOS host, see `docs/toolchain-parity.md`'s "Platform prefixes" table for the equivalent path and override the preset's compiler variables accordingly.
 
 **Slash commands not appearing in Claude Code.**
 
@@ -292,7 +300,11 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 ```
 ~/.planar/
 ├── bin/
-│   ├── planar                          # the Zig operator binary
+│   ├── planar                          # the C++26 operator binary
+│   ├── planar-agent                    # agent-callable coordination binary
+│   ├── planar-watch                    # human-facing read-only viewer
+│   ├── planar-execute                  # deterministic spawn-free Lua workflow engine
+│   ├── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
 │   └── mtkahypar                       # optional prefix-relative wheel adapter
 ├── opt/mtkahypar/1.6.1/venv/          # optional native wheel environment
 ├── install-manifest.json               # versioned managed-projection authority
@@ -302,7 +314,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── 00001_foundation.down.sql
 │   ├── 00002_planning.up.sql
 │   ├── 00002_planning.down.sql
-│   └── … (through 00013_test_spec_artifact_kind)
+│   └── … (through 00033_rename_blocks_to_depends_on)
 ├── agents/                             # vendor-neutral agent role specs
 │   ├── methodology.md
 │   ├── models.md

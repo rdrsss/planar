@@ -129,6 +129,8 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 
    Without `--parent-action`, the coder's action is a root (no parent); `planar-watch tree` renders it as a separate, disjoint chain with no connection to the orchestrator. Omitting the flag preserves today's behavior bit-for-bit and is the correct choice when the caller does not want tree hierarchy (e.g. bare `pull` for non-orchestrated work). The flag is validated as a positive integer; an unknown action id causes `--parent-action` to fail with `NotFound`.
 3. **Heartbeat.** `planar-agent heartbeat --claim <token> [--ttl <secs>]` at least once per TTL/2 while work continues. A long-running tool call may delay the heartbeat, but the agent should heartbeat immediately before and after such calls.
+
+   Omitting `--ttl` RENEWS the lease length the claim currently holds — heartbeating an 8h claim keeps 8h. Pass `--ttl` only to change the lease deliberately; it then sets the new length absolutely, in either direction. (Before task 6093 an omitted `--ttl` reset the lease to a fixed 600s default, so heartbeating a long claim *truncated* it to ten minutes and a faithfully-heartbeating dispatch was more likely to lose its claim than one that never heartbeated. Briefs written against that behavior repeat `--ttl` on every heartbeat; that is still correct, just no longer necessary.)
 4. **Report sub-actions (optional).** For granular telemetry, wrap tool calls in `planar-agent action start --claim <token> --kind tool_call` / `planar-agent action end --action <id> --outcome ok`. Most agents skip this and let the top-level action started by `pull` cover the whole work session.
 5. **Terminate** with exactly one of:
    - `planar-agent complete --claim <token> [--summary <text>]` — work succeeded; task → `done`, claim → `completed`.
@@ -606,6 +608,103 @@ target-specific commands.
 - [ ] No references to files that have been renamed or deleted (grep for
       all file paths cited in changed documents).
 
+## Failures that impersonate regressions
+
+Some failures are environmental, look exactly like a code regression, and
+invite a reflex that makes things worse. Three cost real debugging time in
+this repo before anyone checked the environment instead of the diff (tasks
+6311, 6315, 6350). **Check the environment before you bisect.**
+
+| Signature | Actual cause | The tell |
+|-----------|--------------|----------|
+| Mass `conn.has_value() == false`, reading as a database-layer regression | Disk exhaustion — the suite had leaked temp arenas until the volume filled (task 6311) | `df` the volume. A real DB regression does not fail every connection in the suite at once. |
+| Exit 138, zero diagnostics, reading as "the known flake" | A doxygen SIGBUS retry loop masking a genuine failure — it hid one three times (task 6315) | Signal death is not a lint verdict. Distinguish a signal exit from a non-zero *diagnostic* exit before retrying. |
+| `39 failed`, large `NOT_BUILT` population | Two builds racing in one build directory; `clang-scan-deps` lost a temp-file rename to a concurrent ninja (task 6350) | **Which exit code is non-zero.** `BUILD_EXIT != 0` with `NOT_BUILT` tests means the suite never ran. A real regression gives `CTEST_EXIT != 0` with *named* failing tests. |
+
+The third one generalizes past its own signature, and that is the part worth
+carrying forward. A historical variant — two `test-parity-cpp` runs sharing
+one `.zig-cache`, both since deleted at the M10 cutover — built cleanly, ran,
+and reported `276 CRASH` out of 652 where the truth on the same commit was 18.
+There was **no exit-code tell at all**, and the reflex it invited was not
+re-running but bisecting, or reverting a merge that was never at fault.
+
+So do not treat the `BUILD_EXIT` tell as the general rule. It is the tell for
+one variant. The general rule is the operational one:
+
+**One build at a time per build directory.** That covers `make cpp-lint`
+(it builds) against `ctest` (it builds), either against
+`scripts/break-probe.sh` (it rebuilds per mutation), and any of those against
+an orchestrator running its own verification in the same worktree. The last is
+the one that actually bit: the coder and the orchestrator were both running
+gates against one tree. Pick one — either the lane reports its number and the
+orchestrator re-measures after merge on a quiet tree, or the orchestrator
+tells the lane not to run the gate at all. See also
+[Probes come before gates, and never beside them](#probes-come-before-gates-and-never-beside-them).
+
+## Break-probe discipline
+
+A break-probe is the standing evidence that a new test discriminates:
+mutate the implementation, confirm the NAMED test fails, restore, confirm
+it passes again. A test authored alongside the code it covers can pass
+vacuously, and a suite that has never been shown to fail proves nothing.
+
+Every step of that sequence has a silent-failure mode, and each one looks
+exactly like success:
+
+- **The restore leaves an OLDER mtime.** `cp F F.bak; <mutate>; build;
+  <test>; mv F.bak F` puts back the backup's original timestamp.
+  Incremental build systems that compare mtimes (ninja, make) see nothing
+  newer than the object file, skip the rebuild, and leave the MUTANT
+  linked — so every probe after the first in that pass measures the wrong
+  binary while reporting "all mutants killed". Always `touch` the file
+  after restoring, rebuild, and re-run the test to prove the restore took.
+- **The anchor matched zero occurrences.** A mutation that changed nothing
+  produces a green test that is indistinguishable from a survivor. Verify
+  the substitution count, or diff the file against the backup.
+- **The mutant did not compile.** A compiler-rejected mutant proves the
+  compiler works, not that the test discriminates. It is not a kill.
+- **The test filter matched nothing.** Confirm the filter names real test
+  names, not framework tags, and that it selected at least one.
+- **The mutation changed the file but not the behaviour.** A substitution
+  that lands on a comment, on whitespace, on dead code, or inside an
+  unreachable branch passes the zero-match check above and still compiles
+  to a semantically identical binary. No test can catch it, so the green
+  result says nothing — but it looks exactly like a survivor. Confirm the
+  mutation actually changed compiled output before believing any verdict
+  about the test.
+
+A survivor is a finding, not a footnote: either the test needs rebuilding
+around what is actually observable, or the mutation is provably equivalent
+— and "provably" means the difference was measured, not argued.
+
+An **inert** mutant is a different finding from a survivor, and conflating
+them is how a test acquires evidence it never earned. A survivor indicts
+the test; an inert mutant indicts the probe and must be re-aimed and
+re-run before the test is judged at all.
+
+In the Planar repository the C++ tree ships `scripts/break-probe.sh`,
+which enforces all five checks around one probe and reports
+`killed` (exit 0) / `SURVIVOR` (exit 1) / `INERT` (exit 3), with exit 2
+reserved for a broken probe. Prefer it over a hand-run sequence.
+
+### Probes come before gates, and never beside them
+
+Break-probes are the one piece of evidence only the coder can produce; the
+validation gates are reproducible by anyone downstream. Ordering them the
+other way round is what actually loses the evidence. A full gate pass here is
+roughly 25 minutes, so a coder that runs gates in the foreground and blocks
+runs out of turn before it reaches its probes — five coder stops across tasks
+6339 and 6343 were all that shape (task 6346). The orchestrator then inherits
+tests with unproven discriminating power, and on 6339 the reviewer ran the
+probe itself: the right outcome from the wrong role, because a reviewer judges
+evidence rather than manufacturing it.
+
+Run probes first, then background the long gates and keep working. Do NOT run
+the two concurrently against one build directory: a probe rebuilds, the suite
+reads what it rebuilt, and the resulting failures look real while carrying no
+exit-code tell (task 6350). Give the probes their own build directory or
+sequence them strictly before the suite starts.
+
 ## Dispatch Granularity
 
 Tasks created by the ingestor are deliberately fine-grained: one roadmap bullet → one task row. That granularity is correct for *tracking* but is often wrong as a coder→reviewer iteration unit — eight tasks that all touch the same helper file are naturally a single PR, not eight separate review cycles. Conversely, some users want strict one-task-per-commit history for easy bisect and rollback. The right shape is a per-feature judgement call, not a fixed policy.
@@ -906,7 +1005,7 @@ Heartbeat with a new `--status` string at every meaningful phase boundary:
 
 Heartbeats between phase transitions (lease-renewal-only) may omit `--status`. The cadence goal is: any operator watching `planar-watch ps` can tell what phase the agent is in without waiting for the next phase transition.
 
-For long operations (> 30 s), heartbeat at least once per TTL/2 even if the status string does not change. Pass `--ttl <secs>` to extend the lease if needed.
+For long operations (> 30 s), heartbeat at least once per TTL/2 even if the status string does not change. A bare heartbeat renews the lease length already held, so no `--ttl` is needed to keep a long lease alive; pass `--ttl <secs>` only to change the lease length deliberately.
 
 ### Do not manually duplicate entity-create events
 

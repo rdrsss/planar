@@ -1,7 +1,7 @@
 # install-cleanup.txt — artifacts that older Planar versions installed into
 # $PLANAR_HOME but current Planar no longer ships. On every run, install.sh
 # removes each listed path (if present) so a re-install over an old tree is
-# clean: `zig build --prefix` overwrites the targets it builds but never
+# clean: `cmake --install` overwrites the targets it builds but never
 # deletes files left behind by a prior install.
 #
 # Format: one path per line, RELATIVE to $PLANAR_HOME. Blank lines and lines
@@ -21,3 +21,10 @@
 # not delete, it).)
 # Retired documentation binary (moved to the standalone tabularium project).
 bin/tabularium
+# Retired Python-wheel Mt-KaHyPar bridge (decision 1006, task 6460): the
+# `--with-mtkahypar` flag installed these; the solver is now vendored from
+# source and linked directly into the C++ tree (opt-in via
+# -DPLANAR_WITH_MTKAHYPAR=ON), so a wheel environment and its launcher are
+# dead weight from any prior install.
+bin/mtkahypar
+opt/mtkahypar/

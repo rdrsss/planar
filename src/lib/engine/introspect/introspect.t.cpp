@@ -1,0 +1,606 @@
+// @file introspect.t.cpp
+// @brief Unit tests for `planar.engine.introspect` (plan 996, task 6121).
+//
+// Ported from the oracle's zig/src/engine/introspect.zig unit-test block,
+// case for case — same fixtures, same assertions. Rows are inserted with
+// raw SQL because the engine takes no writes.
+
+#include <catch2/catch_test_macros.hpp>
+
+import std;
+import planar.db;
+import planar.db.migrate;
+import planar.engine.introspect;
+import planar.introspection_preview;
+
+namespace {
+
+namespace intro = planar::engine::introspect;
+namespace ip    = planar::introspection_preview;
+
+struct scratch_db_path {
+  std::filesystem::path path_;
+
+  scratch_db_path()
+      : path_(std::filesystem::temp_directory_path() / std::format("planar_introspect_test_{}_{}.db",
+                                                                   std::chrono::steady_clock::now().time_since_epoch().count(),
+                                                                   reinterpret_cast<std::uintptr_t>(this))) {
+  }
+
+  scratch_db_path(const scratch_db_path&)            = delete;
+  scratch_db_path& operator=(const scratch_db_path&) = delete;
+
+  ~scratch_db_path() {
+    std::error_code ec;
+    std::filesystem::remove(path_, ec);
+    std::filesystem::remove(path_.string() + "-journal", ec);
+    std::filesystem::remove(path_.string() + "-wal", ec);
+    std::filesystem::remove(path_.string() + "-shm", ec);
+  }
+};
+
+auto open_migrated(const scratch_db_path& scratch) -> planar::db::connection {
+  auto conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  auto applied = planar::db::apply_all(*conn);
+  REQUIRE(applied.has_value());
+  return std::move(*conn);
+}
+
+auto exec(planar::db::connection& conn, std::string_view sql) -> void {
+  auto ok = conn.execute(sql);
+  REQUIRE(ok.has_value());
+}
+
+} // namespace
+
+TEST_CASE("build: empty database — all aggregates are zero / empty", "[engine][introspect][build]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  CHECK(b->invocations.empty());
+  CHECK(b->failures.empty());
+  CHECK(b->actions.empty());
+  CHECK(b->sync.empty());
+  CHECK(b->claims.stale_claims == 0);
+  CHECK(b->claim_failure_categories.empty());
+  CHECK(b->handoffs.stale_handoffs == 0);
+  CHECK(b->failure_tail.empty());
+  CHECK(b->window_days == 30);
+  CHECK(b->health == "ok");
+}
+
+TEST_CASE("build: health_summary fails CLOSED — a broken `tasks` query reports degraded, not ok",
+          "[engine][introspect][build][health]") {
+  // introspect.cppm's header on `health_summary` pins this as the one
+  // fallback in the file that must NOT default to 0: a query failure on
+  // `inflight` has to report "degraded" directly, because falling through
+  // to `not_resumable = inflight - resumable` on a fabricated `0` would
+  // read as "healthy" — exactly backwards for a health signal. This test
+  // creates the actual failure condition (renaming `tasks` out from under
+  // the query, so `conn.prepare(...)` genuinely fails with "no such
+  // table") rather than deleting or weakening the guard.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "alter table tasks rename to tasks_renamed_away");
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+  CHECK(b->health == "degraded");
+}
+
+TEST_CASE("build: logging disabled — invocations/failures are empty", "[engine][introspect][build]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
+             " values ('health', '', 0, datetime('now'))");
+
+  auto b = intro::build(conn, 30, 20, false, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  CHECK_FALSE(b->logging_enabled);
+  CHECK(b->invocations.empty());
+  CHECK(b->failures.empty());
+  CHECK(b->failure_tail.empty());
+}
+
+TEST_CASE("build: aggregates reflect seeded cli_invocations", "[engine][introspect][build]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
+             " values ('health', '', 0, datetime('now'))");
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
+             " values ('health', '', 0, datetime('now'))");
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+             " values ('task add', '<pos:1>', 2, 'usage', datetime('now'))");
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  REQUIRE(b->invocations.size() == 2);
+  CHECK(b->invocations[0].verb_path == "health");
+  CHECK(b->invocations[0].count == 2);
+  CHECK(b->invocations[0].success_count == 2);
+  CHECK(b->invocations[0].failure_count == 0);
+
+  REQUIRE(b->failures.size() == 1);
+  CHECK(b->failures[0].category == "usage");
+  CHECK(b->failures[0].count == 1);
+
+  REQUIRE(b->failure_tail.size() == 1);
+  CHECK(b->failure_tail[0].verb_path == "task add");
+  CHECK(b->failure_tail[0].exit_code == 2);
+}
+
+TEST_CASE("build: window filter excludes old rows", "[engine][introspect][build]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
+             " values ('recent', '', 0, datetime('now', '-5 days')),"
+             "        ('old', '', 0, datetime('now', '-31 days'))");
+
+  auto b = intro::build(conn, 7, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  REQUIRE(b->invocations.size() == 1);
+  CHECK(b->invocations[0].verb_path == "recent");
+}
+
+TEST_CASE("build: failure tail cap — only tail_n rows returned", "[engine][introspect][build]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+             " values ('v1', '', 2, 'usage', datetime('now', '-4 minutes')),"
+             "        ('v2', '', 2, 'usage', datetime('now', '-3 minutes')),"
+             "        ('v3', '', 2, 'usage', datetime('now', '-2 minutes')),"
+             "        ('v4', '', 2, 'usage', datetime('now', '-1 minutes')),"
+             "        ('v5', '', 2, 'usage', datetime('now'))");
+
+  auto b = intro::build(conn, 30, 2, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  REQUIRE(b->failure_tail.size() == 2);
+  CHECK(b->failure_tail[0].verb_path == "v5");
+  CHECK(b->failure_tail[1].verb_path == "v4");
+}
+
+TEST_CASE("build: redaction — seeded sentinel titles never appear in text or JSON output", "[engine][introspect][build]") {
+  constexpr std::string_view k_sentinel = "SENTINEL_MUST_NOT_APPEAR_IN_REPORT";
+  scratch_db_path            scratch;
+  auto                       conn = open_migrated(scratch);
+
+  exec(conn,
+       std::format("insert into tasks (scope_kind, title, status, priority) values ('global', '{}', 'todo', 100)", k_sentinel));
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
+             " values ('health', '', 0, datetime('now'))");
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  auto const text = intro::render_text(*b);
+  CHECK(text.find(k_sentinel) == std::string::npos);
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find(k_sentinel) == std::string::npos);
+}
+
+TEST_CASE("build/cli_preview_jsonl: verb_path is NOT entity-text-safe — a top-level free-text positional leaks verbatim",
+          "[engine][introspect][build][redaction]") {
+  // introspect.cppm's header narrows the redaction claim to "no entity-TABLE
+  // column is read" — it does NOT claim `verb_path` is free of
+  // operator-authored text. `search` is a top-level verb with a REQUIRED
+  // free-text positional (handlers/search.zig:38), so `cli_log.zig` records
+  // `verb_path = "search <query>"` with the query inline, and this module
+  // selects that column verbatim in three places. This test PINS that
+  // leaking behavior (oracle-faithful, `cli_log.zig` is the writer and out
+  // of scope here) so the next reader sees it directly instead of trusting
+  // a redaction claim that doesn't hold for this one column.
+  constexpr std::string_view k_sentinel = "SENTINEL_LEAKS";
+  scratch_db_path            scratch;
+  auto                       conn = open_migrated(scratch);
+
+  exec(conn, std::format("insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+                         " values ('search {}', '<pos:1>', 2, 'usage', datetime('now'))",
+                         k_sentinel));
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  // [invocations]: the free-text query is IN the rendered verb_path.
+  REQUIRE(b->invocations.size() == 1);
+  CHECK(b->invocations[0].verb_path.find(k_sentinel) != std::string::npos);
+  CHECK(intro::render_text(*b).find(k_sentinel) != std::string::npos);
+  CHECK(intro::render_json(*b).find(k_sentinel) != std::string::npos);
+
+  // [failure tail]: same column, same leak.
+  REQUIRE(b->failure_tail.size() == 1);
+  CHECK(b->failure_tail[0].verb_path.find(k_sentinel) != std::string::npos);
+
+  // The JSONL preview boundary leaks it too.
+  auto preview = intro::cli_preview_jsonl(conn, 30, 4096);
+  REQUIRE(preview.has_value());
+  CHECK(preview->find(k_sentinel) != std::string::npos);
+}
+
+TEST_CASE("build: handoffs never_consumed is distinct from stale_handoffs", "[engine][introspect][build]") {
+  // A consumed handoff created > 24h ago: stale_handoffs = 0 (already
+  // consumed), never_consumed = 0 (was consumed). Two unconsumed (pending
+  // and validated) handoffs created recently: stale_handoffs = 0 (not
+  // old), never_consumed = 2. Proves the two fields can differ when data
+  // is mixed, AND deliberately makes never_consumed (2) != the consumed
+  // count (1) — a fixture with equal consumed/unconsumed counts cannot
+  // discriminate `status != 'consumed'` from an accidental `status =
+  // 'consumed'` flip, since both would report the same number.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into sessions (vendor, started_at) values ('test', datetime('now'))");
+  exec(conn, "insert into context_snapshots (session_id, vendor, created_at) values (1, 'test', datetime('now'))");
+
+  exec(conn, "insert into handoffs (from_snapshot_id, from_vendor, status, created_at, consumed_at)"
+             " values (1, 'v1', 'consumed', datetime('now', '-2 days'), datetime('now', '-1 days'))");
+  exec(conn, "insert into handoffs (from_snapshot_id, from_vendor, status, created_at)"
+             " values (1, 'v1', 'pending', datetime('now'))");
+  exec(conn, "insert into handoffs (from_snapshot_id, from_vendor, status, created_at)"
+             " values (1, 'v1', 'validated', datetime('now'))");
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  CHECK(b->handoffs.stale_handoffs == 0);
+  CHECK(b->handoffs.never_consumed == 2);
+  CHECK(b->handoffs.stale_handoffs != b->handoffs.never_consumed);
+}
+
+TEST_CASE("build: reopens count reflects seeded task_reopens rows", "[engine][introspect][build]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  {
+    auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+    REQUIRE(b.has_value());
+    CHECK(b->reopens == 0);
+  }
+
+  exec(conn, "insert into tasks (scope_kind, title, status, priority) values ('global', 'T', 'done', 100)");
+  exec(conn, "insert into task_reopens (task_id, from_status, to_status, source) values (1, 'done', 'todo', 'task-reopen')");
+  exec(conn,
+       "insert into task_reopens (task_id, from_status, to_status, source) values (1, 'done', 'doing', 'task-update-force')");
+
+  auto b2 = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b2.has_value());
+  CHECK(b2->reopens == 2);
+
+  // A 1-day window still includes these rows: all timestamps are datetime('now').
+  auto b3 = intro::build(conn, 1, 20, true, "/tmp/test.db");
+  REQUIRE(b3.has_value());
+  CHECK(b3->reopens == 2);
+}
+
+TEST_CASE("build: schema_version reflects the applied migrations", "[engine][introspect][build]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  auto stmt = conn.prepare("select max(version) from schema_migrations");
+  REQUIRE(stmt.has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  REQUIRE(*step == planar::db::step_result::row);
+  CHECK(b->schema_version == stmt->column_int64(0));
+}
+
+TEST_CASE("build: agent_actions aggregates a populated table, not just the empty-database fallback",
+          "[engine][introspect][build][actions]") {
+  // The prior suite only ever exercised query_action_outcomes' EMPTY path
+  // (empty database) and its prepare-failure fallback (never reachable in
+  // a migrated DB). Neither distinguishes the loop's normal-completion
+  // `return rows;` from a hypothetical `return {};` — both look identical
+  // on zero rows. This seeds real rows so a populated result is pinned.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into sessions (vendor, started_at) values ('claude', datetime('now'))");
+  exec(conn, "insert into agent_actions (session_id, action_kind, vendor, outcome, started_at)"
+             " values (1, 'coder', 'claude', 'ok', datetime('now'))");
+  exec(conn, "insert into agent_actions (session_id, action_kind, vendor, outcome, started_at)"
+             " values (1, 'coder', 'claude', 'ok', datetime('now'))");
+  exec(conn, "insert into agent_actions (session_id, action_kind, vendor, outcome, started_at)"
+             " values (1, 'reviewer', 'claude', 'error', datetime('now'))");
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  REQUIRE(b->actions.size() == 2);
+  CHECK(b->actions[0].action_kind == "coder");
+  CHECK(b->actions[0].outcome == "ok");
+  CHECK(b->actions[0].count == 2);
+  CHECK(b->actions[1].action_kind == "reviewer");
+  CHECK(b->actions[1].outcome == "error");
+  CHECK(b->actions[1].count == 1);
+
+  // render_text's "  {}: total={} ok={} fail={}\n" invocations format is
+  // otherwise unpinned, and its own populated-row test is separate below
+  // (build: cli_invocations render_text/render_json pin the exact
+  // populated-row format); this test's job is the actions AGGREGATE, which
+  // renders through the "{}/{}: {}\n" action line instead.
+  auto const text = intro::render_text(*b);
+  CHECK(text.find("[actions]\n  coder/ok: 2\n  reviewer/error: 1\n") != std::string::npos);
+}
+
+TEST_CASE("build+render: a populated invocations bundle pins the exact render_text and render_json shapes",
+          "[engine][introspect][build][render]") {
+  // Closes the gap the reviewer found: render_text is ~80 lines / ~14
+  // branches with exactly one prior positive assertion in the whole suite
+  // (the "unavailable" preview line), and no test rendered JSON from a
+  // populated bundle at all. This pins BOTH renderers' exact populated-row
+  // output for `invocations`, so a format-string mutation like
+  // `:394`'s `"  {}: total={} ok={} fail={}\n"` is caught.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
+             " values ('health', '', 0, datetime('now'))");
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
+             " values ('health', '', 0, datetime('now'))");
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+             " values ('task add', '<pos:1>', 2, 'usage', datetime('now'))");
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  auto const text = intro::render_text(*b);
+  CHECK(text.find("[invocations]\n  health: total=2 ok=2 fail=0\n  task add: total=1 ok=0 fail=1\n") != std::string::npos);
+  CHECK(text.find("[failures]\n  usage: 1\n") != std::string::npos);
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find(R"("invocations":[{"verb_path":"health","count":2,"success_count":2,"failure_count":0},)"
+                  R"({"verb_path":"task add","count":1,"success_count":0,"failure_count":1}])") != std::string::npos);
+  CHECK(json.find(R"("failures":[{"category":"usage","count":1}])") != std::string::npos);
+}
+
+TEST_CASE("build+render: claims — stale_claims and never_consumed are NOT interchangeable in render_json",
+          "[engine][introspect][build][render][claims]") {
+  // Guards render_json's `",\"claims\":{{\"stale_claims\":{},\"never_consumed\":{}}}"`
+  // (:545) against a field swap: seeds deliberately DIFFERENT counts (3
+  // stale, 1 never-consumed) so `{"stale_claims":1,...}` and
+  // `{"stale_claims":3,...}` cannot both satisfy the same substring check.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into sessions (vendor, started_at) values ('claude', datetime('now'))");
+  // Three ACTIVE claims older than 24h -> stale_claims = 3.
+  for (int i = 0; i < 3; ++i) {
+    exec(conn, std::format("insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor,"
+                           " claimed_at, lease_expires_at)"
+                           " values ('tok-stale-{}', 1, 'task', 1, 'active', 'claude',"
+                           " datetime('now','-2 days'), datetime('now','+1 hour'))",
+                           i));
+  }
+  // One EXPIRED/RELEASED claim -> never_consumed = 1.
+  exec(conn, "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor,"
+             " claimed_at, lease_expires_at)"
+             " values ('tok-expired', 1, 'task', 1, 'released', 'claude',"
+             " datetime('now'), datetime('now','+1 hour'))");
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+  REQUIRE(b->claims.stale_claims == 3);
+  REQUIRE(b->claims.never_consumed == 1);
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find(R"("claims":{"stale_claims":3,"never_consumed":1})") != std::string::npos);
+  CHECK(json.find(R"("claims":{"stale_claims":1,"never_consumed":3})") == std::string::npos);
+
+  auto const text = intro::render_text(*b);
+  CHECK(text.find("[claims]        stale=3 never_consumed=1\n") != std::string::npos);
+}
+
+TEST_CASE("build: claim_failure_category_count — provider and category are NOT interchangeable",
+          "[engine][introspect][build][claims]") {
+  // Guards query_claim_failure_categories' row construction
+  // (`.provider = stmt->column_text(0), .category = stmt->column_text(1)`,
+  // :287-288) against a column swap: `vendor` and `failure_category` are
+  // seeded with values that look nothing alike, so a swap is visible on
+  // either field alone.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into sessions (vendor, started_at) values ('claude', datetime('now'))");
+  exec(conn, "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor,"
+             " failure_category, claimed_at, lease_expires_at)"
+             " values ('tok-1', 1, 'task', 1, 'aborted', 'claude-provider-marker',"
+             " 'tool_failure', datetime('now'), datetime('now','+1 hour'))");
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  REQUIRE(b->claim_failure_categories.size() == 1);
+  CHECK(b->claim_failure_categories[0].provider == "claude-provider-marker");
+  CHECK(b->claim_failure_categories[0].category == "tool_failure");
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find(R"("claim_failure_categories":[{"provider":"claude-provider-marker","category":"tool_failure","count":1}])") !=
+        std::string::npos);
+}
+
+TEST_CASE("cli_preview_jsonl: exceeding max_bytes reports query_failed rather than truncating silently",
+          "[engine][introspect][cli_preview_jsonl]") {
+  // The `if (out.size() > max_bytes) { return std::unexpected(...); }` cap
+  // (:392-394) had zero coverage — every prior test used a generous 4096
+  // budget no fixture could reach. This pins the cap actually firing.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  for (int i = 0; i < 10; ++i) {
+    exec(conn, std::format("insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
+                           " values ('health', '', 0, datetime('now', '-{} minutes'))",
+                           i));
+  }
+
+  // Each rendered row is well over 40 bytes; a 16-byte budget cannot hold
+  // even the first one.
+  auto preview = intro::cli_preview_jsonl(conn, 30, 16);
+  CHECK_FALSE(preview.has_value());
+  if (!preview.has_value()) {
+    CHECK(preview.error() == intro::introspect_error::query_failed);
+  }
+}
+
+TEST_CASE("cli_preview_jsonl: canonicalizes captured verb paths exactly once", "[engine][introspect][cli_preview_jsonl]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+             " values ('task add', '', 2, 'usage', strftime('%Y-%m-%dT%H:%M:%SZ','now')),"
+             "        ('planar plan show', '', 1, 'not_found', datetime('now'))");
+
+  auto preview = intro::cli_preview_jsonl(conn, 30, 4096);
+  REQUIRE(preview.has_value());
+  CHECK(preview->find("\"verb_path\":\"planar task add\"") != std::string::npos);
+  CHECK(preview->find("\"verb_path\":\"planar plan show\"") != std::string::npos);
+  CHECK(preview->find("planar planar") == std::string::npos);
+  CHECK(preview->find("ZZ") == std::string::npos);
+}
+
+TEST_CASE("cli_preview_jsonl: empty window still returns an empty (not null) result", "[engine][introspect][cli_preview_jsonl]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto preview = intro::cli_preview_jsonl(conn, 30, 4096);
+  REQUIRE(preview.has_value());
+  CHECK(preview->empty());
+}
+
+TEST_CASE("render_json: empty windows emit empty arrays, never nulls", "[engine][introspect][render]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find("\"invocations\":[]") != std::string::npos);
+  CHECK(json.find("\"failures\":[]") != std::string::npos);
+  CHECK(json.find("\"actions\":[]") != std::string::npos);
+  CHECK(json.find("\"sync\":[]") != std::string::npos);
+  CHECK(json.find("\"claim_failure_categories\":[]") != std::string::npos);
+  CHECK(json.find("\"introspection_preview\":{\"signals\":[],\"coverage\":[],\"warnings\":[]}") != std::string::npos);
+  CHECK(json.find("null") == std::string::npos);
+  CHECK(json.starts_with('{'));
+  CHECK(json.ends_with("}\n"));
+}
+
+TEST_CASE("render_text: introspection preview renders 'unavailable' when build() leaves it unset",
+          "[engine][introspect][render]") {
+  // `bundle` HAS carried a `preview` field since task 6352 (decision 981) —
+  // this test's title used to say otherwise, citing D15 as a permanent
+  // reason the field could not exist at all. D15 only forbade this
+  // module reaching `engine_introspection_adapters` directly; decision
+  // 981's layer-1 extraction closed that gap. What is still true, and
+  // what this test actually pins, is that `build()` (DB-only) never
+  // POPULATES the field — only the `report` handler does, by calling
+  // `introspection_adapters::collect_preview_from_paths` separately. A
+  // bare `build()` call therefore always renders "unavailable" here.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+  REQUIRE_FALSE(b->preview.has_value());
+
+  auto const text = intro::render_text(*b);
+  CHECK(text.find("[introspection preview] unavailable\n") != std::string::npos);
+}
+
+TEST_CASE("render_text: a preview with no coverage rows renders 'empty', distinct from unset ('unavailable')",
+          "[engine][introspect][render][preview]") {
+  // The oracle distinguishes THREE preview render states, not two: unset
+  // (`bundle.preview == null`, "unavailable"), present-but-no-coverage-rows
+  // ("empty" — reachable only if a caller constructs an empty `preview` by
+  // hand; `collect_preview_from_paths` always emits at least four coverage
+  // rows in production), and populated (rendered in full, next test). This
+  // pins the middle state so a future edit cannot silently collapse it
+  // into either of the other two.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+  b->preview = ip::preview{};
+  REQUIRE(b->preview->coverage.empty());
+
+  auto const text = intro::render_text(*b);
+  CHECK(text.find("[introspection preview] empty\n") != std::string::npos);
+  CHECK(text.find("unavailable") == std::string::npos);
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find(R"("introspection_preview":{"signals":[],"coverage":[],"warnings":[]})") != std::string::npos);
+}
+
+TEST_CASE("build+render: a populated preview renders every coverage/signal/warning row, in order, both formats",
+          "[engine][introspect][render][preview]") {
+  // No prior test exercised `render_text`/`render_json`'s POPULATED preview
+  // branch at all (only "unset" and, above, "empty") — this closes that
+  // gap and pins the exact oracle-captured shapes (zig:872-909,
+  // 1013-1040): one coverage line per row, then one signal line, then one
+  // warning line (text); one flat array per field, vendor/category/state/
+  // kind rendered as their bare tag names, never numeric (JSON).
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  auto b = intro::build(conn, 30, 20, true, "/tmp/test.db");
+  REQUIRE(b.has_value());
+  b->preview = ip::preview{
+      .signals =
+          {
+              ip::signal_row{
+                  .v          = ip::vendor::claude,
+                  .verb_path  = "planar task show",
+                  .cat        = ip::category::failure,
+                  .count      = 3,
+                  .first_seen = "2026-07-12T12:00:00Z",
+                  .last_seen  = "2026-07-12T12:05:00Z",
+              },
+          },
+      .coverage =
+          {
+              ip::coverage_row{
+                  .v          = ip::vendor::claude,
+                  .state      = ip::coverage_state::observed,
+                  .scanned    = 10,
+                  .malformed  = 1,
+                  .normalized = 3,
+                  .ignored    = 6,
+                  .capped     = 0,
+              },
+          },
+      .warnings =
+          {
+              ip::warning_row{.v = ip::vendor::claude, .kind = ip::warning_kind::malformed, .count = 1},
+          },
+  };
+
+  auto const text = intro::render_text(*b);
+  CHECK(text.find("[introspection preview]\n"
+                  "  claude: state=observed scanned=10 normalized=3 ignored=6 malformed=1 capped=0\n"
+                  "  signal claude/planar task show/failure: count=3 first=2026-07-12T12:00:00Z last=2026-07-12T12:05:00Z\n"
+                  "  warning claude/malformed: count=1\n") != std::string::npos);
+
+  auto const json = intro::render_json(*b);
+  CHECK(json.find(R"("introspection_preview":{"signals":[{"vendor":"claude","verb_path":"planar task show",)"
+                  R"("category":"failure","count":3,"first_seen":"2026-07-12T12:00:00Z",)"
+                  R"("last_seen":"2026-07-12T12:05:00Z"}],"coverage":[{"vendor":"claude","state":"observed",)"
+                  R"("scanned":10,"malformed":1,"normalized":3,"capped":0,"ignored":6}],)"
+                  R"("warnings":[{"vendor":"claude","kind":"malformed","count":1}]}})") != std::string::npos);
+}

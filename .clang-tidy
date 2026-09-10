@@ -1,0 +1,97 @@
+# Planar clang-tidy configuration — adopted from tabula (D16), corrected at
+# task 6438. Identifier naming only, for now — lower_case identifiers, `_`
+# private/protected member prefix, and tabula's deliberate exception kept:
+# template parameters are CamelCase, the one non-lower_case identifier kind,
+# kept as the visual signal distinguishing a template parameter from a
+# concrete type. Use the pinned LLVM's clang-tidy (docs/toolchain-parity.md).
+#
+# Task 6438 removed tabula's `_` PublicMemberSuffix rule: it never matched
+# this codebase's actual convention (CLAUDE.md § C++ Style: plain snake_case
+# throughout, e.g. `struct parsed_args`) and was firing on 2925 of 3030
+# measured warnings (96.5%) — a config/codebase disagreement inherited
+# wholesale from tabula rather than a real defect. Public members now fall
+# back to VariableCase (lower_case), matching what the codebase already
+# does almost everywhere (see e.g. src/lib/engine/identity/scope.cppm).
+---
+Checks: >
+  -*,
+  readability-identifier-naming
+CheckOptions:
+  # LEADING underscore on private/protected data members: `_timeout`, never
+  # `timeout_`. OPERATOR-DECIDED at task 6577, and the codebase was brought
+  # to it in the same change (17 members across 7 files renamed).
+  #
+  # This rule arrived from tabula at M0 (decision D16) and, being advisory,
+  # never gated anything — so the M1/M3/M4 engine ports were written against
+  # it in the trailing style while the later cmd/ext ports happened to match
+  # it, and `lib/db/db.cppm` ended up carrying both. The rule is unchanged;
+  # what changed is that the code now agrees with it and CLAUDE.md § C++
+  # Style states it, so the next reader does not have to infer it.
+  #
+  # Public members — including every field of a plain `struct`, which is most
+  # of this codebase — are bare snake_case and fall through to VariableCase.
+  # Task 6438 removed tabula's PublicMemberSuffix rule for exactly that
+  # reason; do not reintroduce a suffix rule here.
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: '_'
+  - key: readability-identifier-naming.ProtectedMemberPrefix
+    value: '_'
+  - key: readability-identifier-naming.ClassCase
+    value: lower_case
+  - key: readability-identifier-naming.StructCase
+    value: lower_case
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.EnumCase
+    value: lower_case
+  - key: readability-identifier-naming.EnumConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  # Template parameters are PascalCase (D16) — deliberately the one
+  # un-lower_case identifier kind, so it stays the sole signal that
+  # distinguishes a template parameter from a concrete type at point of use.
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeTemplateParameterCase
+    value: CamelCase
+
+  # ---------------------------------------------------------------------
+  # Task 6439: two conventions this codebase holds DELIBERATELY, which
+  # `lower_case` rejects categorically. Both were measured, not assumed —
+  # together they were 111 of the 114 distinct findings (97%), the same
+  # config/codebase disagreement shape task 6438 found in the inherited
+  # `PublicMemberSuffix` rule. Renaming to satisfy the rule would make the
+  # code worse in both cases.
+  #
+  # 1. `L` — the Lua C API's universal name for `lua_State*`. 48 findings,
+  #    all in engine/execute/host.cpp. Every Lua binding and every page of
+  #    upstream Lua documentation calls it `L`; `l` would break that
+  #    recognizability for a naming rule's benefit.
+  #
+  # 2. A TRAILING UNDERSCORE, which here is FORCED rather than chosen.
+  #    `namespace import_ = engine::local::import_;` exists because
+  #    `import` is a C++20 keyword and cannot name a namespace. `is_`,
+  #    `profile_`, `run_`, `tier_`, `code_`, `error_` and friends
+  #    disambiguate an alias, parameter or member against a type or member
+  #    of the same name. The pattern is anchored (`..._$`) so it permits a
+  #    trailing underscore and nothing else — a leading underscore stays a
+  #    private/protected member per the Prefix rules above, and a DOUBLE
+  #    underscore anywhere stays an error, which is correct: it is reserved
+  #    to the implementation by [lex.name]/3. Three such variables were
+  #    real defects and were renamed in this same change.
+  - key: readability-identifier-naming.ParameterIgnoredRegexp
+    value: '^(L|[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_)$'
+  - key: readability-identifier-naming.VariableIgnoredRegexp
+    value: '^(L|[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_)$'
+  - key: readability-identifier-naming.NamespaceIgnoredRegexp
+    value: '^[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_$'
+  - key: readability-identifier-naming.EnumConstantIgnoredRegexp
+    value: '^[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_$'
+...

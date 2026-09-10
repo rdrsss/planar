@@ -2,13 +2,50 @@
 #
 # coverage-check.sh — leaf (verb, subcommand) integration-test coverage gate.
 #
-# Walks the CLI's verb surface, extracts (verb, subcommand) tuples
-# exercised by `integration_tests/*.zig`, and reports the ratio. Fails
-# when the ratio drops below the recorded baseline so a new leaf added
-# without a scenario test trips CI immediately.
+# Walks the `planar` CLI's verb surface, extracts (verb, subcommand) tuples
+# exercised by the C++ Catch2 test corpus under `src/`, and reports the
+# ratio. Fails when the ratio drops below the recorded baseline so a new
+# leaf added without a test trips CI immediately.
 #
 # Companion to CLAUDE.md "Integration test methodology": new verbs /
 # subcommands require integration-test coverage as part of the same PR.
+#
+# ## Re-pointed from the Zig corpus to the C++ corpus (task 6436, decision
+# ## 1035)
+#
+# This gate originally measured `zig/integration_tests/*.zig` (the
+# `&.{ "verb", "sub" }` slice-literal scan). Task 6548 deleted the
+# redundant Zig integration blocks the C++ port had superseded, which
+# correctly made this gate start failing — it was reporting a shrinking
+# corpus accurately, not malfunctioning. Task 6045 deletes `zig/` entirely
+# next, at which point there would be no corpus left to measure at all.
+#
+# The decision (see task 6436's body and decision 1035): RE-POINT at the
+# C++ corpus rather than retire the gate. The rule it enforces —
+# CLAUDE.md's "a PR adding a verb/subcommand must add coverage in the same
+# PR" — is still worth a mechanical guard, and this gate is the only one
+# that exists. Retiring it would mean nothing catches the next silent
+# regression the way task 6546 caught eight of them.
+#
+# The extraction pass changed shape to match: it now scans
+# `dispatch(fx, {"verb", "sub", ...})` calls (the in-process
+# `*_leaves.t.cpp` / `*_leaf.t.cpp` Catch2 tests) and
+# `run_pinned(cpp_bin(), <arg-list>, ...)` calls (the cross-process
+# black-box tests) instead of Zig slice literals. See
+# `scripts/coverage-extract.py` for the extractor itself and its header
+# comment for the two traps this plan already hit once each:
+#
+#   1. Table-driven loops (a range-for over a literal set, or a
+#      `std::vector<row> const rows{ {tag, {args...}, ...}, ... }` table)
+#      genuinely exercise a leaf through a variable, not a literal at the
+#      call site. The extractor resolves both of the shapes this corpus
+#      actually uses; anything else is a documented remaining blind spot
+#      that undercounts (never overcounts).
+#   2. A leaf NAME appearing as a JSON substring inside the pinned
+#      `schema` catalog raw-string literal (`parity.t.cpp`'s
+#      `R"CATALOG...(...)"`) is NOT coverage. The extractor tokenizes C++
+#      raw strings as one opaque token specifically so that blob is never
+#      split into fake adjacent "string literals".
 #
 # Usage
 #   scripts/coverage-check.sh                # check against baseline
@@ -21,17 +58,17 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="$REPO_ROOT/scripts/coverage-baseline.txt"
+EXTRACTOR="$REPO_ROOT/scripts/coverage-extract.py"
 
-# Scan only files registered by the default integration root. Crediting every
-# file on disk allowed an unimported scenario to inflate coverage.
+# Scan every Catch2 test file under src/ that plausibly dispatches CLI
+# argv — i.e. calls a local `dispatch(...)` helper or the cross-process
+# `run_pinned(...)` helper. Restricting to this grep pre-filter (rather
+# than every `*.t.cpp` file) keeps the extractor's tokenizer off files
+# that can never contribute a leaf, without hand-maintaining a file list
+# that will drift as new `*_leaves.t.cpp` files are added.
 collect_test_files() {
-  while IFS= read -r rel; do
-    local path="$REPO_ROOT/integration_tests/$rel"
-    if [[ -f "$path" ]]; then
-      printf '%s\n' "$path"
-    fi
-  done < <(sed -n 's/.*@import("\([^"]*_test\.zig\)").*/\1/p' \
-    "$REPO_ROOT/integration_tests/all_test.zig")
+  find "$REPO_ROOT/src" -iname '*.t.cpp' -print0 \
+    | xargs -0 grep -l 'dispatch(\|run_pinned(' 2>/dev/null | sort
 }
 
 MODE="check"
@@ -79,10 +116,15 @@ TMP_UNCOVERED=$(mktemp)
 # Verbs we deliberately exclude from coverage tracking:
 #   - completion: emits shell scripts; not amenable to scenario testing
 #   - version: emits a single line
-#   - sync: hits live external systems
-#   - planar: doesn't exist as a real verb (appears in --help output as
-#     a synonym for the bare binary in some renderings)
-EXCLUDE_VERBS="completion version sync planar init"
+#
+# NOTE: 'sync' and 'planar' were pruned here (task 6437). 'sync' moved off
+# the `planar` binary onto `planar-ext` this session (task 6419) and no
+# longer appears as a top-level verb in `planar --help`; 'planar' never
+# matched a real top-level row. Both exclusions were dead — pruning them is
+# behavior-preserving (verified: `planar --help` SUBCOMMANDS has no 'sync'
+# or 'planar' row, so is_excluded() never matched either token before this
+# change either).
+EXCLUDE_VERBS="completion version init"
 
 is_excluded() {
   local v="$1"
@@ -94,8 +136,14 @@ is_excluded() {
 
 for v in $("$PLANAR_BIN" --help 2>&1 | awk '/^  [a-z]/ { print $1 }'); do
   if is_excluded "$v"; then continue; fi
+  # CLI11 (the current parser, since decision 948) emits "SUBCOMMANDS:" as
+  # the section heading, not "COMMANDS:" — the latter was etcli-zig's
+  # heading and never matched CLI11's --help output. With the wrong
+  # heading this awk block set `f` for zero help pages, so every verb's
+  # subcommand list read back empty and the gate silently measured only
+  # top-level verbs (see scripts/coverage-baseline.txt history / task 6433).
   subs=$("$PLANAR_BIN" "$v" --help 2>&1 \
-    | awk '/^COMMANDS:/{f=1;next} f && /^$/{exit} f && /^  [a-z]/{print $1}')
+    | awk '/^SUBCOMMANDS:/{f=1;next} f && /^$/{exit} f && /^  [a-z]/{print $1}')
   if [[ -z "$subs" ]]; then
     # Leaf top-level verb (no subcommands). Track with sentinel "." sub.
     echo "$v ." >> "$TMP_ALL"
@@ -109,69 +157,23 @@ done
 
 sort -u -o "$TMP_ALL" "$TMP_ALL"
 
-# ---------- extract exercised pairs from integration_tests/ ----------
-# Walk every *_test.zig file under integration_tests/, scan each `&.{`
-# slice literal across line boundaries, and capture the first two
-# string-literal positional args as (verb, subcommand). A `&.{ "verb" }`
-# with no second arg counts as (verb, "."). The Python pass handles
-# multi-line `&.{ \n "verb", \n "sub", ... }` forms which a bare grep
-# regex would miss.
-#
-# KNOWN BLIND SPOT: this only sees STRING-LITERAL verb/subcommand pairs.
-# A test that drives the verb through a variable — e.g. a table-driven
-# loop `&.{ tc.kind, "view", id }` or a helper `&.{ kind, "view", id }`
-# — genuinely exercises the leaf but reads here as uncovered, so the leaf
-# can be under-counted. editflow_diff_review_test.zig (parameterized over
-# tc.kind) and any `kind`-variable helper are affected. When you add such
-# a test, prefer passing the FULL literal arg slice from the call site
-# (`&.{ "task", "view", id }`) so the leaf is counted (see
-# entity_view_test.zig), or accept the under-count knowingly.
+# ---------- extract exercised pairs from the C++ Catch2 corpus ----------
+# scripts/coverage-extract.py does the real work: it tokenizes each file
+# (raw strings as one opaque token, comments stripped) and matches CALL
+# SHAPE — `dispatch(fx, {...})` / `run_pinned(cpp_bin(), <arg-list>, ...)`
+# — never string adjacency, so the pinned `schema` catalog's giant JSON
+# raw-string literal (which contains every verb/subcommand name as a
+# substring) cannot masquerade as coverage. It also resolves the two
+# table-driven-loop shapes this corpus actually uses (a range-for over a
+# literal set; a `std::vector<row> const rows{ {tag, {args...}, ...} }`
+# table iterated via `row.args`/`row.argv`) — see its header comment for
+# the full contract and the leftover, deliberately under-count-only blind
+# spots.
 TEST_FILES=$(collect_test_files)
 if [[ -n "$TEST_FILES" ]]; then
-  python3 - "$TMP_EXERCISED" $TEST_FILES <<'PY'
-import re, sys
-
-out_path = sys.argv[1]
-files = sys.argv[2:]
-
-# Match `&.{` followed by anything up to the closing `}`. We constrain
-# the body to no nested `{` to keep the matcher simple — the harness
-# convention is flat positional arg lists.
-slice_re = re.compile(r"&\.\{([^{}]*)\}", re.DOTALL)
-str_re   = re.compile(r'"([a-z][-a-z]*)"')
-
-exercised = set()
-for path in files:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            text = f.read()
-    except OSError:
-        continue
-    for m in slice_re.finditer(text):
-        body = m.group(1)
-        strings = str_re.findall(body)
-        if not strings:
-            continue
-        verb = strings[0]
-        sub = strings[1] if len(strings) > 1 else "."
-        exercised.add((verb, sub))
-
-with open(out_path, "w", encoding="utf-8") as f:
-    for v, s in sorted(exercised):
-        f.write(f"{v} {s}\n")
-PY
+  # shellcheck disable=SC2086 -- word-splitting the file list is intended
+  python3 "$EXTRACTOR" $TEST_FILES > "$TMP_EXERCISED"
 fi
-
-# Fold in any top-level verb appearance into the "<verb> ." sentinel
-# so leaf verbs (no subcommand) are picked up even when only their
-# bare name appears (e.g. `&.{ "tree", "--all-scopes" }` where the
-# second slot is a flag, not a subcommand).
-for v in $("$PLANAR_BIN" --help 2>&1 | awk '/^  [a-z]/ { print $1 }'); do
-  if is_excluded "$v"; then continue; fi
-  if [[ -n "$TEST_FILES" ]] && grep -qE "\&\.\{\s*\"$v\"" $TEST_FILES 2>/dev/null; then
-    echo "$v ." >> "$TMP_EXERCISED"
-  fi
-done
 sort -u -o "$TMP_EXERCISED" "$TMP_EXERCISED"
 
 # ---------- compute uncovered ----------

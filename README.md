@@ -8,36 +8,37 @@ It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class 
 
 ## Status
 
-Planar is a feature-complete, local-first tool built as four binaries (`planar`, `planar-agent`, `planar-watch`, and `planar-execute` — the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface). The schema has thirty-three migrations, through `migrations/00033_rename_blocks_to_depends_on.up.sql`; the runtime applies them automatically from an embedded `migrations` Zig module produced by build-time codegen. The suite contains 1,700+ unit tests and 570+ integration tests. Vendored SQLite is compiled by `build.zig`.
+Planar is a local-first tool built as five binaries: `planar` (operator surface), `planar-agent` (agent-coordination writes), `planar-watch` (read-only viewer), `planar-execute` (the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface), and `planar-ext` (the operational-plane binary — Jira and GitHub Issues adapters; opens SQLite directly, read-only on planning tables and read-write on exactly `external_links` / `external_systems` / `sync_events`). The schema has thirty-three migrations, through `migrations/00033_rename_blocks_to_depends_on.up.sql`; the C++ runtime embeds and applies them at startup. Vendored SQLite is compiled from its pinned amalgamation; no system SQLite library is required.
 
-**History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`; the current canonical Zig implementation lives at `github.com/rdrsss/planar.git`.
+**History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`. Planar then ported from Go to Zig, and from Zig to C++26 (branch `rewrite/cpp26`). **The M10 cutover has landed:** the Zig tree under `zig/`, kept buildable as the port's parity oracle, was deleted once its state-differential evidence came back clean, and C++26 is now the only implementation (see [docs/architecture.md](docs/architecture.md)).
 
 ## Prerequisites
 
 Planar shells out to a small set of external tools. On macOS, install them via Homebrew:
 
 ```bash
-brew install zig git gh jq ripgrep
+brew install cmake ninja llvm git gh jq ripgrep tbb
 ```
 
-- `zig` — required to build the binary (see [Install](#install) and [Build from source](#build-from-source)). The minimum supported version is **zig 0.16.0 or later** (declared in `build.zig.zon`). The runtime statically links a vendored SQLite amalgamation compiled by `build.zig`; no system SQLite library dependency.
-- `git` — required at runtime. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe.
-- `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
-- `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The Zig binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
+- `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries. `install.sh` preflights the exact preset compilers, `/opt/homebrew/opt/llvm/bin/clang` and `/opt/homebrew/opt/llvm/bin/clang++`, before it invokes CMake. Use the repository's `debug` and `release` presets; see [toolchain parity](docs/toolchain-parity.md).
+- `tbb` (>= 2021.5) — **required to build**, since `cmake/dependencies.cmake` vendors Mt-KaHyPar (decision 1006, task 6459) as a pinned CPM source block and Mt-KaHyPar's own CMake `find_package(TBB)`s it. Unlike every other third-party dependency this tree takes, TBB is **not** vendored as source: upstream states TBB does not support static linking, so this is a deliberately accepted dynamic system dependency rather than a hermetic one. `install.sh` preflights `brew --prefix tbb` and fails fast if it is missing, matching CMake's own `find_package(TBB)` failure.
+- `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree.
+- `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
+- `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session below (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
 - `tabularium` — required only by the bundled documentation-maintenance
   workflows. It is a separate project and is not built or installed by Planar;
   install it from `locumipsum/tabularium` when using those workflows.
 
 The full source-checkout installer also uses the base-system utilities declared
-in `install.sh`'s `BUILD_DEPS` manifest (`awk`, `basename`, `cat`, `chmod`,
+in `install.sh`'s `BUILD_DEPS` / `RUN_DEPS` manifests (`awk`, `basename`, `cat`, `chmod`, `cmp`,
 `cp`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mv`, `readlink`,
-`rm`, `rmdir`, `sed`, and `tr`). These ship with supported Unix-like systems;
+`rm`, `rmdir`, and `tr`) alongside CMake, Ninja, and the exact pinned LLVM compiler paths above. These ship with supported Unix-like systems;
 the installer preflights them before making changes.
 
 ### Optional / research tools
 
-- `mtkahypar` — optional. The external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. Run `./install.sh --with-mtkahypar` to install the official, hash-locked native PyPI wheel into `~/.planar/opt/mtkahypar/` behind Planar's prefix-owned CLI adapter at `~/.planar/bin/mtkahypar`. This requires `python3` only for the optional adapter and does not add Mt-KaHyPar to `build.zig` or Planar's four-binary set. When absent, `groups recommend` degrades gracefully to greedy and reports `optimal_available:false`.
+- `mtkahypar` — the external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. As of decision 1006 (tasks 6459/6460) it is **vendored from source** via `cmake/dependencies.cmake` and linked directly into the C++ tree (`libmtkahypar`) — the earlier `--with-mtkahypar` Python-wheel adapter (`bin/mtkahypar`, `opt/mtkahypar/<version>/venv/`) is retired and no `python3` step is needed for this feature any more. The linkage is **off by default**: `mtkahypar` is an `EXCLUDE_FROM_ALL` CMake target and its debug build is ~330MB, so a plain `cmake --build` never compiles it. Configure with `-DPLANAR_WITH_MTKAHYPAR=ON` to build and link the real seam (requires `tbb`, see above); without that flag — including every `install.sh` build today — `groups recommend --solver mtkahypar` degrades gracefully to greedy and reports `optimal_available:false`. This fallback is a deliberate, permanent contract, not a placeholder for missing Mt-KaHyPar support.
 
 `sqlx-cli` and `sqlite3` are only needed for ad-hoc developer workflows against a scratch database (see [Build from source](#build-from-source)); the runtime embeds migrations via build-time codegen and uses the vendored SQLite amalgamation, so neither CLI is a runtime dependency. Install the optional `sqlx-cli` for authoring new migration pairs:
 
@@ -47,15 +48,17 @@ cargo install sqlx-cli --no-default-features --features sqlite
 
 ## Install
 
-The Zig package root IS the repo root (`build.zig` and `build.zig.zon` sit at the top level). Clone the repo, then build directly into your install prefix:
+The C++ project root is the repo root. Clone the repo, then build and install with the release preset:
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
 cd planar
-zig build --prefix "$HOME/.planar"
+cmake --preset release -DPLANAR_VERSION_META=ON
+cmake --build build/release
+cmake --install build/release --prefix "$HOME/.planar"
 ```
 
-This puts a single binary at `~/.planar/bin/planar`. The binary statically links the vendored SQLite amalgamation — no system library dependency.
+This puts all five binaries at `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`. The four that open a database (all but `planar-execute`, which holds no SQLite handle at all) statically link the vendored SQLite amalgamation — no system library dependency.
 
 Add `~/.planar/bin` to your `$PATH`, then verify:
 
@@ -64,16 +67,16 @@ export PATH="$HOME/.planar/bin:$PATH"
 planar health
 ```
 
-This installs only the binary. The agent specs, slash commands, skills, and migration sources are *embedded* in the binary, so the CLI works in isolation. But none of the vendor surfaces (Claude `/pl-*` slash commands, Codex skills, Copilot skills) are wired up — for those, use the [full install](INSTALL.md#full-install-installsh).
+This installs only the five binaries. Migrations and propagation templates are *embedded* at build time, so the CLI works standalone against a local database. Agent specs, slash commands, and skills are **not** embedded — they are separate source files rendered and staged by `install.sh` — so none of the vendor surfaces (Claude `/pl-*` slash commands, Codex skills, Copilot skills) are wired up by a `cmake --install` alone; for those, use the [full install](INSTALL.md#full-install-installsh).
 
 ## Build from source
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
 cd planar
-zig build                         # default install (zig-out/bin/planar)
-zig build test                    # unit tests
-zig build test-integration        # integration tests (or: make test-integration)
+cmake --preset debug
+cmake --build build/debug
+ctest --test-dir build/debug --output-on-failure
 ```
 
 For ad-hoc migration work against a scratch database, install the optional sqlx CLI:
@@ -147,26 +150,30 @@ The flag surface mirrors Unix `tree(1)` wherever the semantic translates (`-L` /
 
 Link local entities to Jira tickets or GitHub Issues, then pull / push deltas explicitly:
 
+`ext` and `sync` verbs run on **`planar-ext`**, the operational-plane binary (decisions 995–1001): it opens SQLite directly with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, and owns both adapters, Jira and GitHub Issues together. `link`/`unlink` and `audit` stay on `planar` (the operator binary still records and reads external links directly).
+
 ```bash
 # Register a system. Credentials come from env vars or the gh CLI.
-planar ext register jira my-jira \
+planar-ext ext register jira my-jira \
     --base-url https://acme.atlassian.net \
     --project PROJ \
     --auth-env JIRA_USER,JIRA_TOKEN          # email,api-token pair
 
-planar ext register github my-gh \
+planar-ext ext register github my-gh \
     --project rdrsss/planar                   # omit --auth-env to shell out to `gh auth token`
 
 # Link a task to a remote ticket.
 planar link task:1 --to my-jira:PROJ-1234 --sync two-way
 
-# Sync on demand.
-planar sync pull 1
-planar sync push 1
+# Sync on demand. planar-ext no longer writes remote values into planning
+# entities (decision 996): it fetches and emits remote_title/remote_status;
+# an agent verifies and calls `planar` to make the actual planning write.
+planar-ext sync pull 1
+planar-ext sync push 1
 
 # Conflicts surface explicitly; never resolved silently.
-planar sync status                            # last_sync_status per link
-planar sync resolve 7 --keep local            # resolves sync_event id 7
+planar-ext sync status                            # last_sync_status per link
+planar-ext sync resolve 7 --keep local            # resolves sync_event id 7
 
 # Audit trail from either direction.
 planar audit trail 1                          # everything for link 1
@@ -176,7 +183,7 @@ planar audit handoff-readiness --threshold 90 # CI gate
 
 Auth methods supported today: `token-env` (single var → bearer, or `USER,TOKEN` pair → basic), `gh-cli` (shells out to `gh auth token`). OAuth-stored / OS keychain is deferred. Background daemons are explicitly out of scope — sync is on-demand only.
 
-For whole-feature propagation (create all operational counterparts for a plan tree at once), use `planar ext propagate <plan>`. The per-feature GitHub strategy (parent-issue, Projects v2, or zero-repo fallback) is selected automatically and cached for subsequent syncs. Use `--restrategize` to change strategy for an existing propagated plan.
+For whole-feature propagation (create all operational counterparts for a plan tree at once), use `planar-ext ext propagate <plan>`. GitHub uses the single-repo parent-issue strategy when the feature touches exactly one repo — the only strategy this verb executes today (task 6421 scoped the C++ port to this arm; Jira's epic-hierarchy strategy is not yet wired into this whole-tree verb, see [docs/cli-reference.md](docs/cli-reference.md#planar-ext-ext-propagate-plan)). The multi-repo `projects-v2` strategy is permanently cut (decision 1001) and will not exist — it is recognized only to be refused with a pointer at the alternative. Use `--restrategize` to change strategy for an existing propagated plan.
 
 ## Workbench
 
@@ -254,7 +261,7 @@ Three threads run through everything:
 
 ## The schema is the contract
 
-Thirty-three migration files (`migrations/00001_foundation.up.sql` through `migrations/00033_rename_blocks_to_depends_on.up.sql`) define Planar's schema. The runtime applies them from an embedded `migrations` Zig module produced by build-time codegen (`tools/gen_migrations.zig`); the public schema-version tracker is `schema_migrations`.
+Thirty-three migration files (`migrations/00001_foundation.up.sql` through `migrations/00033_rename_blocks_to_depends_on.up.sql`) define Planar's schema. The runtime applies them from a generated `planar.db.migrations` module, `#embed`-produced at CMake configure time (`cmake/generate_migrations.cmake`); the public schema-version tracker is `schema_migrations`.
 
 Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries — opens `~/.planar/planar.db` with `PRAGMA query_only = 1`, reads `schema_migrations` to verify version compatibility, and operates without going through the binary. The contract is the schema, not the codebase. See [docs/architecture.md](docs/architecture.md) for the schema overview.
 
@@ -292,22 +299,20 @@ plus `planar skills render --check` against an out-of-tree staging directory.
 
 ## Repository layout
 
-The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at the top level alongside the modules dir (`src/`), build-time codegen (`tools/`), the integration suite (`integration_tests/`), and the vendored SQLite amalgamation (`vendor/sqlite/`).
+The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json` sit at the top level alongside the C++ module tree (`src/`), build-support CMake modules (`cmake/`), the CPM-cached vendor sources (`vendor/`), and the tool sources (`src/tools/`). There is no second implementation tree — `zig/` was deleted at the M10 cutover.
 
 | Path | Role |
 |------|------|
-| `build.zig`, `build.zig.zon` | Zig build configuration and package manifest (package name `planar`, minimum Zig `0.16.0`) |
-| `src/` | Zig modules (the runtime source tree) |
-| `src/cmd/planar/` | Executable entry point — `main.zig`, runtime scaffolding, and per-verb handlers |
-| `vendor/etcli/` | Vendored CLI parser + help/completion renderer ([etcli](https://github.com/rdrsss/etcli) extracted from the former in-tree `src/cli/`). Declared as a path dependency in `build.zig.zon`; provides the `cli` module imported by every binary. |
-| `src/db/` | Database layer — connection wrappers, migration application, vendored-SQLite C bindings |
-| `src/engine/` | Domain engine organized into buckets (`identity/`, `planning/`, `external/`, `runtime/`) and subsystem modules |
-| `tools/gen_migrations.zig` | Build-time codegen: scans `migrations/` and emits a `migrations` Zig module the runtime embeds |
-| `tools/gen_templates.zig` | Build-time codegen for embedded propagation templates (reads `templates/defaults/`) |
-| `vendor/sqlite/` | Vendored SQLite amalgamation (`sqlite3.c`, `sqlite3.h`); compiled by `build.zig` into a static library |
-| `integration_tests/` | End-to-end integration suites exercising the built binary via the `harness.zig` runner |
+| `CMakeLists.txt`, `CMakePresets.json` | Top-level CMake project (C++26, modules) and the pinned `debug`/`release` presets |
+| `src/cmd/` | One directory per binary — `planar/`, `planar-agent/`, `planar-watch/`, `planar-execute/`, `planar-ext/` — each its own CMake target |
+| `src/lib/` | Shared C++ modules: `db/` (connection + migrations), `cliapp/` (CLI11-backed parser wrapper), `engine/` (domain logic, bucketed as `identity/`, `planning/`, `external/`, `runtime/` plus subsystem dirs), `adapter/`, `http/`, and other leaf libraries |
+| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `surface_lint/`) |
+| `cmake/dependencies.cmake` | Every third-party dependency as a pinned `CPMAddPackage(...)` (release archive + SHA256, cached under `vendor/`) |
+| `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/` and `templates/defaults/` into generated modules the runtime embeds |
+| `vendor/` | CPM's committed source cache — pinned release archives only, no `git clone`/submodule vendoring |
+| `src/cmd/parity_harness.hpp` | The cross-process (black-box) test harness — `run_pinned()` execs a built binary over fixed argv in a scratch environment with its own `PLANAR_DB` and `HOME`. Cases live in `src/cmd/*/parity.t.cpp` and `src/cmd/planar/cross_process.t.cpp` |
 | `migrations/` | SQLite migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`) — single authoritative source |
-| `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `github-projects/`, `jira/`); embedded at build time |
+| `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `jira/`); embedded at build time |
 | `templates/doc-prompts/`, `templates/defaults/`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install |
 | `skills/src/` | Unified authored skill sources (`pl-*.md`) |
 | `$PLANAR_HOME/commands/claude/` | Generated Claude staging tree (install output, not checked in) |
@@ -315,9 +320,9 @@ The repo root IS the Zig package root: `build.zig` and `build.zig.zon` sit at th
 | `$PLANAR_HOME/copilot-skills/`, `copilot/` | Generated Copilot staging tree + checked-in authored instructions/prompts |
 | `agents/` | Vendor-neutral Planar agent role specs |
 | `docs/` | User-facing reference docs (architecture, CLI, skills, concepts, workflows) |
-| `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of the Zig build |
-| `Makefile` | Thin wrapper around `zig build ...` invocations |
-| `install.sh` | Source-checkout installer |
+| `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of the build |
+| `Makefile` | Thin wrapper around `cmake --preset` / `cmake --build` / `ctest` invocations |
+| `install.sh` | Source-checkout installer; builds and installs the C++ binaries via CMake |
 
 ## Documentation
 

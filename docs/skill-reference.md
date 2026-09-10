@@ -21,7 +21,7 @@ shows the underlying supported interface.
 | Manage machine-local skills and agents | `/pl-local ...` | `planar local import|link|list|unlink|migrate`; repair uses `planar local link --reconcile` |
 | Resume interrupted work or diagnose degraded state | `/pl-resume <task-id>` or `/pl-doctor` | `planar resume`, `planar audit`, `planar health`, `planar-agent reconcile` |
 | Inspect one external item's local history | `/pl-audit-trail <system:key>` | `planar audit trail` |
-| Reconcile a local/external sync conflict | `/pl-sync status` or `/pl-sync resolve <event-id>` | `planar sync status`, `planar audit trail`, guarded `planar sync resolve` |
+| Reconcile a local/external sync conflict | `/pl-sync status` or `/pl-sync resolve <event-id>` | `planar-ext sync status`, `planar audit trail`, guarded `planar-ext sync resolve` |
 | Maintain published documentation | Raised to tabularium (owns the doc-system tool and its `/pl-doc-maintain` full loop / `/pl-documenter` proposal sweep); planar drives the underlying tool verbs | `tabularium diff|cover|nodoc|lint|build|verify` |
 
 `/pl-local-import` remains an import-only compatibility entry point; prefer
@@ -206,7 +206,7 @@ binary capability boundary; the cue changes transcript visibility only.
 
 ## Binary architecture
 
-Planar ships four executables. Three are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by integration tests (`integration_tests/capability_boundary_test.zig`). The fourth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
+Planar ships four executables. Three are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by the `src/cmd/*/capability.t.cpp` tests. The fourth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
 
 - `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `doc`, `spec`, `templates`, `ext`, `sync`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
 - `planar-agent` — agent-callable coordination binary. Read-write only to its
@@ -359,7 +359,7 @@ Source: `skills/src/pl-spec-ingest.md` · `agents/ingestor.md`
 
 ### `/pl-ext-propagate`
 
-Propagate a feature tree (anchor plan + descendants) to a registered external operational system. Creates external counterparts (Jira epics/stories/subtasks, GitHub parent issues or Projects v2) and records `external_links(link_role='mirror')` rows. Idempotent: already-linked entities are skipped.
+Propagate a feature tree (anchor plan + descendants) to a registered external operational system. Creates external counterparts (Jira epics/stories/subtasks, GitHub parent issues) and records `external_links(link_role='mirror')` rows. Idempotent: already-linked entities are skipped. **Not yet implemented** as of plan 996 — the whole-tree walk lives on neither binary yet; use `planar-ext ext propagate-one` for a single entity today. See `docs/cli-reference.md`.
 
 **Example:**
 ```
@@ -608,7 +608,7 @@ disposition:
 
 | Disposition | Effect |
 |---|---|
-| `keep-local` | After approval, push the complete current local entity with `planar sync resolve <event-id> --keep local ...`; this is not a field-level patch. |
+| `keep-local` | After approval, push the complete current local entity with `planar-ext sync resolve <event-id> --keep local ...`; this is not a field-level patch. |
 | `keep-remote` | After approval, overwrite the local entity with the complete observed remote entity using `--keep remote`; this is not a field-level patch. |
 | `manual-merge` | Do not resolve yet. The operator reviews a proposed merged value, edits through the entity's normal guarded `planar <kind>` workflow, reviews the resulting local post-state, and then separately confirms `keep-local` for that event. |
 | `defer` | Write nothing because evidence is insufficient or resolution was declined or postponed; refresh with a guarded pull before rebuilding evidence. |
@@ -806,7 +806,7 @@ Source: `skills/src/pl-observe.md`
 
 ### `/pl-templates`
 
-Inspect, validate, and render Planar JSON templates for external-system propagation (Jira, GitHub Issues, GitHub Projects).
+Inspect, validate, and render Planar JSON templates for external-system propagation (Jira, GitHub Issues).
 
 **Example:**
 ```

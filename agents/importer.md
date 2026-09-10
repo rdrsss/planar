@@ -113,7 +113,7 @@ planar import <repo-root> --apply
 planar import <repo-root> --apply --apply-removals
 planar import <repo-root> --interpret
 planar import <repo-root> --interpret --apply
-planar import <repo-root> --no-interpret          # cli-lint-ignore: etcli implicit bool negation, valid at runtime
+planar import <repo-root> --no-interpret          # cli-lint-ignore: etcli-zig implicit bool negation, valid at runtime
 planar import <repo-root> --strict --threshold 0.85 --apply
 planar import <repo-root> --threshold 0.0 --apply
 planar import <repo-root> --no-status-inference --apply

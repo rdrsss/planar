@@ -115,7 +115,7 @@ The Request payload carries: README + each `docs/*` body + git log (last ~500 co
 
 ## LLM Result Contract
 
-The skill writes a JSON Result matching this schema. The canonical result types and validation live in [`src/engine/import.zig`](../../src/engine/import.zig); the schema below mirrors the field set.
+The skill writes a JSON Result matching this schema. The canonical result types and validation live in [`src/lib/engine/importer/importer.cppm`](../../src/lib/engine/importer/importer.cppm); the schema below mirrors the field set.
 
 ```json
 {
@@ -237,7 +237,7 @@ planar import <path> --apply                      # commit additions + updates
 planar import <path> --apply --apply-removals     # commit + soft-cancel removed entities
 planar import <path> --interpret                  # opt into LLM pass
 planar import <path> --interpret --apply
-planar import <path> --no-interpret               # explicitly deterministic-only (cli-lint-ignore: etcli implicit bool negation, valid at runtime)
+planar import <path> --no-interpret               # explicitly deterministic-only (cli-lint-ignore: etcli-zig implicit bool negation, valid at runtime)
 planar import <path> --strict --apply             # every task must clear --threshold
 planar import <path> --threshold 0.0 --apply      # disable the confidence floor
 planar import <path> --no-status-inference --apply # docs-only / greenfield: all tasks land todo

@@ -25,6 +25,8 @@ The ritual every code-writing agent dispatch follows is `planar-agent pull → h
 
 `planar-execute` is deliberately **outside** this ritual: it is a workflow engine the caller invokes, not an agent-table writer, and holds no DB handle. When a workflow needs to participate in a claim, it does so by shelling `planar-agent` verbs through the `cli` host function — exactly as any other caller would — never by holding a claim itself.
 
+**Ordering contract — `planar-ext` does not migrate the database; `planar` must run first.** `planar-ext` (decisions 995–1001) is read-only on planning tables and read-write on exactly `external_links`/`external_systems`/`sync_events`, enforced by a `sqlite3_set_authorizer` allowlist — it is deliberately not the migration owner, so unlike `planar`/`planar-agent`/`planar-watch` it does **not** auto-apply pending migrations on open. Pointed at a database with no `schema_migrations` table (or one behind the binary's minimum schema version), it refuses with `SchemaVersionBehind` rather than migrating. Any operator or agent workflow that talks to `planar-ext` — including test harnesses that allocate a fresh scratch DB per run — must invoke `planar` (any verb; `plan list` and `init` both trigger the auto-migration) against that same `PLANAR_DB` at least once before the first `planar-ext` call.
+
 ---
 
 ## Deterministic workflow engine
@@ -619,7 +621,7 @@ An orchestration strategy is the operator-facing dispatch frame for a plan. It b
 | `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; staged into dependency-respecting waves; one consolidated reviewer pass at fan-in. **Model-runnable** via the spawn-free `workflows/parallel-dispatch.lua` seam (plan 760) — no external harness. |
 | `isolated-sequential` | Descriptive alias for `classic` + `worktree` isolation: one cycle worktree per task, reviewer per cycle. |
 | `barrel-deferred` | Coder cycles run back-to-back; reviewer fires once at a milestone or plan boundary on the union diff. Supports both `pwd` and `worktree` isolation. |
-| `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` + `make test-integration` twice + render check + remaining validators) are the entire signal. Supports both `pwd` and `worktree` isolation. |
+| `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` twice + `make coverage` + `make cli-usage-check` + render check + remaining validators) are the entire signal. Supports both `pwd` and `worktree` isolation. |
 
 The model-driven `/pl-orchestrator` skill runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The model runs the git worktree/branch/merge ops and spawns the coders; the seam only computes and hands back. There is **no external harness**. In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
 
@@ -972,14 +974,14 @@ The `link_role` column distinguishes the relationship kind:
 
 | Role | Meaning |
 |------|---------|
-| `mirror` | This external item was created by Planar's `ext propagate` and tracks the local entity one-to-one |
+| `mirror` | This external item was created by Planar's `ext propagate`/`ext propagate-one` and tracks the local entity one-to-one |
 | `reference` | This external item was created independently; the link is informational |
 
-Each `external_links` row also carries a `config_json` blob used by the ext-sync engine to cache per-feature propagation state (selected GitHub strategy, Projects v2 node id, etc.). This is what makes strategy selection sticky across re-propagation runs.
+Each `external_links` row also carries a `config_json` blob used by the ext-sync engine to cache per-feature propagation state (selected GitHub strategy, etc.). This is what makes strategy selection sticky across re-propagation runs.
 
-`planar link <entity> <system-slug>:<external-id>` creates a reference link manually. `planar ext propagate <plan>` creates mirror links automatically.
+`planar link <entity> <system-slug>:<external-id>` creates a reference link manually. `planar-ext ext propagate-one` creates a mirror link automatically for one entity; the whole-tree `planar-ext ext propagate <plan>` is not yet implemented (see `docs/cli-reference.md`).
 
-**SQLite table:** `external_links`, `external_systems`, `sync_events`. **Primary verbs:** `planar link`, `planar unlink`, `planar ext propagate`, `planar ext create`, `planar sync pull`, `planar sync push`.
+**SQLite table:** `external_links`, `external_systems`, `sync_events`. **Primary verbs:** `planar link`, `planar unlink`, `planar-ext ext propagate`, `planar-ext ext create`, `planar-ext sync pull`, `planar-ext sync push`.
 
 ---
 

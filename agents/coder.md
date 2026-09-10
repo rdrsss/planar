@@ -14,7 +14,7 @@ The orchestration flow, iteration loop, and what counts as "implementation-compl
 
 ## What the coder MUST do
 
-These six things are load-bearing. The blind-read reviewer (see
+These seven things are load-bearing. The blind-read reviewer (see
 [`agents/reviewer.md`](reviewer.md)) cannot recover them after the fact —
 they are the coder's job to get right before handoff.
 
@@ -52,6 +52,24 @@ they are the coder's job to get right before handoff.
    re-implement broadly. The reviewer's remediation list is the contract
    for the next iteration; edits outside that list are new scope and
    either need their own task rows or wait for a later cycle.
+7. **Budget the turn so break-probes actually run.** A full gate pass in this
+   repo is roughly 25 minutes — clang-tidy over ~563 files, a doxygen pass
+   that SIGBUSes and retries, and a ~9-minute `ctest`. A coder that starts
+   those in the foreground and blocks reliably runs out of turn *before* its
+   break-probes, and the orchestrator inherits an implementation whose tests
+   have no proven discriminating power. Five coder stops across tasks 6339
+   and 6343 were all this exact shape (task 6346). So:
+   - **Run break-probes FIRST, then the long gates.** Probes are the evidence
+     only you can produce; gates are reproducible by anyone downstream.
+   - **Background the long gates** (`ctest`, `make cpp-lint`) and keep
+     working while they run, rather than blocking a whole turn on one command.
+   - **Never let a probe rebuild race a backgrounded gate.** Both write the
+     same build directory, and concurrent access to one build dir manufactures
+     failures that look real and carry no exit-code tell (task 6350). Either
+     sequence probes strictly before the suite starts, or give the probes
+     their own build directory.
+   - **Report partial results with what is outstanding.** A gate still running
+     is a stated outstanding item, not a reason to withhold the report.
 
 ## What the coder does NOT do
 
@@ -190,7 +208,7 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
 
 - Does not approve its own work. Hands off to `reviewer` via the orchestrator.
 - Does not modify schema unless the task and spec explicitly authorize a schema change; otherwise the coder files a `question` and stops.
-- Does not call operational-plane sync. `planar sync push` is an explicit user or reviewer step.
+- Does not call operational-plane sync. `planar-ext sync push` is an explicit user or reviewer step.
 - Does not invent target-repository validation commands. If the confirmed
   profile is missing or insufficient, the coder stops and returns the gap to
   the orchestrator.

@@ -12,8 +12,10 @@
 #     bin/planar-execute              # deterministic spawn-free Lua workflow
 #                                     # engine (run <wf.lua> --phase; shells
 #                                     #  planar for state, holds no DB handle)
-#     bin/mtkahypar                   # optional wheel-backed solver adapter
-#     opt/mtkahypar/1.6.1/venv/       # optional native PyPI wheel environment
+#     bin/planar-ext                  # operational-plane binary (Jira, GitHub
+#                                     # Issues adapters; read-only on planning
+#                                     # tables, read-write on external_links /
+#                                     # external_systems / sync_events)
 #     planar.db                       # created on first `planar init`
 #     migrations/0001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at compile
@@ -54,8 +56,7 @@
 #   ./install.sh --prefix /opt/planar # override ~/.planar
 #   ./install.sh --force              # overwrite existing symlinks
 #   ./install.sh --uninstall          # tear down everything install.sh created
-#   ./install.sh --optimize Debug     # zig build optimize mode (default ReleaseSafe)
-#   ./install.sh --with-mtkahypar     # install the optional native solver wheel
+#   ./install.sh --preset debug       # CMake preset (default release)
 #   ./install.sh --dry-run            # preview planned actions without changing anything
 #   ./install.sh --verbose            # per-file detail (default prints a summary)
 #   ./install.sh --version            # print installer version and exit
@@ -64,7 +65,7 @@
 # Output is colorized on a TTY; set NO_COLOR=1 (or pipe stdout) for plain text.
 
 # -E (errtrace) propagates the ERR trap into subshells/functions so a failure
-# inside the `( cd … && zig build … )` subshell is reported, not swallowed.
+# inside the CMake build subshell is reported, not swallowed.
 set -eEuo pipefail
 
 # ---------- defaults ----------
@@ -76,11 +77,17 @@ MODE="copy"                   # copy | link
 FORCE=0
 UNINSTALL=0
 NO_PRUNE=0                    # set with --no-prune to skip stale-vendor-file removal
-OPTIMIZE="ReleaseSafe"        # zig optimize mode
+BUILD_PRESET="release"        # CMake preset
+# The installer builds in its OWN directory, never the developer's
+# build/<preset> (task 6537). Reusing it meant the install inherited whatever
+# flags the cache happened to hold -- a `make test-parity-cpp` run leaves
+# PLANAR_WITH_MTKAHYPAR=ON there, which silently produced a solver-linked
+# install -- and left PLANAR_VERSION_META=ON behind afterwards, invalidating
+# the whole build graph on every subsequent commit.
+BUILD_DIR=""                  # resolved below; override with --build-dir
+WITH_SOLVER=0                 # set with --with-solver (Mt-KaHyPar; needs tbb)
 VERBOSE=0                     # set with --verbose/-v for per-file detail
 DRY_RUN=0                     # set with --dry-run/-n to preview without changes
-WITH_MTKAHYPAR=0              # opt-in native wheel + Planar CLI adapter
-MTKAHYPAR_VERSION="1.6.1"
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,8 +111,13 @@ Options:
   --link             Symlink from this repo instead of copying (dev mode)
   --force            Overwrite existing symlinks / adopt a non-Planar prefix
   --no-prune         Skip removal of stale vendor files
-  --optimize MODE    Zig optimize mode: Debug|ReleaseSafe|ReleaseFast|ReleaseSmall (default: ReleaseSafe)
-  --with-mtkahypar   Install the optional pinned Mt-KaHyPar native wheel + adapter
+  --preset NAME      CMake build preset: debug|release (default: release)
+  --build-dir DIR    Where to configure and build (default:
+                     build/install-<preset>). The installer never builds in
+                     the developer's build/<preset>.
+  --with-solver      Link the Mt-KaHyPar solver (needs tbb). Off by default;
+                     without it `groups recommend --solver mtkahypar`
+                     degrades to greedy and reports optimal_available:false.
   --dry-run, -n      Show what would happen without making any changes
   --verbose, -v      Per-file detail (default prints a summary)
   --uninstall        Tear down everything install.sh created
@@ -127,8 +139,9 @@ while [[ $# -gt 0 ]]; do
     --force)      FORCE=1; shift ;;
     --uninstall)  UNINSTALL=1; shift ;;
     --no-prune)   NO_PRUNE=1; shift ;;
-    --optimize)   OPTIMIZE="$2"; shift 2 ;;
-    --with-mtkahypar) WITH_MTKAHYPAR=1; shift ;;
+    --preset)     BUILD_PRESET="$2"; shift 2 ;;
+    --build-dir)  BUILD_DIR="$2"; shift 2 ;;
+    --with-solver) WITH_SOLVER=1; shift ;;
     --verbose|-v) VERBOSE=1; shift ;;
     --dry-run|-n) DRY_RUN=1; shift ;;
     --version)
@@ -140,6 +153,13 @@ while [[ $# -gt 0 ]]; do
     *) printf 'install.sh: unknown flag: %s\n\n' "$1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+# The installer's own build directory. Deliberately NOT build/<preset>: that
+# one belongs to the developer, and sharing it is how an install picked up a
+# parity lane's solver flag and left version-metadata stamping switched on
+# behind it (task 6537). `--build-dir` overrides for callers that need to
+# place it elsewhere (the installer integration tests do).
+[[ -n "$BUILD_DIR" ]] || BUILD_DIR="$REPO_ROOT/build/install-$BUILD_PRESET"
 
 # ---------- output helpers ----------
 
@@ -169,7 +189,7 @@ ok()    { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn()  { WARN_COUNT=$((WARN_COUNT + 1)); printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 err()   { printf '\n%sinstall.sh: %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
 
-# set -e + this ERR trap turn a raw mid-script failure (a bad `zig build`, a
+# set -e + this ERR trap turn a raw mid-script failure (a bad CMake build, a
 # failed `cp`) into a framed message naming the phase that died, instead of a
 # bare non-zero exit the user has to reverse-engineer. Explicit err() exits and
 # `cmd || …` guarded failures never reach here.
@@ -183,6 +203,9 @@ on_err() {
 }
 trap 'on_err $? $LINENO' ERR
 
+# The D13 install freeze ended at the M9 parity gate, and the M10 cutover
+# (task 6045, decisions 963/982) deleted `zig/`: the CMake build is the only
+# build, and the binaries this script installs are its output.
 # check_deps "<tier label>" <fatal:0|1> "cmd|brewpkg|what it's for" …
 # Checks every entry and reports ALL missing tools at once (not one-at-a-time),
 # with a `brew install …` hint built from the entries that have a Homebrew
@@ -383,18 +406,20 @@ title "Planar — install from $REPO_ROOT"
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
 BUILD_DEPS=(
-  "zig|zig|builds the four Planar binaries"
+  "cmake|cmake|configures, builds, and installs the five Planar binaries"
+  "ninja|ninja|C++26 module dependency scanning"
+  "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
+  "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
   "rm||replace prior-install artifacts"
   "mv||atomically replace the install manifest"
   "find||walk vendor + template source trees"
+  "head||take the first Mt-KaHyPar smoke result"
   "rmdir||remove emptied vendor skill directories"
-  "sed||parse the pinned zig version from build.zig.zon"
   "awk||read the build id from 'planar version'"
   "grep||validate the Planar package manifest"
-  "head||take the first match when parsing build.zig.zon"
   "cat||read help text + vendor ownership markers"
   "ls||detect a non-empty / foreign install prefix"
   "readlink||resolve existing vendor symlinks safely"
@@ -404,34 +429,39 @@ BUILD_DEPS=(
   "chmod||mark shipped scripts executable"
 )
 RUN_DEPS=(
+  "cmp||checks installed projection bytes in scripts/check-self-installed.sh"
   "git|git|repo discovery + 'planar import' (required at runtime)"
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
   "tabularium||bundled documentation-maintenance workflows"
-  "python3|python|optional: hosts the pinned native Mt-KaHyPar wheel installed by --with-mtkahypar"
-  "mtkahypar||optional: 'planar groups recommend --solver=mtkahypar' optimal arm; install with --with-mtkahypar"
 )
 
 check_deps "build" 1 "${BUILD_DEPS[@]}"
 
-# Zig version gate — build.zig.zon pins a minimum; an older toolchain otherwise
-# fails deep in the build with a cryptic error. Surface it up front. Dev/build
-# suffixes (0.16.0-dev.123+abc) are treated as their base release.
-MIN_ZIG="$(sed -n 's/.*\.minimum_zig_version = "\([0-9.]*\)".*/\1/p' "$REPO_ROOT/build.zig.zon" | head -n1)"
-HAVE_ZIG="$(zig version 2>/dev/null || true)"
-HAVE_ZIG_CORE="${HAVE_ZIG%%-*}"; HAVE_ZIG_CORE="${HAVE_ZIG_CORE%%+*}"
-if [[ -n "$MIN_ZIG" && -n "$HAVE_ZIG_CORE" ]] && ! version_ge "$HAVE_ZIG_CORE" "$MIN_ZIG"; then
-  err "zig $MIN_ZIG or newer required, found $HAVE_ZIG ($(command -v zig))"
+# TBB (decision 1006, task 6459) — cmake/dependencies.cmake now vendors
+# Mt-KaHyPar unconditionally, and Mt-KaHyPar's own CMakeLists.txt
+# find_package(TBB)s the Homebrew `tbb` formula (TBB does not support static
+# linking; decision 1006 accepts this as the one dynamic runtime dependency
+# the vendored solver needs). CMake configure FATAL_ERRORs without it, so
+# this fails the install here too rather than deep into the CMake build.
+# check_deps() above only probes command-line tools (`command -v`); TBB
+# ships no CLI binary of its own, so it is checked directly the same way
+# cmake/dependencies.cmake's own probe resolves it.
+if command -v brew >/dev/null 2>&1 && [[ -d "$(brew --prefix tbb 2>/dev/null)" ]]; then
+  vlog "dep ok: tbb ($(brew --prefix tbb))"
+else
+  printf '\n%sinstall.sh: missing required build tool(s):%s\n' "$C_RED$C_BOLD" "$C_RESET" >&2
+  printf '  %s✗%s tbb — Mt-KaHyPar (`groups recommend --solver mtkahypar`) TBB runtime dependency\n' "$C_RED" "$C_RESET" >&2
+  printf '  macOS: brew install tbb\n' >&2
+  exit 1
 fi
 
-# Check that we are in a Planar source checkout.
-# Zig code lives under src/; build.zig + build.zig.zon sit at the repo root.
-[[ -f "$REPO_ROOT/build.zig" ]] || err "build.zig not found in $REPO_ROOT (run install.sh from the Planar source repo)"
-[[ -f "$REPO_ROOT/build.zig.zon" ]] || err "build.zig.zon not found in $REPO_ROOT"
-grep -q '^[[:space:]]*\.name = \.planar' "$REPO_ROOT/build.zig.zon" || err "$REPO_ROOT does not look like the Planar Zig package (build.zig.zon name mismatch)"
+# Check that we are in a CMake Planar source checkout.
+[[ -f "$REPO_ROOT/CMakeLists.txt" ]] || err "CMakeLists.txt not found in $REPO_ROOT (run install.sh from the Planar source repo)"
+[[ -f "$REPO_ROOT/CMakePresets.json" ]] || err "CMakePresets.json not found in $REPO_ROOT"
 
-# scriptorium discovery — fatal, fail fast before the (slow) zig build below.
+# scriptorium discovery — fatal, fail fast before the CMake build below.
 # install.sh no longer renders vendor surfaces itself; it shells the
 # scriptorium binary (tech-spec.md § Architecture "How Planar shells
 # scriptorium", decision D2). Resolves $SCRIPTORIUM_BIN into a validated,
@@ -441,16 +471,28 @@ discover_scriptorium_bin
 # Runtime tools — non-fatal; the install still produces a working binary, but
 # Planar's git-backed verbs and the bundled agent skills need these to work.
 check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"
-if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
-  check_deps "Mt-KaHyPar adapter" 1 \
-    "python3|python|creates the isolated native-wheel environment"
-fi
 
+# git version floor — non-fatal, matching the RUN_DEPS tier above (git is
+# already in RUN_DEPS; this adds the *version* check check_deps' presence-only
+# probe can't express). >= 2.31 is required for `git rev-parse
+# --path-format=absolute --git-common-dir` (docs/toolchain-parity.md's git
+# row) — below that floor, worktree detection can misclassify a primary
+# checkout nested two or more levels below the repo root as a secondary
+# worktree. This check stays live after the C++ cutover.
+MIN_GIT="2.31.0"
+if command -v git >/dev/null 2>&1; then
+  HAVE_GIT="$(git --version | awk '{print $3}')"
+  HAVE_GIT_CORE="${HAVE_GIT%%-*}"
+  if [[ -n "$HAVE_GIT_CORE" ]] && ! version_ge "$HAVE_GIT_CORE" "$MIN_GIT"; then
+    warn "git $MIN_GIT or newer required for correct worktree detection, found $HAVE_GIT ($(command -v git))"
+  fi
+fi
 log "PLANAR_HOME = $PLANAR_HOME"
 log "mode        = $MODE"
 log "vendors     = ${VENDORS:-(none)}"
-log "optimize    = $OPTIMIZE"
-log "mtkahypar   = $([[ "$WITH_MTKAHYPAR" -eq 1 ]] && echo install || echo unchanged)"
+log "preset      = $BUILD_PRESET"
+log "build dir   = $BUILD_DIR"
+log "solver      = $( ((WITH_SOLVER)) && echo "mtkahypar (linked)" || echo "off (greedy only)" )"
 [[ "$DRY_RUN" -eq 1 ]] && log "dry-run     = yes (no changes will be made)"
 
 # Writability — the install writes into $PLANAR_HOME (or creates it). Fail with
@@ -482,14 +524,11 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   [[ -f "$REPO_ROOT/install-cleanup.txt" ]] && \
     _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$REPO_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
-  log "build 4 binaries (planar, planar-agent, planar-watch, planar-execute) → $PLANAR_HOME/bin  [optimize=$OPTIMIZE]"
+  log "build 5 binaries (planar, planar-agent, planar-watch, planar-execute, planar-ext) → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
   log "place templates/ (missing-only; --force overwrites)"
-  if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
-    log "install pinned Mt-KaHyPar $MTKAHYPAR_VERSION wheel + adapter → $PLANAR_HOME"
-  fi
   if [[ -n "$VENDORS" ]]; then
     log "wire vendor surfaces: $VENDORS → ~/.claude, ~/.codex, ~/.copilot, ~/.gemini/antigravity-cli"
   else
@@ -505,8 +544,7 @@ fi
 title "Building the Planar binaries"
 
 mkdir -p "$PLANAR_HOME/bin"
-# `zig build --prefix <root>` installs every `installArtifact` target into
-# <root>/bin/. The build registers FOUR binaries:
+# CMake configures, builds, and installs all FIVE executable targets:
 #
 #   planar         — operator surface
 #   planar-agent   — agent-callable coordination (atomic claim ops,
@@ -516,32 +554,41 @@ mkdir -p "$PLANAR_HOME/bin"
 #   planar-execute — deterministic spawn-free Lua workflow engine
 #                    (run <wf.lua> --phase; shells planar for state,
 #                    holds no DB handle, no model-spawn host fn)
+#   planar-ext     — operational-plane binary (Jira, GitHub Issues adapters;
+#                    read-only on planning tables, read-write on exactly
+#                    external_links / external_systems / sync_events)
 #
-# All four land in $PLANAR_HOME/bin/ in one shot — no extra cp step needed.
-# Migrations and templates/defaults are read from the repo root at
-# codegen time (build.zig sits at the repo root).
-# -Dversion-meta=true: stamp the real git sha/date/dirty into `planar version`.
-# Dev builds default this off because embedding live git metadata invalidates
-# the whole build cache on every commit / dirty-flag flip; installs are the
-# one place the stamped metadata is worth that rebuild.
-( cd "$REPO_ROOT" && zig build -Doptimize="$OPTIMIZE" -Dversion-meta=true --prefix "$PLANAR_HOME" )
+# `PLANAR_VERSION_META=ON` stamps the install's git metadata. It stays off
+# for ordinary dev builds so commit/dirty changes do not invalidate the tree.
+#
+# EVERY option this build depends on is pinned explicitly. A configure that
+# omits a flag does NOT reset it -- the cache wins -- so an unpinned
+# PLANAR_WITH_MTKAHYPAR was inherited from whatever last configured the
+# directory (task 6537). `--with-solver` is the only way to turn it on here,
+# and it requires the tbb preflight above.
+( cd "$REPO_ROOT" \
+  && cmake --preset "$BUILD_PRESET" -B "$BUILD_DIR" \
+       -DPLANAR_VERSION_META=ON \
+       -DPLANAR_WITH_MTKAHYPAR="$( ((WITH_SOLVER)) && echo ON || echo OFF )" \
+  && cmake --build "$BUILD_DIR" \
+  && cmake --install "$BUILD_DIR" --prefix "$PLANAR_HOME" )
 vlog "wrote $PLANAR_HOME/bin/planar"
 vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"
 vlog "wrote $PLANAR_HOME/bin/planar-execute"
+vlog "wrote $PLANAR_HOME/bin/planar-ext"
 
 # Smoke check — a build can succeed yet produce a binary that won't run. Confirm
 # it executes now (and capture the build id) rather than discovering it broken
-# at `planar init`. `planar version` prints `planar <sha> <ts> zig <ver>` on
-# stdout and exits 0 even when no DB exists yet.
+# at `planar init`.
 PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
   err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
-ok "built 4 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+ok "built 5 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 
-# `zig build --prefix` only writes the targets it builds — it never removes
-# files a PRIOR install left behind. Iterate the cleanup manifest and delete
+# CMake install only writes the targets it builds — it never removes files a
+# PRIOR install left behind. Iterate the cleanup manifest and delete
 # any $PLANAR_HOME-relative artifact current Planar no longer ships (e.g. a
 # binary dropped in a refactor) so a re-install over an older tree is clean.
 # See install-cleanup.txt.
@@ -630,9 +677,9 @@ else
 fi
 log "rendered via scriptorium: commands/claude, skills/codex, skills/copilot, skills/gemini, agents/{claude,codex,copilot,gemini}"
 
-# Migrations live at repo root in sqlx-cli format and are read by the Zig
-# build via codegen. We also stage them under $PLANAR_HOME for ad-hoc
-# tooling (e.g. operators running `sqlx migrate` against scratch DBs).
+# Migrations live at repo root in sqlx-cli format and are read by the CMake
+# build via configure-time codegen. We also stage them under $PLANAR_HOME for
+# ad-hoc tooling (e.g. operators running `sqlx migrate` against scratch DBs).
 if [[ -d "$REPO_ROOT/migrations" ]]; then
   rm -rf "$PLANAR_HOME/migrations"
   place "$REPO_ROOT/migrations" "$PLANAR_HOME/migrations"
@@ -674,62 +721,6 @@ fi
 # modes (including non-executable data manifests).
 if [[ "$MODE" != "link" && -d "$PLANAR_HOME/scripts" ]]; then
   chmod +x "$PLANAR_HOME/scripts/"* 2>/dev/null || true
-fi
-
-# ---------- optional Mt-KaHyPar wheel adapter ----------
-
-if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
-  title "Installing optional Mt-KaHyPar $MTKAHYPAR_VERSION wheel"
-  MTK_PARENT="$PLANAR_HOME/opt/mtkahypar"
-  MTK_FINAL="$MTK_PARENT/$MTKAHYPAR_VERSION"
-  MTK_STAGE="$MTK_PARENT/.stage.$$"
-  MTK_SMOKE="$MTK_PARENT/.smoke.$$"
-  rm -rf "$MTK_STAGE" "$MTK_SMOKE"
-  mkdir -p "$MTK_STAGE" "$MTK_SMOKE"
-
-  if ! python3 -m venv "$MTK_STAGE/venv"; then
-    rm -rf "$MTK_STAGE" "$MTK_SMOKE"
-    err "python3 could not create the Mt-KaHyPar virtual environment"
-  fi
-  if ! "$MTK_STAGE/venv/bin/python" -m pip install \
-      --disable-pip-version-check \
-      --only-binary=:all: \
-      --no-deps \
-      --require-hashes \
-      -r "$PLANAR_HOME/scripts/mtkahypar-requirements.txt"; then
-    rm -rf "$MTK_STAGE" "$MTK_SMOKE"
-    err "no compatible hash-locked Mt-KaHyPar $MTKAHYPAR_VERSION wheel was installed"
-  fi
-
-  rm -rf "$MTK_FINAL"
-  mv "$MTK_STAGE" "$MTK_FINAL"
-  symlink_to "$PLANAR_HOME/scripts/mtkahypar" "$PLANAR_HOME/bin/mtkahypar"
-
-  # A successful import/help probe is necessary but insufficient. Exercise a
-  # real two-vertex hMETIS partition and require the expected two-row output.
-  printf '1 2 11\n1 1 2\n1\n1\n' > "$MTK_SMOKE/graph.hgr"
-  if ! "$PLANAR_HOME/bin/mtkahypar" \
-      -h "$MTK_SMOKE/graph.hgr" -k 2 -e 0.03 -o km1 -m direct \
-      --write-partition-file=true --partition-output-folder "$MTK_SMOKE"; then
-    rm -rf "$MTK_SMOKE"
-    err "Mt-KaHyPar installed but failed its live partition smoke test"
-  fi
-  MTK_PARTITION="$(find "$MTK_SMOKE" -maxdepth 1 -type f -name 'graph.hgr.part*' | head -n 1)"
-  if [[ -z "$MTK_PARTITION" || "$(grep -c '^[01]$' "$MTK_PARTITION" || true)" -ne 2 ]]; then
-    rm -rf "$MTK_SMOKE"
-    err "Mt-KaHyPar smoke test did not produce a two-vertex partition"
-  fi
-  rm -rf "$MTK_SMOKE"
-  ok "installed and live-tested Mt-KaHyPar $MTKAHYPAR_VERSION → $MTK_FINAL"
-fi
-
-# Preserve the optional-extra record on ordinary reinstalls. The solver is
-# intentionally opt-in to install, but once managed by Planar it remains part
-# of the installed surface until the operator removes it explicitly.
-MTKAHYPAR_PRESENT=0
-if [[ -x "$PLANAR_HOME/opt/mtkahypar/$MTKAHYPAR_VERSION/venv/bin/python" && \
-      -e "$PLANAR_HOME/bin/mtkahypar" ]]; then
-  MTKAHYPAR_PRESENT=1
 fi
 
 # ---------- vendor symlinks ----------
@@ -1204,9 +1195,6 @@ fi
 # found only in vendor destinations (including personal local-* extensions)
 # are deliberately excluded.
 install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
-if [[ "$MTKAHYPAR_PRESENT" -eq 1 ]]; then
-  install_manifest_add_extra mtkahypar
-fi
 if [[ -n "$VENDORS" ]]; then
   IFS=',' read -r -a vendor_list <<< "$VENDORS"
   for v in "${vendor_list[@]}"; do
@@ -1238,14 +1226,7 @@ skills_n="$(count_glob "$PLANAR_HOME"/commands/claude/pl-*.md)"
 agents_n="$(count_glob "$PLANAR_HOME"/agents/claude/*.md)"
 
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
-log "binaries:   planar, planar-agent, planar-watch, planar-execute"
-if [[ "$MTKAHYPAR_PRESENT" -eq 1 ]]; then
-  if [[ "$WITH_MTKAHYPAR" -eq 1 ]]; then
-    log "extra:      mtkahypar $MTKAHYPAR_VERSION (native wheel adapter, live-tested)"
-  else
-    log "extra:      mtkahypar $MTKAHYPAR_VERSION (native wheel adapter, preserved)"
-  fi
-fi
+log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
 log "surfaces:   $skills_n skills · $agents_n agents · vendors: ${VENDORS:-none}"
 if [[ "$WARN_COUNT" -gt 0 ]]; then
   printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"

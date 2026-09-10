@@ -5,7 +5,7 @@ shared_notes:
     - The preview gate is mandatory and unskippable. There is NO flag or path that bypasses it. A declined preview posts nothing and changes nothing.
     - The diagnostic bundle is structurally redacted (counts, verb paths, categories, timestamps — never entity text). Finding text passes through the mandatory preview gate.
     - The gh post uses the operator's existing gh auth. No adapter registration or token configuration is required.
-    - Linkback uses planar link (record-only external_links row, no propagation, no sync subscription). If no GitHub system is registered yet, register one first with planar ext register github.
+    - Linkback uses planar link (record-only external_links row, no propagation, no sync subscription). If no GitHub system is registered yet, register one first with planar-ext ext register github.
 slug: pl-report-issue
 vendor:
     claude:
@@ -92,13 +92,13 @@ gh issue create -R rdrsss/planar --title "<title>" --body "<body>"
 Links (only on successful post, record-only — no propagation flag):
 
 ```
-planar ext register github planar-upstream --project rdrsss/planar
+planar-ext ext register github planar-upstream --project rdrsss/planar
 planar link <kind:id> --to planar-upstream:<issue-number> --role reference --sync read-only --json
 ```
 
-The `planar ext register github` step is a local-only row write — no network
+The `planar-ext ext register github` step is a local-only row write — no network
 contact. Run it once per database; if a `planar-upstream` system already
-exists (`planar ext list`) skip registration. The `planar link` call without
+exists (`planar-ext ext list`) skip registration. The `planar link` call without
 `--propagate` writes a single `external_links` row and returns; no sync
 subscription is created and no remote writes occur.
 
@@ -202,7 +202,7 @@ linkback without warning.
 
 Always report `outcome=ok|partial|error`. A preview returns the assembled body
 identity and zero applied. After confirmation, return the finding, GitHub issue
-number and URL, and external link ID; verify linkback with `planar sync status
+number and URL, and external link ID; verify linkback with `planar-ext sync status
 --entity <kind:id> --system planar-upstream --json`. If posting succeeds but
 linkback fails, report `partial`: the issue remains published and must not be
 posted again. A declined preview is an informative `outcome=ok` no-op.
@@ -229,7 +229,7 @@ finding/audit read. For a failed post, give `gh auth status` and rerun the skill
 through its mandatory preview; no link exists yet. If the issue was posted but
 linkback failed, do not rerun `gh issue create`: inspect the existing URL, then
 retry only `planar link <kind:id> --to planar-upstream:<issue-number> --role
-reference --sync read-only --json`, followed by `planar sync status --entity
+reference --sync read-only --json`, followed by `planar-ext sync status --entity
 <kind:id> --system planar-upstream --json`.
 
 ## Vendor Notes

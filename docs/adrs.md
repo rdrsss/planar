@@ -21,9 +21,9 @@ a one-paragraph summary of each decision.
 | 0004 | Rust as runtime                                                 | Superseded by ADR-0005  |
 | 0005 | Go as runtime                                                   | Superseded by ADR-0009  |
 | 0006 | GitHub operational-plane feature mapping                        | Active                  |
-| 0007 | Internal package bucket grouping                                | Active (carried into Zig) |
-| 0008 | `cmd/planar` subpackage buckets                                 | Active (carried into Zig) |
-| 0009 | Zig as runtime                                                  | Active                  |
+| 0007 | Internal package bucket grouping                                | Active (Go → Zig → C++26) |
+| 0008 | `cmd/planar` subpackage buckets                                 | Active (Go → Zig → C++26) |
+| 0009 | Zig as runtime                                                  | Superseded by plan 996  |
 
 ## ADR-0001 — Plugin extensibility as a future concern
 
@@ -71,9 +71,11 @@ in `docs/lessons-learned-rust-to-go.md` (Planar artifact 34).
 
 ## ADR-0006 — GitHub operational-plane feature mapping
 
-*Active, 2026-05-12.* Jira maps cleanly: feature → epic, child plans
-→ stories, tasks → sub-tasks. GitHub Issues has no epic concept and
-is repo-scoped, so the adapter chooses a strategy per feature at
+*Active, 2026-05-12; the multi-repo arm below is cut by decision 1001
+(2026-09-03) — see that decision for rationale. `parent_issue` survives and
+is the only strategy the C++ rewrite implements.* Jira maps cleanly: feature
+→ epic, child plans → stories, tasks → sub-tasks. GitHub Issues has no epic
+concept and is repo-scoped, so the adapter chooses a strategy per feature at
 first propagation time based on the number of distinct repos the
 feature's tasks touch: single-repo features use parent-issue +
 sub-issues; cross-repo features use a GitHub Projects v2 project as
@@ -111,8 +113,21 @@ registration in `src/cmd/planar/main.zig`.*
 
 ## ADR-0009 — Zig as runtime
 
-*Active. Supersedes ADR-0005 in full; supersedes ADR-0002's runtime
-choice of sqlx-cli library mode.* The Go implementation (ADR-0005)
+*Superseded by plan 996 (the C++26 rewrite), 2026-09. Supersedes
+ADR-0005 in full; supersedes ADR-0002's runtime choice of sqlx-cli
+library mode.*
+
+> **SUPERSEDED.** Zig was the runtime from M1–M19 of the Go→Zig port
+> through the C++26 port's M9 parity gate. Planar is C++26 now: the
+> CMake tree at the repo root is the only build, and the Zig tree under
+> `zig/` — kept buildable through the port as its parity ORACLE, never
+> as a shipped toolchain — was deleted at the M10 cutover (task 6045,
+> decisions 963/982) once its state-differential evidence came back
+> clean. Everything below is the historical record of why Zig was
+> chosen and what it delivered; none of its file paths, build commands,
+> or test counts describe the current tree. The C++26 decision itself
+> is recorded as plan 996's decision set (D1–D18) rather than as a
+> numbered ADR here. The Go implementation (ADR-0005)
 reached M1–M19 feature-complete and exposed two structural costs that
 did not surface at adoption time: (1) cgo-free SQLite via
 `modernc.org/sqlite` paid a measurable per-query overhead and made
@@ -145,10 +160,10 @@ no on-disk migration discovery at runtime.
 
 **Purpose-built CLI parser, extracted upstream.** Argv parsing, help
 rendering, shell completion, and validation live in
-[etcli](https://github.com/rdrsss/etcli) (~1500 LOC, no
+[etcli-zig](https://github.com/rdrsss/etcli-zig) (~1500 LOC, no
 third-party dependency beyond Zig stdlib). Originally hand-rolled
 in-tree under `src/cli/`; extracted into a standalone repo and
-vendored back under `vendor/etcli/` so other Zig CLI projects can
+vendored back under `vendor/etcli-zig/` so other Zig CLI projects can
 reuse it. The deliberate choice over cobra (Go) or clap (Rust)
 stands: the parser surface is small, stable, and integrates with
 the four-binary capability boundary (each binary's verb set is

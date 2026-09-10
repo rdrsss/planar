@@ -1,22 +1,14 @@
 # ============================================================================
-# Zig build artifacts
+# Compiled object artifacts
 # ============================================================================
 
-# `zig build` install prefix (binary lands at zig-out/bin/planar).
-zig-out/
-
-# zig fetch extraction side-effect: zig extracts the content-addressed
-# archive into a `zig-pkg/<hash>/` directory in the build root.
-zig-pkg/
-
-# Incremental compile cache (current name + legacy name; both can appear
-# depending on the zig version operators run).
-.zig-cache/
-zig-cache/
-
-# C object files produced from the vendored SQLite amalgamation if anyone
-# invokes the C compiler directly outside the zig build graph. The graph
-# itself keeps these inside .zig-cache/, so this is just a safety net.
+# The Zig build artifact rules (zig-out/, zig-pkg/, .zig-cache/, zig-cache/)
+# were removed at the M10 cutover (task 6045) along with the tree that
+# produced them; the 18GB of cache they covered was deleted at task 6569.
+# Nothing in this repo runs `zig` any more.
+#
+# These stay: CMake keeps its objects under build/<preset>/, but a stray
+# in-tree compile still lands them here, and ignoring them is cheap.
 *.o
 *.obj
 *.a
@@ -26,7 +18,7 @@ zig-cache/
 # Repo-local install destinations
 # ============================================================================
 
-# `make build` writes the production binary here from zig-out/bin/.
+# `make build` writes the production binaries here from the CMake build.
 /bin/
 
 # Workspace-local install destinations for vendor harnesses. Source files
@@ -55,6 +47,21 @@ zig-cache/
 *.swo
 .idea/
 .vscode/
+
+# ============================================================================
+# CMake (C++26 rewrite, plan 996)
+# ============================================================================
+
+# Out-of-source CMake build trees (CMakePresets.json: build/<preset>).
+/build/
+
+# clangd convenience symlink, recreated by CMakeLists.txt on every configure
+# — always points at whichever build/<preset> tree was configured most
+# recently.
+/compile_commands.json
+
+# Doxyfile.lint's OUTPUT_DIRECTORY.
+/doxygen-lint-output/
 
 # ============================================================================
 # Worktrees
@@ -90,3 +97,11 @@ scripts/parity-data/parity-gap-report.md
 /agents/copilot/
 /agents/gemini/
 __pycache__/
+
+# Mt-KaHyPar's own upstream CMakeLists.txt (mt-kahypar/io/CMakeLists.txt)
+# writes its version header via `configure_file(... "${CMAKE_CURRENT_SOURCE_DIR}/version.h" ...)`
+# -- an in-source write into the vendored tree at configure time (task 6461).
+# Content is deterministic (fixed project version, no timestamps), so it is
+# not load-bearing for the vendored pin and would otherwise show as an
+# untracked file after every configure with PLANAR_WITH_MTKAHYPAR=ON.
+/vendor/mtkahypar/*/mt-kahypar/io/version.h

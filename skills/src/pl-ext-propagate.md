@@ -17,13 +17,26 @@ vendor:
 
 {{.VendorTitle}} skill surface for the vendor-neutral `ext-sync` agent. See [`agents/ext-sync.md`](../../agents/ext-sync.md) for the full role spec, strategy-selection contract, and idempotency invariant.
 
+> **Implementation status (plan 996).** The whole-feature walk this skill
+> describes — `ext propagate <plan>` — is **not yet implemented on either
+> binary**. `ext`/`sync` moved from `planar` to `planar-ext` at task 6419;
+> the tree-walking `propagate` verb itself is tracked separately (task 6421,
+> in progress). What IS live today is the entity-level
+> `planar-ext ext propagate-one <system> --from <kind:id>` — one counterpart
+> per call, no tree walk, no strategy cache. Use it directly for a single
+> plan or task until whole-feature propagation lands.
+
 ## What propagation does
 
 Propagation walks the feature tree anchored at the given plan — top-down — and creates external counterparts for every entity that is not yet linked:
 
 - **Jira:** anchor plan → Epic, child plans → Stories (with Epic Link), tasks → Sub-tasks, decisions → comments on the Epic.
-- **GitHub Issues (single-repo):** anchor plan → parent issue, child plans and tasks → sub-issues. (Phase B)
-- **GitHub Projects v2 (multi-repo):** anchor plan → Project, child plans and tasks → issues in their repos attached to the Project. (Phase B)
+- **GitHub Issues (single-repo):** anchor plan → parent issue, child plans and tasks → sub-issues.
+
+Multi-repo GitHub propagation (the `projects-v2` strategy, a GitHub Projects
+board mirroring the feature tree) is permanently cut — decision 1001. It is
+not deferred work; it will not exist. Do not describe it as a future
+capability.
 
 One `external_links(link_role='mirror')` row is recorded per created entity. One `sync_events(outcome='ok')` row is recorded per Create call.
 
@@ -31,15 +44,17 @@ Before remote writes begin, propagation checks claim-aware plan state. If anothe
 
 ## Per-feature strategy selection (ADR-0006)
 
-The strategy is selected once at first propagation and cached on `external_links.config_json` of the anchor plan. For GitHub systems, the selection is based on the number of distinct repos touched by the feature's descendant tasks:
+The strategy is selected once at first propagation and cached on `external_links.config_json` of the anchor plan.
 
-| GitHub repo count | Strategy |
-|-------------------|---------|
-| 0 | `github-zero-repo` — parent issue in `github_lead_repo` |
-| 1 | `github-parent-issue` — parent issue in the touched repo |
-| ≥ 2 | `github-projects-v2` — Project at the org or user level |
+| System | Strategy |
+|--------|---------|
+| Jira | `jira-epic` (always) |
+| GitHub Issues | `parent-issue` (always) |
 
-Jira always uses the `jira-epic` strategy regardless of repo count.
+There is no repo-count-based strategy selection: GitHub systems always use
+the single-repo `parent-issue` strategy. The multi-repo `projects-v2`
+strategy named in earlier revisions of this skill does not exist — see the
+status note above.
 
 See `docs/architecture.md` for the strategy-selection contract.
 
@@ -58,7 +73,6 @@ Entities that already have an `external_links(link_role='mirror')` row for the t
 | `--system <slug>` | Target a specific external system by slug (defaults to first registered system). |
 | `--dry-run` | Print what would be created without contacting the remote. |
 | `--restrategize` | Force fresh strategy detection. Prompts for confirmation when strategy changes; abandoned counterparts write `sync_events(outcome='strategy-abandoned')`. |
-| `--github-strategy <value>` | Override ADR-0006 auto-detection at first propagation for GitHub systems. Accepted values: `parent-issue`, `projects-v2`, `tracking-issue`. Cached on `external_links.config_json`; subsequent propagations honor the cache. GitHub-only; mutually exclusive with `--restrategize`. |
 | `--yes` | Auto-confirm the `--restrategize` prompt (no interactive input). |
 | `--verify-counterparts` | Probe the remote to confirm existing counterparts still exist. Missing ones write `sync_events(outcome='counterpart-missing')` and are reported as `Missing`. |
 | `--unlink` | Remove `external_links` rows for missing counterparts (requires `--verify-counterparts`). |
@@ -87,7 +101,7 @@ Before any unlink, save the CLI-visible evidence:
 
 ```sh
 planar audit trail --link <link-id> --json > external-link-<link-id>-audit.json
-planar sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
+planar-ext sync status --entity <kind:id> --system <system-slug> --json > external-link-<link-id>-status.json
 ```
 
 Those reads capture identity, event history, and last-sync state, but the
@@ -101,8 +115,7 @@ This retains the same remote id but does not restore the omitted fields.
 For a propagation-owned mirror, validate the plan/system with a dry run before
 unlinking. After unlink, dry-run again to preview fresh creation, then propagate
 with an explicit sync direction. This creates a new remote counterpart and new
-state; it does not restore the deleted row. Pass `--github-strategy` only when
-the old value is independently known. See the complete recovery sequence in
+state; it does not restore the deleted row. See the complete recovery sequence in
 [`docs/cli-reference.md`](../../docs/cli-reference.md#planar-links-update-link-id).
 
 > **Cross-scope guard.** This verb refuses with exit 1 when the
@@ -112,13 +125,13 @@ the old value is independently known. See the complete recovery sequence in
 > escape (not for routine use). See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
-planar ext propagate <plan>
-planar ext propagate <plan> --system <slug>
-planar ext propagate <plan> --dry-run
-planar ext propagate <plan> --restrategize [--yes]
-planar ext propagate <plan> --github-strategy parent-issue|projects-v2|tracking-issue
-planar ext propagate <plan> --sync read-only|write-back|two-way
-planar ext propagate <plan> --verify-counterparts [--unlink | --recreate]
+planar-ext ext propagate <plan>              # NOT YET IMPLEMENTED — see status note above
+planar-ext ext propagate <plan> --system <slug>
+planar-ext ext propagate <plan> --dry-run
+planar-ext ext propagate <plan> --restrategize [--yes]
+planar-ext ext propagate <plan> --sync read-only|write-back|two-way
+planar-ext ext propagate <plan> --verify-counterparts [--unlink | --recreate]
+planar-ext ext propagate-one <system> --from <kind:id>   # live today
 planar link <kind:id> --to <system-slug>:<external-id> --propagate
 planar unlink <link-id>
 planar link <kind:id> --to <system-slug>:<external-id> --role <role> --sync read-only|write-back|two-way
@@ -149,7 +162,7 @@ are skips.
 
 Always report `outcome=ok|partial|error`. Return the anchor plan, strategy,
 system, completed entity-to-link/URL mappings, missing counterparts, and the
-latest sync-event evidence. Verify persisted links with `planar sync status
+latest sync-event evidence. Verify persisted links with `planar-ext sync status
 --entity <kind:id> --system <system-slug> --json` where supported. A fully
 idempotent rerun is `outcome=ok` with zero applied and the existing links.
 
@@ -169,8 +182,8 @@ before any separately confirmed `--unlink` or `--recreate` action.
 
 ## Recovery
 
-For each failed entity, provide its `planar sync status --entity <kind:id>
---system <system-slug> --json` inspection and the exact idempotent `planar ext
+For each failed entity, provide its `planar-ext sync status --entity <kind:id>
+--system <system-slug> --json` inspection and the exact idempotent `planar-ext ext
 propagate <plan> --system <slug> ...` retry preserving strategy, sync, scope,
 and verification flags. Successful targets remain linked and the retry skips
 them; do not prescribe a cross-target undo.
