@@ -356,6 +356,27 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   CHECK(legacy->column_text(5) == "resolved");
   CHECK(legacy->column_text(6) == "legacy");
   CHECK(legacy->column_int64(7) == 1);
+  REQUIRE(legacy->step().value() == planar::db::step_result::done);
+
+  auto legacy_tag = conn->prepare("select tag from annotation_tags where annotation_id = 1");
+  REQUIRE(legacy_tag.has_value());
+  REQUIRE(legacy_tag->step().value() == planar::db::step_result::row);
+  CHECK(legacy_tag->column_text(0) == "legacy-tag");
+  REQUIRE(legacy_tag->step().value() == planar::db::step_result::done);
+
+  REQUIRE(conn->execute(chain[33].down_sql_));
+  auto rolled_back_tag = conn->prepare("select tag from annotation_tags where annotation_id = 1");
+  REQUIRE(rolled_back_tag.has_value());
+  REQUIRE(rolled_back_tag->step().value() == planar::db::step_result::row);
+  CHECK(rolled_back_tag->column_text(0) == "legacy-tag");
+  REQUIRE(rolled_back_tag->step().value() == planar::db::step_result::done);
+
+  REQUIRE(planar::db::apply_all(*conn));
+  auto re_migrated_tag = conn->prepare("select tag from annotation_tags where annotation_id = 1");
+  REQUIRE(re_migrated_tag.has_value());
+  REQUIRE(re_migrated_tag->step().value() == planar::db::step_result::row);
+  CHECK(re_migrated_tag->column_text(0) == "legacy-tag");
+  REQUIRE(re_migrated_tag->step().value() == planar::db::step_result::done);
 
   auto identity = conn->prepare("select source_uuid from annotation_source_identity where singleton = 1");
   REQUIRE(identity.has_value());

@@ -45,8 +45,21 @@ select id, scope_kind, scope_id, 'file', anchor_path, anchor_line_start,
   slug, body, status, vendor, plan_id, task_id, created_at, updated_at
 from annotations;
 
+-- Rebuild the dependent junction before replacing its parent. Dropping
+-- annotations while annotation_tags still references it would cascade-delete
+-- every legacy tag with foreign_keys enabled. Copy after the replacement
+-- parent rows have been inserted so foreign-key enforcement remains active.
+create table annotation_tags_new (
+  annotation_id integer not null references annotations_new(id) on delete cascade,
+  tag           text    not null,
+  primary key (annotation_id, tag)
+);
+insert into annotation_tags_new select annotation_id, tag from annotation_tags;
+drop table annotation_tags;
+
 drop table annotations;
 alter table annotations_new rename to annotations;
+alter table annotation_tags_new rename to annotation_tags;
 
 create index ix_annotations_scope on annotations(scope_kind, scope_id);
 create index ix_annotations_anchor_path on annotations(anchor_path) where anchor_kind = 'file';
@@ -56,6 +69,7 @@ create index ix_annotations_target on annotations(target_kind, target_id) where 
 create index ix_annotations_status on annotations(status);
 create index ix_annotations_created_at on annotations(created_at);
 create unique index ux_annotations_slug on annotations(slug) where slug is not null;
+create index ix_annotation_tags_tag on annotation_tags(tag);
 
 create trigger annotations_search_insert after insert on annotations begin
   insert into search_annotations(rowid, title, body)

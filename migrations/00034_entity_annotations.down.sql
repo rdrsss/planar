@@ -44,8 +44,20 @@ insert into annotations_old select id, scope_kind, scope_id, anchor_path,
   anchor_line_start, anchor_line_end, anchor_commit_sha, anchor_text_hash,
   anchor_text, title, slug, body, status, vendor, plan_id, task_id,
   created_at, updated_at from annotations;
+-- Preserve tags across the reverse parent-table rebuild for the same reason
+-- as the forward migration: a live cascading child would otherwise erase
+-- its rows when annotations is dropped. Copy after the legacy parent rows
+-- exist so foreign-key enforcement remains active.
+create table annotation_tags_old (
+  annotation_id integer not null references annotations_old(id) on delete cascade,
+  tag           text    not null,
+  primary key (annotation_id, tag)
+);
+insert into annotation_tags_old select annotation_id, tag from annotation_tags;
+drop table annotation_tags;
 drop table annotations;
 alter table annotations_old rename to annotations;
+alter table annotation_tags_old rename to annotation_tags;
 create index ix_annotations_scope on annotations(scope_kind, scope_id);
 create index ix_annotations_anchor_path on annotations(anchor_path);
 create index ix_annotations_plan_id on annotations(plan_id) where plan_id is not null;
@@ -53,6 +65,7 @@ create index ix_annotations_task_id on annotations(task_id) where task_id is not
 create index ix_annotations_status on annotations(status);
 create index ix_annotations_created_at on annotations(created_at);
 create unique index ux_annotations_slug on annotations(slug) where slug is not null;
+create index ix_annotation_tags_tag on annotation_tags(tag);
 create trigger annotations_search_insert after insert on annotations begin
   insert into search_annotations(rowid, title, body) values (new.id, coalesce(new.title, ''), new.body);
 end;
