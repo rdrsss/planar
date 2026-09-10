@@ -437,24 +437,10 @@ auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler_result
         error_from_body(kind, std::format("ext create: read local {}:{}: {}", ref->kind, ref->id, local.error())));
   }
 
-  adapter::create_options const opts{.issue_type = flag_string(args, "--type"), .project = sys->default_project};
-
-  auto const payload = built->get()->instance().render(*local, opts);
-  if (!payload) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::generic_failure,
-                        std::format("ext create: render payload: {}", adapter::adapter_error_name(payload.error()))));
-  }
-
-  // THE POST HAPPENS HERE, BEFORE `--role` / `--sync` ARE VALIDATED AND
-  // BEFORE THE DUPLICATE CHECK. Both orderings are the oracle's and both are
-  // observable through the remote's request log; see ext.cppm.
-  auto const created = create_remote(**built, *sys, *payload);
-  if (!created) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::generic_failure, std::format("ext create: remote create: {}", created.error())));
-  }
-
+  // EVERY REFUSAL THAT CAN FIRE, FIRES BEFORE THE POST. This block used to
+  // sit AFTER `create_remote`, which made `--role bogus` and a plain repeat
+  // each mint a real ticket in the operator's Jira or GitHub and only then
+  // refuse — tasks 6312 / 6313, fixed under decision 1067. See ext.cppm.
   auto const role_text = flag_string(args, "--role").value_or("mirror");
   auto const sync_text = flag_string(args, "--sync").value_or("two-way");
 
@@ -476,6 +462,72 @@ auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler_result
         error_from_body(domain_error_kind::invalid_input, std::format("unsupported entity kind '{}' for ext create", ref->kind)));
   }
 
+  // THE IDEMPOTENCY GATE, keyed on `(entity_kind, entity_id, system_id,
+  // link_role)`. Each of the four fields is load-bearing, and so is each of
+  // the two exclusions:
+  //
+  //   * `link_role` is IN the key, and this verb's key is therefore narrower
+  //     than `load_existing_mirror`'s (`propagate-one`'s gate, which hard-
+  //     filters `link_role = 'mirror'`) but no wider. Dropping the field
+  //     would be adopting a NEW cardinality rule — one link per entity per
+  //     system — that nothing else in the tree enforces:
+  //     `load_existing_mirror`'s own contract says a `parent` or `child` row
+  //     for the same entity does not suppress propagation, and `planar link`
+  //     writes a `reference` on an entity+system pair with no gate at all.
+  //     A wide key here would refuse `--role reference` on an entity that
+  //     already has a mirror while `planar link --role reference` still
+  //     allowed it: one table, two verbs, two cardinality rules. Tasks
+  //     6312 / 6313 do not need that, and decision 1067's FIX set does not
+  //     authorise it.
+  //   * `external_id` is OUT of the key, even though the table's `unique
+  //     (entity_kind, entity_id, system_id, external_id)` includes it,
+  //     because a real remote mints a FRESH id per POST. The constraint
+  //     therefore catches a repeat only against a fixture that answers with
+  //     a fixed id; against live Jira it would have let the second link
+  //     INSERT. The post-insert `link_exists` branch below is a race
+  //     backstop, not this check.
+  //
+  // `list_filter` carries no `link_role` field, so the role is applied to
+  // the returned rows rather than to the SQL. That keeps the change inside
+  // this handler: `link::list`'s clause-and-bind order is transcribed from
+  // the Zig original and shared with `planar link list`, and the row set
+  // being narrowed here is one entity on one system — a handful of rows at
+  // most.
+  auto const existing = link_ns::list(**conn, link_ns::list_filter{
+                                                  .entity_kind = *entity_kind,
+                                                  .entity_id   = ref->id,
+                                                  .system_id   = sys->id,
+                                              });
+  if (!existing) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "ext create: read links: QueryFailed"));
+  }
+  auto const same_role = std::ranges::any_of(*existing, [&](const link_ns::ext_link& row) { return row.role == *role; });
+  if (same_role) {
+    // The message NAMES THE ROLE, because under this key the refusal is
+    // about one role and a different `--role` on the same entity and system
+    // is a legitimate next command.
+    return std::unexpected(error_from_body(domain_error_kind::slug_conflict,
+                                           std::format("{} external link for {}:{} on {} already exists",
+                                                       link_ns::link_role_to_text(*role), ref->kind, ref->id, slug)));
+  }
+
+  adapter::create_options const opts{.issue_type = flag_string(args, "--type"), .project = sys->default_project};
+
+  auto const payload = built->get()->instance().render(*local, opts);
+  if (!payload) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure,
+                        std::format("ext create: render payload: {}", adapter::adapter_error_name(payload.error()))));
+  }
+
+  // THE POST. Nothing below it can refuse except the insert itself, whose
+  // failure is the one orphan this verb cannot design away — see ext.cppm.
+  auto const created = create_remote(**built, *sys, *payload);
+  if (!created) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("ext create: remote create: {}", created.error())));
+  }
+
   auto const stored = link_ns::create(
       **conn, link_ns::create_args{
                   .entity_kind    = *entity_kind,
@@ -489,6 +541,23 @@ auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler_result
               });
   if (!stored) {
     if (stored.error() == link_ns::link_error::link_exists) {
+      // Still reachable, and NOT dead code. The gate above keys on
+      // `link_role`; this constraint keys on `external_id`. Two ways to
+      // arrive here with the gate satisfied:
+      //
+      //   * a CONCURRENT create won the race between the read and the
+      //     insert;
+      //   * the remote answered with an id it has ALREADY handed this
+      //     entity+system under a different role. A live Jira or GitHub
+      //     mints a fresh key per POST so this does not arise there, but
+      //     nothing in the adapter contract promises it, and the fixture
+      //     server in `ext_create_leaf.t.cpp` is exactly such a remote.
+      //
+      // Either way the ticket this call just made is now orphaned — the
+      // irreducible orphan documented in ext.cppm. The wording is the
+      // ROLE-LESS one on purpose: unlike the gate above, this refusal is not
+      // about the requested role, and naming it would misreport which row
+      // collided.
       return std::unexpected(
           error_from_body(domain_error_kind::slug_conflict,
                           std::format("external link for {}:{} on {} already exists", ref->kind, ref->id, slug)));
