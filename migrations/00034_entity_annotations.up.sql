@@ -150,6 +150,14 @@ create table annotation_source_identity (
 );
 insert into annotation_source_identity(singleton, source_uuid)
 values (1, lower(hex(randomblob(16))));
+create trigger annotation_source_identity_reject_update before update on annotation_source_identity
+begin
+  select raise(abort, 'annotation source identity is immutable');
+end;
+create trigger annotation_source_identity_reject_delete before delete on annotation_source_identity
+begin
+  select raise(abort, 'annotation source identity is immutable');
+end;
 
 create table annotation_operation_receipts (
   operation_uuid text primary key,

@@ -19,6 +19,8 @@ drop trigger if exists annotations_entity_target_update;
 drop trigger if exists annotations_search_insert;
 drop trigger if exists annotations_search_update;
 drop trigger if exists annotations_search_delete;
+drop trigger if exists annotation_source_identity_reject_update;
+drop trigger if exists annotation_source_identity_reject_delete;
 
 drop table annotation_operation_receipts;
 drop table annotation_source_identity;

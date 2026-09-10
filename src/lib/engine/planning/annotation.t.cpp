@@ -792,7 +792,9 @@ TEST_CASE("add_tag trims and absorbs duplicates", "[annotation]") {
   const auto      id   = add_simple(conn, "a.txt", "A");
 
   REQUIRE(ann::add_tag(conn, id, "  spaced  ").has_value());
+  REQUIRE(ann::show(conn, id)->revision == 2);
   REQUIRE(ann::add_tag(conn, id, "spaced").has_value());
+  CHECK(ann::show(conn, id)->revision == 2);
 
   auto tags = ann::list_tags(conn, id);
   REQUIRE(tags.has_value());
@@ -835,6 +837,7 @@ TEST_CASE("removing a tag that was never attached is a no-op", "[annotation]") {
   const auto      id   = add_simple(conn, "a.txt", "A");
 
   CHECK(ann::remove_tag(conn, id, "never-added").has_value());
+  CHECK(ann::show(conn, id)->revision == 1);
   auto tags = ann::list_tags(conn, id);
   REQUIRE(tags.has_value());
   CHECK(tags->empty());

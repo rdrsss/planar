@@ -944,6 +944,13 @@ auto add_tag(db::connection& conn, std::int64_t ann_id, std::string_view tag) ->
   if (auto s = stmt->step(); !s) {
     return std::unexpected(annotation_error::query_failed);
   }
+  auto changed = conn.prepare("select changes()");
+  if (!changed || !changed->step()) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  if (changed->column_int64(0) == 0) {
+    return {};
+  }
   auto revision = conn.prepare(
       "update annotations set revision = revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?");
   if (!revision || !revision->bind_int64(1, ann_id) || !revision->step()) {
@@ -969,6 +976,13 @@ auto remove_tag(db::connection& conn, std::int64_t ann_id, std::string_view tag)
   }
   if (auto s = stmt->step(); !s) {
     return std::unexpected(annotation_error::query_failed);
+  }
+  auto changed = conn.prepare("select changes()");
+  if (!changed || !changed->step()) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  if (changed->column_int64(0) == 0) {
+    return {};
   }
   auto revision = conn.prepare(
       "update annotations set revision = revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?");

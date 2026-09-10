@@ -382,7 +382,16 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(identity.has_value());
   REQUIRE(identity->step().value() == planar::db::step_result::row);
   CHECK(identity->column_text(0).size() == 32);
+  const auto source_uuid = identity->column_text(0);
   REQUIRE(identity->step().value() == planar::db::step_result::done);
+
+  REQUIRE_FALSE(conn->execute("update annotation_source_identity set source_uuid = 'replaced' where singleton = 1").has_value());
+  REQUIRE_FALSE(conn->execute("delete from annotation_source_identity where singleton = 1").has_value());
+  auto preserved_identity = conn->prepare("select source_uuid from annotation_source_identity where singleton = 1");
+  REQUIRE(preserved_identity.has_value());
+  REQUIRE(preserved_identity->step().value() == planar::db::step_result::row);
+  CHECK(preserved_identity->column_text(0) == source_uuid);
+  REQUIRE(preserved_identity->step().value() == planar::db::step_result::done);
 
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
   REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
