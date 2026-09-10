@@ -652,10 +652,10 @@ TEST_CASE("proposal_action_label: membership wins over existence", "[association
   CHECK(proposal_action_label(proposal{.assoc_exists = true, .member_exists = true}) == "already a member");
 }
 
-TEST_CASE("render_detect_json: the empty case is a DIFFERENT SHAPE, not an empty list", "[association][detect][render]") {
+TEST_CASE("render_detect_json is NDJSON, and empty means ZERO LINES", "[association][detect][render]") {
   // Non-empty renders newline-delimited objects -- NOT a JSON array. The
-  // payload as a whole is not parseable by one `JSON.parse`, and that is
-  // the oracle's behavior, reproduced rather than tidied (D2).
+  // payload as a whole is not parseable by one `JSON.parse`; each LINE is.
+  // That half is unchanged by task 6326.
   auto const two = proposals_from_signals(detect_signals{.parent_basename = "ws", .lang = "go"});
   REQUIRE(two.size() == 2); // guards the assertions below against an empty render
   auto const json = render_detect_json(two);
@@ -664,15 +664,23 @@ TEST_CASE("render_detect_json: the empty case is a DIFFERENT SHAPE, not an empty
                 R"("assoc_exists":false,"member_exists":false,"action":"will create"})"
                 "\n"
                 R"({"slug":"lang:go","kind":"lang","source":"auto:lang","reason":"from detected language ecosystem",)"
-                R"("assoc_exists":false,"member_exists":false,"action":"will create"})");
-  // No trailing newline -- the caller terminates. Same contract as this
-  // file's other JSON renderers.
-  CHECK_FALSE(json.ends_with("\n"));
+                R"("assoc_exists":false,"member_exists":false,"action":"will create"})"
+                "\n");
+  // EVERY line is terminated, the last one included, so the renderer owns
+  // its own terminators and the empty case can be genuinely empty. Task
+  // 6326 moved the trailing newline in here from the caller; before, the
+  // caller appended one unconditionally, which is why an empty render had
+  // to be a non-empty string.
+  CHECK(json.ends_with("\n"));
 
-  // The empty case mentions a `proposals` key that the non-empty form
-  // NEVER emits. Asserting merely "empty renders something short" would
-  // miss a regression to `[]` or to `""`.
-  CHECK(render_detect_json({}) == R"({"proposals":[]})");
+  // EMPTY IS ZERO BYTES (task 6326). It used to be `{"proposals":[]}` — a
+  // key the non-empty form NEVER emits, wrapping an array it never
+  // produces, so a consumer written against either shape broke on the
+  // other. The rule chosen for the whole shape-split family (6257 / 6270 /
+  // 6326) is NDJSON with zero lines for an empty result: it leaves the
+  // populated bytes above untouched, and it is what `links list --json`
+  // already did.
+  CHECK(render_detect_json({}).empty());
 }
 
 TEST_CASE("render_detect_text: asymmetric gutters, and the sentence for empty", "[association][detect][render]") {

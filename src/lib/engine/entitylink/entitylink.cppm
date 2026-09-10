@@ -347,9 +347,31 @@ export auto render_link_list_text(std::span<const directed_link> rows, entity_ki
 ///
 /// This renderer OWNS its terminators, unlike `planar.engine.planning`'s
 /// `render_list_json` (a fragment the caller terminates). The reason is the
-/// empty case: the oracle emits ZERO BYTES for an empty `--json` listing,
-/// and a fragment contract would force the caller to write a bare `"\n"`.
-/// Write the result verbatim; append nothing.
+/// empty case: an empty `--json` listing is ZERO BYTES, and a fragment
+/// contract would force the caller to write a bare `"\n"`. Write the result
+/// verbatim; append nothing.
+///
+/// TASK 6270, and why nothing changed here. That row was filed as "`links
+/// list --json` emits zero bytes for an entity that HAS an `entity_links`
+/// row", ranked above the malformed-JSON defects because it fails SILENTLY
+/// -- a consumer cannot tell "no links" from a broken command. The headline
+/// was already resolved by the time it was triaged: a populated listing
+/// emits one NDJSON object per row. What survived was the EMPTY case, which
+/// is this contract, and which is the same shape-split family as 6257
+/// (`scope suggest`) and 6326 (`assoc detect`).
+///
+/// The three verbs disagreed with each other AND with themselves, so one
+/// rule had to be chosen for all three. It is the one this renderer already
+/// implemented -- NDJSON with N lines for N results, N allowed to be zero
+/// -- because it leaves every POPULATED payload, the shape field consumers
+/// actually read, byte-identical, and because it was already the majority
+/// behaviour rather than a fourth invention. 6257 and 6326 moved onto it;
+/// this file is the reference, not the exception.
+///
+/// The silent-degradation argument still applies to the empty listing and
+/// is answered rather than dismissed: the EXIT CODE distinguishes the two,
+/// and the text form (`no links for <ref>`) says it in words for the
+/// operator who is reading rather than parsing.
 /// @param rows The merged listing.
 /// @return The complete stdout payload, empty for an empty listing.
 export auto render_link_list_json(std::span<const directed_link> rows) -> std::string;

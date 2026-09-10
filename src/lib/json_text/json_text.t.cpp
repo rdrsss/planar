@@ -130,3 +130,54 @@ TEST_CASE("json_text appends rather than clearing the destination") {
   out.push_back('}');
   REQUIRE(out == "{\"name\":\"bare\",\"kind\":\"shipped\"}");
 }
+
+// =========================================================================
+// Doubles (plan 1006, tasks 6072/6186/6261)
+// =========================================================================
+
+TEST_CASE("format_double_fixed never emits an exponent", "[json_text][double]") {
+  using planar::json_text::format_double_fixed;
+
+  // The 6261 witness. `std::to_chars`'s default -- which is what
+  // `json_dom::format_double` used -- writes `1.375e-06` here.
+  CHECK(format_double_fixed(1.375e-06) == "0.000001375");
+  CHECK(format_double_fixed(3.0e-7) == "0.0000003");
+  CHECK(format_double_fixed(-1.5e-10) == "-0.00000000015");
+  CHECK(format_double_fixed(1e-20) == "0." + std::string(19, '0') + "1");
+
+  // Large magnitudes take the other branch of the point shift.
+  CHECK(format_double_fixed(1e21) == "1" + std::string(21, '0'));
+  CHECK(format_double_fixed(1e300) == "1" + std::string(300, '0'));
+
+  // Shortest-round-trip, not a fixed precision: `1/3` keeps every digit it
+  // needs and `3.0` keeps no fractional part at all.
+  CHECK(format_double_fixed(1.0 / 3.0) == "0.3333333333333333");
+  CHECK(format_double_fixed(3.0) == "3");
+  CHECK(format_double_fixed(0.1) == "0.1");
+  CHECK(format_double_fixed(-0.0) == "-0");
+  CHECK(format_double_fixed(9007199254740992.0) == "9007199254740992");
+
+  // Non-finite returns Zig's bare spellings. NOT JSON -- see the
+  // declaration, and append_json_double below.
+  CHECK(format_double_fixed(std::numeric_limits<double>::infinity()) == "inf");
+  CHECK(format_double_fixed(-std::numeric_limits<double>::infinity()) == "-inf");
+  CHECK(format_double_fixed(std::numeric_limits<double>::quiet_NaN()) == "nan");
+}
+
+TEST_CASE("append_json_double emits null for every non-finite value", "[json_text][double]") {
+  using planar::json_text::json_double;
+
+  // The 6186 witness at the emitter. A bare `inf` is what `models evals
+  // --quality-floor inf` used to write into `gates`, and no JSON parser
+  // accepts it. `nan` was QUOTED there, which is valid JSON but a
+  // different TYPE from every other value the field can hold -- the
+  // asymmetry nobody would guess. Both are `null` now.
+  CHECK(json_double(std::numeric_limits<double>::infinity()) == "null");
+  CHECK(json_double(-std::numeric_limits<double>::infinity()) == "null");
+  CHECK(json_double(std::numeric_limits<double>::quiet_NaN()) == "null");
+  CHECK(json_double(-std::numeric_limits<double>::quiet_NaN()) == "null");
+
+  // Finite values are unaffected and carry format_double_fixed's spelling.
+  CHECK(json_double(0.5) == "0.5");
+  CHECK(json_double(1.375e-06) == "0.000001375");
+}

@@ -78,4 +78,71 @@ export auto append_json_string(std::string& out, std::string_view text) -> void;
 /// @return The quoted, escaped string, including both quote characters.
 export auto json_string(std::string_view text) -> std::string;
 
+// =========================================================================
+// Doubles (plan 1006, tasks 6072/6186/6261)
+// =========================================================================
+//
+// The tree carried THREE independent transcriptions of the same
+// shortest-round-trip-in-fixed-notation algorithm, plus one site that had
+// never implemented it at all:
+//
+//   src/cmd/planar/handlers/search.cpp   `format_zig_float`   (correct)
+//   src/lib/engine/execute/manifest.cpp  `format_double`      (correct)
+//   src/lib/json_dom/json_dom.cpp        `format_double`      (WRONG --
+//       plain `std::to_chars` default, so `1.375e-06` where every other
+//       site prints `0.000001375`; task 6261)
+//   src/lib/engine/models/render.cpp     `json_number`        (WRONG --
+//       `std::format("{}", v)`, scientific notation AND a bare `inf`;
+//       tasks 6186/6261)
+//
+// `search.cpp`'s copy carried a standing note that json_dom "has the same
+// divergence ... NOT reused here, and not fixed here either". That is the
+// exact D19 shape json_text was extracted for. There is one definition now.
+
+/// @brief Format `value` as shortest-round-trip digits in FIXED notation.
+///
+/// This is Zig's `{d}` / `std.fmt.format` spelling: the shortest decimal
+/// digit string that round-trips through `double`, with the decimal point
+/// placed by hand so an exponent NEVER appears. `1e300` is a `1` followed by
+/// three hundred zeros; `1.375e-06` is `0.000001375`.
+///
+/// Neither half is what one `std::to_chars` call gives. The default (general)
+/// format yields the shortest digits but switches to scientific for large and
+/// small magnitudes; `chars_format::fixed` never uses an exponent but is
+/// shortest only *for fixed notation*, so it spells out the full exact binary
+/// expansion (`1e300` becomes 300 digits of noise). So: take the shortest
+/// digits from the general form, then move the point.
+///
+/// NOT JSON-SAFE. Non-finite input returns Zig's bare spellings — `inf`,
+/// `-inf`, `nan` — none of which is legal JSON. That is deliberate: the Lua
+/// manifest surface in `engine/execute` renders these values outside a JSON
+/// document and its pins require exactly those three strings. Every JSON
+/// emitter must go through append_json_double() instead.
+/// @param value The value to render.
+/// @return The decimal text, with no exponent.
+export auto format_double_fixed(double value) -> std::string;
+
+/// @brief Append `value` to `out` as a JSON number, or `null` if non-finite.
+///
+/// The JSON-safe wrapper over format_double_fixed(). JSON has no spelling for
+/// an infinity or a NaN, so this emits `null` for both rather than a bare
+/// `inf` / `nan` token that no parser accepts.
+///
+/// A caller for whom `null` is the wrong answer must refuse the value BEFORE
+/// it reaches an emitter — which is what `models evals --quality-floor` now
+/// does (task 6186). This arm is the total-function safety net behind that
+/// refusal, not a substitute for it: an emitter that cannot represent its
+/// input must still produce a parseable document.
+/// @param out Destination buffer; appended to, never cleared.
+/// @param value The value to render.
+export auto append_json_double(std::string& out, double value) -> void;
+
+/// @brief Return `value` as a JSON number, or `null` if non-finite.
+///
+/// Convenience wrapper over append_json_double(), for the call sites that
+/// build a value in isolation rather than appending into a running buffer.
+/// @param value The value to render.
+/// @return The number's bytes, or the four bytes `null`.
+export auto json_double(double value) -> std::string;
+
 } // namespace planar::json_text

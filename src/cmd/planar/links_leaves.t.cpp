@@ -470,7 +470,13 @@ TEST_CASE("links list is an OR over BOTH endpoint columns and its filter EXCLUDE
   CHECK(none.out == "no links for task:8\n");
   auto const none_json = dispatch(fx, {"links", "list", "task:8", "--json"});
   CHECK(none_json.code == 0);
-  CHECK(none_json.out.empty()); // ZERO BYTES — not `[]`, not `\n`.
+  // ZERO BYTES — not `[]`, not `\n`. Task 6270 confirmed this as the RULE
+  // rather than the exception: `scope suggest --json` (6257) and `assoc
+  // detect --json` (6326) both emitted a `{"proposals":[]}` object when
+  // empty and bare NDJSON when populated, and both were moved onto THIS
+  // shape. See `render_link_list_json`'s declaration for why the rule went
+  // this way rather than wrapping all three in an envelope.
+  CHECK(none_json.out.empty());
   CHECK(none_json.err.empty());
 
   // THE SURVIVOR. Edge 5 (`task:4 -> task:5`) appeared in NONE of the five

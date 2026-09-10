@@ -18,21 +18,25 @@
 // looks obvious (widen `suggest` to a prefix match) is a behaviour change
 // this port is not entitled to make.
 //
-// ## `scope suggest --json` DISAGREES WITH ITSELF ON THE EMPTY CASE
+// ## `scope suggest --json` IS NDJSON, INCLUDING WHEN EMPTY (task 6257)
 //
 // Populated, it emits ONE JSON OBJECT PER LINE with no wrapper:
 //
 //     {"slug":"demo","association_id":1,"reason":"explicit member"}
 //     {"slug":"other","association_id":2,"reason":"explicit member"}
 //
-// Empty, it emits a single object under a key that appears on NO other
-// path:
+// Empty, it emits NOTHING — zero bytes, exit 0. That is the NDJSON
+// contract: N lines for N results, and N may be zero.
 //
-//     {"proposals":[]}
-//
-// Neither shape is derivable from the other and a consumer written against
-// either breaks on the other. Both are pinned; a port that "unified" them
-// would pass any assertion phrased as "valid JSON".
+// It did not used to. Empty emitted a single `{"proposals":[]}` object
+// under a key no populated invocation ever produced, so a consumer written
+// against either shape broke on the other — and the empty case is the one
+// people write their parser against first, because it is the easy fixture.
+// Decision 1067 retired D2's bug-for-bug rule for defects with real
+// consequences; task 6257 is one, and the rule chosen for the whole
+// shape-split family (6257 / 6270 / 6326) is NDJSON-with-zero-lines,
+// because it leaves the POPULATED shape — the one field consumers actually
+// read — byte-identical, and it is what `links list --json` already did.
 //
 // ## AN UNKNOWN `--scope` WRITES **TWO** STDERR LINES
 //
@@ -108,6 +112,11 @@
 //     evidence about this path.
 
 #include <catch2/catch_test_macros.hpp>
+// Glaze is this binary's JSON reader (`planar.json_text` is emit-only).
+// Task 6254's escaping assertions are paired with a real PARSE, because a
+// substring check passes on the malformed form too — which is how the
+// unescaped interpolation survived this file's other pins.
+#include <glaze/glaze.hpp>
 
 import std;
 import cli11;
@@ -233,11 +242,14 @@ TEST_CASE("an unbound cwd shows no scope and suggests nothing, in four shapes", 
   CHECK(stext.code == 0);
   CHECK(stext.out == "no scope suggestions for cwd\n");
 
-  // The self-disagreeing empty shape. NOT `[]`, not zero bytes, not a
-  // newline — a one-key object no populated invocation ever emits.
+  // Zero bytes, exit 0 — the NDJSON empty case (task 6257). NOT the old
+  // `{"proposals":[]}` object, and not `[]`: the populated form is a
+  // stream of bare objects and an empty stream has no lines in it.
   auto const sjson = dispatch(fx, {"scope", "suggest", "--json"});
   CHECK(sjson.code == 0);
-  CHECK(sjson.out == "{\"proposals\":[]}\n");
+  CHECK(sjson.out.empty());
+  // ...while the TEXT form (asserted above) still says so in words. That
+  // is where an operator, as opposed to a parser, learns it was empty.
 }
 
 TEST_CASE("show matches by PREFIX and suggest matches EXACTLY, from the same two cwds", "[cmd][scope][show][suggest][cwd]") {
@@ -275,7 +287,7 @@ TEST_CASE("show matches by PREFIX and suggest matches EXACTLY, from the same two
           R"({{"resolved_scopes":[{{"kind":"association","id":1,"slug":"demo","name":"demo","kind_label":"project"}}],"source":"cwd","cwd":"{}"}})"
           "\n",
           sub.string()));
-  CHECK(dispatch_at(fx, sub, {"scope", "suggest", "--json"}).out == "{\"proposals\":[]}\n");
+  CHECK(dispatch_at(fx, sub, {"scope", "suggest", "--json"}).out.empty()); // task 6257
 
   // OUTSIDE the project entirely: neither answers, which is what proves
   // the prefix match above was a match rather than an unconditional hit.
@@ -373,8 +385,9 @@ TEST_CASE("suggest lists EVERY membership, one JSON object per line", "[cmd][sco
   CHECK(text.code == 0);
   CHECK(text.out == "suggested scope based on cwd:\n  demo  (explicit member)\n  other  (explicit member)\n");
 
-  // NDJSON with NO wrapper — the populated shape the `{"proposals":[]}`
-  // empty case never produces.
+  // NDJSON with NO wrapper. UNCHANGED by task 6257 — the fix moved the
+  // empty case onto this shape, it did not move this case onto a wrapper.
+  // Pinning the populated bytes here is what proves that.
   auto const json = dispatch(fx, {"scope", "suggest", "--json"});
   CHECK(json.code == 0);
   CHECK(json.out == "{\"slug\":\"demo\",\"association_id\":1,\"reason\":\"explicit member\"}\n"
@@ -471,4 +484,62 @@ TEST_CASE("reason_from_source maps the four known sources and passes anything el
   // to `unknown`.
   CHECK(id::reason_from_source("auto:something-new") == "auto:something-new");
   CHECK(id::reason_from_source("") == "");
+}
+
+// =========================================================================
+// Escaping (task 6254)
+// =========================================================================
+
+TEST_CASE("scope show/suggest --json ESCAPE cwd, slug, name and reason", "[cmd][scope][json][escape]") {
+  // Task 6254. All three verbs' `--json` arms interpolated their strings
+  // through a raw `std::format`, so a quote or a backslash anywhere in a
+  // cwd or an association slug emitted a document no parser reads.
+  // Reproduced against build/debug/bin/planar under a scratch HOME +
+  // PLANAR_DB before the fix:
+  //
+  //   $ planar scope show --scope 'ev"il' --json
+  //   {"resolved_scopes":[{...,"slug":"ev"il","name":"ev"il",...}],...}
+  //   $ cd 'we"ird' && planar scope show --json
+  //   {...,"cwd":"/…/we"ird"}
+  //   $ planar scope suggest --json
+  //   {"slug":"ev"il","association_id":1,"reason":"explicit member"}
+  //
+  // A BACKSLASH is the byte that reaches this by accident rather than by
+  // malice: it is legal in a POSIX path component and it is every
+  // separator on Windows, where the body of 6254 notes `scope show --json`
+  // would be broken by default rather than as an edge case.
+  auto const fx = make_fixture("escape");
+  CHECK(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  bind_project(fx, R"(ev"il)", "project");
+
+  // 1. `slug` and `name` on the association arm of `json_row`, reached via
+  //    `--scope` so the specificity contest cannot pick the repo instead.
+  auto const flagged = dispatch(fx, {"scope", "show", "--scope", R"(ev"il)", "--json"});
+  CHECK(flagged.code == 0);
+  CHECK(flagged.out.find(R"("slug":"ev\"il","name":"ev\"il")") != std::string::npos);
+  CHECK(flagged.out.find(R"("slug":"ev"il")") == std::string::npos);
+
+  // 2. `cwd`, from a directory whose own name carries both bytes.
+  auto const      weird = fx.root / R"(we"ird\path)";
+  std::error_code ec;
+  std::filesystem::create_directories(weird, ec);
+  REQUIRE_FALSE(ec);
+  auto const shown = dispatch_at(fx, weird, {"scope", "show", "--json"});
+  CHECK(shown.code == 0);
+  CHECK(shown.out.find(R"(we\"ird\\path)") != std::string::npos);
+
+  // 3. `slug` and `reason` on the NDJSON suggest line.
+  auto const sugg = dispatch(fx, {"scope", "suggest", "--json"});
+  CHECK(sugg.code == 0);
+  CHECK(sugg.out == R"({"slug":"ev\"il","association_id":1,"reason":"explicit member"})"
+                    "\n");
+
+  // 4. The whole `scope show` envelope parses. A substring check would
+  //    have passed on the malformed form too, which is how this survived.
+  CHECK(glz::validate_json(flagged.out).ec == glz::error_code::none);
+  CHECK(glz::validate_json(shown.out).ec == glz::error_code::none);
+  CHECK(glz::validate_json(sugg.out).ec == glz::error_code::none);
+
+  // The TEXT forms are unchanged; they are not JSON and never escaped.
+  CHECK(dispatch(fx, {"scope", "suggest"}).out == "suggested scope based on cwd:\n  ev\"il  (explicit member)\n");
 }
