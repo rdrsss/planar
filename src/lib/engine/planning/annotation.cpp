@@ -533,7 +533,7 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<anno
                            "anchor_kind, anchor_path, anchor_line_start, anchor_line_end, "
                            "anchor_commit_sha, anchor_text_hash, anchor_text, "
                            "target_kind, target_id, title, slug, body, status, vendor, origin, plan_id, task_id"
-                           ") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id");
+                           ") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id");
   if (!stmt) {
     return std::unexpected(exec_failed("annotation.create", "PrepareFailed"));
   }

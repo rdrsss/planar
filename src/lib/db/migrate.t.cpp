@@ -119,7 +119,7 @@ TEST_CASE("apply_all migrates a fresh database to head", "[db][migrate]") {
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1)); // count == max version: no gaps
-  REQUIRE(stmt->column_int64(1) == 33);
+  REQUIRE(stmt->column_int64(1) == 34);
 }
 
 TEST_CASE("the embedded migration chain's versions are strictly monotonic", "[db][migrations]") {
@@ -240,7 +240,7 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 33);
+  REQUIRE(stmt->column_int64(1) == 34);
 }
 
 TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-for-row", "[db][migrate][parity]") {
@@ -257,7 +257,7 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
   // `insert into schema_migrations (version, description) values (...)`,
   // so the full (version, description) table below is not a derived
   // artifact of either runtime — it is the literal content of
-  // `migrations/*.up.sql`, transcribed by reading those 33 files directly
+  // `migrations/*.up.sql`, transcribed by reading those 34 files directly
   // (not paraphrased from this test's prior behaviour), which is also
   // exactly what the Zig oracle's own `init` used to embed and what this
   // test confirmed row-for-row before this retirement. Pinning it here
@@ -300,8 +300,9 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
       {31, "dispatch confirmation tokens"},
       {32, "optional comparable latency and cost metrics on terminal samples"},
       {33, "rename the blocks relationship to depends-on"},
+      {34, "annotations: entity anchors, revisions, source identity, and operation receipts"},
   };
-  REQUIRE(k_expected.size() == 33);
+  REQUIRE(k_expected.size() == 34);
 
   scratch_db_path cpp_scratch;
   auto            cpp_conn = planar::db::connection::open(cpp_scratch.path_.string());
@@ -324,7 +325,52 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
     REQUIRE(cpp_stmt->column_text(1) == k_expected[rows].second);
     ++rows;
   }
-  REQUIRE(rows == 33);
+  REQUIRE(rows == 34);
+}
+
+TEST_CASE("migration 34 preserves legacy file annotations and guards entity annotation rollback",
+          "[db][migrate][entity-annotations]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 34);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 33)));
+  REQUIRE(conn->execute(
+      "insert into annotations (scope_kind, anchor_path, anchor_text, title, body, status, vendor, created_at, updated_at) "
+      "values ('global', 'legacy.cpp', 'legacy text', 'legacy title', 'legacy body', 'resolved', 'legacy', "
+      "'2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z');"));
+  REQUIRE(conn->execute("insert into annotation_tags (annotation_id, tag) values (1, 'legacy-tag');"));
+
+  REQUIRE(planar::db::apply_all(*conn));
+  auto legacy = conn->prepare(
+      "select anchor_kind, anchor_path, anchor_text, title, body, status, vendor, revision from annotations where id = 1");
+  REQUIRE(legacy.has_value());
+  REQUIRE(legacy->step().value() == planar::db::step_result::row);
+  CHECK(legacy->column_text(0) == "file");
+  CHECK(legacy->column_text(1) == "legacy.cpp");
+  CHECK(legacy->column_text(2) == "legacy text");
+  CHECK(legacy->column_text(3) == "legacy title");
+  CHECK(legacy->column_text(4) == "legacy body");
+  CHECK(legacy->column_text(5) == "resolved");
+  CHECK(legacy->column_text(6) == "legacy");
+  CHECK(legacy->column_int64(7) == 1);
+
+  auto identity = conn->prepare("select source_uuid from annotation_source_identity where singleton = 1");
+  REQUIRE(identity.has_value());
+  REQUIRE(identity->step().value() == planar::db::step_result::row);
+  CHECK(identity->column_text(0).size() == 32);
+
+  REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
+  REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
+                        "values ('global', 'entity', null, 'plan', 1, 'durable note', 1);"));
+  REQUIRE_FALSE(conn->execute(chain[33].down_sql_).has_value());
+
+  auto version = conn->prepare("select max(version) from schema_migrations");
+  REQUIRE(version.has_value());
+  REQUIRE(version->step().value() == planar::db::step_result::row);
+  CHECK(version->column_int64(0) == 34);
 }
 
 TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db][migrate][roundtrip]") {
@@ -333,7 +379,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 33);
+  REQUIRE(chain.size() == 34);
 
   // Walk the chain forward one migration at a time. At each version,
   // capture the schema, roll that single migration back, re-apply it, and
@@ -366,7 +412,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 33);
+  REQUIRE(stmt->column_int64(1) == 34);
 }
 
 TEST_CASE("the down chain from head deletes schema_migrations rows in strict descending mirror order, "
@@ -378,7 +424,7 @@ TEST_CASE("the down chain from head deletes schema_migrations rows in strict des
   REQUIRE(planar::db::apply_all(*conn));
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 33);
+  REQUIRE(chain.size() == 34);
 
   // Roll back one migration at a time, from the tip down to the
   // foundation, asserting the mirror-order contract at every step: before
@@ -452,7 +498,7 @@ TEST_CASE("the embedded migration chain is CONTIGUOUS, not merely monotonic", "[
 
 TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[db][migrate][guard]") {
   auto const head = planar::db::embedded_max();
-  REQUIRE(head == 33);
+  REQUIRE(head == 34);
 
   SECTION("a fresh, never-initialized database is BEHIND at version 0") {
     scratch_db_path scratch;
