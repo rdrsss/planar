@@ -68,6 +68,18 @@ export enum class status : std::uint8_t {
   archived,  ///< The sole final retention state.
 };
 
+/// @brief The durable location form of an annotation.
+export enum class anchor_kind : std::uint8_t { file, entity };
+
+/// @brief The entity type accepted by an entity anchor.
+export enum class target_kind : std::uint8_t { plan, task };
+
+/// @brief An entity anchor's unambiguous target. File anchors have none.
+export struct entity_target {
+  target_kind  kind;
+  std::int64_t id;
+};
+
 /// @brief Where the annotation hangs in the source tree. Mirrors zig's
 /// `annotation.AnchorFields`. `line_start`/`line_end` unset means a
 /// file-level annotation (the columns are SQL NULL).
@@ -82,34 +94,41 @@ export struct anchor_fields {
 
 /// @brief A stored annotation. Mirrors zig's `annotation.Annotation`.
 export struct annotation {
-  std::int64_t                id{};                            ///< Row id.
-  scope_kind                  scope_kind_{scope_kind::global}; ///< Stored scope kind.
-  std::optional<std::int64_t> scope_id;                        ///< Stored scope id; unset for global.
-  anchor_fields               anchor;                          ///< Anchor descriptor.
-  std::optional<std::string>  title;                           ///< Title; nullable.
-  std::optional<std::string>  slug;                            ///< Slug; nullable and globally UNIQUE.
-  std::string                 body;                            ///< Body; NOT NULL, defaults to `""`.
-  status                      status_{status::active};         ///< Lifecycle status.
-  std::string                 vendor;                          ///< Vendor tag; NOT NULL, defaults to `""`.
-  std::optional<std::int64_t> plan_id;                         ///< Direct FK column (not an entity_link).
-  std::optional<std::int64_t> task_id;                         ///< Direct FK column (not an entity_link).
-  std::vector<std::string>    tags;                            ///< Tags, lexicographically ascending.
-  std::string                 created_at;                      ///< Creation timestamp.
-  std::string                 updated_at;                      ///< Last-modification timestamp.
+  std::int64_t                 id{};                            ///< Row id.
+  scope_kind                   scope_kind_{scope_kind::global}; ///< Stored scope kind.
+  std::optional<std::int64_t>  scope_id;                        ///< Stored scope id; unset for global.
+  anchor_fields                anchor;                          ///< Anchor descriptor.
+  anchor_kind                  anchor_kind_{anchor_kind::file}; ///< File or entity discriminator.
+  std::optional<entity_target> target;                          ///< Entity target; unset for file anchors.
+  std::optional<std::string>   title;                           ///< Title; nullable.
+  std::optional<std::string>   slug;                            ///< Slug; nullable and globally UNIQUE.
+  std::string                  body;                            ///< Body; NOT NULL, defaults to `""`.
+  status                       status_{status::active};         ///< Lifecycle status.
+  std::string                  vendor;                          ///< Vendor tag; NOT NULL, defaults to `""`.
+  std::optional<std::string>   origin;                          ///< Immutable-provenance surface, when supplied.
+  std::int64_t                 revision{1};                     ///< Monotonic annotation revision.
+  std::optional<std::int64_t>  plan_id;                         ///< Direct FK column (not an entity_link).
+  std::optional<std::int64_t>  task_id;                         ///< Direct FK column (not an entity_link).
+  std::vector<std::string>     tags;                            ///< Tags, lexicographically ascending.
+  std::string                  created_at;                      ///< Creation timestamp.
+  std::string                  updated_at;                      ///< Last-modification timestamp.
 };
 
 /// @brief Arguments to `create`. Mirrors zig's `annotation.CreateArgs`.
 export struct create_args {
-  anchor_fields                   anchor;                  ///< Required anchor descriptor.
-  std::optional<std::string_view> title;                   ///< Title, when supplied.
-  std::optional<std::string_view> slug;                    ///< Slug, when supplied.
-  std::string_view                body{""};                ///< Body; defaults to `""`.
-  status                          status_{status::active}; ///< Initial status.
-  std::string_view                vendor{""};              ///< Vendor tag; defaults to `""`.
-  std::optional<std::int64_t>     plan_id;                 ///< Owning plan, when supplied.
-  std::optional<std::int64_t>     task_id;                 ///< Owning task, when supplied.
-  std::vector<std::string>        tags;                    ///< Tags; trimmed and de-duplicated on write.
-  std::optional<std::string_view> scope;                   ///< Scope-ref slug; unset means global.
+  anchor_fields                   anchor;                          ///< Required anchor descriptor.
+  anchor_kind                     anchor_kind_{anchor_kind::file}; ///< Anchor discriminator.
+  std::optional<entity_target>    target;                          ///< Required exactly for entity anchors.
+  std::optional<std::string_view> title;                           ///< Title, when supplied.
+  std::optional<std::string_view> slug;                            ///< Slug, when supplied.
+  std::string_view                body{""};                        ///< Body; defaults to `""`.
+  status                          status_{status::active};         ///< Initial status.
+  std::string_view                vendor{""};                      ///< Vendor tag; defaults to `""`.
+  std::optional<std::string_view> origin;                          ///< Provenance surface for a new annotation.
+  std::optional<std::int64_t>     plan_id;                         ///< Owning plan, when supplied.
+  std::optional<std::int64_t>     task_id;                         ///< Owning task, when supplied.
+  std::vector<std::string>        tags;                            ///< Tags; trimmed and de-duplicated on write.
+  std::optional<std::string_view> scope;                           ///< Scope-ref slug; unset means global.
 };
 
 /// @brief Patch for `update`. Every field is independently optional; an
@@ -141,15 +160,21 @@ export struct list_filter {
 /// @brief Error surface for this module. Mirrors zig's
 /// `annotation.Error`.
 export enum class annotation_error : std::uint8_t {
-  not_found,          ///< No annotation with that id or slug.
-  unsupported_scope,  ///< The scope-ref form is not supported.
-  slug_not_found,     ///< The scope-ref slug did not resolve.
-  terminal_status,    ///< The requested lifecycle transition is refused.
-  slug_conflict,      ///< The slug is already taken (annotations.slug is UNIQUE).
-  empty_tag,          ///< A tag that is empty after trimming.
-  query_failed,       ///< An underlying SQL statement failed.
-  audit_write_failed, ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
+  not_found,             ///< No annotation with that id or slug.
+  unsupported_scope,     ///< The scope-ref form is not supported.
+  slug_not_found,        ///< The scope-ref slug did not resolve.
+  terminal_status,       ///< The requested lifecycle transition is refused.
+  slug_conflict,         ///< The slug is already taken (annotations.slug is UNIQUE).
+  empty_tag,             ///< A tag that is empty after trimming.
+  query_failed,          ///< An underlying SQL statement failed.
+  audit_write_failed,    ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
+  invalid_anchor,        ///< File/entity discriminator and fields disagree.
+  target_not_found,      ///< Entity target does not exist.
+  target_scope_mismatch, ///< Requested annotation scope is not the target's exact scope.
 };
+
+/// @brief Read the immutable UUID assigned to this database source.
+export auto source_uuid(db::connection& conn) -> std::expected<std::string, annotation_error>;
 
 /// @brief Parse a status from its stored text.
 /// @param s The status text.

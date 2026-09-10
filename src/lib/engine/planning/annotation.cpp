@@ -63,11 +63,12 @@ auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique;
 }
 
-constexpr std::string_view k_select_columns = "select id, scope_kind, scope_id, "
-                                              "anchor_path, anchor_line_start, anchor_line_end, "
-                                              "anchor_commit_sha, anchor_text_hash, anchor_text, "
-                                              "title, slug, body, status, vendor, plan_id, task_id, "
-                                              "created_at, updated_at from annotations";
+constexpr std::string_view k_select_columns =
+    "select id, scope_kind, scope_id, "
+    "anchor_kind, anchor_path, anchor_line_start, anchor_line_end, "
+    "anchor_commit_sha, anchor_text_hash, anchor_text, "
+    "target_kind, target_id, title, slug, body, status, vendor, origin, revision, plan_id, task_id, "
+    "created_at, updated_at from annotations";
 
 /// @brief Trim ASCII whitespace the way zig's `std.mem.trim(u8, raw,
 /// " \t\r\n")` does — exactly those four bytes, no locale involvement.
@@ -100,9 +101,27 @@ auto read_row(const db::statement& stmt) -> std::expected<annotation, annotation
   if (!kind.has_value()) {
     return std::unexpected(annotation_error::query_failed);
   }
-  const auto st = status_from_text(stmt.column_text(12));
+  const auto st = status_from_text(stmt.column_text(15));
   if (!st.has_value()) {
     return std::unexpected(annotation_error::query_failed);
+  }
+  const auto anchor_kind_text   = stmt.column_text(3);
+  const auto stored_anchor_kind = anchor_kind_text == "file"     ? std::optional{anchor_kind::file}
+                                  : anchor_kind_text == "entity" ? std::optional{anchor_kind::entity}
+                                                                 : std::nullopt;
+  if (!stored_anchor_kind.has_value()) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  std::optional<entity_target> target;
+  if (*stored_anchor_kind == anchor_kind::entity) {
+    const auto kind_text = stmt.column_text(10);
+    const auto kind      = kind_text == "plan"   ? std::optional{target_kind::plan}
+                           : kind_text == "task" ? std::optional{target_kind::task}
+                                                 : std::nullopt;
+    if (!kind.has_value() || stmt.is_null(11)) {
+      return std::unexpected(annotation_error::query_failed);
+    }
+    target = entity_target{.kind = *kind, .id = stmt.column_int64(11)};
   }
   return annotation{
       .id          = stmt.column_int64(0),
@@ -110,23 +129,27 @@ auto read_row(const db::statement& stmt) -> std::expected<annotation, annotation
       .scope_id    = opt_int(stmt, 2),
       .anchor =
           anchor_fields{
-              .path       = stmt.column_text(3),
-              .line_start = opt_int(stmt, 4),
-              .line_end   = opt_int(stmt, 5),
-              .commit_sha = stmt.column_text(6),
-              .text_hash  = stmt.column_text(7),
-              .text       = stmt.column_text(8),
+              .path       = stmt.is_null(4) ? std::string{} : stmt.column_text(4),
+              .line_start = opt_int(stmt, 5),
+              .line_end   = opt_int(stmt, 6),
+              .commit_sha = stmt.column_text(7),
+              .text_hash  = stmt.column_text(8),
+              .text       = stmt.column_text(9),
           },
-      .title      = opt_text(stmt, 9),
-      .slug       = opt_text(stmt, 10),
-      .body       = stmt.column_text(11),
-      .status_    = *st,
-      .vendor     = stmt.column_text(13),
-      .plan_id    = opt_int(stmt, 14),
-      .task_id    = opt_int(stmt, 15),
-      .tags       = {},
-      .created_at = stmt.column_text(16),
-      .updated_at = stmt.column_text(17),
+      .anchor_kind_ = *stored_anchor_kind,
+      .target       = std::move(target),
+      .title        = opt_text(stmt, 12),
+      .slug         = opt_text(stmt, 13),
+      .body         = stmt.column_text(14),
+      .status_      = *st,
+      .vendor       = stmt.column_text(16),
+      .origin       = opt_text(stmt, 17),
+      .revision     = stmt.column_int64(18),
+      .plan_id      = opt_int(stmt, 19),
+      .task_id      = opt_int(stmt, 20),
+      .tags         = {},
+      .created_at   = stmt.column_text(21),
+      .updated_at   = stmt.column_text(22),
   };
 }
 
@@ -183,10 +206,33 @@ auto resolve_scope(db::connection& conn, std::optional<std::string_view> slug)
   return std::unexpected(annotation_error::query_failed);
 }
 
+auto validate_entity_target(db::connection& conn, const entity_target& target,
+                            const std::pair<scope_kind, std::optional<std::int64_t>>& scope)
+    -> std::expected<void, annotation_error> {
+  const auto table = target.kind == target_kind::plan ? "plans" : "tasks";
+  auto       stmt  = conn.prepare(std::format("select scope_kind, scope_id from {} where id = ?", table));
+  if (!stmt || !stmt->bind_int64(1, target.id)) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  if (*step != db::step_result::row) {
+    return std::unexpected(annotation_error::target_not_found);
+  }
+  const auto actual_kind = scope_kind_from_text(stmt->column_text(0));
+  const auto actual_id   = opt_int(*stmt, 1);
+  if (!actual_kind.has_value() || *actual_kind != scope.first || actual_id != scope.second) {
+    return std::unexpected(annotation_error::target_scope_mismatch);
+  }
+  return {};
+}
+
 /// @brief The single `UPDATE annotations SET status = ?` both the three
 /// lifecycle verbs and `update(status = ...)` funnel through.
 auto write_status(db::connection& conn, std::int64_t id, status new_status) -> std::expected<void, annotation_error> {
-  auto stmt = conn.prepare("update annotations set status = ?, "
+  auto stmt = conn.prepare("update annotations set status = ?, revision = revision + 1, "
                            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?");
   if (!stmt) {
     return std::unexpected(annotation_error::query_failed);
@@ -404,6 +450,18 @@ auto is_terminal(status s) -> bool {
   return s == status::resolved || s == status::dismissed || s == status::archived;
 }
 
+auto source_uuid(db::connection& conn) -> std::expected<std::string, annotation_error> {
+  auto stmt = conn.prepare("select source_uuid from annotation_source_identity where singleton = 1");
+  if (!stmt) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  auto step = stmt->step();
+  if (!step || *step != db::step_result::row) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  return stmt->column_text(0);
+}
+
 // ---------------------------------------------------------------------------
 // CRUD
 // ---------------------------------------------------------------------------
@@ -458,13 +516,24 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<anno
   if (!scope) {
     return std::unexpected(scope.error());
   }
+  if (args.anchor_kind_ == anchor_kind::file && args.target.has_value()) {
+    return std::unexpected(annotation_error::invalid_anchor);
+  }
+  if (args.anchor_kind_ == anchor_kind::entity && (!args.target.has_value() || !args.anchor.path.empty())) {
+    return std::unexpected(annotation_error::invalid_anchor);
+  }
+  if (args.anchor_kind_ == anchor_kind::entity) {
+    if (auto target = validate_entity_target(conn, *args.target, *scope); !target) {
+      return std::unexpected(target.error());
+    }
+  }
 
   auto stmt = conn.prepare("insert into annotations ("
                            "scope_kind, scope_id, "
-                           "anchor_path, anchor_line_start, anchor_line_end, "
+                           "anchor_kind, anchor_path, anchor_line_start, anchor_line_end, "
                            "anchor_commit_sha, anchor_text_hash, anchor_text, "
-                           "title, slug, body, status, vendor, plan_id, task_id"
-                           ") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id");
+                           "target_kind, target_id, title, slug, body, status, vendor, origin, plan_id, task_id"
+                           ") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning id");
   if (!stmt) {
     return std::unexpected(exec_failed("annotation.create", "PrepareFailed"));
   }
@@ -476,14 +545,25 @@ auto create(db::connection& conn, const create_args& args) -> std::expected<anno
     return v.has_value() ? stmt->bind_int64(index, *v).has_value() : stmt->bind_null(index).has_value();
   };
 
-  const bool bound = stmt->bind_text(1, scope_kind_to_text(scope->first)).has_value() && bind_opt_int(2, scope->second) &&
-                     stmt->bind_text(3, args.anchor.path).has_value() && bind_opt_int(4, args.anchor.line_start) &&
-                     bind_opt_int(5, args.anchor.line_end) && stmt->bind_text(6, args.anchor.commit_sha).has_value() &&
-                     stmt->bind_text(7, args.anchor.text_hash).has_value() && stmt->bind_text(8, args.anchor.text).has_value() &&
-                     bind_opt_text(9, args.title) && bind_opt_text(10, args.slug) && stmt->bind_text(11, args.body).has_value() &&
-                     stmt->bind_text(12, status_to_text(args.status_)).has_value() &&
-                     stmt->bind_text(13, args.vendor).has_value() && bind_opt_int(14, args.plan_id) &&
-                     bind_opt_int(15, args.task_id);
+  const auto target_kind_text = args.target.has_value()
+                                    ? std::optional<std::string_view>{args.target->kind == target_kind::plan ? "plan" : "task"}
+                                    : std::nullopt;
+  const auto target_id        = args.target.has_value() ? std::optional{args.target->id} : std::nullopt;
+  const auto plan_id =
+      args.anchor_kind_ == anchor_kind::entity && args.target->kind == target_kind::plan ? target_id : args.plan_id;
+  const auto task_id =
+      args.anchor_kind_ == anchor_kind::entity && args.target->kind == target_kind::task ? target_id : args.task_id;
+  const bool bound =
+      stmt->bind_text(1, scope_kind_to_text(scope->first)).has_value() && bind_opt_int(2, scope->second) &&
+      stmt->bind_text(3, args.anchor_kind_ == anchor_kind::file ? "file" : "entity").has_value() &&
+      (args.anchor_kind_ == anchor_kind::file ? stmt->bind_text(4, args.anchor.path).has_value()
+                                              : stmt->bind_null(4).has_value()) &&
+      bind_opt_int(5, args.anchor.line_start) && bind_opt_int(6, args.anchor.line_end) &&
+      stmt->bind_text(7, args.anchor.commit_sha).has_value() && stmt->bind_text(8, args.anchor.text_hash).has_value() &&
+      stmt->bind_text(9, args.anchor.text).has_value() && bind_opt_text(10, target_kind_text) && bind_opt_int(11, target_id) &&
+      bind_opt_text(12, args.title) && bind_opt_text(13, args.slug) && stmt->bind_text(14, args.body).has_value() &&
+      stmt->bind_text(15, status_to_text(args.status_)).has_value() && stmt->bind_text(16, args.vendor).has_value() &&
+      bind_opt_text(17, args.origin) && bind_opt_int(18, plan_id) && bind_opt_int(19, task_id);
   if (!bound) {
     return std::unexpected(exec_failed("annotation.create", "BindFailed"));
   }
@@ -734,7 +814,7 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
   }
 
   sep();
-  sql += "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?";
+  sql += "revision = revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?";
 
   auto stmt = conn.prepare(sql);
   if (!stmt) {
@@ -864,6 +944,18 @@ auto add_tag(db::connection& conn, std::int64_t ann_id, std::string_view tag) ->
   if (auto s = stmt->step(); !s) {
     return std::unexpected(annotation_error::query_failed);
   }
+  auto changed = conn.prepare("select changes()");
+  if (!changed || !changed->step()) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  if (changed->column_int64(0) == 0) {
+    return {};
+  }
+  auto revision = conn.prepare(
+      "update annotations set revision = revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?");
+  if (!revision || !revision->bind_int64(1, ann_id) || !revision->step()) {
+    return std::unexpected(annotation_error::query_failed);
+  }
   return {};
 }
 
@@ -883,6 +975,18 @@ auto remove_tag(db::connection& conn, std::int64_t ann_id, std::string_view tag)
     return std::unexpected(annotation_error::query_failed);
   }
   if (auto s = stmt->step(); !s) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  auto changed = conn.prepare("select changes()");
+  if (!changed || !changed->step()) {
+    return std::unexpected(annotation_error::query_failed);
+  }
+  if (changed->column_int64(0) == 0) {
+    return {};
+  }
+  auto revision = conn.prepare(
+      "update annotations set revision = revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = ?");
+  if (!revision || !revision->bind_int64(1, ann_id) || !revision->step()) {
     return std::unexpected(annotation_error::query_failed);
   }
   return {};
@@ -966,7 +1070,7 @@ auto sweep_candidates(db::connection& conn, std::int64_t since_days, std::option
   // original's `bufPrintZ`; `since_days` is an integer, so no injection
   // surface exists. The scope id is bound.
   std::string sql = std::format("select id from annotations"
-                                " where status in ('resolved','dismissed')"
+                                " where anchor_kind = 'file' and status in ('resolved','dismissed')"
                                 "   and (julianday('now') - julianday(updated_at)) > {}",
                                 since_days);
   if (scope.has_value()) {

@@ -195,6 +195,42 @@ TEST_CASE("create stores an annotation with active status and a global scope by 
   CHECK(created->tags.empty());
 }
 
+TEST_CASE("entity annotations have an exact target scope and no file path", "[annotation][entity-anchor]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  const auto      plan = insert_plan(conn, "entity-target");
+
+  auto created = ann::create(conn, ann::create_args{
+                                       .anchor       = {},
+                                       .anchor_kind_ = ann::anchor_kind::entity,
+                                       .target       = ann::entity_target{.kind = ann::target_kind::plan, .id = plan},
+                                       .body         = "durable page note",
+                                   });
+  REQUIRE(created.has_value());
+  CHECK(created->anchor_kind_ == ann::anchor_kind::entity);
+  REQUIRE(created->target.has_value());
+  CHECK(created->target->kind == ann::target_kind::plan);
+  CHECK(created->target->id == plan);
+  CHECK(created->anchor.path.empty());
+  CHECK(created->revision == 1);
+  CHECK(scalar_int(conn, "select count(*) from annotations where anchor_kind = 'entity' and anchor_path is null") == 1);
+
+  auto wrong_scope = ann::create(conn, ann::create_args{
+                                           .anchor       = {},
+                                           .anchor_kind_ = ann::anchor_kind::entity,
+                                           .target       = ann::entity_target{.kind = ann::target_kind::plan, .id = plan},
+                                           .scope        = std::string_view{"missing-scope"},
+                                       });
+  CHECK_FALSE(wrong_scope.has_value());
+  CHECK(wrong_scope.error() == ann::annotation_error::slug_not_found);
+
+  exec(conn, "update annotations set status = 'resolved', updated_at = '2000-01-01T00:00:00.000Z' where id = 1");
+  auto swept = ann::sweep(conn, 1, std::nullopt);
+  REQUIRE(swept.has_value());
+  CHECK(*swept == 0);
+  CHECK(scalar_text(conn, "select status from annotations where id = 1") == "resolved");
+}
+
 TEST_CASE("create trims and de-duplicates tags", "[annotation][parity]") {
   // Oracle: `--tags "x, y ,x"` stored exactly ["x","y"].
   scratch_db_path scratch;
@@ -756,7 +792,9 @@ TEST_CASE("add_tag trims and absorbs duplicates", "[annotation]") {
   const auto      id   = add_simple(conn, "a.txt", "A");
 
   REQUIRE(ann::add_tag(conn, id, "  spaced  ").has_value());
+  REQUIRE(ann::show(conn, id)->revision == 2);
   REQUIRE(ann::add_tag(conn, id, "spaced").has_value());
+  CHECK(ann::show(conn, id)->revision == 2);
 
   auto tags = ann::list_tags(conn, id);
   REQUIRE(tags.has_value());
@@ -799,6 +837,7 @@ TEST_CASE("removing a tag that was never attached is a no-op", "[annotation]") {
   const auto      id   = add_simple(conn, "a.txt", "A");
 
   CHECK(ann::remove_tag(conn, id, "never-added").has_value());
+  CHECK(ann::show(conn, id)->revision == 1);
   auto tags = ann::list_tags(conn, id);
   REQUIRE(tags.has_value());
   CHECK(tags->empty());
