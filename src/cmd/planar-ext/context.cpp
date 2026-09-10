@@ -15,32 +15,6 @@ import planar.cmd.planar_ext.exit;
 
 namespace planar::cmd::ext {
 
-namespace {
-
-/// @brief The highest migration version this binary embeds.
-/// @return The embedded maximum schema version.
-auto embedded_max() -> std::uint32_t {
-  std::uint32_t highest = 0;
-  for (auto const& record : db::migrations()) {
-    highest = std::max(highest, record.version_);
-  }
-  return highest;
-}
-
-/// @brief The live schema version, with a missing/unreadable
-/// `schema_migrations` table mapping to 0.
-/// @param conn The open connection.
-/// @return The live version, or 0.
-auto live_version(db::connection& conn) -> std::uint32_t {
-  auto const stored = db::current_version(conn);
-  if (!stored) {
-    return 0;
-  }
-  return *stored;
-}
-
-} // namespace
-
 auto process_env() -> env_lookup {
   return [](std::string_view name) -> std::optional<std::string> {
     std::string const owned(name);
@@ -126,8 +100,21 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
 
   // NO apply_all. `planar init` owns migration; this binary consumes the
   // schema.
-  auto const stored  = live_version(*_db);
-  auto const maximum = embedded_max();
+  // The schema-version handshake. The comparison lives in
+  // `planar.db.migrate` (see `schema_compatibility`'s decision record —
+  // task 6058); this binary's POLICY (refuse both directions) and its
+  // wording stay here, pinned by context.t.cpp.
+  //
+  // A read failure degrades to version 0 rather than surfacing a SQLite
+  // diagnostic, which is what the local `live_version` helper this
+  // replaced did: "A missing `schema_migrations` table (fresh DB never
+  // touched by `planar init`) maps to version 0 — which trips
+  // SchemaVersionBehind below as long as the binary's embedded
+  // migrations include anything at all." The answer an operator needs
+  // there is "run `planar init`", not a driver error string.
+  auto const compat  = db::assert_schema_compatible(*_db);
+  auto const stored  = compat ? compat->live_ : std::uint32_t{0};
+  auto const maximum = db::embedded_max();
 
   if (stored < maximum) {
     err() << std::format("error: schema version {} in {} is older than this binary's minimum of {}; "
@@ -144,6 +131,18 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
                          stored, _db_path.string(), maximum, stored);
     _db.reset();
     return std::unexpected(error_from_body(domain_error_kind::schema_version_ahead, "SchemaVersionAhead"));
+  }
+
+  // Version matches, but the applied set has a hole in it: warn and
+  // proceed. See `schema_compatibility`'s decision record, answer (3) —
+  // a corrupt applied-set is precisely when an operator needs to be able
+  // to LOOK at state, and the missing structure announces itself at the
+  // first query that touches it.
+  if (compat && compat->verdict_ == db::schema_compatibility::gap) {
+    err() << std::format("warning: schema_migrations in {} reports version {} but its applied set has a hole; the "
+                         "database is missing structure this binary expects. Inspect `select version from "
+                         "schema_migrations order by version` before trusting any result\n",
+                         _db_path.string(), compat->live_);
   }
 
   return &*_db;

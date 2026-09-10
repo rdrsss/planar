@@ -353,3 +353,38 @@ TEST_CASE("json_dom's two parse entry points never disagree about validity", "[j
     CHECK(parse_json(input).has_value() == parse_json_reason(input).has_value());
   }
 }
+
+// =========================================================================
+// Float formatting (plan 1006, task 6261)
+// =========================================================================
+
+TEST_CASE("stringify writes floats in FIXED notation, never scientific", "[json_dom][float]") {
+  // Task 6261's witness. This module's `format_double` asked
+  // `std::to_chars` for its DEFAULT format, which switches to scientific
+  // for small and large magnitudes -- so a document that came IN as
+  // `0.000001375` went OUT as `1.375e-06`, and one that came in as
+  // `1.375e-06` stayed there. Both spellings round-trip; only one is what
+  // every other float site in this tree emits. It now routes through
+  // `planar.json_text`'s single definition.
+  auto roundtrip = [](std::string_view text) -> std::string {
+    auto parsed = parse_json(text);
+    REQUIRE(parsed.has_value());
+    return stringify_indent2(*parsed);
+  };
+
+  CHECK(roundtrip("1.375e-06") == "0.000001375");
+  CHECK(roundtrip("0.000001375") == "0.000001375");
+  CHECK(roundtrip("3.0e-7") == "0.0000003");
+  CHECK(roundtrip("-1.5e-10") == "-0.00000000015");
+  CHECK(roundtrip("1.0e21") == "1" + std::string(21, '0'));
+
+  // Values that were already plain are untouched, so the fix is not a
+  // blanket reformat.
+  CHECK(roundtrip("0.5") == "0.5");
+  CHECK(roundtrip("3.0") == "3");
+
+  // The `number_raw` arm is UNAFFECTED: a token that overflows to infinity
+  // is still re-emitted verbatim rather than going through any formatter.
+  CHECK(roundtrip("1e400") == "1e400");
+  CHECK(roundtrip("12345678901234567890") == "12345678901234567890");
+}

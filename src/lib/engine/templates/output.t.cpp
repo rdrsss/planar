@@ -284,21 +284,6 @@ TEST_CASE("validate_issues json is one envelope with an ESCAPED issues array", "
         "\n");
 }
 
-TEST_CASE("validate_issues json does NOT escape set/system/kind — reproduced defect",
-          "[templates][output][validate][oracle-defect]") {
-  // The zig handler builds this envelope with `{s}` inside a string
-  // literal rather than through `encodeJsonString`, so an identifier
-  // containing a double quote produces MALFORMED JSON. The `issues` array
-  // beside it IS escaped.
-  //
-  // Reproduced under D2 rather than corrected: escaping here would change
-  // the bytes a scripted caller parses, on a surface where the two trees
-  // must agree. Named as a defect, not asserted as a virtue.
-  std::vector<tpl::validation_issue> const issues = {{.json_path = "a", .message = "UnknownField"}};
-  auto const                               out    = tpl::validate_issues("bad\"set", "px", "k", "/p", issues, true);
-  CHECK(out.find(R"("set":"bad"set")") != std::string::npos);
-}
-
 TEST_CASE("validate_summary and not_found_message are BODIES with no prefix or terminator", "[templates][output][validate]") {
   // The cmd layer composes `error: ` and the newline. Oracle stderr was
   // `error: 6 issue(s) in probe/px/broken\n` and
@@ -307,4 +292,55 @@ TEST_CASE("validate_summary and not_found_message are BODIES with no prefix or t
   CHECK(tpl::not_found_message("default", "github-issues", "nosuch") == "template default/github-issues/nosuch not found");
   // Singular still says `issue(s)`.
   CHECK(tpl::validate_summary(1, "s", "y", "k") == "1 issue(s) in s/y/k");
+}
+
+// --- validate: identifier escaping (task 6213) -------------------------
+//
+// REPLACES a deleted `[oracle-defect]` pin, `"validate_issues json does NOT
+// escape set/system/kind — reproduced defect"`, which asserted
+// `out.find(R"("set":"bad"set")") != npos` — that is, it asserted the
+// MALFORMED bytes as the contract. Decision 1090 authorises deleting that
+// pin EXPLICITLY -- it is the one pin it calls out by name, precisely
+// because the assertion WAS the malformed bytes -- and it names this cost
+// explicitly: the pins it authorises cannot be re-derived, because the
+// reference that produced them is gone, so the new expectation comes from
+// judgment about what is correct. The judgment here is narrow — a `--json`
+// flag makes exactly one promise, and it is that the output parses.
+
+TEST_CASE("validate escapes set/system/kind, not just the issues array", "[templates][output][validate][escape]") {
+  // Task 6213. The `issues` array was escaped from the start; the three
+  // IDENTIFIERS beside it went through a raw `std::format` interpolation,
+  // so an operator-authored set name containing a double quote emitted a
+  // document no parser reads:
+  //
+  //   $ mkdir -p ~/.planar/templates/'ev"il'/jira && cp ... epic.json
+  //   $ planar templates validate 'ev"il' jira epic --json
+  //   {"ok":true,"set":"ev"il","system":"jira","kind":"epic","issues":[]}
+  //
+  // Reproduced against build/debug/bin/planar under a scratch HOME before
+  // the fix. A set name is a DIRECTORY NAME under `~/.planar/templates/`,
+  // so every byte POSIX allows in a path can reach here — the quote is the
+  // cheap witness, the backslash is the one that shows up by accident.
+  CHECK(tpl::validate_ok(R"(ev"il)", "jira", "epic", true) ==
+        R"({"ok":true,"set":"ev\"il","system":"jira","kind":"epic","issues":[]})"
+        "\n");
+  CHECK(tpl::validate_ok(R"(back\slash)", "sys", "kind", true) ==
+        R"({"ok":true,"set":"back\\slash","system":"sys","kind":"kind","issues":[]})"
+        "\n");
+  CHECK(tpl::validate_ok("s", R"(sy"s)", R"(ki"nd)", true) ==
+        R"({"ok":true,"set":"s","system":"sy\"s","kind":"ki\"nd","issues":[]})"
+        "\n");
+
+  // The failing envelope carries the same three identifiers and had the
+  // same defect. Its `issues` array was ALREADY escaped, which is what made
+  // the header's asymmetry easy to miss.
+  std::vector<tpl::validation_issue> const issues = {{.json_path = "a", .message = "UnknownField"}};
+  CHECK(tpl::validate_issues(R"(ev"il)", "jira", "epic", "/r/p.json", issues, true) ==
+        R"({"ok":false,"set":"ev\"il","system":"jira","kind":"epic",)"
+        R"("issues":[{"json_path":"a","message":"UnknownField"}]})"
+        "\n");
+
+  // The TEXT spellings are unchanged — they are not JSON and never were.
+  CHECK(tpl::validate_ok(R"(ev"il)", "jira", "epic", false) == R"(ok: ev"il/jira/epic)"
+                                                               "\n");
 }

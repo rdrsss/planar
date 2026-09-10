@@ -436,10 +436,13 @@ TEST_CASE("assoc detect: the empty answer is a different SHAPE in each arm", "[c
   auto const json = dispatch(fx, {"assoc", "detect", "--json"});
   CHECK(json.code == 0);
   CHECK(json.err.empty());
-  // NOT `[]`, and not zero bytes: an object naming a `proposals` key that
-  // the non-empty payload never emits. Reproduced from the oracle rather
-  // than normalized.
-  CHECK(json.out == "{\"proposals\":[]}\n");
+  // ZERO BYTES, exit 0 (task 6326). It used to be `{"proposals":[]}` — an
+  // object naming a key the non-empty payload never emits, so one flag had
+  // two shapes. `--json` here is NDJSON, and an empty NDJSON stream has no
+  // lines in it. Decision 1090 authorises the pin rewrite and states the
+  // NDJSON shape rule as a cross-verb contract; the rule is the one applied
+  // across 6257 / 6270 / 6326.
+  CHECK(json.out.empty());
 
   auto const text = dispatch(fx, {"assoc", "detect"});
   CHECK(text.code == 0);
@@ -454,4 +457,10 @@ TEST_CASE("assoc detect: the empty answer is a different SHAPE in each arm", "[c
   auto const nonempty = dispatch(fx, {"assoc", "detect", "--json"});
   CHECK(nonempty.code == 0);
   CHECK(nonempty.out.contains(R"("slug":"lang:go")"));
+  // The populated shape is UNCHANGED by 6326 — one object per line, each
+  // line terminated. Pinning the terminator here is what proves the empty
+  // case above went to zero bytes by dropping a LINE rather than by
+  // dropping the newline the caller used to append.
+  CHECK(nonempty.out.ends_with("\n"));
+  CHECK_FALSE(nonempty.out.starts_with("["));
 }

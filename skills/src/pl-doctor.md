@@ -19,7 +19,7 @@ Guided diagnose-then-reconcile flow for a degraded Planar installation. Companio
 
 ## Safety Contract
 
-Every destructive write (task cancel, task reset, handoff abandon, claim reconcile) requires **explicit operator confirmation** before executing. Recent in-flight tasks (< 48h) are never auto-touched. Reconcile only affects expired claims — never live, heartbeating ones. No `--no-scope-check` is used.
+Every destructive write (task cancel, task reset, handoff abandon, claim reconcile) requires **explicit operator confirmation** before executing. Recent in-flight tasks (< 48h) are never auto-touched. Reconcile only affects expired claims — never live, heartbeating ones. No cross-scope bypass is used — no `--no-scope-check` flag exists on the binary.
 
 ## Scope Warning: Global Health vs Scoped Lists
 

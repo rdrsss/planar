@@ -327,12 +327,14 @@ auto assoc_detect(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     (void)id::enrich_proposals(**conn, proposals, cwd_str);
   }
 
-  // Terminator contract: the text renderer carries its own trailing
-  // newline; the JSON one is a fragment this caller terminates. Note the
-  // JSON renderer's empty case is a different SHAPE, not just empty --
-  // see `render_detect_json`'s declaration.
+  // Terminator contract: BOTH renderers now carry their own trailing
+  // newlines and this caller adds none (task 6326). The JSON one used to be
+  // a fragment this caller terminated, which is precisely why its empty
+  // case could not be empty -- an unconditional `<< '\n'` here would have
+  // turned zero proposals into a lone newline. See `render_detect_json`'s
+  // declaration for the shape rule.
   if (cliapp::flag_bool(args, "--json")) {
-    ctx.out() << id::render_detect_json(proposals) << '\n';
+    ctx.out() << id::render_detect_json(proposals);
   } else {
     ctx.out() << id::render_detect_text(proposals);
   }

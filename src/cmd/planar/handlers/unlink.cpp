@@ -140,6 +140,12 @@ auto unlink(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// since task 6106 and separately described by a `node_spec` that
 /// `apply_surface` skipped. The two halves agreed field for field.
 ///
+/// This binary declares no `ext` or `sync` group. If you came here
+/// looking for one — `unlink` is the nearest surviving neighbor of where
+/// they used to live — see `planar.cmd.planar.surface`'s "THE `ext` AND
+/// `sync` FAMILIES" section (`src/cmd/planar/surface.cppm`) for where they
+/// went and why (task 6666).
+///
 /// `<link-id>` is a plain STRING positional with no validator,
 /// deliberately: the oracle declared `.kind = .string` and its handler
 /// converted with Zig's `parseInt`, so `unlink abc` reaches the

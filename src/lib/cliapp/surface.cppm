@@ -19,7 +19,7 @@
 /// hand-declared in `tree.cpp` caused the corresponding `node_spec` to be
 /// skipped entirely, so that spec's description, flags and positionals had
 /// no effect and nothing said so at the declaration site — the rule is
-/// what made a break-probe INERT during M11.0 (plan 1051, task 6616). Six
+/// what made a break-probe INERT during M11.0 (plan 1051, task 6616). Eight
 /// waves (M11.1 through M11.3f) folded every generated declaration into
 /// hand-written code beside its handler, and the last of them (task 6636)
 /// deleted the final call site along with `surface.cpp`'s last

@@ -56,7 +56,7 @@ For commands without `--scope`, use these command-specific target rules:
   the supported `--to` or `--from`/global-demotion form and do not add `--scope`.
 
 The cue is visibility, not authorization: it does not replace confirmation,
-relax scope guards, or permit `--no-scope-check`.
+relax scope guards, or bypass the cross-scope guard — no such CLI flag exists.
 Same-scope writes MUST NOT emit any cross-scope cue.
 
 ## Codex enforcement caveat

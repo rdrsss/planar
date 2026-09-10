@@ -505,19 +505,28 @@ export auto render_detect_text(std::span<const proposal> proposals) -> std::stri
 
 /// @brief Render the proposals as the `--json` payload.
 ///
-/// The shape is INCONSISTENT between the empty and non-empty cases and the
-/// port reproduces the oracle rather than tidying it:
-///   - non-empty renders newline-delimited JSON — one object per line, NOT
-///     a JSON array, so the payload as a whole is not parseable by a single
-///     `JSON.parse`;
-///   - empty renders the single object `{"proposals":[]}`, which is a
-///     different shape entirely and mentions a key the non-empty form never
-///     emits.
-/// Both were probed directly against the oracle. Normalizing either one
-/// would be a behavior change (D2), so it is left alone and recorded here.
+/// NEWLINE-DELIMITED JSON — one object per line, NOT a JSON array, so the
+/// payload as a whole is not parseable by a single `JSON.parse` even though
+/// each LINE is. An EMPTY result renders ZERO BYTES: N lines for N results,
+/// with N allowed to be zero.
+///
+/// The empty case used to render the single object `{"proposals":[]}`, a
+/// different shape entirely, naming a key the non-empty form never emits.
+/// Both shapes were probed directly against the oracle and reproduced under
+/// D2, whose reason to exist was the runtime differential lane. Decision
+/// 1090 authorises the change here, applying the reasoning 1067 applied to
+/// its own nine rows: once the oracle was deleted D2's rule no longer
+/// decides divergences with real consequences, and task 6326 is one: a consumer written against
+/// either shape broke on the other, and the empty case is the one people
+/// write their parser against first because it is the easy fixture. The
+/// same rule was applied to `scope suggest --json` (6257) and confirmed on
+/// `links list --json` (6270), which already behaved this way.
 /// @param proposals The enriched proposals, in `detect_proposals` order.
-/// @return The payload with NO trailing newline — a fragment the caller
-/// terminates, the same contract as this file's other JSON renderers.
+/// @return The payload, EVERY line terminated including the last — this
+/// renderer owns its terminators and the caller appends nothing. That is
+/// what lets the empty case be genuinely empty rather than a lone newline,
+/// and it is a DELIBERATE break from this file's other JSON renderers,
+/// which are still fragments their caller terminates.
 export auto render_detect_json(std::span<const proposal> proposals) -> std::string;
 
 } // namespace planar::engine::identity

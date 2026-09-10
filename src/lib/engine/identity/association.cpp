@@ -1098,22 +1098,28 @@ auto render_detect_text(std::span<const proposal> proposals) -> std::string {
 }
 
 auto render_detect_json(std::span<const proposal> proposals) -> std::string {
-  // ORACLE: the empty case is a DIFFERENT SHAPE from the non-empty one --
-  // one object with a `proposals` key, versus newline-delimited objects
-  // that never mention that key. Reproduced, not normalized (D2).
-  if (proposals.empty()) {
-    return R"({"proposals":[]})";
-  }
+  // NDJSON, INCLUDING WHEN EMPTY (task 6326). There is no empty branch: the
+  // loop runs zero times and the renderer returns zero bytes.
+  //
+  // It used to short-circuit to `{"proposals":[]}` -- one object naming a
+  // key the non-empty payload NEVER emits, wrapping an array it never
+  // produces. Two shapes behind one flag, reproduced from the oracle under
+  // D2. Decision 1090 authorises the change for this row -- 6326 is one of
+  // the eight it names -- on the reasoning 1067 applied to its own nine:
+  // with the oracle deleted, D2's bug-for-bug rule no longer decides
+  // divergences with real consequences. The family-wide rule (6257 / 6270 / 6326) is N lines
+  // for N results with N allowed to be zero. Every line is terminated here,
+  // the last one included, so the renderer owns its terminators and the
+  // caller appends nothing -- which is what makes an empty render genuinely
+  // empty rather than a lone newline.
   std::string out;
   for (std::size_t i = 0; i < proposals.size(); ++i) {
-    if (i > 0) {
-      out += "\n";
-    }
     const auto& p = proposals[i];
     out += std::format(R"({{"slug":{},"kind":"{}","source":"{}","reason":{},"assoc_exists":{},"member_exists":{},"action":{}}})",
                        json_string(p.slug), association_kind_to_text(p.kind), add_member_source_to_text(p.source),
                        json_string(p.reason), p.assoc_exists ? "true" : "false", p.member_exists ? "true" : "false",
                        json_string(proposal_action_label(p)));
+    out += "\n";
   }
   return out;
 }

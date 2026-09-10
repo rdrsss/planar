@@ -153,15 +153,30 @@ auto validate_ok(std::string_view set_name, std::string_view system, std::string
   if (!json) {
     return std::format("ok: {}/{}/{}\n", set_name, system, kind);
   }
-  // NOTE: the three identifiers are interpolated RAW, not JSON-escaped —
-  // zig's handler builds this envelope with `{s}` inside a literal rather
-  // than through `encodeJsonString`. A set name containing a double quote
-  // therefore emits malformed JSON on BOTH trees. Reproduced deliberately;
-  // escaping here would be a silent divergence on a surface a script
-  // parses. (The `issues` array below IS escaped, because zig escapes it.)
-  return std::format(R"({{"ok":true,"set":"{}","system":"{}","kind":"{}","issues":[]}})"
-                     "\n",
-                     set_name, system, kind);
+  // The three identifiers go through `append_json_string`, same as the
+  // `issues` array below (task 6213). They used to be interpolated RAW,
+  // because zig's handler built this envelope with `{s}` inside a literal
+  // rather than through `encodeJsonString` -- so a set name carrying a
+  // double quote emitted a document no parser reads:
+  //
+  //   {"ok":true,"set":"ev"il","system":"jira","kind":"epic","issues":[]}
+  //
+  // A set name is a DIRECTORY NAME under `~/.planar/templates/`, so every
+  // byte POSIX allows in a path reaches here. Reproducing that was correct
+  // while the oracle existed to be diffed against; decision 1090 authorises
+  // the fix for this row (6213 is one of the eight it names), on the
+  // reasoning 1067 applied to its own nine -- with the oracle deleted D2's
+  // rule no longer decides divergences with real consequences. Emitting invalid
+  // JSON from the one flag whose entire contract is "this parses" is one.
+  std::string out{R"({"ok":true,"set":)"};
+  append_json_string(out, set_name);
+  out += R"(,"system":)";
+  append_json_string(out, system);
+  out += R"(,"kind":)";
+  append_json_string(out, kind);
+  out += R"(,"issues":[]})"
+         "\n";
+  return out;
 }
 
 auto validate_issues(std::string_view set_name, std::string_view system, std::string_view kind, std::string_view path,
@@ -175,8 +190,17 @@ auto validate_issues(std::string_view set_name, std::string_view system, std::st
     return out;
   }
 
-  std::string out   = std::format(R"({{"ok":false,"set":"{}","system":"{}","kind":"{}","issues":[)", set_name, system, kind);
-  bool        first = true;
+  // Same three identifiers, same escaping (task 6213). The `issues` array
+  // below was always escaped, which is exactly what made the header's
+  // asymmetry easy to miss.
+  std::string out{R"({"ok":false,"set":)"};
+  append_json_string(out, set_name);
+  out += R"(,"system":)";
+  append_json_string(out, system);
+  out += R"(,"kind":)";
+  append_json_string(out, kind);
+  out += R"(,"issues":[)";
+  bool first = true;
   for (auto const& issue : issues) {
     if (!first) {
       out += ',';

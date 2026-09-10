@@ -400,15 +400,39 @@ TEST_CASE("decision add --scope refuses an unresolvable slug, having already sta
   CHECK(query_rows(conn, "select id, vendor from sessions order by id", 2) == "1|cli");
 }
 
-TEST_CASE("decision add --plan writes a DANGLING edge, unlike question add") {
-  auto const fx = make_fixture("add-plan");
+TEST_CASE("decision add --plan a NONEXISTENT plan refuses just as question add does") {
+  auto const fx = make_fixture("add-plan-missing");
   seed(fx);
 
+  // Task 6197. This invocation used to exit 0 and leave an `entity_links`
+  // row pointing at a plan that never existed. The operator-visible
+  // contract is now byte-identical to `question add --plan 9999`, which
+  // refused all along: exit 1, `error: decision add: NotFound`.
   auto const res = dispatch(fx, {"decision", "add", "planned", "--body", "b3", "--plan", "9999"});
+  CHECK(res.code == 1);
+
+  auto conn = open_db(fx);
+  // THE ASSERTION THAT MATTERS. The exit code alone could not have caught
+  // the original defect (it was 0), and neither could stdout. Only the
+  // absence of the edge row can.
+  CHECK(edge_rows(conn).empty());
+  CHECK(decision_rows(conn).empty());
+  CHECK(audit_rows(conn, "decision").empty());
+  CHECK(audit_rows(conn, "entity_link").empty());
+}
+
+TEST_CASE("decision add --plan an EXISTING plan writes the edge and one create audit row") {
+  auto const fx = make_fixture("add-plan");
+  seed(fx);
+  // Seeded THROUGH THE CLI, not by raw SQL, so the anchor is the same row
+  // an operator would have. It lands as plan id 1.
+  REQUIRE(dispatch(fx, {"plan", "create", "anchor", "--scope", "global"}).code == 0);
+
+  auto const res = dispatch(fx, {"decision", "add", "planned", "--body", "b3", "--plan", "1"});
   CHECK(res.code == 0);
 
   auto conn = open_db(fx);
-  CHECK(edge_rows(conn) == "1|plan|9999|derives-from");
+  CHECK(edge_rows(conn) == "1|plan|1|derives-from");
   // ONE audit row, verb `create`. The edge is unaudited — which makes it
   // consistent with `supersede`'s edge and inconsistent with `decision
   // link`'s, all three of which were captured separately.

@@ -1,6 +1,11 @@
-// @file surface_generator.t.cpp
+// @file unported_inventory.t.cpp
 // @brief The shape of the `k_unported` inventories each binary's
 // `surface.cppm` carries.
+//
+// Renamed from `surface_generator.t.cpp` (task 6672): `scripts/gen-cli-surface.py`
+// is deleted, so this file tests no generator. It never did test the
+// generator's OUTPUT SHAPE either, strictly speaking — see Provenance below
+// for the one case that did, and why it was deleted rather than repointed.
 //
 // ## Provenance
 //
@@ -28,6 +33,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 import std;
+import planar.cmd.planar_watch.surface;
 
 namespace {
 
@@ -48,15 +54,15 @@ auto source_text(const std::filesystem::path& path) -> std::optional<std::string
   return std::string{std::istreambuf_iterator<char>{input}, {}};
 }
 
-/// @brief Parse the generated `k_unported` initializer, ignoring comments.
+/// @brief Parse the hand-authored `k_unported` initializer, ignoring comments.
 ///
 /// Deliberately scans the whole initializer rather than one line at a time:
-/// the generator is allowed to coalesce entries onto a single line, and a
-/// line-oriented parser silently read only the first of them once.
-/// @param source The generated `surface.cpp` to parse.
+/// entries may be coalesced onto a single line, and a line-oriented parser
+/// silently read only the first of them once.
+/// @param source The hand-authored `surface.cppm` to parse.
 /// @return The declared paths in sorted order, or `std::nullopt` on a
 /// malformed or duplicate-bearing initializer.
-auto generated_unported(const std::filesystem::path& source) -> std::optional<std::vector<std::string>> {
+auto parsed_unported(const std::filesystem::path& source) -> std::optional<std::vector<std::string>> {
   auto text = source_text(source);
   if (!text) {
     return std::nullopt;
@@ -92,7 +98,7 @@ auto generated_unported(const std::filesystem::path& source) -> std::optional<st
 
 } // namespace
 
-TEST_CASE("the checked-in unported inventories carry only decision-980's deferred leaf", "[cmd][generator]") {
+TEST_CASE("the checked-in unported inventories carry only decision-980's deferred leaf", "[cmd][surface]") {
   // The live half of the same subject. `statediff.t.cpp` used to assert
   // these counts as one of the oracle-retirement gate's three conditions
   // (decision 963/982, condition 2: "the unported inventory contains only
@@ -104,25 +110,33 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   // finished `planar` by folding its last thirty-three entries out to the
   // handlers. Each moved the functions this parser actually cares about
   // (`surface_summaries` where it survives, `unported_paths` always) into
-  // a self-contained `surface.cppm`, in the exact same
-  // scanner-recognized array shape `generated_unported` parses.
+  // a self-contained `surface.cppm`.
+  //
+  // `planar` and `planar-agent` are still checked by TEXT SCAN, in the
+  // exact scanner-recognized array shape `parsed_unported` parses — both
+  // binaries live in a different CMake target, and pulling their whole
+  // module tree into this one to make a direct call is not worth it for a
+  // single-function check. `planar-watch` is checked by a DIRECT CALL to
+  // `planar::cmd::watch::unported_paths()` instead (task 6626): once task
+  // 6616 deleted the generator, nothing HAD to keep imitating its output
+  // shape — `unported_paths()` is self-contained (`import std;` only) and
+  // cheap to compile a second time into this test target (see
+  // `CMakeLists.txt`'s `target_sources` block for that binary-local edge).
   // Repointed rather than dropped: the property being pinned (nothing
   // beyond decision 980's deferred leaf remains declared-but-unported on
   // any binary) still holds and is still worth catching a regression on.
-  auto const planar_unported = generated_unported(target_source_root() / "src/cmd/planar/surface.cppm");
-  auto const agent_unported  = generated_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
-  auto const watch_unported  = generated_unported(target_source_root() / "src/cmd/planar-watch/surface.cppm");
+  auto const planar_unported = parsed_unported(target_source_root() / "src/cmd/planar/surface.cppm");
+  auto const agent_unported  = parsed_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
-  REQUIRE(watch_unported.has_value());
 
   CHECK(*planar_unported == std::vector<std::string>{"explore"});
   CHECK(agent_unported->empty());
-  CHECK(watch_unported->empty());
+  CHECK(planar::cmd::watch::unported_paths().empty());
 
-  // The generated empty inventory must retain a scanner-recognized named
-  // initializer while exposing no runtime elements. This protects the
-  // generator's zero-list branch from regressing to an ill-formed array.
+  // The empty inventory must retain a scanner-recognized named initializer
+  // while exposing no runtime elements. This protects the zero-list branch
+  // from regressing to an ill-formed array.
   auto const agent_surface = source_text(target_source_root() / "src/cmd/planar-agent/surface.cppm");
   REQUIRE(agent_surface.has_value());
   CHECK(agent_surface->contains("k_unported[] = {std::string_view{}}"));

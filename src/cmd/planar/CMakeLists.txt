@@ -619,9 +619,12 @@ if(TARGET planar_cmd_planar_tests)
   # exit code against expectations transcribed from the Zig oracle before
   # the M10 cutover deleted it (decisions 963/982), so only this target's
   # own output path is needed. PLANAR_TARGET_SOURCE_ROOT is separate and
-  # still live: surface_generator.t.cpp reads the CHECKED-IN
-  # `src/cmd/*/surface.cppm` files' `k_unported` inventories, and must
-  # resolve those against this checkout rather than the process's cwd.
+  # still live: unported_inventory.t.cpp reads the CHECKED-IN
+  # `src/cmd/planar/surface.cppm` and `src/cmd/planar-agent/surface.cppm`
+  # files' `k_unported` inventories by text scan, and must resolve those
+  # against this checkout rather than the process's cwd. (`planar-watch`'s
+  # is checked by a direct call instead — see the `target_sources` block
+  # below, task 6626.)
   # (`.cppm`, not `.cpp`: plan 1051 M11 folded every generated `node_spec`
   # table away and left each binary with a single-file `surface.cppm` --
   # `planar-watch` at task 6613, `planar-agent` at 6614, `planar` at 6636.
@@ -631,6 +634,22 @@ if(TARGET planar_cmd_planar_tests)
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\""
     "PLANAR_TARGET_SOURCE_ROOT=\"${CMAKE_SOURCE_DIR}\"")
   add_dependencies(planar_cmd_planar_tests planar_cmd_planar)
+
+  # Task 6626: `unported_inventory.t.cpp` checks `planar-watch`'s unported
+  # inventory with a DIRECT CALL to `planar::cmd::watch::unported_paths()`
+  # rather than the text scan the other two binaries still get, because
+  # that module is self-contained (`import std;` only — see its own
+  # header) and safe to compile a second time into this test-only target.
+  # This is a test-target-local edge, not a shipped `cmd_planar ->
+  # cmd_planar_watch` dependency: D15's walk does not police `_tests`
+  # targets (see `planar_binary()`'s own comment on why), and no
+  # `planar_cmd_planar_watch` library is linked — the source is recompiled
+  # standalone, the same way this test target already recompiles
+  # `planar_cmd_planar`'s own INTERFACE list instead of linking it.
+  target_sources(planar_cmd_planar_tests PUBLIC
+    FILE_SET CXX_MODULES
+    BASE_DIRS "${CMAKE_SOURCE_DIR}/src/cmd/planar-watch"
+    FILES "${CMAKE_SOURCE_DIR}/src/cmd/planar-watch/surface.cppm")
 endif()
 
 # Each binary builds its own CLI::App tree directly (plan 996, task 6123),

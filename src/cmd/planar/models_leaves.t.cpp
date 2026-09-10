@@ -99,6 +99,11 @@
 //                                  ^ `--vendor` alone selects the branch.
 
 #include <catch2/catch_test_macros.hpp>
+// Glaze is this binary's JSON READER (see this target's CMakeLists note:
+// `planar.json_text` is emit-only and stays that way). Task 6186 asks the
+// `--json` payload to be asserted as PARSEABLE rather than by substring,
+// which needs a parser rather than an emitter.
+#include <glaze/glaze.hpp>
 
 import std;
 import cli11;
@@ -895,22 +900,57 @@ TEST_CASE("models evals --quality-floor honours Zig's float contract", "[cmd][mo
   // Hex float literals with a `p` exponent.
   CHECK(floor_of("0x1p-1") == "0.5");
   CHECK(floor_of("0X1P-1") == "0.5");
-  // Non-finite values are ACCEPTED and echoed, and the two are rendered
-  // ASYMMETRICALLY — bare `inf`, quoted `"nan"`. Neither is valid JSON;
-  // both are the oracle's. This was invisible until the leaf was wired,
-  // because no engine caller could supply a non-finite gate.
-  CHECK(floor_of("inf") == "inf");
-  CHECK(floor_of("INF") == "inf");
-  CHECK(floor_of("Infinity") == "inf");
-  CHECK(floor_of("-inf") == "-inf");
-  CHECK(floor_of("nan") == R"("nan")");
-  CHECK(floor_of("NaN") == R"("nan")");
-  // The sign is DROPPED on NaN — `-nan` renders identically.
-  CHECK(floor_of("-nan") == R"("nan")");
+  // NON-FINITE VALUES ARE REFUSED (task 6186; decision 1090 authorises the
+  // rewrite of this pin -- 6186 is one of the eight rows it names, and it
+  // is NOT among 1067's nine). The oracle ACCEPTED all four and echoed them
+  // ASYMMETRICALLY — bare `inf` / `-inf`, quoted `"nan"` with the sign
+  // dropped. The quoted arm is valid JSON of the wrong TYPE; the bare arm
+  // is not JSON at all, so `models evals --json`, whose entire purpose is
+  // machine-readable routing advice, handed its consumer a parse error.
+  //
+  // Refusal rather than encoding, because neither value is a meaningful
+  // gate: at `inf` every candidate is below the floor and nothing can ever
+  // be recommended, and at `nan` every comparison is false so the gate
+  // silently never fires. Both are answers the operator would read as
+  // "your cohort is empty" rather than "your floor is nonsense". The
+  // wording is the parse refusal this flag already had, reused verbatim
+  // rather than invented — no new pinned byte.
+  CHECK(floor_of("inf") == "REFUSED:error: invalid --quality-floor 'inf'\n");
+  CHECK(floor_of("INF") == "REFUSED:error: invalid --quality-floor 'INF'\n");
+  CHECK(floor_of("Infinity") == "REFUSED:error: invalid --quality-floor 'Infinity'\n");
+  CHECK(floor_of("-inf") == "REFUSED:error: invalid --quality-floor '-inf'\n");
+  CHECK(floor_of("nan") == "REFUSED:error: invalid --quality-floor 'nan'\n");
+  CHECK(floor_of("NaN") == "REFUSED:error: invalid --quality-floor 'NaN'\n");
+  CHECK(floor_of("-nan") == "REFUSED:error: invalid --quality-floor '-nan'\n");
   // Trailing garbage, a comma decimal, and a leading space are all refused.
   CHECK(floor_of("1,5").starts_with("REFUSED:"));
   CHECK(floor_of("0.5abc").starts_with("REFUSED:"));
   CHECK(floor_of(" 0.5").starts_with("REFUSED:"));
+}
+
+TEST_CASE("models evals --json emits a PARSEABLE document for every accepted gate", "[cmd][models][json]") {
+  // Task 6186 asked for this shape explicitly: assert the payload PARSES,
+  // not that it contains an expected substring. The old bare-`inf` output
+  // would have satisfied any substring check.
+  auto const fx = make_fixture("floatparse");
+  seed_cohort(fx);
+
+  for (auto const& raw : {"0.5", "0", "1", "-0.5", "0x1p-1", "1e-1", "0.000001375"}) {
+    INFO("--quality-floor " << raw);
+    auto const outcome = evals(fx, {"--quality-floor", std::string{raw}});
+    REQUIRE(outcome.code == 0);
+    // Glaze is this binary's JSON READER (see CMakeLists' note that
+    // `planar.json_text` is emit-only); `validate_json` is a parse, not a
+    // substring probe.
+    CHECK(glz::validate_json(outcome.out).ec == glz::error_code::none);
+  }
+
+  // And the float that used to arrive in scientific notation now arrives
+  // fixed, through the same shared formatter as every other float site.
+  auto const small = evals(fx, {"--quality-floor", "0.000001375"});
+  REQUIRE(small.code == 0);
+  CHECK(small.out.find(R"("quality_floor":0.000001375)") != std::string::npos);
+  CHECK(small.out.find("e-06") == std::string::npos);
 }
 
 TEST_CASE("models evals --min-samples is UNSIGNED", "[cmd][models]") {

@@ -937,7 +937,7 @@ planar task doing 142
 planar task done 142
 ```
 
-No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. The cross-scope guard then confirms that task 142 actually belongs to `project:repo-a`; if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, the guard refuses with a multi-line error naming both scopes and pointing at `--scope` / `--no-scope-check` as remediation paths.
+No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. The cross-scope guard then confirms that task 142 actually belongs to `project:repo-a`; if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, the guard refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass.
 
 This is the dominant pattern. Every coder, ingestor, and planner skill that runs against a known repo cwd works without scope plumbing.
 
@@ -987,7 +987,7 @@ From a workspace root, it lists the org plus every member project. From outside 
 
 If the orchestrator runs from a directory that is not inside any registered project, the resolver refuses with `AmbiguousScopeError` (writes) or `OutsideRegisteredScopeError` (reads). For cross-repo planners, pass `--scope <slug>` explicitly — it makes intent legible in the command history. The active scope stack was removed in plan 153 M5, so there is no implicit fallback that could mask the cwd mismatch.
 
-The `--no-scope-check` escape hatch exists for legacy callers that cannot be updated immediately; it converts a cross-scope-guard refusal into a one-line stderr warning and proceeds. Do not use it in new orchestrator code. See [`./cli-reference.md#cross-scope-guard`](cli-reference.md#cross-scope-guard) for the full guarded/unguarded matrix and the exact refusal message format.
+There is no flag that downgrades a cross-scope-guard refusal to a warning — `--no-scope-check` does not exist on the current binary (`planar schema` declares it on no command; passing it fails at parse time with exit 2, `error: <cmd>: The following argument was not expected: --no-scope-check`). The only remedies are `--scope <slug>` or running from the entity's owning repo. See [`./cli-reference.md#cross-scope-guard`](cli-reference.md#cross-scope-guard) for the full guarded/unguarded matrix and the exact refusal message format.
 
 ---
 

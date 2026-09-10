@@ -387,21 +387,40 @@ TEST_CASE("scenario add --related a NONEXISTENT artifact refuses at exit 1 with 
   CHECK(audit_rows(conn, "scenario").empty());
 }
 
-TEST_CASE("scenario add --plan a NONEXISTENT plan SUCCEEDS with a dangling edge") {
+TEST_CASE("scenario add --plan a NONEXISTENT plan refuses and writes NOTHING") {
   auto const fx = make_fixture("add-plan-dangling");
   seed(fx);
 
-  // The opposite answer to `--related` on the SAME verb, and the opposite
-  // of `question add --plan 9999`, which refuses. Checked at the endpoint
-  // rather than inherited from either sibling.
+  // Task 6197. This used to be the OPPOSITE answer to `--related` on the
+  // same verb: `--related 77` refused (a real FK on `related_artifact_id`)
+  // while `--plan 4242` exited 0 and left an `entity_links` edge behind,
+  // because `entity_links` has no FK to its target table. One verb, two
+  // reference flags, two answers. Both endpoints now refuse.
   auto const res = dispatch(fx, {"scenario", "add", "P-only", "--plan", "4242", "--scope", "global"});
+  CHECK(res.code == 1);
+
+  auto conn = open_db(fx);
+  // THE ASSERTION THAT MATTERS: the original defect exited 0, so only the
+  // absence of the edge row distinguishes the fix from the bug.
+  CHECK(edge_rows(conn).empty());
+  CHECK(scenario_rows(conn).empty());
+  CHECK(query_rows(conn, "select count(*) from plans", 1) == "0");
+  CHECK(audit_rows(conn, "scenario").empty());
+  CHECK(audit_rows(conn, "entity_link").empty());
+}
+
+TEST_CASE("scenario add --plan an EXISTING plan writes the test_scenario edge") {
+  auto const fx = make_fixture("add-plan-ok");
+  seed(fx);
+  // Seeded THROUGH THE CLI so the anchor is the row an operator would have.
+  REQUIRE(dispatch(fx, {"plan", "create", "anchor", "--scope", "global"}).code == 0);
+
+  auto const res = dispatch(fx, {"scenario", "add", "P-only", "--plan", "1", "--scope", "global"});
   CHECK(res.code == 0);
 
   auto conn = open_db(fx);
-  // The edge is REALLY there, its `from_kind` is `test_scenario`, and the
-  // plan it points at does not exist.
-  CHECK(edge_rows(conn) == "1|plan|4242|derives-from");
-  CHECK(query_rows(conn, "select count(*) from plans", 1) == "0");
+  // The edge is REALLY there and its `from_kind` is `test_scenario`.
+  CHECK(edge_rows(conn) == "1|plan|1|derives-from");
   // Exactly ONE audit row and its verb is `create` — the edge gets none.
   CHECK(audit_rows(conn, "scenario") == "create|1|create scenario 'P-only'|<NULL>|<NULL>");
   CHECK(audit_rows(conn, "entity_link").empty());

@@ -230,6 +230,79 @@ TEST_CASE("search renders rank in PLAIN DECIMAL, never scientific notation", "[c
   CHECK(json.out.ends_with("]\n"));
 }
 
+TEST_CASE("search renders a rank ABOVE ONE in plain decimal too", "[cmd][search][json]") {
+  // THE ASSERTION THE CASE ABOVE COULD NOT MAKE, and the one that would
+  // have caught a live defect (task 6261).
+  //
+  // The deleted `format_zig_float` asked `std::to_chars` for
+  // `chars_format::scientific` and then parsed the exponent back with
+  // `std::from_chars`. For a NEGATIVE exponent that round-trips (`e-06` ->
+  // `-6`) and the fixed-notation shift ran. For a NON-NEGATIVE one
+  // `to_chars` writes `e+01`, and `from_chars` REJECTS a leading `+`
+  // rather than skipping it -- so the parse failed, the function fell
+  // through its own `return std::string{sci}` guard, and RAW SCIENTIFIC
+  // reached stdout. Measured on the pre-consolidation installed binary:
+  //
+  //     "rank":1.4048523469614144e+01     "rank":6.588114215686955e+00
+  //
+  // Every fixture above searches a term present in EVERY seeded row, where
+  // IDF collapses and rank lands near zero with a negative exponent -- the
+  // one range the broken path handled correctly. So `find("e-") == npos`
+  // passed while the common case, `rank` = `-bm25()` >= 1, was broken.
+  // This case seeds a RARE term instead: present in one row out of many,
+  // so IDF is large and the rank clears 1.
+  auto const fx = make_fixture("rankbig");
+  seed_searchable(fx);
+
+  // A CORPUS, then one short row carrying a term no other row has.
+  //
+  // Both halves are load-bearing, and the first is not obvious. Each entity
+  // KIND has its own FTS5 table, so the `N` in bm25's IDF term is the
+  // number of rows of THAT KIND -- not the number of rows seeded overall.
+  // FTS5 computes `idf = log((N - n + 0.5) / (n + 0.5))` and CLAMPS it to
+  // `1e-6` when it comes out <= 0, which is what happens for n = 1 against
+  // a handful of rows: with two tasks the idf is `log(1) = 0`, the clamp
+  // fires, and the rank arrives as 1.49e-06 -- back in the negative-exponent
+  // range this case exists to escape. Twenty filler tasks put N well above
+  // n so the idf is real, and the short probe row makes bm25's length
+  // normalisation favour it on top of that.
+  for (int i = 0; i < 20; ++i) {
+    CHECK(dispatch(fx, {"task", "add", std::format("Filler task {}", i), "--plan", "1", "--body",
+                        "filler body alpha beta gamma delta epsilon zeta eta theta iota kappa lambda", "--json"})
+              .code == 0);
+  }
+  CHECK(dispatch(fx, {"task", "add", "Quokka", "--plan", "1", "--body", "quokka", "--json"}).code == 0);
+
+  auto const json = dispatch(fx, {"search", "quokka", "--json"});
+  CHECK(json.code == 0);
+
+  // THE VACUITY GUARD. An empty hit list would satisfy every absence
+  // assertion below.
+  REQUIRE(json.out.find("\"rank\":") != std::string::npos);
+
+  // The rank really is at or above 1, so the `e+` assertion is about a
+  // value that WOULD have taken the broken path. Without this the case
+  // would silently degrade into a second copy of the one above.
+  auto const at   = json.out.find("\"rank\":");
+  auto const from = at + std::string_view{"\"rank\":"}.size();
+  auto const to   = json.out.find_first_of(",}", from);
+  REQUIRE(to != std::string::npos);
+  auto const rank_text = json.out.substr(from, to - from);
+  INFO("rank rendered as: " << rank_text);
+  CHECK(std::stod(rank_text) >= 1.0);
+
+  // NEITHER exponent form, in either case. `e+` is the one the old pin
+  // could not see; `e-` is kept so a formatter that fixes one by breaking
+  // the other cannot pass.
+  CHECK(json.out.find("e+") == std::string::npos);
+  CHECK(json.out.find("e-") == std::string::npos);
+  CHECK(json.out.find("E+") == std::string::npos);
+
+  // The rendered digits are plain decimal, so the text a consumer parses
+  // is the text a human reads.
+  CHECK(rank_text.find_first_not_of("0123456789.") == std::string::npos);
+}
+
 TEST_CASE("search --scope \"\" searches everything while --status \"\" matches nothing", "[cmd][search][empty-flag]") {
   auto const fx = make_fixture("emptyflag");
   seed_searchable(fx);

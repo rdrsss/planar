@@ -17,6 +17,25 @@
 # This is a fast local gate, not the durable pin. The durable pins are the
 # catalog strings in src/cmd/*/parity.t.cpp, which ctest checks. Both must
 # pass; this one just fails in seconds instead of minutes.
+#
+# What this actually catches (task 6652, reviewer caveat on task 6633):
+# SIBLING ORDER IS MACHINE-CHECKED, not a hand-carried risk. Three
+# independent probes during M11 (a sibling swap, an anchor deletion, a
+# flag-default downgrade) were each caught here, via the `schema` digest
+# and the per-node `--help` hashes -- both render in declaration order, so
+# a reordered sibling changes the digest. Do not re-propagate the earlier
+# "sibling order is the one thing a passing gate might miss" claim; it was
+# checked against this gate and found false. (The one caveat that DID apply
+# -- this gate protects order only for as long as `apply_surface` was the
+# thing writing node order into these trees -- is now historical: task 6616
+# deleted `apply_surface` entirely, see src/lib/cliapp/surface.cppm.)
+#
+# What IS free to normalize without moving these digests (task 6655): a
+# node's FLAG-vs-POSITIONAL interleave is not observable here, because
+# `--help` and the `schema` catalog both render positionals and flags as
+# separate sections/arrays regardless of the declaration order in tree.cpp.
+# FLAG-vs-FLAG order and POSITIONAL-vs-POSITIONAL sibling order both ARE
+# observable and will fail verify if changed.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

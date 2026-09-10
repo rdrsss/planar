@@ -18,6 +18,19 @@ references:
 
 # Scope resolution
 
+> **Stale document (task 6140, 2026-09-09).** This page describes the
+> active-scope-stack model (`planar scope push`/`pop`, stack-top
+> fallback, `--no-scope-check`) that plan 153 M5 removed entirely —
+> the `active_scope` table is dropped and those verbs no longer exist.
+> The current write-resolution algorithm (`--scope` explicit override
+> → cwd derivation → refuse) is documented in
+> [`concepts.md § Write resolution`](../concepts.md#write-resolution)
+> and [`concepts.md § Cross-scope guard`](../concepts.md#cross-scope-guard).
+> This task fixed only the `--no-scope-check` claim below in place; the
+> rest of the page's stack-based model is a larger doc-drift finding
+> filed separately (see task list for the scope-resolution feature
+> doc rewrite).
+
 Planar resolves every write verb to a single, explicit scope before it
 touches the database. The resolver runs the same four-step algorithm
 for every command, and refuses to guess when the active-scope stack
@@ -71,22 +84,29 @@ Planar would silently pick the stack-top scope and misroute writes
 into the wrong project — a class of bug the strict resolver makes
 impossible to hit by default[^scope_roadmap].
 
-## The `--no-scope-check` escape hatch
+## No `--no-scope-check` escape hatch
 
-`--no-scope-check` opts out of step 4 — the resolver falls back to
-stack-top when cwd and stack disagree, matching the pre-hardening
-behavior. The flag exists for two narrow use cases:
+The current binary implements no such flag; `planar schema` declares
+it on no command, and passing it fails at parse time with exit 2
+(`error: <cmd>: The following argument was not expected: --no-scope-check`).
+It is not merely undocumented-but-present — `grep -rn
+guard_write src/` shows the engine-layer bypass primitive exists and
+is unit-tested, but no `cmd/` handler ever calls it with `true`, so no
+verb can reach it from the CLI. There is no flag-based way to
+downgrade a cross-scope refusal to a warning.
 
-- **Scripts that pre-date strict mode** — pass the flag explicitly
-  rather than rewriting the script today; the long-term fix is to
-  add `--scope` or run from the right directory.
-- **Operating from an unrelated cwd intentionally** — for example,
-  triaging a separate project while sitting in `~/work/notes/`.
+The only present-day remedies for a cross-scope-guard refusal are:
 
-`--no-scope-check` is not for routine use. New skills, new workflow
-docs, and new orchestrator paths must not include it. The flag is
-visible in `--help` output and prints a `planar` log line at info
-level on every invocation so its uses stay grep-able.
+- **Pass `--scope <slug>` explicitly** — the write resolver's step 1
+  above; it wins over cwd derivation outright.
+- **`cd` into the entity's owning repo** so cwd derivation resolves
+  to the matching scope.
+
+A genuine mismatch — operator scope and entity scope disagree and
+neither of the above is done — fails outright. See
+[`concepts.md § Cross-scope guard`](../concepts.md#cross-scope-guard)
+for the exact refusal message format and the guarded/unguarded verb
+matrix.
 
 ## The cwd-stack-mismatch warning
 

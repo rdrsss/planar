@@ -41,11 +41,15 @@
 /// truncation is applied to the MERGED list, so a two-scope read set with
 /// `--limit 5` returns five rows total, not five per scope.
 ///
-/// ## `rank` is rendered with a hand-rolled float formatter
+/// ## `rank` is rendered through the tree's shared float formatter
 ///
-/// See `format_zig_float` in the implementation. `std::to_chars`'s default
-/// shortest form is NOT what the oracle prints and the divergence is
-/// visible in ordinary output (`1.375e-06` vs `0.000001375`).
+/// `planar.json_text`'s `append_json_double` — shortest round-trip digits
+/// in FIXED notation, so an exponent never appears (`0.000001375`, never
+/// `1.375e-06`), and a non-finite rank would be `null` rather than a bare
+/// `inf`. This file used to carry its own `format_zig_float`, which was one
+/// of four transcriptions of that algorithm and was BROKEN for every rank
+/// with a non-negative exponent — the common case. See search.cpp for the
+/// measurement and json_text.cppm for the inventory.
 module;
 
 export module planar.cmd.planar.handlers.search;

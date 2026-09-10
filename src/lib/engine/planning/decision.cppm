@@ -155,12 +155,14 @@ export struct decision_create_args {
   /// @brief Optional plan to link this decision to through an
   /// `entity_links` (`decision -> plan`, relationship `derives-from`) edge.
   ///
-  /// @warning UNLIKE `question add --plan`, the plan is NOT checked for
-  /// existence: `decision add x --body y --plan 9999` succeeds at exit 0
-  /// and leaves a DANGLING edge to a plan that does not exist
-  /// (oracle-captured; `entity_links` carries no FK on the polymorphic
-  /// column pair, so nothing refuses it). Reproduced rather than fixed
-  /// (D2). The edge gets no `link` audit row, matching `question`.
+  /// The plan is CHECKED for existence before anything is written, so a
+  /// nonexistent id yields `decision_error::not_found` and writes no
+  /// `decisions` row, no `audit_log` row and no edge (task 6197). The check
+  /// is in code because `entity_links` carries no FK on its polymorphic
+  /// column pair — nothing in the schema would refuse the edge. Until 6197
+  /// this verb accepted a dangling id at exit 0 where `question add --plan`
+  /// refused; all four `--plan`-carrying create verbs now agree. The edge
+  /// gets no `link` audit row, matching `question`.
   std::optional<std::int64_t> plan_id;
   std::optional<std::string>  scope; ///< Scope slug accepted by `planar.scope_ref::resolve`.
 };
@@ -232,10 +234,10 @@ export enum class decision_error : std::uint8_t {
 /// @param conn An open, migrated database connection.
 /// @param args The decision's title and body (required) plus optional
 /// rationale/session/plan/scope.
-/// @return The created row, or `slug_not_found` / `unsupported_scope`
-/// (unresolvable `scope`), `audit_write_failed`, or `query_failed`. There
-/// is NO `not_found` arm — a dangling `--plan` is accepted (see
-/// `decision_create_args::plan_id`).
+/// @return The created row, or `not_found` (the `--plan` id names no
+/// `plans` row — see `decision_create_args::plan_id`), `slug_not_found` /
+/// `unsupported_scope` (unresolvable `scope`), `audit_write_failed`, or
+/// `query_failed`.
 export auto create_decision(db::connection& conn, const decision_create_args& args) -> std::expected<decision, decision_error>;
 
 /// @brief Look up a decision by id.

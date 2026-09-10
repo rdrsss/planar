@@ -55,13 +55,13 @@
 /// ambiguous would instead have resolved to whatever `derive_from_cwd`
 /// happened to return. The specificity ranking and membership-aware
 /// candidate sets remain cmd-layer read-path concerns and stay out.
-/// `guard_write`'s `no_scope_check` bypass parameter models the documented
-/// `--no-scope-check` escape hatch (docs/concepts.md §cross-scope-guard,
-/// "Escape hatch") as an engine-layer primitive; the current Zig binary
-/// only wires that flag on one verb (`closure compute`) rather than
-/// universally as the docs describe, but the bypass semantics themselves
-/// (skip the check entirely) are unambiguous and reusable regardless of
-/// which verbs end up passing `true`.
+/// `guard_write`'s `no_scope_check` bypass parameter mirrors the shape of a
+/// `--no-scope-check` flag that does NOT exist on the current C++ binary
+/// (docs/concepts.md §cross-scope-guard, "No escape hatch" — task 6140): no
+/// `cmd/` handler ever calls this parameter with `true`, so the bypass is
+/// unreachable from the CLI today. It is kept as an engine-layer primitive
+/// because the bypass semantics themselves (skip the check entirely) are
+/// unambiguous and reusable if a future verb needs them.
 module;
 
 export module planar.engine.identity.scope;

@@ -12,6 +12,13 @@
 /// which is this handler's job per `src/lib/engine/models/CMakeLists.txt`'s
 /// note on where that seam belongs.
 ///
+/// "Fourteen" is the LEAF count and is correct as written (verified, task
+/// 6648): ten `models registry` leaves plus `evals`, `experiments`,
+/// `outcomes`, `resolve`. A count of 15 shows up if the two GROUP nodes
+/// (`models`, `models registry`) are counted alongside the leaves they
+/// contain — those are not leaves, so 15 is the wrong number here. Do not
+/// "fix" this header to 15 without re-deriving the leaf/group split first.
+///
 /// ## `models evals` is TWO verbs sharing a name, and `--vendor` picks
 ///
 /// The single most consequential thing in this file, and it was PROBED

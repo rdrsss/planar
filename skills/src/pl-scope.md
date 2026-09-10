@@ -42,7 +42,7 @@ Every write verb accepts `--scope <slug>` to override the cwd-derived value for 
 - standing at a workspace root where the resolver refuses because membership is ambiguous,
 - scripting or batching across multiple scopes from a neutral cwd.
 
-The cross-scope guard (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)) compares the resolved write scope against the target entity's stored scope and refuses with exit 1 on mismatch.
+The cross-scope guard (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)) compares the resolved write scope against the target entity's stored scope and refuses with exit 5 on mismatch.
 
 ## What Was Removed
 

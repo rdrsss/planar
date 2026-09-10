@@ -16,7 +16,15 @@
 // none of these functions ever ran a binary, read `oracle_available()`, or
 // knew what produced the bytes it parses. The second catalog is simply "the
 // document the first must agree with" — its live callers, in
-// `surface_generator.t.cpp`, pass hand-built fixtures.
+// `catalog_steps.t.cpp`, pass hand-built fixtures.
+//
+// (Corrected at task 6671: this comment previously named
+// `surface_generator.t.cpp` as the live caller. That file has never called
+// `verify_inventory`/`verify_partition` — checked against the cycle base,
+// `git show 9ce35073:src/cmd/planar/surface_generator.t.cpp | grep
+// verify_inventory` returns nothing — and it was renamed to
+// `unported_inventory.t.cpp` at task 6672, which makes the stale name
+// doubly wrong to leave in place.)
 //
 // The alternative was folding it into that one test file. It is 400 lines
 // of parsing and set algebra with its own failure vocabulary, exercised by

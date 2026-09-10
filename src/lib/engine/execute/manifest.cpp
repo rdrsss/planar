@@ -12,6 +12,7 @@
 module planar.engine_execute;
 
 import std;
+import planar.json_text;
 
 namespace planar::engine::execute {
 
@@ -228,85 +229,26 @@ auto validate_confined_rel(std::string_view rel) -> bool {
 }
 
 auto format_double(double value) -> std::string {
-  // Non-finite first: the oracle emits Zig's `{d}` spellings, which are bare
-  // `inf` / `-inf` / `nan`. None of the three is legal JSON and the oracle
-  // emits them anyway; reproducing that is parity, not endorsement. Faking
-  // `null` here would make a workflow that divided by zero look like one
-  // that returned nothing.
-  if (std::isnan(value)) {
-    return "nan";
-  }
-  if (std::isinf(value)) {
-    return value < 0 ? "-inf" : "inf";
-  }
-
-  // Zig's `{d}` is SHORTEST-ROUND-TRIP digits rendered WITHOUT an exponent.
-  // Neither half of that is what a single `to_chars` call gives:
+  // Delegates to `planar.json_text` (task 6261). This file used to carry
+  // its own transcription of Zig's `{d}` -- shortest-round-trip digits
+  // rendered WITHOUT an exponent -- and it was one of the two CORRECT
+  // transcriptions of four, so nothing about its behaviour changes here.
+  // What changes is that there is now one definition instead of four; see
+  // json_text.cppm for the inventory and for the two traps this
+  // implementation records (`chars_format::fixed` spells out the full
+  // exact binary expansion of `1e300`, and `std::from_chars` REJECTS the
+  // leading `+` in `e+300` rather than skipping it, which silently yielded
+  // exponent 0 and rendered `1e300` as `1`).
   //
-  //   std::format("{}", 1e300)                    -> "1e+300"
-  //   to_chars(..., chars_format::fixed)          -> the exact binary value
-  //                                                  of the double, 1 followed
-  //                                                  by "0000000000000000525…"
-  //                                                  — 300 digits of noise
-  //   oracle                                      -> "1" + 300 zeros
-  //
-  // `fixed` is shortest *for fixed notation*, which is not the same thing as
-  // the shortest digit string: it must reproduce the value from the decimal
-  // point outward, so it spells out the full exact expansion. Both spellings
-  // round-trip; only one is the oracle's. So: take the shortest digits from
-  // the default (general) format, then place the decimal point by hand.
-  //
-  // This mattered in practice — a first implementation used `fixed` alone
-  // and the differential run against the oracle caught it on `1e300`.
-  std::array<char, 64> buffer{};
-  auto const           shortest = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
-  std::string_view     text{buffer.data(), shortest.ptr};
-
-  auto const exponent_at = text.find('e');
-  if (exponent_at == std::string_view::npos) {
-    return std::string{text}; // Already plain: "0.1", "-0", "100".
-  }
-
-  std::string_view mantissa      = text.substr(0, exponent_at);
-  std::string_view exponent_text = text.substr(exponent_at + 1);
-  // `to_chars` writes `e+300` for positive exponents and `std::from_chars`
-  // rejects a leading `+` outright — it does not skip it, it fails and leaves
-  // the output untouched. Ignoring that failure silently produced exponent 0,
-  // and `1e300` rendered as `1`. Caught by the differential run, not by
-  // reading the standard.
-  if (!exponent_text.empty() && exponent_text.front() == '+') {
-    exponent_text.remove_prefix(1);
-  }
-  int exponent = 0;
-  if (std::from_chars(exponent_text.data(), exponent_text.data() + exponent_text.size(), exponent).ec != std::errc{}) {
-    return std::string{text};
-  }
-
-  std::string sign;
-  if (!mantissa.empty() && (mantissa.front() == '-' || mantissa.front() == '+')) {
-    if (mantissa.front() == '-') {
-      sign = "-";
-    }
-    mantissa.remove_prefix(1);
-  }
-
-  // Split the mantissa and concatenate its digits; `point` is then the index
-  // within that digit string where the decimal point belongs.
-  auto const  dot = mantissa.find('.');
-  std::string digits{mantissa.substr(0, dot)};
-  if (dot != std::string_view::npos) {
-    digits += mantissa.substr(dot + 1);
-  }
-  auto const integral_digits = static_cast<int>(dot == std::string_view::npos ? mantissa.size() : dot);
-  int const  point           = integral_digits + exponent;
-
-  if (point <= 0) {
-    return sign + "0." + std::string(static_cast<std::size_t>(-point), '0') + digits;
-  }
-  if (static_cast<std::size_t>(point) >= digits.size()) {
-    return sign + digits + std::string(static_cast<std::size_t>(point) - digits.size(), '0');
-  }
-  return sign + digits.substr(0, static_cast<std::size_t>(point)) + "." + digits.substr(static_cast<std::size_t>(point));
+  // `format_double_fixed`, NOT `append_json_double`: this surface is the
+  // Lua workflow manifest, not a JSON document. Its pins require Zig's bare
+  // `inf` / `-inf` / `nan` spellings, and the reason the deleted body gave
+  // for keeping them stands -- faking `null` here would make a workflow
+  // that divided by zero look like one that returned nothing. The bare
+  // spellings are what `format_double_fixed` returns for non-finite input,
+  // and that arm exists precisely so this caller can share the finite path
+  // without inheriting a JSON emitter's null.
+  return json_text::format_double_fixed(value);
 }
 
 } // namespace planar::engine::execute

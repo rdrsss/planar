@@ -337,22 +337,47 @@ TEST_CASE("create_decision refuses an unresolvable scope slug and writes NOTHING
   CHECK(audit_rows(conn).empty());
 }
 
-TEST_CASE("create_decision --plan writes a DANGLING edge without validating the plan") {
+TEST_CASE("create_decision --plan a NONEXISTENT plan refuses and writes NOTHING") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  // The oracle does NOT check the plan's existence here — `question add
-  // --plan 9999` refuses before writing anything, `decision add --plan
-  // 9999` succeeds and leaves an edge to a plan that does not exist.
-  // Captured by running both. This test pins the divergence so a future
-  // "consistency" fix is a deliberate, visible change.
+  // Task 6197. This verb USED to exit 0 here and leave an `entity_links`
+  // edge pointing at a plan that never existed; the pin that recorded that
+  // divergence said "so a future consistency fix is a deliberate, visible
+  // change", and this is that change. `create_question` and
+  // `create_artifact` already ran this existence check; `create_decision`
+  // and `create_scenario` did not. All four now do.
+  //
+  // `entity_links` has NO foreign key to the target table, so nothing
+  // downstream would ever have rejected the row — the check has to be here
+  // or it is nowhere.
   auto const made = create_decision(conn, {.title = "dangling", .body = "b", .plan_id = 9999});
+  REQUIRE_FALSE(made.has_value());
+  CHECK(made.error() == decision_error::not_found);
+
+  // The after-state is the whole point: asserting the error alone would not
+  // have caught the original defect, because the original defect exits 0.
+  // A half-written refusal is the worse bug.
+  CHECK(edge_rows(conn).empty());
+  CHECK(decision_rows(conn).empty());
+  CHECK(audit_rows(conn).empty());
+}
+
+TEST_CASE("create_decision --plan an EXISTING plan still writes the edge and one audit row") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn,
+       "insert into plans (scope_kind, scope_id, title, slug, status) values ('global', null, 'anchor', 'anchor', 'draft')");
+
+  // The positive half of the same check: the refusal above must not have
+  // been bought by breaking the working path. Exactly ONE audit row, verb
+  // `create` — the edge gets no `link` row, which is what makes it
+  // consistent with `supersede`'s edge and inconsistent with `decision
+  // link`'s.
+  auto const made = create_decision(conn, {.title = "planned", .body = "b", .plan_id = 1});
   REQUIRE(made.has_value());
-  CHECK(edge_rows(conn) == "decision:1|plan:9999|derives-from");
-  // And exactly ONE audit row, verb `create`. The edge gets no `link` row —
-  // which is what makes `supersede`'s edge (also unaudited) consistent with
-  // this one and inconsistent with `decision link`'s.
-  CHECK(audit_rows(conn) == "create|decision|1|create decision 'dangling'|<NULL>|<NULL>");
+  CHECK(edge_rows(conn) == "decision:1|plan:1|derives-from");
+  CHECK(audit_rows(conn) == "create|decision|1|create decision 'planned'|<NULL>|<NULL>");
 }
 
 // ===========================================================================

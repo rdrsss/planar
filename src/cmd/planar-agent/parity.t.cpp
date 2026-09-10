@@ -339,8 +339,34 @@ TEST_CASE("planar-agent parity: version diverges only in the runtime tag", "[cmd
   CHECK(cpp.code == 0);
   CHECK(cpp.err.empty());
 
-  // Pinned EXACTLY.
-  CHECK(cpp.out == "planar-agent dev dev cxx Clang-23.1.0\n");
+  // Field 4 is `compiler_version_string()`'s output (`src/lib/cliapp/version.cpp`):
+  // a TOOLCHAIN fact, not a contract of this binary or this test suite. Task
+  // 6706: the literal `Clang-23.1.0` used to be transcribed here directly,
+  // which meant every `brew upgrade llvm` PATCH bump broke `make test` for
+  // everyone on the host with no source change at fault. Deriving the
+  // expected value from the SAME compiler-identification macros
+  // `compiler_version_string()` itself switches on keeps the invariant that
+  // is actually worth pinning — this test binary and the `cpp` binary under
+  // test are always built by the identical compiler invocation, so the two
+  // derivations must agree — while decoupling the assertion from a version
+  // number that changes independently of any code in this tree. This is
+  // NOT a loosening of `docs/toolchain-parity.md`'s toolchain pin: that pin
+  // is enforced by `CMakePresets.json` selecting the exact compiler binary,
+  // untouched here. This assertion is about what the BUILT BINARY emits
+  // given whichever pinned compiler built it, not about relaxing which
+  // compiler is allowed to build it.
+#if defined(__clang__)
+  auto const expected_compiler = std::string{"Clang-"} + std::to_string(__clang_major__) + "." + std::to_string(__clang_minor__) +
+                                 "." + std::to_string(__clang_patchlevel__);
+#elif defined(__GNUC__)
+  auto const expected_compiler = std::string{"GCC-"} + std::to_string(__GNUC__) + "." + std::to_string(__GNUC_MINOR__) + "." +
+                                 std::to_string(__GNUC_PATCHLEVEL__);
+#else
+  auto const expected_compiler = std::string{"unknown"};
+#endif
+
+  // Pinned EXACTLY, modulo the derived compiler field above.
+  CHECK(cpp.out == "planar-agent dev dev cxx " + expected_compiler + "\n");
 
   // AND the field-shape invariant `planar.cliapp.version`'s header makes,
   // restated as an assertion about the built binary alone. Task 6117: this
@@ -360,7 +386,7 @@ TEST_CASE("planar-agent parity: version diverges only in the runtime tag", "[cmd
   CHECK(cpp_fields[1] == "dev");
   CHECK(cpp_fields[2] == "dev");
   CHECK(cpp_fields[3] == "cxx");
-  CHECK(cpp_fields[4] == "Clang-23.1.0");
+  CHECK(cpp_fields[4] == expected_compiler);
   CHECK_FALSE(cpp_fields[4].contains(' '));
 }
 

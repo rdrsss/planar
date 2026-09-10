@@ -57,6 +57,18 @@ New: `planar health` surfaces cwd-vs-stack disagreement;
 cwd-not-on-top mismatches print a non-blocking warning
 (suppressible with `--quiet`).
 
+> **Status update (2026-09-09, task 6140).** The active scope stack this
+> entry describes was itself dropped in plan 153 M5 (see
+> [`concepts.md#removed-the-active-scope-stack`](concepts.md#removed-the-active-scope-stack)),
+> and `--no-scope-check` is not implemented by the current binary at
+> all — `planar schema` declares no such flag on any command, and
+> passing it fails at parse time with exit 2 (`error: <cmd>: The
+> following argument was not expected: --no-scope-check`). This paragraph is preserved as
+> the historical record of plan 88's ship date; it is not current
+> guidance. The only present-day remedy for a cross-scope-guard
+> refusal is `--scope <slug>` or `cd` into the entity's owning repo —
+> see [`concepts.md#cross-scope-guard`](concepts.md#cross-scope-guard).
+
 ### Plan 96 M1–M2: doc kinds and manifest layer landed
 
 The outward-facing docs system's foundation shipped in two

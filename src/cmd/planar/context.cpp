@@ -112,25 +112,38 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
         error_from_body(domain_error_kind::generic_failure, std::format("migration failed: {}", applied.error().message_)));
   }
 
-  auto const stored = db::current_version(*_db);
-  if (!stored) {
+  // The schema-version handshake. The comparison itself lives in
+  // `planar.db.migrate` (see `schema_compatibility`'s decision record —
+  // task 6058); what stays HERE is this binary's policy and this binary's
+  // wording, both of which differ per binary and are pinned by
+  // context.t.cpp / exit_codes.t.cpp.
+  auto const state = db::assert_schema_compatible(*_db);
+  if (!state) {
     _db.reset();
     return std::unexpected(error_from_body(domain_error_kind::generic_failure,
-                                           std::format("reading schema version failed: {}", stored.error().message_)));
+                                           std::format("reading schema version failed: {}", state.error().message_)));
   }
-  auto const    chain        = db::migrations();
-  std::uint32_t embedded_max = 0;
-  for (auto const& record : chain) {
-    embedded_max = std::max(embedded_max, record.version_);
-  }
-  if (*stored > embedded_max) {
+  if (state->verdict_ == db::schema_compatibility::ahead) {
     _db.reset();
     return std::unexpected(error_from_body(
         domain_error_kind::schema_version_ahead,
         std::format("database schema version {} is newer than this binary supports ({}); the DB was migrated by a "
                     "newer build -- rebuild/reinstall planar from a checkout whose migrations include version {}, "
                     "then retry",
-                    *stored, embedded_max, *stored)));
+                    state->live_, state->embedded_max_, state->live_)));
+  }
+  // NO `behind` arm, and that is the operator binary's defining
+  // difference: it just migrated. `planar` owns migration; the three
+  // consumer binaries refuse `behind` and point back here.
+  if (state->verdict_ == db::schema_compatibility::gap) {
+    // Warn, do not refuse — see `schema_compatibility`'s decision record,
+    // answer (3). Refusing here would take `planar health` away from the
+    // operator at the exact moment they need it.
+    err() << std::format("warning: schema_migrations in {} reports version {} but its applied set has a hole; some "
+                         "migration was rolled back or deleted without its successors -- the database is missing "
+                         "structure this binary expects. Inspect `select version from schema_migrations order by "
+                         "version` before trusting any result\n",
+                         _db_path.string(), state->live_);
   }
 
   return &*_db;

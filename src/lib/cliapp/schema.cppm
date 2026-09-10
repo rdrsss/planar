@@ -87,6 +87,29 @@ import planar.cliapp.walk;
 namespace planar::cliapp {
 
 /// @brief Emit the flat JSON schema catalog for the tree rooted at `root`.
+///
+/// ## The one-arg/two-arg split is a per-binary property, not drift
+///
+/// `planar-agent` and `planar-ext` call THIS overload; `planar` and
+/// `planar-watch` call the two-argument one below. That is an intentional
+/// split on measured divergence, not an inconsistency to close:
+/// `surface_summaries()` on the two-arg side exists because a real gap is
+/// being closed — 57 `planar` nodes and 12 `planar-watch` nodes carry a
+/// `summary` that differs from their `description` (this module's header,
+/// divergence 1, task 6065). `planar-agent` measures ZERO such
+/// divergences and `planar-ext` has no oracle catalog to diverge from at
+/// all, so a summaries table on either binary would supply data that
+/// changes nothing.
+///
+/// This was not always the answer: the deleted
+/// `planar-agent/surface.cppm` used to supply a summaries table ANYWAY,
+/// on a uniformity rationale — "the emitter is driven the same way in all
+/// three binaries rather than only where it currently changes bytes."
+/// Task 6614 (M11.2) deleted that table and reversed the rationale in
+/// favor of the one above. Recorded here, not only in that commit
+/// message, because a reader who finds `planar-agent`'s one-arg call site
+/// alone would otherwise have no way to tell "nothing to diverge from"
+/// apart from "not gotten to yet" (task 6628).
 /// @param root The command tree root (its own `get_name()` becomes the
 /// JSON `"root"` value and the first path segment of every `"command"`
 /// string).

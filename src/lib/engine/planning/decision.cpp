@@ -357,10 +357,38 @@ auto create_decision(db::connection& conn, const decision_create_args& args) -> 
     return std::unexpected(scope.error());
   }
 
-  // NOTE the absent `--plan` existence check. `question add --plan 9999`
-  // refuses before writing anything; `decision add --plan 9999` succeeds
-  // and leaves a dangling edge. Oracle-captured, reproduced (D2) — see
-  // `decision_create_args::plan_id`.
+  // `--plan` is validated BEFORE the INSERT, so a dangling plan id leaves
+  // neither a `decisions` row, nor an `audit_log` row, nor an
+  // `entity_links` edge (task 6197).
+  //
+  // This verb USED to skip the check: `question add --plan 9999` refused
+  // while `decision add --plan 9999` exited 0 and left an edge pointing at
+  // a plan that never existed. That was oracle-faithful (D2) and pinned as
+  // a deliberate divergence, and it is now closed in the direction the two
+  // siblings that always checked already went.
+  //
+  // The check has to live HERE and cannot be delegated to the schema:
+  // `entity_links` carries no foreign key to the target table, so SQLite
+  // accepts any `to_id` whatsoever. That is exactly why this verb used to
+  // contradict itself across its own reference flags — `--related` on
+  // `scenario add` is backed by a real FK and refused, while `--plan` on
+  // both verbs wrote into `entity_links` and did not.
+  if (args.plan_id.has_value()) {
+    auto stmt = conn.prepare("select count(*) from plans where id = ?");
+    if (!stmt) {
+      return std::unexpected(decision_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(1, *args.plan_id); !b) {
+      return std::unexpected(decision_error::query_failed);
+    }
+    auto step = stmt->step();
+    if (!step || *step != db::step_result::row) {
+      return std::unexpected(decision_error::query_failed);
+    }
+    if (stmt->column_int64(0) == 0) {
+      return std::unexpected(decision_error::not_found);
+    }
+  }
 
   std::int64_t id = 0;
   {
