@@ -1,7 +1,10 @@
-# Vendor skill trees are generated from skills/src/<slug>.md by
-# `planar skills render` (plan 335). Mark them linguist-generated so
-# GitHub collapses them in PR diffs and excludes them from language
-# stats; the authoritative source lives one tree up.
-commands/claude/pl-*.md linguist-generated=true
-skills/codex/pl-*.md    linguist-generated=true
-skills/copilot/pl-*.md  linguist-generated=true
+# Third-party sources, committed on purpose. CPM caches every pinned release
+# archive here (cmake/dependencies.cmake) so a configured build never touches
+# the network. It is 98M against src/'s 12M, and its 714 .c / 712 .h files
+# from SQLite, curl and Lua outweigh the first-party C++26 eight to one by
+# size -- without this, GitHub's language bar can report this repository as C.
+#
+# Linguist's own heuristics likely exclude a top-level vendor/ already; this
+# states it rather than relying on that, because the failure mode is silent
+# and the fix costs one line.
+vendor/** linguist-vendored=true
