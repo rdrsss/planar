@@ -174,11 +174,12 @@ coverage.
 
 ## Underlying CLI verb
 
-> **Cross-scope guard.** This verb refuses with exit 1 when the
+> **Cross-scope guard.** This verb refuses with exit 5 when the
 > operator's resolved write scope disagrees with the target entity's
 > stored scope. Run from inside the entity's owning repo, pass
-> `--scope <slug>` explicitly, or use `--no-scope-check` for legacy
-> escape (not for routine use). See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
+> `--scope <slug>` explicitly, or `cd` into that repo — there is no
+> flag that downgrades the refusal to a warning; a genuine mismatch fails
+> outright. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
 planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--strict] [--json]

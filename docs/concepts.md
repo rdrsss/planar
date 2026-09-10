@@ -232,6 +232,13 @@ Writes use the strict `scopearg.ResolveForWrite` algorithm. The first step that 
 
 ### Workspace-root refusal
 
+> **Stale section (task 6140, 2026-09-09).** This block's refusal message
+> is FABRICATED against the current C++ binary: `grep -rn "you are in a
+> workspace root" src/` returns nothing, and in a scratch arena a
+> `workspace init --scan` root followed by `task add` with no `--scope`
+> SUCCEEDS at global scope (exit 0) — no refusal fires. Filed as task 6675
+> to determine and write the actual behavior; not rewritten here.
+
 When cwd lands at a registered workspace root (org `config_json.root_path`) and the org has members, `task add` (or any other write verb without `--scope`) refuses with the candidate list:
 
 ```
@@ -244,7 +251,6 @@ error: you are in a workspace root with 3 member projects, but no
 
        Or cd into a specific member project. Pass --scope
        assoc:work to write at the org level (cross-repo work).
-       Pass --no-scope-check to override (legacy escape hatch).
 ```
 
 Fan-out is deliberately not the default: a workspace-root `task add` could plausibly mean any of the members or the org itself, and silently picking is the lectio incident pattern. The refusal forces the operator to state which.
@@ -304,9 +310,11 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 - **Operator-state verbs** (`handoff`, `capture`, `resume`). These manage vendor-session rows, not project-scoped entities. The legitimate polyrepo handoff workflow is "a session inside repo A captures a handoff that references a task in repo B".
 - **External `tabularium` verbs** (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`). Tabularium owns its own machine-local state, so Planar's operator-vs-entity scope guard does not apply.
 
-### Escape hatch
+### No escape hatch
 
-`--no-scope-check` downgrades the refusal to a one-line stderr warning and proceeds. Appropriate uses: legacy scripts that cannot be updated immediately, one-off corrections after a scope-rewrite migration, and ad-hoc fix-ups. Inappropriate uses: routine workflows, skills, agents, orchestrator code. Reach for `--scope <slug>` first to assert explicit intent; `--no-scope-check` is the documented fallback when an explicit scope is not yet known.
+There is no flag that downgrades a cross-scope-guard refusal to a warning. `--no-scope-check` does not exist on the current binary — `planar schema` declares it on no command, and passing it fails at parse time with exit 2 (`error: <cmd>: The following argument was not expected: --no-scope-check`). (The engine-layer `guard_write` primitive under `src/lib/engine/identity/scope.cppm` does carry a `no_scope_check` bypass parameter and is unit-tested, but no `cmd/` handler ever calls it with `true`, so no verb can reach the bypass from the CLI.)
+
+The only remedies for a cross-scope-guard refusal are `--scope <slug>` to assert explicit intent, or `cd` into the entity's owning repo so cwd derivation resolves correctly. A genuine mismatch — neither of those applied — fails outright.
 
 See [docs/cli-reference.md § Cross-scope guard](cli-reference.md#cross-scope-guard) for the per-verb listing and the exact refusal message format.
 
@@ -1028,6 +1036,16 @@ The provider CLIs (`claude`, `codex`) do not expose a machine-readable model lis
 
 ## Color output
 
+> **Stale section (task 6140, 2026-09-09).** This entire section describes a
+> status-color palette, `--color`/`--no-color` flags, and `NO_COLOR` handling
+> that do not exist in the current C++ binary: `grep -rn "NO_COLOR\|palette"
+> src/` returns nothing, `planar schema` declares no `--color`/`--no-color`
+> flag on any command, and passing either fails at parse time with exit 2
+> (`error: <cmd>: The following argument was not expected: --color`). The
+> binary emits no ANSI color output at all today. This is a larger doc-drift
+> finding than task 6140's scope covers (the whole section, not one flag)
+> and is filed separately rather than rewritten here.
+
 `planar tree`, the per-entity `list` verbs (`plan list`, `task list`, `question list`, `decision list`, `artifact list`, `scenario list`), and the child-plan summary section of `plan show` colorize the status column based on the entity kind that owns the status. Status is the only field colorized; titles, IDs, dates, and relationship arrows stay plain.
 
 **Palette families.** The palette uses six visual categories from the 8-color ANSI set (universal across modern terminals: macOS Terminal, iTerm2, kitty, alacritty, Windows Terminal). The map is keyed by `(entity_kind, status)` so the same status text on different entities can take different colors.
@@ -1048,6 +1066,8 @@ The provider CLIs (`claude`, `codex`) do not expose a machine-readable model lis
 3. `--color=always` — emit color
 4. `--color=auto` (default) and stdout is a TTY — emit color
 5. otherwise — do not emit color
+
+None of `--color`, `--no-color`, or `NO_COLOR` are implemented; this precedence table describes the aspirational design, not shipped behavior (see the stale-section note above).
 
 **JSON bypass.** The `--json` output path never calls into the color helper. The bypass is structural, not toggle-based: scripts piping JSON receive byte-identical output regardless of `--color` or `NO_COLOR`.
 

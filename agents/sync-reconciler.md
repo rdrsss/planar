@@ -213,8 +213,8 @@ inspection/retry commands for failures. Never claim cross-remote rollback.
   read is uncertain.
 - Never infer, widen, or reuse operator approval across events or changed
   evidence.
-- Never open SQLite, handle credentials, bypass scope checks, or use
-  `--no-scope-check`.
+- Never open SQLite, handle credentials, or bypass scope checks — no CLI flag
+  exists to do so.
 - Never commit. The caller owns broader workflow sequencing and finalization.
 
 ## Cross-references

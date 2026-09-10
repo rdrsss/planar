@@ -38,9 +38,17 @@ Use the `repo:` prefix for project rows. A bare slug is always parsed as an
 association for compatibility with existing workspace and project-association
 flows.
 
-**Mutating commands** (`task add`, `plan create`, `question add`, `scenario add`, `decision add`, `artifact add`, `link`, `unlink`, `ext create`, `ext propagate`) resolve scope through the strict `ResolveForWrite` algorithm: explicit flag → cwd derivation with most-specific-wins → refuse with an `AmbiguousScopeError` listing candidate `--scope` values. Cwd is the only default; there is no ambient stack. The resolver never silently picks a default when multiple candidates tie at the best rank, nor when cwd lands at a workspace root with member projects (see the workspace-root refusal in [Scope in `docs/concepts.md`](./concepts.md#scope)). See that section for the full algorithm, the membership-aware cross-scope guard, and the specificity ranking.
+**Mutating commands** (`task add`, `plan create`, `question add`, `scenario add`, `decision add`, `artifact add`, `link`, `unlink`, `ext create`, `ext propagate`) resolve scope through the strict `ResolveForWrite` algorithm: explicit flag → cwd derivation with most-specific-wins → refuse with an `AmbiguousScopeError` listing candidate `--scope` values. Cwd is the only default; there is no ambient stack. The resolver never silently picks a default when multiple candidates tie at the best rank, nor when cwd lands at a workspace root with member projects (see the workspace-root refusal in [Scope in `docs/concepts.md`](./concepts.md#scope)).
 
-Source annotations on success: `[from flag]`, `[from cwd]`. The resolved scope and source are printed on success (human output) and included as `scope_kind`, `scope_id`, and `scope_source` fields in `--json` output. To opt out of strict resolution entirely, see `--no-scope-check` in [Global Flags](#global-flags).
+> **Stale claim (task 6140, 2026-09-09).** The "workspace root with member
+> projects" refusal named above is FABRICATED against the current C++
+> binary — see the stale-section banner on the workspace-root refusal in
+> [`docs/concepts.md § Scope`](./concepts.md#scope) for the measurement.
+> Filed as task 6675; not corrected here.
+
+See that section for the full algorithm, the membership-aware cross-scope guard, and the specificity ranking.
+
+Source annotations on success: `[from flag]`, `[from cwd]`. The resolved scope and source are printed on success (human output) and included as `scope_kind`, `scope_id`, and `scope_source` fields in `--json` output. There is no flag to opt out of strict resolution — see [Cross-scope guard § No escape hatch](#cross-scope-guard) for the actual remedies.
 
 **Query commands** (`plan list`, `task list`, `question list`, `scenario list`, `decision list`, `artifact list`, `search`, `tree`) use `ResolveForRead`, which derives the in-scope set from cwd: at a workspace root the org plus every member project; at a member project root the most specific registered repo wins, with longer `projects.root_path` matches beating shorter parent roots. Outside any registered scope, reads refuse unless `--scope global` is passed explicitly. `--scope` on a query is a filter, not a strict pick.
 
@@ -84,11 +92,8 @@ The database path is overridden via the `PLANAR_DB` environment variable (not a 
 | `--quiet` / `-q` | Suppress informational output; only emit errors and explicit results. | off |
 | `-v` | Enable info-level logging. | off |
 | `-vv` | Enable debug-level logging. | off |
-| `--no-scope-check` | Escape hatch. Downgrades the cross-scope guard refusal to a one-line stderr warning. When `ResolveForWrite` refuses at a workspace-root cwd (lone org candidate), this flag promotes the org to the resolved scope so the write lands at the org level. Other `AmbiguousScopeError` shapes (tied candidates, no cwd match) still fail — there is no ambient fallback target. Use for legacy scripts and one-off corrections; do not add to routine workflows. | off |
-| `--color <mode>` | Color mode for `tree` and `list`-style renderers. `auto` emits ANSI only when stdout is a TTY; `always` emits unconditionally (except when `NO_COLOR` is set); `never` never emits. JSON output paths never colorize regardless of this flag. | `auto` |
-| `--no-color` | Shorthand for `--color=never`. Wins over `--color=always` when both are passed (more restrictive choice wins). | off |
 
-The `NO_COLOR` environment variable (any non-empty value) overrides `--color=always`. This follows the [no-color.org](https://no-color.org/) convention and protects operators who set the env var globally from downstream color sequences. To re-enable color in a shell where `NO_COLOR` is set, unset the variable rather than passing `--color=always`.
+There is no `--no-scope-check` flag — see [Cross-scope guard § No escape hatch](#cross-scope-guard) — and no `--color` / `--no-color` flag or `NO_COLOR` handling: the binary does not colorize any output today, so there is no color mode to select or suppress (task 6140; these three were documented aspirationally and never implemented / were removed without the docs following).
 
 Global flags must appear before the subcommand. They are not repeated in per-command option tables below.
 
@@ -117,29 +122,23 @@ The refusal is a multi-line message naming both scopes and listing three remedia
        <kind>'s owning project/association. To proceed:
 
          a. cd into a directory inside <entity-scope>, OR
-         b. pass --scope <entity-scope> explicitly, OR
-         c. pass --no-scope-check to override (legacy escape hatch, not for routine use)
+         b. pass --scope <entity-scope> explicitly
 
        Refusing cross-scope write without explicit operator intent
 ```
 
-The exit code is `1` (user-fixable). No database writes occur before the refusal.
+The exit code is `5` (`domain_error_kind::scope_mismatch`) — the same code as the ambiguous-workspace-root refusal described in [Scope in `docs/concepts.md`](./concepts.md#scope) — see e.g. `spec ingest --apply`'s and `feedback triage set`'s refusal messages, both worded "Refusing cross-scope write; pass --scope \<slug\> or cd into the right repo." An unresolvable `--scope` slug (`SlugNotFound`) is the only scope-related failure that exits `1`. No database writes occur before either refusal.
 
-### Escape hatch
+### No escape hatch
 
-`--no-scope-check` (see [Global Flags](#global-flags)) downgrades the refusal to a one-line stderr warning and lets the write proceed:
+There is no flag that downgrades a cross-scope-guard refusal to a warning. `--no-scope-check` does not exist on this binary — it is absent from every command's flag set in `planar schema`, and passing it fails at parse time with exit 2 (`error: <cmd>: The following argument was not expected: --no-scope-check`), not with the scope guard's own exit code. (An engine-layer `guard_write` bypass parameter of the same shape exists at `src/lib/engine/identity/scope.cppm` and is unit-tested, but no `cmd/` handler ever calls it with `true` — no verb can reach it from the CLI.)
 
-```
-warning: overriding scope mismatch (<kind> <id> belongs to <entity-scope> but resolved write scope is <op-scope>) due to --no-scope-check
-```
+The only remedies are:
 
-Appropriate uses:
+- `cd` into a directory inside the entity's owning scope, or
+- pass `--scope <entity-scope>` explicitly.
 
-- Legacy scripts that cannot be updated immediately.
-- One-off corrections after a scope-rewrite migration where the operator has verified the target.
-- Manual ad-hoc fix-ups where the exact entity id is known to be correct.
-
-Inappropriate uses: routine workflows, skill bodies, agent dispatch code, orchestrator loops. Reach for `--scope <slug>` first.
+There is no way to force a genuinely cross-scope write through a flag; do it by resolving to the correct scope instead.
 
 ### Guarded verbs
 
@@ -5831,6 +5830,18 @@ Test hook: when set, `planar local` uses this directory as the operator's `$HOME
 
 ## Domain: `tree`
 
+> **Stale section (task 6140, 2026-09-09).** `planar tree`'s actual flag set
+> (`planar schema`) is `--scope`, `--all-scopes`, `--depth`, `--kind`,
+> `--status`, `--sort`, `--json` — none of them has a short alias. It does
+> not implement `-L`, `-I`/`-P`, `--ignore-case`, `-r`/`-t`/`-c`/`-U`,
+> `--dirsfirst`/`--no-dirsfirst`, `--noreport`, `--prune`, `-i`/`--no-indent`,
+> `--ascii`, `--no-truncate`, or `-J`; each fails at parse time with exit 2
+> (`error: tree: The following arguments were not expected: <flag>`). Task
+> 6140 fixed only the `--dirsfirst`/`--no-dirsfirst` claims named in its
+> scope; the rest of this synopsis and options table describes a much
+> larger aspirational surface and is filed separately as a follow-up
+> doc-drift finding rather than rewritten here.
+
 The `tree` domain provides a hierarchical view of Planar entities — plans, tasks, artifacts, decisions, scenarios, and questions — for one or all scopes. Read-only; no schema effects.
 
 The walk follows `plans.parent_plan_id` for plan→plan, `tasks.plan_id` and `tasks.parent_task_id` for plan→task and task→subtask, and `entity_links(relationship='derives-from')` for artifacts / decisions / scenarios / questions attached to plans. Filters apply during the walk so excluded subtrees never enter the output.
@@ -5846,7 +5857,6 @@ planar tree [--scope <scope> | --all-scopes]
             [-I <pattern>]... [-P <pattern>]... [--ignore-case]
             [--kind <list>]... [--status <list>]...
             [-r] [-t | -c | -U | --sort <id|updated|created|unsorted>]
-            [--dirsfirst | --no-dirsfirst]
             [--noreport] [--prune]
             [-i | --no-indent] [--ascii] [--no-truncate]
             [-J | --json]
@@ -5871,8 +5881,8 @@ planar tree [--scope <scope> | --all-scopes]
 | `-c`, `--sort-created` | `-c` | off | Sort by `created_at`. |
 | `-U`, `--unsorted` | `-U` | off | Preserve DB insertion order. |
 | `--sort <id\|updated\|created\|unsorted>` | (Planar) | `id` | Long-form sort selector. Mutually exclusive with `-t`/`-c`/`-U`. |
-| `--dirsfirst` | `--dirsfirst` | **on** | Group plans first, then tasks, then everything else by id. |
-| `--no-dirsfirst` | (Planar) | off | Interleave entity kinds by id (no grouping). |
+| ~~`--dirsfirst`~~ | `--dirsfirst` | n/a | **Not implemented.** Grouping is unconditional in the current binary; there is no flag to change it. |
+| ~~`--no-dirsfirst`~~ | (Planar) | n/a | **Not implemented** (task 6140). Fails at parse time with exit 2. |
 | `--noreport` | `--noreport` | off | Suppress the summary footer (`N plans, M tasks, …`). |
 | `--prune` | `--prune` | off | Hide empty branches (plans with zero descendants under the active filter). |
 | `-i`, `--no-indent` | `-i` | off | Disable indentation; print flat tree (one entity per line, no branch glyphs). |

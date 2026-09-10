@@ -229,8 +229,7 @@ cue:
 [cross-scope read: <normalized-target-label>]
 ```
 
-This is visibility only — there is no gate to bypass and no
-`--no-scope-check` equivalent to guard against, because a read cannot
+This is visibility only — there is no gate to bypass, because a read cannot
 harm the target scope. Same-scope reads emit no cue, matching the write
 cue's "same-scope writes MUST NOT emit any cue" rule.
 

@@ -131,7 +131,7 @@ The legacy row therefore never produces the invalid/doubled display label
 destination arguments while using the same cue-label normalization. A generic
 warning such as `[cross-scope write]` is insufficient. This cue makes intent
 visible in the transcript; it does not grant permission, replace an operator
-gate, weaken strict scope resolution, or authorize `--no-scope-check`.
+gate, weaken strict scope resolution, or bypass the cross-scope guard — no such CLI flag exists.
 **Same-scope writes MUST NOT emit any cross-scope cue.**
 
 ---

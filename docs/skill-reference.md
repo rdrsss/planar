@@ -753,7 +753,7 @@ Guided diagnose-then-reconcile flow for a degraded Planar installation. Companio
 4. Non-resumable in-flight tasks — surface each with its age, plan, and scope. Classify: cancel tasks in dead plans, reset weeks-stale tasks in active plans to `todo`, **leave recent (< 48h) tasks alone**. Each write is operator-confirmed.
 5. Re-run `planar health` and report the new state.
 
-**Safety contract:** Every destructive write is operator-confirmed before executing. Recent in-flight tasks are never auto-touched. Reconcile only affects expired claims. No `--no-scope-check`.
+**Safety contract:** Every destructive write is operator-confirmed before executing. Recent in-flight tasks are never auto-touched. Reconcile only affects expired claims. No cross-scope bypass — the binary has no `--no-scope-check` flag at all.
 
 **Hard-won CLI facts encoded:**
 - `planar health` is global (whole DB); `planar task list` is scope-filtered (cwd-derived); `planar handoff list` is global (no scope filter). `--scope global` on `task list` returns only global-scoped tasks — not all scopes. To enumerate in-flight tasks across all scopes, run `task list --status doing,blocked` per-association (from each project's directory or via `--scope <slug>`).
