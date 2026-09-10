@@ -171,7 +171,50 @@ export enum class annotation_error : std::uint8_t {
   invalid_anchor,        ///< File/entity discriminator and fields disagree.
   target_not_found,      ///< Entity target does not exist.
   target_scope_mismatch, ///< Requested annotation scope is not the target's exact scope.
+  revision_conflict,     ///< The supplied optimistic-lock revision is stale.
+  receipt_conflict,      ///< An operation UUID was reused with another payload.
+  source_mismatch,       ///< The writer named a different database source.
+  invalid_command,       ///< The structured command is incomplete or unsupported.
 };
+
+/// @brief The explicitly idempotent writer operations exposed to a future
+/// local annotation client. Legacy annotate leaves remain operator tools;
+/// this contract is the one that carries an operation receipt.
+export enum class command_kind : std::uint8_t { create, edit, replace_tags, resolve, dismiss, archive, remove };
+
+/// @brief Input to one receipt-backed annotation mutation.
+export struct command_args {
+  command_kind                    operation{};
+  std::string_view                operation_uuid;
+  std::string_view                source_uuid;
+  std::optional<std::string_view> scope;
+  std::optional<entity_target>    target;
+  std::optional<std::int64_t>     annotation_id;
+  std::optional<std::int64_t>     expected_revision;
+  std::optional<std::string_view> title;
+  std::optional<std::string_view> body;
+  std::vector<std::string>        tags;
+  std::string_view                origin{"local-annotation-writer"};
+};
+
+/// @brief Durable result for a command UUID. Receipts are never purged.
+export struct operation_receipt {
+  std::string                 operation_uuid;
+  std::string                 source_uuid;
+  std::string                 payload_digest;
+  std::optional<std::int64_t> annotation_id;
+  std::optional<std::int64_t> revision;
+  std::string                 outcome;
+  std::string                 created_at;
+  bool                        replayed{false};
+};
+
+/// @brief Atomically apply a command, revision/audit mutation, and receipt.
+export auto execute_command(db::connection& conn, const command_args& args) -> std::expected<operation_receipt, annotation_error>;
+
+/// @brief Find an already committed operation outcome without mutating state.
+export auto show_receipt(db::connection& conn, std::string_view source_uuid, std::string_view operation_uuid)
+    -> std::expected<std::optional<operation_receipt>, annotation_error>;
 
 /// @brief Read the immutable UUID assigned to this database source.
 export auto source_uuid(db::connection& conn) -> std::expected<std::string, annotation_error>;

@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.json_dom;
 import planar.engine.planning;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -56,6 +57,14 @@ auto zig_error_name(ann::annotation_error err) -> std::string_view {
     return "TargetNotFound";
   case ann::annotation_error::target_scope_mismatch:
     return "TargetScopeMismatch";
+  case ann::annotation_error::revision_conflict:
+    return "Conflict";
+  case ann::annotation_error::receipt_conflict:
+    return "ReceiptConflict";
+  case ann::annotation_error::source_mismatch:
+    return "SourceMismatch";
+  case ann::annotation_error::invalid_command:
+    return "InvalidCommand";
   }
   return "Unknown";
 }
@@ -648,6 +657,110 @@ auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_re
   return {};
 }
 
+auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto const request = flag_string(args, "--request");
+  if (!request || *request != "@-")
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--request @- is required"));
+  const std::string raw{std::istreambuf_iterator<char>{std::cin}, {}};
+  if (raw.size() > 64U * 1024U)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "annotation command body exceeds 64 KiB"));
+  auto parsed_json = json_dom::parse_json(raw);
+  if (!parsed_json || parsed_json->kind != json_dom::json_kind::object)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "annotation command must be a JSON object"));
+  const auto string_field = [&](std::string_view name) -> std::optional<std::string> {
+    auto const* field = parsed_json->find(name);
+    return field && field->kind == json_dom::json_kind::string ? std::optional<std::string>{field->string} : std::nullopt;
+  };
+  const auto integer_field = [&](std::string_view name) -> std::optional<std::int64_t> {
+    auto const* field = parsed_json->find(name);
+    return field && field->kind == json_dom::json_kind::integer ? std::optional<std::int64_t>{field->integer} : std::nullopt;
+  };
+  auto const operation    = string_field("operation");
+  auto const operation_id = string_field("operation_id");
+  auto const source       = string_field("source_uuid");
+  if (!operation || !operation_id || !source)
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, "operation, operation_id, and source_uuid are required"));
+  const auto parsed = *operation == "create"         ? ann::command_kind::create
+                      : *operation == "edit"         ? ann::command_kind::edit
+                      : *operation == "replace-tags" ? ann::command_kind::replace_tags
+                      : *operation == "resolve"      ? ann::command_kind::resolve
+                      : *operation == "dismiss"      ? ann::command_kind::dismiss
+                      : *operation == "archive"      ? ann::command_kind::archive
+                      : *operation == "remove"       ? ann::command_kind::remove
+                                                     : ann::command_kind{};
+  if (*operation != "create" && *operation != "edit" && *operation != "replace-tags" && *operation != "resolve" &&
+      *operation != "dismiss" && *operation != "archive" && *operation != "remove") {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, std::format("unknown annotation operation '{}'", *operation)));
+  }
+  auto const                        target_kind = string_field("target_kind");
+  auto const                        target_id   = integer_field("target_id");
+  std::optional<ann::entity_target> target;
+  if (target_kind || target_id) {
+    if (!target_kind || !target_id || (*target_kind != "plan" && *target_kind != "task")) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::invalid_input, "--target-kind plan|task and --target-id are required together"));
+    }
+    target = {.kind = *target_kind == "plan" ? ann::target_kind::plan : ann::target_kind::task, .id = *target_id};
+  }
+  auto conn = ctx.ensure_db();
+  if (!conn)
+    return std::unexpected(conn.error());
+  auto const               scope = string_field("scope");
+  auto const               title = string_field("title");
+  auto const               body  = string_field("body");
+  std::vector<std::string> tags;
+  if (auto const* fields = parsed_json->find("tags"); fields != nullptr) {
+    if (fields->kind != json_dom::json_kind::array || fields->array.size() > 32)
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, "tags must contain at most 32 strings"));
+    for (const auto& tag : fields->array) {
+      if (tag.kind != json_dom::json_kind::string || tag.string.size() > 64)
+        return std::unexpected(
+            error_from_body(domain_error_kind::invalid_input, "tags must contain strings of at most 64 characters"));
+      tags.push_back(tag.string);
+    }
+  }
+  auto receipt = ann::execute_command(**conn, {.operation         = parsed,
+                                               .operation_uuid    = *operation_id,
+                                               .source_uuid       = *source,
+                                               .scope             = as_view(scope),
+                                               .target            = target,
+                                               .annotation_id     = integer_field("annotation_id"),
+                                               .expected_revision = integer_field("expected_revision"),
+                                               .title             = as_view(title),
+                                               .body              = as_view(body),
+                                               .tags              = std::move(tags)});
+  if (!receipt)
+    return std::unexpected(map_annotation_error(receipt.error(), "annotate command"));
+  ctx.out() << std::format("{{\"operation_uuid\":\"{}\",\"source_uuid\":\"{}\",\"annotation_id\":{},\"revision\":{},\"outcome\":"
+                           "\"{}\",\"replayed\":{}}}\n",
+                           receipt->operation_uuid, receipt->source_uuid, receipt->annotation_id.value_or(0),
+                           receipt->revision.value_or(0), receipt->outcome, receipt->replayed ? "true" : "false");
+  return {};
+}
+
+auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto const source       = flag_string(args, "--source-uuid");
+  auto const operation_id = flag_string(args, "--operation-id");
+  if (!source || !operation_id)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--source-uuid and --operation-id are required"));
+  auto conn = ctx.ensure_db();
+  if (!conn)
+    return std::unexpected(conn.error());
+  auto receipt = ann::show_receipt(**conn, *source, *operation_id);
+  if (!receipt)
+    return std::unexpected(map_annotation_error(receipt.error(), "annotate receipt"));
+  if (!receipt->has_value()) {
+    ctx.out() << "{\"found\":false}\n";
+    return {};
+  }
+  ctx.out() << std::format(
+      "{{\"found\":true,\"operation_uuid\":\"{}\",\"annotation_id\":{},\"revision\":{},\"outcome\":\"{}\"}}\n",
+      (**receipt).operation_uuid, (**receipt).annotation_id.value_or(0), (**receipt).revision.value_or(0), (**receipt).outcome);
+  return {};
+}
+
 namespace {
 
 /// @brief Declare every child of the `annotate` group, in catalog order.
@@ -754,6 +867,15 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
   add_int_default(*sweep, "--since-days", "30");
   add_string(*sweep, "--scope");
   add_json(*sweep);
+
+  CLI::App* command =
+      annotate.add_subcommand("command", "Apply a receipt-backed annotation JSON request from stdin (--request @-).");
+  add_string(*command, "--request");
+  add_json(*command);
+  CLI::App* receipt = annotate.add_subcommand("receipt", "Look up a durable annotation command receipt.");
+  add_string(*receipt, "--source-uuid");
+  add_string(*receipt, "--operation-id");
+  add_json(*receipt);
 }
 
 } // namespace

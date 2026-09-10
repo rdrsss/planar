@@ -203,6 +203,12 @@ export auto annotate_verify(context& ctx, const cliapp::parsed_args& args) -> ha
 /// @return Success, or the mapped engine failure.
 export auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Apply one receipt-backed structured annotation command.
+export auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Look up a receipt after an uncertain writer outcome.
+export auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 /// @brief Declare the `annotate` command tree on `root`.
 ///
 /// The CLI declaration for every `annotate` node, colocated with the

@@ -462,6 +462,182 @@ auto source_uuid(db::connection& conn) -> std::expected<std::string, annotation_
   return stmt->column_text(0);
 }
 
+namespace {
+
+auto command_name(command_kind operation) -> std::string_view {
+  switch (operation) {
+  case command_kind::create:
+    return "create";
+  case command_kind::edit:
+    return "edit";
+  case command_kind::replace_tags:
+    return "replace-tags";
+  case command_kind::resolve:
+    return "resolve";
+  case command_kind::dismiss:
+    return "dismiss";
+  case command_kind::archive:
+    return "archive";
+  case command_kind::remove:
+    return "remove";
+  }
+  return "unknown";
+}
+
+// A receipt digest is an equality fingerprint, never a security primitive.
+// Delimiters keep otherwise adjacent command fields from aliasing.
+auto command_digest(const command_args& args) -> std::string {
+  std::string material = std::format(
+      "{}|{}|{}|{}|{}|{}|{}|{}|{}", command_name(args.operation), args.source_uuid, args.scope.value_or(""),
+      args.annotation_id.value_or(0), args.expected_revision.value_or(0), args.title.value_or(""), args.body.value_or(""),
+      args.target ? (args.target->kind == target_kind::plan ? "plan" : "task") : "", args.target ? args.target->id : 0);
+  for (const auto& tag : args.tags)
+    material += std::format("|{}", tag);
+  return std::format("{:016x}", std::hash<std::string>{}(material));
+}
+
+auto receipt_from_row(db::statement& stmt, bool replayed) -> operation_receipt {
+  return {.operation_uuid = std::string(stmt.column_text(0)),
+          .source_uuid    = std::string(stmt.column_text(1)),
+          .payload_digest = std::string(stmt.column_text(2)),
+          .annotation_id  = opt_int(stmt, 3),
+          .revision       = opt_int(stmt, 4),
+          .outcome        = std::string(stmt.column_text(5)),
+          .created_at     = std::string(stmt.column_text(6)),
+          .replayed       = replayed};
+}
+
+} // namespace
+
+auto show_receipt(db::connection& conn, std::string_view source, std::string_view operation_uuid)
+    -> std::expected<std::optional<operation_receipt>, annotation_error> {
+  auto stmt = conn.prepare("select operation_uuid, source_uuid, payload_digest, annotation_id, revision, outcome, created_at "
+                           "from annotation_operation_receipts where source_uuid = ? and operation_uuid = ?");
+  if (!stmt || !stmt->bind_text(1, source) || !stmt->bind_text(2, operation_uuid))
+    return std::unexpected(annotation_error::query_failed);
+  auto step = stmt->step();
+  if (!step)
+    return std::unexpected(annotation_error::query_failed);
+  if (*step == db::step_result::done)
+    return std::optional<operation_receipt>{};
+  return std::optional<operation_receipt>{receipt_from_row(*stmt, true)};
+}
+
+auto execute_command(db::connection& conn, const command_args& args) -> std::expected<operation_receipt, annotation_error> {
+  if (args.operation_uuid.empty() || args.source_uuid.empty())
+    return std::unexpected(annotation_error::invalid_command);
+  auto actual_source = source_uuid(conn);
+  if (!actual_source)
+    return std::unexpected(actual_source.error());
+  if (*actual_source != args.source_uuid)
+    return std::unexpected(annotation_error::source_mismatch);
+  const auto digest   = command_digest(args);
+  auto       existing = show_receipt(conn, args.source_uuid, args.operation_uuid);
+  if (!existing)
+    return std::unexpected(existing.error());
+  if (existing->has_value()) {
+    if ((**existing).payload_digest != digest)
+      return std::unexpected(annotation_error::receipt_conflict);
+    return **existing;
+  }
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx)
+    return std::unexpected(annotation_error::query_failed);
+  // Recheck under the write lock; a concurrent retry must not double-create.
+  existing = show_receipt(conn, args.source_uuid, args.operation_uuid);
+  if (!existing)
+    return std::unexpected(existing.error());
+  if (existing->has_value()) {
+    if ((**existing).payload_digest != digest)
+      return std::unexpected(annotation_error::receipt_conflict);
+    return **existing;
+  }
+
+  std::optional<std::int64_t> id;
+  std::optional<std::int64_t> revision;
+  if (args.operation == command_kind::create) {
+    if (!args.target.has_value())
+      return std::unexpected(annotation_error::invalid_command);
+    create_args input{.anchor       = {},
+                      .anchor_kind_ = anchor_kind::entity,
+                      .target       = args.target,
+                      .title        = args.title,
+                      .body         = args.body.value_or(""),
+                      .origin       = args.origin,
+                      .tags         = args.tags,
+                      .scope        = args.scope};
+    auto        created = create(conn, input);
+    if (!created)
+      return std::unexpected(created.error());
+    id       = created->id;
+    revision = created->revision;
+  } else {
+    if (!args.annotation_id.has_value() || !args.expected_revision.has_value())
+      return std::unexpected(annotation_error::invalid_command);
+    auto current = show(conn, *args.annotation_id);
+    if (!current)
+      return std::unexpected(current.error());
+    if (current->revision != *args.expected_revision)
+      return std::unexpected(annotation_error::revision_conflict);
+    id = current->id;
+    if (args.operation == command_kind::edit) {
+      auto changed = update(conn, *id, {.title = args.title, .body = args.body});
+      if (!changed)
+        return std::unexpected(changed.error());
+      revision = changed->revision;
+    } else if (args.operation == command_kind::replace_tags) {
+      auto clear = conn.prepare("delete from annotation_tags where annotation_id = ?");
+      if (!clear || !clear->bind_int64(1, *id) || !clear->step())
+        return std::unexpected(annotation_error::query_failed);
+      for (const auto& tag : args.tags) {
+        if (trim(tag).empty())
+          return std::unexpected(annotation_error::empty_tag);
+        auto insert = conn.prepare("insert into annotation_tags(annotation_id, tag) values (?, ?) on conflict do nothing");
+        if (!insert || !insert->bind_int64(1, *id) || !insert->bind_text(2, trim(tag)) || !insert->step())
+          return std::unexpected(annotation_error::query_failed);
+      }
+      auto bump = conn.prepare(
+          "update annotations set revision = revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?");
+      if (!bump || !bump->bind_int64(1, *id) || !bump->step())
+        return std::unexpected(annotation_error::query_failed);
+      if (auto audit = record_audit(conn, {.verb = audit::verb::update, .entity = {.kind = "annotation", .id = *id}}); !audit)
+        return std::unexpected(audit.error());
+      auto changed = show(conn, *id);
+      if (!changed)
+        return std::unexpected(changed.error());
+      revision = changed->revision;
+    } else if (args.operation == command_kind::resolve || args.operation == command_kind::dismiss ||
+               args.operation == command_kind::archive) {
+      auto changed = args.operation == command_kind::resolve   ? resolve(conn, *id)
+                     : args.operation == command_kind::dismiss ? dismiss(conn, *id)
+                                                               : archive(conn, *id);
+      if (!changed)
+        return std::unexpected(changed.error());
+      revision = changed->revision;
+    } else if (args.operation == command_kind::remove) {
+      revision     = current->revision + 1;
+      auto removed = remove(conn, *id);
+      if (!removed)
+        return std::unexpected(removed.error());
+    } else
+      return std::unexpected(annotation_error::invalid_command);
+  }
+  auto insert = conn.prepare("insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, "
+                             "annotation_id, revision, outcome) values (?, ?, ?, ?, ?, ?)");
+  if (!insert || !insert->bind_text(1, args.operation_uuid) || !insert->bind_text(2, args.source_uuid) ||
+      !insert->bind_text(3, digest) || !(id ? insert->bind_int64(4, *id) : insert->bind_null(4)) ||
+      !(revision ? insert->bind_int64(5, *revision) : insert->bind_null(5)) ||
+      !insert->bind_text(6, command_name(args.operation)) || !insert->step())
+    return std::unexpected(annotation_error::query_failed);
+  auto committed = tx->commit();
+  if (!committed)
+    return std::unexpected(annotation_error::query_failed);
+  auto receipt = show_receipt(conn, args.source_uuid, args.operation_uuid);
+  if (!receipt || !receipt->has_value())
+    return std::unexpected(annotation_error::query_failed);
+  return **receipt;
+}
+
 // ---------------------------------------------------------------------------
 // CRUD
 // ---------------------------------------------------------------------------
