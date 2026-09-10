@@ -1172,3 +1172,100 @@ TEST_CASE("the annotate leaves write the oracle's audit_log rows", "[cmd][annota
   // the no-op `annotate update 1`. All three exit 0 and all three write
   // NO row -- which is why they are in the sequence at all.
 }
+
+// =========================================================================
+// Receipt-backed structured annotation commands (task 6684)
+// =========================================================================
+
+TEST_CASE("annotation commands commit mutations, revisions, audit rows, and durable receipts together",
+          "[cmd][annotate][command][receipt][6684]") {
+  auto const fx = make_fixture("commandreceipt");
+  // Open through the command context once so this direct engine case uses
+  // the same migrated schema as a structured command invocation.
+  auto const initialized = dispatch(fx, {"annotate", "list"});
+  REQUIRE(initialized.code == 0);
+  auto conn = open_db(fx);
+
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Command target"});
+  REQUIRE(plan.has_value());
+  auto const source = planar::engine::planning::annotation::source_uuid(conn);
+  REQUIRE(source.has_value());
+
+  namespace ann = planar::engine::planning::annotation;
+  ann::command_args create_command{.operation      = ann::command_kind::create,
+                                   .operation_uuid = "create-6684",
+                                   .source_uuid    = *source,
+                                   .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = plan->id},
+                                   .title          = "receipt body",
+                                   .body           = "v1",
+                                   .tags           = {"first"}};
+  auto const        created = ann::execute_command(conn, create_command);
+  REQUIRE(created.has_value());
+  CHECK_FALSE(created->replayed);
+  REQUIRE(created->annotation_id.has_value());
+  CHECK(created->revision == 1);
+  auto const annotation_id = *created->annotation_id;
+  CHECK(tag_snapshot(conn, annotation_id) == "first");
+
+  // The same UUID and payload is a receipt replay, not a second mutation.
+  auto const replayed = ann::execute_command(conn, create_command);
+  REQUIRE(replayed.has_value());
+  CHECK(replayed->replayed);
+  CHECK(replayed->annotation_id == created->annotation_id);
+  CHECK(id_list(conn) == std::to_string(annotation_id));
+
+  auto different_payload = create_command;
+  different_payload.body = "different";
+  auto const conflict    = ann::execute_command(conn, different_payload);
+  REQUIRE_FALSE(conflict.has_value());
+  CHECK(conflict.error() == ann::annotation_error::receipt_conflict);
+
+  ann::command_args replace_tags{.operation         = ann::command_kind::replace_tags,
+                                 .operation_uuid    = "tags-6684",
+                                 .source_uuid       = *source,
+                                 .annotation_id     = annotation_id,
+                                 .expected_revision = 1,
+                                 .tags              = {"alpha", "beta"}};
+  auto const        tagged = ann::execute_command(conn, replace_tags);
+  REQUIRE(tagged.has_value());
+  CHECK_FALSE(tagged->replayed);
+  CHECK(tagged->revision == 2);
+  CHECK(tag_snapshot(conn, annotation_id) == "alpha,beta");
+
+  ann::command_args resolve_command{.operation         = ann::command_kind::resolve,
+                                    .operation_uuid    = "resolve-6684",
+                                    .source_uuid       = *source,
+                                    .annotation_id     = annotation_id,
+                                    .expected_revision = 2};
+  auto const        resolved = ann::execute_command(conn, resolve_command);
+  REQUIRE(resolved.has_value());
+  CHECK(resolved->revision == 3);
+  CHECK(row_snapshot(conn, annotation_id).contains("|resolved|"));
+
+  // A stale optimistic-lock request writes neither an audit row nor a receipt.
+  ann::command_args stale_edit{.operation         = ann::command_kind::edit,
+                               .operation_uuid    = "stale-6684",
+                               .source_uuid       = *source,
+                               .annotation_id     = annotation_id,
+                               .expected_revision = 2,
+                               .body              = "must not land"};
+  auto const        stale = ann::execute_command(conn, stale_edit);
+  REQUIRE_FALSE(stale.has_value());
+  CHECK(stale.error() == ann::annotation_error::revision_conflict);
+  auto receipt_count = conn.prepare("select count(*) from annotation_operation_receipts");
+  REQUIRE(receipt_count.has_value());
+  REQUIRE(receipt_count->step().has_value());
+  CHECK(receipt_count->column_int64(0) == 3);
+  CHECK(audit_transcript(fx).contains("create|annotation|1|create annotation 'receipt body'\n"));
+  CHECK(audit_transcript(fx).contains("update|annotation|1|<NULL>\n"));
+  CHECK(audit_transcript(fx).contains("status_change|annotation|1|resolve\n"));
+
+  // Lookup is the uncertain-outcome path: it is read-only and preserves the
+  // original revision/outcome after the command process has exited.
+  auto const looked_up = ann::show_receipt(conn, *source, "resolve-6684");
+  REQUIRE(looked_up.has_value());
+  REQUIRE(looked_up->has_value());
+  CHECK((**looked_up).outcome == "resolve");
+  CHECK((**looked_up).revision == 3);
+  CHECK((**looked_up).replayed);
+}

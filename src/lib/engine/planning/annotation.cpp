@@ -635,7 +635,9 @@ auto execute_command(db::connection& conn, const command_args& args) -> std::exp
   auto receipt = show_receipt(conn, args.source_uuid, args.operation_uuid);
   if (!receipt || !receipt->has_value())
     return std::unexpected(annotation_error::query_failed);
-  return **receipt;
+  auto result     = **receipt;
+  result.replayed = false;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
