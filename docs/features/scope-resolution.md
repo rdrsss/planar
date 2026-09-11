@@ -18,144 +18,160 @@ references:
 
 # Scope resolution
 
-> **Stale document (task 6140, 2026-09-09).** This page describes the
-> active-scope-stack model (`planar scope push`/`pop`, stack-top
-> fallback, `--no-scope-check`) that plan 153 M5 removed entirely —
-> the `active_scope` table is dropped and those verbs no longer exist.
-> The current write-resolution algorithm (`--scope` explicit override
-> → cwd derivation → refuse) is documented in
-> [`concepts.md § Write resolution`](../concepts.md#write-resolution)
-> and [`concepts.md § Cross-scope guard`](../concepts.md#cross-scope-guard).
-> This task fixed only the `--no-scope-check` claim below in place; the
-> rest of the page's stack-based model is a larger doc-drift finding
-> filed separately (see task list for the scope-resolution feature
-> doc rewrite).
+Planar resolves every write verb to a single scope before it touches the
+database. Resolution is a pure function of `(--scope flag, cwd, database)` —
+there is no session state, no stack, and nothing to forget about.
 
-Planar resolves every write verb to a single, explicit scope before it
-touches the database. The resolver runs the same four-step algorithm
-for every command, and refuses to guess when the active-scope stack
-and the current working directory disagree[^scope_tech_spec].
+**This page was rewritten on 2026-09-11 (tasks 6676 and 6746) against the
+shipped binary.** Every claim below was measured. Earlier editions described a
+four-step algorithm with an active-scope stack, `planar scope push` / `swap`
+examples, and a `--no-scope-check` escape hatch — a model plan 153 M5 removed
+and a flag that never existed on this binary.
 
 ## What it does
 
-- Pins every write verb (`plan add`, `task add`, `artifact add`,
-  `decision add`, `question add`, `scenario add`, …) to exactly one
-  scope before any row is created[^scope_product_spec].
-- Reads three independent inputs every time: an explicit `--scope`
-  flag, the active-scope stack (`planar scope show`), and the
-  cwd-derived scope (the association whose member project contains
-  the current working directory).
-- Refuses to write — exits with a `cperr.User` error and a clear
-  diagnostic — when the stack-top scope and the cwd-derived scope
-  disagree without `--scope` to break the tie.
-- Prints a non-blocking warning when cwd derives a scope that is
-  in the stack but not on top, suppressible with `--quiet`.
-- Surfaces both the resolved scope and any pending disagreement in
-  `planar health` so onboarding catches mismatches before they
-  silently misroute work.
+- Pins every write verb (`plan create`, `task add`, `artifact add`,
+  `decision add`, `question add`, `scenario add`, …) to exactly one scope
+  before any row is created[^scope_product_spec].
+- Reads **two** inputs, not three: an explicit `--scope` flag and the
+  cwd-derived scope. There is no stack to consult.
+- Surfaces the cwd-derived resolution through `planar scope show`.
 
-## The 4-step algorithm
+## The algorithm
 
-The resolver applies these steps in order; the first one to produce
-a unique scope wins[^scope_tech_spec]:
+`resolve_for_write`, in order; the first step that yields a scope wins:
 
-1. **`--scope` explicit override** — if the flag is present, the
-   resolver uses it verbatim. The scope still has to resolve to a
-   real `associations.id`; an unknown slug is a hard error. No
-   cwd derivation runs in this branch.
-2. **Cwd derivation** — Planar walks upward from the current
-   working directory, finding the first git remote (`origin`) that
-   matches a `projects.git_remote`. The resolver then looks up
-   every association that includes that project. Zero hits leaves
-   cwd unresolved; one hit yields a cwd-scope.
-3. **Stack-top fallback** — if cwd produced nothing, the resolver
-   uses the top of the active-scope stack (`planar scope show`).
-   This is the common path for sessions started from an unrelated
-   directory after `planar scope push`.
-4. **Strict-mode tiebreak** — when both cwd and stack are populated
-   and they point at different associations, the resolver refuses
-   to write. The error message names both scopes and the offending
-   verb, plus the two ways to resolve: pass `--scope`, or change
-   directories so cwd agrees.
+1. **Explicit `--scope`.** Threaded through **verbatim** — not validated
+   against the database. It is the operator's stated intent. An unresolvable
+   slug surfaces later, from whichever verb tries to use it, as `SlugNotFound`
+   (exit 1).
+2. **Meta-workspace arm.** Standing exactly on a registered meta-workspace
+   root, where the cwd names the org and the root repo equally well, the write
+   **refuses** (exit 5) rather than pick. Inside a member repo of a meta
+   workspace, the write lands on that concrete repo.
+3. **Cwd derivation, most-specific-wins.** The same candidate set, specificity
+   ranking and longest-root tie-breaker the read path uses. A member repo
+   outranks an org containing it: a write from inside `~/work/repo-a/` lands at
+   `repo:repo-a`, not `assoc:work`.
+4. **Otherwise `global`, exit 0.**
 
-The strict tiebreak is what makes the resolver safe to run with
-multiple in-flight agents on the same machine. Pre-hardening,
-Planar would silently pick the stack-top scope and misroute writes
-into the wrong project — a class of bug the strict resolver makes
-impossible to hit by default[^scope_roadmap].
+Step 3 shares its ranking with `resolve_read_scope_set` as of task 6746
+(decision 1100). Before that the write path mapped the cwd's project to its
+single association and could never yield a `repo:` scope, so `scope show` and
+the write path disagreed from the same directory. They now agree, and a test
+pins that agreement.
 
-## No `--no-scope-check` escape hatch
+### Step 4 is a footgun, documented because it is true
 
-The current binary implements no such flag; `planar schema` declares
-it on no command, and passing it fails at parse time with exit 2
-(`error: <cmd>: The following argument was not expected: --no-scope-check`).
-It is not merely undocumented-but-present — `grep -rn
-guard_write src/` shows the engine-layer bypass primitive exists and
-is unit-tested, but no `cmd/` handler ever calls it with `true`, so no
-verb can reach it from the CLI. There is no flag-based way to
-downgrade a cross-scope refusal to a warning.
-
-The only present-day remedies for a cross-scope-guard refusal are:
-
-- **Pass `--scope <slug>` explicitly** — the write resolver's step 1
-  above; it wins over cwd derivation outright.
-- **`cd` into the entity's owning repo** so cwd derivation resolves
-  to the matching scope.
-
-A genuine mismatch — operator scope and entity scope disagree and
-neither of the above is done — fails outright. See
-[`concepts.md § Cross-scope guard`](../concepts.md#cross-scope-guard)
-for the exact refusal message format and the guarded/unguarded verb
-matrix.
-
-## The cwd-stack-mismatch warning
-
-When cwd derives a scope that sits in the active stack but is *not*
-the top, the resolver prints a one-line warning to stderr:
+A write from an unregistered directory does **not** refuse. It succeeds at
+global scope. The **read** path refuses the same cwd:
 
 ```
-warning: cwd scope project:web-app is in the stack but not on top
-         (stack top: project:platform). Use --scope to override or
-         `planar scope swap` to reorder.
+$ cd /tmp/nowhere && planar plan list
+error: cwd is not inside any registered Planar scope; cd into a registered
+       scope or pass --scope global
+(exit 1)
+
+$ cd /tmp/nowhere && planar plan create "probe"
+scope:    global
+(exit 0)
 ```
 
-The warning is non-blocking — the resolver proceeds with cwd's
-scope. It exists to make subtle stack-ordering bugs visible without
-breaking the user's flow. `--quiet` suppresses the warning entirely
-for batched / scripted contexts where the noise is unwelcome.
+Reads are the strict side, not writes. Whether step 4 should refuse is an open
+question (decision 1100 deliberately did not settle it). Until it is settled,
+run `planar scope show` before writing from an unfamiliar cwd.
+
+### One registered-project exception
+
+A project registered with **no association** does not resolve to
+`repo:<slug>`; it yields no scope, with the reason `project_unassociated`.
+`plan create` turns that into an exit-5 refusal naming the remedy:
+
+```
+error: plan create: project has no association; run `planar assoc create
+project:proj --kind project` then `planar assoc add project:proj <repo-path>`,
+or pass `--scope global` explicitly
+```
+
+`task add` and `scenario add` deliberately do **not** refuse and file under
+global. That split is pinned by tests and is not an oversight.
+
+## No escape hatch
+
+There is no flag that downgrades a scope refusal. **`--no-scope-check` does
+not exist on this binary** — `planar schema` declares it on no command, and
+passing it fails at parse time with exit 2:
+
+```
+error: <cmd>: The following argument was not expected: --no-scope-check
+```
+
+(An engine-layer `guard_write` bypass parameter of the same shape exists and is
+unit-tested, but no `cmd/` handler ever calls it with `true`, so no verb can
+reach it from the CLI.)
+
+The remedies for a refusal are `--scope <slug>` or `cd` into the entity's
+owning repo. Note that `--scope` selects the write scope only on the verbs
+where it means that: on `plan update`, `artifact update` and `annotate update`
+it is a **patch field** that reassigns the entity's stored scope. See
+[`cli-reference.md § --scope is four different flags`](../cli-reference.md#--scope-is-four-different-flags).
+
+## The removed active-scope stack
+
+Plan 153 M5 dropped the `active_scope` table
+(`migrations/00009_drop_active_scope.up.sql`) and the verbs that manipulated
+it. Measured behaviour of what operators may still type:
+
+| Typed | Result |
+|-------|--------|
+| `planar scope use` | retired-verb notice, **exit 2** |
+| `planar scope pop` | retired-verb notice, **exit 2** |
+| `planar scope clear` | retired-verb notice, **exit 2** |
+| `planar scope use <slug>` | **parse error**, exit 2 — the notice is preempted, because the stub declares no positional (task 6446) |
+| `planar scope push` / `planar scope swap` | parse error, exit 2 — these never existed |
+
+The notice reads:
+
+```
+error: `planar scope pop` was removed in plan 153 M5; the active scope stack
+is gone. Pass --scope <slug> to individual verbs, or cd into a registered
+scope. Run `planar scope show` to inspect the cwd-derived scope.
+```
 
 ## CLI
 
-```sh
-# Inspect the current resolution inputs.
+```bash
+# Inspect the cwd-derived resolution. Run this before writing from an
+# unfamiliar cwd -- step 4 above does not refuse.
 planar scope show
 
-# Push an explicit scope; useful when cwd-derivation is ambiguous.
-planar scope push assoc:project:platform
+# Write under the cwd-derived scope.
+planar task add "Wire the resolver"
 
-# Run a write verb under the resolved scope.
-planar task add "Refactor scope resolver" --priority 100
+# Override explicitly. The flag wins over cwd derivation.
+planar task add "Wire the resolver" --scope repo:planar
 
-# Break the tie explicitly with --scope (wins even if cwd disagrees).
-planar task add "Cross-repo bookkeeping" --scope org:platform
-
-# Inspect resolution health.
-planar health
+# See which scopes a cwd could resolve to.
+planar scope suggest
 ```
 
 ## Implementation notes
 
-The resolver lives in `src/engine/identity/scope.zig` and is
-called by every write verb's handler under `src/cmd/planar/handlers/`.
-The single entry point is `scope.resolveForWrite`; the cwd derivation
-primitive is factored as `scope.deriveFromCwd` so the same code path
-serves both the resolver and the `planar scope show` read. Doc
-comments on those functions are the authoritative specification.
+The resolver is `planar::engine::identity::resolve_for_write` in
+`src/lib/engine/identity/scope.cpp`, called from each binary's `cmd` layer
+through `resolve_write_scope`. `derive_write_scope_ranked` performs step 3 and
+shares its ranking with `resolve_read_scope_set`, which backs `scope show`.
+Doc comments on those functions are the authoritative specification.
+
+Earlier editions pointed at `src/engine/identity/scope.zig`. The Zig tree was
+deleted at the M10 cutover; that path no longer exists.
 
 ## Related
 
 - [Concepts: scope and association](../concepts.md#scope)
-- [Workflows: switching scope mid-session](../workflows.md)
+- [Concepts: write resolution](../concepts.md#write-resolution)
+- [Concepts: cross-scope guard](../concepts.md#cross-scope-guard)
+- [CLI reference: cross-scope guard](../cli-reference.md#cross-scope-guard)
 
 [^scope_product_spec]:
 [^scope_tech_spec]:

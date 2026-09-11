@@ -310,7 +310,7 @@ Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard
 
 ### Removed: the active scope stack
 
-Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get an exit-1 redirect pointing at `planar scope show`.
+Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get a retired-verb notice pointing at `planar scope show`, at **exit 2** (measured at task 6676; earlier editions of this page said exit 1). `planar scope use <slug>` is the exception: the stub declares no positional, so the parser refuses first and the notice never prints (task 6446). `planar scope push` and `planar scope swap` never existed at all.
 
 **SQLite tables:** `associations`, `project_associations`, `projects`. **Primary verbs:** `planar scope show` (derived view), `planar scope suggest`. Set the scope for any verb by `cd`-ing into the target or passing `--scope <slug>`.
 
@@ -1104,19 +1104,37 @@ The provider CLIs (`claude`, `codex`) do not expose a machine-readable model lis
 
 ## Color output
 
-> **Stale section (task 6140, 2026-09-09).** This entire section describes a
-> status-color palette, `--color`/`--no-color` flags, and `NO_COLOR` handling
-> that do not exist in the current C++ binary: `grep -rn "NO_COLOR\|palette"
-> src/` returns nothing, `planar schema` declares no `--color`/`--no-color`
-> flag on any command, and passing either fails at parse time with exit 2
-> (`error: <cmd>: The following argument was not expected: --color`). The
-> binary emits no ANSI color output at all today. This is a larger doc-drift
-> finding than task 6140's scope covers (the whole section, not one flag)
-> and is filed separately rather than rewritten here.
+**There is none.** Measured 2026-09-11 (task 6675): `planar plan list` emits
+**zero** ANSI escape bytes, `planar schema` declares no `--color` / `--no-color`
+flag on any command, and all three spellings fail at parse time with exit 2:
 
-`planar tree`, the per-entity `list` verbs (`plan list`, `task list`, `question list`, `decision list`, `artifact list`, `scenario list`), and the child-plan summary section of `plan show` colorize the status column based on the entity kind that owns the status. Status is the only field colorized; titles, IDs, dates, and relationship arrows stay plain.
+```
+$ planar plan list --color   # cli-lint-ignore: the flag's ABSENCE is the point
+error: plan list: The following argument was not expected: --color
+(exit 2)
+```
 
-**Palette families.** The palette uses six visual categories from the 8-color ANSI set (universal across modern terminals: macOS Terminal, iTerm2, kitty, alacritty, Windows Terminal). The map is keyed by `(entity_kind, status)` so the same status text on different entities can take different colors.
+`NO_COLOR` is not read, because there is nothing to suppress.
+
+Editions of this page before 2026-09-11 described a six-family ANSI palette
+keyed by `(entity_kind, status)`, a five-level `--color=auto|always|never`
+precedence table, a structural `--json` bypass, and a "drift gate" unit test
+asserting a palette entry for every status. **None of that exists.** The
+entry-point it named — `src/cmd/planar/output.zig` — went with the Zig tree at
+the M10 cutover, and no C++ equivalent was written.
+
+The design is preserved below as a *proposal*, not as documentation, because it
+is a reasonable design and re-deriving it would be waste. Anyone implementing
+it should treat the table as a starting point and re-check it against the
+current status vocabulary, which has changed since it was written.
+
+<details>
+<summary>Unimplemented palette proposal</summary>
+
+Scope: `planar tree`, the per-entity `list` verbs, and the child-plan summary
+in `plan show` would colorize the status column only — titles, IDs, dates and
+relationship arrows stay plain. The map is keyed by `(entity_kind, status)`, so
+the same status text on different entities can take different colors.
 
 | Family | Color | Statuses |
 |---|---|---|
@@ -1127,21 +1145,19 @@ The provider CLIs (`claude`, `codex`) do not expose a machine-readable model lis
 | Hard fail | red | `scenario_outcome.error`, `scenario_outcome.fail`, `question.wontfix` |
 | Terminal-dim | gray | `plan.abandoned`, `task.cancelled`, `annotation.dismissed`, `annotation.archived`, `artifact.superseded`, `artifact.retired`, `decision.superseded`, `decision.withdrawn`, `scenario.retired`, `scenario_outcome.skipped`, `plan_step.skipped` |
 
-**Mode precedence (highest wins).**
+Proposed mode precedence, highest first: `NO_COLOR` (any non-empty value) →
+`--no-color` / `--color=never` → `--color=always` → `--color=auto` with a TTY
+stdout → otherwise off.
 
-1. `NO_COLOR` env var (any non-empty value) — never emit color
-2. `--no-color` or `--color=never` — never emit color
-3. `--color=always` — emit color
-4. `--color=auto` (default) and stdout is a TTY — emit color
-5. otherwise — do not emit color
+Two properties worth keeping if this is ever built: the `--json` path should
+bypass the color helper **structurally** rather than by consulting a toggle, so
+piped JSON is byte-identical regardless of mode; and a drift test should walk
+every domain's status constant and assert a palette entry, so a migration that
+adds a status cannot silently ship uncolored.
 
-None of `--color`, `--no-color`, or `NO_COLOR` are implemented; this precedence table describes the aspirational design, not shipped behavior (see the stale-section note above).
+</details>
 
-**JSON bypass.** The `--json` output path never calls into the color helper. The bypass is structural, not toggle-based: scripts piping JSON receive byte-identical output regardless of `--color` or `NO_COLOR`.
-
-**Drift gate.** A unit test in the output color module walks every domain's `Statuses` constant and asserts a palette entry. A future migration that adds a new status without updating the palette fails the test and the build is red.
-
-**SQLite tables:** none — color is a pure rendering concern. **Primary entry points:** the output color helpers in `src/cmd/planar/output.zig`. Engine-internal, not a CLI surface.
+**SQLite tables:** none. **Primary entry points:** none — nothing implements this.
 
 ## Local sandbox
 
