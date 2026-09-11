@@ -136,7 +136,6 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 ///
 /// `--json` carries a description here, so it is `add_bool` rather
 /// than `add_json`; `init` is the only other such site.
-/// @param root The root app to attach it to.
 auto declare_report(CLI::App& root) -> void {
   CLI::App* report = root.add_subcommand(
       "report",

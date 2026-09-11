@@ -570,7 +570,6 @@ auto synthesize(context& ctx, const cliapp::parsed_args& args) -> handler_result
   return {};
 }
 /// @brief Declare the `synthesize` leaf.
-/// @param root The root app to attach it to.
 auto declare_synthesize(CLI::App& root) -> void {
   CLI::App* synthesize = root.add_subcommand(
       "synthesize", "synthesize reads a repository's existing planning docs, source\n  code, and git history AS INPUT for an LLM "

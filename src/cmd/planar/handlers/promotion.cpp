@@ -223,7 +223,6 @@ auto demote(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// module, so each gets its own declaration function rather than one
 /// shared function declaring both — the shape `run` and `bench`
 /// already take in `runs.cpp`.
-/// @param root The root app to attach it to.
 auto declare_promote(CLI::App& root) -> void {
   CLI::App* promote = root.add_subcommand(
       "promote", "Promote an entity from its current scope to a named association.\n\n  Valid entity kinds: plan, task, "
@@ -235,7 +234,6 @@ auto declare_promote(CLI::App& root) -> void {
 }
 
 /// @brief Declare the `demote` leaf. See `declare_promote`.
-/// @param root The root app to attach it to.
 auto declare_demote(CLI::App& root) -> void {
   CLI::App* demote = root.add_subcommand(
       "demote", "Reverse a promotion — move an entity back to global personal scope.\n\n  The destination is always global; the "

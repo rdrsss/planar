@@ -121,7 +121,6 @@ auto init(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// the ninety-odd bare `--json` flags elsewhere in the tree, so it is
 /// `add_bool` rather than `add_json` — `report` is the only other
 /// such site.
-/// @param root The root app to attach it to.
 auto declare_init(CLI::App& root) -> void {
   CLI::App* init = root.add_subcommand("init", "Initialize the Planar database and register the current directory as a project.");
   add_string(*init, "--name", "Project name (defaults to repo dir)");

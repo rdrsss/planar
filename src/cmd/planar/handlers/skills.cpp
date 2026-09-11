@@ -32,7 +32,6 @@ auto skills(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// `render`/`status`/`repair` and left the node registered so the verb
 /// reports "no subcommands" rather than an unknown-verb error. With no
 /// children it is a LEAF and needs a handler — see `skills` above.
-/// @param root The root app to attach it to.
 auto declare_skills(CLI::App& root) -> void {
   root.add_subcommand(
       "skills", "The unified skill source tree under skills/src/ is rendered by the\n  external scriptorium binary (plan 918). "

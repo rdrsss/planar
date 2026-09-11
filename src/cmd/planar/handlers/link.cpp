@@ -166,7 +166,6 @@ auto link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// `links.cpp`) writes `entity_links`. The two spellings mirror
 /// `planar link` vs `planar links add`, and they are NOT the same
 /// domain — see this binary's CMakeLists for the same note.
-/// @param root The root app to attach it to.
 auto declare_link(CLI::App& root) -> void {
   CLI::App* link = root.add_subcommand(
       "link", "Manually record an external_links row linking a local entity to\n  an already-existing external ticket. Use this "

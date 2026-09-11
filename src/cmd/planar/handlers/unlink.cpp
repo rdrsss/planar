@@ -154,7 +154,6 @@ auto unlink(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// earlier and change both the message and the exit code. The parity
 /// suite pins the whole `1_0` / `007` / `+12` / `_10` / `10_` / `0x10`
 /// / overflow table through this leaf.
-/// @param root The root app to attach it to.
 auto declare_unlink(CLI::App& root) -> void {
   CLI::App* unlink = root.add_subcommand(
       "unlink",

@@ -516,7 +516,6 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 /// the token `import` is a module-import directive, and naming the
 /// variable after its verb invites a future edit to move it to the
 /// start of a line.
-/// @param root The root app to attach it to.
 auto declare_import(CLI::App& root) -> void {
   CLI::App* importer = root.add_subcommand(
       "import", "import translates the planning artefacts of an existing\n  repository into Planar's data model. It discovers\n  "

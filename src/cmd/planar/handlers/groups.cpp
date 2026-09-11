@@ -75,7 +75,6 @@ auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_
 }
 
 /// @brief Declare the `groups` group and its `recommend` leaf.
-/// @param root The root app to attach it to.
 auto declare_groups(CLI::App& root) -> void {
   CLI::App* groups = root.add_subcommand(
       "groups",
