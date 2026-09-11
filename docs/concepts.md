@@ -310,7 +310,7 @@ Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard
 
 ### Removed: the active scope stack
 
-Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get an exit-1 redirect pointing at `planar scope show`.
+Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get a retired-verb notice pointing at `planar scope show`, at **exit 2** (measured at task 6676; earlier editions of this page said exit 1). `planar scope use <slug>` is the exception: the stub declares no positional, so the parser refuses first and the notice never prints (task 6446). `planar scope push` and `planar scope swap` never existed at all.
 
 **SQLite tables:** `associations`, `project_associations`, `projects`. **Primary verbs:** `planar scope show` (derived view), `planar scope suggest`. Set the scope for any verb by `cd`-ing into the target or passing `--scope <slug>`.
 
