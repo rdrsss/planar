@@ -136,6 +136,7 @@ export struct create_args {
 /// bumping `updated_at`. Mirrors zig's `annotation.UpdateArgs`.
 export struct update_args {
   std::optional<std::string_view> title;   ///< New title.
+  bool                            clear_title = false; ///< Set the nullable title to SQL NULL.
   std::optional<std::string_view> slug;    ///< New slug.
   std::optional<std::string_view> body;    ///< New body.
   std::optional<status>           status_; ///< New status; validated against the transition matrix.
@@ -180,7 +181,7 @@ export enum class annotation_error : std::uint8_t {
 /// @brief The explicitly idempotent writer operations exposed to a future
 /// local annotation client. Legacy annotate leaves remain operator tools;
 /// this contract is the one that carries an operation receipt.
-export enum class command_kind : std::uint8_t { create, edit, replace_tags, resolve, dismiss, archive, remove };
+export enum class command_kind : std::uint8_t { create, edit, replace_tags, resolve, dismiss, archive, remove, bulk_resolve, bulk_dismiss, bulk_archive };
 
 /// @brief Input to one receipt-backed annotation mutation.
 export struct command_args {
@@ -192,8 +193,10 @@ export struct command_args {
   std::optional<std::int64_t>     annotation_id;
   std::optional<std::int64_t>     expected_revision;
   std::optional<std::string_view> title;
+  bool                            clear_title = false; ///< A JSON null title; distinct from omission.
   std::optional<std::string_view> body;
   std::vector<std::string>        tags;
+  std::optional<list_filter>      bulk_filter;
   std::string_view                origin{"local-annotation-writer"};
 };
 
@@ -206,6 +209,7 @@ export struct operation_receipt {
   std::optional<std::int64_t> revision;
   std::string                 outcome;
   std::string                 created_at;
+  std::optional<std::int64_t> affected_count; ///< Immutable aggregate count for bulk operations.
   bool                        replayed{false};
 };
 
@@ -361,24 +365,9 @@ export enum class bulk_action : std::uint8_t {
 /// @brief Apply `action` to every annotation matching `filter`, returning
 /// the number of rows that actually transitioned.
 ///
-/// **THIS IS NOT TRANSACTIONAL, and that is the oracle's own behavior,
-/// established by experiment rather than assumed.** The probe (hazard 1 in
-/// task 6094's brief), reproducible verbatim:
-///
-/// ```
-/// $Z annotate add --anchor-path z.txt --title B1   # x4, ids 1..4
-/// sqlite3 p3.db "create trigger boom before update on annotations
-///                when new.id = 3 begin select raise(abort,'boom'); end;"
-/// $Z annotate bulk-archive --anchor-path z.txt --json
-///   -> exit 1, `error: annotate bulk-archive: QueryFailed`
-/// sqlite3 p3.db "select id,status from annotations order by id"
-///   -> 1|archived   2|archived   3|active   4|active
-/// ```
-///
-/// The prefix STAYS APPLIED. There is no `BEGIN`, no rollback, and the
-/// rows after the failure are never attempted. Each row also carried a
-/// distinct `updated_at`, confirming one UPDATE statement per row rather
-/// than a single set-update.
+/// The selection, every row lifecycle/revision/audit mutation, and its
+/// outcome are one immediate transaction. A failed row rolls back every
+/// earlier row; no invocation may report a partial success.
 ///
 /// Per-row skip rules, preserved exactly:
 ///   - a row already in the target state is skipped (not counted);
@@ -387,8 +376,7 @@ export enum class bulk_action : std::uint8_t {
 ///   - for `archive`, no pre-skip — `resolved` and `dismissed` legally
 ///     progress to `archived` under the retention-tier model;
 ///   - a `terminal_status` error from the per-row transition is swallowed
-///     and the row skipped; ANY OTHER error aborts the pass and is
-///     returned, leaving the prefix applied.
+///     and the row skipped; ANY OTHER error aborts and rolls back the pass.
 ///
 /// @param conn An open, migrated database connection.
 /// @param filter The selection; `bulk-resolve`/`bulk-dismiss` pass

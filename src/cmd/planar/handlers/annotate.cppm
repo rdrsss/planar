@@ -95,7 +95,7 @@ export auto annotate_show(context& ctx, const cliapp::parsed_args& args) -> hand
 /// engine failure.
 export auto annotate_update(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-/// @brief Handle `planar annotate remove <annotation-id> [--json]`.
+/// @brief Handle `planar annotate remove <annotation-id> --expected-revision N [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or `invalid_input` (exit 2) for a non-integer id, or

@@ -513,7 +513,7 @@ TEST_CASE("annotate remove deletes the row and cascades its tags", "[cmd][annota
   REQUIRE(id_list(conn) == "1,2");
   REQUIRE(tag_snapshot(conn, 1) == "a,b");
 
-  auto const text = dispatch(fx, {"annotate", "remove", "1"});
+  auto const text = dispatch(fx, {"annotate", "remove", "1", "--expected-revision", "1"});
   REQUIRE(text.code == 0);
   CHECK(text.out == "annotation 1 removed\n");
 
@@ -525,7 +525,7 @@ TEST_CASE("annotate remove deletes the row and cascades its tags", "[cmd][annota
   CHECK(tag_snapshot(conn, 1).empty());
   CHECK(tag_snapshot(conn, 2) == "c");
 
-  auto const json = dispatch(fx, {"annotate", "remove", "2", "--json"});
+  auto const json = dispatch(fx, {"annotate", "remove", "2", "--expected-revision", "1", "--json"});
   REQUIRE(json.code == 0);
   // Both renderers are fragments, so BOTH paths append — unlike `show`,
   // whose text renderer carries its own newlines.
@@ -535,7 +535,7 @@ TEST_CASE("annotate remove deletes the row and cascades its tags", "[cmd][annota
 
 TEST_CASE("annotate remove reports a missing id by naming it", "[cmd][annotate][remove][parity]") {
   auto const fx  = make_fixture("removenf");
-  auto const got = dispatch(fx, {"annotate", "remove", "99"});
+  auto const got = dispatch(fx, {"annotate", "remove", "99", "--expected-revision", "1"});
   CHECK(got.code == 1);
   CHECK(got.err == "error: no annotation with id 99\n");
 }
@@ -1152,7 +1152,7 @@ TEST_CASE("the annotate leaves write the oracle's audit_log rows", "[cmd][annota
   REQUIRE(dispatch(fx, {"annotate", "archive", "1"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "tag", "1", "t1"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "tag", "1", "t1", "--remove"}).code == 0);
-  REQUIRE(dispatch(fx, {"annotate", "remove", "2"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "remove", "2", "--expected-revision", "1"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "update", "1"}).code == 0); // no-op patch
 
   CHECK(audit_transcript(fx) == "create|annotation|1|create annotation 'A1'\n"
@@ -1268,4 +1268,64 @@ TEST_CASE("annotation commands commit mutations, revisions, audit rows, and dura
   CHECK((**looked_up).outcome == "resolve");
   CHECK((**looked_up).revision == 3);
   CHECK((**looked_up).replayed);
+}
+
+TEST_CASE("annotation command payload identity is durable and preserves null titles", "[cmd][annotate][command][receipt][6684]") {
+  auto const fx = make_fixture("commandidentity");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto conn = open_db(fx);
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  namespace ann = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+  ann::command_args first{.operation = ann::command_kind::create, .operation_uuid = "delimiter", .source_uuid = *source,
+                          .target = ann::entity_target{.kind = ann::target_kind::plan, .id = plan->id}, .title = "a|b", .body = "c"};
+  REQUIRE(ann::execute_command(conn, first).has_value());
+  auto distinct = first;
+  distinct.title = "a";
+  distinct.body = "b|c";
+  auto const conflict = ann::execute_command(conn, distinct);
+  REQUIRE_FALSE(conflict.has_value());
+  CHECK(conflict.error() == ann::annotation_error::receipt_conflict);
+
+  ann::command_args edit{.operation = ann::command_kind::edit, .operation_uuid = "clear-title", .source_uuid = *source,
+                         .annotation_id = 1, .expected_revision = 1, .clear_title = true};
+  REQUIRE(ann::execute_command(conn, edit).has_value());
+  auto cleared = ann::show(conn, 1);
+  REQUIRE(cleared.has_value());
+  CHECK_FALSE(cleared->title.has_value());
+}
+
+TEST_CASE("annotate remove requires the current revision", "[cmd][annotate][remove][revision][6684]") {
+  auto const fx = make_fixture("removerevision");
+  seed(fx, {"--anchor-path", "f.txt", "--title", "remove"});
+  auto const stale = dispatch(fx, {"annotate", "remove", "1", "--expected-revision", "2"});
+  CHECK(stale.code == 1);
+  CHECK(stale.err == "error: annotate remove: Conflict\n");
+  auto conn = open_db(fx);
+  CHECK(id_list(conn) == "1");
+  auto const missing = dispatch(fx, {"annotate", "remove", "1"});
+  CHECK(missing.code == 2);
+  CHECK(missing.err == "error: --expected-revision is required\n");
+}
+
+TEST_CASE("bulk command receipts retain their affected count on replay", "[cmd][annotate][bulk][receipt][6684]") {
+  auto const fx = make_fixture("bulkreceipt");
+  seed(fx, {"--anchor-path", "f.txt", "--title", "one"});
+  seed(fx, {"--anchor-path", "f.txt", "--title", "two"});
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto conn = open_db(fx);
+  namespace ann = planar::engine::planning::annotation;
+  auto source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+  ann::command_args command{.operation = ann::command_kind::bulk_resolve, .operation_uuid = "bulk-6684", .source_uuid = *source,
+                            .bulk_filter = ann::list_filter{.anchor_path = "f.txt", .status_ = ann::status::active}};
+  auto first = ann::execute_command(conn, command);
+  REQUIRE(first.has_value());
+  CHECK(first->affected_count == 2);
+  auto replay = ann::execute_command(conn, command);
+  REQUIRE(replay.has_value());
+  CHECK(replay->replayed);
+  CHECK(replay->affected_count == 2);
 }
