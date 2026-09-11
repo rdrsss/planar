@@ -3386,7 +3386,7 @@ TEST_CASE("init --skip-project migrates the database and registers nothing", "[c
 
   // Migrated — but no row. Both halves matter: a handler that skipped the
   // whole verb would also leave `projects` empty.
-  CHECK(read_schema_version(fx) == 34);
+  CHECK(read_schema_version(fx) == 35);
   CHECK(read_table_count(fx) > 80);
   CHECK_FALSE(read_project(fx).has_value());
 }

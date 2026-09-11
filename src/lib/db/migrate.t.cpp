@@ -365,6 +365,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   CHECK(legacy_tag->column_text(0) == "legacy-tag");
   REQUIRE(legacy_tag->step().value() == planar::db::step_result::done);
 
+  REQUIRE(conn->execute(chain[34].down_sql_));
   REQUIRE(conn->execute(chain[33].down_sql_));
   auto rolled_back_tag = conn->prepare("select tag from annotation_tags where annotation_id = 1");
   REQUIRE(rolled_back_tag.has_value());
@@ -397,6 +398,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
   REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
                         "values ('global', 'entity', null, 'plan', 1, 'durable note', 1);"));
+  REQUIRE(conn->execute(chain[34].down_sql_));
   REQUIRE_FALSE(conn->execute(chain[33].down_sql_).has_value());
   auto guard = conn->prepare("select count(*) from sqlite_master where type = 'table' and name = 'annotation_rollback_guard'");
   REQUIRE(guard.has_value());
@@ -407,7 +409,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   auto version = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(version.has_value());
   REQUIRE(version->step().value() == planar::db::step_result::row);
-  CHECK(version->column_int64(0) == 34);
+  CHECK(version->column_int64(0) == 33);
   REQUIRE(version->step().value() == planar::db::step_result::done);
 
   REQUIRE(conn->execute("delete from annotations where anchor_kind = 'entity'"));

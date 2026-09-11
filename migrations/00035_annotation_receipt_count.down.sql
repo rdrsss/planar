@@ -2,9 +2,10 @@
 -- is refused while receipts exist, preserving the replay window. With no
 -- receipts, rebuild it so up/down/up returns to the migration-34 schema.
 select case when exists (select 1 from annotation_operation_receipts)
-  then raise(abort, 'cannot roll back annotation receipt count while receipts exist') end;
+  then abs(-9223372036854775808) else 0 end;
 
-create table annotation_operation_receipts_old (
+alter table annotation_operation_receipts rename to annotation_operation_receipts_with_count;
+create table annotation_operation_receipts (
   operation_uuid text primary key,
   source_uuid text not null references annotation_source_identity(source_uuid),
   payload_digest text not null,
@@ -13,11 +14,10 @@ create table annotation_operation_receipts_old (
   outcome text not null,
   created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-insert into annotation_operation_receipts_old (
+insert into annotation_operation_receipts (
   operation_uuid, source_uuid, payload_digest, annotation_id, revision, outcome, created_at
 ) select operation_uuid, source_uuid, payload_digest, annotation_id, revision, outcome, created_at
-  from annotation_operation_receipts;
-drop table annotation_operation_receipts;
-alter table annotation_operation_receipts_old rename to annotation_operation_receipts;
+  from annotation_operation_receipts_with_count;
+drop table annotation_operation_receipts_with_count;
 
 delete from schema_migrations where version = 35;

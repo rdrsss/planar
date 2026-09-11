@@ -1152,7 +1152,7 @@ TEST_CASE("the annotate leaves write the oracle's audit_log rows", "[cmd][annota
   REQUIRE(dispatch(fx, {"annotate", "archive", "1"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "tag", "1", "t1"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "tag", "1", "t1", "--remove"}).code == 0);
-  REQUIRE(dispatch(fx, {"annotate", "remove", "2", "--expected-revision", "1"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "remove", "2", "--expected-revision", "2"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "update", "1"}).code == 0); // no-op patch
 
   CHECK(audit_transcript(fx) == "create|annotation|1|create annotation 'A1'\n"
