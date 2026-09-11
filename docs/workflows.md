@@ -985,7 +985,7 @@ From a workspace root, it lists the org plus every member project. From outside 
 
 ### When the cwd does not match
 
-If the orchestrator runs from a directory that is not inside any registered project, the resolver refuses with `AmbiguousScopeError` (writes) or `OutsideRegisteredScopeError` (reads). For cross-repo planners, pass `--scope <slug>` explicitly — it makes intent legible in the command history. The active scope stack was removed in plan 153 M5, so there is no implicit fallback that could mask the cwd mismatch.
+If the orchestrator runs from a directory that is not inside any registered project, READS refuse (`error: cwd is not inside any registered Planar scope; cd into a registered scope or pass --scope global`, exit 1) while WRITES silently succeed at global scope, exit 0. That asymmetry is measured, not intended — see [Write resolution](concepts.md#write-resolution). For cross-repo planners, pass `--scope <slug>` explicitly — it makes intent legible in the command history. The active scope stack was removed in plan 153 M5, so there is no implicit fallback that could mask the cwd mismatch.
 
 There is no flag that downgrades a cross-scope-guard refusal to a warning — `--no-scope-check` does not exist on the current binary (`planar schema` declares it on no command; passing it fails at parse time with exit 2, `error: <cmd>: The following argument was not expected: --no-scope-check`). The only remedies are `--scope <slug>` or running from the entity's owning repo. See [`./cli-reference.md#cross-scope-guard`](cli-reference.md#cross-scope-guard) for the full guarded/unguarded matrix and the exact refusal message format.
 
