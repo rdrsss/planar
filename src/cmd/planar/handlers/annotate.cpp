@@ -8,6 +8,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.json_dom;
+import planar.json_text;
 import planar.engine.planning;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -697,6 +698,29 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
   auto              parsed_json = json_dom::parse_json(raw);
   if (!parsed_json || parsed_json->kind != json_dom::json_kind::object)
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "annotation command must be a JSON object"));
+  const auto is_string = [&](std::string_view name) {
+    auto const* field = parsed_json->find(name);
+    return field == nullptr || field->kind == json_dom::json_kind::string;
+  };
+  const auto is_integer = [&](std::string_view name) {
+    auto const* field = parsed_json->find(name);
+    return field == nullptr || field->kind == json_dom::json_kind::integer;
+  };
+  for (std::string_view name : {"scope", "target_kind", "body", "anchor_path", "vendor", "tag"}) {
+    if (!is_string(name))
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} must be a string", name)));
+  }
+  for (std::string_view name : {"target_id", "annotation_id", "expected_revision", "plan_id", "task_id"}) {
+    if (!is_integer(name))
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} must be an integer", name)));
+  }
+  if (auto const* field = parsed_json->find("title");
+      field != nullptr && field->kind != json_dom::json_kind::string && field->kind != json_dom::json_kind::null_)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "title must be a string or null"));
+  for (std::string_view name : {"operation", "operation_id", "source_uuid"}) {
+    if (auto const* field = parsed_json->find(name); field != nullptr && field->kind != json_dom::json_kind::string)
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} must be a string", name)));
+  }
   const auto string_field = [&](std::string_view name) -> std::optional<std::string> {
     auto const* field = parsed_json->find(name);
     return field && field->kind == json_dom::json_kind::string ? std::optional<std::string>{field->string} : std::nullopt;
@@ -738,16 +762,10 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
     }
     target = {.kind = *target_kind == "plan" ? ann::target_kind::plan : ann::target_kind::task, .id = *target_id};
   }
-  auto conn = ctx.ensure_db();
-  if (!conn)
-    return std::unexpected(conn.error());
   auto const  scope       = string_field("scope");
   auto const* title_field = parsed_json->find("title");
-  if (title_field != nullptr && title_field->kind != json_dom::json_kind::string &&
-      title_field->kind != json_dom::json_kind::null_)
-    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "title must be a string or null"));
-  auto const title = string_field("title");
-  auto const body  = string_field("body");
+  auto const  title       = string_field("title");
+  auto const  body        = string_field("body");
   if (body && body->size() > 64U * 1024U)
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "annotation command body exceeds 64 KiB"));
   std::vector<std::string> tags;
@@ -755,12 +773,16 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
     if (fields->kind != json_dom::json_kind::array || fields->array.size() > 32)
       return std::unexpected(error_from_body(domain_error_kind::invalid_input, "tags must contain at most 32 strings"));
     for (const auto& tag : fields->array) {
-      if (tag.kind != json_dom::json_kind::string || tag.string.size() > 64)
+      if (tag.kind != json_dom::json_kind::string ||
+          std::ranges::count_if(tag.string, [](unsigned char c) { return (c & 0xc0U) != 0x80U; }) > 64)
         return std::unexpected(
             error_from_body(domain_error_kind::invalid_input, "tags must contain strings of at most 64 characters"));
       tags.push_back(tag.string);
     }
   }
+  auto conn = ctx.ensure_db();
+  if (!conn)
+    return std::unexpected(conn.error());
   auto const bulk_anchor = string_field("anchor_path");
   auto const bulk_vendor = string_field("vendor");
   auto const bulk_tag    = string_field("tag");
@@ -800,16 +822,22 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
   auto         page_size     = (**conn).prepare("pragma page_size");
   if (page_count && page_size && page_count->step() && page_size->step())
     storage_bytes = page_count->column_int64(0) * page_size->column_int64(0);
-  const auto warning =
-      count > 10000 ? std::format(",\"retention_warning\":{{\"receipt_count\":{},\"storage_bytes\":{},\"message\":\"receipts are "
-                                  "retained permanently; no purge is available; this warning returns after restart\"}}",
-                                  count, storage_bytes)
-                    : std::string{};
-  ctx.out() << std::format(
-      "{{\"operation_uuid\":\"{}\",\"source_uuid\":\"{}\",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":"
-      "\"{}\",\"replayed\":{}}}{}\n",
-      receipt->operation_uuid, receipt->source_uuid, receipt->annotation_id.value_or(0), receipt->revision.value_or(0),
-      receipt->affected_count.value_or(0), receipt->outcome, receipt->replayed ? "true" : "false", warning);
+  std::string out{"{\"operation_uuid\":"};
+  json_text::append_json_string(out, receipt->operation_uuid);
+  out += ",\"source_uuid\":";
+  json_text::append_json_string(out, receipt->source_uuid);
+  out +=
+      std::format(",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":", receipt->annotation_id.value_or(0),
+                  receipt->revision.value_or(0), receipt->affected_count.value_or(0));
+  json_text::append_json_string(out, receipt->outcome);
+  out += receipt->replayed ? ",\"replayed\":true" : ",\"replayed\":false";
+  if (count > 10000) {
+    out += std::format(",\"retention_warning\":{{\"receipt_count\":{},\"storage_bytes\":{},\"message\":", count, storage_bytes);
+    json_text::append_json_string(out,
+                                  "receipts are retained permanently; no purge is available; this warning returns after restart");
+    out += '}';
+  }
+  ctx.out() << out << "}\n";
   return {};
 }
 

@@ -82,6 +82,7 @@ import cli11;
 import planar.db;
 import planar.engine.identity;
 import planar.engine.planning;
+import planar.json_dom;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
@@ -135,10 +136,18 @@ auto make_fixture(std::string_view tag) -> fixture {
 /// @param fx The fixture.
 /// @param args The argv tail.
 /// @return The captured invocation.
-auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
+auto dispatch(const fixture& fx, std::vector<std::string> args, std::optional<std::string_view> stdin_text = std::nullopt)
+    -> invocation {
   std::vector<std::string> argv{"planar"};
   argv.insert(argv.end(), args.begin(), args.end());
 
+  std::istringstream input{stdin_text.value_or("")};
+  struct cin_restore {
+    std::streambuf* previous;
+    ~cin_restore() {
+      std::cin.rdbuf(previous);
+    }
+  } restore{std::cin.rdbuf(input.rdbuf())};
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
@@ -1338,4 +1347,108 @@ TEST_CASE("bulk command receipts retain their affected count on replay", "[cmd][
   REQUIRE(replay.has_value());
   CHECK(replay->replayed);
   CHECK(replay->affected_count == 2);
+}
+
+TEST_CASE("annotation command validates its JSON boundary before mutation and emits parseable receipts",
+          "[cmd][annotate][command][boundary][6684]") {
+  auto const fx = make_fixture("commandboundary");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto       conn = open_db(fx);
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  namespace ann     = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+
+  auto const malformed = dispatch(
+      fx, {"annotate", "command", "--request", "@-"},
+      std::format(
+          R"({{"operation":"create","operation_id":"bad-body","source_uuid":"{}","target_kind":"plan","target_id":{},"body":123}})",
+          *source, plan->id));
+  CHECK(malformed.code == 2);
+  CHECK(malformed.out.empty());
+  CHECK(malformed.err == "error: body must be a string\n");
+  CHECK_FALSE(malformed.db_open);
+  auto annotation_count = conn.prepare("select count(*) from annotations");
+  auto receipt_count    = conn.prepare("select count(*) from annotation_operation_receipts");
+  auto audit_count      = conn.prepare("select count(*) from audit_log");
+  REQUIRE(annotation_count.has_value());
+  REQUIRE(receipt_count.has_value());
+  REQUIRE(audit_count.has_value());
+  REQUIRE(annotation_count->step().has_value());
+  REQUIRE(receipt_count->step().has_value());
+  REQUIRE(audit_count->step().has_value());
+  CHECK(annotation_count->column_int64(0) == 0);
+  CHECK(receipt_count->column_int64(0) == 0);
+  auto const audits_before = audit_count->column_int64(0);
+  REQUIRE(annotation_count->reset().has_value());
+  REQUIRE(receipt_count->reset().has_value());
+  REQUIRE(audit_count->reset().has_value());
+
+  // Cross the informational retention threshold without changing the command
+  // under test. The next receipt must remain one complete JSON object.
+  auto seeded = conn.prepare("insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, outcome) "
+                             "values (?, ?, 'seed', 'create')");
+  REQUIRE(seeded.has_value());
+  for (int i = 0; i < 10000; ++i) {
+    REQUIRE(seeded->bind_text(1, std::format("seed-{}", i)).has_value());
+    REQUIRE(seeded->bind_text(2, *source).has_value());
+    REQUIRE(seeded->step().has_value());
+    REQUIRE(seeded->reset().has_value());
+  }
+
+  auto const quoted = dispatch(
+      fx, {"annotate", "command", "--request", "@-"},
+      std::format(
+          R"({{"operation":"create","operation_id":"quote\"id","source_uuid":"{}","target_kind":"plan","target_id":{},"title":"quoted"}})",
+          *source, plan->id));
+  REQUIRE(quoted.code == 0);
+  CHECK(quoted.err.empty());
+  auto const response = planar::json_dom::parse_json(quoted.out);
+  REQUIRE(response.has_value());
+  REQUIRE(response->kind == planar::json_dom::json_kind::object);
+  REQUIRE(response->find("operation_uuid") != nullptr);
+  CHECK(response->find("operation_uuid")->string == "quote\"id");
+  REQUIRE(response->find("retention_warning") != nullptr);
+  CHECK(response->find("retention_warning")->kind == planar::json_dom::json_kind::object);
+
+  auto after_audit = conn.prepare("select count(*) from audit_log");
+  REQUIRE(after_audit.has_value());
+  REQUIRE(after_audit->step().has_value());
+  CHECK(after_audit->column_int64(0) == audits_before + 1);
+}
+
+TEST_CASE("annotation command measures tag limits in UTF-8 characters", "[cmd][annotate][command][unicode][6684]") {
+  auto const fx = make_fixture("commandunicode");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto       conn = open_db(fx);
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  namespace ann     = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+
+  // Constructing by concatenation preserves the UTF-8 bytes while making the
+  // 63/64/65 code-point boundaries explicit.
+  auto tags_request = [&](std::string_view operation_id, std::string_view tag, std::optional<std::int64_t> annotation_id,
+                          std::optional<std::int64_t> revision) {
+    std::string request = std::format("{{\"operation\":\"{}\",\"operation_id\":\"{}\",\"source_uuid\":\"{}\",\"tags\":[\"{}\"]",
+                                      annotation_id ? "replace-tags" : "create", operation_id, *source, tag);
+    if (annotation_id)
+      request += std::format(",\"annotation_id\":{},\"expected_revision\":{}", *annotation_id, *revision);
+    else
+      request += std::format(",\"target_kind\":\"plan\",\"target_id\":{}", plan->id);
+    return request + '}';
+  };
+  auto const tag63 = std::string(62, 'x') + "é"; // 63 code points, 64 bytes.
+  auto const first = dispatch(fx, {"annotate", "command", "--request", "@-"}, tags_request("unicode-63", tag63, {}, {}));
+  REQUIRE(first.code == 0);
+  auto const tag64  = std::string(62, 'x') + "éé"; // 64 code points, 66 bytes.
+  auto const second = dispatch(fx, {"annotate", "command", "--request", "@-"}, tags_request("unicode-64", tag64, 1, 1));
+  REQUIRE(second.code == 0);
+  auto const tag65    = std::string(63, 'x') + "éé"; // 65 code points.
+  auto const rejected = dispatch(fx, {"annotate", "command", "--request", "@-"}, tags_request("unicode-65", tag65, 1, 2));
+  CHECK(rejected.code == 2);
+  CHECK(rejected.err == "error: tags must contain strings of at most 64 characters\n");
+  CHECK(tag_snapshot(conn, 1) == tag64);
 }
