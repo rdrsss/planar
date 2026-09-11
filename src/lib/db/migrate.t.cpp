@@ -409,7 +409,9 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   auto version = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(version.has_value());
   REQUIRE(version->step().value() == planar::db::step_result::row);
-  CHECK(version->column_int64(0) == 33);
+  // Migration 35 has rolled back, while migration 34 correctly refuses to
+  // discard entity-anchored annotations. Its migration marker must remain.
+  CHECK(version->column_int64(0) == 34);
   REQUIRE(version->step().value() == planar::db::step_result::done);
 
   REQUIRE(conn->execute("delete from annotations where anchor_kind = 'entity'"));
