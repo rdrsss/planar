@@ -48,7 +48,6 @@ auto test_spec_status(context& ctx, const cliapp::parsed_args& args) -> handler_
 }
 
 /// @brief Declare the `test-spec` group and its `status` leaf.
-/// @param root The root app to attach it to.
 auto declare_test_spec(CLI::App& root) -> void {
   CLI::App* test_spec = root.add_subcommand(
       "test-spec", "Commands for inspecting test-spec coverage of a plan's tasks.\n\n  'test-spec status' prints a per-milestone "

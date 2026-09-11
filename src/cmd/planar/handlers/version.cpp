@@ -25,7 +25,6 @@ auto version(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// MOVED HERE FROM `tree.cpp` at M11.3f, where it had been the very
 /// first verb this binary ever declared (task 6105). Its `node_spec`
 /// twin agreed with it exactly.
-/// @param root The root app to attach it to.
 auto declare_version(CLI::App& root) -> void {
   root.add_subcommand("version", "Print the planar version, commit, and C++ toolchain.");
 }

@@ -102,7 +102,6 @@ auto closure_show(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 /// @brief Declare the `closure` group and its two leaves.
-/// @param root The root app to attach it to.
 auto declare_closure(CLI::App& root) -> void {
   CLI::App* closure = root.add_subcommand(
       "closure",

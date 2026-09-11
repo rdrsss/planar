@@ -254,7 +254,6 @@ auto dashboard(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 }
 
 /// @brief Declare the `dashboard` leaf.
-/// @param root The root app to attach it to.
 auto declare_dashboard(CLI::App& root) -> void {
   CLI::App* dashboard = root.add_subcommand(
       "dashboard", "Roll-up of in-flight plans in the current scope.\n\n  --agents folds in the live claim state from "

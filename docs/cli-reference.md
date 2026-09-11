@@ -140,37 +140,75 @@ The only remedies are:
 
 There is no way to force a genuinely cross-scope write through a flag; do it by resolving to the correct scope instead.
 
+### `--scope` is four different flags
+
+The remedy above — "pass `--scope <entity-scope>`" — only works on verbs where
+`--scope` selects the operator's **write scope**. It does not mean the same
+thing everywhere. Measured at task 6075:
+
+| Meaning | Effect of passing `--scope` | Verbs |
+|---------|----------------------------|-------|
+| **Write-scope selector** | Sets the operator scope the write resolves under. This is the one the guard's remedy assumes. | `plan create`, `task add`, `task update`, `artifact add`, `decision add`, `question add`, `scenario add`, `annotate add`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision` |
+| **Patch field** | **Reassigns the entity's stored scope** — it moves the row. | `plan update`, `artifact update`, `annotate update` |
+| **Read filter** | Restricts which rows are listed. | `plan list`, `artifact list`, `decision list`, `question list`, `scenario list`, `annotate list`, `search`, `tree`, `dashboard`, `health` |
+| **Inert** | Accepted, parsed, discarded. | `planar-ext ext propagate` |
+
+The consequence worth stating plainly: on `plan update`, `artifact update` and
+`annotate update` there is **no way to authorize a cross-scope write with
+`--scope`**, because `--scope` there performs the move instead. Those verbs
+are unguarded today, so nothing refuses — but the documented escape hatch
+does not exist for them, and could not be offered without a new flag.
+
 ### Guarded verbs
 
-Verbs that perform an explicit cross-scope check on every invocation. The "guards against" column names the entity kind whose stored scope is read for the comparison.
+**Measured against the source at task 6075 (2026-09-11), not aspirational.**
+Eight verbs carry a cross-scope check; seven call sites implement them
+(`sync push` and `sync pull` share one). Every other mutating verb — including
+several this table claimed for years — performs **no** scope comparison.
 
-| Verb | Guards against | Notes |
-|------|---------------|-------|
-| `spec ingest <plan> --apply` | `plan` | Bulk write of derived rows under the anchor plan; preview remains read-only. |
-| `ext propagate <plan>` | `plan` | Walks the feature tree to create external counterparts. |
-| `sync push <link\|kind:id>` | `plan` or `task` | Single-target push form; `--all` is unguarded. |
-| `sync pull <link\|kind:id>` | `plan` or `task` | Single-target pull form; `--all` is unguarded. |
-| `sync resolve <event-id>` | resolved via the event's target entity | Conflict resolution writes back to the target. |
-| `plan update <plan-id>` | `plan` | |
-| `plan step add <plan-id> <body>` | parent `plan` | New step inherits the parent plan's scope. |
-| `plan step done <step-id>` | `plan_step` (inherits parent plan's scope) | |
-| `plan step skip <step-id>` | `plan_step` | |
-| `task update <task-id>` | `task` | |
-| `task done <task-id>` | `task` | |
-| `task reopen <task-id>` | `task` | |
-| `task block <task-id> --on <task-id>` | `task` (both blocked and blocking) | Guard fires on both endpoints. |
-| `question edit <question-id>` | `question` | |
-| `scenario edit <scenario-id>` | `scenario` | |
-| `decision edit <decision-id>` | `decision` | |
-| `decision supersede <old> --by <new>` | `decision` (both old and new) | Guard fires on both endpoints. |
-| `artifact update <artifact-id>` | `artifact` | |
-| `audit publish-decision <decision-id>` | `decision` | Posts to every external link reachable from the decision. |
-| `ext create --from <kind:id>` | `plan` or `task` | The local entity the external counterpart will mirror. |
-| `link <kind:id> --to ...` | local entity kind | `external_links` creation against a local entity. |
-| `unlink <link-id>` | resolved via the link's local entity | Reads the `external_links` row to find the local endpoint. |
-| `links update <link-id>` | resolved via the link's local entity | `external_links` field update. |
+| Verb | Guards against | Comparison | Call site |
+|------|---------------|-----------|-----------|
+| `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec_ingest.cpp` |
+| `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback.cpp` |
+| `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit.cpp` |
+| `task update <task-id>` | `task` | **strict equality** | `src/cmd/planar/handlers/task.cpp` |
+| `closure compute` | resolved write scope | **strict equality** | `src/cmd/planar/handlers/closure.cpp` |
+| `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
+| `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
+| `planar-ext sync resolve <event-id>` | the event's target entity | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
 
-### Explicitly unguarded verbs
+`--all` forms of `sync push` / `sync pull` are unguarded; the bulk fan-out is
+an explicit opt-in.
+
+#### Two comparisons, not one
+
+The `Comparison` column is a real behavioural split, not a note about
+implementation. Five verbs call `guard_with_membership`, which accepts an
+entity at `repo:<project>` when the operator's write scope is an association
+that project belongs to. Two — `task update` and `closure compute` — call
+`engine::identity::check_scope_guard` directly, which is strict equality after
+`assoc:` normalization.
+
+So an `assoc:<org>` → `repo:<member>` write is **accepted** by
+`spec ingest --apply` and **refused** by `task update`, from the identical
+working directory. This divergence is recorded, not endorsed; reconciling it
+is an open operator decision.
+
+### Verbs with no scope guard
+
+Every mutating verb not listed in the table above writes without comparing the
+operator's scope to the entity's. That includes ones a reader would reasonably
+expect to be guarded:
+
+`plan update`, `plan step add/done/skip`, `task done`, `task reopen`,
+`task block`, `question edit`, `scenario edit`, `decision edit`,
+`decision supersede`, `artifact update`, `annotate update`,
+`planar-ext ext create --from`, `planar-ext ext propagate-one`, `link`, `unlink`.
+
+Editions of this document before 2026-09-11 listed most of those as guarded.
+They were not, and are not. Treat the table above as the whole set.
+
+### Explicitly unguarded by design
 
 Verbs audited and deliberately left unguarded. The absence is recorded so future readers do not interpret it as an oversight.
 
@@ -179,6 +217,7 @@ Verbs audited and deliberately left unguarded. The absence is recorded so future
 | `*_link` (e.g. `task link`, `plan link`, `links add`, `links remove`, `task touches add`, `task touches remove`) | `entity_links` is cross-entity by design; polyrepo `touches`/`derives-from` edges legitimately cross scopes. |
 | `*_add` / `*_create` (e.g. `task add`, `plan create`, `question add`, `scenario add`, `decision add`, `artifact add`, `ext register`) | New entity resolves its own `--scope` through the write resolver; `--plan` / `--parent` are references, not scope inheritance. |
 | `sync push --all` / `sync pull --all` | Bulk fan-outs that the operator opts into explicitly via `--all`. |
+| `planar-ext ext propagate` | `external_links` carries no scope column, so there is nothing to compare against; `--scope` is accepted and discarded. |
 | Read-only verbs (`show`, `list`, `status`, `audit trail`, `audit session`, `tree`, `health`) | Reads do not corrupt state; audit-from-anywhere is the common case. |
 | Identity bucket (`assoc *`, `init`, `promote`, `demote`, `scope show`, `scope suggest`, `workspace *`) | Associations *are* scope; `promote`/`demote` deliberately cross scopes (that is their purpose). |
 | Operator-state (`handoff`, `capture *`, `resume`, `resume validate`) | Manages vendor-session rows in `sessions` / `context_snapshots` / `handoffs`; not project-scoped entities. The polyrepo handoff workflow (session in repo A references a task in repo B) is supported by design. |
@@ -687,7 +726,7 @@ planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>]
 
 Note: `plan recompute-status` deliberately bypasses this matrix (it is an engine-internal aggregate roll-up, not an operator transition). Direct operator status changes always go through this verb and are matrix-checked.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the plan's stored scope. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `plan update` performs no scope comparison; the write proceeds from any cwd. Note also that `--scope` on this verb is a **patch field** that reassigns the plan's scope, not a write-scope override. See [Cross-scope guard](#cross-scope-guard).
 
 **Options:**
 
@@ -1013,7 +1052,7 @@ planar plan step add <plan-id> <body> [--after <ordinal>]
 
 **Description:** Append a new step to a plan. By default inserts at the end. `--after <ordinal>` inserts after the specified ordinal, renumbering subsequent steps.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the parent plan's stored scope (the new step inherits its parent plan's scope). See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `plan step add` performs no scope comparison against the parent plan. See [Cross-scope guard](#cross-scope-guard).
 
 **Arguments:**
 
@@ -1057,7 +1096,7 @@ planar plan step done <step-id>
 
 **Description:** Mark a plan step as done.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the parent plan's stored scope (plan steps inherit their parent plan's scope). See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `plan step done` performs no scope comparison. See [Cross-scope guard](#cross-scope-guard).
 
 **Output (`--json`):**
 ```json
@@ -1083,7 +1122,7 @@ planar plan step skip <step-id>
 
 **Description:** Mark a plan step as skipped.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the parent plan's stored scope. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `plan step skip` performs no scope comparison. See [Cross-scope guard](#cross-scope-guard).
 
 **Output (`--json`):**
 ```json
@@ -1336,7 +1375,7 @@ planar task done <task-id> [--force]
 
 **Description:** Mark a task as done. Legal from `doing` or `blocked` — not from `todo` (the matrix requires `todo → doing` first) or from a terminal status (`done`/`cancelled`). Equivalent to `task update --status done` but spelled explicitly for the common case.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `task done` declares `--scope` and never reads it; the flag is inert here and no comparison is made. See [Cross-scope guard](#cross-scope-guard).
 
 **Claim-atomic guard:** Refuses if the task has an active work claim. The agent path (`planar-agent complete`) is the correct way to close out a claimed task. Pass `--force` to override and mark done anyway — use this only when the agent is known to be no longer active.
 
@@ -1366,7 +1405,7 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 
 **Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks — see [`import`](#planar-import-repo-root) for the producer of the most common false-done case. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `task reopen` declares `--scope` and never reads it; the flag is inert here and no comparison is made. See [Cross-scope guard](#cross-scope-guard).
 
 **Claim-atomic guard:** Refuses if the task has an active work claim. Pass `--force` to override.
 
@@ -1401,7 +1440,7 @@ planar task block <task-id> --on <task-id> [--force]
 
 **Description:** Mark a task as blocked and record the blocking relationship in `entity_links`. Sets the blocked task's status to `blocked`.
 
-**Scope guard:** Refuses when either the blocked task or the blocking task is in a scope that disagrees with the operator's resolved write scope. Both endpoints are guarded. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `task block` declares `--scope` and never reads it; neither endpoint is compared. See [Cross-scope guard](#cross-scope-guard).
 
 **Claim-atomic guard:** Refuses if the task being blocked has an active work claim. Pass `--force` to override.
 
@@ -2031,7 +2070,7 @@ planar decision supersede <decision-id> --by <decision-id>
 
 **Description:** Mark a decision as superseded by a newer decision.
 
-**Scope guard:** Refuses when either the old decision or the new (`--by`) decision is in a scope that disagrees with the operator's resolved write scope. Both endpoints are guarded. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. Neither the old decision nor the `--by` decision is compared against the operator's scope. See [Cross-scope guard](#cross-scope-guard).
 
 **Options:**
 
@@ -2228,7 +2267,7 @@ planar artifact update <artifact-id> [--title <text>] [--body <text>] [--status 
 
 **Description:** Update mutable fields on an artifact.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the artifact's stored scope. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `artifact update` performs no scope comparison. Note also that `--scope` on this verb is a **patch field** that reassigns the artifact's scope, not a write-scope override. See [Cross-scope guard](#cross-scope-guard).
 
 **Schema effects:** Updates `artifacts(title, body, status, source_path, updated_at)`.
 
@@ -3283,7 +3322,7 @@ planar-ext ext create <system-slug> --from <kind:id> [--type <issue-type>] [--ro
 
 **Description:** Create a counterpart for an existing local entity on the named external system, then record the link. This is the automation entry point for surfacing local work to the operational plane.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the `--from` entity's stored scope. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE. `ext create --from` performs no scope comparison against the `--from` entity. See [Cross-scope guard](#cross-scope-guard).
 
 **Options:**
 
@@ -3478,7 +3517,7 @@ planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--s
 
 **Description:** Manually record an `external_links` row linking a local entity to an already-existing external ticket. Use this when the external ticket was created outside of `ext create`. Does not push any data to the external system.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the local entity's stored scope. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE — and unguarded **by design**: `entity_links` edges legitimately cross scopes (the polyrepo `touches`/`derives-from` workflow). See [Cross-scope guard](#cross-scope-guard).
 
 **Arguments:**
 
@@ -3532,7 +3571,7 @@ restore the exact old `external_url`, `config_json`, link role, or sync
 direction, so do not unlink unless those losses are acceptable and the role
 and desired direction are known independently.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the local entity referenced by the link. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** NONE — unguarded by design, for the same reason as `link`. See [Cross-scope guard](#cross-scope-guard).
 
 **Schema effects:**
 - Deletes from `external_links(id)`.
@@ -4775,12 +4814,24 @@ entity link 22 removed
 
 ### `planar links update <link-id>`
 
-> **Not yet implemented.** This verb is deferred to the M11 external-plane
-> work. Invoking it prints `links update is deferred to M11` and makes no
-> change. `links remove` and `links add` manage internal `entity_links`; they
-> cannot change an external link. No lossless external-link update exists in
-> the current CLI. The behavior described below is the intended contract, not
-> the current one.
+> **This verb does not exist.** Measured at task 6075 (2026-09-11):
+> `planar schema` declares `links add`, `links list`, `links remove` and
+> `links trail` — there is no `links update`. Invoking it fails at PARSE TIME
+> with exit 2:
+>
+> ```
+> error: links: The following arguments were not expected: update 7 --sync write-back
+> ```
+>
+> It does not print `links update is deferred to M11`; no such message exists
+> in the binary. An earlier edition of this page claimed that deferral, and
+> also claimed a cross-scope guard for a verb that cannot be invoked.
+>
+> `links remove` / `links add` manage internal `entity_links` and cannot
+> change an external link. **No lossless external-link update exists in the
+> CLI today.** Everything below is a design sketch for a verb that has never
+> shipped — not a contract. The unlink-and-recreate sequence documented above
+> is the actual workaround.
 
 The only current recovery is destructive top-level `unlink` / `link`, or
 `unlink` followed by a fresh `ext propagate`. Before proceeding, capture the
@@ -4840,7 +4891,7 @@ planar links update <link-id> --sync <direction>
 
 **Description:** Mutate the `sync_direction` column on an existing `external_links` row. Use this to change the sync direction for a link that was already created by `ext propagate`, `link`, or `ext create`. The change takes effect on the next `planar-ext sync push` or `planar-ext sync pull` invocation. An audit row is written to `sync_events` with `outcome='ok'` and a payload recording the old and new directions.
 
-**Scope guard:** Refuses when the operator's resolved write scope disagrees with the local entity referenced by the link. See [Cross-scope guard](#cross-scope-guard).
+**Scope guard:** Not applicable — the verb does not exist.
 
 **Arguments:**
 

@@ -127,7 +127,6 @@ auto tree(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// `planar.cmd.planar.handlers.tree`. Not to be confused with
 /// `planar.cmd.planar.tree`, the module that builds the whole root app
 /// and calls this function.
-/// @param root The root app to attach it to.
 auto declare_tree(CLI::App& root) -> void {
   CLI::App* tree =
       root.add_subcommand("tree", "Render a hierarchical view of Planar entities for one or all\n  scopes.\n\n  Walks plans (via "

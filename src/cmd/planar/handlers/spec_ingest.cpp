@@ -1491,7 +1491,6 @@ auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 /// unobservable at runtime as well: the handler reads the flag as
 /// `flag_string(args, "--format").value_or("text")` and never depends on
 /// CLI11 filling the value in.
-/// @param root The root app to attach it to.
 auto declare_spec(CLI::App& root) -> void {
   CLI::App* spec = root.add_subcommand(
       "spec",

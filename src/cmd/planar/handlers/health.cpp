@@ -238,7 +238,6 @@ auto health_hygiene(context& ctx, const cliapp::parsed_args& args) -> handler_re
 /// This is the mirror image of `declare_handoff`, where the hand half
 /// declared inherited flags FIRST and the fold preserved that. Both
 /// orders ship somewhere; neither is a convention.
-/// @param root The root app to attach it to.
 auto declare_health(CLI::App& root) -> void {
   CLI::App* health = root.add_subcommand(
       "health", "Check database reachability, schema version currency, SQLite\n  integrity, in-flight task resumability, pending "
