@@ -143,16 +143,82 @@ export auto ext_test(context& ctx, const cliapp::parsed_args& args) -> handler_r
 ///                       sets are genuinely different sizes: seven that a
 ///                       link may point at, four this verb can read.
 ///
-/// ## THE REMOTE IS CREATED BEFORE `--role` AND `--sync` ARE VALIDATED
+/// ## NOTHING REACHES THE REMOTE UNTIL EVERY REFUSAL HAS FIRED
 ///
-/// Oracle-captured from the fixture server's own request log, and preserved
-/// under D2: `ext create <sys> --from task:1 --role bogus` POSTs the
-/// ticket, THEN refuses at exit 2, leaving a real remote issue with no local
-/// link. A duplicate `ext create` does the same — it POSTs a SECOND ticket
-/// before discovering the existing link and refusing at exit 6. Both are
-/// defects in the oracle rather than in this port, and both are pinned in
-/// `ext_create_leaf.t.cpp` so that fixing them is a deliberate, recorded
-/// divergence rather than a silent one.
+/// The order is: `--from` shape, system lookup, adapter build, local read,
+/// `--role` / `--sync`, entity kind, THE DUPLICATE GATE, render, POST,
+/// insert. Every step that can refuse precedes the POST.
+///
+/// It did not always. Under D2 this verb reproduced the oracle's ordering:
+/// `--role bogus` POSTed the ticket and THEN refused at exit 2 (task 6312),
+/// and a repeat POSTed a SECOND ticket before discovering the existing link
+/// and refusing at exit 6 (task 6313). Decision 1067 retired D2's
+/// bug-for-bug rule together with the oracle it existed to serve, and put
+/// both rows in its FIX half: alone among the nine reproduced divergences,
+/// this one's consequence LEAVES THE COMMAND. It writes a ticket into a
+/// system Planar does not own, cannot roll back, and holds no record of — a
+/// typo in a flag left an issue for somebody to find and close by hand.
+///
+/// The fix is a pure reordering plus one added read; no message, exit code
+/// or JSON shape moved. `ext_create_leaf.t.cpp`'s ordering case now pins the
+/// request count at ZERO for every refusal, having previously pinned it at
+/// one.
+///
+/// ## THE DUPLICATE GATE IS NOT THE CONSTRAINT, AND IT IS ROLE-SCOPED
+///
+/// It is a `link::list` on `(entity_kind, entity_id, system_id)` whose rows
+/// are then narrowed to the requested `link_role` — a four-field key. The
+/// refusal names the role: `mirror external link for task:1 on jira-demo
+/// already exists`.
+///
+/// The role belongs in the key because REPEATING A COMMAND is what 6313 is
+/// about, and a repeat carries the same `--role`. Dropping it would be
+/// adopting a new cardinality rule — one link per entity per system — that
+/// nothing else in this tree enforces. `load_existing_mirror`'s contract
+/// says in as many words that a `parent` or `child` row for the same entity
+/// does not suppress propagation, and `planar link <kind:id> --to
+/// <slug>:<id>` defaults `--role` to `reference` and gates on nothing but
+/// the UNIQUE. A wide key here would refuse `--role reference` on an entity
+/// that already had a mirror while `planar link` still allowed exactly that
+/// row: one table, two verbs, two cardinality rules, and no recovery from
+/// the CLI. `docs/cli-reference.md` advertises all four roles on this verb
+/// with no stated restriction. Narrowing that is a product decision, and
+/// decision 1067's FIX set does not contain one.
+///
+/// The gate is NOT `load_existing_mirror` either: that hard-filters
+/// `link_role = 'mirror'`, which is right where it lives (`propagate-one`
+/// only ever writes mirrors) but wrong here, where the role comes from a
+/// flag.
+///
+/// And the table's `unique (entity_kind, entity_id, system_id,
+/// external_id)` is not a substitute, for a reason easy to miss from a
+/// fixture: a real Jira or GitHub mints a FRESH id on every POST, so a
+/// second create's insert would have SUCCEEDED, leaving two tickets and two
+/// links with no refusal at all. The exit-6 refusal 6313 recorded was an
+/// artifact of a fixture server that answers with a fixed id. The
+/// post-insert `link_exists` branch survives as a backstop for a concurrent
+/// create only.
+///
+/// ## ONE ORPHAN PATH REMAINS, AND IT IS THE IRREDUCIBLE ONE
+///
+/// If the POST succeeds and `link::create` then fails, the remote issue
+/// exists with no local row. Three ways in: a genuine SQLite error; a
+/// concurrent create winning the race between the gate's read and the
+/// insert; or a remote that answers with an `external_id` it has already
+/// handed this entity+system under a DIFFERENT role, which the gate lets
+/// past and the table's UNIQUE then rejects. The third is why the
+/// `link_exists` branch after the POST is not dead code — a live Jira or
+/// GitHub mints a fresh key per POST, but no adapter contract promises it.
+///
+/// Closing any of them needs a remote rollback this verb has no adapter
+/// operation for. The reordering removes the two orphan paths that were
+/// reachable from a typo and a repeat; it introduces none.
+///
+/// The refusal after the POST keeps the ROLE-LESS wording (`external link
+/// for task:1 on jira-demo already exists`) while the gate before it names
+/// the role. That is deliberate: the two refusals key on different columns,
+/// and naming the requested role in the constraint case would misreport
+/// which row actually collided.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success; `not_found` (exit 1) for an unknown slug or an absent
@@ -181,17 +247,25 @@ export auto ext_create(context& ctx, const cliapp::parsed_args& args) -> handler
 ///
 /// ## THIS is the idempotent one, and it is idempotent for a structural reason
 ///
-/// `ext create` has two recorded side-effect-first defects: it POSTs before
-/// validating `--role` (6312) and POSTs a SECOND ticket on a repeat (6313).
-/// This verb has neither, and not by accident — `load_existing_mirror` is the
-/// FIRST thing it does, before the template is even loaded, and every
-/// argument refusal (`--from` shape, entity kind, `--strategy`, `--sync`)
-/// precedes both the adapter build and the POST. A repeat returns
-/// `op:"skipped"` carrying the EXISTING external id and sends nothing.
+/// `load_existing_mirror` is the FIRST thing this verb does, before the
+/// template is even loaded, and every argument refusal (`--from` shape,
+/// entity kind, `--strategy`, `--sync`) precedes both the adapter build and
+/// the POST. A repeat returns `op:"skipped"` carrying the EXISTING external
+/// id and sends nothing.
 ///
-/// This shape is the one to copy when 6312/6313 are eventually fixed. Note
-/// `workbench publish` is a THIRD shape again — it REFUSES on an existing
-/// link rather than skipping.
+/// This is the shape `ext create` was made to match under decision 1067,
+/// where it had reproduced the oracle's side-effect-first ordering (tasks
+/// 6312 / 6313). The two gates are still not the same query — see
+/// `ext_create`'s header on why this one cannot be reused there.
+///
+/// The one refusal here that DOES follow the POST,
+/// `external_entity_kind_from_text` on the way to the insert, is unreachable
+/// from the CLI: `ext_propagate_one` admits only `plan` and `task`, and both
+/// are valid kinds. It is latent, not operator-reachable, which is why it
+/// was left alone rather than folded into those rows.
+///
+/// Note `workbench publish` is a THIRD shape again — it REFUSES on an
+/// existing link rather than skipping.
 ///
 /// ## `--strategy` accepts one value and names two others to refuse them
 ///
