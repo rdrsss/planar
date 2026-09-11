@@ -5903,62 +5903,61 @@ The flag surface deliberately mirrors `tree(1)` wherever the semantic translates
 
 **Synopsis:**
 ```
-planar tree [--scope <scope> | --all-scopes]
-            [-L <N> | --depth <N>]
-            [-I <pattern>]... [-P <pattern>]... [--ignore-case]
-            [--kind <list>]... [--status <list>]...
-            [-r] [-t | -c | -U | --sort <id|updated|created|unsorted>]
-            [--noreport] [--prune]
-            [-i | --no-indent] [--ascii] [--no-truncate]
-            [-J | --json]
+planar tree [--scope <scope> | --all-scopes] [--depth <N>]
+            [--kind <kind>] [--status <status>] [--sort <key>] [--json]
 ```
 
 **Description:** Render a hierarchical view of the cwd-derived read set (default) or another scope, walking plans → tasks → derived artifacts/decisions/scenarios/questions. At a workspace root, the default output contains one scope root for the workspace org and one for each member project; inside a member repo, the most specific repo root is used.
 
 **Options:**
 
-| Flag | tree(1) equiv. | Default | Description |
-|------|----------------|---------|-------------|
-| `--scope <X>` | (Planar) | cwd-derived | Render this scope only. Accepts `global`, `repo:<slug>`, `assoc:<slug>`, or a bare association slug. |
-| `--all-scopes` | (Planar) | off | Render every scope as a separate section. Always renders the `global` section even when empty. Mutually exclusive with `--scope`. |
-| `-L`, `--depth <N>` | `-L` | unbounded | Maximum recursion depth. Top-level plan is depth 0; child plan is depth 1; task under a top-level plan is depth 1; subtask is depth 2. |
-| `-I`, `--ignore <pattern>` | `-I` | none | Glob pattern excluding entities whose title or slug matches. Repeatable. |
-| `-P`, `--match <pattern>` | `-P` | none | Glob pattern restricting to entities whose title or slug matches (or whose descendants match). Repeatable. |
-| `--ignore-case` | `--ignore-case` | off | Case-insensitive matching for `-I` / `-P`. |
-| `--kind <list>` | (Planar) | all | Restrict entity kinds. Repeatable. Valid: `plan`, `task`, `artifact`, `decision`, `scenario`, `question`. |
-| `--status <list>` | (Planar) | all | Restrict by status. Repeatable. |
-| `-r`, `--reverse` | `-r` | off | Reverse sort order within each level. |
-| `-t`, `--sort-updated` | `-t` | off | Sort by `updated_at`. |
-| `-c`, `--sort-created` | `-c` | off | Sort by `created_at`. |
-| `-U`, `--unsorted` | `-U` | off | Preserve DB insertion order. |
-| `--sort <id\|updated\|created\|unsorted>` | (Planar) | `id` | Long-form sort selector. Mutually exclusive with `-t`/`-c`/`-U`. |
-| ~~`--dirsfirst`~~ | `--dirsfirst` | n/a | **Not implemented.** Grouping is unconditional in the current binary; there is no flag to change it. |
-| ~~`--no-dirsfirst`~~ | (Planar) | n/a | **Not implemented** (task 6140). Fails at parse time with exit 2. |
-| `--noreport` | `--noreport` | off | Suppress the summary footer (`N plans, M tasks, …`). |
-| `--prune` | `--prune` | off | Hide empty branches (plans with zero descendants under the active filter). |
-| `-i`, `--no-indent` | `-i` | off | Disable indentation; print flat tree (one entity per line, no branch glyphs). |
-| `--ascii` | `--charset ASCII` | off | Use ASCII box-drawing (`+--`, `|`, `\--`). Default is Unicode (`├──`, `│`, `└──`). |
-| `--no-truncate` | (Planar) | off | Do not truncate long entity titles. Default truncates at 80 chars with `…`. |
-| `-J`, `--json` | `-J` | off | Emit nested JSON instead of indented text. |
+**This table was rewritten on 2026-09-11 (task 6675) against the binary.** Earlier editions documented twenty-two flags modelled on `tree(1)`, fifteen of which do not exist. Each was probed individually: everything absent below fails at parse time with exit 2 (`error: tree: The following argument was not expected: <flag>`).
 
-#### Deliberately omitted flags
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--scope <X>` | cwd-derived | Render this scope only. Accepts `global`, `repo:<slug>`, `assoc:<slug>`, or a bare association slug. |
+| `--all-scopes` | off | Render every scope as a separate section. |
+| `--depth <N>` | `-1` (unbounded) | Max tree depth. |
+| `--kind <kind>` | all | Restrict to a **single** kind. Not repeatable and not a comma-list, despite what earlier editions of this page claimed — `--help` says "Restrict to a single kind". |
+| `--status <status>` | all | Restrict to a **single** status. Same caveat as `--kind`. |
+| `--sort <key>` | `id` | Sort key. |
+| `--json` | off | Emit the subtree as JSON instead of human text. |
 
-The following `tree(1)` flags are intentionally not supported. They are rejected at parse time with a clean error pointing at the Planar alternative (or noting no analog exists) rather than silently ignored:
+That is the complete flag set. `planar schema` declares exactly these seven.
 
-| Flag | Reason |
-|------|--------|
+#### Flags this page used to document that do not exist
+
+None of these are accepted; all fail at parse time with exit 2. They are listed only so a reader who remembers them from an earlier edition can stop looking.
+
+`-L`, `-I`, `--ignore`, `-P`, `--match`, `--ignore-case`, `-r`, `--reverse`, `-t`, `--sort-updated`, `-c`, `--sort-created`, `-U`, `--unsorted`, `--noreport`, `--prune`, `-i`, `--no-indent`, `--ascii`, `--no-truncate`, `-J`.
+
+Note that `--depth`, `--kind`, `--status`, `--sort` and `--json` **do** exist — but their short aliases (`-L`, `-J`) do not.
+
+#### `tree(1)` flags with no Planar analog
+
+Earlier editions claimed these "are rejected at parse time with a clean error pointing at the Planar alternative (or noting no analog exists) rather than silently ignored". **That is not what happens.** They produce the same generic parse error as any other unknown flag, with no alternative suggested:
+
+```
+$ planar tree --scope global -d   # cli-lint-ignore: the flag's ABSENCE is the point
+error: tree: The following argument was not expected: -d
+(exit 2)
+```
+
+The list below is retained as design rationale for why no analog was built — not as a description of any behaviour:
+
+| Flag | Rationale for having no analog |
+|------|-------------------------------|
 | `-a` | no concept of hidden entities |
-| `-d` | use `--kind plan` |
-| `-f` | entity references are `kind:id`; full path is redundant |
-| `-s`, `-h`, `-p`, `-u`, `-g`, `-D` | no filesystem analog (use `-t` / `-c` for entity timestamps) |
+| `-d` | `--kind plan` covers it |
+| `-f` | entity references are `kind:id`; a full path is redundant |
+| `-s`, `-h`, `-p`, `-u`, `-g`, `-D` | no filesystem analog |
 | `--inodes`, `--device` | filesystem-specific |
 | `-Q` | Planar titles are sanitized at insert; no quoting needed |
 | `-X`, `-H` | use `--json` and pipe through a transformer |
 | `-v` | no semver in entity titles |
 | `--filelimit`, `--matchdirs` | out of scope; revisit on user signal |
-| `-C` | color support deferred |
-| `-o` | use shell redirect (`> file`) to write to a file |
-
+| `-C` | no color output exists at all (see [Color output](concepts.md#color-output)) |
+| `-o` | use a shell redirect (`> file`) |
 **Output (human):**
 ```
 assoc:project:planar
