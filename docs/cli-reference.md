@@ -38,7 +38,7 @@ Use the `repo:` prefix for project rows. A bare slug is always parsed as an
 association for compatibility with existing workspace and project-association
 flows.
 
-**Mutating commands** (`task add`, `plan create`, `question add`, `scenario add`, `decision add`, `artifact add`, `link`, `unlink`, `ext create`, `ext propagate`) resolve scope through the strict `ResolveForWrite` algorithm: explicit flag → cwd derivation with most-specific-wins → refuse with an `AmbiguousScopeError` listing candidate `--scope` values. Cwd is the only default; there is no ambient stack. The resolver never silently picks a default when multiple candidates tie at the best rank, nor when cwd lands at a workspace root with member projects (see the workspace-root refusal in [Scope in `docs/concepts.md`](./concepts.md#scope)).
+**Mutating commands** (`task add`, `plan create`, `question add`, `scenario add`, `decision add`, `artifact add`, `link`, `unlink`, `ext create`, `ext propagate`) resolve scope through `resolve_for_write`: explicit flag (threaded through verbatim, not validated) → meta-workspace arm → cwd derivation with most-specific-wins, using the same specificity ranking as reads (task 6746, so a member repo outranks an org containing it) → otherwise **global scope, exit 0**. Cwd is the only default; there is no ambient stack. Note the last step: an unregistered cwd does NOT refuse on the write path, though it does on the read path. See [Write resolution in `docs/concepts.md`](./concepts.md#write-resolution) for the measured behaviour, including the `project_unassociated` exception.
 
 > **Stale claim (task 6140, 2026-09-09).** The "workspace root with member
 > projects" refusal named above is FABRICATED against the current C++
@@ -108,7 +108,7 @@ The cross-scope guard is a refusal mechanism that runs at the top of every mutat
 For every guarded verb:
 
 1. Look up the target entity's stored scope. Global-scoped entities short-circuit and are accepted from any operator scope.
-2. Resolve the operator's write scope through the cwd-primary algorithm (explicit `--scope` flag → cwd derivation, most-specific-wins → refuse with `AmbiguousScopeError`).
+2. Resolve the operator's write scope through the cwd-primary algorithm (explicit `--scope` flag → cwd derivation, most-specific-wins → otherwise global).
 3. Compare the two scopes with the membership-aware coverage rule: equality matches, and an operator scope `assoc:<org>` covers any entity scoped to one of the org's member projects (via `project_associations`). Otherwise refuse with exit 1. The reverse direction (operator project, entity org) does not cover.
 
 ### Refusal message

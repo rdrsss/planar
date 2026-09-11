@@ -218,42 +218,77 @@ narrowest first:
   6. host, path, lang  (auto-detected technical / fallback association kinds)
 ```
 
-A repo scope outranks an `org` whose membership contains that project, so a cwd inside `~/work/repo-a/` resolves to `repo:repo-a` even when `org:work` also matches. Association candidates of kind `project` rank above raw repo candidates for compatibility with older project-association flows. At the workspace root (`~/work/`, no project root_path contains it) only `org:work` matches, so the org wins — but at the workspace root writes refuse rather than land in the org by default (see below).
+A repo scope outranks an `org` whose membership contains that project, so a cwd inside `~/work/repo-a/` resolves to `repo:repo-a` even when `org:work` also matches. Association candidates of kind `project` rank above raw repo candidates for compatibility with older project-association flows. At the workspace root (`~/work/`, no project root_path contains it) only `org:work` matches, so the org wins, and a write there lands at `assoc:work` — it does **not** refuse.
+
+**This ranking applies to reads and writes alike as of task 6746.** It did not before: the write path mapped the cwd's project to its single association and so could never yield a `repo:` scope at all, while `scope show` — which renders the read resolution — reported one. The two disagreed from the same working directory, which meant the verb operators use to ask "where will this write land?" answered wrong. `resolve_for_write` and `resolve_read_scope_set` now share the ranking, and their agreement is pinned by a test.
 
 ### Write resolution
 
-Writes use the strict `scopearg.ResolveForWrite` algorithm. The first step that yields a single unambiguous scope wins:
+Writes resolve through `resolve_for_write`. The first step that yields a
+single scope wins:
 
-1. **Explicit flag.** If `--scope` is passed, parse it and return. The flag is the user's stated intent; never override it.
-2. **Cwd derivation, most-specific-wins.** Run `DeriveFromCwd`, rank by specificity, return the single most-specific match. Two refusals fire here:
-   - If multiple candidates tie at the best rank, refuse with an `AmbiguousScopeError` listing the tied `--scope` values.
-   - If the single winner is `kind=org` and the org has at least one member project, refuse with the workspace-root variant (see below). A zero-member org passes through — that is the workspace-init edge case where writing at the org level is the only sensible choice.
-3. **Refuse.** Return an `AmbiguousScopeError`. No silent default; no fallback to ambient state.
+1. **Explicit flag.** If `--scope` is passed, it is threaded through
+   **verbatim** — not validated against the database. The flag is the
+   operator's stated intent. An unresolvable slug surfaces later, from
+   whichever verb tries to use it, as `SlugNotFound` (exit 1).
+2. **Meta-workspace arm.** Standing exactly on a registered meta-workspace
+   root, where the cwd names the org and the root repo equally well, the write
+   refuses rather than pick (exit 5). Inside a member repo of a meta
+   workspace, the write lands on that concrete repo.
+3. **Cwd derivation, most-specific-wins.** The same candidate set, specificity
+   ranking and longest-root tie-breaker the read path uses (task 6746). A
+   member repo therefore outranks an org that contains it: a write from inside
+   `~/work/repo-a/` lands at `repo:repo-a`, not at `assoc:work`.
+4. **Otherwise, `global`.** If the cwd matches no registered root, or two
+   candidates tie at the best rank, the write lands at **global scope, exit
+   0**. There is no refusal here.
 
-### Workspace-root refusal
-
-> **Stale section (task 6140, 2026-09-09).** This block's refusal message
-> is FABRICATED against the current C++ binary: `grep -rn "you are in a
-> workspace root" src/` returns nothing, and in a scratch arena a
-> `workspace init --scan` root followed by `task add` with no `--scope`
-> SUCCEEDS at global scope (exit 0) — no refusal fires. Filed as task 6675
-> to determine and write the actual behavior; not rewritten here.
-
-When cwd lands at a registered workspace root (org `config_json.root_path`) and the org has members, `task add` (or any other write verb without `--scope`) refuses with the candidate list:
+**Step 4 is a real footgun and is documented because it is true, not because
+it is good.** A write from an unregistered directory succeeds silently at
+global scope, while the READ path refuses the same cwd outright:
 
 ```
-error: you are in a workspace root with 3 member projects, but no
-       specific project scope was passed. Choose one with --scope:
+$ cd /tmp/nowhere && planar plan list
+error: cwd is not inside any registered Planar scope; cd into a registered
+       scope or pass --scope global
+(exit 1)
 
-         --scope repo:repo-a
-         --scope repo:repo-b
-         --scope repo:repo-c
-
-       Or cd into a specific member project. Pass --scope
-       assoc:work to write at the org level (cross-repo work).
+$ cd /tmp/nowhere && planar plan create "probe"
+scope:    global
+(exit 0)
 ```
 
-Fan-out is deliberately not the default: a workspace-root `task add` could plausibly mean any of the members or the org itself, and silently picking is the lectio incident pattern. The refusal forces the operator to state which.
+Reads are the strict side, not writes. Editions of this document before
+2026-09-11 asserted the reverse ("No silent default; no fallback to ambient
+state") and named two error kinds — `AmbiguousScopeError` and
+`OutsideRegisteredScopeError` — that exist nowhere in the source. The real
+enum is `scope_error { query_failed, invalid_path, slug_not_found,
+scope_mismatch }`.
+
+**One registered-project exception.** A project registered with **no
+association** does not resolve to `repo:<slug>`; it yields no scope, with the
+reason `project_unassociated`. `plan create` turns that into an exit-5
+refusal naming the `assoc create` / `assoc add` remedy; `task add` and
+`scenario add` deliberately do not refuse and file under global. That split is
+pinned by tests and is not an oversight.
+
+### Workspace-root refusal — DOES NOT EXIST
+
+Editions of this document before 2026-09-11 quoted a refusal here:
+
+> you are in a workspace root with 3 member projects, but no specific project
+> scope was passed. Choose one with --scope: …
+
+**No such refusal fires, and no such message exists in the binary**
+(`grep -rn "you are in a workspace root" src/` returns nothing). Measured in a
+scratch arena — two git repos under a workspace root, `workspace init --scan
+1` creating `org:work` with both as members — a `plan create` at that root
+succeeds at **`org:work`**, exit 0, via step 3 above.
+
+Whether that *should* refuse is open: the fan-out argument in the old text is
+sound, and silently picking is the lectio incident pattern. But the refusal
+was never implemented, and documenting it as though it were left operators
+believing in a guard they did not have.
 
 ### Read resolution
 

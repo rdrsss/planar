@@ -50,7 +50,7 @@ The cross-scope guard (see [`docs/concepts.md#cross-scope-guard`](../../docs/con
 
 ## When To Invoke
 
-At the start of a session, before running a write verb from an unfamiliar cwd, or when a verb refuses with `AmbiguousScopeError` and you need to see the candidate scopes for the cwd.
+At the start of a session, before running a write verb from an unfamiliar cwd, or when a read verb refuses because the cwd is not inside any registered scope and you need to see the candidate scopes. Run it before writing from an unfamiliar cwd in particular: a write from an unregistered directory does not refuse — it lands at global scope, exit 0.
 
 ## Context
 
