@@ -496,8 +496,15 @@ auto command_name(command_kind operation) -> std::string_view {
 // delimiters and the distinction between omitted and explicitly-null values.
 auto command_digest(const command_args& args) -> std::string {
   std::string material;
-  const auto append = [&](std::string_view value) { material += std::format("{}:", value.size()); material += value; };
-  const auto optional = [&](const std::optional<std::string_view>& value) { append(value ? "present" : "omitted"); if (value) append(*value); };
+  const auto  append = [&](std::string_view value) {
+    material += std::format("{}:", value.size());
+    material += value;
+  };
+  const auto optional = [&](const std::optional<std::string_view>& value) {
+    append(value ? "present" : "omitted");
+    if (value)
+      append(*value);
+  };
   append(command_name(args.operation));
   append(args.source_uuid);
   optional(args.scope);
@@ -509,11 +516,16 @@ auto command_digest(const command_args& args) -> std::string {
   append(args.target ? (args.target->kind == target_kind::plan ? "plan" : "task") : "none");
   append(std::format("{}", args.target ? args.target->id : -1));
   append(std::format("{}", args.tags.size()));
-  for (const auto& tag : args.tags) append(tag);
+  for (const auto& tag : args.tags)
+    append(tag);
   if (args.bulk_filter) {
     append("bulk-filter");
-    optional(args.bulk_filter->anchor_path); optional(args.bulk_filter->vendor); optional(args.bulk_filter->tag); optional(args.bulk_filter->scope);
-    append(std::format("{}", args.bulk_filter->plan_id.value_or(-1))); append(std::format("{}", args.bulk_filter->task_id.value_or(-1)));
+    optional(args.bulk_filter->anchor_path);
+    optional(args.bulk_filter->vendor);
+    optional(args.bulk_filter->tag);
+    optional(args.bulk_filter->scope);
+    append(std::format("{}", args.bulk_filter->plan_id.value_or(-1)));
+    append(std::format("{}", args.bulk_filter->task_id.value_or(-1)));
     append(args.bulk_filter->status_ ? status_to_text(*args.bulk_filter->status_) : "none");
   }
   return sha256::hex(material);
@@ -535,8 +547,9 @@ auto receipt_from_row(db::statement& stmt, bool replayed) -> operation_receipt {
 
 auto show_receipt(db::connection& conn, std::string_view source, std::string_view operation_uuid)
     -> std::expected<std::optional<operation_receipt>, annotation_error> {
-  auto stmt = conn.prepare("select operation_uuid, source_uuid, payload_digest, annotation_id, revision, outcome, created_at, affected_count "
-                           "from annotation_operation_receipts where source_uuid = ? and operation_uuid = ?");
+  auto stmt = conn.prepare(
+      "select operation_uuid, source_uuid, payload_digest, annotation_id, revision, outcome, created_at, affected_count "
+      "from annotation_operation_receipts where source_uuid = ? and operation_uuid = ?");
   if (!stmt || !stmt->bind_text(1, source) || !stmt->bind_text(2, operation_uuid))
     return std::unexpected(annotation_error::query_failed);
   auto step = stmt->step();
@@ -580,19 +593,31 @@ auto execute_command(db::connection& conn, const command_args& args) -> std::exp
   std::optional<std::int64_t> id;
   std::optional<std::int64_t> revision;
   std::optional<std::int64_t> affected_count;
-  if (args.operation == command_kind::bulk_resolve || args.operation == command_kind::bulk_dismiss || args.operation == command_kind::bulk_archive) {
+  if (args.operation == command_kind::bulk_resolve || args.operation == command_kind::bulk_dismiss ||
+      args.operation == command_kind::bulk_archive) {
     if (!args.bulk_filter)
       return std::unexpected(annotation_error::invalid_command);
     auto items = list(conn, *args.bulk_filter);
     if (!items)
       return std::unexpected(items.error());
-    const auto action = args.operation == command_kind::bulk_resolve ? bulk_action::resolve : args.operation == command_kind::bulk_dismiss ? bulk_action::dismiss : bulk_action::archive;
-    std::size_t count = 0;
+    const auto  action = args.operation == command_kind::bulk_resolve   ? bulk_action::resolve
+                         : args.operation == command_kind::bulk_dismiss ? bulk_action::dismiss
+                                                                        : bulk_action::archive;
+    std::size_t count  = 0;
     for (const auto& a : *items) {
-      const bool already = (action == bulk_action::resolve && a.status_ == status::resolved) || (action == bulk_action::dismiss && a.status_ == status::dismissed) || (action == bulk_action::archive && a.status_ == status::archived);
-      if (already || (action != bulk_action::archive && is_terminal(a.status_))) continue;
-      auto changed = action == bulk_action::resolve ? resolve(conn, a.id) : action == bulk_action::dismiss ? dismiss(conn, a.id) : archive(conn, a.id);
-      if (!changed) { if (changed.error() == annotation_error::terminal_status) continue; return std::unexpected(changed.error()); }
+      const bool already = (action == bulk_action::resolve && a.status_ == status::resolved) ||
+                           (action == bulk_action::dismiss && a.status_ == status::dismissed) ||
+                           (action == bulk_action::archive && a.status_ == status::archived);
+      if (already || (action != bulk_action::archive && is_terminal(a.status_)))
+        continue;
+      auto changed = action == bulk_action::resolve   ? resolve(conn, a.id)
+                     : action == bulk_action::dismiss ? dismiss(conn, a.id)
+                                                      : archive(conn, a.id);
+      if (!changed) {
+        if (changed.error() == annotation_error::terminal_status)
+          continue;
+        return std::unexpected(changed.error());
+      }
       ++count;
     }
     affected_count = static_cast<std::int64_t>(count);

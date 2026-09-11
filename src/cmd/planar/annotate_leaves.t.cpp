@@ -1273,24 +1273,32 @@ TEST_CASE("annotation commands commit mutations, revisions, audit rows, and dura
 TEST_CASE("annotation command payload identity is durable and preserves null titles", "[cmd][annotate][command][receipt][6684]") {
   auto const fx = make_fixture("commandidentity");
   REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
-  auto conn = open_db(fx);
+  auto       conn = open_db(fx);
   auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
   REQUIRE(plan.has_value());
-  namespace ann = planar::engine::planning::annotation;
+  namespace ann     = planar::engine::planning::annotation;
   auto const source = ann::source_uuid(conn);
   REQUIRE(source.has_value());
-  ann::command_args first{.operation = ann::command_kind::create, .operation_uuid = "delimiter", .source_uuid = *source,
-                          .target = ann::entity_target{.kind = ann::target_kind::plan, .id = plan->id}, .title = "a|b", .body = "c"};
+  ann::command_args first{.operation      = ann::command_kind::create,
+                          .operation_uuid = "delimiter",
+                          .source_uuid    = *source,
+                          .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = plan->id},
+                          .title          = "a|b",
+                          .body           = "c"};
   REQUIRE(ann::execute_command(conn, first).has_value());
-  auto distinct = first;
-  distinct.title = "a";
-  distinct.body = "b|c";
+  auto distinct       = first;
+  distinct.title      = "a";
+  distinct.body       = "b|c";
   auto const conflict = ann::execute_command(conn, distinct);
   REQUIRE_FALSE(conflict.has_value());
   CHECK(conflict.error() == ann::annotation_error::receipt_conflict);
 
-  ann::command_args edit{.operation = ann::command_kind::edit, .operation_uuid = "clear-title", .source_uuid = *source,
-                         .annotation_id = 1, .expected_revision = 1, .clear_title = true};
+  ann::command_args edit{.operation         = ann::command_kind::edit,
+                         .operation_uuid    = "clear-title",
+                         .source_uuid       = *source,
+                         .annotation_id     = 1,
+                         .expected_revision = 1,
+                         .clear_title       = true};
   REQUIRE(ann::execute_command(conn, edit).has_value());
   auto cleared = ann::show(conn, 1);
   REQUIRE(cleared.has_value());
@@ -1315,13 +1323,15 @@ TEST_CASE("bulk command receipts retain their affected count on replay", "[cmd][
   seed(fx, {"--anchor-path", "f.txt", "--title", "one"});
   seed(fx, {"--anchor-path", "f.txt", "--title", "two"});
   REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
-  auto conn = open_db(fx);
+  auto conn     = open_db(fx);
   namespace ann = planar::engine::planning::annotation;
-  auto source = ann::source_uuid(conn);
+  auto source   = ann::source_uuid(conn);
   REQUIRE(source.has_value());
-  ann::command_args command{.operation = ann::command_kind::bulk_resolve, .operation_uuid = "bulk-6684", .source_uuid = *source,
-                            .bulk_filter = ann::list_filter{.anchor_path = "f.txt", .status_ = ann::status::active}};
-  auto first = ann::execute_command(conn, command);
+  ann::command_args command{.operation      = ann::command_kind::bulk_resolve,
+                            .operation_uuid = "bulk-6684",
+                            .source_uuid    = *source,
+                            .bulk_filter    = ann::list_filter{.anchor_path = "f.txt", .status_ = ann::status::active}};
+  auto              first = ann::execute_command(conn, command);
   REQUIRE(first.has_value());
   CHECK(first->affected_count == 2);
   auto replay = ann::execute_command(conn, command);

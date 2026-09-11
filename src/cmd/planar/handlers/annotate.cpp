@@ -277,13 +277,20 @@ auto run_bulk(context& ctx, const cliapp::parsed_args& args, ann::bulk_action ac
     auto source = ann::source_uuid(**conn);
     if (!source)
       return std::unexpected(map_annotation_error(source.error(), leaf));
-    auto receipt = ann::execute_command(**conn, {.operation = action == ann::bulk_action::resolve ? ann::command_kind::bulk_resolve : action == ann::bulk_action::dismiss ? ann::command_kind::bulk_dismiss : ann::command_kind::bulk_archive,
-                                                  .operation_uuid = *operation_id, .source_uuid = *source, .bulk_filter = store->filter});
+    auto receipt =
+        ann::execute_command(**conn, {.operation      = action == ann::bulk_action::resolve   ? ann::command_kind::bulk_resolve
+                                                        : action == ann::bulk_action::dismiss ? ann::command_kind::bulk_dismiss
+                                                                                              : ann::command_kind::bulk_archive,
+                                      .operation_uuid = *operation_id,
+                                      .source_uuid    = *source,
+                                      .bulk_filter    = store->filter});
     if (!receipt)
       return std::unexpected(map_annotation_error(receipt.error(), leaf));
     const auto count = receipt->affected_count.value_or(0);
-    if (flag_bool(args, "--json")) ctx.out() << ann::render_bulk_json(participle, static_cast<std::size_t>(count)) << '\n';
-    else ctx.out() << ann::render_bulk_text(participle, static_cast<std::size_t>(count)) << '\n';
+    if (flag_bool(args, "--json"))
+      ctx.out() << ann::render_bulk_json(participle, static_cast<std::size_t>(count)) << '\n';
+    else
+      ctx.out() << ann::render_bulk_text(participle, static_cast<std::size_t>(count)) << '\n';
     return {};
   }
 
@@ -687,7 +694,7 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
   if (!request || *request != "@-")
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--request @- is required"));
   const std::string raw{std::istreambuf_iterator<char>{std::cin}, {}};
-  auto parsed_json = json_dom::parse_json(raw);
+  auto              parsed_json = json_dom::parse_json(raw);
   if (!parsed_json || parsed_json->kind != json_dom::json_kind::object)
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "annotation command must be a JSON object"));
   const auto string_field = [&](std::string_view name) -> std::optional<std::string> {
@@ -734,12 +741,13 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
   auto conn = ctx.ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
-  auto const               scope = string_field("scope");
-  auto const*              title_field = parsed_json->find("title");
-  if (title_field != nullptr && title_field->kind != json_dom::json_kind::string && title_field->kind != json_dom::json_kind::null_)
+  auto const  scope       = string_field("scope");
+  auto const* title_field = parsed_json->find("title");
+  if (title_field != nullptr && title_field->kind != json_dom::json_kind::string &&
+      title_field->kind != json_dom::json_kind::null_)
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "title must be a string or null"));
-  auto const               title = string_field("title");
-  auto const               body  = string_field("body");
+  auto const title = string_field("title");
+  auto const body  = string_field("body");
   if (body && body->size() > 64U * 1024U)
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "annotation command body exceeds 64 KiB"));
   std::vector<std::string> tags;
@@ -755,42 +763,53 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
   }
   auto const bulk_anchor = string_field("anchor_path");
   auto const bulk_vendor = string_field("vendor");
-  auto const bulk_tag = string_field("tag");
-  auto bulk_filter = ann::list_filter{.anchor_path = as_view(bulk_anchor), .status_ = std::nullopt,
-                                      .plan_id = integer_field("plan_id"), .task_id = integer_field("task_id"),
-                                      .vendor = as_view(bulk_vendor), .tag = as_view(bulk_tag), .scope = as_view(scope)};
+  auto const bulk_tag    = string_field("tag");
+  auto       bulk_filter = ann::list_filter{.anchor_path = as_view(bulk_anchor),
+                                            .status_     = std::nullopt,
+                                            .plan_id     = integer_field("plan_id"),
+                                            .task_id     = integer_field("task_id"),
+                                            .vendor      = as_view(bulk_vendor),
+                                            .tag         = as_view(bulk_tag),
+                                            .scope       = as_view(scope)};
   if (parsed == ann::command_kind::bulk_resolve || parsed == ann::command_kind::bulk_dismiss)
     bulk_filter.status_ = ann::status::active;
-  auto receipt = ann::execute_command(**conn, {.operation         = parsed,
-                                               .operation_uuid    = *operation_id,
-                                               .source_uuid       = *source,
-                                               .scope             = as_view(scope),
-                                               .target            = target,
-                                               .annotation_id     = integer_field("annotation_id"),
-                                               .expected_revision = integer_field("expected_revision"),
-                                               .title             = as_view(title),
-                                               .clear_title       = title_field != nullptr && title_field->kind == json_dom::json_kind::null_,
-                                               .body              = as_view(body),
-                                               .tags              = std::move(tags),
-                                               .bulk_filter       = (parsed == ann::command_kind::bulk_resolve || parsed == ann::command_kind::bulk_dismiss || parsed == ann::command_kind::bulk_archive) ? std::optional{bulk_filter} : std::nullopt});
+  auto receipt = ann::execute_command(
+      **conn, {.operation         = parsed,
+               .operation_uuid    = *operation_id,
+               .source_uuid       = *source,
+               .scope             = as_view(scope),
+               .target            = target,
+               .annotation_id     = integer_field("annotation_id"),
+               .expected_revision = integer_field("expected_revision"),
+               .title             = as_view(title),
+               .clear_title       = title_field != nullptr && title_field->kind == json_dom::json_kind::null_,
+               .body              = as_view(body),
+               .tags              = std::move(tags),
+               .bulk_filter       = (parsed == ann::command_kind::bulk_resolve || parsed == ann::command_kind::bulk_dismiss ||
+                                     parsed == ann::command_kind::bulk_archive)
+                                        ? std::optional{bulk_filter}
+                                        : std::nullopt});
   if (!receipt)
     return std::unexpected(map_annotation_error(receipt.error(), "annotate command"));
-  auto receipt_count = (**conn).prepare("select count(*) from annotation_operation_receipts where source_uuid = ?");
-  std::int64_t count = 0;
+  auto         receipt_count = (**conn).prepare("select count(*) from annotation_operation_receipts where source_uuid = ?");
+  std::int64_t count         = 0;
   if (receipt_count && receipt_count->bind_text(1, *source) && receipt_count->step())
     count = receipt_count->column_int64(0);
   std::int64_t storage_bytes = 0;
-  auto page_count = (**conn).prepare("pragma page_count");
-  auto page_size = (**conn).prepare("pragma page_size");
+  auto         page_count    = (**conn).prepare("pragma page_count");
+  auto         page_size     = (**conn).prepare("pragma page_size");
   if (page_count && page_size && page_count->step() && page_size->step())
     storage_bytes = page_count->column_int64(0) * page_size->column_int64(0);
-  const auto warning = count > 10000
-                           ? std::format(",\"retention_warning\":{{\"receipt_count\":{},\"storage_bytes\":{},\"message\":\"receipts are retained permanently; no purge is available; this warning returns after restart\"}}", count, storage_bytes)
-                           : std::string{};
-  ctx.out() << std::format("{{\"operation_uuid\":\"{}\",\"source_uuid\":\"{}\",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":"
-                           "\"{}\",\"replayed\":{}}}{}\n",
-                           receipt->operation_uuid, receipt->source_uuid, receipt->annotation_id.value_or(0),
-                           receipt->revision.value_or(0), receipt->affected_count.value_or(0), receipt->outcome, receipt->replayed ? "true" : "false", warning);
+  const auto warning =
+      count > 10000 ? std::format(",\"retention_warning\":{{\"receipt_count\":{},\"storage_bytes\":{},\"message\":\"receipts are "
+                                  "retained permanently; no purge is available; this warning returns after restart\"}}",
+                                  count, storage_bytes)
+                    : std::string{};
+  ctx.out() << std::format(
+      "{{\"operation_uuid\":\"{}\",\"source_uuid\":\"{}\",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":"
+      "\"{}\",\"replayed\":{}}}{}\n",
+      receipt->operation_uuid, receipt->source_uuid, receipt->annotation_id.value_or(0), receipt->revision.value_or(0),
+      receipt->affected_count.value_or(0), receipt->outcome, receipt->replayed ? "true" : "false", warning);
   return {};
 }
 
@@ -809,10 +828,10 @@ auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_
     ctx.out() << "{\"found\":false}\n";
     return {};
   }
-  ctx.out() << std::format(
-      "{{\"found\":true,\"operation_uuid\":\"{}\",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":\"{}\"}}\n",
-      (**receipt).operation_uuid, (**receipt).annotation_id.value_or(0), (**receipt).revision.value_or(0),
-      (**receipt).affected_count.value_or(0), (**receipt).outcome);
+  ctx.out() << std::format("{{\"found\":true,\"operation_uuid\":\"{}\",\"annotation_id\":{},\"revision\":{},\"affected_count\":{}"
+                           ",\"outcome\":\"{}\"}}\n",
+                           (**receipt).operation_uuid, (**receipt).annotation_id.value_or(0), (**receipt).revision.value_or(0),
+                           (**receipt).affected_count.value_or(0), (**receipt).outcome);
   return {};
 }
 

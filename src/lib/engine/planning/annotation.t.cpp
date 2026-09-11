@@ -1478,35 +1478,36 @@ TEST_CASE("receipt retention threshold preserves replay across a reopened source
   scratch_db_path scratch;
   std::string     source;
   {
-    auto conn = open_migrated(scratch);
+    auto conn     = open_migrated(scratch);
     auto identity = ann::source_uuid(conn);
     REQUIRE(identity.has_value());
     source = *identity;
-    exec(conn, std::format(
-        "with recursive n(x) as (select 1 union all select x + 1 from n where x < 10000) "
-        "insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, outcome) "
-        "select printf('retained-%05d', x), '{}', printf('digest-%05d', x), 'create' from n;", source));
+    exec(conn, std::format("with recursive n(x) as (select 1 union all select x + 1 from n where x < 10000) "
+                           "insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, outcome) "
+                           "select printf('retained-%05d', x), '{}', printf('digest-%05d', x), 'create' from n;",
+                           source));
 
-    exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global', 'receipt target', 'receipt-target', 'draft')");
-    ann::command_args command{.operation = ann::command_kind::create,
+    exec(conn,
+         "insert into plans (scope_kind, title, slug, status) values ('global', 'receipt target', 'receipt-target', 'draft')");
+    ann::command_args command{.operation      = ann::command_kind::create,
                               .operation_uuid = "retain-and-replay",
-                              .source_uuid = source,
-                              .target = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
-                              .body = "durable"};
-    auto first = ann::execute_command(conn, command);
+                              .source_uuid    = source,
+                              .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                              .body           = "durable"};
+    auto              first = ann::execute_command(conn, command);
     REQUIRE(first.has_value());
     CHECK_FALSE(first->replayed);
     CHECK(scalar_int(conn, "select count(*) from annotation_operation_receipts") == 10001);
     CHECK(scalar_int(conn, "select count(*) from annotations") == 1);
   }
 
-  auto reopened = open_migrated(scratch);
-  ann::command_args replay{.operation = ann::command_kind::create,
+  auto              reopened = open_migrated(scratch);
+  ann::command_args replay{.operation      = ann::command_kind::create,
                            .operation_uuid = "retain-and-replay",
-                           .source_uuid = source,
-                           .target = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
-                           .body = "durable"};
-  auto result = ann::execute_command(reopened, replay);
+                           .source_uuid    = source,
+                           .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                           .body           = "durable"};
+  auto              result = ann::execute_command(reopened, replay);
   REQUIRE(result.has_value());
   CHECK(result->replayed);
   CHECK(scalar_int(reopened, "select count(*) from annotation_operation_receipts") == 10001);

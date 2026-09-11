@@ -135,15 +135,15 @@ export struct create_args {
 /// all-unset patch is a no-op that returns a fresh snapshot WITHOUT
 /// bumping `updated_at`. Mirrors zig's `annotation.UpdateArgs`.
 export struct update_args {
-  std::optional<std::string_view> title;   ///< New title.
+  std::optional<std::string_view> title;               ///< New title.
   bool                            clear_title = false; ///< Set the nullable title to SQL NULL.
-  std::optional<std::string_view> slug;    ///< New slug.
-  std::optional<std::string_view> body;    ///< New body.
-  std::optional<status>           status_; ///< New status; validated against the transition matrix.
-  std::optional<std::int64_t>     plan_id; ///< New owning plan.
-  std::optional<std::int64_t>     task_id; ///< New owning task.
-  std::optional<anchor_fields>    anchor;  ///< Full anchor replacement.
-  std::optional<std::string_view> scope;   ///< New scope-ref slug.
+  std::optional<std::string_view> slug;                ///< New slug.
+  std::optional<std::string_view> body;                ///< New body.
+  std::optional<status>           status_;             ///< New status; validated against the transition matrix.
+  std::optional<std::int64_t>     plan_id;             ///< New owning plan.
+  std::optional<std::int64_t>     task_id;             ///< New owning task.
+  std::optional<anchor_fields>    anchor;              ///< Full anchor replacement.
+  std::optional<std::string_view> scope;               ///< New scope-ref slug.
 };
 
 /// @brief Filter for `list` (and, in the same shape, for every `bulk-*`
@@ -181,7 +181,18 @@ export enum class annotation_error : std::uint8_t {
 /// @brief The explicitly idempotent writer operations exposed to a future
 /// local annotation client. Legacy annotate leaves remain operator tools;
 /// this contract is the one that carries an operation receipt.
-export enum class command_kind : std::uint8_t { create, edit, replace_tags, resolve, dismiss, archive, remove, bulk_resolve, bulk_dismiss, bulk_archive };
+export enum class command_kind : std::uint8_t {
+  create,
+  edit,
+  replace_tags,
+  resolve,
+  dismiss,
+  archive,
+  remove,
+  bulk_resolve,
+  bulk_dismiss,
+  bulk_archive
+};
 
 /// @brief Input to one receipt-backed annotation mutation.
 export struct command_args {
