@@ -269,7 +269,9 @@ This composes naturally with `plan list`, `task list`, `question list`, `scenari
 
 ### Cross-scope guard
 
-Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against each *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. The guard is membership-aware: an operator scope `assoc:<org>` covers any entity scoped to one of the org's member projects (via `project_associations`). The reverse — operator project, entity org — still refuses; cross-repo coordination requires either `cd` to the workspace root or `--scope assoc:<org>` explicitly.
+Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against a target entity's stored `(scope_kind, scope_id)` and refuses if they disagree.
+
+**It runs on eight verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. Five of the eight are membership-aware (an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`); two use strict equality instead. The reverse direction — operator project, entity org — refuses under both.
 
 ### Removed: the active scope stack
 
@@ -289,15 +291,45 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 
 ### Which verbs are guarded
 
-Two classes of verb are guarded:
+**Measured against the source at task 6075 (2026-09-11).** Eight verbs, seven call sites (`sync push` and `sync pull` share one):
 
-- **Bulk-write-from-parent.** Verbs that take a parent entity id (typically a plan) and write a tree of derived rows. The parent's scope is the natural scope for the derived rows; running from a cwd that resolves to a different scope is the lectio incident pattern. Verbs: `spec ingest --apply`, `ext propagate`, `sync push <link|kind:id>`, `sync pull <link|kind:id>`, `sync resolve`. The default `spec ingest` preview is read-only: an explicit numeric plan id may locate and inspect an anchor outside the cwd-derived scope, but crossing into `--apply` requires a matching cwd or explicit `--scope`.
-- **Mutating-existing-entity.** Verbs that take an existing entity id and rewrite it (or its links). Routing such a mutation through the wrong cwd updates the row but skews future writes that follow the same code path. Verbs: `plan update`, `plan step add/done/skip`, `task update/done/block` (both endpoints on `block`), `question edit`, `scenario edit`, `decision edit`, `decision supersede` (both old and new), `artifact update`, `audit publish-decision`, `ext create --from`, `link <kind:id> --to`, `unlink`, `links update`.
+| Verb | Comparison |
+|------|-----------|
+| `spec ingest <plan> --apply` | membership-aware |
+| `feedback triage set` | membership-aware |
+| `audit publish-decision` | membership-aware |
+| `planar-ext sync push <link\|kind:id>` | membership-aware |
+| `planar-ext sync pull <link\|kind:id>` | membership-aware |
+| `planar-ext sync resolve <event-id>` | membership-aware |
+| `task update` | **strict equality** |
+| `closure compute` | **strict equality** |
+
+The two classes the guard was designed around — bulk-write-from-parent (the lectio incident pattern) and mutating-an-existing-entity — describe its *intent*. They do not describe its coverage. Most mutating-existing-entity verbs are **not** guarded: `plan update`, `plan step add/done/skip`, `task done/reopen/block`, `question edit`, `scenario edit`, `decision edit`, `decision supersede`, `artifact update`, `annotate update`, `planar-ext ext create --from`, `planar-ext ext propagate-one`, `link`, `unlink`. Earlier editions of this document listed those as guarded; they never were.
+
+`planar links update` appears in older editions of both documents. That verb does not exist — `planar schema` declares `links add`, `links list`, `links remove`, `links trail` only, and invoking `links update` fails at parse time with exit 2.
+
+### Two comparisons, not one
+
+Five guarded verbs call the cmd-layer `guard_with_membership`; two — `task update` and `closure compute` — call `engine::identity::check_scope_guard` directly, which is strict equality after `assoc:` normalization.
+
+The observable consequence: an `assoc:<org>` → `repo:<member>` write is **accepted** by `spec ingest --apply` and **refused** by `task update`, from the identical working directory. This is recorded here as fact, not endorsed. Reconciling the two flavours — and which direction to reconcile them in — is an open operator decision, because either choice changes behaviour that ships today.
 
 ### Membership-aware coverage
 
-The comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project that belongs to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work` (or via the workspace-root opt-in flow), the guard accepts writes targeting `project:repo-a`, `project:repo-b`, etc. — the org operator is "above" its member projects. The reverse direction (operator `project:repo-a`, entity in `assoc:work`) still refuses; cross-repo coordination requires explicit org scope.
+For the five verbs that use it, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses.
 
+### `--scope` does not mean the same thing on every verb
+
+The guard's documented remedy — "pass `--scope <entity-scope>`" — assumes `--scope` selects the operator's **write scope**. Measured at task 6075, it carries four distinct meanings:
+
+| Meaning | Effect | Verbs |
+|---------|--------|-------|
+| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision` |
+| **Patch field** | **Reassigns the entity's stored scope — it moves the row.** | `plan update`, `artifact update`, `annotate update` |
+| Read filter | Restricts which rows are listed. | the `list` verbs, `search`, `tree`, `dashboard`, `health` |
+| Inert | Accepted, parsed, discarded. | `planar-ext ext propagate` |
+
+On `plan update`, `artifact update` and `annotate update` there is therefore **no way to authorize a cross-scope write with `--scope`** — it performs the move instead. Those verbs are unguarded today so nothing refuses, but the documented escape hatch does not exist for them and could not be offered without a new flag.
 ### Which verbs are deliberately not guarded
 
 Several verb classes were audited and explicitly left unguarded; the absence is not an oversight:
@@ -305,6 +337,7 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 - **All `*_link` and `links add/remove` verbs.** `entity_links` is cross-entity by design — the polyrepo `touches`/`derives-from` story depends on edges crossing scope boundaries.
 - **All `*_add` / `*_create` verbs.** A newly-created entity has its own `--scope` resolved through the write resolver; `--plan` or `--parent` on a create verb is a reference, not scope inheritance.
 - **`sync push --all` / `sync pull --all`.** Bulk fan-outs that the operator opts into explicitly.
+- **`planar-ext ext propagate`.** `external_links` carries no scope column, so there is nothing to compare against. The verb accepts `--scope` and discards it; the handler carries an explicit `(void)flag_string(args, "--scope");` with a comment saying so. Older editions of `docs/cli-reference.md` listed this verb as guarded — it never was.
 - **All read-only verbs.** `show`, `list`, `status`, `audit trail`, `tree` — reads do not corrupt state and the audit-from-anywhere case is the common case.
 - **Identity-bucket verbs** (`assoc`, `init`, `promote`/`demote`, `scope`, `workspace`). Associations *are* scope; `promote`/`demote` deliberately cross scopes (that is the verb's job).
 - **Operator-state verbs** (`handoff`, `capture`, `resume`). These manage vendor-session rows, not project-scoped entities. The legitimate polyrepo handoff workflow is "a session inside repo A captures a handoff that references a task in repo B".
@@ -314,7 +347,7 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 
 There is no flag that downgrades a cross-scope-guard refusal to a warning. `--no-scope-check` does not exist on the current binary — `planar schema` declares it on no command, and passing it fails at parse time with exit 2 (`error: <cmd>: The following argument was not expected: --no-scope-check`). (The engine-layer `guard_write` primitive under `src/lib/engine/identity/scope.cppm` does carry a `no_scope_check` bypass parameter and is unit-tested, but no `cmd/` handler ever calls it with `true`, so no verb can reach the bypass from the CLI.)
 
-The only remedies for a cross-scope-guard refusal are `--scope <slug>` to assert explicit intent, or `cd` into the entity's owning repo so cwd derivation resolves correctly. A genuine mismatch — neither of those applied — fails outright.
+The only remedies for a cross-scope-guard refusal are `--scope <slug>` to assert explicit intent, or `cd` into the entity's owning repo so cwd derivation resolves correctly. A genuine mismatch — neither of those applied — fails outright. Note that the `--scope` remedy applies only to verbs where `--scope` selects the write scope; see [§ `--scope` does not mean the same thing on every verb](#--scope-does-not-mean-the-same-thing-on-every-verb) above.
 
 See [docs/cli-reference.md § Cross-scope guard](cli-reference.md#cross-scope-guard) for the per-verb listing and the exact refusal message format.
 
