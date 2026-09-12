@@ -67,6 +67,12 @@ export auto annotate_add(context& ctx, const cliapp::parsed_args& args) -> handl
 /// `--status`, or the mapped engine failure.
 export auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar annotate capabilities [--json]`.
+///
+/// This is a source-bound read handshake for local consumers. It advertises
+/// only implemented annotation contracts and does not process annotations.
+export auto annotate_capabilities(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 /// @brief Handle `planar annotate show <annotation-id> [--json]`.
 ///
 /// The positional is declared a STRING in the tree and parsed here, so a

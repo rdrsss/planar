@@ -408,11 +408,12 @@ TEST_CASE("annotate show renders both wire formats and leaves the row alone", "[
 
   auto const json = dispatch(fx, {"annotate", "show", "1", "--json"});
   REQUIRE(json.code == 0);
-  CHECK(json.out.starts_with("{\"id\":1,\"scope_kind\":\"global\",\"scope_id\":null,"
-                             "\"anchor\":{\"path\":\"f.txt\",\"line_start\":null,\"line_end\":null,"
-                             "\"commit_sha\":\"\",\"text_hash\":\"\",\"text\":\"\"},"
-                             "\"title\":\"T1\",\"slug\":null,\"body\":\"B1\",\"status\":\"active\","
-                             "\"vendor\":\"\",\"plan_id\":null,\"task_id\":null,\"tags\":[\"a\",\"b\"],"));
+  CHECK(json.out.starts_with(
+      "{\"id\":1,\"scope_kind\":\"global\",\"scope_id\":null,"
+      "\"anchor\":{\"kind\":\"file\",\"path\":\"f.txt\",\"line_start\":null,\"line_end\":null,"
+      "\"commit_sha\":\"\",\"text_hash\":\"\",\"text\":\"\"},"
+      "\"target\":null,\"title\":\"T1\",\"slug\":null,\"body\":\"B1\",\"status\":\"active\","
+      "\"vendor\":\"\",\"origin\":null,\"revision\":1,\"plan_id\":null,\"task_id\":null,\"tags\":[\"a\",\"b\"],"));
   // render_json is a documented FRAGMENT, so the handler appends exactly
   // one terminator.
   CHECK(json.out.ends_with("\"}\n"));
@@ -421,6 +422,54 @@ TEST_CASE("annotate show renders both wire formats and leaves the row alone", "[
   // A read verb must not write. `untouched` still holds, which no stdout
   // assertion can express.
   CHECK(row_snapshot(conn, 1) == before);
+}
+
+TEST_CASE("annotation read JSON exposes stable entity targets, revisions, filters, and capabilities without a mutation",
+          "[cmd][annotate][read][6685]") {
+  auto const fx = make_fixture("readcontract");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto conn = open_db(fx);
+  auto plan = planar::engine::planning::create_plan(conn, {.title = "Read target"});
+  REQUIRE(plan.has_value());
+  namespace ann     = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+  auto created = ann::execute_command(conn, {.operation      = ann::command_kind::create,
+                                             .operation_uuid = "read-contract-create",
+                                             .source_uuid    = *source,
+                                             .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = plan->id},
+                                             .title          = "Entity note",
+                                             .body           = "stable body",
+                                             .tags           = {"inbox"}});
+  REQUIRE(created.has_value());
+  REQUIRE(created->annotation_id.has_value());
+  const auto id     = *created->annotation_id;
+  const auto before = ann::show(conn, id);
+  REQUIRE(before.has_value());
+
+  auto const list = dispatch(fx, {"annotate", "list", "--anchor-kind", "entity", "--target-kind", "plan", "--target-id",
+                                  std::to_string(plan->id), "--json"});
+  REQUIRE(list.code == 0);
+  CHECK(list.out.contains(std::format("\"id\":{}", id)));
+  CHECK(list.out.contains(std::format("\"target\":{{\"kind\":\"plan\",\"id\":{}}}", plan->id)));
+  CHECK(list.out.contains("\"anchor\":{\"kind\":\"entity\",\"path\":null"));
+  CHECK(list.out.contains("\"revision\":1"));
+
+  auto const shown = dispatch(fx, {"annotate", "show", std::to_string(id), "--json"});
+  REQUIRE(shown.code == 0);
+  CHECK(list.out == "[" + shown.out.substr(0, shown.out.size() - 1) + "]\n");
+
+  auto const capabilities = dispatch(fx, {"annotate", "capabilities", "--json"});
+  REQUIRE(capabilities.code == 0);
+  CHECK(capabilities.out.contains(std::format("\"source_uuid\":\"{}\"", *source)));
+  CHECK(capabilities.out.contains("\"annotation_read\":true"));
+  CHECK(capabilities.out.contains("\"entity_anchors\":true"));
+  CHECK(capabilities.out.contains("\"filters\":[\"anchor_kind\",\"target_kind\",\"target_id\""));
+
+  auto const after = ann::show(conn, id);
+  REQUIRE(after.has_value());
+  CHECK(after->revision == before->revision);
+  CHECK(after->updated_at == before->updated_at);
 }
 
 TEST_CASE("annotate show reports a missing id by NAMING it, at exit 1", "[cmd][annotate][show][parity]") {
