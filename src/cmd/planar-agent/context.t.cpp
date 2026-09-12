@@ -29,6 +29,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
+import planar.db.migrations;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.dispatch;
@@ -329,4 +330,37 @@ TEST_CASE("planar-agent's operator cwd is PWD-first", "[cmd][agent][context]") {
   CHECK(planar::cmd::agent::operator_cwd(planar::cmd::agent::map_env({{"PWD", "/var/project"}})).string() == "/var/project");
   // An empty PWD falls through rather than yielding an empty path.
   CHECK_FALSE(planar::cmd::agent::operator_cwd(planar::cmd::agent::map_env({{"PWD", ""}})).empty());
+}
+
+TEST_CASE("planar-agent refuses a database migrated past its embedded chain", "[cmd][agent][context]") {
+  // The SchemaVersionAhead arm (task 6690). Before this case only `planar`
+  // had a UNIT test for it; the other three binaries pinned their `behind`
+  // arm only, so task 6058's break-probe 2 -- disabling the ahead comparison
+  // -- left this binary's suite GREEN. The process-level check covered it;
+  // nothing at unit level did.
+  //
+  // Simulated the same way `planar`'s case does: migrate normally, then
+  // insert a schema_migrations row above the embedded maximum, which is
+  // exactly the state a newer binary leaves behind.
+  auto const fx = make_fixture("ahead");
+  seed_migrated_db(fx.db_path);
+  {
+    auto opened = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(opened.has_value());
+    std::uint32_t embedded_max = 0;
+    for (auto const& record : planar::db::migrations()) {
+      embedded_max = std::max(embedded_max, record.version_);
+    }
+    auto const inserted = opened->execute(std::format(
+        "insert into schema_migrations (version, description) values ({}, 'from a newer binary');", embedded_max + 1));
+    REQUIRE(inserted.has_value());
+  }
+
+  std::ostringstream out;
+  std::ostringstream err;
+  auto               ctx    = make_context(fx, out, err);
+  auto const         opened = ctx.ensure_db();
+  REQUIRE_FALSE(opened.has_value());
+  CHECK(opened.error().kind == planar::cmd::agent::domain_error_kind::schema_version_ahead);
+  CHECK(planar::cmd::agent::exit_code(opened.error()) == 7);
 }

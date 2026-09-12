@@ -290,51 +290,63 @@ TEST_CASE("render's {{else}} handling is ASYMMETRIC — silent when false, loud 
   CHECK(render_or_name("{{if .Task.Title}}a{{else}}b{{end}}", ctx) == "UnsupportedDirective");
 }
 
-// --- the reproduced 128-byte defect -----------------------------------
+// --- the removed 128-byte defect (task 6210) --------------------------
 
-TEST_CASE("k_truthy_budget IS 128 — the oracle's number, not a tunable", "[templates][render][if][oracle-defect]") {
-  // Pinned as a LITERAL, and separately from the boundary cases below,
-  // because those cases must not derive their inputs from this constant.
-  // See the note on the 129-byte case.
-  CHECK(tpl::k_truthy_budget == 128);
-}
-
-TEST_CASE("render's {{if}} accepts a value of exactly 128 bytes", "[templates][render][if][oracle-defect]") {
-  // Oracle capture: a task whose body was 128 'q' characters rendered
-  // `{"x": "HAS-BODY"}` at exit 0.
+TEST_CASE("render's {{if}} accepts a value of exactly 128 bytes", "[templates][render][if][6210]") {
+  // The old boundary's lower half, kept: it never failed, and it is what
+  // makes the case below a BOUNDARY rather than a single point.
   tpl::render_context ctx = sample();
   ctx.task.body           = std::string(128, 'q');
   CHECK(render_or_name("{{if .Task.Body}}HAS-BODY{{end}}", ctx) == "HAS-BODY");
 }
 
-TEST_CASE("render's {{if}} FAILS THE WHOLE RENDER on a value of 129 bytes", "[templates][render][if][oracle-defect]") {
-  // Oracle capture: 129 'q' characters produced
-  // `error: rendering template: OutOfMemory` at exit 1 — the render did
-  // not degrade to "falsy", it aborted.
+TEST_CASE("render's {{if}} accepts a value of 129 bytes — the removed ceiling", "[templates][render][if][6210]") {
+  // INVERTED AT TASK 6210 (decision 1067's FIX set). This case used to
+  // assert `== "OutOfMemory"`: 129 bytes failed the ENTIRE render, exit 1,
+  // reproducing zig's `var tmp: [128]u8` FixedBufferAllocator. Bisected to
+  // exactly 128 pass / 129 fail.
   //
-  // THIS IS A REAL PLANAR BUG, reproduced on purpose under D2. Any task
-  // whose body exceeds 128 bytes is unrenderable through a template that
-  // guards it with `{{if .Task.Body}}`, which the shipped templates do.
-  // Do NOT "fix" it here — the fix belongs against the oracle, and a
-  // one-sided fix would diverge the two trees while every lane stayed
-  // green. See render.cppm's header.
+  // Reproducing it was right while the oracle existed; decision 1067 ended
+  // that rule and named this row in its FIX set. The blast radius is why:
+  // truthiness does not depend on length, and every task whose body exceeded
+  // 128 bytes was unrenderable through any `{{if}}`-guarded template --
+  // including the shipped `templates/defaults/github-issues/issue.json`.
   //
-  // THE LENGTH IS A LITERAL 129, NOT `k_truthy_budget + 1`. The first
-  // draft wrote it in terms of the constant and a break-probe reported it
-  // as a SURVIVOR: widening `k_truthy_budget` to 4096 widened the test's
-  // own input to 4097 and it stayed green, so it pinned "the budget is
-  // whatever the header says" rather than "the budget is the oracle's
-  // 128". The literal is the whole point.
+  // THE LENGTH STAYS A LITERAL 129, not `k_truthy_budget + 1`. The original
+  // case learned this the hard way: written in terms of the constant, a
+  // break-probe widening the budget widened the test's own input and it
+  // stayed green. The literal is the point, and it still is -- it pins the
+  // exact byte the old ceiling rejected.
   tpl::render_context ctx = sample();
   ctx.task.body           = std::string(129, 'q');
-  CHECK(render_or_name("{{if .Task.Body}}HAS-BODY{{end}}", ctx) == "OutOfMemory");
+  CHECK(render_or_name("{{if .Task.Body}}HAS-BODY{{end}}", ctx) == "HAS-BODY");
 }
 
-TEST_CASE("render's 128-byte budget applies ONLY to {{if}}, not to plain references", "[templates][render][if][oracle-defect]") {
-  // The budget lives in `eval_truthy`, so a long value that is merely
-  // PRINTED is fine. A port that put the ceiling in `resolve_reference`
-  // instead would break every long task body, and the differential above
-  // would not have caught it because both probes guard with `{{if}}`.
+TEST_CASE("render's {{if}} accepts a value far past any former ceiling", "[templates][render][if][6210]") {
+  // Non-vacuity: a "fix" that merely bumped the constant would satisfy the
+  // 129-byte case. 8 KiB would not.
+  tpl::render_context ctx = sample();
+  ctx.task.body           = std::string(8192, 'q');
+  CHECK(render_or_name("{{if .Task.Body}}HAS-BODY{{end}}", ctx) == "HAS-BODY");
+}
+
+TEST_CASE("an EMPTY value is still falsy — length was never the rule", "[templates][render][if][6210]") {
+  // The property the ceiling obscured: `{{if}}` asks whether the rendered
+  // text is non-empty, and nothing else. Removing a LENGTH ceiling must not
+  // make everything truthy.
+  //
+  // No `{{else}}` here: this renderer does not support it (there is a case
+  // above pinning `{{else}}` as UnsupportedDirective), so the falsy body
+  // simply emits nothing.
+  tpl::render_context ctx = sample();
+  ctx.task.body           = "";
+  CHECK(render_or_name("[{{if .Task.Body}}HAS-BODY{{end}}]", ctx) == "[]");
+}
+
+TEST_CASE("a long value that is merely PRINTED still renders whole", "[templates][render][if][6210]") {
+  // Carried over from the old suite. The budget lived in `eval_truthy`, so a
+  // port that had put a ceiling in `resolve_reference` instead would break
+  // every long body while the `{{if}}` cases stayed green.
   tpl::render_context ctx = sample();
   ctx.task.body           = std::string(4096, 'z');
   CHECK(render_or_name("{{.Task.Body}}", ctx) == std::string(4096, 'z'));

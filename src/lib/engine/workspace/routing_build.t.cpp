@@ -304,14 +304,20 @@ TEST_CASE("go-library survives when there is no package main", "[engine][workspa
   CHECK(project_named(*table, "lib").capabilities == std::vector<std::string>{"go-library"});
 }
 
-TEST_CASE("a capability pattern containing a slash never matches", "[engine][workspace][routing][build][divergence]") {
-  // DIVERGENCE 2, reproduced as observed. Five consecutive oracle builds over
-  // these exact fixtures, identical every time:
-  //     a.proto at the repo ROOT  -> ["protobuf"]
-  //     proto/a.proto only        -> []
-  // The cause is a use-after-free in `patternFinds` — full account in
-  // routing.cppm's header. This test pins BOTH halves: the absence is only
-  // meaningful beside the presence.
+TEST_CASE("a capability pattern containing a slash scans that subdirectory", "[engine][workspace][routing][build][6322]") {
+  // INVERTED AT TASK 6322 (decision 1067's FIX set). This case used to assert
+  // the opposite -- that `proto/*.proto` never matches -- pinning a genuine
+  // use-after-free reproduced from the oracle: `patternFinds` freed the joined
+  // path before `openDir` saw it and the `catch return false` swallowed it.
+  // Every slash-bearing capability pattern silently matched nothing,
+  // including the SHIPPED protobuf rule's `proto/*.proto` arm.
+  //
+  // Reproducing it was right while the oracle existed (D2) because the fix
+  // emits tags the oracle never emits on a persisted write path. Decision
+  // 1067 ended that rule, and named this row in its FIX set.
+  //
+  // Both halves still matter: the subdirectory match is only meaningful
+  // beside the root match, which never regressed.
   scratch_tree tree;
   auto         conn = open_migrated(tree);
   add_org(conn, "acme");
@@ -322,10 +328,48 @@ TEST_CASE("a capability pattern containing a slash never matches", "[engine][wor
 
   auto table = routing::build(conn, 1, "acme", "Acme", routing::default_capability_rules());
   REQUIRE(table.has_value());
-  // PRESENT: the no-slash `*.proto` arm fires.
+  // The no-slash `*.proto` arm fires at the repo root, as it always did.
   CHECK(project_named(*table, "rootproto").capabilities == std::vector<std::string>{"protobuf"});
-  // ABSENT: the `proto/*.proto` arm never does.
-  CHECK(project_named(*table, "subproto").capabilities.empty());
+  // And the `proto/*.proto` arm now fires in the subdirectory.
+  CHECK(project_named(*table, "subproto").capabilities == std::vector<std::string>{"protobuf"});
+}
+
+TEST_CASE("a slash pattern does NOT match the same filename at the root", "[engine][workspace][routing][build][6322]") {
+  // Non-vacuity for the case above. Without this, a "fix" that ignored the
+  // directory part entirely -- globbing the leaf against the ROOT -- would
+  // satisfy it. `proto/*.proto` must look in `proto/`, not everywhere.
+  scratch_tree tree;
+  auto         conn = open_migrated(tree);
+  add_org(conn, "acme");
+  // A .proto at the root of a repo that has NO proto/ directory. The
+  // shipped rule's other arm (`*.proto`, no slash) is what should fire here;
+  // to isolate the slash arm this case uses a rules set carrying ONLY it.
+  put(tree.repo("flat") / "a.proto", "syntax=\"proto3\";\n");
+  add_member(conn, "flat", tree.repo("flat"));
+
+  std::vector<routing::capability_rule> only_slash{
+      routing::capability_rule{.tag = "protobuf", .match_all = {}, .match_any = {"proto/*.proto"}}};
+  auto table = routing::build(conn, 1, "acme", "Acme", only_slash);
+  REQUIRE(table.has_value());
+  CHECK(project_named(*table, "flat").capabilities.empty());
+}
+
+TEST_CASE("a traversing slash pattern is refused, not followed", "[engine][workspace][routing][build][6322]") {
+  // The scan is rooted at a project directory and the rules file is
+  // operator-authored, so `..` is refused rather than normalized away.
+  // Silently clamping it would hide a rules-file bug the same way the
+  // original defect hid itself.
+  scratch_tree tree;
+  auto         conn = open_migrated(tree);
+  add_org(conn, "acme");
+  put(tree.repo("esc") / "a.proto", "syntax=\"proto3\";\n");
+  add_member(conn, "esc", tree.repo("esc"));
+
+  std::vector<routing::capability_rule> traversing{
+      routing::capability_rule{.tag = "protobuf", .match_all = {}, .match_any = {"../esc/*.proto"}}};
+  auto table = routing::build(conn, 1, "acme", "Acme", traversing);
+  REQUIRE(table.has_value());
+  CHECK(project_named(*table, "esc").capabilities.empty());
 }
 
 TEST_CASE("a rule with both pattern lists empty matches nothing", "[engine][workspace][routing][build]") {

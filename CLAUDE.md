@@ -28,10 +28,10 @@
     generator under `src/lib/cliapp/` — the layer that carries the
     oracle-pinned parity surface (help text, parse-error wording, exit
     codes, the `schema` JSON catalog). `import cli11;` in
-    `src/lib/cliapp/args.cppm` is ground truth for this; decision 948's
-    status is still recorded as `proposed` even though the code already
-    ships it — that status/code mismatch is open as a question, not
-    silently reconciled here.
+    `src/lib/cliapp/args.cppm` is ground truth for this. Decision 948 was
+    `proposed` while its code shipped; that status/code mismatch is CLOSED
+    (task 6719) — 948 is now `accepted`, along with the thirteen other
+    plan-996 decisions whose code had already landed.
 
 - Treat this file as this repo's true agent guide, not a template for other repos.
 - Keep `AGENTS.md` equivalent to this file (symlink or byte-for-byte copy).

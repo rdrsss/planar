@@ -105,9 +105,26 @@ auto assert_schema_compatible(connection& conn, std::span<migration_record const
   // ORDER IS THE POLICY, and it is deliberate (see `schema_compatibility`):
   // `ahead` first because a newer schema is the case the binary can say
   // the most about and the operator can act on immediately; `gap` next
-  // because a hole makes the remaining comparison meaningless — applying
-  // the "pending" tail on top of a broken base would compound it; only
-  // then the ordinary behind/current split.
+  // because a hole is a more specific and more actionable finding than
+  // "behind"; only then the ordinary behind/current split.
+  //
+  // AN EARLIER VERSION OF THIS COMMENT justified gap-over-behind as
+  // "applying the pending tail on top of a broken base would compound it".
+  // That mechanism is not realized anywhere, and saying so was misleading
+  // in two directions (task 6695):
+  //
+  //  - There is no pending tail left to apply when the verdict is read.
+  //    `context.cpp` runs `db::apply_all` BEFORE
+  //    `db::assert_schema_compatible`, so the tail is already applied by the
+  //    time a verdict exists.
+  //  - This ordering is not what the binaries observe anyway. All three
+  //    consumer binaries test `stored < maximum` (and `stored > maximum`)
+  //    against the raw `live_` version and never consult `verdict_` at all,
+  //    so at the binary level BEHIND outranks GAP -- the inverse of the
+  //    precedence declared here.
+  //
+  // The ordering below is still the right one for a caller that DOES read
+  // `verdict_`; it is just not load-bearing for the shipped binaries today.
   if (state.live_ > state.embedded_max_) {
     state.verdict_ = schema_compatibility::ahead;
   } else if (has_hole) {
@@ -179,7 +196,10 @@ auto apply_all(connection& conn) -> std::expected<void, db_error> {
   // `subspan(0, i + 1)` prefix). Enforcing it there would reject the
   // seam's whole purpose while adding nothing: a caller that hands over
   // its own chain already knows what it built.
-  auto const chain = migrations();
+  return apply_contiguous(conn, migrations());
+}
+
+auto apply_contiguous(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {
   if (auto const contiguous = require_contiguous(chain); !contiguous) {
     return std::unexpected(contiguous.error());
   }

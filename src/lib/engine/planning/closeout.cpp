@@ -37,12 +37,6 @@ constexpr std::string_view k_unknown_branch = "(unknown)";
 
 /// @brief The oracle's fixed `refs/heads/{branch}` scratch buffer size.
 ///
-/// `branch_exists` returns FALSE rather than probing when the formatted ref
-/// does not fit. Reproduced deliberately: unlike the broken IO handle this
-/// module routes around, this is the oracle's own logic. `refs/heads/` is
-/// 11 bytes, so the effective branch-name ceiling is 117.
-constexpr std::size_t k_branch_ref_buffer = 128;
-
 /// @brief The recursive CTE naming the plan AND every descendant plan.
 /// Seeded with the plan itself — used by the claim, finalization and
 /// locality queries, all of which count the plan's own rows too.
@@ -85,16 +79,23 @@ auto git_run_trimmed(std::string_view repo_root, std::span<const std::string_vie
 
 /// @brief True when `branch` resolves as a local head.
 ///
-/// Carries the oracle's fixed-buffer ceiling — see `k_branch_ref_buffer`.
+/// FIXED AT TASK 6321 (decision 1067's FIX set). This carried the oracle's
+/// fixed-buffer ceiling: a `[128]u8` scratch buffer meant `refs/heads/` plus
+/// anything over 117 bytes did not fit, and the function returned FALSE
+/// rather than probing -- reporting a branch ABSENT when it exists. A
+/// closeout that reads "the branch is gone" when it is not is the wrong
+/// answer to the question the operator asked, and it is silent.
+///
+/// The ceiling was always artificial here: this port formats the ref into a
+/// `std::string`, which has no such limit, so the guard existed ONLY to
+/// reproduce the oracle. Decision 1067 ended that rule. Git's own limit on
+/// ref names now applies and `rev-parse --verify` reports it.
 /// @param repo_root The repository to probe.
 /// @param branch The branch name.
 /// @return Whether `refs/heads/<branch>` verifies.
 auto branch_exists(std::string_view repo_root, std::string_view branch) -> bool {
-  static constexpr std::string_view k_prefix = "refs/heads/";
-  if (k_prefix.size() + branch.size() >= k_branch_ref_buffer) {
-    return false;
-  }
-  std::string const                     ref = std::string{k_prefix} + std::string{branch};
+  static constexpr std::string_view     k_prefix = "refs/heads/";
+  std::string const                     ref      = std::string{k_prefix} + std::string{branch};
   std::array<std::string_view, 3> const args{"rev-parse", "--verify", ref};
   return git_run(repo_root, args).has_value();
 }
