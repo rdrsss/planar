@@ -80,6 +80,8 @@
 import std;
 import cli11;
 import planar.db;
+import planar.db.migrate;
+import planar.db.migrations;
 import planar.engine.identity;
 import planar.engine.planning;
 import planar.json_dom;
@@ -194,6 +196,13 @@ auto open_db(const fixture& fx) -> planar::db::connection {
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
   return std::move(*conn);
+}
+
+/// @brief Preserve an on-disk witness byte-for-byte around a read admission.
+auto database_bytes(const std::filesystem::path& path) -> std::string {
+  std::ifstream input(path, std::ios::binary);
+  REQUIRE(input.is_open());
+  return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
 }
 
 /// @brief Every column of one annotation row, pipe-joined, with SQL NULL
@@ -470,6 +479,51 @@ TEST_CASE("annotation read JSON exposes stable entity targets, revisions, filter
   REQUIRE(after.has_value());
   CHECK(after->revision == before->revision);
   CHECK(after->updated_at == before->updated_at);
+}
+
+TEST_CASE("annotation capabilities refuses old and ahead sources without applying migrations",
+          "[cmd][annotate][capabilities][readonly][6689]") {
+  auto const old = make_fixture("capabilities_old_source");
+  {
+    auto conn = open_db(old);
+    REQUIRE(planar::db::apply_all(conn, planar::db::migrations().subspan(0, 33)).has_value());
+  }
+  const auto old_before = database_bytes(old.db_path);
+  const auto old_result = dispatch(old, {"annotate", "capabilities", "--json"});
+  REQUIRE(old_result.code == 0);
+  CHECK_FALSE(old_result.db_open);
+  CHECK(old_result.out.contains("\"available\":false"));
+  CHECK(old_result.out.contains("\"reason\":\"schema_incompatible\""));
+  CHECK(old_result.out.contains("\"observed_schema_version\":33"));
+  CHECK(database_bytes(old.db_path) == old_before);
+  {
+    auto       conn  = open_db(old);
+    auto const state = planar::db::assert_schema_compatible(conn);
+    REQUIRE(state.has_value());
+    CHECK(state->live_ == 33);
+    CHECK(state->verdict_ == planar::db::schema_compatibility::behind);
+  }
+
+  auto const ahead = make_fixture("capabilities_ahead_source");
+  {
+    auto conn = open_db(ahead);
+    REQUIRE(planar::db::apply_all(conn).has_value());
+    REQUIRE(conn.execute("insert into schema_migrations(version, description) values (999, 'future source')").has_value());
+  }
+  const auto ahead_before = database_bytes(ahead.db_path);
+  const auto ahead_result = dispatch(ahead, {"annotate", "capabilities", "--json"});
+  REQUIRE(ahead_result.code == 0);
+  CHECK_FALSE(ahead_result.db_open);
+  CHECK(ahead_result.out.contains("\"available\":false"));
+  CHECK(ahead_result.out.contains("\"observed_schema_version\":999"));
+  CHECK(database_bytes(ahead.db_path) == ahead_before);
+  {
+    auto       conn  = open_db(ahead);
+    auto const state = planar::db::assert_schema_compatible(conn);
+    REQUIRE(state.has_value());
+    CHECK(state->live_ == 999);
+    CHECK(state->verdict_ == planar::db::schema_compatibility::ahead);
+  }
 }
 
 TEST_CASE("annotate show reports a missing id by NAMING it, at exit 1", "[cmd][annotate][show][parity]") {

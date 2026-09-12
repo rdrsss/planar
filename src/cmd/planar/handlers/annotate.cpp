@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.db.migrate;
 import planar.json_dom;
 import planar.json_text;
 import planar.engine.planning;
@@ -491,13 +492,44 @@ auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
 }
 
 auto annotate_capabilities(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  // Capability discovery is the read-side admission handshake for Explorer.
+  // It must never take the operator context's migration path: a readable old
+  // source is still useful to Explorer in default viewing mode, and probing
+  // it must not turn that probe into a schema upgrade.  The command writers
+  // below intentionally retain ctx.ensure_db(), because their transaction
+  // needs the current schema and is the explicit writer boundary.
+  auto conn = db::connection::open_read_only(ctx.db_path().string());
   if (!conn) {
-    return std::unexpected(conn.error());
+    if (flag_bool(args, "--json")) {
+      ctx.out() << R"({"available":false,"reason":"source_unavailable"})" << '\n';
+    } else {
+      ctx.out() << "annotation writing: unavailable (source cannot be opened read-only)\n";
+    }
+    return {};
   }
-  auto source = ann::source_uuid(**conn);
+  auto const schema = db::assert_schema_compatible(*conn);
+  if (!schema || schema->verdict_ != db::schema_compatibility::current) {
+    const auto observed = schema ? schema->live_ : 0;
+    if (flag_bool(args, "--json")) {
+      ctx.out()
+          << std::format(
+                 R"({{"available":false,"reason":"schema_incompatible","observed_schema_version":{},"required_schema_version":{}}})",
+                 observed, db::embedded_max())
+          << '\n';
+    } else {
+      ctx.out() << std::format("annotation writing: unavailable (source schema {} is not compatible with writer schema {})\n",
+                               observed, db::embedded_max());
+    }
+    return {};
+  }
+  auto source = ann::source_uuid(*conn);
   if (!source) {
-    return std::unexpected(map_annotation_error(source.error(), "annotate capabilities"));
+    if (flag_bool(args, "--json")) {
+      ctx.out() << R"({"available":false,"reason":"source_unavailable"})" << '\n';
+    } else {
+      ctx.out() << "annotation writing: unavailable (source identity cannot be read)\n";
+    }
+    return {};
   }
   if (flag_bool(args, "--json")) {
     std::string out{"{\"source_uuid\":"};
