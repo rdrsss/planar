@@ -6982,6 +6982,99 @@ For quick reference, all documented commands grouped by domain:
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch`, `tabularium`) |
+## Domain: `closure`
+
+Derived-closure extraction: given a task's touched `(repo, path)` seeds, walk
+the source with tree-sitter and persist the files that task's work actually
+reaches. `closure compute` does the walk and writes; `closure show` reads back
+what was written.
+
+Rows are classified by `role`:
+
+| Role | Meaning |
+|------|---------|
+| `modify` | A seed path itself — the file the task touches directly. |
+| `reference` | Reached from a seed by a direct source reference. |
+| `transitive` | Reached only through another reference. |
+
+**SQLite tables:** reads `task_touch_paths` for seeds and `projects.root_path`
+to resolve them against a checkout; writes the closure rows `closure show`
+reads back.
+
+---
+
+### `planar closure compute <task-id>`
+
+**Synopsis:**
+```
+planar closure compute <task-id> [--scope <slug>] [--json]
+```
+
+**Description:** Run the extractor over a task's seeds and persist the closure.
+Seeds come from `task_touch_paths`, so a task with no touched paths has nothing
+to walk and is refused rather than silently writing an empty closure.
+
+Seed paths are resolved against `projects.root_path`, which is why a project
+registered with a path that does not match your checkout produces an empty or
+wrong result — see the association-less-repo advisory under
+[`task touches add`](#planar-task-touches-add-task-id).
+
+**Scope guard:** Refuses when the operator's resolved write scope disagrees
+with the task's, using **strict equality** (see
+[Cross-scope guard](#cross-scope-guard) — this is one of the two verbs that
+does not use the membership-aware comparison).
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<task-id>` | The task whose seeds to walk (integer). |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--scope <slug>` | Write-scope override for the cross-scope guard. | cwd-derived |
+| `--json` | Emit the row-count summary as JSON. | off |
+
+**Output:** A count summary — seeds walked, and rows written per role.
+
+**Exit codes:**
+- `0` — closure computed and persisted.
+- `1` — the task has no seeds, or a query failed.
+- `5` — cross-scope guard refusal.
+
+---
+
+### `planar closure show <task-id>`
+
+**Synopsis:**
+```
+planar closure show <task-id> [--json]
+```
+
+**Description:** Read back a task's persisted closure rows. Read-only; it never
+recomputes, so a task whose closure was never computed reads back empty rather
+than triggering a walk.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<task-id>` | The task whose closure to read (integer). |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit the rows as JSON. | off |
+
+**Exit codes:**
+- `0` — rows rendered (including none).
+- `1` — query failure.
+
+---
+
 ## Domain: `feedback`
 
 Migration `00028_feedback_triage` stores deterministic operator triage for
@@ -7002,6 +7095,13 @@ planar feedback triage set <task:id|question:id> --severity <value>
   [--duplicate-of <task:id|question:id>] [--evidence <redacted-text>]
   [--scope <slug>] [--json]
 ```
+
+**Scope guard on `feedback triage set`:** it refuses when the operator's
+resolved write scope disagrees with the OWNING entity's, using the
+membership-aware comparison — an operator scope `assoc:<org>` covers a finding
+on a `repo:<member>` task. `list` and `show` are reads and are unguarded. See
+[Cross-scope guard](#cross-scope-guard); `feedback triage set` is one of the
+eight verbs in that table.
 
 Disposition values are `untriaged`, `needs-reproduction`, `accepted`,
 `retained-question`, `dismissed`, `reported-external`, and `duplicate`.
