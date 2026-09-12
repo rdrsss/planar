@@ -807,12 +807,21 @@ auto collect_preview(std::span<const raw_source> sources) -> preview {
   // sources, one disabled and one unavailable) must keep their relative
   // input order — `coverageLessThan`/`signalLessThan` only ever compare a
   // PREFIX of the full key, so an unstable sort could silently swap ties.
-  // Correct fidelity call (the "raw vendor fixtures..." test's two `cli_log`
-  // rows exercise exactly this tie and pin the resulting order), but no
-  // test here flips `stable_sort` back to `sort` and re-asserts — so a
-  // future regression to an unstable sort is not itself pinned, only this
-  // one tie's OUTCOME is. Do not read the passing test as coverage for the
-  // stability guarantee in general.
+  // PINNED AT TASK 6348 by `coverage rows for one vendor keep INPUT order`,
+  // which DOES flip this to `sort` and fail. Getting a discriminating fixture
+  // took three attempts and the reason is worth recording, because the two
+  // failures both LOOK like passes:
+  //
+  //   n=20, one vendor    SURVIVED -- introsort falls back to insertion sort
+  //                       below ~30 elements, and insertion sort is stable.
+  //   n=64, one vendor    SURVIVED -- an ALL-TIES range is degenerate for
+  //                       introsort: it partitions to nothing and preserves
+  //                       order whatever the algorithm.
+  //   n=64, TWO vendors   KILLS -- interleaving forces a real partition, and
+  //   interleaved         the ties then sit inside it.
+  //
+  // So a small or single-vendor fixture cannot tell `sort` from `stable_sort`
+  // here at any size. Do not "simplify" that test back toward one vendor.
   std::ranges::stable_sort(signals, signal_less_than);
   std::ranges::stable_sort(coverage, coverage_less_than);
 

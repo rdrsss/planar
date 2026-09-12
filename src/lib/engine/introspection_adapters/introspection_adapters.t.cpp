@@ -78,6 +78,64 @@ auto preview_leaks(const ia::preview& p, std::string_view sentinel) -> bool {
 
 } // namespace
 
+TEST_CASE("coverage rows for one vendor keep INPUT order — the sort is stable", "[engine][introspection_adapters][6348]") {
+  // TASK 6348. `coverage_less_than` compares the VENDOR AND NOTHING ELSE, so
+  // every coverage row for one vendor is a tie and only `stable_sort`'s
+  // guarantee decides their order. The module comment recorded that this was
+  // a fidelity call with no test behind it: the existing two-`cli_log`-row
+  // case pins one tie's OUTCOME, which a lucky unstable sort would also
+  // satisfy.
+  //
+  // SIXTY-FOUR rows, not two -- and not twenty either. An unstable introsort
+  // falls back to INSERTION SORT below an implementation threshold (~30 in
+  // libc++), and insertion sort is stable by accident, so a small fixture
+  // cannot tell `sort` from `stable_sort` at all. Measured: a first cut of
+  // this case used twenty rows and the `stable_sort` -> `sort` probe SURVIVED.
+  // Sixty-four is comfortably past the threshold on both libc++ and
+  // libstdc++.
+  // TWO vendors, INTERLEAVED. An all-ties range is degenerate for introsort --
+  // it partitions to nothing and preserves order whatever the algorithm --
+  // so a single-vendor fixture cannot tell `sort` from `stable_sort` at any
+  // size. Measured: single-vendor cuts at n=20 AND n=64 both SURVIVED the
+  // probe. Interleaving forces a real partition, and the ties then sit
+  // inside it where an unstable sort actually disturbs them.
+  std::vector<ia::raw_source> sources;
+  sources.reserve(64);
+  for (std::uint32_t i = 0; i < 64; ++i) {
+    std::string jsonl;
+    for (std::uint32_t line = 0; line <= i; ++line) {
+      jsonl += "{\"version\":1,\"type\":\"tool_result\",\"timestamp\":\"2026-07-12T12:05:00Z\","
+               "\"tool\":{\"name\":\"planar task add\",\"input\":{}},\"exit_code\":0,\"retry\":false}\n";
+    }
+    // `codex` sorts AFTER `claude`, so the odd rows must all migrate past the
+    // even ones -- real work for the sort -- while each vendor's own rows
+    // keep their relative input order.
+    auto const v = (i % 2 == 0) ? ia::vendor::claude : ia::vendor::codex;
+    sources.push_back(ia::raw_source{.v = v, .enabled = true, .available = true, .jsonl = std::move(jsonl)});
+  }
+
+  auto const got = ia::collect_preview(sources);
+  REQUIRE(got.coverage.size() == 64);
+
+  // Grouped by vendor, and WITHIN each group the `scanned` counts must still
+  // ascend exactly as they were supplied: claude saw 1, 3, 5, … and codex
+  // saw 2, 4, 6, …
+  std::vector<std::uint32_t> claude_scanned;
+  std::vector<std::uint32_t> codex_scanned;
+  for (auto const& row : got.coverage) {
+    (row.v == ia::vendor::claude ? claude_scanned : codex_scanned).push_back(row.scanned);
+  }
+  REQUIRE(claude_scanned.size() == 32);
+  REQUIRE(codex_scanned.size() == 32);
+  CHECK(std::ranges::is_sorted(claude_scanned));
+  CHECK(std::ranges::is_sorted(codex_scanned));
+
+  // And the grouping itself: every claude row precedes every codex row.
+  auto const first_codex = std::ranges::find(got.coverage, ia::vendor::codex, &ia::coverage_row::v);
+  CHECK(std::ranges::none_of(std::ranges::subrange(first_codex, got.coverage.end()),
+                             [](auto const& row) { return row.v == ia::vendor::claude; }));
+}
+
 TEST_CASE("raw vendor fixtures redact, aggregate, count malformed, and report coverage", "[engine][introspection_adapters]") {
   std::vector<ia::raw_source> sources{
       ia::raw_source{

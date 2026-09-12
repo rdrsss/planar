@@ -371,4 +371,23 @@ TEST_CASE("publish-decision PROPAGATES a direct-target link-read failure, not sw
   CHECK(published.code == 1);
   CHECK(published.err == "error: audit publish-decision: direct target: QueryFailed\n");
   CHECK(published.out.empty());
+
+  // THE SYMMETRIC ARM IS NOT COVERED, AND CANNOT BE FROM HERE (task 6345).
+  //
+  // `publish_target` runs twice: once for the DIRECT target, which this case
+  // forces to fail, and once per TRANSITIVE target discovered through
+  // `entity_links` (the success path of which is
+  // `posts to a target reached only via entity_links` above). The transitive
+  // call's `links_for_entity` FAILURE arm is four lines, symmetric with the
+  // one asserted here, and reviewed for oracle fidelity by reading.
+  //
+  // It is unreachable by THIS fixture by construction: with
+  // `external_links` dropped the DIRECT read fails first and control never
+  // reaches the transitive loop. Covering it needs the table readable for
+  // one call and failing for the next within a single process -- a DB
+  // fault-injection seam this tree does not have.
+  //
+  // Recorded here rather than only on a task, because a test file carrying a
+  // named propagation-failure case is exactly what invites a later reader to
+  // assume the other arm is covered too. It is not.
 }
