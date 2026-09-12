@@ -921,11 +921,14 @@ auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_
   }
   std::string out{"{\"found\":true,\"operation_uuid\":"};
   json_text::append_json_string(out, (**receipt).operation_uuid);
+  out += ",\"source_uuid\":";
+  json_text::append_json_string(out, (**receipt).source_uuid);
   out += std::format(
       ",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":", (**receipt).annotation_id.value_or(0),
       (**receipt).revision.value_or(0), (**receipt).affected_count.value_or(0));
   json_text::append_json_string(out, (**receipt).outcome);
-  ctx.out() << out << "}\n";
+  out += (**receipt).replayed ? ",\"replayed\":true}" : ",\"replayed\":false}";
+  ctx.out() << out << '\n';
   return {};
 }
 

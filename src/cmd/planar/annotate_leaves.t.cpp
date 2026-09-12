@@ -1472,8 +1472,12 @@ TEST_CASE("annotation command validates its JSON boundary before mutation and em
   CHECK(lookup_json->find("found")->boolean);
   REQUIRE(lookup_json->find("operation_uuid") != nullptr);
   CHECK(lookup_json->find("operation_uuid")->string == "quote\"id");
+  REQUIRE(lookup_json->find("source_uuid") != nullptr);
+  CHECK(lookup_json->find("source_uuid")->string == *source);
   REQUIRE(lookup_json->find("outcome") != nullptr);
   CHECK(lookup_json->find("outcome")->string == "create");
+  REQUIRE(lookup_json->find("replayed") != nullptr);
+  CHECK(lookup_json->find("replayed")->boolean);
 
   auto after_audit = conn.prepare("select count(*) from audit_log");
   REQUIRE(after_audit.has_value());
