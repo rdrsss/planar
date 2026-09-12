@@ -168,6 +168,7 @@ export enum class annotation_error : std::uint8_t {
   slug_conflict,         ///< The slug is already taken (annotations.slug is UNIQUE).
   empty_tag,             ///< A tag that is empty after trimming.
   query_failed,          ///< An underlying SQL statement failed.
+  busy_source,           ///< SQLite could not acquire the source write lock; retry unchanged.
   audit_write_failed,    ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
   invalid_anchor,        ///< File/entity discriminator and fields disagree.
   target_not_found,      ///< Entity target does not exist.

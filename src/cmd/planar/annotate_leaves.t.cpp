@@ -1412,10 +1412,67 @@ TEST_CASE("annotation command validates its JSON boundary before mutation and em
   REQUIRE(response->find("retention_warning") != nullptr);
   CHECK(response->find("retention_warning")->kind == planar::json_dom::json_kind::object);
 
+  auto const looked_up = dispatch(fx, {"annotate", "receipt", "--source-uuid", *source, "--operation-id", "quote\"id"});
+  REQUIRE(looked_up.code == 0);
+  auto const lookup_json = planar::json_dom::parse_json(looked_up.out);
+  REQUIRE(lookup_json.has_value());
+  REQUIRE(lookup_json->find("found") != nullptr);
+  CHECK(lookup_json->find("found")->boolean);
+  REQUIRE(lookup_json->find("operation_uuid") != nullptr);
+  CHECK(lookup_json->find("operation_uuid")->string == "quote\"id");
+  REQUIRE(lookup_json->find("outcome") != nullptr);
+  CHECK(lookup_json->find("outcome")->string == "create");
+
   auto after_audit = conn.prepare("select count(*) from audit_log");
   REQUIRE(after_audit.has_value());
   REQUIRE(after_audit->step().has_value());
   CHECK(after_audit->column_int64(0) == audits_before + 1);
+}
+
+TEST_CASE("annotation command reports a competing write lock as retryable busy without a receipt",
+          "[cmd][annotate][command][busy][6684]") {
+  auto const fx = make_fixture("commandbusy");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto       conn = open_db(fx);
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  namespace ann     = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+
+  auto lock = conn.begin_transaction(planar::db::lock_mode::immediate);
+  REQUIRE(lock.has_value());
+  auto const request = std::format(
+      R"({{"operation":"create","operation_id":"busy-6684","source_uuid":"{}","target_kind":"plan","target_id":{},"title":"retry"}})",
+      *source, plan->id);
+  auto const busy = dispatch(fx, {"annotate", "command", "--request", "@-"}, request);
+  CHECK(busy.code == 1);
+  CHECK(busy.out.empty());
+  CHECK(busy.err == "error: annotate command: Busy\n");
+
+  {
+    auto annotation_count = conn.prepare("select count(*) from annotations");
+    auto receipt_count    = conn.prepare("select count(*) from annotation_operation_receipts");
+    auto audit_count      = conn.prepare("select count(*) from audit_log");
+    REQUIRE(annotation_count.has_value());
+    REQUIRE(receipt_count.has_value());
+    REQUIRE(audit_count.has_value());
+    REQUIRE(annotation_count->step().has_value());
+    REQUIRE(receipt_count->step().has_value());
+    REQUIRE(audit_count->step().has_value());
+    CHECK(annotation_count->column_int64(0) == 0);
+    CHECK(receipt_count->column_int64(0) == 0);
+    CHECK(audit_count->column_int64(0) == 1); // create_plan only
+  }
+  REQUIRE(lock->commit().has_value());
+
+  auto const retried = dispatch(fx, {"annotate", "command", "--request", "@-"}, request);
+  REQUIRE(retried.code == 0);
+  auto const retry_json = planar::json_dom::parse_json(retried.out);
+  REQUIRE(retry_json.has_value());
+  REQUIRE(retry_json->find("replayed") != nullptr);
+  CHECK_FALSE(retry_json->find("replayed")->boolean);
+  CHECK(ann::show_receipt(conn, *source, "busy-6684")->has_value());
 }
 
 TEST_CASE("annotation command measures tag limits in UTF-8 characters", "[cmd][annotate][command][unicode][6684]") {

@@ -72,6 +72,7 @@ namespace planar::cmd {
 /// @brief The domain-error taxonomy this binary's handlers raise.
 export enum class domain_error_kind : std::uint8_t {
   generic_failure,
+  busy_source,
   not_found,
   invalid_input,
   invalid_entity_ref,
@@ -145,6 +146,7 @@ export auto error_from_rendered(domain_error_kind kind, std::string payload) -> 
 export auto exit_code_for(domain_error_kind kind) -> int {
   switch (kind) {
   case domain_error_kind::generic_failure:
+  case domain_error_kind::busy_source:
   case domain_error_kind::not_found:
     return exit_generic_failure;
   case domain_error_kind::invalid_input:

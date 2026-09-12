@@ -48,6 +48,8 @@ auto zig_error_name(ann::annotation_error err) -> std::string_view {
     return "EmptyTag";
   case ann::annotation_error::query_failed:
     return "QueryFailed";
+  case ann::annotation_error::busy_source:
+    return "Busy";
   case ann::annotation_error::audit_write_failed:
     // zig `policy.audit.Error` has the single member `WriteFailed`, which
     // the Zig call sites `try` straight out of the engine module.
@@ -84,8 +86,9 @@ auto zig_error_name(ann::annotation_error err) -> std::string_view {
 /// @param leaf The leaf name to lead the message with, e.g. `"annotate add"`.
 /// @return The mapped failure.
 auto map_annotation_error(ann::annotation_error err, std::string_view leaf) -> domain_error {
-  auto const kind =
-      err == ann::annotation_error::slug_conflict ? domain_error_kind::slug_conflict : domain_error_kind::generic_failure;
+  auto const kind = err == ann::annotation_error::slug_conflict ? domain_error_kind::slug_conflict
+                    : err == ann::annotation_error::busy_source ? domain_error_kind::busy_source
+                                                                : domain_error_kind::generic_failure;
   return error_from_body(kind, std::format("{}: {}", leaf, zig_error_name(err)));
 }
 
@@ -856,10 +859,13 @@ auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_
     ctx.out() << "{\"found\":false}\n";
     return {};
   }
-  ctx.out() << std::format("{{\"found\":true,\"operation_uuid\":\"{}\",\"annotation_id\":{},\"revision\":{},\"affected_count\":{}"
-                           ",\"outcome\":\"{}\"}}\n",
-                           (**receipt).operation_uuid, (**receipt).annotation_id.value_or(0), (**receipt).revision.value_or(0),
-                           (**receipt).affected_count.value_or(0), (**receipt).outcome);
+  std::string out{"{\"found\":true,\"operation_uuid\":"};
+  json_text::append_json_string(out, (**receipt).operation_uuid);
+  out += std::format(
+      ",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":", (**receipt).annotation_id.value_or(0),
+      (**receipt).revision.value_or(0), (**receipt).affected_count.value_or(0));
+  json_text::append_json_string(out, (**receipt).outcome);
+  ctx.out() << out << "}\n";
   return {};
 }
 

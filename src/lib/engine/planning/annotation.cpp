@@ -59,9 +59,16 @@ namespace {
 // entitylink.cpp already use to detect a UNIQUE violation without
 // string-matching the driver's message.
 constexpr int k_sqlite_constraint_unique = 2067;
+constexpr int k_sqlite_busy              = 5;
 
 auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique;
+}
+
+/// SQLite reports extended busy codes too (for example SQLITE_BUSY_SNAPSHOT),
+/// whose low byte remains SQLITE_BUSY.
+auto command_db_error(const db::db_error& err) -> annotation_error {
+  return (err.code_ & 0xff) == k_sqlite_busy ? annotation_error::busy_source : annotation_error::query_failed;
 }
 
 constexpr std::string_view k_select_columns =
@@ -579,7 +586,7 @@ auto execute_command(db::connection& conn, const command_args& args) -> std::exp
   }
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx)
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   // Recheck under the write lock; a concurrent retry must not double-create.
   existing = show_receipt(conn, args.source_uuid, args.operation_uuid);
   if (!existing)
@@ -700,7 +707,7 @@ auto execute_command(db::connection& conn, const command_args& args) -> std::exp
     return std::unexpected(annotation_error::query_failed);
   auto committed = tx->commit();
   if (!committed)
-    return std::unexpected(annotation_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   auto receipt = show_receipt(conn, args.source_uuid, args.operation_uuid);
   if (!receipt || !receipt->has_value())
     return std::unexpected(annotation_error::query_failed);
