@@ -10,15 +10,16 @@
 // because `apply_all` MIGRATES whatever database it is handed, and this
 // branch carries a schema the installed binaries do not support.
 //
-// A private header rather than a module, for the reason json_read.hpp and
-// sha256.hpp next door already state: it is test-only scaffolding shared
+// A private header rather than a module, for the reason json_read.hpp next
+// door already states: it is test-only scaffolding shared
 // between TUs of the SAME target, so it creates no dependency edge, and
 // nothing that ships includes it.
 #pragma once
 
 // Included from module-importing test translation units after `import std;`,
-// so it deliberately includes no standard header (the sha256.hpp exception
-// applies only to headers pulled into a global module fragment).
+// so it deliberately includes no standard header (that exception applies
+// only to headers pulled into a global module fragment; `sha256.hpp`, which
+// this used to cite as the example, was deleted at task 6407).
 
 #include <catch2/catch_test_macros.hpp>
 

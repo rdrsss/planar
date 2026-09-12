@@ -171,10 +171,20 @@ export [[nodiscard]] auto source_digest(std::string_view source_kind, std::int64
 /// builds. Both modules live in this bucket, so sharing the implementation
 /// costs no new dependency and avoids a second copy.
 ///
-/// NOTE for whoever needs a THIRD one: `engine/external/sha256.hpp` and
-/// `engine/workbench/manifest.cpp` each already carry their own. Consolidating
-/// all four into a layer-1 module is D19's remedy and is worth doing, but it
-/// is a cross-bucket refactor rather than a line item on a port cycle.
+/// NOTE, CORRECTED AT TASK 6407. This comment used to say that
+/// `engine/external/sha256.hpp` and `engine/workbench/manifest.cpp` each
+/// carried their own, making four. Measured by the FIPS round constants, the
+/// real count was FIVE: those two, this one, `engine/planning/annotation.cpp`
+/// (which the note missed), and the layer-1 module `planar.sha256`.
+///
+/// `engine/external/sha256.hpp` is now GONE -- task 6407 pointed that bucket
+/// at `planar.sha256` and moved its padding-boundary vectors into the
+/// module's own tests. THREE copies remain: this one, `manifest.cpp`, and
+/// `annotation.cpp`. All five were verified byte-identical in their ordered
+/// constant tables before the first was removed, so no digest changed.
+///
+/// Consolidating the rest onto `planar.sha256` is D19's remedy and is still
+/// worth doing; it is a cross-bucket refactor rather than a line item.
 /// @param input The bytes to digest.
 /// @return The 64-character lowercase hex digest.
 export [[nodiscard]] auto sha256_hex(std::string_view input) -> std::string;

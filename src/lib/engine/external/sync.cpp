@@ -5,8 +5,6 @@
 
 module;
 
-#include "sha256.hpp"
-
 #include <glaze/glaze.hpp>
 
 module planar.engine.external.sync;
@@ -16,6 +14,7 @@ import planar.db;
 import planar.adapter;
 import planar.json_text;
 import planar.engine.external.link;
+import planar.sha256;
 
 namespace planar::engine::external::sync {
 
@@ -432,15 +431,20 @@ auto resolve_keep_to_text(resolve_keep keep) -> std::string_view {
 auto evidence_token(std::int64_t link_id, std::string_view local_title, std::string_view local_status,
                     std::string_view local_updated_at, std::string_view remote_title, std::string_view remote_status,
                     std::string_view remote_version) -> std::string {
-  // NUL-separated, `v1` prefixed, in exactly this field order. See sha256.hpp
-  // for why the digest and the ordering are a contract rather than a choice.
+  // NUL-separated, `v1` prefixed, in exactly this field order. The digest
+  // and the ordering are a CONTRACT: `sync resolve --evidence-token` compares
+  // what an operator read out of an event against what this rebuilds, so a
+  // changed field order silently invalidates every outstanding token.
+  //
+  // Digests via `planar.sha256` since task 6407; this bucket used to carry
+  // its own copy in `sha256.hpp`.
   std::string input = "v1";
   for (auto const part : {std::string_view(std::format("{}", link_id)), local_title, local_status, local_updated_at, remote_title,
                           remote_status, remote_version}) {
     input.push_back('\0');
     input.append(part);
   }
-  return sha256::hex(input);
+  return planar::sha256::hex(input);
 }
 
 auto events_for_link(db::connection& conn, std::int64_t link_id) -> std::expected<std::vector<sync_event>, sync_error> {
