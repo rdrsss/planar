@@ -142,10 +142,33 @@ auto assoc_add(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "assoc add: slug and repo-path are required"));
   }
 
-  // `*path` VERBATIM. No canonicalise, no absolute, no existence check —
-  // see this function's declaration for why each of those would be a
-  // silent regression rather than a hardening.
-  auto added = id::add_member(**conn, *slug, *path, id::add_member_source::user);
+  // ABSOLUTE paths go in VERBATIM. No canonicalise, no existence check —
+  // see this function's declaration for why each of those would be a silent
+  // regression rather than a hardening (the `/var` -> `/private/var` case).
+  //
+  // A RELATIVE path is different in kind, and task 6256 is the proof:
+  // `assoc add acme .` stored the literal `.`, and cwd-derivation compares
+  // against ABSOLUTE paths, so that row could never match anything. The
+  // association existed, `assoc list` showed it, and no scope resolution
+  // would ever find it — a row written, exit 0, permanently wrong, which is
+  // the exact shape the `repo-path`-is-empty refusal above exists to stop.
+  //
+  // Resolved against the INVOCATION's cwd and lexically normalised. Lexical,
+  // not `std::filesystem::canonical`: normalising `.` and `..` textually
+  // cannot resolve a symlink, so the `/var` case the declaration documents is
+  // untouched. `ctx.cwd()` is the same cwd `context::operator_cwd` hands the
+  // resolver, so the stored key is the one that will later be compared.
+  std::string stored_path{*path};
+  if (!std::filesystem::path{stored_path}.is_absolute()) {
+    stored_path = (ctx.cwd() / stored_path).lexically_normal().string();
+    // `lexically_normal` leaves a trailing separator on a path ending in `.`
+    // or `/`; the resolver's keys never carry one.
+    if (stored_path.size() > 1 && stored_path.back() == '/') {
+      stored_path.pop_back();
+    }
+  }
+
+  auto added = id::add_member(**conn, *slug, stored_path, id::add_member_source::user);
   if (!added) {
     switch (added.error()) {
     case id::association_error::not_found:
@@ -263,10 +286,25 @@ auto assoc_remove(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "assoc remove: slug and repo-path are required"));
   }
 
-  // `*path` VERBATIM — it is matched by string equality against whatever
-  // `assoc add` stored, which is itself uncanonicalised. See this
-  // function's declaration for the task-6256 shape this preserves.
-  auto removed = id::remove_member(**conn, *slug, *path);
+  // MATCHED BY STRING EQUALITY against whatever `assoc add` stored, so this
+  // resolves a relative path exactly the way `add` does and leaves an
+  // absolute one verbatim. The two MUST agree: task 6256 taught `add` to
+  // resolve `.` against the invocation cwd, and a `remove` still comparing
+  // the literal `.` would miss every row `add` had just written correctly --
+  // turning a fix into a broken round-trip.
+  //
+  // Absolute paths stay uncanonicalised on BOTH sides, which is what the
+  // `assoc remove matches root_path VERBATIM` case pins: a trailing slash
+  // names the same directory and a different string, and must still miss.
+  std::string lookup_path{*path};
+  if (!std::filesystem::path{lookup_path}.is_absolute()) {
+    lookup_path = (ctx.cwd() / lookup_path).lexically_normal().string();
+    if (lookup_path.size() > 1 && lookup_path.back() == '/') {
+      lookup_path.pop_back();
+    }
+  }
+
+  auto removed = id::remove_member(**conn, *slug, lookup_path);
   if (!removed) {
     switch (removed.error()) {
     case id::association_error::not_found:

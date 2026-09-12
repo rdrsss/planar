@@ -4318,11 +4318,21 @@ TEST_CASE("assoc add registers the project, joins it, and reports both argv valu
   CHECK(memberships[0] == "1|1|user"); // source='user', not an auto-detect value
 }
 
-TEST_CASE("assoc add auto-registers an unregistered path, verbatim", "[cmd][handlers][assoc][parity][6135]") {
-  // The path is the `projects.root_path` KEY cwd-derive later matches
-  // against, so it is stored exactly as typed: not canonicalised, not made
-  // absolute, and not required to exist. Each of those would look like a
-  // hardening and would break the match.
+TEST_CASE("assoc add stores an ABSOLUTE path verbatim and RESOLVES a relative one",
+          "[cmd][handlers][assoc][parity][6135][6256]") {
+  // An absolute path is the `projects.root_path` KEY cwd-derive later matches
+  // against, so it is stored exactly as typed: not canonicalised and not
+  // required to exist. Canonicalising would look like a hardening and would
+  // break the `/var` -> `/private/var` match, because `context::operator_cwd`
+  // does not canonicalise either.
+  //
+  // A RELATIVE path is different in kind (task 6256). It was stored verbatim
+  // too, and cwd-derivation compares against ABSOLUTE paths -- so
+  // `assoc add acme .` wrote a row that could never match anything, while
+  // exiting 0 and appearing in `assoc list`. It is now resolved against the
+  // invocation cwd and lexically normalised. LEXICALLY: textual `.`/`..`
+  // normalisation cannot resolve a symlink, so the `/var` case above is
+  // untouched.
   auto const fx = make_fixture("aapath");
   REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
   REQUIRE(dispatch(fx, {"assoc", "add", "acme", "/nonexistent/path/xyz"}).code == 0);
@@ -4332,9 +4342,30 @@ TEST_CASE("assoc add auto-registers an unregistered path, verbatim", "[cmd][hand
   REQUIRE(rows.size() == 2);
   CHECK(rows[0].slug == "xyz");
   CHECK(rows[0].name == "xyz");
-  CHECK(rows[0].root_path == "/nonexistent/path/xyz"); // verbatim
+  CHECK(rows[0].root_path == "/nonexistent/path/xyz"); // absolute: verbatim, existence not required
+
+  // Resolved against the cwd this invocation ran under, and ABSOLUTE now --
+  // which is the whole point: a relative key can never match a cwd-derived
+  // one.
   CHECK(rows[1].slug == "path");
-  CHECK(rows[1].root_path == "relative/path"); // still verbatim, still relative
+  CHECK(std::filesystem::path{rows[1].root_path}.is_absolute());
+  CHECK(rows[1].root_path.ends_with("/relative/path"));
+  CHECK(rows[1].root_path != "relative/path");
+}
+
+TEST_CASE("assoc add then assoc remove ROUND-TRIP on the same relative path", "[cmd][handlers][assoc][6256]") {
+  // The asymmetry task 6256's fix could have introduced. `remove` matches
+  // `root_path` by STRING EQUALITY, so teaching `add` to resolve a relative
+  // path while leaving `remove` comparing the literal would make every
+  // relative round-trip miss -- turning a fix into a broken verb pair.
+  auto const fx = make_fixture("aaroundtrip");
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", "round/trip"}).code == 0);
+  REQUIRE(read_projects(fx).size() == 1);
+
+  auto const removed = dispatch(fx, {"assoc", "remove", "acme", "round/trip"});
+  INFO("remove stderr: " << removed.err);
+  CHECK(removed.code == 0);
 }
 
 TEST_CASE("assoc add derives the basename the way zig does, trailing slash included", "[cmd][handlers][assoc][parity][6135]") {

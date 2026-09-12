@@ -248,6 +248,16 @@ open question on planar task 5613: tier is a work-shape judgement rather than a
 claim about provider support, so it may legitimately stay Planar-side even after
 the model catalog goes. Until that is answered, keep the two copies in sync.
 
+**Spelling.** This table hyphenates (`spec-reviewer`, `test-coder`), and
+`--role` accepts that — `roles.cpp`'s parser normalises `-` to `_` before the
+table lookup, deliberately, so both spellings resolve to the same role. The
+CANONICAL wire form is the UNDERSCORED one (`spec_reviewer`, `test_coder`):
+that is what `role_rows` stores and what every renderer emits, so passing
+`--role spec-reviewer` and reading `role : spec_reviewer` back is expected,
+not a bug (task 6341 — filed the other way round, as an "undocumented
+underscored alias"; the underscored form is the canonical one and the
+hyphenated one is the alias).
+
 | Agent               | Tier   | Capability  | Primary work |
 |---------------------|--------|-------------|--------------|
 | `orchestrator`      | large  | coordinate  | Full lifecycle dispatch; phase selection, escalation, iteration-cap judgment |
