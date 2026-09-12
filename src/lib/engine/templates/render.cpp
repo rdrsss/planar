@@ -230,8 +230,18 @@ auto resolve_reference(std::string_view directive, const render_context& ctx, it
 /// Go's rule but is the oracle's. An unknown field is falsy rather than an
 /// error; every other resolution error propagates.
 ///
-/// The 128-byte budget below is the reproduced oracle defect. See
-/// render.cppm's header.
+/// FIXED AT TASK 6210 (decision 1067's FIX set). This used to fail the
+/// ENTIRE render with `out_of_memory` when the referenced value exceeded 128
+/// bytes: zig's `evalTruthy` resolved into a `var tmp: [128]u8` through a
+/// FixedBufferAllocator, and the allocation failure escaped all the way out.
+/// Bisected to exactly 128 pass / 129 fail -- a fixed budget, not a heap
+/// condition.
+///
+/// The blast radius is why it was in the FIX set: truthiness does not depend
+/// on length, so every task whose BODY exceeded 128 bytes was unrenderable
+/// through any template guarding it with `{{if}}` -- including the shipped
+/// `templates/defaults/github-issues/issue.json`. An operator saw a whole
+/// propagation fail with `OutOfMemory` and nothing naming the field.
 /// @param ctx The data.
 /// @param item The current `range` binding, if any.
 /// @param path The referenced path.
@@ -244,12 +254,9 @@ auto eval_truthy(const render_context& ctx, item_ref item, std::string_view path
     }
     return std::unexpected(resolved.error());
   }
-  if (resolved->size() > k_truthy_budget) {
-    // zig's `evalTruthy` resolves into `var tmp: [128]u8` through a
-    // FixedBufferAllocator; a longer value fails the allocation and the
-    // error escapes all the way out of the render. Reproduced, not fixed.
-    return std::unexpected(render_error::out_of_memory);
-  }
+  // No length ceiling. Emptiness is the whole question; the oracle's
+  // 128-byte scratch buffer was an implementation artifact of how it
+  // resolved the value, never part of the rule.
   return !resolved->empty();
 }
 

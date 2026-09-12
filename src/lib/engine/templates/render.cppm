@@ -46,26 +46,28 @@
 ///
 /// ## The 128-byte truthiness budget IS the oracle, and it IS a defect
 ///
-/// `{{if .X}}` resolves `.X` into a 128-BYTE STACK BUFFER purely to ask
-/// "is this non-empty?", and a value that does not fit fails the ENTIRE
-/// render. Concretely, against the built oracle:
+/// `{{if .X}}` used to resolve `.X` into a 128-BYTE STACK BUFFER purely to
+/// ask "is this non-empty?", and a value that did not fit failed the ENTIRE
+/// render. Against the built oracle:
 ///
 ///   task body of 128 bytes -> exit 0, `{"x": "HAS-BODY"}`
 ///   task body of 129 bytes -> exit 1, `error: rendering template: OutOfMemory`
 ///
-/// So `planar templates render` — and every `ext propagate` path that
-/// shares this renderer — refuses outright for any task whose body exceeds
-/// 128 bytes when the template guards it with `{{if .Task.Body}}`. That is
-/// a real, operator-visible Planar bug, not a quirk of the port. It is
-/// REPRODUCED here rather than fixed, because D2 makes this cycle a port
-/// and silently widening the budget would make the two trees disagree on a
-/// live surface while every parity lane stayed green. It needs its own
-/// task; see this file's entry in the cycle report.
+/// So `planar templates render` — and every `ext propagate` path sharing
+/// this renderer — refused outright for any task whose body exceeded 128
+/// bytes under an `{{if .Task.Body}}` guard, which the shipped
+/// `templates/defaults/github-issues/issue.json` uses.
 ///
-/// The reproduction is explicit (`k_truthy_budget`) rather than emergent —
-/// a C++ `std::string` has no allocation ceiling, so nothing here would
-/// fail on its own. An implementation that "just worked" would be the
-/// silent divergence.
+/// REMOVED AT TASK 6210 under decision 1067, which ended D2's bug-for-bug
+/// rule once the oracle was deleted and named this row in its FIX set.
+/// Truthiness asks whether the rendered text is non-empty; length was never
+/// part of the rule, and the ceiling was an artifact of how the oracle
+/// resolved the value (a `FixedBufferAllocator` over `var tmp: [128]u8`).
+///
+/// `k_truthy_budget` survives as a NAMED HISTORICAL CONSTANT only — nothing
+/// reads it. It is kept because the render tests pin the exact byte the old
+/// ceiling rejected, and a reader finding 129 in a test deserves to find
+/// what 129 meant.
 
 module;
 
@@ -103,11 +105,13 @@ export auto error_name(render_error e) -> std::string_view;
 
 /// @brief The truthiness-evaluation budget, in bytes.
 ///
-/// zig's `evalTruthy` backs `resolveReference` with
-/// `var tmp: [128]u8` + a `FixedBufferAllocator`, so resolving a value
-/// longer than this to decide `{{if}}` fails the whole render. Verified
-/// against the oracle at exactly 128 (pass) and 129 (fail). See this
-/// file's header — this is a reproduced defect, not a design choice.
+/// HISTORICAL. Nothing reads this. zig's `evalTruthy` backed
+/// `resolveReference` with `var tmp: [128]u8` + a `FixedBufferAllocator`,
+/// so resolving a longer value to decide `{{if}}` failed the whole render —
+/// verified against the oracle at exactly 128 (pass) and 129 (fail), and
+/// reproduced here until task 6210 removed it under decision 1067. Retained
+/// so the number appearing in the render tests has a definition to point at.
+/// Do NOT wire it back into `eval_truthy`.
 export inline constexpr std::size_t k_truthy_budget = 128;
 
 /// @brief Substitute every `{{...}}` directive in one string.
