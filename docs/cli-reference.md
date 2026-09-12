@@ -5756,13 +5756,20 @@ Prints `templates validate: ok` on success.
 
 **Synopsis:**
 ```
-planar templates init
+planar templates init [--force] [--json]
 ```
 
 **Description:** Idempotently extract the embedded baseline templates to
-`<templates-root>/default/<system>/<kind>.json`. Existing files are never
-overwritten. Reports the list of files written. Also called automatically by
-`planar init` (after `config init`, before `migrate apply`).
+`<templates-root>/default/<system>/<kind>.json`. Without `--force` an existing
+file is never overwritten. Reports the list of files written. Also called
+automatically by `planar init` (after `config init`, before `migrate apply`).
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--force` | Overwrite an existing template from the embedded default — use this to reset a template you have edited. A **directory** sitting where a template belongs is still skipped: the flag resets files, it does not remove trees. Declared and silently discarded before task 6212, so `--force` reported "nothing to do" and left the edited file in place. | off |
+| `--json` | Emit the written-file list as JSON. | off |
 
 **Output:** Lists each newly written file path, or confirms nothing was done.
 

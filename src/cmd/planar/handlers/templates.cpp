@@ -360,13 +360,17 @@ auto templates_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
     return std::unexpected(root.error());
   }
 
-  // `--force` is deliberately NOT read. See templates.cppm.
+  // TASK 6212: `--force` IS read now. It used to be declared and discarded,
+  // so the verb exited 0, reported nothing, and left an edited template in
+  // place -- an operator using it to reset a template they had broken was
+  // told the command succeeded while nothing happened.
+  bool const                       force = cliapp::flag_bool(args, "--force");
   std::vector<tmpl::embedded_file> embedded;
   for (auto const& e : cfg::embedded_templates()) {
     embedded.push_back({.system = e.system, .kind = e.kind, .body = e.body});
   }
 
-  auto created = tmpl::extract_defaults(std::filesystem::path{*root}, embedded);
+  auto created = tmpl::extract_defaults(std::filesystem::path{*root}, embedded, force);
   if (!created.has_value()) {
     auto const tag = created.error() == tmpl::extract_error::invalid_input ? "InvalidInput" : "WriteFailed";
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("templates init: {}", tag)));

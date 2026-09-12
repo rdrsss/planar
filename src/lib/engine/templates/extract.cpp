@@ -8,7 +8,7 @@ import std;
 
 namespace planar::engine::templates {
 
-auto extract_defaults(const std::filesystem::path& root, std::span<const embedded_file> embedded)
+auto extract_defaults(const std::filesystem::path& root, std::span<const embedded_file> embedded, bool force)
     -> std::expected<std::vector<std::string>, extract_error> {
   if (root.empty()) {
     return std::unexpected(extract_error::invalid_input);
@@ -32,9 +32,20 @@ auto extract_defaults(const std::filesystem::path& root, std::span<const embedde
     auto const full = sys_dir / std::format("{}.json", entry.kind);
     // EXISTS, not "is a regular file": zig probes with `access`, so a
     // directory sitting where a template belongs counts as present and is
-    // skipped rather than clobbered or reported.
+    // skipped rather than clobbered or reported. That part is unchanged, and
+    // `force` deliberately does NOT override it -- overwriting a file an
+    // operator edited is what the flag is for; removing a directory tree is
+    // not, and a `--force` that did it silently would be a far worse defect
+    // than the one task 6321 fixed.
     if (std::filesystem::exists(full, ec)) {
-      continue;
+      if (!force || !std::filesystem::is_regular_file(full, ec)) {
+        continue;
+      }
+      // Fall through and truncate. TASK 6212: `--force` used to be discarded
+      // entirely, so `templates init --force` exited 0, reported nothing
+      // overwritten, and left the operator's edited file in place -- an
+      // operator using it to reset a template they had broken was told the
+      // command succeeded while nothing happened.
     }
 
     std::ofstream out(full, std::ios::binary | std::ios::trunc);

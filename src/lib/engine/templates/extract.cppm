@@ -69,7 +69,11 @@ export enum class extract_error : std::uint8_t {
 /// @param embedded The template set to write, in the order to write it.
 /// @return The paths NEWLY written, in `embedded`'s order — empty when
 /// everything was already present.
-export auto extract_defaults(const std::filesystem::path& root, std::span<const embedded_file> embedded)
+/// @param force When true, an existing REGULAR FILE is overwritten. A
+/// directory sitting where a template belongs is still skipped: `--force`
+/// exists to reset a file an operator edited, not to remove a tree
+/// (task 6212).
+export auto extract_defaults(const std::filesystem::path& root, std::span<const embedded_file> embedded, bool force = false)
     -> std::expected<std::vector<std::string>, extract_error>;
 
 } // namespace planar::engine::templates
