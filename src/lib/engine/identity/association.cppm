@@ -314,7 +314,8 @@ export auto render_member_list_json(std::span<const project_ref> members) -> std
 /// Mirrors zig's `Proposal`.
 ///
 /// `assoc_exists` / `member_exists` are NOT filled by the producing
-/// function; `enrich_proposals` sets them, and both default false so an
+/// function; `enrich_proposals` COMPUTES them (clearing first, task 6327),
+/// and both default false so an
 /// un-enriched proposal reads as "will create" rather than as a lie about
 /// existing state.
 export struct proposal {

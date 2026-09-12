@@ -36,7 +36,17 @@ doxyfile="${1:?usage: cpp-lint-doxygen.sh <Doxyfile>}"
 # consecutive crashes at a 50% rate are ~12.5%, and worse-case correlated
 # runs still make a persistent doxygen breakage visible via the retry
 # messages below rather than infinite-looping silently.
-max_attempts=3
+# OVERRIDABLE (task 6054). The default stays 3 for an interactive
+# `make cpp-lint`, where a human sees the retry messages and can just run it
+# again. `make test-all` composes the gating half of this recipe via
+# `cpp-lint-gate` and passes a HIGHER bound, because an automatic gate that
+# fails ~1-12% of the time for a content-independent reason trains people to
+# ignore it -- which is worse than not gating at all.
+#
+# Raising the bound CANNOT mask a finding: the scan below treats a genuine
+# WARN_FORMAT diagnostic as authoritative and never retries it, however many
+# attempts remain. Only a crash that produced NO diagnostic text is retried.
+max_attempts=${DOXYGEN_MAX_ATTEMPTS:-3}
 attempt=1
 
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/cpp-lint-doxygen.XXXXXX") || exit 1
