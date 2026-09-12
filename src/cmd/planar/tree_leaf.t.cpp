@@ -23,13 +23,14 @@
 // And the two refusals do not share an exit code either — an unknown
 // `--kind` is 2 while an unknown `--scope` is 1.
 //
-// ## `--sort` is accepted and INERT
+// ## `--sort` IS WIRED (task 6281)
 //
-// The oracle declares the flag, stores it, and never reads it. Captured:
-// `--sort updated` and `--sort bogus` are both byte-identical to a bare
-// `tree`, and a bogus key does not refuse. Pinned here so a future
-// "obvious fix" that starts honouring it fails a test instead of silently
-// changing every consumer's row order.
+// The oracle declared the flag, stored it, and never read it: `--sort
+// updated` and `--sort bogus` were both byte-identical to a bare `tree` and
+// a bogus key did not refuse. Reproduced under D2 until decision 1067 ended
+// that rule. It now orders siblings, and an unrecognised key REFUSES at
+// exit 2 -- silently accepting a typo'd key was the worse half of the
+// defect, because the operator got some other order and no sign of it.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -235,12 +236,47 @@ TEST_CASE("tree: a cwd outside every registered scope refuses at exit 1", "[cmd]
   CHECK(remedy.code == 0);
 }
 
-TEST_CASE("tree: --sort is ACCEPTED and INERT", "[cmd][tree]") {
-  // The oracle declares the flag and never reads it. Both a recognised and
-  // an unrecognised key produce output byte-identical to a bare `tree`,
-  // and neither refuses. Pinned so a well-meaning future change that
-  // starts honouring `--sort` trips a test rather than silently reordering
-  // every consumer's rows.
+TEST_CASE("tree: --sort updated REORDERS top-level plans", "[cmd][tree][6281]") {
+  // The half a refusal test cannot cover. A break-probe that made the
+  // `updated` arm a no-op SURVIVED against the refusal case alone: nothing
+  // asserted the ORDER actually changes, so `--sort updated` could have gone
+  // on silently doing nothing -- which is the exact defect 6281 reported.
+  auto const fx = make_fixture("sortorder");
+  REQUIRE(dispatch(fx, {"init", "--json", "--allow-no-repo"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Alpha", "--slug", "alpha", "--scope", "global", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Beta", "--slug", "beta", "--scope", "global", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Gamma", "--slug", "gamma", "--scope", "global", "--json"}).code == 0);
+
+  // Touch plan 1 LAST, so `updated_at` order is the reverse of id order for
+  // it. Without this the two keys agree and the case proves nothing.
+  REQUIRE(dispatch(fx, {"plan", "update", "1", "--summary", "touched", "--json"}).code == 0);
+
+  auto const by_id = dispatch(fx, {"tree", "--scope", "global"});
+  REQUIRE(by_id.code == 0);
+  auto const alpha_id = by_id.out.find("Alpha");
+  auto const gamma_id = by_id.out.find("Gamma");
+  REQUIRE(alpha_id != std::string::npos);
+  REQUIRE(gamma_id != std::string::npos);
+  CHECK(alpha_id < gamma_id); // id order: 1 before 3
+
+  auto const by_updated = dispatch(fx, {"tree", "--scope", "global", "--sort", "updated"});
+  REQUIRE(by_updated.code == 0);
+  // Plan 1 was touched last, so it leads under `updated` -- and plan 3 now
+  // precedes plan 2, which id order never does.
+  auto const beta_up  = by_updated.out.find("Beta");
+  auto const gamma_up = by_updated.out.find("Gamma");
+  REQUIRE(beta_up != std::string::npos);
+  REQUIRE(gamma_up != std::string::npos);
+  CHECK(gamma_up < beta_up);
+
+  // And the two renderings genuinely differ, which is the blunt form of the
+  // same claim.
+  CHECK(by_updated.out != by_id.out);
+}
+
+TEST_CASE("tree: --sort id and unsorted match a bare tree; a bogus key REFUSES", "[cmd][tree][6281]") {
+  // INVERTED AT TASK 6281. Every key used to be byte-identical to a bare
+  // `tree` and a bogus key exited 0.
   auto const fx = make_fixture("sort");
   seed(fx);
 
@@ -248,13 +284,27 @@ TEST_CASE("tree: --sort is ACCEPTED and INERT", "[cmd][tree]") {
   REQUIRE(plain.code == 0);
   REQUIRE_FALSE(plain.out.empty()); // the comparisons below need real bytes
 
-  for (auto const* key : {"updated", "created", "id", "bogus", ""}) {
+  // `id` is the default, and `unsorted` leaves the walk's own order (which
+  // every query emits as `order by id`) untouched -- so both still match.
+  for (auto const* key : {"id", "unsorted"}) {
     INFO("--sort " << key);
     auto const sorted = dispatch(fx, {"tree", "--sort", key});
     CHECK(sorted.code == 0);
     CHECK(sorted.err.empty());
     CHECK(sorted.out == plain.out);
   }
+
+  // A typo'd key is the half that mattered: accepting it silently handed the
+  // operator some other order with no indication.
+  auto const bogus = dispatch(fx, {"tree", "--sort", "bogus"});
+  CHECK(bogus.code == 2);
+  CHECK(bogus.err == "error: unknown --sort value 'bogus'; expected one of: id, updated, created, unsorted\n");
+  CHECK(bogus.out.empty());
+
+  // An EMPTY value is a value, not an absent flag, so it refuses too.
+  auto const empty = dispatch(fx, {"tree", "--sort", ""});
+  CHECK(empty.code == 2);
+  CHECK(empty.err.contains("unknown --sort value"));
 }
 
 TEST_CASE("tree: --depth caps descent, and 0 is unbounded", "[cmd][tree]") {
