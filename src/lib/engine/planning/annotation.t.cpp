@@ -1282,9 +1282,9 @@ auto oracle_fixture() -> ann::annotation {
 
 TEST_CASE("render_json is byte-identical to the oracle's --json object", "[annotation][parity]") {
   CHECK(ann::render_json(oracle_fixture()) ==
-        R"({"id":1,"scope_kind":"global","scope_id":null,"anchor":{"path":"a.txt","line_start":null,)"
-        R"("line_end":null,"commit_sha":"","text_hash":"","text":""},"title":"A1","slug":null,)"
-        R"("body":"b1","status":"active","vendor":"","plan_id":null,"task_id":null,"tags":["x","y"],)"
+        R"({"id":1,"scope_kind":"global","scope_id":null,"anchor":{"kind":"file","path":"a.txt","line_start":null,)"
+        R"("line_end":null,"commit_sha":"","text_hash":"","text":""},"target":null,"title":"A1","slug":null,)"
+        R"("body":"b1","status":"active","vendor":"","origin":null,"revision":1,"plan_id":null,"task_id":null,"tags":["x","y"],)"
         R"("created_at":"2026-08-23T01:01:48.528Z","updated_at":"2026-08-23T01:01:48.528Z"})");
 }
 
@@ -1298,10 +1298,11 @@ TEST_CASE("render_json emits every optional as an explicit null", "[annotation][
   };
   // Captured from `annotate add --anchor-path b.txt --title A3
   // --line-start 3 --line-end 9 --json`.
-  CHECK(ann::render_json(bare) == R"({"id":3,"scope_kind":"global","scope_id":null,"anchor":{"path":"b.txt","line_start":3,)"
-                                  R"("line_end":9,"commit_sha":"","text_hash":"","text":""},"title":"A3","slug":null,)"
-                                  R"("body":"","status":"active","vendor":"","plan_id":null,"task_id":null,"tags":[],)"
-                                  R"("created_at":"2026-08-23T01:01:48.594Z","updated_at":"2026-08-23T01:01:48.594Z"})");
+  CHECK(ann::render_json(bare) ==
+        R"({"id":3,"scope_kind":"global","scope_id":null,"anchor":{"kind":"file","path":"b.txt","line_start":3,)"
+        R"("line_end":9,"commit_sha":"","text_hash":"","text":""},"target":null,"title":"A3","slug":null,)"
+        R"("body":"","status":"active","vendor":"","origin":null,"revision":1,"plan_id":null,"task_id":null,"tags":[],)"
+        R"("created_at":"2026-08-23T01:01:48.594Z","updated_at":"2026-08-23T01:01:48.594Z"})");
 }
 
 TEST_CASE("render_list_json wraps objects in a bare array", "[annotation][parity]") {
