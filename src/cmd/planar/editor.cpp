@@ -68,14 +68,39 @@ auto invoke(const env_lookup& env, std::string_view initial_content, const invok
     return std::unexpected(editor_error::no_editor);
   }
 
-  // The temp directory follows `$TMPDIR`, else `/tmp` — the Zig original's
-  // `createTempFile`. Under test `$TMPDIR` is the fixture root, so nothing
-  // escapes the scratch arena.
-  auto const tmp_dir = non_empty(env, "TMPDIR").value_or("/tmp");
+  // The temp directory follows `$TMPDIR` from the INVOCATION's env, as the
+  // Zig original's `createTempFile` did.
+  //
+  // TASK 6427: THE FALLBACK IS NO LONGER THE LITERAL "/tmp". The comment here
+  // used to claim "under test `$TMPDIR` is the fixture root, so nothing
+  // escapes the scratch arena". That is false for every fixture built with
+  // `context::map_env`, which is a CLOSED table: it returns nullopt for any
+  // key it was not given and never consults the real environment. None of the
+  // eight suites that exercise this path put "TMPDIR" in their map, so each
+  // of them wrote `planar-edit-XXXXXXXX` straight into the system /tmp --
+  // outside the fixture's own scratch root AND outside the listener's
+  // PID-scoped arena root, since `setenv` only moves the real process
+  // environment and `map_env` never reads it.
+  //
+  // `temp_directory_path()` DOES read the real environment (TMPDIR/TMP/TEMP),
+  // so a synthetic env now lands in whatever the process was redirected to
+  // rather than in a shared directory. Production is unaffected: there
+  // `process_env` supplies TMPDIR and the first branch wins, so this fallback
+  // is only reached when the variable is genuinely absent -- where a real
+  // temp directory beats a hardcoded path anyway.
+  auto tmp_dir = non_empty(env, "TMPDIR");
+  if (!tmp_dir.has_value()) {
+    std::error_code ec;
+    auto const      system_tmp = std::filesystem::temp_directory_path(ec);
+    // The error_code overload, and "/tmp" if even that fails: this function
+    // returns `std::expected`, and an unwritable temp directory is the next
+    // line's problem to report, not this one's to throw over.
+    tmp_dir = ec ? std::string{"/tmp"} : system_tmp.string();
+  }
 
   std::random_device                           entropy;
   std::uniform_int_distribution<std::uint32_t> spread;
-  auto const path = std::format("{}/planar-edit-{:08x}{}", tmp_dir, spread(entropy), opts.file_extension);
+  auto const path = std::format("{}/planar-edit-{:08x}{}", *tmp_dir, spread(entropy), opts.file_extension);
 
   {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
