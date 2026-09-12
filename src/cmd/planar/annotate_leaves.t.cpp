@@ -84,7 +84,9 @@ import planar.engine.identity;
 import planar.engine.planning;
 import planar.json_dom;
 import planar.cmd.planar.context;
+import planar.cmd.planar.cli_log;
 import planar.cmd.planar.dispatch;
+import planar.cmd.planar.exit;
 import planar.cmd.planar.tree;
 
 namespace {
@@ -93,10 +95,11 @@ using planar::cmd::context;
 
 /// @brief One handler invocation's observable result.
 struct invocation {
-  int         code = 0;        ///< The exit code.
-  std::string out;             ///< Everything written to stdout.
-  std::string err;             ///< Everything written to stderr.
-  bool        db_open = false; ///< Whether the verb opened SQLite at all.
+  int                                           code = 0;        ///< The exit code.
+  std::optional<planar::cmd::domain_error_kind> kind;            ///< The classified domain failure, when any.
+  std::string                                   out;             ///< Everything written to stdout.
+  std::string                                   err;             ///< Everything written to stderr.
+  bool                                          db_open = false; ///< Whether the verb opened SQLite at all.
 };
 
 /// @brief A scratch root plus the environment and database path every case
@@ -151,10 +154,10 @@ auto dispatch(const fixture& fx, std::vector<std::string> args, std::optional<st
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
-  int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  auto const         tree    = planar::cmd::root_app();
+  auto const         table   = planar::cmd::handlers(*tree);
+  auto const         outcome = planar::cmd::run_detailed(ctx, *tree, table);
+  return invocation{.code = outcome.code, .kind = outcome.kind, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
 }
 
 /// @brief Dispatch from an arbitrary directory under the fixture root.
@@ -174,10 +177,10 @@ auto dispatch_in(const fixture& fx, const std::filesystem::path& cwd, std::vecto
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), cwd, fx.db_path, out, err};
-  auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
-  int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  auto const         tree    = planar::cmd::root_app();
+  auto const         table   = planar::cmd::handlers(*tree);
+  auto const         outcome = planar::cmd::run_detailed(ctx, *tree, table);
+  return invocation{.code = outcome.code, .kind = outcome.kind, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
 }
 
 /// @brief Open the fixture's database directly, for row assertions.
@@ -1465,6 +1468,36 @@ TEST_CASE("annotation command reports a competing write lock as retryable busy w
     CHECK(audit_count->column_int64(0) == 1); // create_plan only
   }
   REQUIRE(lock->commit().has_value());
+
+  // main records after command dispatch.  The command's own transaction was
+  // deliberately contended above, so release the competing writer before
+  // recording its diagnostic on the separate best-effort log connection.
+  // This proves the actual command outcome reaches the durable retryable
+  // category when persistence is possible; it neither turns Busy into
+  // success nor relies on logging while the source remains locked.
+  std::filesystem::create_directories(fx.root / "fakehome" / ".planar");
+  {
+    std::ofstream config(fx.root / "fakehome" / ".planar" / "config.toml");
+    config << "[introspection]\ncli_log = true\n";
+  }
+  std::ostringstream logged_out;
+  std::ostringstream logged_err;
+  context            logged_ctx{{"planar", "annotate", "command", "--request", "@-"},
+                                planar::cmd::map_env(fx.vars),
+                                fx.root / "proj",
+                                fx.db_path,
+                                logged_out,
+                                logged_err};
+  REQUIRE(busy.kind == planar::cmd::domain_error_kind::busy_source);
+  planar::cmd::record(logged_ctx, busy.code, busy.kind, std::chrono::milliseconds{1});
+  {
+    auto diagnostic = conn.prepare("select verb_path, exit_code, error_category from cli_invocations order by id desc limit 1");
+    REQUIRE(diagnostic.has_value());
+    REQUIRE(diagnostic->step().has_value());
+    CHECK(diagnostic->column_text(0) == "annotate command");
+    CHECK(diagnostic->column_int64(1) == 1);
+    CHECK(diagnostic->column_text(2) == "busy");
+  }
 
   auto const retried = dispatch(fx, {"annotate", "command", "--request", "@-"}, request);
   REQUIRE(retried.code == 0);

@@ -274,6 +274,7 @@ TEST_CASE("category_for maps every domain-error kind the way the oracle does", "
   CHECK(pc::category_for(k::not_implemented) == "internal");
   CHECK(pc::category_for(k::generic_failure) == "internal");
   CHECK(pc::category_for(k::schema_version_behind) == "internal");
+  CHECK(pc::category_for(k::busy_source) == "busy");
 
   // Every value it can return has to satisfy the migration's CHECK
   // constraint, or the insert fails and the row is silently lost.
@@ -281,7 +282,7 @@ TEST_CASE("category_for maps every domain-error kind the way the oracle does", "
   auto       conn = arena.open();
   for (auto const kind : {k::invalid_input, k::invalid_entity_ref, k::parse_error, k::scope_mismatch, k::not_found,
                           k::sync_conflict, k::slug_conflict, k::already_exists, k::schema_version_ahead, k::not_implemented,
-                          k::generic_failure, k::schema_version_behind}) {
+                          k::generic_failure, k::schema_version_behind, k::busy_source}) {
     INFO("kind ordinal: " << static_cast<int>(kind));
     CHECK(pc::write_invocation(conn, pc::parsed_args_shape{.verb_path = "health"}, 1, pc::category_for(kind), std::nullopt, 90));
   }
