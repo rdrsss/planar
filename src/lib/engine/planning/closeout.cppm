@@ -90,14 +90,19 @@
 ///     blocked, APPLY mode    exit 3  `error: plan {id} is not ready to close ({n} reason(s))`
 ///     blocked, --dry-run     exit 0  (full report, no error line)
 ///
-/// `--dry-run` EXITS 0 EVEN WHEN BLOCKED. The verb's own help text in
-/// `surface.cpp` claims "Hard gate failures produce a non-zero exit in both
-/// dry-run and apply modes" — that sentence is STALE in the oracle and is
-/// carried verbatim in this tree's already-declared surface. The handler
-/// comment beside the check states the real rule (a preview must let a
-/// caller read `{ready, blocked_by}` before deciding), and the measurement
-/// agrees with the comment, not the help. Prose lost to code, as it has
-/// every other time this milestone.
+/// `--dry-run` EXITS 0 EVEN WHEN BLOCKED, deliberately: a preview must let a
+/// caller read `{ready, blocked_by}` and decide for itself. The verb's help
+/// text used to claim the opposite ("Hard gate failures produce a non-zero
+/// exit in both dry-run and apply modes"), inherited verbatim from the
+/// oracle, where it was already stale.
+///
+/// TASK 6319 corrected the SENTENCE, not the behaviour — the behaviour is
+/// the reasoned contract and the wording was simply false. An operator
+/// scripting `--dry-run` against the old help would have waited for a
+/// non-zero exit that never comes. This moved the `schema` catalog digest,
+/// which is a deliberate recorded divergence under decision 1067, not a
+/// refactor: exactly ONE pin moved (`the schema catalog is pinned, whole`)
+/// and it was re-pinned in the same commit.
 ///
 /// In the blocked APPLY arm the FULL report still goes to stdout; the error
 /// line is stderr only. Both streams were captured separately to establish

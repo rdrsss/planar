@@ -318,11 +318,14 @@ export auto plan_divergence(context& ctx, const cliapp::parsed_args& args) -> ha
 /// TWO THINGS ABOUT THIS LEAF'S EXIT BEHAVIOUR ARE EASY TO GET BACKWARDS,
 /// and both were measured rather than read:
 ///
-///   - `--dry-run` EXITS 0 EVEN WHEN THE GATE FAILS. The verb's own help
-///     text says the opposite ("non-zero exit in both dry-run and apply
-///     modes"); that sentence is stale in the oracle and is carried
-///     verbatim in `surface.cpp`. A preview must let a caller read
-///     `{ready, blocked_by}` and decide, so only the APPLY path refuses.
+///   - `--dry-run` EXITS 0 EVEN WHEN THE GATE FAILS, deliberately: a preview
+///     must let a caller read `{ready, blocked_by}` and decide, so only the
+///     APPLY path refuses. The help text used to promise the opposite
+///     ("non-zero exit in both dry-run and apply modes"), inherited verbatim
+///     from the oracle. TASK 6319 corrected the SENTENCE rather than the
+///     behaviour: the behaviour is the reasoned contract, and an operator
+///     scripting `--dry-run` against the old wording would have waited for a
+///     non-zero exit that never comes.
 ///   - On the blocked APPLY path the FULL report still goes to STDOUT and
 ///     the refusal to STDERR, in that order. Writing the error instead of
 ///     the report would lose the operator's only account of what blocked.

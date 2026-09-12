@@ -566,7 +566,7 @@ Each transition emits a `session_entries` row with `prefix='note'` and a body th
 
 **Who can call it:** This is an **operator verb** on the `planar` binary, not `planar-agent`. The **janitor** is the authorized agent caller — it runs `planar plan closeout` on behalf of the operator after delivery evidence is verified (Phase 3.7 Finalization). Coders use `planar-agent complete` to close tasks and claims, never plans.
 
-**Apply semantics:** Without `--dry-run`, passing the hard gate marks the plan `done` directly — bypassing the `recompute-status` anchor cap. This is intentional: `plan closeout` is the explicit operator release-gate for anchor plans. `--dry-run` evaluates and reports without writing. Both modes exit non-zero when the hard gate is blocked.
+**Apply semantics:** Without `--dry-run`, passing the hard gate marks the plan `done` directly — bypassing the `recompute-status` anchor cap. This is intentional: `plan closeout` is the explicit operator release-gate for anchor plans. `--dry-run` evaluates and reports without writing. **Only apply mode exits non-zero when the hard gate is blocked** — `--dry-run` always exits 0, because a preview must let its caller read `ready` / `blocked_by` from the report and decide. Editions of this page before 2026-09-12 said both modes refuse; they never did (task 6319).
 
 ---
 

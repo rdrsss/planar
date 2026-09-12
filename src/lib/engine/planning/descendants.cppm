@@ -31,17 +31,32 @@
 /// the same correction task 6272 made on `audit commits` and task 6294 made
 /// on the three `sync` write leaves.
 ///
-/// ## TWO BEHAVIOURS HERE ARE SURPRISING AND BOTH ARE ORACLE-VERIFIED
+/// ## ONE SURPRISING BEHAVIOUR REMAINS; THE OTHER WAS A DEFECT AND IS FIXED
 ///
-/// **`tasks.plan_id` IS NOT CONSULTED.** A task reaches the tree only
-/// through an `entity_links` row `(from_kind='task', to_kind='plan',
-/// relationship='derives-from')`. Measured: a fixture with three tasks
-/// created as `task add --plan N` and no links returned the four PLANS and
-/// ZERO tasks; adding the links made exactly those tasks appear. `plan next`
-/// on the same fixture listed all three tasks, so the two verbs genuinely
-/// disagree about what a plan's tasks are. A port that read `plan_id`
-/// "because that is obviously what was meant" would emit a strictly larger
-/// tree than the oracle on the same database.
+/// **`tasks.plan_id` IS CONSULTED, ALONGSIDE `derives-from` (task 6307).**
+/// A task reaches the tree either by carrying `plan_id` of a plan in the
+/// walk, or through an `entity_links` row `(from_kind='task',
+/// to_kind='plan', relationship='derives-from')`. `distinct` collapses a
+/// task that arrives by both routes for the same plan.
+///
+/// It used to read the EDGE ONLY, which was the oracle's behaviour and was
+/// reproduced under D2. Measured then: a fixture with three tasks created as
+/// `task add --plan N` and no links returned the four PLANS and ZERO tasks,
+/// while `plan next` on the same database listed all three. The two verbs
+/// disagreed about what a plan's tasks are, and `descendants` was the one
+/// that was wrong -- `task add --plan` is the ordinary way to attach a task
+/// and writes no edge.
+///
+/// The failure mode is why it outranked the other findings in its milestone:
+/// the answer was CONFIDENT, WELL-FORMED and EMPTY OF TASKS, indistinguishable
+/// from a plan that genuinely has none. An operator asking "what is under
+/// this plan before I close it" was told nothing was.
+///
+/// The relationship filter still applies to the EDGE route: a `cites` link
+/// from a task whose `plan_id` is outside the walk does NOT reach the tree.
+/// `plan_descendants_sync_status_leaves.t.cpp`'s T-five exists to pin that,
+/// because the fixture's older discriminator (T-four) is `--plan 1` and now
+/// arrives by the plan_id route regardless of its edge.
 ///
 /// **A TASK LINKED TO N PLANS IN THE TREE APPEARS N TIMES.** The `distinct`
 /// is scoped to one query and the query runs once per plan. With `task:1`
