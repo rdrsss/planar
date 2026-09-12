@@ -290,6 +290,39 @@ auto task_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                         "pass `--body <text>` or `--editor=false`"));
   }
 
+  // TASK 6340: `--plan` and `--parent` are resolved BEFORE the insert. Both
+  // are foreign keys, so a nonexistent id used to reach SQLite and surface as
+  // two raw lines naming neither the flag nor the id:
+  //
+  //     error: task.create exec failed: StepFailed
+  //     error: task add: QueryFailed
+  //
+  // An operator who fat-fingered a plan id got a driver error and no way to
+  // tell which of the two references was wrong.
+  for (auto const& [flag, kind, table] : std::initializer_list<std::tuple<const char*, const char*, const char*>>{
+           {"--plan", "plan", "plans"}, {"--parent", "task", "tasks"}}) {
+    auto const referenced = cliapp::flag_int(args, flag);
+    if (!referenced.has_value()) {
+      continue;
+    }
+    // `table` is a literal from the list above, never operator input.
+    auto probe = (*conn)->prepare(std::format("select 1 from {} where id = ?", table));
+    if (!probe) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task add: reference lookup: QueryFailed"));
+    }
+    if (auto bound = probe->bind_int64(1, *referenced); !bound) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task add: reference lookup: QueryFailed"));
+    }
+    auto stepped = probe->step();
+    if (!stepped) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task add: reference lookup: QueryFailed"));
+    }
+    if (*stepped != db::step_result::row) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::not_found, std::format("no {} with id {} for {}", kind, *referenced, flag)));
+    }
+  }
+
   // Every optional argument is threaded EXPLICITLY. `task_create_args`
   // default-constructs all of them, so an omission here is invisible at
   // compile time and shows up only as a NULL column in a row that

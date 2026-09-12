@@ -4017,6 +4017,51 @@ auto associate_cwd(const fixture& fx, std::string_view assoc_slug) -> void {
 
 } // namespace
 
+TEST_CASE("task add REFUSES a nonexistent --plan or --parent, naming the flag", "[cmd][handlers][task][6340]") {
+  // TASK 6340. Both flags are foreign keys. A nonexistent id used to reach
+  // SQLite and surface as TWO raw lines naming neither the flag nor the id:
+  //
+  //     error: task.create exec failed: StepFailed
+  //     error: task add: QueryFailed
+  //
+  // An operator who fat-fingered an id got a driver error with no way to tell
+  // which of the two references was wrong. Both are now resolved before the
+  // insert.
+  auto const fx = make_fixture("taref");
+  associate_cwd(fx, "acme");
+  REQUIRE(dispatch(fx, {"plan", "create", "P one"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "anchor"}).code == 0);
+
+  auto const bad_plan = dispatch(fx, {"task", "add", "x", "--plan", "99999"});
+  CHECK(bad_plan.code != 0);
+  CHECK(bad_plan.err == "error: no plan with id 99999 for --plan\n");
+  CHECK(bad_plan.out.empty());
+
+  // The flag is NAMED, which is the half a generic "not found" would miss:
+  // the two references are distinguishable in the diagnostic.
+  auto const bad_parent = dispatch(fx, {"task", "add", "x", "--parent", "77777"});
+  CHECK(bad_parent.code != 0);
+  CHECK(bad_parent.err == "error: no task with id 77777 for --parent\n");
+
+  // NOTHING WAS WRITTEN by either refusal -- only the anchor task exists.
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto const task_count = [&] {
+    auto stmt = conn->prepare("select count(*) from tasks");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    return stmt->column_int64(0);
+  };
+  CHECK(task_count() == 1);
+
+  // Non-vacuity: the SAME verb with VALID references still succeeds, so the
+  // refusals above are about the ids and not about the flags being present.
+  auto const good = dispatch(fx, {"task", "add", "ok", "--plan", "1", "--parent", "1"});
+  INFO("good stderr: " << good.err);
+  CHECK(good.code == 0);
+  CHECK(task_count() == 2);
+}
+
 TEST_CASE("task add threads EVERY optional flag into the row", "[cmd][handlers][task][parity][6135]") {
   // THE anti-defaulting case, and the reason this verb is not plumbing.
   // `task_create_args` default-constructs all eight optional members, so a
@@ -4209,7 +4254,8 @@ TEST_CASE("task add resolves --scope BEFORE validating --due", "[cmd][handlers][
   CHECK(read_tasks(fx).empty());
 }
 
-TEST_CASE("task add maps a slug collision to exit 6 and a dangling --plan to exit 1", "[cmd][handlers][task][parity][6135]") {
+TEST_CASE("task add maps a slug collision to exit 6 and a dangling reference to a NAMED refusal",
+          "[cmd][handlers][task][parity][6135][6340]") {
   auto const fx = make_fixture("tafail");
   associate_cwd(fx, "acme");
   REQUIRE(dispatch(fx, {"task", "add", "first", "--slug", "taken"}).code == 0);
@@ -4221,13 +4267,18 @@ TEST_CASE("task add maps a slug collision to exit 6 and a dangling --plan to exi
   CHECK(dup.code == 6);
   CHECK(dup.err == "error: task add: SlugConflict\n");
 
+  // TASK 6340: both dangling references are resolved BEFORE the insert and
+  // the refusal names the flag. These two used to read
+  // `error: task add: QueryFailed` at exit 1 -- preceded by a second raw
+  // line, `error: task.create exec failed: StepFailed` -- naming neither the
+  // flag nor the id, so an operator could not tell which reference was wrong.
   auto const bad_plan = dispatch(fx, {"task", "add", "orphan", "--plan", "999"});
   CHECK(bad_plan.code == 1);
-  CHECK(bad_plan.err == "error: task add: QueryFailed\n");
+  CHECK(bad_plan.err == "error: no plan with id 999 for --plan\n");
 
   auto const bad_parent = dispatch(fx, {"task", "add", "orphan", "--parent", "999"});
   CHECK(bad_parent.code == 1);
-  CHECK(bad_parent.err == "error: task add: QueryFailed\n");
+  CHECK(bad_parent.err == "error: no task with id 999 for --parent\n");
 
   auto const bad_scope = dispatch(fx, {"task", "add", "unscoped", "--scope", "nosuchscope"});
   CHECK(bad_scope.code == 1);

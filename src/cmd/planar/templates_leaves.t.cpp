@@ -455,15 +455,13 @@ TEST_CASE("templates init is IDEMPOTENT and says so", "[cmd][templates][init][em
   cleanup(fx);
 }
 
-TEST_CASE("templates init --force does NOT overwrite — reproduced defect", "[cmd][templates][init][oracle-defect]") {
-  // The flag is declared and DISCARDED (`_ = args.force;` in the zig
-  // handler), so a populated root reports nothing-to-do under `--force`
-  // and the operator's edits survive. Oracle-captured on a third run.
-  //
-  // Reproduced under D2, not corrected. It is arguably wrong for a flag
-  // named `--force`, but the fix belongs against the oracle; a one-sided
-  // change here would diverge the two trees on a surface that WRITES
-  // FILES.
+TEST_CASE("templates init --force DOES overwrite an edited template", "[cmd][templates][init][6212]") {
+  // INVERTED AT TASK 6212. The flag used to be declared and DISCARDED
+  // (`_ = args.force;` in the zig handler, reproduced here under D2), so a
+  // populated root reported "nothing to do" under `--force` and the
+  // operator's edits survived. An operator reaching for `--force` to reset a
+  // template they had broken was told the command succeeded while nothing
+  // happened.
   auto const fx = make_fixture("initforce");
   REQUIRE(dispatch(fx, {"templates", "init"}).code == 0);
 
@@ -472,7 +470,56 @@ TEST_CASE("templates init --force does NOT overwrite — reproduced defect", "[c
 
   auto const forced = dispatch(fx, {"templates", "init", "--force"});
   CHECK(forced.code == 0);
-  CHECK(forced.out == "templates init: nothing to do (all templates already present)\n");
+  CHECK(forced.out != "templates init: nothing to do (all templates already present)\n");
+
+  std::ifstream     file(target, std::ios::binary);
+  std::string const body{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+  CHECK(body != "OPERATOR EDIT");
+  CHECK(body.contains("{"));
+  cleanup(fx);
+}
+
+TEST_CASE("templates init --force does NOT remove a DIRECTORY in a template's place", "[cmd][templates][init][6212]") {
+  // The guard task 6212 deliberately kept. `--force` exists to reset a FILE
+  // an operator edited; removing a directory tree is a different and much
+  // worse action, and a `--force` that did it silently would be a bigger
+  // defect than the one being fixed.
+  //
+  // Added because a break-probe dropping the `is_regular_file` test
+  // SURVIVED: the behaviour had been verified by hand in a scratch arena and
+  // pinned by nothing.
+  auto const fx = make_fixture("initforcedir");
+  REQUIRE(dispatch(fx, {"templates", "init"}).code == 0);
+
+  auto const      target = templates_root(fx) / "default" / "jira" / "epic.json";
+  std::error_code ec;
+  std::filesystem::remove(target, ec);
+  std::filesystem::create_directories(target / "not-a-template", ec);
+  REQUIRE(std::filesystem::is_directory(target));
+
+  auto const forced = dispatch(fx, {"templates", "init", "--force"});
+  CHECK(forced.code == 0);
+
+  // Still a directory, and its contents are untouched.
+  CHECK(std::filesystem::is_directory(target));
+  CHECK(std::filesystem::exists(target / "not-a-template"));
+  cleanup(fx);
+}
+
+TEST_CASE("templates init WITHOUT --force still leaves an edited template alone", "[cmd][templates][init][6212]") {
+  // Non-vacuity for the case above: `--force` must be what does the
+  // overwriting, not `init` becoming unconditionally destructive. An
+  // operator's edits survive a plain `init`, which is the idempotence the
+  // verb has always promised.
+  auto const fx = make_fixture("initnoforce");
+  REQUIRE(dispatch(fx, {"templates", "init"}).code == 0);
+
+  auto const target = templates_root(fx) / "default" / "jira" / "epic.json";
+  write_file(target, "OPERATOR EDIT");
+
+  auto const again = dispatch(fx, {"templates", "init"});
+  CHECK(again.code == 0);
+  CHECK(again.out == "templates init: nothing to do (all templates already present)\n");
 
   std::ifstream     file(target, std::ios::binary);
   std::string const body{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};

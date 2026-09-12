@@ -931,7 +931,7 @@ TEST_CASE("edit refuses a status the FRONT-MATTER PARSER does not know", "[cmd][
   CHECK(scalar(conn, "select status from questions where id = 1") == "open");
 }
 
-TEST_CASE("edit surfaces a schema CHECK constraint as a bare QueryFailed", "[cmd][drafting][edit]") {
+TEST_CASE("edit refuses question -> answered by NAMING the remedy", "[cmd][drafting][edit][6207]") {
   // THE THIRD GATE, and the sharpest edge in the reduced flow.
   //
   // `answered` is a VALID question status: the front-matter parser accepts
@@ -942,17 +942,18 @@ TEST_CASE("edit surfaces a schema CHECK constraint as a bare QueryFailed", "[cmd
   //             and answered_at is not null) or (status != 'answered'))
   //
   // and `editflow` writes title and status ONLY -- it never touches
-  // `answer_body` or `answered_at`. So a front-matter edit that would move a
-  // question to `answered` is refused by SQLite, and the operator gets a
-  // bare `error: QueryFailed` with no mention of the constraint, the
-  // column, or the fact that `question answer` is the verb that works.
+  // `answer_body` or `answered_at`. So this edit can never satisfy the
+  // constraint from this path.
   //
-  // ORACLE-CONFIRMED, byte for byte on the first line -- the oracle emits
-  // the same `error: QueryFailed` and then its stack trace through
-  // `applyMutations`. This is reproduced rather than improved: a friendlier
-  // message here would be a behaviour change wearing a bug fix's clothes,
-  // and the parity lane would flag it. It is the kind of thing that
-  // deserves its own task.
+  // INVERTED AT TASK 6207. It used to reach SQLite and surface as a bare
+  // `error: QueryFailed`, naming neither the constraint, the columns, nor
+  // `question answer` -- the verb that does this correctly by setting all
+  // three together. That was oracle-confirmed byte for byte and reproduced
+  // under D2; decision 1067 ended that obligation, and the row was filed as
+  // "the kind of thing that deserves its own task". This is that task.
+  //
+  // The refusal now happens in `apply_mutations`, BEFORE the statement runs,
+  // so the diagnostic can name the remedy instead of the driver.
   auto fx = make_fixture("editcheck");
   seed_linked(fx);
 
@@ -963,12 +964,16 @@ TEST_CASE("edit surfaces a schema CHECK constraint as a bare QueryFailed", "[cmd
   fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();
 
   auto const res = dispatch(fx, {"question", "edit", "1"});
-  CHECK(res.code == 1);
+  CHECK(res.code == 2);
   CHECK(res.out.empty());
-  CHECK(res.err == "error: QueryFailed\n");
+  CHECK(res.err ==
+        "error: cannot set a question to 'answered' by editing front matter: the row also requires an answer body and an "
+        "answered_at timestamp. Use `planar question answer <id> --answer <text>`, which sets all three together.\n");
 
-  // The update is ATOMIC in the useful sense: the title did not land
-  // either, because title and status go in one statement.
+  // The update still lands NOTHING: the refusal is ahead of the statement, so
+  // the title change in the same edit is dropped with it. That was true
+  // before (one statement, one CHECK failure) and stays true now (refused
+  // before the statement) -- the operator's file is unchanged either way.
   auto conn = open_db(fx);
   CHECK(scalar(conn, "select title from questions where id = 1") == "Q linked");
   CHECK(scalar(conn, "select status from questions where id = 1") == "open");
