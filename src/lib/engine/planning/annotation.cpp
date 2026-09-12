@@ -888,6 +888,15 @@ auto list(db::connection& conn, const list_filter& filter) -> std::expected<std:
   if (filter.anchor_path.has_value()) {
     sql += " and anchor_path = ?";
   }
+  if (filter.anchor_kind_.has_value()) {
+    sql += " and anchor_kind = ?";
+  }
+  if (filter.target_kind_.has_value()) {
+    sql += " and target_kind = ?";
+  }
+  if (filter.target_id.has_value()) {
+    sql += " and target_id = ?";
+  }
   if (filter.status_.has_value()) {
     sql += " and status = ?";
   }
@@ -925,6 +934,21 @@ auto list(db::connection& conn, const list_filter& filter) -> std::expected<std:
   int idx = 1;
   if (filter.anchor_path.has_value()) {
     if (auto b = stmt->bind_text(idx++, *filter.anchor_path); !b) {
+      return std::unexpected(annotation_error::query_failed);
+    }
+  }
+  if (filter.anchor_kind_.has_value()) {
+    if (auto b = stmt->bind_text(idx++, *filter.anchor_kind_ == anchor_kind::file ? "file" : "entity"); !b) {
+      return std::unexpected(annotation_error::query_failed);
+    }
+  }
+  if (filter.target_kind_.has_value()) {
+    if (auto b = stmt->bind_text(idx++, *filter.target_kind_ == target_kind::plan ? "plan" : "task"); !b) {
+      return std::unexpected(annotation_error::query_failed);
+    }
+  }
+  if (filter.target_id.has_value()) {
+    if (auto b = stmt->bind_int64(idx++, *filter.target_id); !b) {
       return std::unexpected(annotation_error::query_failed);
     }
   }
@@ -1464,12 +1488,21 @@ auto render_json(const annotation& a) -> std::string {
   std::string out;
   out += std::format(R"({{"id":{},"scope_kind":"{}","scope_id":{},)", a.id, scope_kind_to_text(a.scope_kind_),
                      json_optional_int(a.scope_id));
-  out += std::format(R"("anchor":{{"path":{},"line_start":{},"line_end":{},)", json_string(a.anchor.path),
+  out += std::format(R"("anchor":{{"kind":"{}","path":{},"line_start":{},"line_end":{},)",
+                     a.anchor_kind_ == anchor_kind::file ? "file" : "entity",
+                     a.anchor_kind_ == anchor_kind::file ? json_string(a.anchor.path) : "null",
                      json_optional_int(a.anchor.line_start), json_optional_int(a.anchor.line_end));
   out += std::format(R"("commit_sha":{},"text_hash":{},"text":{}}},)", json_string(a.anchor.commit_sha),
                      json_string(a.anchor.text_hash), json_string(a.anchor.text));
-  out += std::format(R"("title":{},"slug":{},"body":{},"status":"{}","vendor":{},)", json_optional_string(a.title),
-                     json_optional_string(a.slug), json_string(a.body), status_to_text(a.status_), json_string(a.vendor));
+  out += "\"target\":";
+  if (a.target.has_value()) {
+    out += std::format(R"({{"kind":"{}","id":{}}})", a.target->kind == target_kind::plan ? "plan" : "task", a.target->id);
+  } else {
+    out += "null";
+  }
+  out += std::format(R"(,"title":{},"slug":{},"body":{},"status":"{}","vendor":{},"origin":{},"revision":{},)",
+                     json_optional_string(a.title), json_optional_string(a.slug), json_string(a.body), status_to_text(a.status_),
+                     json_string(a.vendor), json_optional_string(a.origin), a.revision);
   out += std::format(R"("plan_id":{},"task_id":{},"tags":[)", json_optional_int(a.plan_id), json_optional_int(a.task_id));
   for (std::size_t i = 0; i < a.tags.size(); ++i) {
     if (i > 0) {

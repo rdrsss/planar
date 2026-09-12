@@ -248,6 +248,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar annotate add", "Create a new annotation."},
       {"planar annotate show", "Show an annotation."},
       {"planar annotate list", "List annotations."},
+      {"planar annotate capabilities", "Describe annotation read and command support."},
       {"planar annotate update", "Update an annotation."},
       {"planar annotate remove", "Remove an annotation."},
       {"planar annotate tag", "Add or remove a tag on an annotation."},

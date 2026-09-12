@@ -534,11 +534,12 @@ TEST_CASE("annotate add --json emits the oracle's object with a terminator appen
   auto const got =
       dispatch(fx, {"annotate", "add", "--anchor-path", "src/bar.zig", "--line-start", "1", "--title", "T2", "--json"});
   REQUIRE(got.code == 0);
-  CHECK(got.out.starts_with("{\"id\":1,\"scope_kind\":\"global\",\"scope_id\":null,"
-                            "\"anchor\":{\"path\":\"src/bar.zig\",\"line_start\":1,\"line_end\":null,"
-                            "\"commit_sha\":\"\",\"text_hash\":\"\",\"text\":\"\"},"
-                            "\"title\":\"T2\",\"slug\":null,\"body\":\"\",\"status\":\"active\","
-                            "\"vendor\":\"\",\"plan_id\":null,\"task_id\":null,\"tags\":[],\"created_at\":\""));
+  CHECK(got.out.starts_with(
+      "{\"id\":1,\"scope_kind\":\"global\",\"scope_id\":null,"
+      "\"anchor\":{\"kind\":\"file\",\"path\":\"src/bar.zig\",\"line_start\":1,\"line_end\":null,"
+      "\"commit_sha\":\"\",\"text_hash\":\"\",\"text\":\"\"},\"target\":null,"
+      "\"title\":\"T2\",\"slug\":null,\"body\":\"\",\"status\":\"active\","
+      "\"vendor\":\"\",\"origin\":null,\"revision\":1,\"plan_id\":null,\"task_id\":null,\"tags\":[],\"created_at\":\""));
   // render_json documents itself as returning NO trailing newline, so the
   // handler appends one. Exactly one.
   CHECK(got.out.ends_with("\"}\n"));

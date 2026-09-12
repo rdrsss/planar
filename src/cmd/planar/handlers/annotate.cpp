@@ -206,6 +206,34 @@ auto status_flag(const cliapp::parsed_args& args) -> std::expected<std::optional
   return std::optional<ann::status>{*parsed};
 }
 
+auto anchor_kind_flag(const cliapp::parsed_args& args) -> std::expected<std::optional<ann::anchor_kind>, domain_error> {
+  auto const raw = flag_string(args, "--anchor-kind");
+  if (!raw.has_value()) {
+    return std::optional<ann::anchor_kind>{};
+  }
+  if (*raw == "file") {
+    return std::optional<ann::anchor_kind>{ann::anchor_kind::file};
+  }
+  if (*raw == "entity") {
+    return std::optional<ann::anchor_kind>{ann::anchor_kind::entity};
+  }
+  return std::unexpected(error_from_body(domain_error_kind::invalid_input, "anchor kind must be 'file' or 'entity'"));
+}
+
+auto target_kind_flag(const cliapp::parsed_args& args) -> std::expected<std::optional<ann::target_kind>, domain_error> {
+  auto const raw = flag_string(args, "--target-kind");
+  if (!raw.has_value()) {
+    return std::optional<ann::target_kind>{};
+  }
+  if (*raw == "plan") {
+    return std::optional<ann::target_kind>{ann::target_kind::plan};
+  }
+  if (*raw == "task") {
+    return std::optional<ann::target_kind>{ann::target_kind::task};
+  }
+  return std::unexpected(error_from_body(domain_error_kind::invalid_input, "target kind must be 'plan' or 'task'"));
+}
+
 /// @brief The owned flag values a `list_filter` points into, plus the
 /// filter itself.
 ///
@@ -415,15 +443,26 @@ auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
   auto const tag         = flag_string(args, "--tag");
   auto const scope       = flag_string(args, "--scope");
   auto const status_text = flag_string(args, "--status");
+  auto const anchor_kind = anchor_kind_flag(args);
+  if (!anchor_kind) {
+    return std::unexpected(anchor_kind.error());
+  }
+  auto const target_kind = target_kind_flag(args);
+  if (!target_kind) {
+    return std::unexpected(target_kind.error());
+  }
 
   ann::list_filter filter{
-      .anchor_path = as_view(anchor_path),
-      .status_     = std::nullopt,
-      .plan_id     = flag_int(args, "--plan"),
-      .task_id     = flag_int(args, "--task"),
-      .vendor      = as_view(vendor),
-      .tag         = as_view(tag),
-      .scope       = as_view(scope),
+      .anchor_path  = as_view(anchor_path),
+      .anchor_kind_ = *anchor_kind,
+      .target_kind_ = *target_kind,
+      .target_id    = flag_int(args, "--target-id"),
+      .status_      = std::nullopt,
+      .plan_id      = flag_int(args, "--plan"),
+      .task_id      = flag_int(args, "--task"),
+      .vendor       = as_view(vendor),
+      .tag          = as_view(tag),
+      .scope        = as_view(scope),
   };
   if (status_text.has_value()) {
     auto const parsed = ann::status_from_text(*status_text);
@@ -447,6 +486,27 @@ auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
     ctx.out() << ann::render_list_json(*items) << '\n';
   } else {
     ctx.out() << ann::render_list_text(*items);
+  }
+  return {};
+}
+
+auto annotate_capabilities(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto source = ann::source_uuid(**conn);
+  if (!source) {
+    return std::unexpected(map_annotation_error(source.error(), "annotate capabilities"));
+  }
+  if (flag_bool(args, "--json")) {
+    std::string out{"{\"source_uuid\":"};
+    json_text::append_json_string(out, *source);
+    out +=
+        R"(,"annotation_read":true,"entity_anchors":true,"revisions":true,"filters":["anchor_kind","target_kind","target_id","status","scope","tag","plan","task","vendor","anchor_path"],"commands":["create","edit","replace-tags","resolve","dismiss","archive"],"receipt_lookup":true})";
+    ctx.out() << out << '\n';
+  } else {
+    ctx.out() << "annotation read: available\nentity anchors: available\nrevisions: available\nsource uuid: " << *source << '\n';
   }
   return {};
 }
@@ -897,6 +957,9 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
 
   CLI::App* list = annotate.add_subcommand("list", "List annotations.");
   add_string(*list, "--anchor-path");
+  add_string(*list, "--anchor-kind");
+  add_string(*list, "--target-kind");
+  add_int(*list, "--target-id");
   add_string(*list, "--status");
   add_int(*list, "--plan");
   add_int(*list, "--task");
@@ -904,6 +967,9 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
   add_string(*list, "--tag");
   add_string(*list, "--scope");
   add_json(*list);
+
+  CLI::App* capabilities = annotate.add_subcommand("capabilities", "Describe annotation read and command support.");
+  add_json(*capabilities);
 
   CLI::App* update = annotate.add_subcommand("update", "Update an annotation.");
   add_string(*update, "--title");

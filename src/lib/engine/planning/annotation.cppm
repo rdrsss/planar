@@ -149,13 +149,16 @@ export struct update_args {
 /// @brief Filter for `list` (and, in the same shape, for every `bulk-*`
 /// leaf). Mirrors zig's `annotation.ListFilter`.
 export struct list_filter {
-  std::optional<std::string_view> anchor_path; ///< Exact `anchor_path` match.
-  std::optional<status>           status_;     ///< Exact status match.
-  std::optional<std::int64_t>     plan_id;     ///< Exact `plan_id` match.
-  std::optional<std::int64_t>     task_id;     ///< Exact `task_id` match.
-  std::optional<std::string_view> vendor;      ///< Exact `vendor` match.
-  std::optional<std::string_view> tag;         ///< Rows carrying this tag.
-  std::optional<std::string_view> scope;       ///< Scope-ref slug.
+  std::optional<std::string_view> anchor_path;  ///< Exact `anchor_path` match.
+  std::optional<anchor_kind>      anchor_kind_; ///< Exact file/entity anchor discriminator.
+  std::optional<target_kind>      target_kind_; ///< Exact entity target kind; entity rows only.
+  std::optional<std::int64_t>     target_id;    ///< Exact entity target id; entity rows only.
+  std::optional<status>           status_;      ///< Exact status match.
+  std::optional<std::int64_t>     plan_id;      ///< Exact `plan_id` match.
+  std::optional<std::int64_t>     task_id;      ///< Exact `task_id` match.
+  std::optional<std::string_view> vendor;       ///< Exact `vendor` match.
+  std::optional<std::string_view> tag;          ///< Rows carrying this tag.
+  std::optional<std::string_view> scope;        ///< Scope-ref slug.
 };
 
 /// @brief Error surface for this module. Mirrors zig's
