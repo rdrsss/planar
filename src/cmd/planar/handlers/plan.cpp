@@ -1313,7 +1313,8 @@ auto declare_plan_children(CLI::App& plan) -> void {
       "closeout",
       "Evaluate the DB-hard gate (all tasks terminal, all descendants terminal, no live claims)\n  and advisory git-evidence for "
       "a plan. In apply mode (no --dry-run), marks the plan\n  done when the hard gate passes. Cancelled tasks are terminal "
-      "\xe2\x80\x94 they do not block.\n\n  Hard gate failures produce a non-zero exit in both dry-run and apply modes.\n\n  "
+      "\xe2\x80\x94 they do not block.\n\n  Hard gate failures exit non-zero in APPLY mode. --dry-run always exits 0:\n  it is a "
+      "preview, and the caller reads ready/blocked_by from the report.\n\n  "
       "--check-merge adds an advisory epic-branch merge roll-up: for each contributing\n  branch from agent_work_claims, reports "
       "how many are merged to the target branch.\n  Never blocks; absent branches are inconclusive.");
   add_bool(*closeout, "--dry-run", "Evaluate and report only; never writes.");

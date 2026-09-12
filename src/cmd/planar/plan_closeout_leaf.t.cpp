@@ -306,12 +306,12 @@ TEST_CASE("a ready plan reports ready in both renderings", "[cmd][plan][closeout
 )J",
                                 k_none_evidence));
 
-  // THE BANNER DEFECT. Plan 1 is `draft` and this call changed nothing, and
-  // the oracle still says "already terminal". Pinned so a well-meaning fix
-  // has to fail a test and start a conversation.
+  // THE BANNER, corrected at task 6318. Plan 1 is `draft` and this call
+  // changed nothing; the old wording claimed it was already terminal, which
+  // is the opposite of what `--dry-run` is asked to report.
   auto const text_mode = dispatch(fx, {"plan", "closeout", "1", "--dry-run"});
   CHECK(text_mode.code == 0);
-  CHECK(text_mode.out == std::format("[dry-run] plan 1: ready (already terminal — no change)\n"
+  CHECK(text_mode.out == std::format("[dry-run] plan 1: ready to close (no change made)\n"
                                      "\n"
                                      "hard gate:\n"
                                      "  tasks:       open=0  done=0  cancelled=0\n"

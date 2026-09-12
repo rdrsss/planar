@@ -525,16 +525,18 @@ TEST_CASE("the text renderer emits the oracle's exact bytes, banner defect inclu
         "    branch:  (none)  target: (unknown)\n"
         "    note:    no commit attribution — inconclusive (hardens once session-commit capture is wired)\n");
 
-  // THE BANNER DEFECT, pinned so it cannot be "fixed" without a failing
-  // test forcing the conversation. This plan is `active` and this call
-  // writes nothing, yet the oracle's middle arm says "already terminal".
+  // THE BANNER, corrected at task 6318. This plan is `active` and the call
+  // writes nothing; the old middle arm said "already terminal" anyway, for
+  // every `--dry-run` on an open closeable plan -- the opposite of the
+  // state the operator was asking about. `dry_run` now discriminates.
   auto const ready_plan = seed_plan(conn, "render-ready", "active");
   auto const ready      = co::evaluate(conn, ready_plan, false, false);
   REQUIRE(ready.has_value());
   REQUIRE(ready->ready);
   REQUIRE_FALSE(ready->applied);
-  CHECK(co::render_text(*ready, true).starts_with("[dry-run] plan 2: ready (already terminal — no change)\n"));
-  // And with no `[dry-run] ` prefix when apply mode produced the same state.
+  CHECK(co::render_text(*ready, true).starts_with("[dry-run] plan 2: ready to close (no change made)\n"));
+  // Apply mode reaching this arm DOES mean already-terminal: a ready plan
+  // that was not already terminal would have set `applied`.
   CHECK(co::render_text(*ready, false).starts_with("plan 2: ready (already terminal — no change)\n"));
 
   // The applied banner, and the absence of both optional sections.

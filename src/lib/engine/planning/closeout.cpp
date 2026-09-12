@@ -763,11 +763,19 @@ auto render_text(const closeout_result& result, bool dry_run) -> std::string {
   std::string_view const mode_label = dry_run ? "[dry-run] " : "";
 
   std::string out;
-  // The middle arm reads "already terminal" for ANY ready-but-not-applied
-  // evaluation, `--dry-run` on an open plan included. Oracle wording,
-  // reproduced verbatim — see the module header.
+  // TASK 6318. The middle arm used to read "already terminal — no change"
+  // for ANY ready-but-not-applied evaluation, which meant every `--dry-run`
+  // on an open, closeable plan. An operator running `--dry-run` to ask
+  // "CAN this be closed?" was told it already IS closed -- the two states
+  // differ in exactly the way the question is about.
+  //
+  // `dry_run` is the discriminator, and it is exact: in apply mode a ready
+  // plan that was not already terminal sets `applied`, so reaching this arm
+  // with `dry_run == false` does mean the plan was already terminal.
   if (result.applied) {
     out += std::format("{}plan {}: marked done\n", mode_label, result.plan_id);
+  } else if (result.ready && dry_run) {
+    out += std::format("{}plan {}: ready to close (no change made)\n", mode_label, result.plan_id);
   } else if (result.ready) {
     out += std::format("{}plan {}: ready (already terminal — no change)\n", mode_label, result.plan_id);
   } else {
