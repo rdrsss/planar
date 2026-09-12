@@ -753,24 +753,29 @@ TEST_CASE("enrich_proposals: reads state, writes none, and needs no registered p
   CHECK(proposals[0].assoc_exists);
   CHECK_FALSE(proposals[0].member_exists); // registered, but not linked to path:ws
 
-  // 5. THE FLAGS ARE WRITE-ONLY: enrichment SETS them and never CLEARS
-  //    them. Two paths skip the membership probe entirely and leave
-  //    whatever was already there -- an unregistered root (the project id
-  //    resolves to zero and the guarded probe is skipped) and a proposal
-  //    whose association does not exist (the loop `continue`s before
-  //    either assignment).
+  // 5. THE FLAGS ARE COMPUTED, NOT MERELY SET (task 6327). Enrichment now
+  //    clears both before probing, so re-enriching the SAME slice against a
+  //    different root RESETS it rather than inheriting the previous pass.
   //
-  //    So re-enriching the SAME slice against a different root does not
-  //    reset it. This was asserted the other way round first and failed;
-  //    re-reading the oracle confirmed the port is faithful and the
-  //    expectation was wrong. It is invisible to operators because the
-  //    handler builds a fresh proposal slice per invocation, but anything
-  //    that reuses a slice inherits stale flags.
+  //    This case used to assert the opposite and carried a note saying the
+  //    author had asserted clearing FIRST, found the oracle did not, and
+  //    matched the oracle. Decision 1067 ended that obligation. The reusing
+  //    caller is real: `assoc.cpp`'s `--apply` path calls `enrich_proposals`
+  //    a SECOND time on the SAME span after applying.
+  //
+  //    Both current callers are unaffected -- between their two passes rows
+  //    are only ever created, never removed -- which is why this was filed
+  //    as a latent trap rather than a live defect.
   REQUIRE(add_member(conn, "path:ws", "/w/elsewhere").has_value());
   REQUIRE(enrich_proposals(conn, proposals, "/w/elsewhere").has_value());
   REQUIRE(proposals[0].member_exists); // set to true by the probe...
   REQUIRE(enrich_proposals(conn, proposals, "/w/never-registered").has_value());
-  CHECK(proposals[0].member_exists); // ...and NOT cleared by the unregistered root
+  CHECK_FALSE(proposals[0].member_exists); // ...and CLEARED by the unregistered root
+
+  // Non-vacuity: clearing must not make the flag permanently false. Probing
+  // against the registered root raises it again.
+  REQUIRE(enrich_proposals(conn, proposals, "/w/elsewhere").has_value());
+  CHECK(proposals[0].member_exists);
 }
 
 TEST_CASE("apply_proposals: refuses before it writes anything", "[association][detect][apply]") {

@@ -917,6 +917,21 @@ auto enrich_proposals(db::connection& conn, std::span<proposal> proposals, std::
   }
 
   for (auto& p : proposals) {
+    // TASK 6327: CLEAR both flags before probing, so this function COMPUTES
+    // them rather than only ever setting them. The reusing caller is real,
+    // not hypothetical: `assoc.cpp`'s `--apply` path calls this a SECOND
+    // time on the SAME span after applying (the oracle's `catch {}`
+    // re-enrich). With set-only semantics a flag raised on the first pass
+    // could never come back down, so a proposal whose row disappeared
+    // between passes would keep reporting `already a member`.
+    //
+    // No behaviour change for either current caller -- between the two
+    // passes rows are only ever created -- which is exactly why this was
+    // filed as a latent trap rather than a live defect. It is cheap to make
+    // the contract match the name.
+    p.assoc_exists  = false;
+    p.member_exists = false;
+
     auto stmt = conn.prepare("select id from associations where slug = ?");
     if (!stmt) {
       return std::unexpected(association_error::query_failed);

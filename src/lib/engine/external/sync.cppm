@@ -58,14 +58,36 @@
 /// anything (task row, link row, `sync_events`, and the fixture's PUT count
 /// all unchanged):
 ///
-///   1. the named event must still be the LATEST event on its link, and the
+/// IN THE ORDER THE CODE RUNS THEM, which is not the order an earlier edition
+/// of this comment gave (task 6297 — see below):
+///
+///   1. the named event must BE a conflict — otherwise `not_conflict`;
+///   2. the supplied token must equal the stored evidence token — otherwise
+///      `evidence_changed`;
+///   3. the named event must still be the LATEST event on its link, and the
 ///      link must still be in `conflict` — otherwise `stale_conflict`;
-///   2. the supplied token must equal the stored evidence token;
-///   3. the supplied local `updated_at` must equal the entity's CURRENT one;
-///   4. a FRESH adapter pull must still match the recorded evidence in title,
+///   4. the supplied local `updated_at` must equal the entity's CURRENT one;
+///   5. a FRESH adapter pull must still match the recorded evidence in title,
 ///      status AND version — and BOTH the recorded and the fresh version must
 ///      be NON-EMPTY. A provider that exposes no version can never authorize
 ///      a resolution, however well its field values match.
+///
+/// THE ORDER IS NOT DECORATIVE, and this comment having it backwards is why
+/// an oracle defect survived the original port of this module. The earlier
+/// edition listed stale-then-token; the code runs token before stale, and ran
+/// the CAS guard ahead of the is-this-a-conflict check entirely (task 6296),
+/// so pointing the verb at a NON-conflict event reported "evidence or
+/// approved local version changed" — telling the operator their data had
+/// raced when in fact they had named the wrong event. A reader checking
+/// whether the guard order was sensible read this header, found a sensible
+/// order, and stopped. 6296 is fixed; the header is corrected here so the
+/// next such reader is checking against the code rather than against prose.
+///
+/// The inline labels in `resolve_conflict` still read `Guard 2` before
+/// `Guard 1a`, preserving the numbering this list used to carry. They are
+/// left alone deliberately: renumbering them would silently rewrite the
+/// history of which guard came from where, and the sequence above is now the
+/// authority.
 ///
 /// `keep=local` pushes to the provider and leaves the entity alone; the event
 /// it writes has direction `push`. `keep=remote` writes the remote onto the
