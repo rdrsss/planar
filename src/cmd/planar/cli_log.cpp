@@ -219,6 +219,10 @@ auto category_for(domain_error_kind kind) -> std::optional<std::string_view> {
   case domain_error_kind::generic_failure:
     // Exit 1, so the fallback's `else` arm: internal.
     return "internal";
+  case domain_error_kind::busy_source:
+    // A competing source writer is retryable, rather than an operator
+    // failure in this process.  Keep it distinct for Explorer's retry UI.
+    return "busy";
   }
   return "internal";
 }

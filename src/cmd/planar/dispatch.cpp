@@ -468,6 +468,8 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("annotate bulk-archive", handlers::annotate_bulk_archive);
   table.emplace("annotate verify", handlers::annotate_verify);
   table.emplace("annotate sweep", handlers::annotate_sweep);
+  table.emplace("annotate command", handlers::annotate_command);
+  table.emplace("annotate receipt", handlers::annotate_receipt);
   table.emplace("link", handlers::link);
   table.emplace("unlink", handlers::unlink);
   // The whole `ext` family (register/list/test/create/propagate-one) and

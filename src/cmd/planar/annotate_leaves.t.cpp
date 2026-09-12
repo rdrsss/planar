@@ -82,8 +82,11 @@ import cli11;
 import planar.db;
 import planar.engine.identity;
 import planar.engine.planning;
+import planar.json_dom;
 import planar.cmd.planar.context;
+import planar.cmd.planar.cli_log;
 import planar.cmd.planar.dispatch;
+import planar.cmd.planar.exit;
 import planar.cmd.planar.tree;
 
 namespace {
@@ -92,10 +95,11 @@ using planar::cmd::context;
 
 /// @brief One handler invocation's observable result.
 struct invocation {
-  int         code = 0;        ///< The exit code.
-  std::string out;             ///< Everything written to stdout.
-  std::string err;             ///< Everything written to stderr.
-  bool        db_open = false; ///< Whether the verb opened SQLite at all.
+  int                                           code = 0;        ///< The exit code.
+  std::optional<planar::cmd::domain_error_kind> kind;            ///< The classified domain failure, when any.
+  std::string                                   out;             ///< Everything written to stdout.
+  std::string                                   err;             ///< Everything written to stderr.
+  bool                                          db_open = false; ///< Whether the verb opened SQLite at all.
 };
 
 /// @brief A scratch root plus the environment and database path every case
@@ -135,17 +139,25 @@ auto make_fixture(std::string_view tag) -> fixture {
 /// @param fx The fixture.
 /// @param args The argv tail.
 /// @return The captured invocation.
-auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
+auto dispatch(const fixture& fx, std::vector<std::string> args, std::optional<std::string_view> stdin_text = std::nullopt)
+    -> invocation {
   std::vector<std::string> argv{"planar"};
   argv.insert(argv.end(), args.begin(), args.end());
 
+  std::istringstream input{stdin_text.value_or("")};
+  struct cin_restore {
+    std::streambuf* previous;
+    ~cin_restore() {
+      std::cin.rdbuf(previous);
+    }
+  } restore{std::cin.rdbuf(input.rdbuf())};
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
-  int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  auto const         tree    = planar::cmd::root_app();
+  auto const         table   = planar::cmd::handlers(*tree);
+  auto const         outcome = planar::cmd::run_detailed(ctx, *tree, table);
+  return invocation{.code = outcome.code, .kind = outcome.kind, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
 }
 
 /// @brief Dispatch from an arbitrary directory under the fixture root.
@@ -165,10 +177,10 @@ auto dispatch_in(const fixture& fx, const std::filesystem::path& cwd, std::vecto
   std::ostringstream out;
   std::ostringstream err;
   context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), cwd, fx.db_path, out, err};
-  auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
-  int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  auto const         tree    = planar::cmd::root_app();
+  auto const         table   = planar::cmd::handlers(*tree);
+  auto const         outcome = planar::cmd::run_detailed(ctx, *tree, table);
+  return invocation{.code = outcome.code, .kind = outcome.kind, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
 }
 
 /// @brief Open the fixture's database directly, for row assertions.
@@ -513,7 +525,7 @@ TEST_CASE("annotate remove deletes the row and cascades its tags", "[cmd][annota
   REQUIRE(id_list(conn) == "1,2");
   REQUIRE(tag_snapshot(conn, 1) == "a,b");
 
-  auto const text = dispatch(fx, {"annotate", "remove", "1"});
+  auto const text = dispatch(fx, {"annotate", "remove", "1", "--expected-revision", "1"});
   REQUIRE(text.code == 0);
   CHECK(text.out == "annotation 1 removed\n");
 
@@ -525,7 +537,7 @@ TEST_CASE("annotate remove deletes the row and cascades its tags", "[cmd][annota
   CHECK(tag_snapshot(conn, 1).empty());
   CHECK(tag_snapshot(conn, 2) == "c");
 
-  auto const json = dispatch(fx, {"annotate", "remove", "2", "--json"});
+  auto const json = dispatch(fx, {"annotate", "remove", "2", "--expected-revision", "1", "--json"});
   REQUIRE(json.code == 0);
   // Both renderers are fragments, so BOTH paths append — unlike `show`,
   // whose text renderer carries its own newlines.
@@ -535,7 +547,7 @@ TEST_CASE("annotate remove deletes the row and cascades its tags", "[cmd][annota
 
 TEST_CASE("annotate remove reports a missing id by naming it", "[cmd][annotate][remove][parity]") {
   auto const fx  = make_fixture("removenf");
-  auto const got = dispatch(fx, {"annotate", "remove", "99"});
+  auto const got = dispatch(fx, {"annotate", "remove", "99", "--expected-revision", "1"});
   CHECK(got.code == 1);
   CHECK(got.err == "error: no annotation with id 99\n");
 }
@@ -1152,7 +1164,7 @@ TEST_CASE("the annotate leaves write the oracle's audit_log rows", "[cmd][annota
   REQUIRE(dispatch(fx, {"annotate", "archive", "1"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "tag", "1", "t1"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "tag", "1", "t1", "--remove"}).code == 0);
-  REQUIRE(dispatch(fx, {"annotate", "remove", "2"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "remove", "2", "--expected-revision", "2"}).code == 0);
   REQUIRE(dispatch(fx, {"annotate", "update", "1"}).code == 0); // no-op patch
 
   CHECK(audit_transcript(fx) == "create|annotation|1|create annotation 'A1'\n"
@@ -1171,4 +1183,362 @@ TEST_CASE("the annotate leaves write the oracle's audit_log rows", "[cmd][annota
   // Nothing above came from `annotate tag`, `annotate tag --remove`, or
   // the no-op `annotate update 1`. All three exit 0 and all three write
   // NO row -- which is why they are in the sequence at all.
+}
+
+// =========================================================================
+// Receipt-backed structured annotation commands (task 6684)
+// =========================================================================
+
+TEST_CASE("annotation commands commit mutations, revisions, audit rows, and durable receipts together",
+          "[cmd][annotate][command][receipt][6684]") {
+  auto const fx = make_fixture("commandreceipt");
+  // Open through the command context once so this direct engine case uses
+  // the same migrated schema as a structured command invocation.
+  auto const initialized = dispatch(fx, {"annotate", "list"});
+  REQUIRE(initialized.code == 0);
+  auto conn = open_db(fx);
+
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Command target"});
+  REQUIRE(plan.has_value());
+  auto const source = planar::engine::planning::annotation::source_uuid(conn);
+  REQUIRE(source.has_value());
+
+  namespace ann = planar::engine::planning::annotation;
+  ann::command_args create_command{.operation      = ann::command_kind::create,
+                                   .operation_uuid = "create-6684",
+                                   .source_uuid    = *source,
+                                   .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = plan->id},
+                                   .title          = "receipt body",
+                                   .body           = "v1",
+                                   .tags           = {"first"}};
+  auto const        created = ann::execute_command(conn, create_command);
+  REQUIRE(created.has_value());
+  CHECK_FALSE(created->replayed);
+  REQUIRE(created->annotation_id.has_value());
+  CHECK(created->revision == 1);
+  auto const annotation_id = *created->annotation_id;
+  CHECK(tag_snapshot(conn, annotation_id) == "first");
+
+  // The same UUID and payload is a receipt replay, not a second mutation.
+  auto const replayed = ann::execute_command(conn, create_command);
+  REQUIRE(replayed.has_value());
+  CHECK(replayed->replayed);
+  CHECK(replayed->annotation_id == created->annotation_id);
+  CHECK(id_list(conn) == std::to_string(annotation_id));
+
+  auto different_payload = create_command;
+  different_payload.body = "different";
+  auto const conflict    = ann::execute_command(conn, different_payload);
+  REQUIRE_FALSE(conflict.has_value());
+  CHECK(conflict.error() == ann::annotation_error::receipt_conflict);
+
+  ann::command_args replace_tags{.operation         = ann::command_kind::replace_tags,
+                                 .operation_uuid    = "tags-6684",
+                                 .source_uuid       = *source,
+                                 .annotation_id     = annotation_id,
+                                 .expected_revision = 1,
+                                 .tags              = {"alpha", "beta"}};
+  auto const        tagged = ann::execute_command(conn, replace_tags);
+  REQUIRE(tagged.has_value());
+  CHECK_FALSE(tagged->replayed);
+  CHECK(tagged->revision == 2);
+  CHECK(tag_snapshot(conn, annotation_id) == "alpha,beta");
+
+  ann::command_args resolve_command{.operation         = ann::command_kind::resolve,
+                                    .operation_uuid    = "resolve-6684",
+                                    .source_uuid       = *source,
+                                    .annotation_id     = annotation_id,
+                                    .expected_revision = 2};
+  auto const        resolved = ann::execute_command(conn, resolve_command);
+  REQUIRE(resolved.has_value());
+  CHECK(resolved->revision == 3);
+  CHECK(row_snapshot(conn, annotation_id).contains("|resolved|"));
+
+  // A stale optimistic-lock request writes neither an audit row nor a receipt.
+  ann::command_args stale_edit{.operation         = ann::command_kind::edit,
+                               .operation_uuid    = "stale-6684",
+                               .source_uuid       = *source,
+                               .annotation_id     = annotation_id,
+                               .expected_revision = 2,
+                               .body              = "must not land"};
+  auto const        stale = ann::execute_command(conn, stale_edit);
+  REQUIRE_FALSE(stale.has_value());
+  CHECK(stale.error() == ann::annotation_error::revision_conflict);
+  auto receipt_count = conn.prepare("select count(*) from annotation_operation_receipts");
+  REQUIRE(receipt_count.has_value());
+  REQUIRE(receipt_count->step().has_value());
+  CHECK(receipt_count->column_int64(0) == 3);
+  CHECK(audit_transcript(fx).contains("create|annotation|1|create annotation 'receipt body'\n"));
+  CHECK(audit_transcript(fx).contains("update|annotation|1|<NULL>\n"));
+  CHECK(audit_transcript(fx).contains("status_change|annotation|1|resolve\n"));
+
+  // Lookup is the uncertain-outcome path: it is read-only and preserves the
+  // original revision/outcome after the command process has exited.
+  auto const looked_up = ann::show_receipt(conn, *source, "resolve-6684");
+  REQUIRE(looked_up.has_value());
+  REQUIRE(looked_up->has_value());
+  CHECK((**looked_up).outcome == "resolve");
+  CHECK((**looked_up).revision == 3);
+  CHECK((**looked_up).replayed);
+}
+
+TEST_CASE("annotation command payload identity is durable and preserves null titles", "[cmd][annotate][command][receipt][6684]") {
+  auto const fx = make_fixture("commandidentity");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto       conn = open_db(fx);
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  namespace ann     = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+  ann::command_args first{.operation      = ann::command_kind::create,
+                          .operation_uuid = "delimiter",
+                          .source_uuid    = *source,
+                          .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = plan->id},
+                          .title          = "a|b",
+                          .body           = "c"};
+  REQUIRE(ann::execute_command(conn, first).has_value());
+  auto distinct       = first;
+  distinct.title      = "a";
+  distinct.body       = "b|c";
+  auto const conflict = ann::execute_command(conn, distinct);
+  REQUIRE_FALSE(conflict.has_value());
+  CHECK(conflict.error() == ann::annotation_error::receipt_conflict);
+
+  ann::command_args edit{.operation         = ann::command_kind::edit,
+                         .operation_uuid    = "clear-title",
+                         .source_uuid       = *source,
+                         .annotation_id     = 1,
+                         .expected_revision = 1,
+                         .clear_title       = true};
+  REQUIRE(ann::execute_command(conn, edit).has_value());
+  auto cleared = ann::show(conn, 1);
+  REQUIRE(cleared.has_value());
+  CHECK_FALSE(cleared->title.has_value());
+}
+
+TEST_CASE("annotate remove requires the current revision", "[cmd][annotate][remove][revision][6684]") {
+  auto const fx = make_fixture("removerevision");
+  seed(fx, {"--anchor-path", "f.txt", "--title", "remove"});
+  auto const stale = dispatch(fx, {"annotate", "remove", "1", "--expected-revision", "2"});
+  CHECK(stale.code == 1);
+  CHECK(stale.err == "error: annotate remove: Conflict\n");
+  auto conn = open_db(fx);
+  CHECK(id_list(conn) == "1");
+  auto const missing = dispatch(fx, {"annotate", "remove", "1"});
+  CHECK(missing.code == 2);
+  CHECK(missing.err == "error: --expected-revision is required\n");
+}
+
+TEST_CASE("bulk command receipts retain their affected count on replay", "[cmd][annotate][bulk][receipt][6684]") {
+  auto const fx = make_fixture("bulkreceipt");
+  seed(fx, {"--anchor-path", "f.txt", "--title", "one"});
+  seed(fx, {"--anchor-path", "f.txt", "--title", "two"});
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto conn     = open_db(fx);
+  namespace ann = planar::engine::planning::annotation;
+  auto source   = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+  ann::command_args command{.operation      = ann::command_kind::bulk_resolve,
+                            .operation_uuid = "bulk-6684",
+                            .source_uuid    = *source,
+                            .bulk_filter    = ann::list_filter{.anchor_path = "f.txt", .status_ = ann::status::active}};
+  auto              first = ann::execute_command(conn, command);
+  REQUIRE(first.has_value());
+  CHECK(first->affected_count == 2);
+  auto replay = ann::execute_command(conn, command);
+  REQUIRE(replay.has_value());
+  CHECK(replay->replayed);
+  CHECK(replay->affected_count == 2);
+}
+
+TEST_CASE("annotation command validates its JSON boundary before mutation and emits parseable receipts",
+          "[cmd][annotate][command][boundary][6684]") {
+  auto const fx = make_fixture("commandboundary");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto       conn = open_db(fx);
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  namespace ann     = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+
+  auto const malformed = dispatch(
+      fx, {"annotate", "command", "--request", "@-"},
+      std::format(
+          R"({{"operation":"create","operation_id":"bad-body","source_uuid":"{}","target_kind":"plan","target_id":{},"body":123}})",
+          *source, plan->id));
+  CHECK(malformed.code == 2);
+  CHECK(malformed.out.empty());
+  CHECK(malformed.err == "error: body must be a string\n");
+  CHECK_FALSE(malformed.db_open);
+  auto annotation_count = conn.prepare("select count(*) from annotations");
+  auto receipt_count    = conn.prepare("select count(*) from annotation_operation_receipts");
+  auto audit_count      = conn.prepare("select count(*) from audit_log");
+  REQUIRE(annotation_count.has_value());
+  REQUIRE(receipt_count.has_value());
+  REQUIRE(audit_count.has_value());
+  REQUIRE(annotation_count->step().has_value());
+  REQUIRE(receipt_count->step().has_value());
+  REQUIRE(audit_count->step().has_value());
+  CHECK(annotation_count->column_int64(0) == 0);
+  CHECK(receipt_count->column_int64(0) == 0);
+  auto const audits_before = audit_count->column_int64(0);
+  REQUIRE(annotation_count->reset().has_value());
+  REQUIRE(receipt_count->reset().has_value());
+  REQUIRE(audit_count->reset().has_value());
+
+  // Cross the informational retention threshold without changing the command
+  // under test. The next receipt must remain one complete JSON object.
+  auto seeded = conn.prepare("insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, outcome) "
+                             "values (?, ?, 'seed', 'create')");
+  REQUIRE(seeded.has_value());
+  for (int i = 0; i < 10000; ++i) {
+    REQUIRE(seeded->bind_text(1, std::format("seed-{}", i)).has_value());
+    REQUIRE(seeded->bind_text(2, *source).has_value());
+    REQUIRE(seeded->step().has_value());
+    REQUIRE(seeded->reset().has_value());
+  }
+
+  auto const quoted = dispatch(
+      fx, {"annotate", "command", "--request", "@-"},
+      std::format(
+          R"({{"operation":"create","operation_id":"quote\"id","source_uuid":"{}","target_kind":"plan","target_id":{},"title":"quoted"}})",
+          *source, plan->id));
+  REQUIRE(quoted.code == 0);
+  CHECK(quoted.err.empty());
+  auto const response = planar::json_dom::parse_json(quoted.out);
+  REQUIRE(response.has_value());
+  REQUIRE(response->kind == planar::json_dom::json_kind::object);
+  REQUIRE(response->find("operation_uuid") != nullptr);
+  CHECK(response->find("operation_uuid")->string == "quote\"id");
+  REQUIRE(response->find("retention_warning") != nullptr);
+  CHECK(response->find("retention_warning")->kind == planar::json_dom::json_kind::object);
+
+  auto const looked_up = dispatch(fx, {"annotate", "receipt", "--source-uuid", *source, "--operation-id", "quote\"id"});
+  REQUIRE(looked_up.code == 0);
+  auto const lookup_json = planar::json_dom::parse_json(looked_up.out);
+  REQUIRE(lookup_json.has_value());
+  REQUIRE(lookup_json->find("found") != nullptr);
+  CHECK(lookup_json->find("found")->boolean);
+  REQUIRE(lookup_json->find("operation_uuid") != nullptr);
+  CHECK(lookup_json->find("operation_uuid")->string == "quote\"id");
+  REQUIRE(lookup_json->find("outcome") != nullptr);
+  CHECK(lookup_json->find("outcome")->string == "create");
+
+  auto after_audit = conn.prepare("select count(*) from audit_log");
+  REQUIRE(after_audit.has_value());
+  REQUIRE(after_audit->step().has_value());
+  CHECK(after_audit->column_int64(0) == audits_before + 1);
+}
+
+TEST_CASE("annotation command reports a competing write lock as retryable busy without a receipt",
+          "[cmd][annotate][command][busy][6684]") {
+  auto const fx = make_fixture("commandbusy");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto       conn = open_db(fx);
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  namespace ann     = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+
+  auto lock = conn.begin_transaction(planar::db::lock_mode::immediate);
+  REQUIRE(lock.has_value());
+  auto const request = std::format(
+      R"({{"operation":"create","operation_id":"busy-6684","source_uuid":"{}","target_kind":"plan","target_id":{},"title":"retry"}})",
+      *source, plan->id);
+  auto const busy = dispatch(fx, {"annotate", "command", "--request", "@-"}, request);
+  CHECK(busy.code == 1);
+  CHECK(busy.out.empty());
+  CHECK(busy.err == "error: annotate command: Busy\n");
+
+  {
+    auto annotation_count = conn.prepare("select count(*) from annotations");
+    auto receipt_count    = conn.prepare("select count(*) from annotation_operation_receipts");
+    auto audit_count      = conn.prepare("select count(*) from audit_log");
+    REQUIRE(annotation_count.has_value());
+    REQUIRE(receipt_count.has_value());
+    REQUIRE(audit_count.has_value());
+    REQUIRE(annotation_count->step().has_value());
+    REQUIRE(receipt_count->step().has_value());
+    REQUIRE(audit_count->step().has_value());
+    CHECK(annotation_count->column_int64(0) == 0);
+    CHECK(receipt_count->column_int64(0) == 0);
+    CHECK(audit_count->column_int64(0) == 1); // create_plan only
+  }
+  REQUIRE(lock->commit().has_value());
+
+  // main records after command dispatch.  The command's own transaction was
+  // deliberately contended above, so release the competing writer before
+  // recording its diagnostic on the separate best-effort log connection.
+  // This proves the actual command outcome reaches the durable retryable
+  // category when persistence is possible; it neither turns Busy into
+  // success nor relies on logging while the source remains locked.
+  std::filesystem::create_directories(fx.root / "fakehome" / ".planar");
+  {
+    std::ofstream config(fx.root / "fakehome" / ".planar" / "config.toml");
+    config << "[introspection]\ncli_log = true\n";
+  }
+  std::ostringstream logged_out;
+  std::ostringstream logged_err;
+  context            logged_ctx{{"planar", "annotate", "command", "--request", "@-"},
+                                planar::cmd::map_env(fx.vars),
+                                fx.root / "proj",
+                                fx.db_path,
+                                logged_out,
+                                logged_err};
+  REQUIRE(busy.kind == planar::cmd::domain_error_kind::busy_source);
+  planar::cmd::record(logged_ctx, busy.code, busy.kind, std::chrono::milliseconds{1});
+  {
+    auto diagnostic = conn.prepare("select verb_path, exit_code, error_category from cli_invocations order by id desc limit 1");
+    REQUIRE(diagnostic.has_value());
+    REQUIRE(diagnostic->step().has_value());
+    CHECK(diagnostic->column_text(0) == "annotate command");
+    CHECK(diagnostic->column_int64(1) == 1);
+    CHECK(diagnostic->column_text(2) == "busy");
+  }
+
+  auto const retried = dispatch(fx, {"annotate", "command", "--request", "@-"}, request);
+  REQUIRE(retried.code == 0);
+  auto const retry_json = planar::json_dom::parse_json(retried.out);
+  REQUIRE(retry_json.has_value());
+  REQUIRE(retry_json->find("replayed") != nullptr);
+  CHECK_FALSE(retry_json->find("replayed")->boolean);
+  CHECK(ann::show_receipt(conn, *source, "busy-6684")->has_value());
+}
+
+TEST_CASE("annotation command measures tag limits in UTF-8 characters", "[cmd][annotate][command][unicode][6684]") {
+  auto const fx = make_fixture("commandunicode");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto       conn = open_db(fx);
+  auto const plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  namespace ann     = planar::engine::planning::annotation;
+  auto const source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+
+  // Constructing by concatenation preserves the UTF-8 bytes while making the
+  // 63/64/65 code-point boundaries explicit.
+  auto tags_request = [&](std::string_view operation_id, std::string_view tag, std::optional<std::int64_t> annotation_id,
+                          std::optional<std::int64_t> revision) {
+    std::string request = std::format("{{\"operation\":\"{}\",\"operation_id\":\"{}\",\"source_uuid\":\"{}\",\"tags\":[\"{}\"]",
+                                      annotation_id ? "replace-tags" : "create", operation_id, *source, tag);
+    if (annotation_id)
+      request += std::format(",\"annotation_id\":{},\"expected_revision\":{}", *annotation_id, *revision);
+    else
+      request += std::format(",\"target_kind\":\"plan\",\"target_id\":{}", plan->id);
+    return request + '}';
+  };
+  auto const tag63 = std::string(62, 'x') + "é"; // 63 code points, 64 bytes.
+  auto const first = dispatch(fx, {"annotate", "command", "--request", "@-"}, tags_request("unicode-63", tag63, {}, {}));
+  REQUIRE(first.code == 0);
+  auto const tag64  = std::string(62, 'x') + "éé"; // 64 code points, 66 bytes.
+  auto const second = dispatch(fx, {"annotate", "command", "--request", "@-"}, tags_request("unicode-64", tag64, 1, 1));
+  REQUIRE(second.code == 0);
+  auto const tag65    = std::string(63, 'x') + "éé"; // 65 code points.
+  auto const rejected = dispatch(fx, {"annotate", "command", "--request", "@-"}, tags_request("unicode-65", tag65, 1, 2));
+  CHECK(rejected.code == 2);
+  CHECK(rejected.err == "error: tags must contain strings of at most 64 characters\n");
+  CHECK(tag_snapshot(conn, 1) == tag64);
 }

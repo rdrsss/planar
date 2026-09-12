@@ -221,6 +221,7 @@ planar_module(engine_planning
     log
     scope_ref
     policy
+    sha256
   TEST_DEPENDS
     engine_identity)
 

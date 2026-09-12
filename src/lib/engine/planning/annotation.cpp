@@ -11,6 +11,7 @@ import planar.db;
 import planar.log;
 import planar.scope_ref;
 import planar.policy;
+import planar.sha256;
 import planar.engine.planning.transitions;
 
 namespace planar::engine::planning::annotation {
@@ -58,9 +59,16 @@ namespace {
 // entitylink.cpp already use to detect a UNIQUE violation without
 // string-matching the driver's message.
 constexpr int k_sqlite_constraint_unique = 2067;
+constexpr int k_sqlite_busy              = 5;
 
 auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique;
+}
+
+/// SQLite reports extended busy codes too (for example SQLITE_BUSY_SNAPSHOT),
+/// whose low byte remains SQLITE_BUSY.
+auto command_db_error(const db::db_error& err) -> annotation_error {
+  return (err.code_ & 0xff) == k_sqlite_busy ? annotation_error::busy_source : annotation_error::query_failed;
 }
 
 constexpr std::string_view k_select_columns =
@@ -462,6 +470,252 @@ auto source_uuid(db::connection& conn) -> std::expected<std::string, annotation_
   return stmt->column_text(0);
 }
 
+namespace {
+
+auto command_name(command_kind operation) -> std::string_view {
+  switch (operation) {
+  case command_kind::create:
+    return "create";
+  case command_kind::edit:
+    return "edit";
+  case command_kind::replace_tags:
+    return "replace-tags";
+  case command_kind::resolve:
+    return "resolve";
+  case command_kind::dismiss:
+    return "dismiss";
+  case command_kind::archive:
+    return "archive";
+  case command_kind::remove:
+    return "remove";
+  case command_kind::bulk_resolve:
+    return "bulk-resolve";
+  case command_kind::bulk_dismiss:
+    return "bulk-dismiss";
+  case command_kind::bulk_archive:
+    return "bulk-archive";
+  }
+  return "unknown";
+}
+
+// A receipt digest is an equality fingerprint, never a security primitive.
+// Length-prefixing makes every field boundary unambiguous, including embedded
+// delimiters and the distinction between omitted and explicitly-null values.
+auto command_digest(const command_args& args) -> std::string {
+  std::string material;
+  const auto  append = [&](std::string_view value) {
+    material += std::format("{}:", value.size());
+    material += value;
+  };
+  const auto optional = [&](const std::optional<std::string_view>& value) {
+    append(value ? "present" : "omitted");
+    if (value)
+      append(*value);
+  };
+  append(command_name(args.operation));
+  append(args.source_uuid);
+  optional(args.scope);
+  append(std::format("{}", args.annotation_id.value_or(-1)));
+  append(std::format("{}", args.expected_revision.value_or(-1)));
+  append(args.clear_title ? "null" : "not-null");
+  optional(args.title);
+  optional(args.body);
+  append(args.target ? (args.target->kind == target_kind::plan ? "plan" : "task") : "none");
+  append(std::format("{}", args.target ? args.target->id : -1));
+  append(std::format("{}", args.tags.size()));
+  for (const auto& tag : args.tags)
+    append(tag);
+  if (args.bulk_filter) {
+    append("bulk-filter");
+    optional(args.bulk_filter->anchor_path);
+    optional(args.bulk_filter->vendor);
+    optional(args.bulk_filter->tag);
+    optional(args.bulk_filter->scope);
+    append(std::format("{}", args.bulk_filter->plan_id.value_or(-1)));
+    append(std::format("{}", args.bulk_filter->task_id.value_or(-1)));
+    append(args.bulk_filter->status_ ? status_to_text(*args.bulk_filter->status_) : "none");
+  }
+  return sha256::hex(material);
+}
+
+auto receipt_from_row(db::statement& stmt, bool replayed) -> operation_receipt {
+  return {.operation_uuid = std::string(stmt.column_text(0)),
+          .source_uuid    = std::string(stmt.column_text(1)),
+          .payload_digest = std::string(stmt.column_text(2)),
+          .annotation_id  = opt_int(stmt, 3),
+          .revision       = opt_int(stmt, 4),
+          .outcome        = std::string(stmt.column_text(5)),
+          .created_at     = std::string(stmt.column_text(6)),
+          .affected_count = opt_int(stmt, 7),
+          .replayed       = replayed};
+}
+
+} // namespace
+
+auto show_receipt(db::connection& conn, std::string_view source, std::string_view operation_uuid)
+    -> std::expected<std::optional<operation_receipt>, annotation_error> {
+  auto stmt = conn.prepare(
+      "select operation_uuid, source_uuid, payload_digest, annotation_id, revision, outcome, created_at, affected_count "
+      "from annotation_operation_receipts where source_uuid = ? and operation_uuid = ?");
+  if (!stmt || !stmt->bind_text(1, source) || !stmt->bind_text(2, operation_uuid))
+    return std::unexpected(annotation_error::query_failed);
+  auto step = stmt->step();
+  if (!step)
+    return std::unexpected(annotation_error::query_failed);
+  if (*step == db::step_result::done)
+    return std::optional<operation_receipt>{};
+  return std::optional<operation_receipt>{receipt_from_row(*stmt, true)};
+}
+
+auto execute_command(db::connection& conn, const command_args& args) -> std::expected<operation_receipt, annotation_error> {
+  if (args.operation_uuid.empty() || args.source_uuid.empty())
+    return std::unexpected(annotation_error::invalid_command);
+  auto actual_source = source_uuid(conn);
+  if (!actual_source)
+    return std::unexpected(actual_source.error());
+  if (*actual_source != args.source_uuid)
+    return std::unexpected(annotation_error::source_mismatch);
+  const auto digest   = command_digest(args);
+  auto       existing = show_receipt(conn, args.source_uuid, args.operation_uuid);
+  if (!existing)
+    return std::unexpected(existing.error());
+  if (existing->has_value()) {
+    if ((**existing).payload_digest != digest)
+      return std::unexpected(annotation_error::receipt_conflict);
+    return **existing;
+  }
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx)
+    return std::unexpected(command_db_error(tx.error()));
+  // Recheck under the write lock; a concurrent retry must not double-create.
+  existing = show_receipt(conn, args.source_uuid, args.operation_uuid);
+  if (!existing)
+    return std::unexpected(existing.error());
+  if (existing->has_value()) {
+    if ((**existing).payload_digest != digest)
+      return std::unexpected(annotation_error::receipt_conflict);
+    return **existing;
+  }
+
+  std::optional<std::int64_t> id;
+  std::optional<std::int64_t> revision;
+  std::optional<std::int64_t> affected_count;
+  if (args.operation == command_kind::bulk_resolve || args.operation == command_kind::bulk_dismiss ||
+      args.operation == command_kind::bulk_archive) {
+    if (!args.bulk_filter)
+      return std::unexpected(annotation_error::invalid_command);
+    auto items = list(conn, *args.bulk_filter);
+    if (!items)
+      return std::unexpected(items.error());
+    const auto  action = args.operation == command_kind::bulk_resolve   ? bulk_action::resolve
+                         : args.operation == command_kind::bulk_dismiss ? bulk_action::dismiss
+                                                                        : bulk_action::archive;
+    std::size_t count  = 0;
+    for (const auto& a : *items) {
+      const bool already = (action == bulk_action::resolve && a.status_ == status::resolved) ||
+                           (action == bulk_action::dismiss && a.status_ == status::dismissed) ||
+                           (action == bulk_action::archive && a.status_ == status::archived);
+      if (already || (action != bulk_action::archive && is_terminal(a.status_)))
+        continue;
+      auto changed = action == bulk_action::resolve   ? resolve(conn, a.id)
+                     : action == bulk_action::dismiss ? dismiss(conn, a.id)
+                                                      : archive(conn, a.id);
+      if (!changed) {
+        if (changed.error() == annotation_error::terminal_status)
+          continue;
+        return std::unexpected(changed.error());
+      }
+      ++count;
+    }
+    affected_count = static_cast<std::int64_t>(count);
+    // Aggregate receipts intentionally carry no per-row revision: every
+    // affected annotation has its own revision and audit row.
+  } else if (args.operation == command_kind::create) {
+    if (!args.target.has_value())
+      return std::unexpected(annotation_error::invalid_command);
+    create_args input{.anchor       = {},
+                      .anchor_kind_ = anchor_kind::entity,
+                      .target       = args.target,
+                      .title        = args.title,
+                      .body         = args.body.value_or(""),
+                      .origin       = args.origin,
+                      .tags         = args.tags,
+                      .scope        = args.scope};
+    auto        created = create(conn, input);
+    if (!created)
+      return std::unexpected(created.error());
+    id       = created->id;
+    revision = created->revision;
+  } else {
+    if (!args.annotation_id.has_value() || !args.expected_revision.has_value())
+      return std::unexpected(annotation_error::invalid_command);
+    auto current = show(conn, *args.annotation_id);
+    if (!current)
+      return std::unexpected(current.error());
+    if (current->revision != *args.expected_revision)
+      return std::unexpected(annotation_error::revision_conflict);
+    id = current->id;
+    if (args.operation == command_kind::edit) {
+      auto changed = update(conn, *id, {.title = args.title, .clear_title = args.clear_title, .body = args.body});
+      if (!changed)
+        return std::unexpected(changed.error());
+      revision = changed->revision;
+    } else if (args.operation == command_kind::replace_tags) {
+      auto clear = conn.prepare("delete from annotation_tags where annotation_id = ?");
+      if (!clear || !clear->bind_int64(1, *id) || !clear->step())
+        return std::unexpected(annotation_error::query_failed);
+      for (const auto& tag : args.tags) {
+        if (trim(tag).empty())
+          return std::unexpected(annotation_error::empty_tag);
+        auto insert = conn.prepare("insert into annotation_tags(annotation_id, tag) values (?, ?) on conflict do nothing");
+        if (!insert || !insert->bind_int64(1, *id) || !insert->bind_text(2, trim(tag)) || !insert->step())
+          return std::unexpected(annotation_error::query_failed);
+      }
+      auto bump = conn.prepare(
+          "update annotations set revision = revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?");
+      if (!bump || !bump->bind_int64(1, *id) || !bump->step())
+        return std::unexpected(annotation_error::query_failed);
+      if (auto audit = record_audit(conn, {.verb = audit::verb::update, .entity = {.kind = "annotation", .id = *id}}); !audit)
+        return std::unexpected(audit.error());
+      auto changed = show(conn, *id);
+      if (!changed)
+        return std::unexpected(changed.error());
+      revision = changed->revision;
+    } else if (args.operation == command_kind::resolve || args.operation == command_kind::dismiss ||
+               args.operation == command_kind::archive) {
+      auto changed = args.operation == command_kind::resolve   ? resolve(conn, *id)
+                     : args.operation == command_kind::dismiss ? dismiss(conn, *id)
+                                                               : archive(conn, *id);
+      if (!changed)
+        return std::unexpected(changed.error());
+      revision = changed->revision;
+    } else if (args.operation == command_kind::remove) {
+      revision     = current->revision + 1;
+      auto removed = remove(conn, *id);
+      if (!removed)
+        return std::unexpected(removed.error());
+    } else
+      return std::unexpected(annotation_error::invalid_command);
+  }
+  auto insert = conn.prepare("insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, "
+                             "annotation_id, revision, outcome, affected_count) values (?, ?, ?, ?, ?, ?, ?)");
+  if (!insert || !insert->bind_text(1, args.operation_uuid) || !insert->bind_text(2, args.source_uuid) ||
+      !insert->bind_text(3, digest) || !(id ? insert->bind_int64(4, *id) : insert->bind_null(4)) ||
+      !(revision ? insert->bind_int64(5, *revision) : insert->bind_null(5)) ||
+      !insert->bind_text(6, command_name(args.operation)) ||
+      !(affected_count ? insert->bind_int64(7, *affected_count) : insert->bind_null(7)) || !insert->step())
+    return std::unexpected(annotation_error::query_failed);
+  auto committed = tx->commit();
+  if (!committed)
+    return std::unexpected(command_db_error(committed.error()));
+  auto receipt = show_receipt(conn, args.source_uuid, args.operation_uuid);
+  if (!receipt || !receipt->has_value())
+    return std::unexpected(annotation_error::query_failed);
+  auto result     = **receipt;
+  result.replayed = false;
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // CRUD
 // ---------------------------------------------------------------------------
@@ -773,7 +1027,7 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
     sep();
     sql += "scope_id = ?";
   }
-  if (patch.title.has_value()) {
+  if (patch.title.has_value() || patch.clear_title) {
     sep();
     sql += "title = ?";
   }
@@ -827,8 +1081,8 @@ auto update(db::connection& conn, std::int64_t id, const update_args& patch) -> 
     bound = bound && (scope->second.has_value() ? stmt->bind_int64(idx++, *scope->second).has_value()
                                                 : stmt->bind_null(idx++).has_value());
   }
-  if (patch.title.has_value()) {
-    bound = bound && stmt->bind_text(idx++, *patch.title).has_value();
+  if (patch.title.has_value() || patch.clear_title) {
+    bound = bound && (patch.clear_title ? stmt->bind_null(idx++).has_value() : stmt->bind_text(idx++, *patch.title).has_value());
   }
   if (patch.slug.has_value()) {
     bound = bound && stmt->bind_text(idx++, *patch.slug).has_value();
@@ -1002,6 +1256,11 @@ auto list_tags(db::connection& conn, std::int64_t ann_id) -> std::expected<std::
 
 auto bulk_apply(db::connection& conn, const list_filter& filter, bulk_action action)
     -> std::expected<std::size_t, annotation_error> {
+  // A bulk lifecycle request is one domain operation: a failed row must
+  // roll back every earlier row, including their audit records and revisions.
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx)
+    return std::unexpected(annotation_error::query_failed);
   auto items = list(conn, filter);
   if (!items) {
     return std::unexpected(items.error());
@@ -1029,13 +1288,12 @@ auto bulk_apply(db::connection& conn, const list_filter& filter, bulk_action act
       if (updated.error() == annotation_error::terminal_status) {
         continue;
       }
-      // NOT transactional: every row already updated stays updated. See
-      // annotation.cppm's `bulk_apply` doc comment for the oracle probe
-      // that established this.
       return std::unexpected(updated.error());
     }
     ++count;
   }
+  if (!tx->commit())
+    return std::unexpected(annotation_error::query_failed);
   return count;
 }
 

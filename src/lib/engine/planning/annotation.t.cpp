@@ -933,7 +933,7 @@ TEST_CASE("bulk-archive skips rows already archived", "[annotation]") {
   CHECK(*second == 0);
 }
 
-TEST_CASE("bulk_apply is NOT transactional: the prefix stays applied", "[annotation][hazard-bulk-boundary]") {
+TEST_CASE("bulk_apply rolls back every row when one transition fails", "[annotation][bulk-transaction]") {
   // HAZARD 1, answered by experiment against the oracle and reproduced
   // here with the SAME mechanism (a BEFORE UPDATE trigger that aborts on
   // one specific row). See this file's header, section (C), for the
@@ -953,11 +953,9 @@ TEST_CASE("bulk_apply is NOT transactional: the prefix stays applied", "[annotat
   REQUIRE_FALSE(res.has_value());
   CHECK(res.error() == ann::annotation_error::query_failed);
 
-  // The prefix STAYS APPLIED -- there is no rollback.
-  CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id1)) == "archived");
-  CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id2)) == "archived");
-  // The failing row is untouched, and so is everything after it: the pass
-  // aborts rather than continuing past the failure.
+  // The failed invocation has no partial outcome.
+  CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id1)) == "active");
+  CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id2)) == "active");
   CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id3)) == "active");
   CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id4)) == "active");
 }
@@ -1470,4 +1468,48 @@ TEST_CASE("status and scope_kind text round-trip", "[annotation]") {
     CHECK(*parsed == k);
   }
   CHECK_FALSE(ann::scope_kind_from_text("workspace").has_value());
+}
+
+TEST_CASE("receipt retention threshold preserves replay across a reopened source", "[annotation][receipt][6684]") {
+  // The 10,000-receipt limit is informational: no maintenance action may
+  // evict a receipt and reopen the duplicate-create window. Seed the soft
+  // cap directly so this regression stays fast while exercising a real
+  // receipt-backed create and a fresh connection (the restart boundary).
+  scratch_db_path scratch;
+  std::string     source;
+  {
+    auto conn     = open_migrated(scratch);
+    auto identity = ann::source_uuid(conn);
+    REQUIRE(identity.has_value());
+    source = *identity;
+    exec(conn, std::format("with recursive n(x) as (select 1 union all select x + 1 from n where x < 10000) "
+                           "insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, outcome) "
+                           "select printf('retained-%05d', x), '{}', printf('digest-%05d', x), 'create' from n;",
+                           source));
+
+    exec(conn,
+         "insert into plans (scope_kind, title, slug, status) values ('global', 'receipt target', 'receipt-target', 'draft')");
+    ann::command_args command{.operation      = ann::command_kind::create,
+                              .operation_uuid = "retain-and-replay",
+                              .source_uuid    = source,
+                              .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                              .body           = "durable"};
+    auto              first = ann::execute_command(conn, command);
+    REQUIRE(first.has_value());
+    CHECK_FALSE(first->replayed);
+    CHECK(scalar_int(conn, "select count(*) from annotation_operation_receipts") == 10001);
+    CHECK(scalar_int(conn, "select count(*) from annotations") == 1);
+  }
+
+  auto              reopened = open_migrated(scratch);
+  ann::command_args replay{.operation      = ann::command_kind::create,
+                           .operation_uuid = "retain-and-replay",
+                           .source_uuid    = source,
+                           .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                           .body           = "durable"};
+  auto              result = ann::execute_command(reopened, replay);
+  REQUIRE(result.has_value());
+  CHECK(result->replayed);
+  CHECK(scalar_int(reopened, "select count(*) from annotation_operation_receipts") == 10001);
+  CHECK(scalar_int(reopened, "select count(*) from annotations") == 1);
 }
