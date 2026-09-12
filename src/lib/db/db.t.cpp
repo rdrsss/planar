@@ -171,6 +171,64 @@ TEST_CASE("a foreign-key violation is rejected", "[db][connection][error-path]")
   REQUIRE(result.error().code_ == k_sqlite_constraint_foreignkey);
 }
 
+TEST_CASE("a foreign-key violation through PREPARE/BIND/STEP preserves the extended code", "[db][statement][error-path][6062]") {
+  // R7 of the M1 review. The case above pins extended-code preservation on the
+  // `execute()` path. This one drives the SAME violation through
+  // prepare/bind/step, which extracts its error separately -- a `step()` that
+  // reported `sqlite3_errcode` where `execute()` reports
+  // `sqlite3_extended_errcode` would collapse 787 to 19 (SQLITE_CONSTRAINT)
+  // and nothing in this file would notice.
+  //
+  // 787 rather than a primary code on purpose: every other error assertion in
+  // this file uses a code where primary == extended (1 SQLITE_ERROR,
+  // 14 SQLITE_CANTOPEN), so none of them can tell the two calls apart.
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  REQUIRE(conn->execute("create table parent (id integer primary key);"));
+  REQUIRE(conn->execute("create table child (id integer primary key, parent_id integer references parent(id));"));
+
+  auto stmt = conn->prepare("insert into child (id, parent_id) values (?, ?);");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_int64(1, 1).has_value());
+  REQUIRE(stmt->bind_int64(2, 999).has_value()); // no such parent row
+
+  // The violation surfaces at STEP, not at prepare or bind: the statement is
+  // syntactically fine and the values are well-typed.
+  auto stepped = stmt->step();
+  REQUIRE_FALSE(stepped.has_value());
+  CHECK(stepped.error().code_ == k_sqlite_constraint_foreignkey);
+
+  // And the EXTENDED code is the discriminating half. 787 & 0xff is 19
+  // (SQLITE_CONSTRAINT); asserting only that would pass against a driver that
+  // had thrown the extended bits away.
+  CHECK((stepped.error().code_ & 0xff) == 19);
+  CHECK(stepped.error().code_ != 19);
+
+  // WHAT IT TAKES TO BREAK THIS, measured, because the two paths guard the
+  // property differently and a single-line probe is INERT against this one:
+  //
+  //   `execute()` reports `sqlite3_exec`'s RETURN CODE, so it depends on
+  //   `sqlite3_extended_result_codes(handle, 1)`. Turning that off alone
+  //   kills the `execute()` case above and leaves THIS case passing.
+  //
+  //   `step()` reports `make_error`, which calls `sqlite3_extended_errcode`
+  //   -- and that returns extended codes whether or not the setting is on.
+  //   So swapping it for `sqlite3_errcode` alone is ALSO inert here.
+  //
+  // Only BOTH together fail this case. That is belt-and-braces rather than a
+  // gap: two independent mechanisms hold the contract, and this pins the
+  // OUTCOME rather than either mechanism. Do not "simplify" it by asserting
+  // which function is called.
+
+  // Nothing was written.
+  auto count = conn->prepare("select count(*) from child;");
+  REQUIRE(count.has_value());
+  REQUIRE(count->step().has_value());
+  CHECK(count->column_int64(0) == 0);
+}
+
 TEST_CASE("transaction commit persists the write", "[db][transaction]") {
   scratch_db_path scratch;
   auto            conn = planar::db::connection::open(scratch.path_.string());
