@@ -1332,7 +1332,7 @@ The `scope` column shows where the task lives: `global`, `repo:<slug>`, or `asso
 planar task update <task-id> [--title <text>] [--body <text>] [--status <status>] [--priority <n>] [--next-action <text>] [--due <date>] [--plan <plan-id>] [--force] [--reason <text>] [--editor]
 ```
 
-**Description:** Update mutable fields on a task. Status changes are validated against the per-entity transition matrix in `policy.status.check`; illegal moves exit non-zero and leave the task unchanged. Legal status moves: `todo → {doing, blocked, cancelled}`, `doing → {todo, blocked, done, cancelled}`, `blocked → {doing, done, cancelled}`. The terminal statuses `done` and `cancelled` block bare `--status` updates; use `task reopen --reason` (the preferred verb-gated path) or `--force` (operator override, records audit row).
+**Description:** Update mutable fields on a task. Status changes are validated against the per-entity transition matrix in `policy.status.check`; illegal moves exit non-zero and leave the task unchanged. Legal status moves: `todo → {doing, blocked, cancelled}`, `doing → {todo, blocked, done, cancelled}`, `blocked → {todo, doing, done, cancelled}` (`blocked → todo` added at task 6441, to requeue an unblocked task without claiming work started). The terminal statuses `done` and `cancelled` block bare `--status` updates; use `task reopen --reason` (the preferred verb-gated path) or `--force` (operator override, records audit row).
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees with the task's stored scope. See [Cross-scope guard](#cross-scope-guard).
 

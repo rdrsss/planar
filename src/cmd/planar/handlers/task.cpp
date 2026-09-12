@@ -1160,12 +1160,32 @@ auto resolve_infer_repo(context& ctx, db::connection& conn, std::optional<std::s
     }
     auto root = stmt->column_text(2);
     // Longest matching prefix wins, so a submodule checkout beats its
-    // superproject. Plain `starts_with` on the STRING, exactly as the oracle
-    // does it — no path-component normalisation, so `/a/repo2` does match a
-    // registration at `/a/repo`. That is the oracle's behaviour and is
-    // reproduced rather than corrected.
-    if (root.empty() || !cwd.starts_with(root)) {
+    // superproject.
+    //
+    // THE MATCH IS ON PATH COMPONENTS, not on the raw string (task 6331).
+    // A plain `cwd.starts_with(root)` — what the oracle did and what this
+    // reproduced — matches `/a/repo2` against a registration at `/a/repo`,
+    // so work done in one repository was attributed to a differently-named
+    // sibling. Silently: `touches infer` writes the edges and reports
+    // success, naming the wrong repo in output an operator has no reason to
+    // re-read.
+    //
+    // The boundary test is what makes it a path prefix: `cwd` must either BE
+    // `root`, or continue with a separator. A trailing separator already
+    // stored on `root` is tolerated so a registration of `/a/repo/` behaves
+    // the same as `/a/repo`.
+    if (root.empty()) {
       continue;
+    }
+    {
+      auto const trimmed =
+          (root.size() > 1 && root.back() == '/') ? std::string_view{root}.substr(0, root.size() - 1) : std::string_view{root};
+      if (!cwd.starts_with(trimmed)) {
+        continue;
+      }
+      if (cwd.size() > trimmed.size() && cwd[trimmed.size()] != '/') {
+        continue;
+      }
     }
     if (best.has_value() && root.size() <= best->root.size()) {
       continue;

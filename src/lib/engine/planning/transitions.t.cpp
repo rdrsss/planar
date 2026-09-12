@@ -61,6 +61,10 @@ TEST_CASE("task arm: legal edges among active states are accepted", "[transition
   CHECK(check_transition(transition_kind::task, "doing", "blocked", false).has_value());
   CHECK(check_transition(transition_kind::task, "doing", "done", false).has_value());
   CHECK(check_transition(transition_kind::task, "doing", "cancelled", false).has_value());
+  // TASK 6441: `blocked` -> `todo`. The other three exits already existed;
+  // this is the one that says "the blocker cleared, requeue it" without
+  // claiming work started or writing a cancellation that did not happen.
+  CHECK(check_transition(transition_kind::task, "blocked", "todo", false).has_value());
   CHECK(check_transition(transition_kind::task, "blocked", "doing", false).has_value());
   CHECK(check_transition(transition_kind::task, "blocked", "done", false).has_value());
   CHECK(check_transition(transition_kind::task, "blocked", "cancelled", false).has_value());

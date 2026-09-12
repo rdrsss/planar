@@ -114,12 +114,55 @@ auto link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!direction) {
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("invalid --sync '{}'", sync_text)));
   }
-  // The kind is validated; the ROW is not. `link task:999` succeeds. See
-  // link.cppm — an oracle defect, reproduced under D2.
   auto const entity_kind = link_ns::external_entity_kind_from_text(ref->kind);
   if (!entity_kind) {
     return std::unexpected(
         error_from_body(domain_error_kind::invalid_input, std::format("unsupported entity kind '{}'", ref->kind)));
+  }
+
+  // THE ROW IS VALIDATED TOO (task 6331's sibling finding, task 6314; fixed
+  // under decision 1067). Only the KIND used to be checked, so
+  // `link task:999 --to sys:X` returned `{"ok":true,...,"entity_id":999}` and
+  // wrote an `external_links` row pointing at a task that does not exist.
+  // Nothing downstream re-checks: `sync push`/`pull` resolve the local
+  // endpoint from this row, so a typo'd id produced a link that could never
+  // sync and reported success while doing it.
+  {
+    auto const table = [&] -> std::string_view {
+      switch (*entity_kind) {
+      case link_ns::external_entity_kind::plan:
+        return "plans";
+      case link_ns::external_entity_kind::task:
+        return "tasks";
+      case link_ns::external_entity_kind::question:
+        return "questions";
+      case link_ns::external_entity_kind::test_scenario:
+        return "test_scenarios";
+      case link_ns::external_entity_kind::artifact:
+        return "artifacts";
+      case link_ns::external_entity_kind::decision:
+        return "decisions";
+      case link_ns::external_entity_kind::session:
+        break;
+      }
+      return "sessions";
+    }();
+    // `table` comes from the enum above, never from operator input, so the
+    // interpolation cannot carry a caller-supplied fragment.
+    auto exists = (*conn)->prepare(std::format("select 1 from {} where id = ?", table));
+    if (!exists) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "link: entity lookup: QueryFailed"));
+    }
+    if (auto bound = exists->bind_int64(1, ref->id); !bound) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "link: entity lookup: QueryFailed"));
+    }
+    auto stepped = exists->step();
+    if (!stepped) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "link: entity lookup: QueryFailed"));
+    }
+    if (*stepped != db::step_result::row) {
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no {} with id {}", ref->kind, ref->id)));
+    }
   }
 
   // `never`, not `ok`: nothing has been exchanged with the remote. `ext

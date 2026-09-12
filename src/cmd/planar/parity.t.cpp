@@ -425,8 +425,20 @@ TEST_CASE("unlink over a seeded external link is pinned", "[cmd][parity][cli-sur
   auto const reg = run_pinned(ext_bin, std::vector<std::string>{"ext", "register", "github", "gh", "--project", "owner/repo"},
                               space.cpp_root, "seed1");
   REQUIRE(reg.code == 0);
+  // The two plans must EXIST. Before task 6314 `link` validated only the
+  // entity KIND, so this fixture linked `plan:1` / `plan:2` into an arena
+  // that had never created a plan and still got exit 0. The verb now
+  // resolves the row, so the seed creates them.
+  auto const plan1 = run_pinned(cpp_bin(), std::vector<std::string>{"plan", "create", "Seed one", "--scope", "global"},
+                                space.cpp_root, "seedp1");
+  REQUIRE(plan1.code == 0);
+  auto const plan2 = run_pinned(cpp_bin(), std::vector<std::string>{"plan", "create", "Seed two", "--scope", "global"},
+                                space.cpp_root, "seedp2");
+  REQUIRE(plan2.code == 0);
+
   auto const link1 =
       run_pinned(cpp_bin(), std::vector<std::string>{"link", "plan:1", "--to", "gh:42", "--json"}, space.cpp_root, "seed2");
+  INFO("link1 stderr: " << link1.err);
   REQUIRE(link1.code == 0);
   auto const link2 =
       run_pinned(cpp_bin(), std::vector<std::string>{"link", "plan:2", "--to", "gh:43", "--json"}, space.cpp_root, "seed3");

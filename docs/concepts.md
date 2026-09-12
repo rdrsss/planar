@@ -580,9 +580,18 @@ A task is the leaf unit of work. It is attached to a plan via `plan_id` and opti
         ┌──────────────────────┐
         ↓                      |
 todo ⇄ doing ⇄ blocked → done  (terminal)
-  ↘     ↓                ↓
+  ↖___________↙  ↓
+  ↘     ↓        ↓
 cancelled (terminal)  cancelled (terminal)
 ```
+
+`blocked → todo` was added at task 6441. Every other exit from `blocked`
+already existed, but none of them meant "the blocker cleared and this is
+queued again": `doing` claims work is in progress, and `done`/`cancelled` are
+terminal. The sanctioned recovery had been to cancel the task and then
+`reopen --reason` it — writing a cancellation that never semantically happened
+into the audit trail, for an ordinary lifecycle event a dependency-bearing
+plan hits every time a blocker closes.
 
 Legal transitions (enforced by `policy.status.check`):
 
@@ -590,7 +599,7 @@ Legal transitions (enforced by `policy.status.check`):
 |------|----|-------|
 | `todo` | `doing`, `blocked`, `cancelled` | |
 | `doing` | `todo`, `blocked`, `done`, `cancelled` | |
-| `blocked` | `doing`, `done`, `cancelled` | |
+| `blocked` | `todo`, `doing`, `done`, `cancelled` | `todo` requeues an unblocked task without claiming work started (task 6441). |
 | `done` | `todo`, `doing`, `blocked` | Only via `task reopen --reason` or `task update --force` |
 | `cancelled` | `todo`, `doing`, `blocked` | Only via `task reopen --reason` or `task update --force` |
 

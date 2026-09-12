@@ -302,23 +302,49 @@ TEST_CASE("a duplicate link is exit 6 while the same entity on a NEW id is exit 
   CHECK(scalar(fx, "select count(*) from external_links where entity_kind = 'task' and entity_id = 1") == 2);
 }
 
-TEST_CASE("link validates the KIND and never the ROW, so a dangling link is one command", "[cmd][link][defect][dangling]") {
-  // An ORACLE DEFECT, reproduced under D2 rather than fixed here. Pinned so
-  // that fixing it later is a deliberate, recorded divergence — and so that
-  // a reader who assumes this verb checks the entity finds out from a test.
+TEST_CASE("link validates the ROW, not just the kind — no dangling link", "[cmd][link][6314]") {
+  // INVERTED AT TASK 6314 (decision 1067). This case used to assert the
+  // opposite: `link task:999` returned exit 0 and wrote an `external_links`
+  // row pointing at a task that does not exist. Only the KIND was checked.
+  //
+  // Nothing downstream re-checked. `sync push` / `sync pull` resolve the
+  // local endpoint FROM this row, so a typo'd id produced a link that could
+  // never sync, and the verb reported success while creating it.
   auto const fx = make_fixture("dangling");
   seed(fx);
 
   CHECK(scalar(fx, "select count(*) from tasks where id = 999") == 0);
   auto const ran = dispatch(fx, {"link", "task:999", "--to", "jira-demo:DEMO-10"});
-  CHECK(ran.code == 0);
-  CHECK(ran.out == "linked task:999 \xe2\x86\x92 jira-demo:DEMO-10  (link id: 1, read-only reference)\n");
-  CHECK(scalar(fx, "select count(*) from external_links where entity_id = 999") == 1);
+  CHECK(ran.code != 0);
+  CHECK(ran.err.contains("no task with id 999"));
+  // And nothing was written.
+  CHECK(scalar(fx, "select count(*) from external_links where entity_id = 999") == 0);
 
   // `decision` links here and REFUSES under `ext create`, whose local read
-  // serves only four kinds. The two verbs' kind sets are independent.
+  // serves only four kinds. The two verbs' kind sets are independent — and
+  // an EXISTING decision still links, so the new check did not narrow the
+  // kind set by accident.
   auto const decision = dispatch(fx, {"link", "decision:1", "--to", "jira-demo:DEMO-11"});
+  INFO("decision stderr: " << decision.err);
   CHECK(decision.code == 0);
+}
+
+TEST_CASE("link's row check is per-KIND, not a single table", "[cmd][link][6314]") {
+  // Non-vacuity: a check that always probed `tasks` would pass the case
+  // above and still wave through `question:999`. Each kind must resolve
+  // against its own table.
+  auto const fx = make_fixture("perkind");
+  seed(fx);
+
+  auto const q = dispatch(fx, {"link", "question:999", "--to", "jira-demo:DEMO-20"});
+  CHECK(q.code != 0);
+  CHECK(q.err.contains("no question with id 999"));
+
+  auto const a = dispatch(fx, {"link", "artifact:999", "--to", "jira-demo:DEMO-21"});
+  CHECK(a.code != 0);
+  CHECK(a.err.contains("no artifact with id 999"));
+
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
 }
 
 TEST_CASE("the --scope flag is accepted and inert, and no audit row is written", "[cmd][link][scope][audit]") {
