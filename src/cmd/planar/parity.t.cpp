@@ -1478,7 +1478,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        0,
        "planar initialized\n"
        "  db:      $ROOT/planar.db\n"
-       "  schema:  35\n"
+       "  schema:  36\n"
        "  project: proj (id: 1)\n"
        "  next:    `planar assoc create project:proj --kind project`\n"
        "           `planar assoc add project:proj $ROOT/proj`\n"},
@@ -1487,14 +1487,14 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        false,
        0,
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":35,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":36,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
-      {"initskip", {"init", "--skip-project"}, false, 0, "planar initialized\n  db:      $ROOT/planar.db\n  schema:  35\n"},
+      {"initskip", {"init", "--skip-project"}, false, 0, "planar initialized\n  db:      $ROOT/planar.db\n  schema:  36\n"},
       {"initskipj",
        {"init", "--skip-project", "--json"},
        false,
        0,
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":35}\n"},
+       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":36}\n"},
       // Declared, and never read by either binary. Probed rather than
       // assumed: `init` in a non-git directory succeeds WITHOUT it.
       {"initanr",
@@ -1503,7 +1503,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        0,
        "planar initialized\n"
        "  db:      $ROOT/planar.db\n"
-       "  schema:  35\n"
+       "  schema:  36\n"
        "  project: proj (id: 1)\n"
        "  next:    `planar assoc create project:proj --kind project`\n"
        "           `planar assoc add project:proj $ROOT/proj`\n"},
@@ -1511,7 +1511,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        {"init", "--name", "My Proj", "--slug", "custom-slug", "--json"},
        false,
        0,
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":35,\"project_id\":1,\"project_slug\":\"custom-slug\","
+       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":36,\"project_id\":1,\"project_slug\":\"custom-slug\","
        "\"project_name\":\"My Proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       // THE `git_remote` CASES. Without these the whole column is invisible
       // to this file.
@@ -1520,7 +1520,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        true,
        0,
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":35,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":36,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\",\"git_remote\":\"git@github.com:example/repo.git\"}\n"},
       {"initremotetext",
        {"init"},
@@ -1528,7 +1528,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        0,
        "planar initialized\n"
        "  db:      $ROOT/planar.db\n"
-       "  schema:  35\n"
+       "  schema:  36\n"
        "  project: proj (id: 1)\n"
        "  next:    `planar assoc create project:proj --kind project`\n"
        "           `planar assoc add project:proj $ROOT/proj`\n"},
@@ -1594,26 +1594,26 @@ TEST_CASE("repeated init and --force are pinned", "[cmd][parity][cli-surface][in
       {"i1",
        {"init", "--json"},
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":35,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":36,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       // Idempotent: `--name` is NOT applied on the second run, because the
       // insert is OR IGNORE.
       {"i2",
        {"init", "--name", "Ignored", "--json"},
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":35,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":36,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       // `--force` repoints the SAME row id rather than inserting a second.
       {"i3",
        {"init", "--force", "--name", "Renamed", "--json"},
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":35,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":36,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"Renamed\",\"root_path\":\"$ROOT/proj\"}\n"},
       {"i4",
        {"init"},
        "planar initialized\n"
        "  db:      $ROOT/planar.db\n"
-       "  schema:  35\n"
+       "  schema:  36\n"
        "  project: proj (id: 1)\n"
        "  next:    `planar assoc create project:proj --kind project`\n"
        "           `planar assoc add project:proj $ROOT/proj`\n"},
