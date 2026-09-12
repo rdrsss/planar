@@ -215,13 +215,25 @@ void seed_tree(const fixture& fx) {
   REQUIRE(dispatch(fx, {"links", "add", "task:2", "plan:2", "--relationship", "derives-from"}).code == 0);
   REQUIRE(dispatch(fx, {"links", "add", "task:1", "plan:2", "--relationship", "derives-from"}).code == 0);
   // A fourth task linked to the ANCHOR with a relationship that is NOT
-  // `derives-from`. Without it the walk's relationship predicate is
-  // untested: a break-probe that DELETED the predicate outright SURVIVED,
-  // because every other edge in this fixture is already `derives-from` and
-  // dropping the filter changed nothing. This row is the one the predicate
-  // has to exclude, and it is what turns that probe into a kill.
+  // `derives-from`. It is ALSO `--plan 1`, so since task 6307 taught the
+  // walk to read `tasks.plan_id` it appears anyway — through the plan_id
+  // route, not the edge.
   REQUIRE(dispatch(fx, {"task", "add", "T-four", "--plan", "1", "--slug", "t-four", "--scope", "global"}).code == 0);
   REQUIRE(dispatch(fx, {"links", "add", "task:4", "plan:1", "--relationship", "cites"}).code == 0);
+
+  // T-FOUR THEREFORE NO LONGER TESTS THE RELATIONSHIP PREDICATE, and that
+  // predicate still needs a discriminator: the fixture's own history records
+  // that a break-probe DELETING it SURVIVED, because every other edge here is
+  // already `derives-from`.
+  //
+  // T-five restores it. Its plan is OUTSIDE the walked tree (plan 6 has no
+  // parent, so the BFS from plan 1 never reaches it), and its only edge into
+  // the tree is `cites`. Neither route may admit it: the plan_id route
+  // because plan 6 is not in the tree, the edge route because the
+  // relationship is wrong. Drop the relationship filter and T-five appears.
+  REQUIRE(dispatch(fx, {"plan", "create", "Outside", "--slug", "outside", "--scope", "global"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T-five", "--plan", "6", "--slug", "t-five", "--scope", "global"}).code == 0);
+  REQUIRE(dispatch(fx, {"links", "add", "task:5", "plan:1", "--relationship", "cites"}).code == 0);
 }
 
 /// @brief Seed two systems and four links for the `sync status` cases.
@@ -260,8 +272,10 @@ TEST_CASE("the 6298 fixture seeds the tree and the links its cases read", "[cmd]
 
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
-  CHECK(count(*conn, "plans") == 5);
-  CHECK(count(*conn, "tasks") == 4);
+  // Six plans and five tasks since task 6307 added the `Outside` plan and
+  // T-five, the relationship predicate's discriminator (see `seed_tree`).
+  CHECK(count(*conn, "plans") == 6);
+  CHECK(count(*conn, "tasks") == 5);
   CHECK(count(*conn, "external_links") == 4);
   CHECK(count(*conn, "external_systems") == 2);
 
@@ -273,13 +287,17 @@ TEST_CASE("the 6298 fixture seeds the tree and the links its cases read", "[cmd]
   while (parents->step().value() == planar::db::step_result::row) {
     got.emplace_back(parents->column_int64(0), parents->column_int64(1));
   }
-  std::vector<std::pair<std::int64_t, std::int64_t>> const want{{1, 0}, {2, 1}, {3, 1}, {4, 2}, {5, 3}};
+  // Plan 6 (`Outside`) is deliberately PARENTLESS: the BFS from plan 1 must
+  // never reach it, which is what makes T-five unreachable by the plan_id
+  // route.
+  std::vector<std::pair<std::int64_t, std::int64_t>> const want{{1, 0}, {2, 1}, {3, 1}, {4, 2}, {5, 3}, {6, 0}};
   CHECK(got == want);
 
   // THREE derives-from edges, and task 1 owns TWO of them. That second edge
   // is the whole duplicate-emission case; without it the relevant assertion
-  // below would pass against a de-duplicating implementation.
-  CHECK(count(*conn, "entity_links") == 4);
+  // below would pass against a de-duplicating implementation. The other two
+  // edges are `cites` (task 4 and task 5).
+  CHECK(count(*conn, "entity_links") == 5);
   auto dup = conn->prepare("select count(*) from entity_links where from_kind='task' and from_id=1 "
                            "and to_kind='plan' and relationship='derives-from'");
   REQUIRE(dup.has_value());
@@ -310,14 +328,21 @@ TEST_CASE("plan descendants walks anchor then children breadth-first, then tasks
   auto const json = dispatch(fx, {"plan", "descendants", "1", "--json"});
   CHECK(json.code == 0);
   CHECK(json.err.empty());
+  // Task rows are grouped by the plan they were collected from, in the BFS
+  // order above: plan 1 yields T-one and T-four, plan 2 yields T-one again
+  // (the duplicate-across-plans behaviour task 6306 KEEPS) and T-two, plan 4
+  // yields T-three. T-five never appears — see the relationship-predicate
+  // case below.
   CHECK(json.out == R"([{"kind":"plan","role":"anchor","id":1,"title":"Anchor"},)"
                     R"({"kind":"plan","role":"child","id":2,"title":"ChildA"},)"
                     R"({"kind":"plan","role":"child","id":3,"title":"ChildB"},)"
                     R"({"kind":"plan","role":"child","id":4,"title":"GrandC"},)"
                     R"({"kind":"plan","role":"child","id":5,"title":"GrandD"},)"
                     R"({"kind":"task","role":"task","id":1,"title":"T-one"},)"
+                    R"({"kind":"task","role":"task","id":4,"title":"T-four"},)"
                     R"({"kind":"task","role":"task","id":1,"title":"T-one"},)"
-                    R"({"kind":"task","role":"task","id":2,"title":"T-two"}])"
+                    R"({"kind":"task","role":"task","id":2,"title":"T-two"},)"
+                    R"({"kind":"task","role":"task","id":3,"title":"T-three"}])"
                     "\n");
 
   // BFS, not DFS. Plan 4's parent is plan 2, so a depth-first walk would
@@ -344,39 +369,47 @@ TEST_CASE("plan descendants walks anchor then children breadth-first, then tasks
                     "plan (child):4  GrandC\n"
                     "plan (child):5  GrandD\n"
                     "task:1  T-one\n"
+                    "task:4  T-four\n"
                     "task:1  T-one\n"
-                    "task:2  T-two\n");
+                    "task:2  T-two\n"
+                    "task:3  T-three\n");
 }
 
-TEST_CASE("plan descendants ignores tasks.plan_id and reads derives-from only", "[cmd][6298][plan-descendants]") {
+TEST_CASE("plan descendants reads BOTH tasks.plan_id and derives-from", "[cmd][6307][plan-descendants]") {
   auto const fx = make_fixture("planid");
   seed_tree(fx);
 
-  // Task 3 is attached to plan 4 by `--plan` and is NOT linked. Plan 4 is
-  // inside the walked tree, so a walk that consulted `plan_id` would list
-  // it. The oracle does not.
+  // INVERTED AT TASK 6307. Task 3 is attached to plan 4 by `--plan` -- the
+  // ordinary way, which writes `tasks.plan_id` and no edge -- and plan 4 is
+  // inside the walked tree. The walk used to consult `entity_links` ONLY, so
+  // task 3 was invisible and the verb answered with a confident, well-formed,
+  // task-free tree indistinguishable from a plan that genuinely has none,
+  // while `plan next` listed the same task.
   auto const json = dispatch(fx, {"plan", "descendants", "1", "--json"});
   REQUIRE(json.code == 0);
-  CHECK(json.out.find(R"("id":3,"title":"T-three")") == std::string::npos);
-  CHECK(json.out.find("T-three") == std::string::npos);
+  CHECK(json.out.find("T-three") != std::string::npos);
 
-  // The PRESENT half of the same claim: the two tasks that ARE linked do
-  // appear. Without this, the absence above would also pass against a walk
-  // that emitted no tasks at all.
+  // The edge-linked tasks still appear: the fix ADDED a route, it did not
+  // replace one.
   CHECK(json.out.find("T-one") != std::string::npos);
   CHECK(json.out.find("T-two") != std::string::npos);
 
-  // Task 4 IS linked to the anchor, but with `cites` rather than
-  // `derives-from`, so it is excluded too. This is the other half of the
-  // predicate: a walk that dropped the relationship filter would emit it.
-  CHECK(json.out.find("T-four") == std::string::npos);
+  // T-four is `cites`-linked AND `--plan 1`, so it now appears through the
+  // plan_id route. Its edge is still not `derives-from`; that is no longer
+  // what keeps it in or out.
+  CHECK(json.out.find("T-four") != std::string::npos);
 
-  // And both excluded tasks are still in the table — a read verb must not
-  // have removed them.
+  // T-FIVE is the relationship predicate's discriminator: plan 6 is outside
+  // the walked tree and the only edge in is `cites`. Neither route admits
+  // it. Dropping the relationship filter would.
+  CHECK(json.out.find("T-five") == std::string::npos);
+
+  // The excluded task is still in the table — a read verb must not have
+  // removed it. Counts rose to 5/5 when T-five joined the fixture.
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
-  CHECK(count(*conn, "tasks") == 4);
-  CHECK(count(*conn, "entity_links") == 4);
+  CHECK(count(*conn, "tasks") == 5);
+  CHECK(count(*conn, "entity_links") == 5);
 }
 
 TEST_CASE("plan descendants emits a multiply-linked task once per plan", "[cmd][6298][plan-descendants]") {
@@ -412,11 +445,24 @@ TEST_CASE("plan descendants renders a childless anchor and refuses bad input", "
   auto const fx = make_fixture("edges");
   seed_tree(fx);
 
-  // Plan 4 is a leaf with no children and no linked tasks. The anchor's OWN
-  // entry is still emitted — the result is never empty for an existing plan.
-  auto const lone = dispatch(fx, {"plan", "descendants", "4", "--json"});
+  // Plan 5 is the genuinely childless leaf: no child plans, no linked tasks,
+  // and nothing carrying `plan_id = 5`. The anchor's OWN entry is still
+  // emitted — the result is never empty for an existing plan.
+  //
+  // Plan 4 used to serve this role and no longer can: T-three is attached to
+  // it by `--plan 4`, and since task 6307 that route is read, so plan 4 is
+  // not childless and never really was. The old expectation held only
+  // because the walk could not see `tasks.plan_id`.
+  auto const lone = dispatch(fx, {"plan", "descendants", "5", "--json"});
   CHECK(lone.code == 0);
-  CHECK(lone.out == R"([{"kind":"plan","role":"anchor","id":4,"title":"GrandC"}])"
+  CHECK(lone.out == R"([{"kind":"plan","role":"anchor","id":5,"title":"GrandD"}])"
+                    "\n");
+
+  // And plan 4 now reports the task it always owned.
+  auto const four = dispatch(fx, {"plan", "descendants", "4", "--json"});
+  CHECK(four.code == 0);
+  CHECK(four.out == R"([{"kind":"plan","role":"anchor","id":4,"title":"GrandC"},)"
+                    R"({"kind":"task","role":"task","id":3,"title":"T-three"}])"
                     "\n");
   // The prefix is `plan (anchor)`, not `plan (child)`: the role is relative
   // to the WALK, so a plan that is someone's child becomes the anchor when
@@ -424,9 +470,9 @@ TEST_CASE("plan descendants renders a childless anchor and refuses bad input", "
   // case asserted `plan (child)` on the reasoning that plan 4's row carries
   // a `parent_plan_id`, and the oracle disagreed. The text and JSON forms
   // agree with each other here; there is no inconsistency to report.
-  auto const lone_text = dispatch(fx, {"plan", "descendants", "4"});
+  auto const lone_text = dispatch(fx, {"plan", "descendants", "5"});
   CHECK(lone_text.code == 0);
-  CHECK(lone_text.out == "plan (anchor):4  GrandC\n");
+  CHECK(lone_text.out == "plan (anchor):5  GrandD\n");
 
   // A plan with exactly one descendant, to sit between the eight-row anchor
   // walk and the one-row leaf above. Plan 3 is a child that has a child.

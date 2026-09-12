@@ -453,25 +453,30 @@ TEST_CASE("plan next refuses a missing plan at exit 1 and a non-integer at exit 
   CHECK_FALSE(missing.out.contains("plan:999"));
 }
 
-TEST_CASE("plan next and plan descendants read the graph differently, on ONE database",
-          "[cmd][plan][next][descendants][divergence]") {
-  // Task 6307's finding, pinned from both sides so a future "unify the two
-  // walks" cleanup fails a test instead of passing review.
+TEST_CASE("plan next and plan descendants AGREE that a plan_id-attached task is under the plan",
+          "[cmd][plan][next][descendants][6307]") {
+  // INVERTED AT TASK 6307. This case used to pin the two verbs DISAGREEING
+  // on one database: `descendants` followed `derives-from` edges only, so a
+  // task attached the ordinary way -- `task add --plan`, which writes
+  // `tasks.plan_id` and no edge -- was invisible to it while `plan next`
+  // listed it.
+  //
+  // That was the defect, not an invariant. It is pinned from both sides here
+  // so the agreement is what a future change has to break, rather than the
+  // divergence being what it has to preserve.
   auto const fx = make_fixture("divergence");
   seed(fx);
 
-  // `descendants` follows `derives-from` edges. There are none, so it sees
-  // the plan tree and NOT ONE task.
+  // `descendants` now reads BOTH routes, so task 6 reaches the tree through
+  // the child plan it is attached to.
   auto const desc = dispatch(fx, {"plan", "descendants", "1", "--json"});
   CHECK(desc.code == 0);
-  CHECK(desc.out == R"([{"kind":"plan","role":"anchor","id":1,"title":"Anchor plan"},)"
-                    R"({"kind":"plan","role":"child","id":2,"title":"Child plan"}])"
-                    "\n");
-  CHECK_FALSE(desc.out.contains("Foxtrot child"));
+  CHECK(desc.out.contains(R"({"kind":"plan","role":"anchor","id":1,"title":"Anchor plan"})"));
+  CHECK(desc.out.contains(R"({"kind":"plan","role":"child","id":2,"title":"Child plan"})"));
+  CHECK(desc.out.contains("Foxtrot child"));
 
-  // `next` follows `plans.parent_plan_id` then `tasks.plan_id`, so on the
-  // SAME database it lists task 6 — which lives under the child plan and is
-  // invisible to the walk above.
+  // `next` follows `plans.parent_plan_id` then `tasks.plan_id` and lists the
+  // same task. The two verbs now answer the same question the same way.
   auto const next = dispatch(fx, {"plan", "next", "1"});
   CHECK(next.code == 0);
   CHECK(next.out.contains("task:6  Foxtrot child"));

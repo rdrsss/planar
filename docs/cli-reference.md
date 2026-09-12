@@ -993,7 +993,7 @@ planar plan descendants <plan-id> [--json]
 
 **Description:** Emit the anchor plan's full subtree — child plans and tasks — in dependency-topological order (anchor → child plans → tasks). Read-only; queries and reports, no writes.
 
-The topological ordering follows `parent_plan_id` chains for plans and `plan_id` for tasks. Use this verb to enumerate the complete work graph for a plan before feeding it to a propagation or orchestration step.
+The topological ordering follows `parent_plan_id` chains for plans. A task reaches the subtree either by carrying the `plan_id` of a plan in the walk or through a `derives-from` edge in `entity_links`; a task arriving by both routes for the same plan appears once, but one linked to several plans in the walk appears once per plan. (Until task 6307 only the edge route was read, so a task attached the ordinary way — `task add --plan`, which writes no edge — was missing from the output. This sentence described the intent correctly the whole time; the code did not.) Use this verb to enumerate the complete work graph for a plan before feeding it to a propagation or orchestration step.
 
 **Arguments:**
 
