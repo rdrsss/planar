@@ -127,7 +127,8 @@ it. Measured behaviour of what operators may still type:
 | `planar scope use` | retired-verb notice, **exit 2** |
 | `planar scope pop` | retired-verb notice, **exit 2** |
 | `planar scope clear` | retired-verb notice, **exit 2** |
-| `planar scope use <slug>` | **parse error**, exit 2 — the notice is preempted, because the stub declares no positional (task 6446) |
+| `planar scope use <slug>` | retired-verb notice, **exit 2** — the stub declares an optional positional and `allow_extras`, so the notice is NOT preempted |
+| `planar scope use --bogus` <!-- cli-lint-ignore: the flag's ABSENCE is the point --> | retired-verb notice, **exit 2** — same reason: the handler runs before CLI11 can reject the flag (task 6446) |
 | `planar scope push` / `planar scope swap` | parse error, exit 2 — these never existed |
 
 The notice reads:
