@@ -618,3 +618,56 @@ TEST_CASE("bind_text preserves embedded NUL bytes and does not stop at one", "[d
   REQUIRE(read->column_int64(0) == 3);
   REQUIRE(read->column_text(1) == "text");
 }
+
+// --- task 6060: a statement outliving its connection must not leak the handle
+
+// SQLite's process-wide allocation counter. Declared here rather than
+// included, for the same reason the result-code constants above are
+// mirrored: `planar.db` keeps the raw C API confined to its own global
+// module fragment, and one `extern "C"` declaration is a narrower breach
+// of that than pulling in the whole amalgamation header. `sqlite3_int64`
+// is `long long` on every platform this project builds for, and
+// `SQLITE_DEFAULT_MEMSTATUS` is on (cmake/dependencies.cmake defines no
+// `=0` override), so the counter is live.
+extern "C" long long sqlite3_memory_used();
+
+TEST_CASE("a statement outliving its connection does not leak the connection handle", "[db][connection][6060]") {
+  scratch_db_path scratch;
+
+  // Warm the allocator with one full open/prepare/destroy cycle first, so
+  // the measured window below is not charged for one-time lazily-allocated
+  // SQLite state that has nothing to do with the handle under test.
+  {
+    auto warm = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(warm.has_value());
+    auto warm_stmt = warm->prepare("select 1");
+    REQUIRE(warm_stmt.has_value());
+  }
+
+  long long const before = sqlite3_memory_used();
+
+  {
+    // The destruction order the public API permits and RAII makes easy to
+    // reach: the statement outlives the connection it came from. `statement`
+    // holds only the raw `sqlite3_stmt*` and keeps nothing alive.
+    std::optional<planar::db::statement> orphan;
+    {
+      auto conn = planar::db::connection::open(scratch.path_.string());
+      REQUIRE(conn.has_value());
+      auto stmt = conn->prepare("select 1");
+      REQUIRE(stmt.has_value());
+      orphan = std::move(*stmt);
+    } // connection destroyed here, with `orphan` still holding a live statement
+  } // statement finalized here
+
+  long long const after = sqlite3_memory_used();
+
+  // With `sqlite3_close` the destructor's close returns SQLITE_BUSY, the
+  // handle is never freed, and this delta is ~158,992 bytes -- permanently,
+  // for every such connection. With `sqlite3_close_v2` the zombie handle is
+  // reclaimed the moment the last statement finalizes and the delta is zero.
+  // The bound is slack by two orders of magnitude against the real leak so
+  // incidental allocator noise cannot flip it either way.
+  INFO("sqlite3_memory_used delta across the orphaned-statement scope: " << (after - before));
+  CHECK(after - before < 1024);
+}

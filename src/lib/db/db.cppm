@@ -243,10 +243,28 @@ public:
 
 /// @brief A RAII SQLite connection.
 ///
-/// Move-only. `close`s the underlying handle in the destructor. Foreign
-/// keys are enabled explicitly on every connection this type opens
-/// (belt-and-suspenders alongside the compile-time
+/// Move-only. Foreign keys are enabled explicitly on every connection this
+/// type opens (belt-and-suspenders alongside the compile-time
 /// `SQLITE_DEFAULT_FOREIGN_KEYS=1` default — tech-spec § "db module").
+///
+/// ### Lifetime contract with `statement` (task 6060)
+///
+/// A `statement` does NOT keep its `connection` alive: it holds only the
+/// raw `sqlite3_stmt*`, and the two are independent objects that a caller
+/// may legitimately destroy in either order. The destructor and move
+/// assignment therefore use `sqlite3_close_v2`, not `sqlite3_close`.
+///
+/// The distinction is not cosmetic. `sqlite3_close` on a handle with a
+/// live prepared statement returns `SQLITE_BUSY` and does NOT free the
+/// handle; because the destructor has nowhere to report that, the
+/// connection would leak permanently and silently (measured at 158,992
+/// bytes for one trivial connection, task 6060). `sqlite3_close_v2`
+/// instead marks the connection a zombie and reclaims it when the last
+/// statement finalizes, so destruction order stops mattering.
+///
+/// This deliberately does NOT add an ownership link from `statement` back
+/// to `connection`: the cost of that coupling is not justified when the C
+/// API already offers the order-independent close.
 export class connection {
 private:
   sqlite3* _handle    = nullptr;

@@ -272,7 +272,7 @@ connection::connection(connection&& other) noexcept
 connection& connection::operator=(connection&& other) noexcept {
   if (this != &other) {
     if (_handle != nullptr) {
-      sqlite3_close(_handle);
+      sqlite3_close_v2(_handle);
     }
     _handle          = other._handle;
     _read_only       = other._read_only;
@@ -284,7 +284,7 @@ connection& connection::operator=(connection&& other) noexcept {
 
 connection::~connection() {
   if (_handle != nullptr) {
-    sqlite3_close(_handle);
+    sqlite3_close_v2(_handle);
   }
 }
 
@@ -295,7 +295,7 @@ auto connection::open(std::string_view path) -> std::expected<connection, db_err
   if (rc != SQLITE_OK) {
     db_error err = make_error(handle);
     if (handle != nullptr) {
-      sqlite3_close(handle);
+      sqlite3_close_v2(handle);
     }
     return std::unexpected(err);
   }
@@ -323,7 +323,7 @@ auto connection::open_read_only(std::string_view path) -> std::expected<connecti
   if (rc != SQLITE_OK) {
     db_error err = make_error(handle);
     if (handle != nullptr) {
-      sqlite3_close(handle);
+      sqlite3_close_v2(handle);
     }
     return std::unexpected(err);
   }
