@@ -272,3 +272,46 @@ TEST_CASE("interpreted import forward-spec selection supports all CSV and none",
   REQUIRE(dispatch(none, {"import", (none.root / "repo").string(), "--interpret", "--apply", "--no-forward-specs"}).code == 0);
   CHECK(count_forwards(none) == 0);
 }
+
+// --- task 6406: the `decisions` array-shape guard ---------------------------
+//
+// `reconcile_cache` requires `decisions` to be an ARRAY before iterating
+// `decisions->array` downstream, so deleting that clause is null-deref-
+// adjacent rather than merely permissive. It had no test: the guard could be
+// removed outright with the suite green (task 6106 blind review).
+//
+// The envelope validator upstream (`cache_anchor`) does NOT inspect
+// `decisions` at all, so a non-array value reaches this guard and nothing
+// else -- which is what makes it the discriminating fixture.
+TEST_CASE("interpreted import rejects a cache whose decisions field is not an array", "[cmd][import][6406]") {
+  auto const fx    = make_fixture("decisions_shape");
+  auto const cache = stage_cache(fx);
+
+  // Swap ONLY the decisions value, array -> object, leaving every other
+  // field of the known-good envelope byte-identical.
+  auto const good = read(cache);
+  auto const key  = std::string{R"("decisions":[)"};
+  REQUIRE(good.contains(key));
+  auto const open_at  = good.find(key) + key.size() - 1;
+  auto const close_at = good.find(']', open_at);
+  REQUIRE(close_at != std::string::npos);
+  auto malformed = good;
+  malformed.replace(open_at, close_at - open_at + 1, R"({"title":"Keep transaction"})");
+  REQUIRE(malformed.contains(R"("decisions":{)"));
+  write(cache, malformed);
+
+  auto const rejected = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
+  CHECK(rejected.code == 1);
+  // Rejection must be total: the guard runs before reconciliation writes, so
+  // nothing from this cache may reach the database.
+  if (std::filesystem::exists(fx.db_path))
+    CHECK(inventory(fx) == "plans=0 tasks=0 artifacts=0 decisions=0 links=0");
+
+  // Positive control: the identical envelope with `decisions` restored to an
+  // array IS accepted, so the rejection above is attributable to the shape
+  // and not to some unrelated staleness in the fixture.
+  write(cache, good);
+  auto const accepted = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
+  CHECK(accepted.code == 0);
+  CHECK(inventory(fx) == "plans=3 tasks=2 artifacts=2 decisions=1 links=3");
+}

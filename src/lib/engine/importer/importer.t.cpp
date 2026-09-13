@@ -79,3 +79,105 @@ TEST_CASE("import rejects a malformed or mismatched interpretation cache before 
   CHECK(mismatched.error() == im::error::invalid_input);
   std::filesystem::remove_all(root);
 }
+
+// --- task 6406: negative-path cover for the untrusted cache envelope --------
+//
+// `cache_anchor` (importer.cpp:61-63) declares the interpretation cache an
+// UNTRUSTED hand-off boundary: it is written out-of-process by a vendor
+// skill, not by this binary. Three of its envelope checks -- the
+// `forward_specs` count bound, the non-empty `anchor_title`, and the
+// non-empty `provenance` -- could each be deleted outright with the suite
+// still green (measured by permissive mutation, task 6106 blind review).
+// The logic was right; nothing asserted the rejection.
+//
+// Each case below pairs a rejection with the POSITIVE CONTROL that differs
+// only in the field under test, so a rejection for some unrelated reason
+// cannot masquerade as cover.
+
+namespace {
+
+/// @brief A cache envelope carrying the real fingerprint, parameterised on
+/// exactly the three fields task 6406 leaves uncovered.
+auto envelope(std::string_view fingerprint, std::size_t spec_count, std::string_view title, std::string_view provenance)
+    -> std::string {
+  std::string specs;
+  for (std::size_t i = 0; i < spec_count; ++i) {
+    if (i > 0)
+      specs += ",";
+    specs += std::format(R"({{"slug":"spec-{}"}})", i);
+  }
+  return std::format(R"({{"schema_version":1,"fingerprint":"{}","anchor_title":"{}","provenance":"{}",)"
+                     R"("phases":[],"forward_specs":[{}]}})",
+                     fingerprint, title, provenance, specs);
+}
+
+/// @brief Overwrite the staged cache and re-run staging over it.
+auto stage_and_run(const std::filesystem::path& repo, const std::filesystem::path& home, const std::filesystem::path& cache,
+                   std::string_view body) -> std::expected<im::outcome, im::error> {
+  std::ofstream out(cache);
+  out << body;
+  out.close();
+  return im::run(repo, home, true);
+}
+
+} // namespace
+
+TEST_CASE("the untrusted cache envelope is rejected outside its documented bounds", "[engine][importer][6406]") {
+  auto const root = std::filesystem::temp_directory_path() /
+                    std::format("planar-importer-envelope-{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  auto const home = root / "home";
+  std::filesystem::create_directories(root / "repo");
+  {
+    std::ofstream out(root / "repo" / "README.md");
+    out << "# Imported title\n";
+  }
+
+  auto staged = im::run(root / "repo", home, true);
+  REQUIRE(staged.has_value());
+  auto const repo        = root / "repo";
+  auto const cache       = staged->cache_path;
+  auto const fingerprint = staged->request_.fingerprint;
+  std::filesystem::create_directories(cache.parent_path());
+
+  SECTION("forward_specs count is bounded at BOTH ends") {
+    // The positive control first: three specs is the low bound and must be
+    // ACCEPTED, so a rejection below cannot be blamed on the envelope shape.
+    auto const three = stage_and_run(repo, home, cache, envelope(fingerprint, 3, "x", "p"));
+    REQUIRE(three.has_value());
+    CHECK(three->mode_ == im::outcome::mode::cache_hit);
+    auto const five = stage_and_run(repo, home, cache, envelope(fingerprint, 5, "x", "p"));
+    REQUIRE(five.has_value());
+    CHECK(five->mode_ == im::outcome::mode::cache_hit);
+
+    // Both ends, not one: a bound written as a single comparison passes a
+    // one-sided fixture.
+    auto const two = stage_and_run(repo, home, cache, envelope(fingerprint, 2, "x", "p"));
+    REQUIRE_FALSE(two.has_value());
+    CHECK(two.error() == im::error::invalid_input);
+    auto const six = stage_and_run(repo, home, cache, envelope(fingerprint, 6, "x", "p"));
+    REQUIRE_FALSE(six.has_value());
+    CHECK(six.error() == im::error::invalid_input);
+  }
+
+  SECTION("anchor_title must be non-empty") {
+    auto const present = stage_and_run(repo, home, cache, envelope(fingerprint, 3, "a title", "p"));
+    REQUIRE(present.has_value());
+    CHECK(present->mode_ == im::outcome::mode::cache_hit);
+
+    auto const empty = stage_and_run(repo, home, cache, envelope(fingerprint, 3, "", "p"));
+    REQUIRE_FALSE(empty.has_value());
+    CHECK(empty.error() == im::error::invalid_input);
+  }
+
+  SECTION("provenance must be non-empty") {
+    auto const present = stage_and_run(repo, home, cache, envelope(fingerprint, 3, "x", "vendor-skill"));
+    REQUIRE(present.has_value());
+    CHECK(present->mode_ == im::outcome::mode::cache_hit);
+
+    auto const empty = stage_and_run(repo, home, cache, envelope(fingerprint, 3, "x", ""));
+    REQUIRE_FALSE(empty.has_value());
+    CHECK(empty.error() == im::error::invalid_input);
+  }
+
+  std::filesystem::remove_all(root);
+}
