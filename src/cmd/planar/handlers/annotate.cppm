@@ -67,6 +67,12 @@ export auto annotate_add(context& ctx, const cliapp::parsed_args& args) -> handl
 /// `--status`, or the mapped engine failure.
 export auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar annotate capabilities [--json]`.
+///
+/// This is a source-bound read handshake for local consumers. It advertises
+/// only implemented annotation contracts and does not process annotations.
+export auto annotate_capabilities(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 /// @brief Handle `planar annotate show <annotation-id> [--json]`.
 ///
 /// The positional is declared a STRING in the tree and parsed here, so a
@@ -95,7 +101,7 @@ export auto annotate_show(context& ctx, const cliapp::parsed_args& args) -> hand
 /// engine failure.
 export auto annotate_update(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-/// @brief Handle `planar annotate remove <annotation-id> [--json]`.
+/// @brief Handle `planar annotate remove <annotation-id> --expected-revision N [--json]`.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
@@ -202,6 +208,12 @@ export auto annotate_verify(context& ctx, const cliapp::parsed_args& args) -> ha
 /// @param args The parsed arguments.
 /// @return Success, or the mapped engine failure.
 export auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Apply one receipt-backed structured annotation command.
+export auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
+/// @brief Look up a receipt after an uncertain writer outcome.
+export auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Declare the `annotate` command tree on `root`.
 ///

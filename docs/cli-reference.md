@@ -2296,7 +2296,7 @@ planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind>
 
 ## Domain: `annotate`
 
-Annotations are anchored review notes — a short note attached to a file path and optional line range, captured during a code review or agent pass. Each annotation can carry a `commit_sha` and `text_hash` so its anchor can later be **verified** against the current workspace state (the anchored lines may have moved or changed). Annotations have a lifecycle (`active` → `resolved` / `dismissed` → `archived`; or `active` → `archived` directly), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity. `archived` is the single final retention state (plan 692): `resolved` and `dismissed` are outcome states that may still progress to `archived` via `annotate sweep` or `annotate archive`.
+Annotations are either file-anchored review notes or entity-anchored notes on a plan or task. File annotations can carry a `commit_sha` and `text_hash` for later verification; entity annotations have no invented file path. Annotations have a lifecycle (`active` → `resolved` / `dismissed` → `archived`; or `active` → `archived` directly), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity. `archived` is the single final retention state (plan 692): `resolved` and `dismissed` are outcome states that may still progress to `archived` via `annotate sweep` or `annotate archive`.
 
 ---
 
@@ -2319,16 +2319,29 @@ planar annotate add --text <note> [--anchor-path <path>] [--line-start <n>] [--l
 
 `show` prints one annotation (add `--json`). `remove` hard-deletes it (and its `annotation_tags`).
 
+`show --json` and `list --json` emit the stable consumer representation described in [Annotation consumer contract](features/annotation-consumer-contract.md). In particular, `anchor.kind` distinguishes `file` and `entity`, `target` is either `null` or an object with a `kind` and numeric `id`, and `revision` is the optimistic-concurrency value. Reads do not resolve, process, or otherwise mutate an annotation.
+
 ---
 
 ### `planar annotate list`
 
 **Synopsis:**
 ```
-planar annotate list [--anchor-path <path>] [--status <status>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
+planar annotate list [--anchor-path <path>] [--anchor-kind file|entity] [--target-kind plan|task] [--target-id <id>] [--status <status>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
 ```
 
-**Description:** List annotations in scope, filtered by any combination of anchor path, `--status` (`open`/`resolved`/`dismissed`/`archived`), associated `--plan`/`--task`, `--vendor`, or a single `--tag`.
+**Description:** List annotations in scope, filtered by any combination of anchor path or kind, exact entity target kind/id, `--status` (`active`/`resolved`/`dismissed`/`archived`), associated `--plan`/`--task`, `--vendor`, or a single `--tag`. `--target-kind` and `--target-id` apply to entity anchors, while `--plan` / `--task` retain their legacy association meaning.
+
+---
+
+### `planar annotate capabilities`
+
+**Synopsis:**
+```
+planar annotate capabilities [--json]
+```
+
+**Description:** Return a source-bound capability handshake for a local annotation consumer. JSON includes the immutable `source_uuid`, supported read/filter fields, entity-anchor/revision support, the allowed structured command operations, and receipt lookup support. It is an observation command; it does not process annotations or enable writing.
 
 ---
 
@@ -6955,7 +6968,7 @@ For quick reference, all documented commands grouped by domain:
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |
 | `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
-| `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
+| `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate capabilities`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
 | `workbench` | `workbench lint`, `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |
 | `workspace` | `workspace init`, `workspace doctor`, `workspace routing build`, `workspace routing show`, `workspace regenerate` |

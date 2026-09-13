@@ -195,6 +195,42 @@ TEST_CASE("create stores an annotation with active status and a global scope by 
   CHECK(created->tags.empty());
 }
 
+TEST_CASE("entity annotations have an exact target scope and no file path", "[annotation][entity-anchor]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  const auto      plan = insert_plan(conn, "entity-target");
+
+  auto created = ann::create(conn, ann::create_args{
+                                       .anchor       = {},
+                                       .anchor_kind_ = ann::anchor_kind::entity,
+                                       .target       = ann::entity_target{.kind = ann::target_kind::plan, .id = plan},
+                                       .body         = "durable page note",
+                                   });
+  REQUIRE(created.has_value());
+  CHECK(created->anchor_kind_ == ann::anchor_kind::entity);
+  REQUIRE(created->target.has_value());
+  CHECK(created->target->kind == ann::target_kind::plan);
+  CHECK(created->target->id == plan);
+  CHECK(created->anchor.path.empty());
+  CHECK(created->revision == 1);
+  CHECK(scalar_int(conn, "select count(*) from annotations where anchor_kind = 'entity' and anchor_path is null") == 1);
+
+  auto wrong_scope = ann::create(conn, ann::create_args{
+                                           .anchor       = {},
+                                           .anchor_kind_ = ann::anchor_kind::entity,
+                                           .target       = ann::entity_target{.kind = ann::target_kind::plan, .id = plan},
+                                           .scope        = std::string_view{"missing-scope"},
+                                       });
+  CHECK_FALSE(wrong_scope.has_value());
+  CHECK(wrong_scope.error() == ann::annotation_error::slug_not_found);
+
+  exec(conn, "update annotations set status = 'resolved', updated_at = '2000-01-01T00:00:00.000Z' where id = 1");
+  auto swept = ann::sweep(conn, 1, std::nullopt);
+  REQUIRE(swept.has_value());
+  CHECK(*swept == 0);
+  CHECK(scalar_text(conn, "select status from annotations where id = 1") == "resolved");
+}
+
 TEST_CASE("create trims and de-duplicates tags", "[annotation][parity]") {
   // Oracle: `--tags "x, y ,x"` stored exactly ["x","y"].
   scratch_db_path scratch;
@@ -756,7 +792,9 @@ TEST_CASE("add_tag trims and absorbs duplicates", "[annotation]") {
   const auto      id   = add_simple(conn, "a.txt", "A");
 
   REQUIRE(ann::add_tag(conn, id, "  spaced  ").has_value());
+  REQUIRE(ann::show(conn, id)->revision == 2);
   REQUIRE(ann::add_tag(conn, id, "spaced").has_value());
+  CHECK(ann::show(conn, id)->revision == 2);
 
   auto tags = ann::list_tags(conn, id);
   REQUIRE(tags.has_value());
@@ -799,6 +837,7 @@ TEST_CASE("removing a tag that was never attached is a no-op", "[annotation]") {
   const auto      id   = add_simple(conn, "a.txt", "A");
 
   CHECK(ann::remove_tag(conn, id, "never-added").has_value());
+  CHECK(ann::show(conn, id)->revision == 1);
   auto tags = ann::list_tags(conn, id);
   REQUIRE(tags.has_value());
   CHECK(tags->empty());
@@ -894,7 +933,7 @@ TEST_CASE("bulk-archive skips rows already archived", "[annotation]") {
   CHECK(*second == 0);
 }
 
-TEST_CASE("bulk_apply is NOT transactional: the prefix stays applied", "[annotation][hazard-bulk-boundary]") {
+TEST_CASE("bulk_apply rolls back every row when one transition fails", "[annotation][bulk-transaction]") {
   // HAZARD 1, answered by experiment against the oracle and reproduced
   // here with the SAME mechanism (a BEFORE UPDATE trigger that aborts on
   // one specific row). See this file's header, section (C), for the
@@ -914,11 +953,9 @@ TEST_CASE("bulk_apply is NOT transactional: the prefix stays applied", "[annotat
   REQUIRE_FALSE(res.has_value());
   CHECK(res.error() == ann::annotation_error::query_failed);
 
-  // The prefix STAYS APPLIED -- there is no rollback.
-  CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id1)) == "archived");
-  CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id2)) == "archived");
-  // The failing row is untouched, and so is everything after it: the pass
-  // aborts rather than continuing past the failure.
+  // The failed invocation has no partial outcome.
+  CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id1)) == "active");
+  CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id2)) == "active");
   CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id3)) == "active");
   CHECK(scalar_text(conn, std::format("select status from annotations where id = {}", id4)) == "active");
 }
@@ -1245,9 +1282,9 @@ auto oracle_fixture() -> ann::annotation {
 
 TEST_CASE("render_json is byte-identical to the oracle's --json object", "[annotation][parity]") {
   CHECK(ann::render_json(oracle_fixture()) ==
-        R"({"id":1,"scope_kind":"global","scope_id":null,"anchor":{"path":"a.txt","line_start":null,)"
-        R"("line_end":null,"commit_sha":"","text_hash":"","text":""},"title":"A1","slug":null,)"
-        R"("body":"b1","status":"active","vendor":"","plan_id":null,"task_id":null,"tags":["x","y"],)"
+        R"({"id":1,"scope_kind":"global","scope_id":null,"anchor":{"kind":"file","path":"a.txt","line_start":null,)"
+        R"("line_end":null,"commit_sha":"","text_hash":"","text":""},"target":null,"title":"A1","slug":null,)"
+        R"("body":"b1","status":"active","vendor":"","origin":null,"revision":1,"plan_id":null,"task_id":null,"tags":["x","y"],)"
         R"("created_at":"2026-08-23T01:01:48.528Z","updated_at":"2026-08-23T01:01:48.528Z"})");
 }
 
@@ -1261,10 +1298,11 @@ TEST_CASE("render_json emits every optional as an explicit null", "[annotation][
   };
   // Captured from `annotate add --anchor-path b.txt --title A3
   // --line-start 3 --line-end 9 --json`.
-  CHECK(ann::render_json(bare) == R"({"id":3,"scope_kind":"global","scope_id":null,"anchor":{"path":"b.txt","line_start":3,)"
-                                  R"("line_end":9,"commit_sha":"","text_hash":"","text":""},"title":"A3","slug":null,)"
-                                  R"("body":"","status":"active","vendor":"","plan_id":null,"task_id":null,"tags":[],)"
-                                  R"("created_at":"2026-08-23T01:01:48.594Z","updated_at":"2026-08-23T01:01:48.594Z"})");
+  CHECK(ann::render_json(bare) ==
+        R"({"id":3,"scope_kind":"global","scope_id":null,"anchor":{"kind":"file","path":"b.txt","line_start":3,)"
+        R"("line_end":9,"commit_sha":"","text_hash":"","text":""},"target":null,"title":"A3","slug":null,)"
+        R"("body":"","status":"active","vendor":"","origin":null,"revision":1,"plan_id":null,"task_id":null,"tags":[],)"
+        R"("created_at":"2026-08-23T01:01:48.594Z","updated_at":"2026-08-23T01:01:48.594Z"})");
 }
 
 TEST_CASE("render_list_json wraps objects in a bare array", "[annotation][parity]") {
@@ -1431,4 +1469,48 @@ TEST_CASE("status and scope_kind text round-trip", "[annotation]") {
     CHECK(*parsed == k);
   }
   CHECK_FALSE(ann::scope_kind_from_text("workspace").has_value());
+}
+
+TEST_CASE("receipt retention threshold preserves replay across a reopened source", "[annotation][receipt][6684]") {
+  // The 10,000-receipt limit is informational: no maintenance action may
+  // evict a receipt and reopen the duplicate-create window. Seed the soft
+  // cap directly so this regression stays fast while exercising a real
+  // receipt-backed create and a fresh connection (the restart boundary).
+  scratch_db_path scratch;
+  std::string     source;
+  {
+    auto conn     = open_migrated(scratch);
+    auto identity = ann::source_uuid(conn);
+    REQUIRE(identity.has_value());
+    source = *identity;
+    exec(conn, std::format("with recursive n(x) as (select 1 union all select x + 1 from n where x < 10000) "
+                           "insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, outcome) "
+                           "select printf('retained-%05d', x), '{}', printf('digest-%05d', x), 'create' from n;",
+                           source));
+
+    exec(conn,
+         "insert into plans (scope_kind, title, slug, status) values ('global', 'receipt target', 'receipt-target', 'draft')");
+    ann::command_args command{.operation      = ann::command_kind::create,
+                              .operation_uuid = "retain-and-replay",
+                              .source_uuid    = source,
+                              .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                              .body           = "durable"};
+    auto              first = ann::execute_command(conn, command);
+    REQUIRE(first.has_value());
+    CHECK_FALSE(first->replayed);
+    CHECK(scalar_int(conn, "select count(*) from annotation_operation_receipts") == 10001);
+    CHECK(scalar_int(conn, "select count(*) from annotations") == 1);
+  }
+
+  auto              reopened = open_migrated(scratch);
+  ann::command_args replay{.operation      = ann::command_kind::create,
+                           .operation_uuid = "retain-and-replay",
+                           .source_uuid    = source,
+                           .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                           .body           = "durable"};
+  auto              result = ann::execute_command(reopened, replay);
+  REQUIRE(result.has_value());
+  CHECK(result->replayed);
+  CHECK(scalar_int(reopened, "select count(*) from annotation_operation_receipts") == 10001);
+  CHECK(scalar_int(reopened, "select count(*) from annotations") == 1);
 }

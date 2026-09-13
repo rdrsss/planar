@@ -101,6 +101,17 @@ if (auto applied = db::apply_all(conn); !applied) {
 The binary embeds every up and down SQL string at compile time, so it has
 no runtime dependency on the `migrations/` directory.
 
+### Entity-annotation rollback recovery
+
+Migration 00034 deliberately refuses a down migration while entity
+annotations or annotation operation receipts exist. Those rows cannot be
+represented by the older file-only schema, so rollback never detaches notes
+or purges receipts. Export the affected rows (including `annotation_tags`)
+from a backup with SQLite before explicitly removing or otherwise disposing
+of them through the supported Planar annotation workflow; only then retry the
+rollback. Keep the export with the source UUID from `annotation_source_identity`
+so it cannot be imported into an unrelated source by numeric ID alone.
+
 ## Tooling
 
 - **Linter** — `.sqlfluff` at the repo root pins dialect to `sqlite` and

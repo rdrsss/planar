@@ -68,6 +68,18 @@ export enum class status : std::uint8_t {
   archived,  ///< The sole final retention state.
 };
 
+/// @brief The durable location form of an annotation.
+export enum class anchor_kind : std::uint8_t { file, entity };
+
+/// @brief The entity type accepted by an entity anchor.
+export enum class target_kind : std::uint8_t { plan, task };
+
+/// @brief An entity anchor's unambiguous target. File anchors have none.
+export struct entity_target {
+  target_kind  kind;
+  std::int64_t id;
+};
+
 /// @brief Where the annotation hangs in the source tree. Mirrors zig's
 /// `annotation.AnchorFields`. `line_start`/`line_end` unset means a
 /// file-level annotation (the columns are SQL NULL).
@@ -82,74 +94,149 @@ export struct anchor_fields {
 
 /// @brief A stored annotation. Mirrors zig's `annotation.Annotation`.
 export struct annotation {
-  std::int64_t                id{};                            ///< Row id.
-  scope_kind                  scope_kind_{scope_kind::global}; ///< Stored scope kind.
-  std::optional<std::int64_t> scope_id;                        ///< Stored scope id; unset for global.
-  anchor_fields               anchor;                          ///< Anchor descriptor.
-  std::optional<std::string>  title;                           ///< Title; nullable.
-  std::optional<std::string>  slug;                            ///< Slug; nullable and globally UNIQUE.
-  std::string                 body;                            ///< Body; NOT NULL, defaults to `""`.
-  status                      status_{status::active};         ///< Lifecycle status.
-  std::string                 vendor;                          ///< Vendor tag; NOT NULL, defaults to `""`.
-  std::optional<std::int64_t> plan_id;                         ///< Direct FK column (not an entity_link).
-  std::optional<std::int64_t> task_id;                         ///< Direct FK column (not an entity_link).
-  std::vector<std::string>    tags;                            ///< Tags, lexicographically ascending.
-  std::string                 created_at;                      ///< Creation timestamp.
-  std::string                 updated_at;                      ///< Last-modification timestamp.
+  std::int64_t                 id{};                            ///< Row id.
+  scope_kind                   scope_kind_{scope_kind::global}; ///< Stored scope kind.
+  std::optional<std::int64_t>  scope_id;                        ///< Stored scope id; unset for global.
+  anchor_fields                anchor;                          ///< Anchor descriptor.
+  anchor_kind                  anchor_kind_{anchor_kind::file}; ///< File or entity discriminator.
+  std::optional<entity_target> target;                          ///< Entity target; unset for file anchors.
+  std::optional<std::string>   title;                           ///< Title; nullable.
+  std::optional<std::string>   slug;                            ///< Slug; nullable and globally UNIQUE.
+  std::string                  body;                            ///< Body; NOT NULL, defaults to `""`.
+  status                       status_{status::active};         ///< Lifecycle status.
+  std::string                  vendor;                          ///< Vendor tag; NOT NULL, defaults to `""`.
+  std::optional<std::string>   origin;                          ///< Immutable-provenance surface, when supplied.
+  std::int64_t                 revision{1};                     ///< Monotonic annotation revision.
+  std::optional<std::int64_t>  plan_id;                         ///< Direct FK column (not an entity_link).
+  std::optional<std::int64_t>  task_id;                         ///< Direct FK column (not an entity_link).
+  std::vector<std::string>     tags;                            ///< Tags, lexicographically ascending.
+  std::string                  created_at;                      ///< Creation timestamp.
+  std::string                  updated_at;                      ///< Last-modification timestamp.
 };
 
 /// @brief Arguments to `create`. Mirrors zig's `annotation.CreateArgs`.
 export struct create_args {
-  anchor_fields                   anchor;                  ///< Required anchor descriptor.
-  std::optional<std::string_view> title;                   ///< Title, when supplied.
-  std::optional<std::string_view> slug;                    ///< Slug, when supplied.
-  std::string_view                body{""};                ///< Body; defaults to `""`.
-  status                          status_{status::active}; ///< Initial status.
-  std::string_view                vendor{""};              ///< Vendor tag; defaults to `""`.
-  std::optional<std::int64_t>     plan_id;                 ///< Owning plan, when supplied.
-  std::optional<std::int64_t>     task_id;                 ///< Owning task, when supplied.
-  std::vector<std::string>        tags;                    ///< Tags; trimmed and de-duplicated on write.
-  std::optional<std::string_view> scope;                   ///< Scope-ref slug; unset means global.
+  anchor_fields                   anchor;                          ///< Required anchor descriptor.
+  anchor_kind                     anchor_kind_{anchor_kind::file}; ///< Anchor discriminator.
+  std::optional<entity_target>    target;                          ///< Required exactly for entity anchors.
+  std::optional<std::string_view> title;                           ///< Title, when supplied.
+  std::optional<std::string_view> slug;                            ///< Slug, when supplied.
+  std::string_view                body{""};                        ///< Body; defaults to `""`.
+  status                          status_{status::active};         ///< Initial status.
+  std::string_view                vendor{""};                      ///< Vendor tag; defaults to `""`.
+  std::optional<std::string_view> origin;                          ///< Provenance surface for a new annotation.
+  std::optional<std::int64_t>     plan_id;                         ///< Owning plan, when supplied.
+  std::optional<std::int64_t>     task_id;                         ///< Owning task, when supplied.
+  std::vector<std::string>        tags;                            ///< Tags; trimmed and de-duplicated on write.
+  std::optional<std::string_view> scope;                           ///< Scope-ref slug; unset means global.
 };
 
 /// @brief Patch for `update`. Every field is independently optional; an
 /// all-unset patch is a no-op that returns a fresh snapshot WITHOUT
 /// bumping `updated_at`. Mirrors zig's `annotation.UpdateArgs`.
 export struct update_args {
-  std::optional<std::string_view> title;   ///< New title.
-  std::optional<std::string_view> slug;    ///< New slug.
-  std::optional<std::string_view> body;    ///< New body.
-  std::optional<status>           status_; ///< New status; validated against the transition matrix.
-  std::optional<std::int64_t>     plan_id; ///< New owning plan.
-  std::optional<std::int64_t>     task_id; ///< New owning task.
-  std::optional<anchor_fields>    anchor;  ///< Full anchor replacement.
-  std::optional<std::string_view> scope;   ///< New scope-ref slug.
+  std::optional<std::string_view> title;               ///< New title.
+  bool                            clear_title = false; ///< Set the nullable title to SQL NULL.
+  std::optional<std::string_view> slug;                ///< New slug.
+  std::optional<std::string_view> body;                ///< New body.
+  std::optional<status>           status_;             ///< New status; validated against the transition matrix.
+  std::optional<std::int64_t>     plan_id;             ///< New owning plan.
+  std::optional<std::int64_t>     task_id;             ///< New owning task.
+  std::optional<anchor_fields>    anchor;              ///< Full anchor replacement.
+  std::optional<std::string_view> scope;               ///< New scope-ref slug.
 };
 
 /// @brief Filter for `list` (and, in the same shape, for every `bulk-*`
 /// leaf). Mirrors zig's `annotation.ListFilter`.
 export struct list_filter {
-  std::optional<std::string_view> anchor_path; ///< Exact `anchor_path` match.
-  std::optional<status>           status_;     ///< Exact status match.
-  std::optional<std::int64_t>     plan_id;     ///< Exact `plan_id` match.
-  std::optional<std::int64_t>     task_id;     ///< Exact `task_id` match.
-  std::optional<std::string_view> vendor;      ///< Exact `vendor` match.
-  std::optional<std::string_view> tag;         ///< Rows carrying this tag.
-  std::optional<std::string_view> scope;       ///< Scope-ref slug.
+  std::optional<std::string_view> anchor_path;  ///< Exact `anchor_path` match.
+  std::optional<anchor_kind>      anchor_kind_; ///< Exact file/entity anchor discriminator.
+  std::optional<target_kind>      target_kind_; ///< Exact entity target kind; entity rows only.
+  std::optional<std::int64_t>     target_id;    ///< Exact entity target id; entity rows only.
+  std::optional<status>           status_;      ///< Exact status match.
+  std::optional<std::int64_t>     plan_id;      ///< Exact `plan_id` match.
+  std::optional<std::int64_t>     task_id;      ///< Exact `task_id` match.
+  std::optional<std::string_view> vendor;       ///< Exact `vendor` match.
+  std::optional<std::string_view> tag;          ///< Rows carrying this tag.
+  std::optional<std::string_view> scope;        ///< Scope-ref slug.
 };
 
 /// @brief Error surface for this module. Mirrors zig's
 /// `annotation.Error`.
 export enum class annotation_error : std::uint8_t {
-  not_found,          ///< No annotation with that id or slug.
-  unsupported_scope,  ///< The scope-ref form is not supported.
-  slug_not_found,     ///< The scope-ref slug did not resolve.
-  terminal_status,    ///< The requested lifecycle transition is refused.
-  slug_conflict,      ///< The slug is already taken (annotations.slug is UNIQUE).
-  empty_tag,          ///< A tag that is empty after trimming.
-  query_failed,       ///< An underlying SQL statement failed.
-  audit_write_failed, ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
+  not_found,             ///< No annotation with that id or slug.
+  unsupported_scope,     ///< The scope-ref form is not supported.
+  slug_not_found,        ///< The scope-ref slug did not resolve.
+  terminal_status,       ///< The requested lifecycle transition is refused.
+  slug_conflict,         ///< The slug is already taken (annotations.slug is UNIQUE).
+  empty_tag,             ///< A tag that is empty after trimming.
+  query_failed,          ///< An underlying SQL statement failed.
+  busy_source,           ///< SQLite could not acquire the source write lock; retry unchanged.
+  audit_write_failed,    ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
+  invalid_anchor,        ///< File/entity discriminator and fields disagree.
+  target_not_found,      ///< Entity target does not exist.
+  target_scope_mismatch, ///< Requested annotation scope is not the target's exact scope.
+  revision_conflict,     ///< The supplied optimistic-lock revision is stale.
+  receipt_conflict,      ///< An operation UUID was reused with another payload.
+  source_mismatch,       ///< The writer named a different database source.
+  invalid_command,       ///< The structured command is incomplete or unsupported.
 };
+
+/// @brief The explicitly idempotent writer operations exposed to a future
+/// local annotation client. Legacy annotate leaves remain operator tools;
+/// this contract is the one that carries an operation receipt.
+export enum class command_kind : std::uint8_t {
+  create,
+  edit,
+  replace_tags,
+  resolve,
+  dismiss,
+  archive,
+  remove,
+  bulk_resolve,
+  bulk_dismiss,
+  bulk_archive
+};
+
+/// @brief Input to one receipt-backed annotation mutation.
+export struct command_args {
+  command_kind                    operation{};
+  std::string_view                operation_uuid;
+  std::string_view                source_uuid;
+  std::optional<std::string_view> scope;
+  std::optional<entity_target>    target;
+  std::optional<std::int64_t>     annotation_id;
+  std::optional<std::int64_t>     expected_revision;
+  std::optional<std::string_view> title;
+  bool                            clear_title = false; ///< A JSON null title; distinct from omission.
+  std::optional<std::string_view> body;
+  std::vector<std::string>        tags;
+  std::optional<list_filter>      bulk_filter;
+  std::string_view                origin{"local-annotation-writer"};
+};
+
+/// @brief Durable result for a command UUID. Receipts are never purged.
+export struct operation_receipt {
+  std::string                 operation_uuid;
+  std::string                 source_uuid;
+  std::string                 payload_digest;
+  std::optional<std::int64_t> annotation_id;
+  std::optional<std::int64_t> revision;
+  std::string                 outcome;
+  std::string                 created_at;
+  std::optional<std::int64_t> affected_count; ///< Immutable aggregate count for bulk operations.
+  bool                        replayed{false};
+};
+
+/// @brief Atomically apply a command, revision/audit mutation, and receipt.
+export auto execute_command(db::connection& conn, const command_args& args) -> std::expected<operation_receipt, annotation_error>;
+
+/// @brief Find an already committed operation outcome without mutating state.
+export auto show_receipt(db::connection& conn, std::string_view source_uuid, std::string_view operation_uuid)
+    -> std::expected<std::optional<operation_receipt>, annotation_error>;
+
+/// @brief Read the immutable UUID assigned to this database source.
+export auto source_uuid(db::connection& conn) -> std::expected<std::string, annotation_error>;
 
 /// @brief Parse a status from its stored text.
 /// @param s The status text.
@@ -293,24 +380,9 @@ export enum class bulk_action : std::uint8_t {
 /// @brief Apply `action` to every annotation matching `filter`, returning
 /// the number of rows that actually transitioned.
 ///
-/// **THIS IS NOT TRANSACTIONAL, and that is the oracle's own behavior,
-/// established by experiment rather than assumed.** The probe (hazard 1 in
-/// task 6094's brief), reproducible verbatim:
-///
-/// ```
-/// $Z annotate add --anchor-path z.txt --title B1   # x4, ids 1..4
-/// sqlite3 p3.db "create trigger boom before update on annotations
-///                when new.id = 3 begin select raise(abort,'boom'); end;"
-/// $Z annotate bulk-archive --anchor-path z.txt --json
-///   -> exit 1, `error: annotate bulk-archive: QueryFailed`
-/// sqlite3 p3.db "select id,status from annotations order by id"
-///   -> 1|archived   2|archived   3|active   4|active
-/// ```
-///
-/// The prefix STAYS APPLIED. There is no `BEGIN`, no rollback, and the
-/// rows after the failure are never attempted. Each row also carried a
-/// distinct `updated_at`, confirming one UPDATE statement per row rather
-/// than a single set-update.
+/// The selection, every row lifecycle/revision/audit mutation, and its
+/// outcome are one immediate transaction. A failed row rolls back every
+/// earlier row; no invocation may report a partial success.
 ///
 /// Per-row skip rules, preserved exactly:
 ///   - a row already in the target state is skipped (not counted);
@@ -319,8 +391,7 @@ export enum class bulk_action : std::uint8_t {
 ///   - for `archive`, no pre-skip — `resolved` and `dismissed` legally
 ///     progress to `archived` under the retention-tier model;
 ///   - a `terminal_status` error from the per-row transition is swallowed
-///     and the row skipped; ANY OTHER error aborts the pass and is
-///     returned, leaving the prefix applied.
+///     and the row skipped; ANY OTHER error aborts and rolls back the pass.
 ///
 /// @param conn An open, migrated database connection.
 /// @param filter The selection; `bulk-resolve`/`bulk-dismiss` pass

@@ -7,6 +7,9 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.db.migrate;
+import planar.json_dom;
+import planar.json_text;
 import planar.engine.planning;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
@@ -46,10 +49,26 @@ auto zig_error_name(ann::annotation_error err) -> std::string_view {
     return "EmptyTag";
   case ann::annotation_error::query_failed:
     return "QueryFailed";
+  case ann::annotation_error::busy_source:
+    return "Busy";
   case ann::annotation_error::audit_write_failed:
     // zig `policy.audit.Error` has the single member `WriteFailed`, which
     // the Zig call sites `try` straight out of the engine module.
     return "WriteFailed";
+  case ann::annotation_error::invalid_anchor:
+    return "InvalidAnchor";
+  case ann::annotation_error::target_not_found:
+    return "TargetNotFound";
+  case ann::annotation_error::target_scope_mismatch:
+    return "TargetScopeMismatch";
+  case ann::annotation_error::revision_conflict:
+    return "Conflict";
+  case ann::annotation_error::receipt_conflict:
+    return "ReceiptConflict";
+  case ann::annotation_error::source_mismatch:
+    return "SourceMismatch";
+  case ann::annotation_error::invalid_command:
+    return "InvalidCommand";
   }
   return "Unknown";
 }
@@ -68,8 +87,9 @@ auto zig_error_name(ann::annotation_error err) -> std::string_view {
 /// @param leaf The leaf name to lead the message with, e.g. `"annotate add"`.
 /// @return The mapped failure.
 auto map_annotation_error(ann::annotation_error err, std::string_view leaf) -> domain_error {
-  auto const kind =
-      err == ann::annotation_error::slug_conflict ? domain_error_kind::slug_conflict : domain_error_kind::generic_failure;
+  auto const kind = err == ann::annotation_error::slug_conflict ? domain_error_kind::slug_conflict
+                    : err == ann::annotation_error::busy_source ? domain_error_kind::busy_source
+                                                                : domain_error_kind::generic_failure;
   return error_from_body(kind, std::format("{}: {}", leaf, zig_error_name(err)));
 }
 
@@ -187,6 +207,34 @@ auto status_flag(const cliapp::parsed_args& args) -> std::expected<std::optional
   return std::optional<ann::status>{*parsed};
 }
 
+auto anchor_kind_flag(const cliapp::parsed_args& args) -> std::expected<std::optional<ann::anchor_kind>, domain_error> {
+  auto const raw = flag_string(args, "--anchor-kind");
+  if (!raw.has_value()) {
+    return std::optional<ann::anchor_kind>{};
+  }
+  if (*raw == "file") {
+    return std::optional<ann::anchor_kind>{ann::anchor_kind::file};
+  }
+  if (*raw == "entity") {
+    return std::optional<ann::anchor_kind>{ann::anchor_kind::entity};
+  }
+  return std::unexpected(error_from_body(domain_error_kind::invalid_input, "anchor kind must be 'file' or 'entity'"));
+}
+
+auto target_kind_flag(const cliapp::parsed_args& args) -> std::expected<std::optional<ann::target_kind>, domain_error> {
+  auto const raw = flag_string(args, "--target-kind");
+  if (!raw.has_value()) {
+    return std::optional<ann::target_kind>{};
+  }
+  if (*raw == "plan") {
+    return std::optional<ann::target_kind>{ann::target_kind::plan};
+  }
+  if (*raw == "task") {
+    return std::optional<ann::target_kind>{ann::target_kind::task};
+  }
+  return std::unexpected(error_from_body(domain_error_kind::invalid_input, "target kind must be 'plan' or 'task'"));
+}
+
 /// @brief The owned flag values a `list_filter` points into, plus the
 /// filter itself.
 ///
@@ -253,6 +301,30 @@ auto run_bulk(context& ctx, const cliapp::parsed_args& args, ann::bulk_action ac
   // `annotate_bulk_archive`'s declaration for the oracle capture.
   if (action != ann::bulk_action::archive) {
     store->filter.status_ = ann::status::active;
+  }
+
+  // A caller that supplies an operation UUID receives the durable aggregate
+  // receipt required for timeout recovery; the legacy no-UUID invocation
+  // preserves its existing one-shot CLI behavior.
+  if (auto operation_id = flag_string(args, "--operation-id"); operation_id) {
+    auto source = ann::source_uuid(**conn);
+    if (!source)
+      return std::unexpected(map_annotation_error(source.error(), leaf));
+    auto receipt =
+        ann::execute_command(**conn, {.operation      = action == ann::bulk_action::resolve   ? ann::command_kind::bulk_resolve
+                                                        : action == ann::bulk_action::dismiss ? ann::command_kind::bulk_dismiss
+                                                                                              : ann::command_kind::bulk_archive,
+                                      .operation_uuid = *operation_id,
+                                      .source_uuid    = *source,
+                                      .bulk_filter    = store->filter});
+    if (!receipt)
+      return std::unexpected(map_annotation_error(receipt.error(), leaf));
+    const auto count = receipt->affected_count.value_or(0);
+    if (flag_bool(args, "--json"))
+      ctx.out() << ann::render_bulk_json(participle, static_cast<std::size_t>(count)) << '\n';
+    else
+      ctx.out() << ann::render_bulk_text(participle, static_cast<std::size_t>(count)) << '\n';
+    return {};
   }
 
   auto const count = ann::bulk_apply(**conn, store->filter, action);
@@ -372,15 +444,26 @@ auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
   auto const tag         = flag_string(args, "--tag");
   auto const scope       = flag_string(args, "--scope");
   auto const status_text = flag_string(args, "--status");
+  auto const anchor_kind = anchor_kind_flag(args);
+  if (!anchor_kind) {
+    return std::unexpected(anchor_kind.error());
+  }
+  auto const target_kind = target_kind_flag(args);
+  if (!target_kind) {
+    return std::unexpected(target_kind.error());
+  }
 
   ann::list_filter filter{
-      .anchor_path = as_view(anchor_path),
-      .status_     = std::nullopt,
-      .plan_id     = flag_int(args, "--plan"),
-      .task_id     = flag_int(args, "--task"),
-      .vendor      = as_view(vendor),
-      .tag         = as_view(tag),
-      .scope       = as_view(scope),
+      .anchor_path  = as_view(anchor_path),
+      .anchor_kind_ = *anchor_kind,
+      .target_kind_ = *target_kind,
+      .target_id    = flag_int(args, "--target-id"),
+      .status_      = std::nullopt,
+      .plan_id      = flag_int(args, "--plan"),
+      .task_id      = flag_int(args, "--task"),
+      .vendor       = as_view(vendor),
+      .tag          = as_view(tag),
+      .scope        = as_view(scope),
   };
   if (status_text.has_value()) {
     auto const parsed = ann::status_from_text(*status_text);
@@ -404,6 +487,58 @@ auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
     ctx.out() << ann::render_list_json(*items) << '\n';
   } else {
     ctx.out() << ann::render_list_text(*items);
+  }
+  return {};
+}
+
+auto annotate_capabilities(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  // Capability discovery is the read-side admission handshake for Explorer.
+  // It must never take the operator context's migration path: a readable old
+  // source is still useful to Explorer in default viewing mode, and probing
+  // it must not turn that probe into a schema upgrade.  The command writers
+  // below intentionally retain ctx.ensure_db(), because their transaction
+  // needs the current schema and is the explicit writer boundary.
+  auto conn = db::connection::open_read_only(ctx.db_path().string());
+  if (!conn) {
+    if (flag_bool(args, "--json")) {
+      ctx.out() << R"({"available":false,"reason":"source_unavailable"})" << '\n';
+    } else {
+      ctx.out() << "annotation writing: unavailable (source cannot be opened read-only)\n";
+    }
+    return {};
+  }
+  auto const schema = db::assert_schema_compatible(*conn);
+  if (!schema || schema->verdict_ != db::schema_compatibility::current) {
+    const auto observed = schema ? schema->live_ : 0;
+    if (flag_bool(args, "--json")) {
+      ctx.out()
+          << std::format(
+                 R"({{"available":false,"reason":"schema_incompatible","observed_schema_version":{},"required_schema_version":{}}})",
+                 observed, db::embedded_max())
+          << '\n';
+    } else {
+      ctx.out() << std::format("annotation writing: unavailable (source schema {} is not compatible with writer schema {})\n",
+                               observed, db::embedded_max());
+    }
+    return {};
+  }
+  auto source = ann::source_uuid(*conn);
+  if (!source) {
+    if (flag_bool(args, "--json")) {
+      ctx.out() << R"({"available":false,"reason":"source_unavailable"})" << '\n';
+    } else {
+      ctx.out() << "annotation writing: unavailable (source identity cannot be read)\n";
+    }
+    return {};
+  }
+  if (flag_bool(args, "--json")) {
+    std::string out{"{\"source_uuid\":"};
+    json_text::append_json_string(out, *source);
+    out +=
+        R"(,"annotation_read":true,"entity_anchors":true,"revisions":true,"filters":["anchor_kind","target_kind","target_id","status","scope","tag","plan","task","vendor","anchor_path"],"commands":["create","edit","replace-tags","resolve","dismiss","archive"],"receipt_lookup":true})";
+    ctx.out() << out << '\n';
+  } else {
+    ctx.out() << "annotation read: available\nentity anchors: available\nrevisions: available\nsource uuid: " << *source << '\n';
   }
   return {};
 }
@@ -482,6 +617,14 @@ auto annotate_remove(context& ctx, const cliapp::parsed_args& args) -> handler_r
   if (!conn) {
     return std::unexpected(conn.error());
   }
+  auto const expected_revision = flag_int(args, "--expected-revision");
+  if (!expected_revision)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--expected-revision is required"));
+  auto current = ann::show(**conn, *id);
+  if (!current)
+    return std::unexpected(map_annotation_error_by_id(current.error(), *id, "annotate remove"));
+  if (current->revision != *expected_revision)
+    return std::unexpected(map_annotation_error(ann::annotation_error::revision_conflict, "annotate remove"));
   auto removed = ann::remove(**conn, *id);
   if (!removed) {
     return std::unexpected(map_annotation_error_by_id(removed.error(), *id, "annotate remove"));
@@ -576,6 +719,9 @@ auto annotate_verify(context& ctx, const cliapp::parsed_args& args) -> handler_r
   std::vector<ann::verify_row> rows;
   rows.reserve(items->size());
   for (auto const& a : *items) {
+    if (a.anchor_kind_ == ann::anchor_kind::entity) {
+      continue;
+    }
     // Relative to the OPERATOR CWD, not the association root — see this
     // leaf's declaration for the experiment that settled it. An absolute
     // stored path wins on its own, which is what `operator/` does.
@@ -639,6 +785,185 @@ auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_re
   return {};
 }
 
+auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto const request = flag_string(args, "--request");
+  if (!request || *request != "@-")
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--request @- is required"));
+  const std::string raw{std::istreambuf_iterator<char>{std::cin}, {}};
+  auto              parsed_json = json_dom::parse_json(raw);
+  if (!parsed_json || parsed_json->kind != json_dom::json_kind::object)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "annotation command must be a JSON object"));
+  const auto is_string = [&](std::string_view name) {
+    auto const* field = parsed_json->find(name);
+    return field == nullptr || field->kind == json_dom::json_kind::string;
+  };
+  const auto is_integer = [&](std::string_view name) {
+    auto const* field = parsed_json->find(name);
+    return field == nullptr || field->kind == json_dom::json_kind::integer;
+  };
+  for (std::string_view name : {"scope", "target_kind", "body", "anchor_path", "vendor", "tag"}) {
+    if (!is_string(name))
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} must be a string", name)));
+  }
+  for (std::string_view name : {"target_id", "annotation_id", "expected_revision", "plan_id", "task_id"}) {
+    if (!is_integer(name))
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} must be an integer", name)));
+  }
+  if (auto const* field = parsed_json->find("title");
+      field != nullptr && field->kind != json_dom::json_kind::string && field->kind != json_dom::json_kind::null_)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "title must be a string or null"));
+  for (std::string_view name : {"operation", "operation_id", "source_uuid"}) {
+    if (auto const* field = parsed_json->find(name); field != nullptr && field->kind != json_dom::json_kind::string)
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} must be a string", name)));
+  }
+  const auto string_field = [&](std::string_view name) -> std::optional<std::string> {
+    auto const* field = parsed_json->find(name);
+    return field && field->kind == json_dom::json_kind::string ? std::optional<std::string>{field->string} : std::nullopt;
+  };
+  const auto integer_field = [&](std::string_view name) -> std::optional<std::int64_t> {
+    auto const* field = parsed_json->find(name);
+    return field && field->kind == json_dom::json_kind::integer ? std::optional<std::int64_t>{field->integer} : std::nullopt;
+  };
+  auto const operation    = string_field("operation");
+  auto const operation_id = string_field("operation_id");
+  auto const source       = string_field("source_uuid");
+  if (!operation || !operation_id || !source)
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, "operation, operation_id, and source_uuid are required"));
+  const auto parsed = *operation == "create"         ? ann::command_kind::create
+                      : *operation == "edit"         ? ann::command_kind::edit
+                      : *operation == "replace-tags" ? ann::command_kind::replace_tags
+                      : *operation == "resolve"      ? ann::command_kind::resolve
+                      : *operation == "dismiss"      ? ann::command_kind::dismiss
+                      : *operation == "archive"      ? ann::command_kind::archive
+                      : *operation == "remove"       ? ann::command_kind::remove
+                      : *operation == "bulk-resolve" ? ann::command_kind::bulk_resolve
+                      : *operation == "bulk-dismiss" ? ann::command_kind::bulk_dismiss
+                      : *operation == "bulk-archive" ? ann::command_kind::bulk_archive
+                                                     : ann::command_kind{};
+  if (*operation != "create" && *operation != "edit" && *operation != "replace-tags" && *operation != "resolve" &&
+      *operation != "dismiss" && *operation != "archive" && *operation != "remove" && *operation != "bulk-resolve" &&
+      *operation != "bulk-dismiss" && *operation != "bulk-archive") {
+    return std::unexpected(
+        error_from_body(domain_error_kind::invalid_input, std::format("unknown annotation operation '{}'", *operation)));
+  }
+  auto const                        target_kind = string_field("target_kind");
+  auto const                        target_id   = integer_field("target_id");
+  std::optional<ann::entity_target> target;
+  if (target_kind || target_id) {
+    if (!target_kind || !target_id || (*target_kind != "plan" && *target_kind != "task")) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::invalid_input, "--target-kind plan|task and --target-id are required together"));
+    }
+    target = {.kind = *target_kind == "plan" ? ann::target_kind::plan : ann::target_kind::task, .id = *target_id};
+  }
+  auto const  scope       = string_field("scope");
+  auto const* title_field = parsed_json->find("title");
+  auto const  title       = string_field("title");
+  auto const  body        = string_field("body");
+  if (body && body->size() > 64U * 1024U)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "annotation command body exceeds 64 KiB"));
+  std::vector<std::string> tags;
+  if (auto const* fields = parsed_json->find("tags"); fields != nullptr) {
+    if (fields->kind != json_dom::json_kind::array || fields->array.size() > 32)
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, "tags must contain at most 32 strings"));
+    for (const auto& tag : fields->array) {
+      if (tag.kind != json_dom::json_kind::string ||
+          std::ranges::count_if(tag.string, [](unsigned char c) { return (c & 0xc0U) != 0x80U; }) > 64)
+        return std::unexpected(
+            error_from_body(domain_error_kind::invalid_input, "tags must contain strings of at most 64 characters"));
+      tags.push_back(tag.string);
+    }
+  }
+  auto conn = ctx.ensure_db();
+  if (!conn)
+    return std::unexpected(conn.error());
+  auto const bulk_anchor = string_field("anchor_path");
+  auto const bulk_vendor = string_field("vendor");
+  auto const bulk_tag    = string_field("tag");
+  auto       bulk_filter = ann::list_filter{.anchor_path = as_view(bulk_anchor),
+                                            .status_     = std::nullopt,
+                                            .plan_id     = integer_field("plan_id"),
+                                            .task_id     = integer_field("task_id"),
+                                            .vendor      = as_view(bulk_vendor),
+                                            .tag         = as_view(bulk_tag),
+                                            .scope       = as_view(scope)};
+  if (parsed == ann::command_kind::bulk_resolve || parsed == ann::command_kind::bulk_dismiss)
+    bulk_filter.status_ = ann::status::active;
+  auto receipt = ann::execute_command(
+      **conn, {.operation         = parsed,
+               .operation_uuid    = *operation_id,
+               .source_uuid       = *source,
+               .scope             = as_view(scope),
+               .target            = target,
+               .annotation_id     = integer_field("annotation_id"),
+               .expected_revision = integer_field("expected_revision"),
+               .title             = as_view(title),
+               .clear_title       = title_field != nullptr && title_field->kind == json_dom::json_kind::null_,
+               .body              = as_view(body),
+               .tags              = std::move(tags),
+               .bulk_filter       = (parsed == ann::command_kind::bulk_resolve || parsed == ann::command_kind::bulk_dismiss ||
+                                     parsed == ann::command_kind::bulk_archive)
+                                        ? std::optional{bulk_filter}
+                                        : std::nullopt});
+  if (!receipt)
+    return std::unexpected(map_annotation_error(receipt.error(), "annotate command"));
+  auto         receipt_count = (**conn).prepare("select count(*) from annotation_operation_receipts where source_uuid = ?");
+  std::int64_t count         = 0;
+  if (receipt_count && receipt_count->bind_text(1, *source) && receipt_count->step())
+    count = receipt_count->column_int64(0);
+  std::int64_t storage_bytes = 0;
+  auto         page_count    = (**conn).prepare("pragma page_count");
+  auto         page_size     = (**conn).prepare("pragma page_size");
+  if (page_count && page_size && page_count->step() && page_size->step())
+    storage_bytes = page_count->column_int64(0) * page_size->column_int64(0);
+  std::string out{"{\"operation_uuid\":"};
+  json_text::append_json_string(out, receipt->operation_uuid);
+  out += ",\"source_uuid\":";
+  json_text::append_json_string(out, receipt->source_uuid);
+  out +=
+      std::format(",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":", receipt->annotation_id.value_or(0),
+                  receipt->revision.value_or(0), receipt->affected_count.value_or(0));
+  json_text::append_json_string(out, receipt->outcome);
+  out += receipt->replayed ? ",\"replayed\":true" : ",\"replayed\":false";
+  if (count > 10000) {
+    out += std::format(",\"retention_warning\":{{\"receipt_count\":{},\"storage_bytes\":{},\"message\":", count, storage_bytes);
+    json_text::append_json_string(out,
+                                  "receipts are retained permanently; no purge is available; this warning returns after restart");
+    out += '}';
+  }
+  ctx.out() << out << "}\n";
+  return {};
+}
+
+auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto const source       = flag_string(args, "--source-uuid");
+  auto const operation_id = flag_string(args, "--operation-id");
+  if (!source || !operation_id)
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--source-uuid and --operation-id are required"));
+  auto conn = ctx.ensure_db();
+  if (!conn)
+    return std::unexpected(conn.error());
+  auto receipt = ann::show_receipt(**conn, *source, *operation_id);
+  if (!receipt)
+    return std::unexpected(map_annotation_error(receipt.error(), "annotate receipt"));
+  if (!receipt->has_value()) {
+    ctx.out() << "{\"found\":false}\n";
+    return {};
+  }
+  std::string out{"{\"found\":true,\"operation_uuid\":"};
+  json_text::append_json_string(out, (**receipt).operation_uuid);
+  out += ",\"source_uuid\":";
+  json_text::append_json_string(out, (**receipt).source_uuid);
+  out += std::format(
+      ",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":", (**receipt).annotation_id.value_or(0),
+      (**receipt).revision.value_or(0), (**receipt).affected_count.value_or(0));
+  json_text::append_json_string(out, (**receipt).outcome);
+  out += (**receipt).replayed ? ",\"replayed\":true}" : ",\"replayed\":false}";
+  ctx.out() << out << '\n';
+  return {};
+}
+
 namespace {
 
 /// @brief Declare every child of the `annotate` group, in catalog order.
@@ -667,6 +992,9 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
 
   CLI::App* list = annotate.add_subcommand("list", "List annotations.");
   add_string(*list, "--anchor-path");
+  add_string(*list, "--anchor-kind");
+  add_string(*list, "--target-kind");
+  add_int(*list, "--target-id");
   add_string(*list, "--status");
   add_int(*list, "--plan");
   add_int(*list, "--task");
@@ -674,6 +1002,9 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
   add_string(*list, "--tag");
   add_string(*list, "--scope");
   add_json(*list);
+
+  CLI::App* capabilities = annotate.add_subcommand("capabilities", "Describe annotation read and command support.");
+  add_json(*capabilities);
 
   CLI::App* update = annotate.add_subcommand("update", "Update an annotation.");
   add_string(*update, "--title");
@@ -687,6 +1018,7 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
   add_positional(*update, "annotation-id");
 
   CLI::App* remove = annotate.add_subcommand("remove", "Remove an annotation.");
+  add_int(*remove, "--expected-revision");
   add_json(*remove);
   add_positional(*remove, "annotation-id");
 
@@ -709,6 +1041,7 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
   add_positional(*archive, "annotation-id");
 
   CLI::App* bulk_resolve = annotate.add_subcommand("bulk-resolve", "Resolve every active annotation matching the filter.");
+  add_string(*bulk_resolve, "--operation-id");
   add_string(*bulk_resolve, "--anchor-path");
   add_int(*bulk_resolve, "--plan");
   add_int(*bulk_resolve, "--task");
@@ -718,6 +1051,7 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
   add_json(*bulk_resolve);
 
   CLI::App* bulk_dismiss = annotate.add_subcommand("bulk-dismiss", "Dismiss every active annotation matching the filter.");
+  add_string(*bulk_dismiss, "--operation-id");
   add_string(*bulk_dismiss, "--anchor-path");
   add_int(*bulk_dismiss, "--plan");
   add_int(*bulk_dismiss, "--task");
@@ -728,6 +1062,7 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
 
   CLI::App* bulk_archive =
       annotate.add_subcommand("bulk-archive", "Archive every annotation matching the filter (including non-active rows).");
+  add_string(*bulk_archive, "--operation-id");
   add_string(*bulk_archive, "--anchor-path");
   add_int(*bulk_archive, "--plan");
   add_int(*bulk_archive, "--task");
@@ -745,6 +1080,15 @@ auto declare_annotate_children(CLI::App& annotate) -> void {
   add_int_default(*sweep, "--since-days", "30");
   add_string(*sweep, "--scope");
   add_json(*sweep);
+
+  CLI::App* command =
+      annotate.add_subcommand("command", "Apply a receipt-backed annotation JSON request from stdin (--request @-).");
+  add_string(*command, "--request");
+  add_json(*command);
+  CLI::App* receipt = annotate.add_subcommand("receipt", "Look up a durable annotation command receipt.");
+  add_string(*receipt, "--source-uuid");
+  add_string(*receipt, "--operation-id");
+  add_json(*receipt);
 }
 
 } // namespace
