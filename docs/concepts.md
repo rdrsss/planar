@@ -218,42 +218,77 @@ narrowest first:
   6. host, path, lang  (auto-detected technical / fallback association kinds)
 ```
 
-A repo scope outranks an `org` whose membership contains that project, so a cwd inside `~/work/repo-a/` resolves to `repo:repo-a` even when `org:work` also matches. Association candidates of kind `project` rank above raw repo candidates for compatibility with older project-association flows. At the workspace root (`~/work/`, no project root_path contains it) only `org:work` matches, so the org wins — but at the workspace root writes refuse rather than land in the org by default (see below).
+A repo scope outranks an `org` whose membership contains that project, so a cwd inside `~/work/repo-a/` resolves to `repo:repo-a` even when `org:work` also matches. Association candidates of kind `project` rank above raw repo candidates for compatibility with older project-association flows. At the workspace root (`~/work/`, no project root_path contains it) only `org:work` matches, so the org wins, and a write there lands at `assoc:work` — it does **not** refuse.
+
+**This ranking applies to reads and writes alike as of task 6746.** It did not before: the write path mapped the cwd's project to its single association and so could never yield a `repo:` scope at all, while `scope show` — which renders the read resolution — reported one. The two disagreed from the same working directory, which meant the verb operators use to ask "where will this write land?" answered wrong. `resolve_for_write` and `resolve_read_scope_set` now share the ranking, and their agreement is pinned by a test.
 
 ### Write resolution
 
-Writes use the strict `scopearg.ResolveForWrite` algorithm. The first step that yields a single unambiguous scope wins:
+Writes resolve through `resolve_for_write`. The first step that yields a
+single scope wins:
 
-1. **Explicit flag.** If `--scope` is passed, parse it and return. The flag is the user's stated intent; never override it.
-2. **Cwd derivation, most-specific-wins.** Run `DeriveFromCwd`, rank by specificity, return the single most-specific match. Two refusals fire here:
-   - If multiple candidates tie at the best rank, refuse with an `AmbiguousScopeError` listing the tied `--scope` values.
-   - If the single winner is `kind=org` and the org has at least one member project, refuse with the workspace-root variant (see below). A zero-member org passes through — that is the workspace-init edge case where writing at the org level is the only sensible choice.
-3. **Refuse.** Return an `AmbiguousScopeError`. No silent default; no fallback to ambient state.
+1. **Explicit flag.** If `--scope` is passed, it is threaded through
+   **verbatim** — not validated against the database. The flag is the
+   operator's stated intent. An unresolvable slug surfaces later, from
+   whichever verb tries to use it, as `SlugNotFound` (exit 1).
+2. **Meta-workspace arm.** Standing exactly on a registered meta-workspace
+   root, where the cwd names the org and the root repo equally well, the write
+   refuses rather than pick (exit 5). Inside a member repo of a meta
+   workspace, the write lands on that concrete repo.
+3. **Cwd derivation, most-specific-wins.** The same candidate set, specificity
+   ranking and longest-root tie-breaker the read path uses (task 6746). A
+   member repo therefore outranks an org that contains it: a write from inside
+   `~/work/repo-a/` lands at `repo:repo-a`, not at `assoc:work`.
+4. **Otherwise, `global`.** If the cwd matches no registered root, or two
+   candidates tie at the best rank, the write lands at **global scope, exit
+   0**. There is no refusal here.
 
-### Workspace-root refusal
-
-> **Stale section (task 6140, 2026-09-09).** This block's refusal message
-> is FABRICATED against the current C++ binary: `grep -rn "you are in a
-> workspace root" src/` returns nothing, and in a scratch arena a
-> `workspace init --scan` root followed by `task add` with no `--scope`
-> SUCCEEDS at global scope (exit 0) — no refusal fires. Filed as task 6675
-> to determine and write the actual behavior; not rewritten here.
-
-When cwd lands at a registered workspace root (org `config_json.root_path`) and the org has members, `task add` (or any other write verb without `--scope`) refuses with the candidate list:
+**Step 4 is a real footgun and is documented because it is true, not because
+it is good.** A write from an unregistered directory succeeds silently at
+global scope, while the READ path refuses the same cwd outright:
 
 ```
-error: you are in a workspace root with 3 member projects, but no
-       specific project scope was passed. Choose one with --scope:
+$ cd /tmp/nowhere && planar plan list
+error: cwd is not inside any registered Planar scope; cd into a registered
+       scope or pass --scope global
+(exit 1)
 
-         --scope repo:repo-a
-         --scope repo:repo-b
-         --scope repo:repo-c
-
-       Or cd into a specific member project. Pass --scope
-       assoc:work to write at the org level (cross-repo work).
+$ cd /tmp/nowhere && planar plan create "probe"
+scope:    global
+(exit 0)
 ```
 
-Fan-out is deliberately not the default: a workspace-root `task add` could plausibly mean any of the members or the org itself, and silently picking is the lectio incident pattern. The refusal forces the operator to state which.
+Reads are the strict side, not writes. Editions of this document before
+2026-09-11 asserted the reverse ("No silent default; no fallback to ambient
+state") and named two error kinds — `AmbiguousScopeError` and
+`OutsideRegisteredScopeError` — that exist nowhere in the source. The real
+enum is `scope_error { query_failed, invalid_path, slug_not_found,
+scope_mismatch }`.
+
+**One registered-project exception.** A project registered with **no
+association** does not resolve to `repo:<slug>`; it yields no scope, with the
+reason `project_unassociated`. `plan create` turns that into an exit-5
+refusal naming the `assoc create` / `assoc add` remedy; `task add` and
+`scenario add` deliberately do not refuse and file under global. That split is
+pinned by tests and is not an oversight.
+
+### Workspace-root refusal — DOES NOT EXIST
+
+Editions of this document before 2026-09-11 quoted a refusal here:
+
+> you are in a workspace root with 3 member projects, but no specific project
+> scope was passed. Choose one with --scope: …
+
+**No such refusal fires, and no such message exists in the binary**
+(`grep -rn "you are in a workspace root" src/` returns nothing). Measured in a
+scratch arena — two git repos under a workspace root, `workspace init --scan
+1` creating `org:work` with both as members — a `plan create` at that root
+succeeds at **`org:work`**, exit 0, via step 3 above.
+
+Whether that *should* refuse is open: the fan-out argument in the old text is
+sound, and silently picking is the lectio incident pattern. But the refusal
+was never implemented, and documenting it as though it were left operators
+believing in a guard they did not have.
 
 ### Read resolution
 
@@ -269,11 +304,13 @@ This composes naturally with `plan list`, `task list`, `question list`, `scenari
 
 ### Cross-scope guard
 
-Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against each *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. The guard is membership-aware: an operator scope `assoc:<org>` covers any entity scoped to one of the org's member projects (via `project_associations`). The reverse — operator project, entity org — still refuses; cross-repo coordination requires either `cd` to the workspace root or `--scope assoc:<org>` explicitly.
+Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against a target entity's stored `(scope_kind, scope_id)` and refuses if they disagree.
+
+**It runs on eight verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. Five of the eight are membership-aware (an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`); two use strict equality instead. The reverse direction — operator project, entity org — refuses under both.
 
 ### Removed: the active scope stack
 
-Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get an exit-1 redirect pointing at `planar scope show`.
+Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get a retired-verb notice pointing at `planar scope show`, at **exit 2** (measured at task 6676; earlier editions of this page said exit 1). This holds for every arm — a trailing slug (`scope use someslug`) and an unknown flag (`scope use --bogus`) both still print the notice, because the retired stubs declare `allow_extras` so the handler runs before CLI11 can reject anything (task 6446). `planar scope push` and `planar scope swap` never existed at all.
 
 **SQLite tables:** `associations`, `project_associations`, `projects`. **Primary verbs:** `planar scope show` (derived view), `planar scope suggest`. Set the scope for any verb by `cd`-ing into the target or passing `--scope <slug>`.
 
@@ -289,15 +326,45 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 
 ### Which verbs are guarded
 
-Two classes of verb are guarded:
+**Measured against the source at task 6075 (2026-09-11).** Eight verbs, seven call sites (`sync push` and `sync pull` share one):
 
-- **Bulk-write-from-parent.** Verbs that take a parent entity id (typically a plan) and write a tree of derived rows. The parent's scope is the natural scope for the derived rows; running from a cwd that resolves to a different scope is the lectio incident pattern. Verbs: `spec ingest --apply`, `ext propagate`, `sync push <link|kind:id>`, `sync pull <link|kind:id>`, `sync resolve`. The default `spec ingest` preview is read-only: an explicit numeric plan id may locate and inspect an anchor outside the cwd-derived scope, but crossing into `--apply` requires a matching cwd or explicit `--scope`.
-- **Mutating-existing-entity.** Verbs that take an existing entity id and rewrite it (or its links). Routing such a mutation through the wrong cwd updates the row but skews future writes that follow the same code path. Verbs: `plan update`, `plan step add/done/skip`, `task update/done/block` (both endpoints on `block`), `question edit`, `scenario edit`, `decision edit`, `decision supersede` (both old and new), `artifact update`, `audit publish-decision`, `ext create --from`, `link <kind:id> --to`, `unlink`, `links update`.
+| Verb | Comparison |
+|------|-----------|
+| `spec ingest <plan> --apply` | membership-aware |
+| `feedback triage set` | membership-aware |
+| `audit publish-decision` | membership-aware |
+| `planar-ext sync push <link\|kind:id>` | membership-aware |
+| `planar-ext sync pull <link\|kind:id>` | membership-aware |
+| `planar-ext sync resolve <event-id>` | membership-aware |
+| `task update` | **strict equality** |
+| `closure compute` | **strict equality** |
+
+The two classes the guard was designed around — bulk-write-from-parent (the lectio incident pattern) and mutating-an-existing-entity — describe its *intent*. They do not describe its coverage. Most mutating-existing-entity verbs are **not** guarded: `plan update`, `plan step add/done/skip`, `task done/reopen/block`, `question edit`, `scenario edit`, `decision edit`, `decision supersede`, `artifact update`, `annotate update`, `planar-ext ext create --from`, `planar-ext ext propagate-one`, `link`, `unlink`. Earlier editions of this document listed those as guarded; they never were.
+
+`planar links update` appears in older editions of both documents. That verb does not exist — `planar schema` declares `links add`, `links list`, `links remove`, `links trail` only, and invoking `links update` fails at parse time with exit 2.
+
+### Two comparisons, not one
+
+Five guarded verbs call the cmd-layer `guard_with_membership`; two — `task update` and `closure compute` — call `engine::identity::check_scope_guard` directly, which is strict equality after `assoc:` normalization.
+
+The observable consequence: an `assoc:<org>` → `repo:<member>` write is **accepted** by `spec ingest --apply` and **refused** by `task update`, from the identical working directory. This is recorded here as fact, not endorsed. Reconciling the two flavours — and which direction to reconcile them in — is an open operator decision, because either choice changes behaviour that ships today.
 
 ### Membership-aware coverage
 
-The comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project that belongs to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work` (or via the workspace-root opt-in flow), the guard accepts writes targeting `project:repo-a`, `project:repo-b`, etc. — the org operator is "above" its member projects. The reverse direction (operator `project:repo-a`, entity in `assoc:work`) still refuses; cross-repo coordination requires explicit org scope.
+For the five verbs that use it, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses.
 
+### `--scope` does not mean the same thing on every verb
+
+The guard's documented remedy — "pass `--scope <entity-scope>`" — assumes `--scope` selects the operator's **write scope**. Measured at task 6075, it carries four distinct meanings:
+
+| Meaning | Effect | Verbs |
+|---------|--------|-------|
+| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision` |
+| **Patch field** | **Reassigns the entity's stored scope — it moves the row.** | `plan update`, `artifact update`, `annotate update` |
+| Read filter | Restricts which rows are listed. | the `list` verbs, `search`, `tree`, `dashboard`, `health` |
+| Inert | Accepted, parsed, discarded. | `planar-ext ext propagate` |
+
+On `plan update`, `artifact update` and `annotate update` there is therefore **no way to authorize a cross-scope write with `--scope`** — it performs the move instead. Those verbs are unguarded today so nothing refuses, but the documented escape hatch does not exist for them and could not be offered without a new flag.
 ### Which verbs are deliberately not guarded
 
 Several verb classes were audited and explicitly left unguarded; the absence is not an oversight:
@@ -305,6 +372,7 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 - **All `*_link` and `links add/remove` verbs.** `entity_links` is cross-entity by design — the polyrepo `touches`/`derives-from` story depends on edges crossing scope boundaries.
 - **All `*_add` / `*_create` verbs.** A newly-created entity has its own `--scope` resolved through the write resolver; `--plan` or `--parent` on a create verb is a reference, not scope inheritance.
 - **`sync push --all` / `sync pull --all`.** Bulk fan-outs that the operator opts into explicitly.
+- **`planar-ext ext propagate`.** `external_links` carries no scope column, so there is nothing to compare against. The verb accepts `--scope` and discards it; the handler carries an explicit `(void)flag_string(args, "--scope");` with a comment saying so. Older editions of `docs/cli-reference.md` listed this verb as guarded — it never was.
 - **All read-only verbs.** `show`, `list`, `status`, `audit trail`, `tree` — reads do not corrupt state and the audit-from-anywhere case is the common case.
 - **Identity-bucket verbs** (`assoc`, `init`, `promote`/`demote`, `scope`, `workspace`). Associations *are* scope; `promote`/`demote` deliberately cross scopes (that is the verb's job).
 - **Operator-state verbs** (`handoff`, `capture`, `resume`). These manage vendor-session rows, not project-scoped entities. The legitimate polyrepo handoff workflow is "a session inside repo A captures a handoff that references a task in repo B".
@@ -314,7 +382,7 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 
 There is no flag that downgrades a cross-scope-guard refusal to a warning. `--no-scope-check` does not exist on the current binary — `planar schema` declares it on no command, and passing it fails at parse time with exit 2 (`error: <cmd>: The following argument was not expected: --no-scope-check`). (The engine-layer `guard_write` primitive under `src/lib/engine/identity/scope.cppm` does carry a `no_scope_check` bypass parameter and is unit-tested, but no `cmd/` handler ever calls it with `true`, so no verb can reach the bypass from the CLI.)
 
-The only remedies for a cross-scope-guard refusal are `--scope <slug>` to assert explicit intent, or `cd` into the entity's owning repo so cwd derivation resolves correctly. A genuine mismatch — neither of those applied — fails outright.
+The only remedies for a cross-scope-guard refusal are `--scope <slug>` to assert explicit intent, or `cd` into the entity's owning repo so cwd derivation resolves correctly. A genuine mismatch — neither of those applied — fails outright. Note that the `--scope` remedy applies only to verbs where `--scope` selects the write scope; see [§ `--scope` does not mean the same thing on every verb](#--scope-does-not-mean-the-same-thing-on-every-verb) above.
 
 See [docs/cli-reference.md § Cross-scope guard](cli-reference.md#cross-scope-guard) for the per-verb listing and the exact refusal message format.
 
@@ -498,7 +566,7 @@ Each transition emits a `session_entries` row with `prefix='note'` and a body th
 
 **Who can call it:** This is an **operator verb** on the `planar` binary, not `planar-agent`. The **janitor** is the authorized agent caller — it runs `planar plan closeout` on behalf of the operator after delivery evidence is verified (Phase 3.7 Finalization). Coders use `planar-agent complete` to close tasks and claims, never plans.
 
-**Apply semantics:** Without `--dry-run`, passing the hard gate marks the plan `done` directly — bypassing the `recompute-status` anchor cap. This is intentional: `plan closeout` is the explicit operator release-gate for anchor plans. `--dry-run` evaluates and reports without writing. Both modes exit non-zero when the hard gate is blocked.
+**Apply semantics:** Without `--dry-run`, passing the hard gate marks the plan `done` directly — bypassing the `recompute-status` anchor cap. This is intentional: `plan closeout` is the explicit operator release-gate for anchor plans. `--dry-run` evaluates and reports without writing. **Only apply mode exits non-zero when the hard gate is blocked** — `--dry-run` always exits 0, because a preview must let its caller read `ready` / `blocked_by` from the report and decide. Editions of this page before 2026-09-12 said both modes refuse; they never did (task 6319).
 
 ---
 
@@ -512,9 +580,18 @@ A task is the leaf unit of work. It is attached to a plan via `plan_id` and opti
         ┌──────────────────────┐
         ↓                      |
 todo ⇄ doing ⇄ blocked → done  (terminal)
-  ↘     ↓                ↓
+  ↖___________↙  ↓
+  ↘     ↓        ↓
 cancelled (terminal)  cancelled (terminal)
 ```
+
+`blocked → todo` was added at task 6441. Every other exit from `blocked`
+already existed, but none of them meant "the blocker cleared and this is
+queued again": `doing` claims work is in progress, and `done`/`cancelled` are
+terminal. The sanctioned recovery had been to cancel the task and then
+`reopen --reason` it — writing a cancellation that never semantically happened
+into the audit trail, for an ordinary lifecycle event a dependency-bearing
+plan hits every time a blocker closes.
 
 Legal transitions (enforced by `policy.status.check`):
 
@@ -522,7 +599,7 @@ Legal transitions (enforced by `policy.status.check`):
 |------|----|-------|
 | `todo` | `doing`, `blocked`, `cancelled` | |
 | `doing` | `todo`, `blocked`, `done`, `cancelled` | |
-| `blocked` | `doing`, `done`, `cancelled` | |
+| `blocked` | `todo`, `doing`, `done`, `cancelled` | `todo` requeues an unblocked task without claiming work started (task 6441). |
 | `done` | `todo`, `doing`, `blocked` | Only via `task reopen --reason` or `task update --force` |
 | `cancelled` | `todo`, `doing`, `blocked` | Only via `task reopen --reason` or `task update --force` |
 
@@ -1036,19 +1113,37 @@ The provider CLIs (`claude`, `codex`) do not expose a machine-readable model lis
 
 ## Color output
 
-> **Stale section (task 6140, 2026-09-09).** This entire section describes a
-> status-color palette, `--color`/`--no-color` flags, and `NO_COLOR` handling
-> that do not exist in the current C++ binary: `grep -rn "NO_COLOR\|palette"
-> src/` returns nothing, `planar schema` declares no `--color`/`--no-color`
-> flag on any command, and passing either fails at parse time with exit 2
-> (`error: <cmd>: The following argument was not expected: --color`). The
-> binary emits no ANSI color output at all today. This is a larger doc-drift
-> finding than task 6140's scope covers (the whole section, not one flag)
-> and is filed separately rather than rewritten here.
+**There is none.** Measured 2026-09-11 (task 6675): `planar plan list` emits
+**zero** ANSI escape bytes, `planar schema` declares no `--color` / `--no-color`
+flag on any command, and all three spellings fail at parse time with exit 2:
 
-`planar tree`, the per-entity `list` verbs (`plan list`, `task list`, `question list`, `decision list`, `artifact list`, `scenario list`), and the child-plan summary section of `plan show` colorize the status column based on the entity kind that owns the status. Status is the only field colorized; titles, IDs, dates, and relationship arrows stay plain.
+```
+$ planar plan list --color   # cli-lint-ignore: the flag's ABSENCE is the point
+error: plan list: The following argument was not expected: --color
+(exit 2)
+```
 
-**Palette families.** The palette uses six visual categories from the 8-color ANSI set (universal across modern terminals: macOS Terminal, iTerm2, kitty, alacritty, Windows Terminal). The map is keyed by `(entity_kind, status)` so the same status text on different entities can take different colors.
+`NO_COLOR` is not read, because there is nothing to suppress.
+
+Editions of this page before 2026-09-11 described a six-family ANSI palette
+keyed by `(entity_kind, status)`, a five-level `--color=auto|always|never`
+precedence table, a structural `--json` bypass, and a "drift gate" unit test
+asserting a palette entry for every status. **None of that exists.** The
+entry-point it named — `src/cmd/planar/output.zig` — went with the Zig tree at
+the M10 cutover, and no C++ equivalent was written.
+
+The design is preserved below as a *proposal*, not as documentation, because it
+is a reasonable design and re-deriving it would be waste. Anyone implementing
+it should treat the table as a starting point and re-check it against the
+current status vocabulary, which has changed since it was written.
+
+<details>
+<summary>Unimplemented palette proposal</summary>
+
+Scope: `planar tree`, the per-entity `list` verbs, and the child-plan summary
+in `plan show` would colorize the status column only — titles, IDs, dates and
+relationship arrows stay plain. The map is keyed by `(entity_kind, status)`, so
+the same status text on different entities can take different colors.
 
 | Family | Color | Statuses |
 |---|---|---|
@@ -1059,21 +1154,19 @@ The provider CLIs (`claude`, `codex`) do not expose a machine-readable model lis
 | Hard fail | red | `scenario_outcome.error`, `scenario_outcome.fail`, `question.wontfix` |
 | Terminal-dim | gray | `plan.abandoned`, `task.cancelled`, `annotation.dismissed`, `annotation.archived`, `artifact.superseded`, `artifact.retired`, `decision.superseded`, `decision.withdrawn`, `scenario.retired`, `scenario_outcome.skipped`, `plan_step.skipped` |
 
-**Mode precedence (highest wins).**
+Proposed mode precedence, highest first: `NO_COLOR` (any non-empty value) →
+`--no-color` / `--color=never` → `--color=always` → `--color=auto` with a TTY
+stdout → otherwise off.
 
-1. `NO_COLOR` env var (any non-empty value) — never emit color
-2. `--no-color` or `--color=never` — never emit color
-3. `--color=always` — emit color
-4. `--color=auto` (default) and stdout is a TTY — emit color
-5. otherwise — do not emit color
+Two properties worth keeping if this is ever built: the `--json` path should
+bypass the color helper **structurally** rather than by consulting a toggle, so
+piped JSON is byte-identical regardless of mode; and a drift test should walk
+every domain's status constant and assert a palette entry, so a migration that
+adds a status cannot silently ship uncolored.
 
-None of `--color`, `--no-color`, or `NO_COLOR` are implemented; this precedence table describes the aspirational design, not shipped behavior (see the stale-section note above).
+</details>
 
-**JSON bypass.** The `--json` output path never calls into the color helper. The bypass is structural, not toggle-based: scripts piping JSON receive byte-identical output regardless of `--color` or `NO_COLOR`.
-
-**Drift gate.** A unit test in the output color module walks every domain's `Statuses` constant and asserts a palette entry. A future migration that adds a new status without updating the palette fails the test and the build is red.
-
-**SQLite tables:** none — color is a pure rendering concern. **Primary entry points:** the output color helpers in `src/cmd/planar/output.zig`. Engine-internal, not a CLI surface.
+**SQLite tables:** none. **Primary entry points:** none — nothing implements this.
 
 ## Local sandbox
 

@@ -58,6 +58,19 @@ export auto current_version(connection& conn) -> std::expected<std::uint32_t, db
 /// was never created. That is why `gap` outranks `behind` and `current`
 /// in the ordering below.
 ///
+/// **CAVEAT, added at task 6695:** that ordering is real but it is NOT
+/// what the shipped binaries observe. Every consumer `ensure_db()` reads
+/// `compat->live_` -- the raw version -- and runs its own
+/// `stored < maximum` / `stored > maximum` comparison BEFORE `verdict_` is
+/// consulted, so at the binary level BEHIND outranks GAP, the inverse of
+/// the precedence declared here. `verdict_` is read only for the warn-and-
+/// proceed `gap` arm. An earlier edition of this comment also justified
+/// gap-over-behind as "applying the pending tail on top of a broken base
+/// would compound it"; there is no pending tail at that point, because
+/// `context.cpp` runs `apply_all` BEFORE `assert_schema_compatible`. Both
+/// claims were removed rather than left to mislead a future reader into
+/// thinking the ordering is load-bearing where it is not.
+///
 /// **(2) What does each binary do?** Unchanged by this task and recorded
 /// here because it is the reason this is a verdict and not a boolean:
 /// `planar` owns migration, so it APPLIES the pending chain and then
@@ -176,6 +189,24 @@ export auto assert_schema_compatible(connection& conn) -> std::expected<schema_s
 /// destructor rolls back anything not explicitly committed); every
 /// migration applied earlier in the same call stays committed.
 export auto apply_all(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error>;
+
+/// @brief Apply `chain` after enforcing that it is CONTIGUOUS from 1.
+///
+/// The enforcement point `apply_all(connection&)` delegates to (task 6697).
+/// It exists as a named, callable function rather than as three inline lines
+/// so the enforcement itself can be pinned by a test: the embedded chain is
+/// contiguous, so a guard wired only into `apply_all(connection&)` can never
+/// fire, and a reviewer probe deleting that call passed the ENTIRE suite
+/// (3429 tests, exit 0). The contiguity PREDICATE was pinned;
+/// the enforcement was not.
+///
+/// Do NOT route the span overload through this: that overload is the test
+/// seam that deliberately injects partial and synthetic chains, and
+/// enforcing contiguity there would reject its whole purpose.
+/// @param conn An open database connection.
+/// @param chain The migration chain to enforce and apply.
+/// @return Success, or the contiguity failure before any migration runs.
+export auto apply_contiguous(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error>;
 
 /// @brief Convenience overload applying `planar::db::migrations()` — the
 /// real embedded chain.

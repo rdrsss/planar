@@ -292,6 +292,39 @@ auto resolve_meta_workspace_write_scope(db::connection& conn, std::string_view c
   }
 }
 
+/// @brief The write-path twin of `resolve_read_scope_set`'s winner selection
+/// (task 6746, decision 1100).
+///
+/// Same candidate set, same specificity ranking, same longest-root
+/// tie-breaker as the read resolver -- but it yields ONE scope label rather
+/// than a read set, and it does NOT expand an `org` winner into its member
+/// projects (a write lands in one scope; a read spans several).
+///
+/// REPLACED `derive_from_cwd` on this path. That function maps the cwd's
+/// project to its single association, so it could never return a `repo:`
+/// scope at all, while `scope show` -- rendering the read resolution --
+/// reported one. The two disagreed from the same working directory, which
+/// made the diagnostic verb wrong about where a write would land.
+///
+/// Two behaviours are preserved deliberately, because they are orthogonal and
+/// separately pinned:
+///  - A registered project with NO association still yields an unset scope
+///    with reason `project_unassociated`, so `plan create` keeps its exit-5
+///    refusal and `task add` / `scenario add` keep filing under global.
+///  - An empty candidate set and a TIE both fall back to an unset scope
+///    (global, exit 0) rather than refusing. Whether they SHOULD refuse is an
+///    open question, not settled here.
+/// @param conn An open, migrated database connection.
+/// @param cwd The absolute working directory to resolve from.
+/// @return The single most-specific scope for `cwd`, or the failure
+/// (`invalid_path` for a relative/empty cwd, `query_failed` on SQL,
+/// `slug_not_found` when the winning row carries no slug).
+///
+/// Forward-declared here because `resolve_for_write` sits above
+/// `derive_candidates` in this file; the definition lives next to
+/// `resolve_read_scope_set`, whose ranking it shares.
+auto derive_write_scope_ranked(db::connection& conn, std::string_view cwd) -> std::expected<scope_resolution, scope_error>;
+
 auto resolve_for_write(db::connection& conn, std::optional<std::string_view> scope_flag, std::string_view cwd)
     -> std::expected<write_scope_resolution, write_scope_failure> {
   if (scope_flag.has_value()) {
@@ -334,7 +367,11 @@ auto resolve_for_write(db::connection& conn, std::optional<std::string_view> sco
     break;
   }
 
-  auto derived = derive_from_cwd(conn, cwd);
+  // SPIKE (task 6746): was `derive_from_cwd`, which maps the cwd's project to
+  // its single association and therefore NEVER yields a `repo:` scope --
+  // measured divergence from `scope show`, which applies the specificity
+  // ranking and does. This routes the write path through the same ranking.
+  auto derived = derive_write_scope_ranked(conn, cwd);
   if (!derived) {
     return std::unexpected(write_scope_failure{.code = derived.error()});
   }
@@ -708,6 +745,96 @@ auto resolve_read_scope_set(db::connection& conn, std::string_view cwd, std::opt
     return expand_workspace_read_set(conn, winner.id);
   }
   return std::vector<read_scope>{read_scope{.kind = scope_kind::association, .id = winner.id}};
+}
+
+auto derive_write_scope_ranked(db::connection& conn, std::string_view cwd) -> std::expected<scope_resolution, scope_error> {
+  if (cwd.empty() || cwd.front() != '/') {
+    return std::unexpected(scope_error::invalid_path);
+  }
+
+  auto candidates = derive_candidates(conn, cwd);
+  if (!candidates) {
+    return std::unexpected(candidates.error());
+  }
+  if (candidates->empty()) {
+    return scope_resolution{.scope = std::nullopt, .reason = derive_reason::no_project_match, .project_slug = std::nullopt};
+  }
+
+  auto best_rank     = specificity_rank((*candidates)[0].kind);
+  auto best_root_len = (*candidates)[0].root_len;
+  for (auto const& c : std::span{*candidates}.subspan(1)) {
+    auto const r = specificity_rank(c.kind);
+    if (r < best_rank) {
+      best_rank     = r;
+      best_root_len = c.root_len;
+    } else if (r == best_rank && c.root_len > best_root_len) {
+      best_root_len = c.root_len;
+    }
+  }
+  std::size_t top_count = 0;
+  candidate   winner    = (*candidates)[0];
+  for (auto const& c : *candidates) {
+    if (specificity_rank(c.kind) == best_rank && c.root_len == best_root_len) {
+      ++top_count;
+      winner = c;
+    }
+  }
+  if (top_count != 1) {
+    return scope_resolution{
+        .scope = std::nullopt, .reason = derive_reason::project_multiple_associations, .project_slug = std::nullopt};
+  }
+
+  auto const  table = winner.kind == "repo" ? "projects" : "associations";
+  std::string slug;
+  {
+    auto stmt = conn.prepare(std::format("select coalesce(slug,'') from {} where id = ?", table));
+    if (!stmt) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (auto b = stmt->bind_int64(1, winner.id); !b) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      return std::unexpected(scope_error::slug_not_found);
+    }
+    slug = stmt->column_text(0);
+  }
+  if (slug.empty()) {
+    return std::unexpected(scope_error::slug_not_found);
+  }
+
+  if (winner.kind == "repo") {
+    // PRESERVE the unassociated arm verbatim. A registered project with no
+    // association is a DELIBERATE, separately-tested behaviour: `plan create`
+    // keys an exit-5 refusal on this exact `reason`, and `task add` /
+    // `scenario add` deliberately do not. Emitting a `repo:` scope here would
+    // silently retire that refusal -- which is what the first spike run did,
+    // and it is orthogonal to the question this spike is measuring.
+    auto assoc_count = conn.prepare("select count(*) from project_associations where project_id = ?");
+    if (!assoc_count) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (auto b = assoc_count->bind_int64(1, winner.id); !b) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    auto step = assoc_count->step();
+    if (!step) {
+      return std::unexpected(scope_error::query_failed);
+    }
+    if (*step == db::step_result::row && assoc_count->column_int64(0) == 0) {
+      return scope_resolution{.scope = std::nullopt, .reason = derive_reason::project_unassociated, .project_slug = slug};
+    }
+    return scope_resolution{
+        .scope = std::format("repo:{}", slug), .reason = derive_reason::project_single_association, .project_slug = slug};
+  }
+  // An association winner keeps the BARE slug the pre-spike path returned --
+  // `resolve_slug` parses a bare slug as an association, so this stays
+  // byte-compatible with what every guarded comparison already sees.
+  return scope_resolution{.scope = slug, .reason = derive_reason::project_single_association, .project_slug = std::nullopt};
 }
 
 auto read_scope_filter_slugs(db::connection& conn, std::span<const read_scope> scopes)

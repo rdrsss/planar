@@ -1,15 +1,20 @@
-/// @file check.t.cpp
-/// @brief planar.core.check — the guard survives NDEBUG (task 6347,
-/// decision 1040).
-///
-/// THIS TU IS DELIBERATELY COMPILED AS IF IT WERE THE RELEASE BUILD.
-/// `NDEBUG` is defined below, before any include, so `assert()` in this file
-/// would expand to nothing. `check()` is an inline function in the module
-/// interface and is therefore instantiated HERE, under that same `NDEBUG` —
-/// which is what makes the death test below discriminating rather than
-/// decorative. A `check(true)` call proves nothing on its own: it looks
-/// identical whether the guard is live or deleted. Only observing the FAILING
-/// path abort under `NDEBUG` distinguishes the two.
+// check.t.cpp — planar.core.check: the guard survives NDEBUG (task 6347,
+// decision 1040).
+//
+// Plain `//` deliberately, not `///`: this is the only test TU in the tree
+// that ever carried a Doxygen `@file` block, and carrying one made the
+// doc-comment lint demand `@brief` on every TEST_CASE and on the `#define`
+// below. The other 195 `.t.cpp` files use plain comments; this one now
+// matches them. The prose is unchanged.
+//
+// THIS TU IS DELIBERATELY COMPILED AS IF IT WERE THE RELEASE BUILD.
+// `NDEBUG` is defined below, before any include, so `assert()` in this file
+// would expand to nothing. `check()` is an inline function in the module
+// interface and is therefore instantiated HERE, under that same `NDEBUG` —
+// which is what makes the death test below discriminating rather than
+// decorative. A `check(true)` call proves nothing on its own: it looks
+// identical whether the guard is live or deleted. Only observing the FAILING
+// path abort under `NDEBUG` distinguishes the two.
 
 #define NDEBUG 1
 

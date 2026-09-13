@@ -65,12 +65,24 @@ auto tree(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     filter.statuses.push_back(*status);
   }
 
-  // `--sort` is read and DISCARDED. The oracle declares the flag, stores it
-  // on its filter, and never consults it — every query orders by id. Both
-  // `--sort updated` and `--sort bogus` were captured as byte-identical to
-  // a bare `tree`, with no refusal. Accepting-and-ignoring is therefore the
-  // behavior under test; see engine/tree/CMakeLists.txt.
-  static_cast<void>(cliapp::flag_string(args, "--sort"));
+  // TASK 6281: `--sort` is READ. It used to be read and discarded -- the
+  // oracle declared the flag, stored it on its filter and never consulted
+  // it, so `--sort updated` and `--sort bogus` were both byte-identical to a
+  // bare `tree` and an unrecognised key did not refuse. Reproduced under D2
+  // until decision 1067 ended that rule.
+  //
+  // A BOGUS KEY NOW REFUSES. Silently accepting one is the worse half of the
+  // defect: an operator who typos `--sort updatd` got a tree ordered some
+  // other way and no indication of it.
+  if (auto const raw = cliapp::flag_string(args, "--sort"); raw.has_value()) {
+    auto const parsed = tree_engine::sort_key_from_text(*raw);
+    if (!parsed) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::invalid_input,
+                          std::format("unknown --sort value '{}'; expected one of: id, updated, created, unsorted", *raw)));
+    }
+    filter.sort = *parsed;
+  }
 
   auto conn = ctx.ensure_db();
   if (!conn) {
@@ -127,7 +139,6 @@ auto tree(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// `planar.cmd.planar.handlers.tree`. Not to be confused with
 /// `planar.cmd.planar.tree`, the module that builds the whole root app
 /// and calls this function.
-/// @param root The root app to attach it to.
 auto declare_tree(CLI::App& root) -> void {
   CLI::App* tree =
       root.add_subcommand("tree", "Render a hierarchical view of Planar entities for one or all\n  scopes.\n\n  Walks plans (via "

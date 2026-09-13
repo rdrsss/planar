@@ -47,13 +47,19 @@
 /// `PLANAR_HOME` — the obvious guess, and what most of Planar does — would
 /// send `templates init` to write ten files into the wrong tree.
 ///
-/// ## Two leaves declare flags they do not use
+/// ## ONE leaf still declares flags it does not use
 ///
-/// `templates path` ignores `--system`, `--set` AND `--json`; `templates
-/// init` ignores `--force`. Both reproduced from the oracle rather than
-/// implemented. See `planar.engine.templates`'s CMakeLists for the full
-/// list of reproduced oracle defects in this family, including the
-/// 128-byte render failure.
+/// `templates path` ignores `--system`, `--set` AND `--json`, reproduced
+/// from the oracle rather than implemented.
+///
+/// `templates init` USED to ignore `--force` the same way; task 6212 wired
+/// it, under decision 1067. The two are not the same shape: `templates
+/// path`'s ignored flags make its output no less correct, while a discarded
+/// `--force` told an operator resetting a template they had broken that the
+/// command succeeded when nothing had happened.
+///
+/// The 128-byte render failure named in this family's CMakeLists was also
+/// fixed, at task 6210.
 
 module;
 
@@ -113,8 +119,10 @@ export auto templates_validate(context& ctx, const cliapp::parsed_args& args) ->
 
 /// @brief Handle `planar templates init [--force] [--json]`.
 ///
-/// Idempotent, and `--force` is discarded — an existing file is never
-/// overwritten under any flag combination.
+/// Idempotent without `--force`: an existing file is left alone. WITH
+/// `--force` an existing regular file is overwritten from the embedded
+/// defaults (task 6212 — the flag used to be discarded entirely). A
+/// directory sitting where a template belongs is skipped either way.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or a `generic_failure` (exit 1) when the root cannot be

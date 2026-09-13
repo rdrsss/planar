@@ -150,7 +150,6 @@ auto workflow_run(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 ///
 /// `run` shells `planar-execute` rather than executing a workflow
 /// itself; see the handler for the resolution order.
-/// @param root The root app to attach it to.
 auto declare_workflow(CLI::App& root) -> void {
   CLI::App* workflow = root.add_subcommand(
       "workflow", "Enumerate, inspect, and invoke shipped and sandbox Lua workflows.\n\n  Shipped workflows live at "

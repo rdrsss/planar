@@ -58,15 +58,48 @@
 //       -> `ext create: read local task:999: NotFound` at exit ONE. Same
 //          message template as the case above, different exit code.
 //
-// ## THE ORDERING DEFECT IS PINNED FROM THE SERVER'S SIDE
+// ## THE ORDERING IS PINNED FROM THE SERVER'S SIDE
 //
-// `--role bogus` POSTS THE TICKET and then refuses, leaving a real remote
-// issue with no local link; a duplicate `ext create` POSTs a SECOND ticket
-// before discovering the existing link. Both were found by reading the
-// fixture server's request log rather than the verb's output — nothing in
-// stdout, stderr or the exit code reveals either. Both are oracle defects,
-// reproduced under D2, and the case at the bottom of this file asserts the
-// REQUEST COUNT so that fixing them later is deliberate.
+// The last case in this file asserts the REQUEST COUNT, not the verb's
+// output, because the property it guards is invisible from stdout, stderr
+// and the exit code alike: NO REMOTE WRITE HAPPENS UNTIL EVERY LOCAL
+// PRECONDITION THAT COULD REFUSE HAS BEEN CHECKED.
+//
+// It used to pin the OPPOSITE. Under D2 this verb reproduced two oracle
+// defects — `--role bogus` POSTed the ticket and only then refused (6312),
+// and a repeat POSTed a SECOND ticket before discovering the existing link
+// (6313) — and the pin recorded those request counts so that fixing them
+// would be deliberate rather than silent. Decision 1067 retired D2's
+// bug-for-bug rule once the oracle was deleted and put both rows in its FIX
+// half, on the grounds that this is the only divergence on that board whose
+// consequence leaves the command: it writes a ticket into somebody's live
+// Jira or GitHub that Planar has no record of and cannot clean up. The
+// expectations below are therefore JUDGMENT, not measurement — the reference
+// that produced the old numbers is gone. See decision 1067 on that cost.
+//
+// Note what THIS file's `respond` can and cannot show about 6313. It answers
+// every Jira create with the same `DEMO-77`, so the old second POST collided
+// on `external_links`' `unique (entity_kind, entity_id, system_id,
+// external_id)` and the verb refused at exit 6. A REAL remote mints a fresh
+// id per POST, so that second insert would have SUCCEEDED: two tickets and
+// two links, no refusal at all. The exit 6 was measuring the FIXTURE. That
+// is why the gate ignores `external_id` — the post-insert constraint is not
+// a substitute for it — and why the ordering case at the bottom installs its
+// own INCREMENTING responder instead of `respond`, so that its assertions
+// are about the gate rather than about a canned id.
+//
+// ## THE GATE KEY IS FOUR FIELDS, AND EACH ONE IS PINNED
+//
+// `(entity_kind, entity_id, system_id, link_role)`. The ordering case walks
+// one sub-case per field in which THAT field is the only thing distinguishing
+// the new create from an existing link, and asserts the create SUCCEEDS.
+// Drop any single field from the handler's filter and exactly those
+// assertions turn into an exit-6 refusal. `link_role` is in the key on
+// purpose and is not a wider `(entity, system)` cardinality: `planar link`
+// writes a `reference` row on an entity+system pair with no gate at all, and
+// `load_existing_mirror`'s own contract says a non-mirror row for the same
+// entity does not suppress propagation. This verb must not be the one place
+// that rule is different.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -227,6 +260,12 @@ void seed(const fixture& fx, std::string_view base) {
     REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
                 .has_value());
     REQUIRE(conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (1, 'global', 1, 'Demo task')").has_value());
+    // A SECOND task of the same kind on the same plan. Nothing but the
+    // ordering case uses it, and that case needs it: it is the only way to
+    // ask whether the duplicate gate keys on `entity_id` at all, since
+    // `plan:1` differs from `task:1` in `entity_kind` too.
+    REQUIRE(
+        conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (2, 'global', 1, 'Second task')").has_value());
     REQUIRE(conn->execute("insert into decisions (id, scope_kind, title, body) values (1, 'global', 'Demo decision', 'because')")
                 .has_value());
   }
@@ -382,44 +421,123 @@ TEST_CASE("the --from ref is parsed loosely and refused late, in two exit-code b
   CHECK(scalar(fx, "select count(*) from external_links") == 0);
 }
 
-TEST_CASE("the remote is created BEFORE --role is validated and before the duplicate check",
-          "[cmd][ext][create][defect][ordering]") {
-  // TWO ORACLE DEFECTS, reproduced under D2 and pinned from the SERVER's
-  // side because neither is visible in the verb's own output. Fixing either
-  // later must be a deliberate, recorded divergence.
+TEST_CASE("no remote write happens until every local precondition has been checked", "[cmd][ext][create][ordering]") {
+  // Pinned from the SERVER's side: none of what follows is visible in the
+  // verb's own output. See this file's header on why these numbers are the
+  // inverse of what they were.
+  //
+  // This case does NOT use the file's shared `respond`. It mints a FRESH
+  // external id per POST, the way a real Jira or GitHub does, so that every
+  // "this is not a duplicate, it must go through" assertion below is decided
+  // by the handler's gate and not by `external_links`' UNIQUE. Under the
+  // shared fixed-id responder those same creates would collide on
+  // `external_id` and refuse at exit 6 — which is precisely the measurement
+  // artefact task 6313 was originally written from.
   std::vector<planar::http::fixture::captured_request> seen;
+  int                                                  minted = 0;
   planar::http::fixture::server                        remote([&](const planar::http::fixture::captured_request& req) {
     seen.push_back(req);
-    return respond(req);
+    minted += 1;
+    if (req.target.contains("rest/api/3/issue")) {
+      return planar::http::fixture::canned_response{
+          .status = 201, .body = std::format(R"({{"key":"DEMO-{}"}})", minted), .content_type = "application/json"};
+    }
+    return planar::http::fixture::canned_response{
+        .status       = 201,
+        .body         = std::format(R"({{"number":{},"html_url":"https://example.invalid/i/{}"}})", minted, minted),
+        .content_type = "application/json"};
   });
   auto const                                           fx = make_fixture("ordering");
   seed(fx, remote.base_url());
 
-  // Defect 1: a bad `--role` POSTs the ticket and THEN refuses, leaving a
-  // real remote issue with no local link.
+  // A bad `--role` refuses with the SAME message and the SAME exit code it
+  // always did. Only the request log moved.
   auto const bad_role = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1", "--role", "bogus"});
   CHECK(bad_role.code == 2);
   CHECK(bad_role.err == "error: invalid --role 'bogus'\n");
-  CHECK(seen.size() == 1);                                       // the POST happened
-  CHECK(scalar(fx, "select count(*) from external_links") == 0); // the link did not
+  CHECK(seen.empty());                                           // no ticket was created
+  CHECK(scalar(fx, "select count(*) from external_links") == 0); // and no link either
 
-  // Defect 2: a duplicate POSTs a SECOND ticket before discovering the
-  // existing link.
+  // `--sync` is validated on the same side of the POST as `--role`. It was
+  // never separately pinned; both flags were parsed in the same block after
+  // the request went out, so a fix that moved only one would have looked
+  // green here.
+  seen.clear();
+  auto const bad_sync = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1", "--sync", "sideways"});
+  CHECK(bad_sync.code == 2);
+  CHECK(bad_sync.err == "error: invalid --sync 'sideways'\n");
+  CHECK(seen.empty());
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+
+  // The success path still POSTs exactly once — the paired presence that
+  // keeps every `seen.empty()` above from being satisfied by a verb that
+  // reaches the server on no path at all.
   seen.clear();
   REQUIRE(dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1"}).code == 0);
   CHECK(seen.size() == 1);
   CHECK(scalar(fx, "select count(*) from external_links") == 1);
 
+  // The repeat is where the operator-visible damage was: it used to mint a
+  // SECOND ticket and only then refuse. Same exit code, zero requests, and a
+  // message that now NAMES THE ROLE, because under a role-scoped key the
+  // same entity and system with a different `--role` is a legitimate next
+  // command rather than the same refusal.
   seen.clear();
   auto const again = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1"});
   CHECK(again.code == 6);
-  CHECK(again.err == "error: external link for task:1 on jira-demo already exists\n");
-  CHECK(seen.size() == 1);                                       // a second ticket was created
-  CHECK(scalar(fx, "select count(*) from external_links") == 1); // and discarded
+  CHECK(again.err == "error: mirror external link for task:1 on jira-demo already exists\n");
+  CHECK(seen.empty());
+  CHECK(scalar(fx, "select count(*) from external_links") == 1);
 
-  // The paired presence for both counts above: a refusal that fires BEFORE
-  // the POST reaches the server not at all. Without this, `seen.size() == 1`
-  // could not be distinguished from "every path POSTs".
+  // PINS `link_role`. A `reference` alongside the `mirror` on the same
+  // entity and system is NOT a duplicate: `planar link` creates exactly that
+  // pair with no gate at all, and `load_existing_mirror` documents that a
+  // non-mirror row does not suppress propagation. A gate that dropped
+  // `link_role` would refuse this at exit 6 and leave no way back short of a
+  // manual DB write.
+  seen.clear();
+  auto const other_role = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1", "--role", "reference"});
+  CHECK(other_role.code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 2);
+  CHECK(scalar(fx, "select count(*) from external_links where link_role = 'reference'") == 1);
+
+  // ...and the repeat of THAT is refused in turn, naming the other role. The
+  // narrowing closes 6313 for every role, not just the default one.
+  seen.clear();
+  auto const other_role_again = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1", "--role", "reference"});
+  CHECK(other_role_again.code == 6);
+  CHECK(other_role_again.err == "error: reference external link for task:1 on jira-demo already exists\n");
+  CHECK(seen.empty());
+  CHECK(scalar(fx, "select count(*) from external_links") == 2);
+
+  // PINS `system_id`. The same entity on a DIFFERENT system is not a
+  // duplicate. A gate that dropped it would silently break the two-provider
+  // mirror the schema exists to allow.
+  seen.clear();
+  REQUIRE(dispatch(fx, {"ext", "create", "gh-demo", "--from", "task:1"}).code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 3);
+
+  // PINS `entity_kind`. `plan:1` and `task:1` are different entities that
+  // share an id, so a gate that dropped `entity_kind` would refuse this
+  // because of the `task:1` mirror above — and every other assertion in this
+  // file would still be green. That survivor is the reason this sub-case
+  // exists.
+  seen.clear();
+  REQUIRE(dispatch(fx, {"ext", "create", "jira-demo", "--from", "plan:1"}).code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 4);
+
+  // PINS `entity_id`. `task:2` shares its kind AND its system with `task:1`,
+  // so only the id distinguishes them; `plan:1` above cannot pin this field
+  // because it differs in `entity_kind` as well.
+  seen.clear();
+  REQUIRE(dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:2"}).code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 5);
+
+  // A refusal that always fired before the POST still does.
   seen.clear();
   CHECK(dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:999"}).code == 1);
   CHECK(seen.empty());

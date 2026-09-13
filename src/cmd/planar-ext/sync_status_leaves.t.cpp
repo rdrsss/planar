@@ -177,14 +177,20 @@ TEST_CASE("sync status lists every link when unfiltered", "[cmd][sync][status]")
   auto const text = dispatch(fx, {"sync", "status"});
   CHECK(text.code == 0);
   CHECK(text.err.empty());
-  // The `question:1` row MISALIGNS, and that is the oracle's. Only the id
-  // carries the column width, so a five-character kind pushes the rest of
-  // the line right. Straightening it here would be a silent divergence.
+  // ALIGNED AT TASK 6308. The `question:1` row used to push the rest of the
+  // line right, because only the ID carried the column width (`{}:{:<11}`)
+  // while the header promised `{:<14}`. Reproduced from the oracle under D2
+  // until decision 1067 ended that rule; the entity column is now padded as
+  // ONE field.
+  //
+  // `question:1` is what makes this case evidence: every other row here has a
+  // four-character kind, so a fixture of only `task:`/`plan:` rows would line
+  // up under both the old formatting and the new.
   CHECK(text.out == "link    entity          external-id         system    last-sync                 status\n"
-                    "1       task:1            PROJ-11             1         2026-01-02T03:04:05.678Z  ok\n"
-                    "2       task:2            o/r#7               2         never                     never\n"
-                    "3       plan:1            PROJ-12             1         2026-02-03T04:05:06.789Z  conflict\n"
-                    "4       question:1            o/r#8               2         never                     error\n");
+                    "1       task:1          PROJ-11             1         2026-01-02T03:04:05.678Z  ok\n"
+                    "2       task:2          o/r#7               2         never                     never\n"
+                    "3       plan:1          PROJ-12             1         2026-02-03T04:05:06.789Z  conflict\n"
+                    "4       question:1      o/r#8               2         never                     error\n");
 
   // Line-delimited objects, NOT an array. And `last_synced_at` is OMITTED
   // when NULL rather than rendered as `null`, so the key set varies row to

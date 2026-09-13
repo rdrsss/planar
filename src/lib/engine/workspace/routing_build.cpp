@@ -186,26 +186,59 @@ auto simple_glob_match(std::string_view pattern, std::string_view candidate) -> 
 
 /// @brief Does any entry of `root` match `pattern`?
 ///
-/// DIVERGENCE-REPRODUCING BRANCH. A pattern containing `/` is meant to scan
-/// the named subdirectory; in the oracle it never matches anything, because
-/// `patternFinds` frees the joined path before opening it. Measured over
-/// five consecutive builds and three fixtures — the full account, with the
-/// offending Zig lines, is in routing.cppm's header.
+/// A slash-bearing pattern scans the named subdirectory: everything before
+/// the LAST `/` is a directory path relative to `root`, and the remainder is
+/// globbed against that directory's entries. `proto/*.proto` therefore looks
+/// in `<root>/proto` for anything ending `.proto`.
 ///
-/// Reproduced rather than repaired: implementing the INTENT would make this
-/// binary emit capability tags the oracle never emits.
+/// FIXED AT TASK 6322 (decision 1067's FIX set). This branch previously
+/// returned false for ANY pattern containing `/`, reproducing a genuine
+/// use-after-free in the oracle: `patternFinds` freed the joined path before
+/// `openDir` saw it, and the `catch return false` swallowed the failure. The
+/// observable consequence was that every slash-bearing capability pattern
+/// silently matched nothing -- including the shipped `protobuf` rule's
+/// `proto/*.proto` arm, and any subdirectory glob in an operator's own rules
+/// file, with no diagnostic. Measured deterministic over five builds and
+/// three fixtures before it was reproduced, and again before it was fixed.
+///
+/// Reproducing it was correct while the oracle existed (D2), because
+/// repairing it emits capability tags the oracle never emits and the routing
+/// table is a persisted WRITE path. Decision 1067 ended that: the bug-for-bug
+/// rule does not outlive the oracle, and this row was in its FIX set.
+///
+/// A traversing pattern (`..`) is refused rather than followed -- the rules
+/// file is operator-authored but the scan is rooted at a project directory,
+/// and escaping it would let a rule probe arbitrary paths.
 ///
 /// No entry-kind test, deliberately: the original matches a directory's name
-/// as readily as a file's.
+/// as readily as a file's, and that part was never the defect.
 auto pattern_finds(const std::filesystem::path& root, std::string_view pattern) -> bool {
   if (pattern.empty()) {
     return false;
   }
-  if (pattern.find('/') != std::string_view::npos) {
-    return false;
+
+  auto       scan_root = root;
+  auto       leaf      = pattern;
+  auto const slash     = pattern.find_last_of('/');
+  if (slash != std::string_view::npos) {
+    auto const dir_part = pattern.substr(0, slash);
+    leaf                = pattern.substr(slash + 1);
+    if (leaf.empty() || dir_part.empty()) {
+      return false;
+    }
+    // Refuse traversal rather than normalizing it away: a rule that escapes
+    // the project root is a rules-file bug, and silently clamping it would
+    // hide that the same way the original defect hid itself.
+    for (auto const part : split(dir_part, '/')) {
+      if (part == ".." || part.empty()) {
+        return false;
+      }
+      scan_root /= part;
+    }
   }
-  for (const auto& entry : list_dir(root)) {
-    if (simple_glob_match(pattern, entry.name)) {
+
+  for (const auto& entry : list_dir(scan_root)) {
+    if (simple_glob_match(leaf, entry.name)) {
       return true;
     }
   }

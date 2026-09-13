@@ -38,7 +38,16 @@ auto check_task(std::string_view from, std::string_view to) -> std::expected<voi
   } else if (from == "doing") {
     legal = to == "todo" || to == "blocked" || to == "done" || to == "cancelled";
   } else if (from == "blocked") {
-    legal = to == "doing" || to == "done" || to == "cancelled";
+    // `todo` added at task 6441. Every other exit from `blocked` already
+    // existed, but none of them says "the blocker cleared and this is
+    // queued again": `doing` claims work is in progress (and `planar-agent
+    // pull` is what legitimately makes that true), `done` and `cancelled`
+    // are terminal. The sanctioned recovery was therefore to CANCEL and
+    // then `reopen --reason` — writing a cancellation that never
+    // semantically happened into the audit trail for an ordinary lifecycle
+    // event. A plan with dependency edges hits this every time a blocker
+    // closes, because completing a blocker does NOT clear the dependent.
+    legal = to == "todo" || to == "doing" || to == "done" || to == "cancelled";
   } else if (from == "done" || from == "cancelled") {
     legal = false; // terminal for bare update; escape via reopen/force.
   } else {

@@ -296,7 +296,13 @@ TEST_CASE("resolve_for_write: explicit --scope wins over cwd derivation, even wh
   CHECK(*res->scope == "flag-org");
 }
 
-TEST_CASE("resolve_for_write: falls back to cwd derivation when no --scope flag is passed", "[scope][resolve_for_write]") {
+TEST_CASE("resolve_for_write: falls back to cwd derivation when no --scope flag is passed", "[scope][resolve_for_write][6746]") {
+  // The member repo WINS over the org it belongs to (decision on task 6746).
+  // This case previously expected "myorg": the write path used to map the
+  // cwd's project to its single association, so it could never return a
+  // `repo:` scope at all, while `scope show` — reading the same cwd through
+  // `resolve_read_scope_set`'s specificity ranking — reported `repo:myrepo`.
+  // The two answers disagreed, and the ranking is the documented one.
   scratch_db_path scratch;
   auto            conn       = open_migrated(scratch);
   const auto      project_id = insert_project(conn, "myrepo", "/work/myrepo");
@@ -307,7 +313,7 @@ TEST_CASE("resolve_for_write: falls back to cwd derivation when no --scope flag 
   REQUIRE(res.has_value());
   CHECK_FALSE(res->from_explicit_flag);
   REQUIRE(res->scope.has_value());
-  CHECK(*res->scope == "myorg");
+  CHECK(*res->scope == "repo:myrepo");
   CHECK(res->reason == derive_reason::project_single_association);
 }
 
@@ -462,7 +468,12 @@ TEST_CASE("resolve_for_write: a SIBLING path sharing a prefix is not inside the 
   auto res = resolve_for_write(conn, std::nullopt, "/work/meta-other/src");
   REQUIRE(res.has_value());
   REQUIRE(res->scope.has_value());
-  CHECK(*res->scope == "other-org");
+  // The SUBJECT of this case is that the sibling path is not treated as
+  // inside the workspace, so resolution falls through to cwd derivation.
+  // WHICH scope that fallback yields is incidental here and is pinned by the
+  // "falls back to cwd derivation" case above; it became `repo:other` at
+  // task 6746 when the write path adopted the read path's ranking.
+  CHECK(*res->scope == "repo:other");
 }
 
 TEST_CASE("resolve_for_write: an org WITHOUT the meta-repo shape is not a meta workspace", "[scope][resolve_for_write][6134]") {
@@ -478,7 +489,10 @@ TEST_CASE("resolve_for_write: an org WITHOUT the meta-repo shape is not a meta w
   auto res = resolve_for_write(conn, std::nullopt, "/work/myrepo");
   REQUIRE(res.has_value());
   REQUIRE(res->scope.has_value());
-  CHECK(*res->scope == "myorg");
+  // As above: the SUBJECT is that an org without the meta-repo shape is not a
+  // meta workspace, so this falls through to cwd derivation. The resulting
+  // scope is incidental and changed at task 6746.
+  CHECK(*res->scope == "repo:myrepo");
 }
 
 TEST_CASE("resolve_meta_workspace_write_scope: reports `none` when no meta workspace is registered",
@@ -584,6 +598,38 @@ void seed_project(planar::db::connection& conn, std::string_view root) {
 }
 
 } // namespace
+
+TEST_CASE("the write scope and the read scope AGREE for the same cwd", "[engine][identity][scope][6746]") {
+  // The invariant task 6746 exists for. `scope show` renders
+  // `resolve_read_scope_set`; every cwd-derived write goes through
+  // `resolve_for_write`. Before 6746 those two answered DIFFERENTLY from the
+  // same working directory — a write inside a member repo landed in the org
+  // while `scope show` said `repo:<slug>` — so the verb an operator uses to
+  // ask "where will this write land?" was wrong.
+  //
+  // This case fails if the two resolvers drift apart again, which the three
+  // updated `resolve_for_write` cases above cannot catch on their own: they
+  // pin the write side alone.
+  scratch_db_path scratch;
+  auto            conn       = open_migrated(scratch);
+  const auto      project_id = insert_project(conn, "myrepo", "/work/myrepo");
+  const auto      assoc_id   = insert_association(conn, "myorg");
+  link_project_association(conn, project_id, assoc_id);
+
+  auto const write = resolve_for_write(conn, std::nullopt, "/work/myrepo/src");
+  REQUIRE(write.has_value());
+  REQUIRE(write->scope.has_value());
+
+  auto const read = resolve_read_scope_set(conn, "/work/myrepo/src", std::nullopt);
+  REQUIRE(read.has_value());
+  REQUIRE(read->size() == 1);
+
+  // Same scope, expressed in each resolver's own vocabulary: the write path
+  // returns a `repo:<slug>` label, the read path a `(kind, id)` pair.
+  CHECK(*write->scope == "repo:myrepo");
+  CHECK((*read)[0].kind == scope_kind::repo);
+  CHECK((*read)[0].id == project_id);
+}
 
 TEST_CASE("resolve_read_scope_set returns EMPTY for a cwd outside every registered root", "[engine][identity][scope][6141]") {
   // An empty set is a meaningful answer the caller must REFUSE on, not an

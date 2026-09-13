@@ -44,6 +44,8 @@ auto is_short_flag(std::string_view token) -> bool {
 /// unit tests call `parse_args` directly, and `task add` collapsed to `task`.
 /// A default that degrades the result is a trap; deriving it internally means
 /// no caller can get it wrong.
+/// @return The set of top-level verbs that have subcommands, built once on
+/// first call and returned by reference thereafter.
 auto parent_verb_set() -> const std::set<std::string, std::less<>>& {
   static const std::set<std::string, std::less<>> verbs = [] {
     std::set<std::string, std::less<>> out;

@@ -290,6 +290,39 @@ auto task_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                         "pass `--body <text>` or `--editor=false`"));
   }
 
+  // TASK 6340: `--plan` and `--parent` are resolved BEFORE the insert. Both
+  // are foreign keys, so a nonexistent id used to reach SQLite and surface as
+  // two raw lines naming neither the flag nor the id:
+  //
+  //     error: task.create exec failed: StepFailed
+  //     error: task add: QueryFailed
+  //
+  // An operator who fat-fingered a plan id got a driver error and no way to
+  // tell which of the two references was wrong.
+  for (auto const& [flag, kind, table] : std::initializer_list<std::tuple<const char*, const char*, const char*>>{
+           {"--plan", "plan", "plans"}, {"--parent", "task", "tasks"}}) {
+    auto const referenced = cliapp::flag_int(args, flag);
+    if (!referenced.has_value()) {
+      continue;
+    }
+    // `table` is a literal from the list above, never operator input.
+    auto probe = (*conn)->prepare(std::format("select 1 from {} where id = ?", table));
+    if (!probe) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task add: reference lookup: QueryFailed"));
+    }
+    if (auto bound = probe->bind_int64(1, *referenced); !bound) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task add: reference lookup: QueryFailed"));
+    }
+    auto stepped = probe->step();
+    if (!stepped) {
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task add: reference lookup: QueryFailed"));
+    }
+    if (*stepped != db::step_result::row) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::not_found, std::format("no {} with id {} for {}", kind, *referenced, flag)));
+    }
+  }
+
   // Every optional argument is threaded EXPLICITLY. `task_create_args`
   // default-constructs all of them, so an omission here is invisible at
   // compile time and shows up only as a NULL column in a row that
@@ -1160,12 +1193,32 @@ auto resolve_infer_repo(context& ctx, db::connection& conn, std::optional<std::s
     }
     auto root = stmt->column_text(2);
     // Longest matching prefix wins, so a submodule checkout beats its
-    // superproject. Plain `starts_with` on the STRING, exactly as the oracle
-    // does it — no path-component normalisation, so `/a/repo2` does match a
-    // registration at `/a/repo`. That is the oracle's behaviour and is
-    // reproduced rather than corrected.
-    if (root.empty() || !cwd.starts_with(root)) {
+    // superproject.
+    //
+    // THE MATCH IS ON PATH COMPONENTS, not on the raw string (task 6331).
+    // A plain `cwd.starts_with(root)` — what the oracle did and what this
+    // reproduced — matches `/a/repo2` against a registration at `/a/repo`,
+    // so work done in one repository was attributed to a differently-named
+    // sibling. Silently: `touches infer` writes the edges and reports
+    // success, naming the wrong repo in output an operator has no reason to
+    // re-read.
+    //
+    // The boundary test is what makes it a path prefix: `cwd` must either BE
+    // `root`, or continue with a separator. A trailing separator already
+    // stored on `root` is tolerated so a registration of `/a/repo/` behaves
+    // the same as `/a/repo`.
+    if (root.empty()) {
       continue;
+    }
+    {
+      auto const trimmed =
+          (root.size() > 1 && root.back() == '/') ? std::string_view{root}.substr(0, root.size() - 1) : std::string_view{root};
+      if (!cwd.starts_with(trimmed)) {
+        continue;
+      }
+      if (cwd.size() > trimmed.size() && cwd[trimmed.size()] != '/') {
+        continue;
+      }
     }
     if (best.has_value() && root.size() <= best->root.size()) {
       continue;

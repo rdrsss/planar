@@ -40,6 +40,10 @@ enum class flow_error : std::uint8_t {
   parse_failed,
   editor_failed,
   illegal_transition,
+  /// TASK 6212's sibling, task 6207: `question edit` cannot reach `answered`.
+  /// Unlike every variant above this one does NOT render as a Zig tag -- see
+  /// `bare_error`.
+  question_answer_required,
 };
 
 /// @brief The Zig `@errorName` tag for a failure.
@@ -70,6 +74,14 @@ auto zig_error_name(flow_error err) -> std::string_view {
     return "EditorFailed";
   case flow_error::illegal_transition:
     return "IllegalTransition";
+  case flow_error::question_answer_required:
+    // Never reached. This variant is produced by `apply_mutations`, whose
+    // only caller is `edit`, which renders through `bare_error` -- and
+    // `bare_error` special-cases it before asking for a tag. `prose_error`
+    // (diff/review) never sees it because those paths do not mutate. The arm
+    // exists so the switch stays exhaustive; if a future caller does reach
+    // it, `QueryFailed` is the tag it would have produced before task 6207.
+    return "QueryFailed";
   }
   return "Unknown";
 }
@@ -83,6 +95,23 @@ auto zig_error_name(flow_error err) -> std::string_view {
 /// @param err The failure.
 /// @return The domain error.
 auto bare_error(flow_error err) -> domain_error {
+  // TASK 6207, the ONE variant that does not render as a bare tag. Setting
+  // `status: answered` in a question's front matter used to pass the parser
+  // and the (absent) transition guard and then hit the TABLE's own CHECK --
+  // `(status='answered' and answer_body is not null and answered_at is not
+  // null) or status != 'answered'` -- surfacing as a bare `QueryFailed` that
+  // named neither the constraint nor `question answer`, the verb that does
+  // this correctly by setting all three columns together.
+  //
+  // The tag convention exists to reproduce the oracle's output. Decision 1067
+  // ended that obligation, and a driver tag is exactly the kind of message
+  // that leaves an operator with nowhere to go.
+  if (err == flow_error::question_answer_required) {
+    return error_from_body(domain_error_kind::invalid_input,
+                           "cannot set a question to 'answered' by editing front matter: the row also requires an answer "
+                           "body and an answered_at timestamp. Use `planar question answer <id> --answer <text>`, which "
+                           "sets all three together.");
+  }
   return error_from_body(domain_error_kind::generic_failure, std::string{zig_error_name(err)});
 }
 
@@ -987,6 +1016,13 @@ auto apply_mutations(db::connection& conn, entity_kind kind, std::int64_t id, st
                      std::optional<std::string> status) -> std::expected<void, flow_error> {
   if (!title.has_value() && !status.has_value()) {
     return {};
+  }
+
+  // TASK 6207: refuse BEFORE SQLite does, with a message that names the
+  // remedy. `apply_mutations` writes title and status only, so `answered`
+  // can never satisfy the questions table's CHECK from this path.
+  if (kind == entity_kind::question && status.has_value() && *status == "answered") {
+    return std::unexpected(flow_error::question_answer_required);
   }
 
   if (kind == entity_kind::scenario && status.has_value()) {

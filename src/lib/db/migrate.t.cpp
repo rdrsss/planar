@@ -582,6 +582,50 @@ TEST_CASE("the embedded migration chain is CONTIGUOUS, not merely monotonic", "[
   REQUIRE_FALSE(planar::db::require_contiguous(offset).has_value());
 }
 
+TEST_CASE("apply_contiguous REFUSES a non-contiguous chain before running anything", "[db][migrate][guard][6697]") {
+  // Task 6697. The contiguity PREDICATE was pinned -- a case calls
+  // `require_contiguous` directly -- but its ENFORCEMENT POINT was not:
+  // deleting the call from `apply_all(connection&)` rebuilt clean and passed
+  // 3429 tests, exit 0. It could not fail, because the embedded chain IS
+  // contiguous, so the guard never fires in production.
+  //
+  // `apply_contiguous` exists so the enforcement is reachable with a chain a
+  // test controls. The span overload of `apply_all` deliberately does NOT
+  // enforce (it is the seam for partial chains), so this is the only place
+  // the wiring can be observed.
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  // A chain that SKIPS the first record: versions 2..4 with no 1.
+  auto const gapped = planar::db::migrations().subspan(1, 3);
+  auto const result = planar::db::apply_contiguous(*conn, gapped);
+  REQUIRE_FALSE(result.has_value());
+
+  // ASSERT WHICH FAILURE. `REQUIRE_FALSE` alone is not discriminating here,
+  // and a first cut of this case was INERT for exactly that reason: with the
+  // guard unwired, `apply_all` runs migration 2 without migration 1 and
+  // fails on its own SQL, so the call returns an error either way. Only the
+  // MESSAGE separates "refused by the guard" from "blew up downstream".
+  CHECK(result.error().message_.contains("migration chain is not contiguous"));
+  CHECK(result.error().message_.contains("position 0 holds version 2"));
+
+  // And refused BEFORE running anything.
+  auto probe = conn->prepare("select count(*) from sqlite_master where type='table' and name='schema_migrations'");
+  REQUIRE(probe.has_value());
+  REQUIRE(probe->step());
+  CHECK(probe->column_int64(0) == 0);
+}
+
+TEST_CASE("apply_contiguous ACCEPTS the embedded chain, so the refusal above is not vacuous", "[db][migrate][guard][6697]") {
+  // Non-vacuity for the case above: without this, an `apply_contiguous` that
+  // refused every chain unconditionally would still look correct.
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  CHECK(planar::db::apply_contiguous(*conn, planar::db::migrations()).has_value());
+}
+
 TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[db][migrate][guard]") {
   auto const head = planar::db::embedded_max();
   REQUIRE(head == 36);
@@ -638,6 +682,40 @@ TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[d
     auto const state = planar::db::assert_schema_compatible(*conn);
     REQUIRE(state.has_value());
     CHECK(state->live_ == 20);
+    CHECK(state->verdict_ == planar::db::schema_compatibility::gap);
+  }
+
+  SECTION("a NON-POSITIVE version is a gap that the count/max comparison alone cannot see") {
+    // Task 6696. The `lowest != 1` half of `has_hole` had NO fixture: a
+    // reviewer probe deleting it left `ctest -L db` at 31/31. It is very
+    // nearly redundant -- with unique versions >= 1, `applied == live`
+    // already implies the set is exactly 1..live, so `lowest` must be 1 --
+    // and `schema_migrations.version` carries no CHECK constraint, so the
+    // ONLY way to reach the clause is a row at version <= 0.
+    //
+    // Constructed so the OTHER half is false: versions {0, 2, 3} give
+    // count == 3 and max == 3, so `applied != live_` does NOT fire. Only
+    // `lowest != 1` catches it. That makes this the exact fixture the
+    // surviving probe was missing.
+    scratch_db_path scratch;
+    auto            conn = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::db::apply_all(*conn, planar::db::migrations().subspan(0, 3)));
+    REQUIRE(conn->execute("delete from schema_migrations where version = 1;"));
+    REQUIRE(conn->execute("insert into schema_migrations (version, description) values (0, 'hand-corrupted');"));
+
+    // Non-vacuity: the arithmetic the clause depends on really does hide
+    // this from the count/max half.
+    auto checks = conn->prepare("select max(version), count(*), min(version) from schema_migrations");
+    REQUIRE(checks.has_value());
+    REQUIRE(checks->step());
+    CHECK(checks->column_int64(0) == 3); // live_
+    CHECK(checks->column_int64(1) == 3); // applied == live_, so that half is FALSE
+    CHECK(checks->column_int64(2) == 0); // lowest != 1, so this half is the only one left
+
+    auto const state = planar::db::assert_schema_compatible(*conn);
+    REQUIRE(state.has_value());
+    CHECK(state->live_ == 3);
     CHECK(state->verdict_ == planar::db::schema_compatibility::gap);
   }
 

@@ -525,16 +525,18 @@ TEST_CASE("the text renderer emits the oracle's exact bytes, banner defect inclu
         "    branch:  (none)  target: (unknown)\n"
         "    note:    no commit attribution — inconclusive (hardens once session-commit capture is wired)\n");
 
-  // THE BANNER DEFECT, pinned so it cannot be "fixed" without a failing
-  // test forcing the conversation. This plan is `active` and this call
-  // writes nothing, yet the oracle's middle arm says "already terminal".
+  // THE BANNER, corrected at task 6318. This plan is `active` and the call
+  // writes nothing; the old middle arm said "already terminal" anyway, for
+  // every `--dry-run` on an open closeable plan -- the opposite of the
+  // state the operator was asking about. `dry_run` now discriminates.
   auto const ready_plan = seed_plan(conn, "render-ready", "active");
   auto const ready      = co::evaluate(conn, ready_plan, false, false);
   REQUIRE(ready.has_value());
   REQUIRE(ready->ready);
   REQUIRE_FALSE(ready->applied);
-  CHECK(co::render_text(*ready, true).starts_with("[dry-run] plan 2: ready (already terminal — no change)\n"));
-  // And with no `[dry-run] ` prefix when apply mode produced the same state.
+  CHECK(co::render_text(*ready, true).starts_with("[dry-run] plan 2: ready to close (no change made)\n"));
+  // Apply mode reaching this arm DOES mean already-terminal: a ready plan
+  // that was not already terminal would have set `applied`.
   CHECK(co::render_text(*ready, false).starts_with("plan 2: ready (already terminal — no change)\n"));
 
   // The applied banner, and the absence of both optional sections.
@@ -599,6 +601,14 @@ TEST_CASE("the git probes compose each note arm", "[engine][planning][closeout][
   REQUIRE(sh(std::format("git -C '{0}' checkout -q -b unmerged-branch && touch '{0}/c.txt' && git -C '{0}' add c.txt "
                          "&& git -C '{0}' commit -qm c",
                          repo)));
+  // TASK 6321: a branch name past the oracle's 117-byte ceiling. Before the
+  // fix, `branch_exists` refused to probe anything whose `refs/heads/<name>`
+  // exceeded a 128-byte buffer and reported it ABSENT -- a closeout saying
+  // "the branch is gone" about a branch that is right there.
+  std::string const long_branch(120, 'x');
+  REQUIRE(sh(std::format("git -C '{0}' checkout -q -b {1} && touch '{0}/d.txt' && git -C '{0}' add d.txt "
+                         "&& git -C '{0}' commit -qm d",
+                         repo, long_branch)));
   REQUIRE(sh(std::format("git -C '{}' checkout -q main", repo)));
   // Fixture shape: the repo really does have a detectable origin/HEAD.
   REQUIRE(sh(std::format("git -C '{}' symbolic-ref --short refs/remotes/origin/HEAD", repo)));
@@ -612,10 +622,11 @@ TEST_CASE("the git probes compose each note arm", "[engine][planning][closeout][
   seed_claim(conn, "arm-unmerged", task_id, "released", k_future, repo, "unmerged-branch", base_sha);
   seed_claim(conn, "arm-absent", task_id, "released", k_future, repo, "absent-branch", base_sha);
   seed_claim(conn, "arm-nosha", task_id, "released", k_future, repo, "merged-branch", std::nullopt);
+  seed_claim(conn, "arm-longname", task_id, "released", k_future, repo, long_branch, base_sha);
 
   auto const result = co::evaluate(conn, plan_id, false, true);
   REQUIRE(result.has_value());
-  REQUIRE(result->git.size() == 4);
+  REQUIRE(result->git.size() == 5);
 
   // Every entry detected the target, which is the property the oracle cannot
   // reach at all.
@@ -645,11 +656,20 @@ TEST_CASE("the git probes compose each note arm", "[engine][planning][closeout][
   CHECK(result->git[3].branch_merged == true);
   CHECK(result->git[3].note == "base-merged=unknown; branch-merged=true");
 
+  // TASK 6321. A 120-byte branch name -- `refs/heads/` + 120 = 131, past the
+  // removed 128-byte ceiling. It must be PROBED, not declared absent. The
+  // discriminating assertion is `branch_merged.has_value()`: before the fix
+  // this arm produced "branch absent -- inconclusive" with no value, exactly
+  // like `arm-absent` above, for a branch that exists.
+  CHECK(result->git[4].branch_merged.has_value());
+  CHECK(result->git[4].branch_merged == false); // real answer: created off main, never merged back
+  CHECK(result->git[4].note != "branch absent — inconclusive");
+
   REQUIRE(result->epic_merge.has_value());
   CHECK(result->epic_merge->target_branch == "main");
-  CHECK(result->epic_merge->total_branches == 3); // merged, unmerged, absent
+  CHECK(result->epic_merge->total_branches == 4); // merged, unmerged, absent, long-name
   CHECK(result->epic_merge->merged_count == 1);   // only `merged-branch`
-  CHECK(result->epic_merge->note == "1 of 3 contributing branch(es) merged to main (advisory; absent branches inconclusive)");
+  CHECK(result->epic_merge->note == "1 of 4 contributing branch(es) merged to main (advisory; absent branches inconclusive)");
 
   std::error_code ec;
   std::filesystem::remove_all(root, ec);

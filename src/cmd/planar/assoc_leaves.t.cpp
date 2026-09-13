@@ -5,16 +5,20 @@
 // ## THE FIXTURE SEEDS WITH ABSOLUTE PATHS, AND THAT IS LOAD-BEARING HERE
 // ## IN A WAY IT IS NOT ANYWHERE ELSE
 //
-// `assoc add <slug> .` stores the literal string `.` in
-// `projects.root_path` (oracle defect, task 6256). Every other suite that
-// has tripped on this lost the *cwd-derivation* arm and passed vacuously
-// on an empty answer. This suite would lose something worse: `assoc
-// remove` matches `root_path` by STRING EQUALITY, so a fixture that seeds
-// with `.` and removes with an absolute path gets `NotAMember` — and a
-// "the membership is gone" assertion is then satisfied by a membership
-// that was never created. The remove cases therefore assert the row EXISTS
-// (via `assoc members`) BEFORE removing it, so a vacuous seed fails at the
-// seed rather than passing at the end.
+// `assoc add <slug> .` USED to store the literal string `.` in
+// `projects.root_path` (task 6256, fixed 2026-09-12: a relative repo-path is
+// now resolved against the invocation cwd and lexically normalised, while an
+// absolute one still goes in verbatim). Every other suite that tripped on
+// this lost the *cwd-derivation* arm and passed vacuously on an empty
+// answer. This suite would have lost something worse: `assoc remove` matches
+// `root_path` by STRING EQUALITY, so a fixture that seeded with `.` and
+// removed with an absolute path got `NotAMember` — and a "the membership is
+// gone" assertion was then satisfied by a membership that was never created.
+//
+// The absolute-path seeding and the assert-it-EXISTS-before-removing
+// discipline both STAY. They cost nothing, and they are what makes a vacuous
+// seed fail at the seed rather than pass at the end — which is a property
+// worth keeping whether or not `.` happens to work today.
 //
 // ## `assoc list --kind` BINDS THE HYPHENATED WIRE FORM, AND ONE KIND
 // ## PROVES IT

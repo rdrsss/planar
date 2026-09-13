@@ -789,19 +789,27 @@ auto sync_status(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   }
 
   // Column widths are the oracle's `{s:<6} {s:<14} {s:<18} {s:<8} {s:<24}`
-  // separated by TWO spaces each. On the data rows the entity column is not
-  // one padded field but `<kind>:<id>` where only the ID carries the width,
-  // so the rendered column is wider than its header whenever the kind is
-  // longer than three characters. That is the oracle's, not a bug to fix
-  // here.
+  // separated by TWO spaces each.
+  //
+  // TASK 6308: the entity column is padded AS ONE FIELD. It used to render
+  // as `<kind>:<id>` with only the ID carrying the width (`{}:{:<11}`), so
+  // every kind longer than three characters pushed the rest of the line
+  // right and the data rows stopped lining up with their own header --
+  // `question:1` and `test_scenario:1` visibly so. Reproduced from the
+  // oracle under D2 until decision 1067 ended that rule.
+  //
+  // The composed field is padded to the header's 14, so a kind long enough
+  // to overflow it (`test_scenario:` is 14 on its own) still pushes right --
+  // that is ordinary column behaviour, not the defect, and `{:<14}` is what
+  // the header promises.
   ctx.out() << std::format("{:<6}  {:<14}  {:<18}  {:<8}  {:<24}  {}\n", "link", "entity", "external-id", "system", "last-sync",
                            "status");
   std::string out;
   for (auto const& row : *rows) {
-    auto const last = row.last_synced_at.has_value() ? std::string_view{*row.last_synced_at} : std::string_view{"never"};
-    out += std::format("{:<6}  {}:{:<11}  {:<18}  {:<8}  {:<24}  {}\n", row.link_id,
-                       link_ns::external_entity_kind_to_text(row.entity_kind), row.entity_id, row.external_id, row.system_id,
-                       last, link_ns::sync_status_to_text(row.last_sync_status));
+    auto const last   = row.last_synced_at.has_value() ? std::string_view{*row.last_synced_at} : std::string_view{"never"};
+    auto const entity = std::format("{}:{}", link_ns::external_entity_kind_to_text(row.entity_kind), row.entity_id);
+    out += std::format("{:<6}  {:<14}  {:<18}  {:<8}  {:<24}  {}\n", row.link_id, entity, row.external_id, row.system_id, last,
+                       link_ns::sync_status_to_text(row.last_sync_status));
   }
   ctx.out() << out;
   return {};

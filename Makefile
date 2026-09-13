@@ -185,6 +185,43 @@ endef
 CPP_FILES := $(shell find src scripts/toolchain-probes -type f \( -name '*.cppm' -o -name '*.cpp' \) \
 	-not -path '*/vendor/*' -not -path '*/build/*' 2>/dev/null)
 
+.PHONY: cpp-lint-gate
+cpp-lint-gate: ## The GATING half of cpp-lint (clang-format --Werror + doxygen); composed into test-all
+	# TASK 6054. `cpp-lint` has three steps and only TWO of them gate: a
+	# nonzero exit from `clang-format --Werror` or from the Doxygen pass
+	# (WARN_AS_ERROR=YES) stops the recipe. `clang-tidy` is advisory — no
+	# --warnings-as-errors, no WarningsAsErrors key in .clang-tidy, 105
+	# residual findings (task 6439) — so it exits 0 regardless and cannot
+	# gate anything.
+	#
+	# That asymmetry is what let this composition stay deferred: the
+	# objection recorded above `test-all` was clang-tidy's RUNTIME over the
+	# whole module graph, and that it is advisory. Both are true of
+	# clang-tidy and neither is true of the two steps that actually gate,
+	# so this target runs those two and `test-all` takes it.
+	#
+	# Doxygen still needs the module BMIs materialized, same as clang-tidy
+	# (task 6049 F3), but `test-all` reaches this only after `test` and
+	# `cli-usage-check` have configured and built $(CPP_BUILD_DIR), so the
+	# build below is a no-op in that path and a correctness guard when the
+	# target is run alone.
+	$(call require_pinned_llvm,$(CLANG_FORMAT_BIN))
+	@echo "== cpp-lint-gate: clang-format --dry-run --Werror (pinned $(CLANG_FORMAT_BIN)) =="
+	$(CLANG_FORMAT_BIN) --dry-run --Werror $(CPP_FILES)
+	cmake --build $(CPP_BUILD_DIR)
+	@echo "== cpp-lint-gate: doxygen Doxyfile.lint (retries only on signal death; see docs/toolchain-parity.md) =="
+	# A HIGHER retry bound than interactive `cpp-lint` uses. doxygen 1.18.0
+	# has a content-independent SIGBUS at a measured 25-50% per run (task
+	# 6077/6315), so the default bound of 3 leaves a composed gate failing
+	# somewhere between 1% and 12% of the time for no reason at all -- and a
+	# gate that fails randomly is one people learn to ignore. Eight attempts
+	# puts that under a percent.
+	#
+	# This cannot mask a finding: cpp-lint-doxygen.sh treats a genuine
+	# WARN_FORMAT diagnostic as authoritative and never retries it, however
+	# many attempts remain. Only a crash with NO diagnostic text is retried.
+	DOXYGEN_MAX_ATTEMPTS=8 scripts/cpp-lint-doxygen.sh Doxyfile.lint
+
 cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C++ (docs/toolchain-parity.md)
 	$(call require_pinned_llvm,$(CLANG_FORMAT_BIN))
 	$(call require_pinned_llvm,$(CLANG_TIDY_BIN))
@@ -297,14 +334,20 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 # entire C++ tree before the cheap gates run. That reason is now WEAKER
 # than it was: since the M10 cutover (task 6045) the C++ tree is the only
 # implementation, so `make test` builds it anyway and the precondition
-# costs nothing at the point cpp-lint would run. What still argues against
-# composing it in is clang-tidy's runtime over the whole module graph, and
-# that it is advisory (no --warnings-as-errors; 105 residual findings, task
-# 6439). Revisit together with adding the gate to CI — this repo has no
-# .github/workflows at all today, so until then C++ format/tidy drift rides
-# on operator discipline plus `make fmt-check`.
+# costs nothing at the point cpp-lint would run.
+#
+# RESOLVED AT TASK 6054 by splitting the recipe rather than composing all of
+# it. `cpp-lint-gate` runs the two steps that actually GATE — clang-format
+# --Werror and the Doxygen pass — and `test-all` takes that. Full `cpp-lint`
+# stays an explicit target because clang-tidy is the slow half AND the
+# advisory half (no --warnings-as-errors; 105 residual findings, task 6439),
+# so composing it would add runtime while gating nothing.
+#
+# C++ format and doc-comment drift therefore no longer rides on operator
+# discipline. Tidy drift still does, as does everything else, because this
+# repo has no .github/workflows at all today.
 .PHONY: test-all
-test-all: test coverage cli-usage-check surface-check ## Run the unit suite, coverage, and the composed authored-surface gates
+test-all: test coverage cli-usage-check surface-check cpp-lint-gate ## Run the unit suite, coverage, the authored-surface gates, and the gating half of cpp-lint
 
 # RE-POINTED AT clang-format (plan 996, task 6045). These ran `zig fmt` over
 # `zig/`. With that tree deleted the formatter of record is the PINNED LLVM's

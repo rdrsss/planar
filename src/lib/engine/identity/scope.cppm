@@ -9,7 +9,11 @@
 ///     `--scope \<slug\>` parsing/reverse-lookup plumbing.
 ///   - zig/src/engine/policy/scope_guard.zig's `check` — the pure
 ///     entity-scope-vs-write-scope comparison the cross-scope guard runs
-///     before every guarded mutation (docs/concepts.md §cross-scope-guard).
+///     before a guarded mutation. NOT before every mutation: only eight
+///     verbs guard at all, and two of them (`task update`, `closure
+///     compute`) call THIS function directly while the other six go through
+///     the cmd-layer `guard_with_membership` wrapper. Measured at task 6075;
+///     see docs/concepts.md §cross-scope-guard for the list.
 ///     Folded into this module rather than a separate `policy` bucket:
 ///     no `policy` module exists yet in the C++ tree, and the guard is one
 ///     small pure function tightly coupled to scope vocabulary — the Zig
@@ -199,13 +203,16 @@ export auto slug_from_ref(db::connection& conn, scope_kind kind, std::optional<s
 export auto check_scope_guard(std::optional<std::string_view> entity_scope, std::optional<std::string_view> write_scope)
     -> std::expected<void, scope_error>;
 
-/// @brief `check_scope_guard`, with the documented `--no-scope-check`
-/// escape hatch (docs/concepts.md §cross-scope-guard, "Escape hatch")
-/// folded in: when `no_scope_check` is true, the check is skipped
-/// entirely and the write is always allowed. Rendering the "downgrades to
-/// a one-line stderr warning" half of that contract is a `cmd/`-layer
-/// concern (this module has no output surface); callers that pass `true`
-/// are expected to emit their own warning first.
+/// @brief `check_scope_guard` with a bypass parameter: when `no_scope_check`
+/// is true the check is skipped entirely and the write is always allowed.
+///
+/// UNREACHABLE FROM THE CLI. This was ported to mirror a `--no-scope-check`
+/// flag that does not exist on this binary — `planar schema` declares it on
+/// no command, and passing it fails at parse time with exit 2. No `cmd/`
+/// handler calls this function with `true`, so no verb can reach the bypass.
+/// It survives because it is unit-tested and harmless, NOT because anything
+/// uses it; see docs/concepts.md §cross-scope-guard, "No escape hatch".
+/// Wiring a flag to it would reintroduce a bypass the docs say is absent.
 ///
 /// @param entity_scope The target entity's stored scope label (unset = global).
 /// @param write_scope The operator's resolved write-scope label (unset = global/unresolved).

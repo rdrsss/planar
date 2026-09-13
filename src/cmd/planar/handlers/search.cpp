@@ -220,7 +220,6 @@ auto search(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 }
 
 /// @brief Declare the `search` leaf.
-/// @param root The root app to attach it to.
 auto declare_search(CLI::App& root) -> void {
   CLI::App* search = root.add_subcommand(
       "search", "Run a full-text search across every searchable entity kind.\n\n  Queries are passed to SQLite's FTS5 MATCH "

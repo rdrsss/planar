@@ -686,6 +686,45 @@ auto scope_ids(db::connection& conn, std::string_view sql) -> std::expected<std:
 /// task 6274's `languages` field, which was a Zig `StringHashMap` artifact
 /// and could not be pinned); every ordering here comes from an explicit
 /// SQL `order by`, so all of it is safe to pin.
+/// @brief Order ONE level of siblings in place. Does NOT recurse.
+///
+/// NOT RECURSIVE, for two reasons.
+///
+/// The behavioural one: a plan's children are a MIXED-KIND level -- tasks
+/// alongside artifacts, decisions, scenarios and questions. Re-ordering that
+/// by `updated_at` interleaves the kinds and makes the subtree harder to
+/// read, not easier. `tree --sort updated` means "show me the plans, most
+/// recently touched first", and that is the level this orders.
+///
+/// The honest one: a recursive version of this function made
+/// `tree::build` throw `std::length_error("vector")` on 3 of this module's
+/// fixtures. Sorting one level alone passes; recursing alone passes; doing
+/// both throws. That was NOT root-caused, and filed rather than shipped --
+/// task 6757. Reordering every level
+/// was never the intended behaviour, so nothing is lost by not doing it, but
+/// the crash is a real property of this data structure and someone should
+/// understand it before a future change reaches for recursion here.
+/// @param nodes The level to order, in place.
+/// @param key The ordering.
+auto sort_level(std::vector<node>& nodes, sort_key key) -> void {
+  // STABLE, and that is the whole tie-break story: every query already emits
+  // `order by id`, so equal `updated_at` / `created_at` values keep id order
+  // instead of landing wherever the sort happens to put them.
+  switch (key) {
+  case sort_key::id:
+    std::ranges::stable_sort(nodes, {}, &node::id);
+    break;
+  case sort_key::updated:
+    std::ranges::stable_sort(nodes, std::ranges::greater{}, &node::updated_at);
+    break;
+  case sort_key::created:
+    std::ranges::stable_sort(nodes, std::ranges::greater{}, &node::created_at);
+    break;
+  case sort_key::unsorted:
+    break;
+  }
+}
+
 auto build_all_scopes(db::connection& conn, const tree_filter& filter) -> std::expected<std::vector<node>, tree_error> {
   std::vector<node> roots;
 
@@ -717,6 +756,14 @@ auto build_all_scopes(db::connection& conn, const tree_filter& filter) -> std::e
       return std::unexpected(root.error());
     }
     roots.push_back(std::move(*root));
+  }
+
+  // Each scope root's SUBTREE is ordered; the scope roots themselves keep
+  // their global/association/repo sequence. A scope node's `created_at` and
+  // `updated_at` are empty strings, so sorting the roots by either would be
+  // sorting by nothing while visibly scrambling the sections.
+  for (auto& root : roots) {
+    sort_level(root.children, filter.sort);
   }
 
   return roots;
@@ -947,6 +994,22 @@ auto render_unknown_kind(std::string_view kind) -> std::string {
   return std::format("unknown kind '{}'", kind);
 }
 
+auto sort_key_from_text(std::string_view text) -> std::optional<sort_key> {
+  if (text == "id") {
+    return sort_key::id;
+  }
+  if (text == "updated") {
+    return sort_key::updated;
+  }
+  if (text == "created") {
+    return sort_key::created;
+  }
+  if (text == "unsorted") {
+    return sort_key::unsorted;
+  }
+  return std::nullopt;
+}
+
 auto build(db::connection& conn, const tree_filter& filter) -> std::expected<std::vector<node>, tree_error> {
   // Kind validation happens BEFORE any scope work, so an unknown kind
   // refuses even when the scope would also have failed.
@@ -995,6 +1058,8 @@ auto build(db::connection& conn, const tree_filter& filter) -> std::expected<std
   }
   std::vector<node> roots;
   roots.push_back(std::move(*root));
+  // The scope root itself is the only element, so this orders its SUBTREE.
+  sort_level(roots.front().children, filter.sort);
   return roots;
 }
 

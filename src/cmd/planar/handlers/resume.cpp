@@ -203,7 +203,6 @@ auto resume_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
 /// never positionals: a shared positional name aborted every invocation
 /// of the binary at tree-build time, not just the affected verb. See
 /// `declare_handoff`'s header.
-/// @param root The root app to attach it to.
 auto declare_resume(CLI::App& root) -> void {
   CLI::App* resume = root.add_subcommand(
       "resume",

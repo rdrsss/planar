@@ -242,6 +242,55 @@ TEST_CASE("the fixture arena is seeded as described", "[cmd][task][touches][infe
 // The verb is wired
 // =========================================================================
 
+TEST_CASE("a SIBLING directory sharing a name prefix does not resolve to the repo", "[cmd][task][touches][infer][6331]") {
+  // TASK 6331. The cwd was matched against `projects.root_path` with a raw
+  // string `starts_with` and no path-component boundary, so a project
+  // registered at `<root>/repo` also matched a cwd of `<root>/repo2` -- a
+  // DIFFERENT repository that merely shares a name prefix.
+  //
+  // The consequence was silent: `touches infer` resolved tokens against the
+  // wrong checkout and reported success, attributing work done in one
+  // repository to a differently-named sibling. Reproduced from the oracle
+  // under D2 until decision 1067 ended that rule.
+  auto fx = make_fixture("sibling6331");
+  seed(fx);
+
+  // A real sibling directory whose path begins with the registered root.
+  auto const      sibling = std::filesystem::path{fx.repo.string() + "2"};
+  std::error_code ec;
+  std::filesystem::create_directories(sibling / "src" / "engine", ec);
+  {
+    std::ofstream out{sibling / "src" / "engine" / "a.zig"};
+    out << "// sibling\n";
+  }
+
+  auto const got = dispatch_from(fx, sibling, {"task", "touches", "infer", "1"});
+
+  // It must NOT silently resolve to `t6330repo`. The verb has no repo for
+  // this cwd and says so.
+  CHECK(got.code != 0);
+  INFO("stderr: " << got.err);
+  CHECK(got.err.contains("no repo matches the current directory"));
+  CHECK_FALSE(got.out.contains("t6330repo"));
+}
+
+TEST_CASE("the registered root itself still resolves — the boundary is a component, not a ban",
+          "[cmd][task][touches][infer][6331]") {
+  // Non-vacuity for the case above. A boundary check that simply refused
+  // every cwd would satisfy it; the repo root and a subdirectory of it must
+  // still match.
+  auto fx = make_fixture("boundary6331");
+  seed(fx);
+
+  auto const at_root = dispatch_from(fx, fx.repo, {"task", "touches", "infer", "1"});
+  INFO("root stderr: " << at_root.err);
+  CHECK(at_root.code == 0);
+
+  auto const in_subdir = dispatch_from(fx, fx.repo / "src", {"task", "touches", "infer", "1"});
+  INFO("subdir stderr: " << in_subdir.err);
+  CHECK(in_subdir.code == 0);
+}
+
 TEST_CASE("task touches infer dispatches instead of refusing at exit 64", "[cmd][task][touches][infer]") {
   auto fx = make_fixture("wired");
   seed(fx);

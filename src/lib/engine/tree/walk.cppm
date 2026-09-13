@@ -36,19 +36,36 @@
 /// which is the same move task 6089 made for scope resolution; it is a
 /// task of its own and NOT smuggled into a port cycle.
 ///
-/// ## `--sort` IS INERT, AND THAT IS THE ORACLE'S BEHAVIOR
+/// ## `--sort` IS WIRED (task 6281); IT USED TO BE INERT
 ///
-/// The oracle declares `Filter.sort` and a `--sort` flag, and **never
-/// reads the field**: every query in tree.zig orders by `id` (or by `slug`
-/// for the scope roots) unconditionally. Verified by capture, not by
-/// reading: `tree --sort updated` and `tree --sort bogus` both produce
-/// output byte-identical to a bare `tree`, and an unrecognised sort key
-/// does NOT refuse (exit 0). This module therefore carries no `sort`
-/// field at all — a dead member reproduced faithfully is still dead code,
-/// and the observable contract (accept the flag, ignore it) is preserved
-/// at the handler. Recorded as an oracle defect for a follow-up task
-/// rather than silently "fixed" here: implementing a sort would be a
-/// behavior CHANGE, which D2 forbids in a port.
+/// The oracle declared `Filter.sort` and a `--sort` flag and NEVER read the
+/// field: every query in tree.zig ordered by `id` (or `slug` for scope
+/// roots) unconditionally, so `tree --sort updated` and `tree --sort bogus`
+/// were both byte-identical to a bare `tree` and an unrecognised key did not
+/// refuse. That was reproduced under D2; decision 1067 ended the obligation
+/// and this task wired it.
+///
+/// THE SORT IS APPLIED AFTER THE WALK, not pushed into the queries. Every
+/// query keeps its `order by id`, which makes id the STABLE TIE-BREAK for
+/// every other key — two rows sharing an `updated_at` come out in id order,
+/// deterministically. Pushing the key into ~10 separate statements would
+/// have bought nothing and risked each one drifting.
+///
+/// `updated` and `created` sort DESCENDING (most recent first), which is what
+/// an operator scanning a tree for recent movement wants; `id` and
+/// `unsorted` are ascending/insertion order. There is no `--reverse` on this
+/// verb, so the direction is fixed per key rather than composable.
+///
+/// SCOPE ROOTS ARE NEVER REORDERED. They carry no timestamps (both fields are
+/// empty strings on a scope node), so sorting them by one would be sorting by
+/// nothing. `--all-scopes` keeps its scope order under every key.
+///
+/// THE SORT IS SINGLE-LEVEL: it orders each scope root's DIRECT children, the
+/// top-level plans. It does not descend. A plan's children are a mixed-kind
+/// level -- tasks alongside artifacts, decisions, scenarios and questions --
+/// and re-ordering that by timestamp interleaves the kinds rather than
+/// clarifying anything. Separately, a recursive version made `build` throw;
+/// see task 6757 and the note on `sort_level`.
 ///
 /// ## Empty flag values mean three DIFFERENT things on this one verb
 ///
@@ -106,10 +123,24 @@ export struct node {
   std::optional<activity_summary> activity;      ///< Rollup, or absent. NEVER set on scope roots.
 };
 
-/// @brief Which entities the walk keeps.
+/// @brief How a level's siblings are ordered (task 6281).
 ///
-/// Deliberately carries NO `sort` member; see this file's header for why
-/// the oracle's dead `Filter.sort` is not reproduced.
+/// Applied after the walk; see this file's header. `id` is the default and
+/// matches every query's own `order by id`, so it is also the stable
+/// tie-break under `updated` and `created`.
+export enum class sort_key : std::uint8_t {
+  id,       ///< Ascending row id. The default, and every other key's tie-break.
+  updated,  ///< `updated_at` DESCENDING, most recent first.
+  created,  ///< `created_at` DESCENDING, most recent first.
+  unsorted, ///< Leave the walk's own order untouched.
+};
+
+/// @brief Parse a `--sort` value.
+/// @param text The raw flag value.
+/// @return The key, or unset when `text` names none.
+export auto sort_key_from_text(std::string_view text) -> std::optional<sort_key>;
+
+/// @brief Which entities the walk keeps, and how siblings are ordered.
 export struct tree_filter {
   std::optional<std::string>  scope;              ///< Scope slug; unset -> global. Ignored when `all_scopes`.
   bool                        all_scopes = false; ///< Walk global + every association + every project.
@@ -117,6 +148,7 @@ export struct tree_filter {
   std::vector<std::string>    kinds;          ///< Restrict to these kinds; empty -> all.
   std::vector<std::string>    statuses;       ///< Restrict to these statuses; empty -> any.
   std::optional<std::int64_t> root_plan_id;   ///< Start from this top-level plan only.
+  sort_key                    sort = sort_key::id; ///< Sibling ordering (task 6281).
 };
 
 /// @brief Error surface for the walk.
