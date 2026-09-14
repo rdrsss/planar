@@ -306,7 +306,7 @@ This composes naturally with `plan list`, `task list`, `question list`, `scenari
 
 Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against a target entity's stored `(scope_kind, scope_id)` and refuses if they disagree.
 
-**It runs on eight verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. Five of the eight are membership-aware (an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`); two use strict equality instead. The reverse direction — operator project, entity org — refuses under both.
+**It runs on ten verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. Eight of the ten are membership-aware, through six shared call sites (an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`); two use strict equality instead. The reverse direction — operator project, entity org — refuses under both with exit 5.
 
 ### Removed: the active scope stack
 
@@ -318,7 +318,7 @@ Earlier releases maintained a per-database `active_scope` table and exposed `pla
 
 ## Cross-scope guard
 
-The cross-scope guard is a refusal mechanism that fires when the operator's resolved write scope disagrees with the target entity's stored `(scope_kind, scope_id)`. Guarded verbs read the entity's scope, resolve the operator's scope through the strict write resolver above, compare the two, and refuse with exit 1 if they differ.
+The cross-scope guard is a refusal mechanism that fires when the operator's resolved write scope disagrees with the target entity's stored `(scope_kind, scope_id)`. Guarded verbs read the entity's scope, resolve the operator's scope through the strict write resolver above, compare the two, and refuse with exit 5 if they differ.
 
 ### Why it exists
 
@@ -355,7 +355,7 @@ The observable consequence: an `assoc:<org>` → `repo:<member>` write is **acce
 
 ### Membership-aware coverage
 
-For the five verbs that use it, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses.
+For the eight verbs that use it, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
 
 ### `--scope` does not mean the same thing on every verb
 
@@ -363,7 +363,7 @@ The guard's documented remedy — "pass `--scope <entity-scope>`" — assumes `-
 
 | Meaning | Effect | Verbs |
 |---------|--------|-------|
-| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision` |
+| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw` |
 | **Patch field** | **Reassigns the entity's stored scope — it moves the row.** | `plan update`, `artifact update`, `annotate update` |
 | Read filter | Restricts which rows are listed. | the `list` verbs, `search`, `tree`, `dashboard`, `health` |
 | Inert | Accepted, parsed, discarded. | `planar-ext ext propagate` |

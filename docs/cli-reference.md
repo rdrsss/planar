@@ -2069,6 +2069,7 @@ decision's scope explicitly with `--scope` when invoking from elsewhere. See
 
 **Exit codes:**
 - `1` — decision not found.
+- `5` — the resolved write scope does not admit the decision's scope.
 
 ---
 
@@ -2123,6 +2124,10 @@ decision's scope explicitly with `--scope` when invoking from elsewhere. See
 **Schema effects:** Updates `decisions(status='withdrawn', updated_at)`.
 
 **Capture:** Appends `session_entries` row with `prefix='decision'`.
+
+**Exit codes:**
+- `1` — decision not found.
+- `5` — the resolved write scope does not admit the decision's scope.
 
 ---
 

@@ -717,6 +717,38 @@ TEST_CASE("decision transitions enforce the entity scope before mutating") {
         "1|accepted;2|proposed;3|accepted;4|withdrawn;5|proposed;6|proposed");
 }
 
+TEST_CASE("decision transitions admit association-to-member writes and refuse the reverse direction") {
+  auto const fx = make_fixture("transition-membership");
+  seed(fx);
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", (fx.root / "proj").string()}).code == 0);
+
+  // These two decisions are scoped to the member project. The explicit
+  // association scope must authorize both transition verbs through the real
+  // project_associations row, not merely because either scope string exists.
+  add(fx, {"member-accept", "--body", "b", "--scope", "repo:proj"});
+  add(fx, {"member-withdraw", "--body", "b", "--scope", "repo:proj"});
+  CHECK(dispatch(fx, {"decision", "accept", "1", "--scope", "acme"}).code == 0);
+  CHECK(dispatch(fx, {"decision", "withdraw", "2", "--scope", "acme"}).code == 0);
+
+  // The relation is directional: a member project cannot authorize a write
+  // to an association-owned decision. Capture both rows and audits before
+  // refusal so a transition or audit appended before the guard cannot pass.
+  add(fx, {"association-owned", "--body", "b", "--scope", "acme"});
+  auto       conn    = open_db(fx);
+  auto const before  = decision_rows(conn);
+  auto const audit   = audit_rows(conn, "decision");
+  auto const refused = dispatch(fx, {"decision", "accept", "3", "--scope", "repo:proj"});
+  CHECK(refused.code == 5);
+  CHECK(refused.err == "error: decision 3 belongs to a different scope\n");
+  CHECK(refused.out.empty());
+  CHECK(decision_rows(conn) == before);
+  CHECK(audit_rows(conn, "decision") == audit);
+  CHECK(decision_rows(conn) == "1|repo|1|member-accept|b|<NULL>|accepted|SET|1;"
+                               "2|repo|1|member-withdraw|b|<NULL>|withdrawn|<NULL>|1;"
+                               "3|association|1|association-owned|b|<NULL>|proposed|<NULL>|1");
+}
+
 // ===========================================================================
 // decision supersede
 // ===========================================================================
