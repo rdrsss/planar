@@ -2047,10 +2047,21 @@ decision 5: "Use Stripe as payment processor"  [proposed]  (scope: association:3
 
 **Synopsis:**
 ```
-planar decision accept <decision-id>
+planar decision accept <decision-id> [--scope <scope>]
 ```
 
 **Description:** Mark a decision as accepted.
+
+**Scope guard:** Refuses before changing the decision when the operator's
+resolved write scope disagrees with the decision's stored scope. Pass the
+decision's scope explicitly with `--scope` when invoking from elsewhere. See
+[Cross-scope guard](#cross-scope-guard).
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--scope <scope>` | Override scope for the cross-scope guard. | cwd-derived write scope |
 
 **Schema effects:** Updates `decisions(status='accepted', decided_at=now(), updated_at)`.
 
@@ -2058,6 +2069,7 @@ planar decision accept <decision-id>
 
 **Exit codes:**
 - `1` — decision not found.
+- `5` — the resolved write scope does not admit the decision's scope.
 
 ---
 
@@ -2093,14 +2105,29 @@ planar decision supersede <decision-id> --by <decision-id>
 
 **Synopsis:**
 ```
-planar decision withdraw <decision-id>
+planar decision withdraw <decision-id> [--scope <scope>]
 ```
 
 **Description:** Mark a decision as withdrawn.
 
+**Scope guard:** Refuses before changing the decision when the operator's
+resolved write scope disagrees with the decision's stored scope. Pass the
+decision's scope explicitly with `--scope` when invoking from elsewhere. See
+[Cross-scope guard](#cross-scope-guard).
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--scope <scope>` | Override scope for the cross-scope guard. | cwd-derived write scope |
+
 **Schema effects:** Updates `decisions(status='withdrawn', updated_at)`.
 
 **Capture:** Appends `session_entries` row with `prefix='decision'`.
+
+**Exit codes:**
+- `1` — decision not found.
+- `5` — the resolved write scope does not admit the decision's scope.
 
 ---
 

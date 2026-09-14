@@ -670,19 +670,83 @@ TEST_CASE("decision withdraw REFUSES a terminal decision with its own verb word"
   CHECK(res.err == "error: decision 1 is terminal; cannot withdraw\n");
 }
 
-TEST_CASE("decision accept and withdraw ACCEPT AND IGNORE --scope, even an unresolvable one") {
+TEST_CASE("decision transitions enforce the entity scope before mutating") {
   auto const fx = make_fixture("transition-scope");
-  seed(fx);
-  add(fx, {"a", "--body", "b"});
-  add(fx, {"b", "--body", "b"});
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  std::error_code ec;
+  std::filesystem::create_directories(fx.root / "other", ec);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", (fx.root / "other").string()}).code == 0);
+  add(fx, {"global", "--body", "b"});
+  add(fx, {"mismatch", "--body", "b", "--scope", "acme"});
+  add(fx, {"explicit", "--body", "b", "--scope", "acme"});
+  add(fx, {"invalid", "--body", "b", "--scope", "acme"});
+  add(fx, {"invalid-accept-global", "--body", "b"});
+  add(fx, {"invalid-withdraw-global", "--body", "b"});
 
-  // Deliberate CLI parity in the original: `_ = args.scope;`. A port that
-  // helpfully resolved it would turn both of these into SlugNotFound.
-  CHECK(dispatch(fx, {"decision", "accept", "1", "--scope", "nosuchslug"}).code == 0);
-  CHECK(dispatch(fx, {"decision", "withdraw", "2", "--scope", "nosuchslug"}).code == 0);
+  // The cwd has no registered project, so the global decision is a same-scope
+  // transition and establishes that the guard does not reject valid writes.
+  CHECK(dispatch(fx, {"decision", "accept", "1"}).code == 0);
+
+  const auto mismatch = dispatch(fx, {"decision", "accept", "2"});
+  CHECK(mismatch.code == 5);
+  CHECK(mismatch.err == "error: decision 2 belongs to a different scope\n");
+
+  // An explicit matching scope authorizes both transition verbs.
+  CHECK(dispatch(fx, {"decision", "accept", "3", "--scope", "acme"}).code == 0);
+  CHECK(dispatch(fx, {"decision", "withdraw", "4", "--scope", "acme"}).code == 0);
+
+  // Validate an explicit scope before the global-scope shortcut in the guard.
+  // Otherwise either transition could mutate a global decision while silently
+  // accepting a typoed `--scope`.
+  const auto invalid_accept = dispatch(fx, {"decision", "accept", "5", "--scope", "nosuchslug"});
+  CHECK(invalid_accept.code == 1);
+  CHECK(invalid_accept.err == "error: decision accept: resolving write scope failed: SlugNotFound\n");
+  const auto invalid_withdraw = dispatch(fx, {"decision", "withdraw", "6", "--scope", "nosuchslug"});
+  CHECK(invalid_withdraw.code == 1);
+  CHECK(invalid_withdraw.err == "error: decision withdraw: resolving write scope failed: SlugNotFound\n");
+
+  // A missing target remains a lookup failure even when the supplied scope is
+  // otherwise valid, and cannot write an audit row or alter an existing row.
+  const auto missing = dispatch(fx, {"decision", "withdraw", "999", "--scope", "acme"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: no decision with id 999\n");
 
   auto conn = open_db(fx);
-  CHECK(query_rows(conn, "select id, status from decisions order by id", 2) == "1|accepted;2|withdrawn");
+  CHECK(query_rows(conn, "select id, status from decisions order by id", 2) ==
+        "1|accepted;2|proposed;3|accepted;4|withdrawn;5|proposed;6|proposed");
+}
+
+TEST_CASE("decision transitions admit association-to-member writes and refuse the reverse direction") {
+  auto const fx = make_fixture("transition-membership");
+  seed(fx);
+  REQUIRE(dispatch(fx, {"assoc", "create", "acme"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "acme", (fx.root / "proj").string()}).code == 0);
+
+  // These two decisions are scoped to the member project. The explicit
+  // association scope must authorize both transition verbs through the real
+  // project_associations row, not merely because either scope string exists.
+  add(fx, {"member-accept", "--body", "b", "--scope", "repo:proj"});
+  add(fx, {"member-withdraw", "--body", "b", "--scope", "repo:proj"});
+  CHECK(dispatch(fx, {"decision", "accept", "1", "--scope", "acme"}).code == 0);
+  CHECK(dispatch(fx, {"decision", "withdraw", "2", "--scope", "acme"}).code == 0);
+
+  // The relation is directional: a member project cannot authorize a write
+  // to an association-owned decision. Capture both rows and audits before
+  // refusal so a transition or audit appended before the guard cannot pass.
+  add(fx, {"association-owned", "--body", "b", "--scope", "acme"});
+  auto       conn    = open_db(fx);
+  auto const before  = decision_rows(conn);
+  auto const audit   = audit_rows(conn, "decision");
+  auto const refused = dispatch(fx, {"decision", "accept", "3", "--scope", "repo:proj"});
+  CHECK(refused.code == 5);
+  CHECK(refused.err == "error: decision 3 belongs to a different scope\n");
+  CHECK(refused.out.empty());
+  CHECK(decision_rows(conn) == before);
+  CHECK(audit_rows(conn, "decision") == audit);
+  CHECK(decision_rows(conn) == "1|repo|1|member-accept|b|<NULL>|accepted|SET|1;"
+                               "2|repo|1|member-withdraw|b|<NULL>|withdrawn|<NULL>|1;"
+                               "3|association|1|association-owned|b|<NULL>|proposed|<NULL>|1");
 }
 
 // ===========================================================================

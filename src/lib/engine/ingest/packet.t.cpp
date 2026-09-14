@@ -127,7 +127,7 @@ constexpr std::int64_t bare_task  = 200;
 constexpr std::int64_t plan_id    = 1;
 
 /// @brief Seed the shared arena: one READY task (100), its satisfied
-/// dependency (101), and one bare task (200) on the same active plan.
+/// dependency (101), and one bare root task (200) on the same active plan.
 ///
 /// This is the byte-identical SQL the differential ran through both binaries.
 auto seed(planar::db::connection& conn) -> void {
@@ -298,7 +298,6 @@ TEST_CASE("a bare task reports its reasons in emission order", "[packet]") {
                                              "missing_roadmap",
                                              "missing_test_spec",
                                              "missing_locked_decision",
-                                             "missing_dependency",
                                              "missing_touch",
                                              "absent_validation_gates",
                                              "missing_acceptance_fact",
@@ -316,18 +315,18 @@ TEST_CASE("a bare task reports its reasons in emission order", "[packet]") {
   CHECK(std::ranges::find(names, "missing_anchor_plan") == names.end());
 }
 
-TEST_CASE("a root task cannot satisfy missing_dependency", "[packet]") {
+TEST_CASE("a root task is not missing a dependency", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
 
-  // Planar task 6048 is an OPEN QUESTION arguing this is the wrong policy.
-  // This case pins the MEASURED behaviour so that changing it is a deliberate
-  // act with a test to update, not a silent drift. Do not "fix" this here.
+  // A root task declares no dependency by design. It can still be blocked by
+  // every other missing readiness input, but absence of an edge is not itself
+  // an error. A declared unfinished dependency remains invalid below.
   auto packet = pk::assemble_task(conn, bare_task);
   REQUIRE(packet.has_value());
   const auto names = reason_names(*packet);
-  CHECK(std::ranges::find(names, "missing_dependency") != names.end());
+  CHECK(std::ranges::find(names, "missing_dependency") == names.end());
 }
 
 // ===========================================================================
@@ -721,7 +720,6 @@ TEST_CASE("an empty input names every applicable reason", "[packet]") {
                                              "missing_roadmap",
                                              "missing_test_spec",
                                              "missing_locked_decision",
-                                             "missing_dependency",
                                              "missing_touch",
                                              "absent_validation_gates",
                                              "missing_acceptance_fact",
@@ -841,12 +839,12 @@ TEST_CASE("render_json carries the policy version in the envelope", "[packet]") 
   // The version rides in the envelope so a consumer can establish that two
   // packets are comparable BEFORE parsing the canonical body — which is the
   // very thing whose format the version describes.
-  CHECK(json.starts_with(R"({"policy_version":"routing-packet-v1","ready":true,"input":{)"));
+  CHECK(json.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{)"));
   CHECK(json.find(R"("reasons":[]})") != std::string::npos);
   CHECK(json.ends_with("\n"));
   // `policy` appears again INSIDE the escaped canonical body; the two are not
   // the same field and both are contract.
-  CHECK(json.find(R"(\"policy\":\"routing-packet-v1\")") != std::string::npos);
+  CHECK(json.find(R"(\"policy\":\"routing-packet-v2\")") != std::string::npos);
 
   auto blocked = pk::assemble_task(conn, bare_task);
   REQUIRE(blocked.has_value());
@@ -1112,7 +1110,7 @@ TEST_CASE("compile_planning: canonical body key order and digest/canonical split
   input.scope_facts[0].display_label = "Renamed Plan";
   const auto packet                  = pk::compile_planning(input);
 
-  CHECK(packet.canonical.starts_with(R"({"policy":"routing-packet-v1","role":"orchestrator","goal":"Ship the thing.")"));
+  CHECK(packet.canonical.starts_with(R"({"policy":"routing-packet-v2","role":"orchestrator","goal":"Ship the thing.")"));
   CHECK(packet.canonical.find(R"("review_rubric_version":"")") != std::string::npos);
   CHECK(packet.canonical.find("display_label") != std::string::npos);
 

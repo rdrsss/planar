@@ -1250,11 +1250,11 @@ TEST_CASE("models resolve without --plan reports no_packet; a not-ready plan rep
   CHECK(ready.code == 0);
   CHECK(ready.out == "{\"resolution_version\":\"routing-roles-v1\",\"role\":\"orchestrator\",\"packet_class\":\"planning\","
                      "\"source\":\"packet\",\"packet_backed\":true,\"tier\":\"medium\",\"work_type\":null,\"complexity\":null,"
-                     "\"fallback_reason\":null,\"first_readiness_reason\":null,\"rule_version\":\"routing-packet-v1\"}\n");
+                     "\"fallback_reason\":null,\"first_readiness_reason\":null,\"rule_version\":\"routing-packet-v2\"}\n");
 
   auto const ready_text = dispatch(fx, {"models", "resolve", "--role", "orchestrator", "--plan", "1"});
   CHECK(ready_text.code == 0);
-  CHECK(ready_text.out == "role   : orchestrator (planning packet)\ntier   : medium\nsource : packet (routing-packet-v1)\n");
+  CHECK(ready_text.out == "role   : orchestrator (planning packet)\ntier   : medium\nsource : packet (routing-packet-v2)\n");
 }
 
 TEST_CASE("models resolve on a READY high-risk task packet reaches complexity_tag, not complexity_to_text", "[cmd][models]") {

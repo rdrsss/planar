@@ -1428,12 +1428,8 @@ auto compile_task(const task_input& input) -> task_packet {
   if (input.decisions.empty()) {
     append_reason(reasons, r::missing_locked_decision);
   }
-  // A ROOT TASK TRIPS THIS. See packet.cppm's header and Planar task 6048 —
-  // that an unblocked task cannot satisfy `missing_dependency` is an open
-  // question about the POLICY, not a defect in this port.
-  if (input.dependencies.empty()) {
-    append_reason(reasons, r::missing_dependency);
-  }
+  // Root tasks intentionally have no dependency edge. A declared unfinished
+  // dependency remains `invalid_dependency`; an empty list adds no reason.
   if (input.touches.empty()) {
     append_reason(reasons, r::missing_touch);
   }

@@ -69,7 +69,7 @@
 ///     missing_body, missing_acceptance_section, generic_acceptance,
 ///     generic_next_action, missing_product_spec, missing_tech_spec,
 ///     missing_roadmap, missing_test_spec, missing_locked_decision,
-///     missing_dependency, missing_touch, absent_validation_gates,
+///     missing_touch, absent_validation_gates,
 ///     missing_acceptance_fact, missing_next_action_fact,
 ///     uncovered_required_scenario
 ///
@@ -91,11 +91,10 @@
 ///
 /// ## ORACLE FACTS THAT COST A CYCLE IF ASSUMED
 ///
-/// **`missing_dependency` FIRES ON A ROOT TASK.** A task with no `depends-on`
-/// edge is `not_ready` with `missing_dependency` among its reasons, at exit 0,
-/// with no exemption and no error. Planar task 6048 is an OPEN QUESTION
-/// arguing that this is wrong. This port reproduces the MEASURED behaviour and
-/// leaves 6048 to be decided on its own terms; do not "fix" it here.
+/// **ROOT TASKS ARE READY WITHOUT A `depends-on` EDGE.** An empty dependency
+/// list means the task is a root task, so it does not produce
+/// `missing_dependency`. A declared edge whose dependency is unfinished still
+/// produces `invalid_dependency`; this exemption affects only the empty list.
 ///
 /// **`contradictory_mandatory_fact` IS UNREACHABLE FROM `assemble_task`.** The
 /// check looks for two required facts sharing `kind`, `id` AND `locator` with
@@ -139,7 +138,7 @@ namespace planar::engine::ingest::packet {
 ///
 /// Packets are comparable only within one version. It rides in the JSON
 /// envelope as `policy_version` and inside the canonical body as `policy`.
-export inline constexpr std::string_view policy_version = "routing-packet-v1";
+export inline constexpr std::string_view policy_version = "routing-packet-v2";
 
 /// @brief One piece of evidence the packet compiled, with its provenance and
 /// freshness.
