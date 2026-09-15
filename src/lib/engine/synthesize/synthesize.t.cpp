@@ -104,3 +104,71 @@ TEST_CASE("synthesize refuses contradictory modes layouts and providers", "[engi
   CHECK(synth::run(root / "repo", root / "home", {}, bad_env).error() == synth::error::invalid_input);
   std::filesystem::remove_all(root);
 }
+
+// --- task 6273 / decision 1125: --dry-run stages nothing --------------------
+
+TEST_CASE("dry run stages NOTHING on disk and says what it would have written", "[engine][synthesize][dry-run][6273]") {
+  // `--dry-run` was declared and never read: the verb did exactly what it
+  // does without it. That is the worst failure mode of the three an inert
+  // flag can have -- an operator reaches for --dry-run precisely when they
+  // are unsure, so silently doing the normal thing manufactures false
+  // confidence at the moment doubt was signalled.
+  //
+  // Asserted ON THE FILESYSTEM, not inferred from stdout: the cache
+  // directory itself must not come into existence, since creating it is
+  // part of what staging does.
+  auto const root = arena("dry-run");
+  write(root / "repo" / "README.md", "# Probe Project\n\nAn oracle synthesis probe.\n");
+  write(root / "repo" / "src" / "main.zig", "pub fn main() void {}\n");
+
+  auto result = synth::run(root / "repo", root / "home", {.dry_run = true}, no_env);
+  REQUIRE(result.has_value());
+  CHECK(result->mode_ == synth::mode::pending);
+  CHECK_FALSE(std::filesystem::exists(result->pending_path));
+  CHECK_FALSE(std::filesystem::exists(result->pending_path.parent_path()));
+  CHECK_FALSE(std::filesystem::exists(root / "home" / "cache"));
+
+  // Useful, not merely quieter: the path it would have written is named.
+  CHECK(result->message.contains("dry run"));
+  CHECK(result->message.contains(result->pending_path.string()));
+  CHECK(result->message.contains(result->cache_path.string()));
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("a normal run is unchanged by the flag's existence", "[engine][synthesize][dry-run][6273]") {
+  // The compatibility half: wiring the flag must not alter what a run
+  // WITHOUT it does. Same arena shape as the dry-run case above, so the
+  // two differ in exactly one input.
+  auto const root = arena("dry-run-off");
+  write(root / "repo" / "README.md", "# Probe Project\n\nAn oracle synthesis probe.\n");
+  write(root / "repo" / "src" / "main.zig", "pub fn main() void {}\n");
+
+  auto result = synth::run(root / "repo", root / "home", {.dry_run = false}, no_env);
+  REQUIRE(result.has_value());
+  CHECK(std::filesystem::exists(result->pending_path));
+  CHECK(read(result->pending_path).starts_with("{\"schema_version\":1,\"repo_slug\":\"repo\""));
+  CHECK(result->message.starts_with("Awaiting LLM synthesis."));
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("a dry run against an existing cache still reports the hit", "[engine][synthesize][dry-run][6273]") {
+  // --dry-run suppresses the STAGING write; it is not a refusal. A cache
+  // hit performs no write at all, so the flag must leave that path alone
+  // rather than turning a readable result into a "would have" report.
+  auto const root = arena("dry-run-hit");
+  write(root / "repo" / "README.md", "# Probe Project\n");
+
+  auto staged = synth::run(root / "repo", root / "home", {.treat_as_greenfield = true}, no_env);
+  REQUIRE(staged.has_value());
+  write(
+      staged->cache_path,
+      std::format(
+          R"({{"schema_version":1,"fingerprint":"{}","synthesized":true,"anchor_title":"Anchor","phases":[{{"slug":"phase","status":"draft"}}],"forward_specs":[{{"slug":"a"}},{{"slug":"b"}},{{"slug":"c"}}],"provenance":"fixture"}})",
+          staged->request_.fingerprint));
+
+  auto hit = synth::run(root / "repo", root / "home", {.treat_as_greenfield = true, .dry_run = true}, no_env);
+  REQUIRE(hit.has_value());
+  CHECK(hit->mode_ == synth::mode::cache_hit);
+  CHECK(hit->message.starts_with("Loaded cached synthesis result"));
+  std::filesystem::remove_all(root);
+}

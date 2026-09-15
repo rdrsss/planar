@@ -423,6 +423,19 @@ auto run(const std::filesystem::path& root, const std::filesystem::path& planar_
   }
   if (opts.apply)
     return std::unexpected(error::not_found);
+  // `--dry-run` (task 6273, decision 1125). There are no PLANNING writes on
+  // this path to suppress -- a non-apply run creates zero plans and zero
+  // tasks either way. Staging `_pending.json` (and the cache directory
+  // holding it) is the entire side effect, so it is the entire thing the
+  // flag suppresses. It reports the path it WOULD have written rather than
+  // merely going quiet: an operator reaches for --dry-run when unsure what
+  // a command does, and an answer of "nothing happened" tells them nothing.
+  if (opts.dry_run) {
+    out.message = std::format("dry run: nothing staged. Would have written the pending synthesis request to {}, and would read "
+                              "the LLM's result back from {}.",
+                              out.pending_path.string(), out.cache_path.string());
+    return out;
+  }
   if (!write_atomic(out.pending_path, encode_request(out.request_)))
     return std::unexpected(error::io);
   out.message = std::format(

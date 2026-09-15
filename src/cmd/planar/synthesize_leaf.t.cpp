@@ -302,3 +302,27 @@ TEST_CASE("synthesize semantic flags are strict", "[cmd][synthesize][flags]") {
     CHECK_FALSE(invalid.db_open);
   }
 }
+
+TEST_CASE("synthesize --dry-run stages nothing through the CLI", "[cmd][synthesize][dry-run][6273]") {
+  // The flag was DECLARED and never read, so `planar synthesize <root>
+  // --dry-run` did exactly what the bare invocation does. Wiring it in the
+  // engine is not enough on its own: the handler has to pass it through, and
+  // only a CLI-level case can observe that it does.
+  auto const fx = make_fixture("dry-run");
+  seed_repo(fx);
+
+  auto const dry = dispatch(fx, {"synthesize", (fx.root / "repo").string(), "--dry-run", "--json"});
+  REQUIRE(dry.code == 0);
+  REQUIRE_FALSE(dry.db_open);
+  auto const pending_path = std::filesystem::path{field(dry.out, "pending_path")};
+  CHECK_FALSE(pending_path.empty());
+  CHECK_FALSE(std::filesystem::exists(pending_path));
+  CHECK_FALSE(std::filesystem::exists(fx.root / "home" / "cache"));
+  CHECK(dry.out.contains("dry run: nothing staged"));
+
+  // Same invocation WITHOUT the flag stages for real -- the two runs differ
+  // in exactly one argument, so the flag is what made the difference.
+  auto const wet = dispatch(fx, {"synthesize", (fx.root / "repo").string(), "--json"});
+  REQUIRE(wet.code == 0);
+  CHECK(std::filesystem::exists(std::filesystem::path{field(wet.out, "pending_path")}));
+}
