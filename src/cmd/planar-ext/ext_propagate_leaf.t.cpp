@@ -574,19 +574,14 @@ TEST_CASE("ext propagate --verify-counterparts reports every counterpart verifie
   auto const ran = dispatch(fx, {"ext", "propagate", "1", "--system", "gh-demo", "--verify-counterparts", "--json"});
   CHECK(ran.code == 0);
   CHECK(ran.out.contains(R"("ok":true)"));
-  // Only 2, not 4: `list_mirror_links_in_tree` walks plan descendants plus
-  // tasks reachable via `entity_links(relationship='derives-from')` --
-  // mirroring the oracle's `listMirrorLinksInTree` verbatim (strategy.zig).
-  // This binary's `parent_issue` tree walk instead reaches tasks via
-  // `tasks.plan_id` (and direct-anchor tasks via `plan_id` alone), which
-  // `listMirrorLinksInTree` never follows. So `--verify-counterparts` sees
-  // only the 2 plan-level mirror links here; the 2 task links are
-  // invisible to it. This asymmetry is IN THE ORACLE (propagate.zig's
-  // `walkTree` vs strategy.zig's `listMirrorLinksInTree` disagree on what
-  // "in the tree" means for a task) and is reproduced rather than patched
-  // -- see this file's header on D2 and the task 6428 report for the
-  // disclosed finding.
-  CHECK(ran.out.contains(R"("verified":2)"));
+  // All 4: task 6429/decision 1115 widened `list_mirror_links_in_tree` to
+  // read `tasks.plan_id` as well as `entity_links(derives-from)`, matching
+  // `descendants::walk_tree` (task 6307 fixed that function's identical
+  // blind spot). `--verify-counterparts` now walks the same tree
+  // `ext propagate` actually propagates, so every mirror link this fixture
+  // seeded is reachable -- 2 plan-level links plus the 2 task links that
+  // this fixture's tasks carry via `tasks.plan_id` alone.
+  CHECK(ran.out.contains(R"("verified":4)"));
   CHECK_FALSE(ran.out.contains(R"("missing")"));
   CHECK(scalar(fx, "select count(*) from external_links") == 4);
   CHECK(scalar(fx, "select count(*) from sync_events where outcome = 'counterpart-missing'") == 0);
@@ -607,12 +602,10 @@ TEST_CASE("ext propagate --verify-counterparts reports a missing counterpart and
   }
   REQUIRE(scalar(fx, "select count(*) from external_links") == 4);
 
-  // The child plan's counterpart is the one the remote "deleted".
-  // `--verify-counterparts` only ever reaches plan-level mirror links plus
-  // task links attached via `entity_links(derives-from)` -- see the note in
-  // the "verify][happy]" case above -- and this fixture's tasks are
-  // attached via `tasks.plan_id` alone, so a plan-level link is the only
-  // kind this probe pass can see here.
+  // The child plan's counterpart is the one the remote "deleted". Any
+  // mirror link would do the same job now that `--verify-counterparts`
+  // reaches every attachment shape (task 6429/decision 1115); the plan-level
+  // link is used here because it is the simplest one to isolate.
   auto const missing_external_id =
       text_scalar(fx, "select external_id from external_links where entity_kind = 'plan' and entity_id = 2");
   auto const hash = missing_external_id.rfind('#');
@@ -633,7 +626,8 @@ TEST_CASE("ext propagate --verify-counterparts reports a missing counterpart and
   CHECK(ran.code == 2); // invalid_input
   CHECK(ran.out.contains(R"("ok":false)"));
   CHECK(ran.out.contains(R"("missing":1)"));
-  CHECK(ran.out.contains(R"("verified":1)")); // the anchor plan link; the 2 task links are unreachable, see above.
+  // 3 of the 4 seeded links verify; the child plan's is the one "missing".
+  CHECK(ran.out.contains(R"("verified":3)"));
   CHECK(ran.err.contains("1 counterpart(s) missing during --verify-counterparts"));
 
   // No remediation flag: the link survives.

@@ -799,6 +799,10 @@ auto draft_scenario(db::connection& conn, std::int64_t task_id, std::string_view
 /// @brief Retire only ingestor-owned placeholders that duplicate an authored
 /// scenario's coverage. The body marker is the durable ownership boundary:
 /// user-authored scenarios are never inferred from a title or removed here.
+/// @param conn An open, migrated database connection.
+/// @param anchor_plan_id The root plan whose subtree's placeholders are swept.
+/// @param res Apply-result accumulator; `scenarios_retired` is incremented per row.
+/// @return Success, or the mapped engine failure.
 auto retire_covered_placeholders(db::connection& conn, std::int64_t anchor_plan_id, apply_result& res)
     -> std::expected<void, std::string> {
   auto stmt = conn.prepare(R"(select distinct placeholder.id
@@ -846,6 +850,9 @@ where p.id in (
 
 /// @brief Attach the accepted decisions reviewed for an anchor to every
 /// descendant task through normal audited entity-link writes.
+/// @param conn An open, migrated database connection.
+/// @param anchor_plan_id The root plan whose subtree's tasks are linked.
+/// @return Success, or the mapped engine failure.
 auto reconcile_accepted_decision_links(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<void, std::string> {
   auto stmt = conn.prepare(R"(with recursive plan_tree(id) as (
   select id from plans where id=?
@@ -870,6 +877,11 @@ join decisions d on d.id=el.from_id and d.status='accepted' order by t.id,d.id)"
   return {};
 }
 
+/// @brief Attach the reviewed artifacts for an anchor to every descendant
+/// task through normal audited entity-link writes.
+/// @param conn An open, migrated database connection.
+/// @param anchor_plan_id The root plan whose subtree's tasks are linked.
+/// @return Success, or the mapped engine failure.
 auto reconcile_reviewed_artifact_links(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<void, std::string> {
   auto stmt = conn.prepare(R"(with recursive plan_tree(id) as (
   select id from plans where id=? union all select child.id from plans child join plan_tree parent on child.parent_plan_id=parent.id
