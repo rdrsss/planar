@@ -1486,7 +1486,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `ext`/`sync` GROUP nodes left with them. Verified by running this test
   // against the live tree, not by arithmetic on this comment.
   auto const leaves = planar::cliapp::leaf_keys(*tree);
-  CHECK(leaves.size() == 215);
+  CHECK(leaves.size() == 216);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));

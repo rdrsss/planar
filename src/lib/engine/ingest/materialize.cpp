@@ -277,7 +277,8 @@ constexpr std::array<evidence_flag, 12> evidence_flags = {{
 /// @brief Inserts one fact into the staging table.
 [[nodiscard]] auto stage(db::connection& conn, std::int64_t task_id, std::string_view fact_kind, const fact_value& value,
                          std::string_view source_kind, std::int64_t source_id, std::string_view locator,
-                         std::string_view semantic_source) -> std::expected<void, materialize_error> {
+                         std::string_view semantic_source, std::string_view version = materializer_version)
+    -> std::expected<void, materialize_error> {
   const auto digest = source_digest(source_kind, source_id, locator, semantic_source);
 
   auto stmt = conn.prepare(R"(insert into temp.routing_task_facts_stage (
@@ -312,7 +313,7 @@ constexpr std::array<evidence_flag, 12> evidence_flags = {{
                                                        : stmt->bind_null(6).has_value()) &&
       stmt->bind_text(7, source_kind).has_value() && stmt->bind_int64(8, source_id).has_value() &&
       stmt->bind_text(9, locator).has_value() && stmt->bind_text(10, digest).has_value() &&
-      stmt->bind_text(11, materializer_version).has_value();
+      stmt->bind_text(11, version).has_value();
   if (!ok) {
     return query_failure();
   }
@@ -335,6 +336,25 @@ constexpr std::array<evidence_flag, 12> evidence_flags = {{
     }
   }
   return {};
+}
+
+/// @brief Whether a task's acceptance section certifies readiness.
+///
+/// Shared by the plan-wide pass and the single-task operator pass so the two
+/// can never disagree about what "complete" means. The generic ingest
+/// placeholder is explicitly UNREADY: routing rejects that phrase, and Planar
+/// must not certify text Planar itself generated.
+/// @param acceptance The task body's `## Acceptance Criteria` section.
+/// @return True when the section is present and not the placeholder.
+[[nodiscard]] auto acceptance_is_ready(std::string_view acceptance) -> bool {
+  return !acceptance.empty() && !contains_fold(acceptance, "is implemented and tested.");
+}
+
+/// @brief Whether a task's `next_action` is specific enough to dispatch.
+/// @param next_action The task's stored next action.
+/// @return True when it is present and not the generic ingest placeholder.
+[[nodiscard]] auto next_action_is_ready(std::string_view next_action) -> bool {
+  return !next_action.empty() && !contains_fold(next_action, "implement per acceptance criteria");
 }
 
 [[nodiscard]] auto create_stage(db::connection& conn) -> std::expected<void, materialize_error> {
@@ -377,10 +397,8 @@ order by t.id)");
     const auto body        = stmt->column_text(1);
     const auto next_action = stmt->column_text(2);
 
-    const auto acceptance = section(body, "## Acceptance Criteria");
-    // The generic ingest placeholder is explicitly UNREADY: routing rejects
-    // that phrase, and Planar must not certify text Planar itself generated.
-    const bool acceptance_ready = !acceptance.empty() && !contains_fold(acceptance, "is implemented and tested.");
+    const auto acceptance       = section(body, "## Acceptance Criteria");
+    const bool acceptance_ready = acceptance_is_ready(acceptance);
     if (auto r = stage(conn, task_id, "acceptance_complete", fact_value{acceptance_ready}, "task", task_id,
                        "body#acceptance-criteria", acceptance);
         !r.has_value()) {
@@ -394,7 +412,7 @@ order by t.id)");
       }
     }
 
-    const bool next_ready = !next_action.empty() && !contains_fold(next_action, "implement per acceptance criteria");
+    const bool next_ready = next_action_is_ready(next_action);
     if (auto r = stage(conn, task_id, "next_action_exact", fact_value{next_ready}, "task", task_id, "next_action", next_action);
         !r.has_value()) {
       return r;
@@ -884,6 +902,9 @@ auto materialize_error::describe() const -> std::string {
   if (kind_ == materialize_error_kind::query_failed) {
     return "materializing routing facts: a database query failed";
   }
+  if (kind_ == materialize_error_kind::task_not_found) {
+    return "materializing routing facts: no task with that id";
+  }
   std::string out = std::format("materializing routing facts: {} unresolvable citation(s)", citations_.size());
   for (const auto& diagnostic : citations_) {
     out.append("\n  ");
@@ -1180,6 +1201,149 @@ order by task_id, source_entity_kind, source_entity_id, source_locator,
          fact_kind, value_type, coalesce(value_text, ''),
          coalesce(value_integer, value_bool))")
            .has_value()) {
+    return query_failure();
+  }
+  return {};
+}
+
+auto stage_one_task(db::connection& conn, std::int64_t task_id) -> std::expected<void, materialize_error> {
+  // Operator provenance, never `spec-ingest-v1`: a reader must be able to tell
+  // a fact the operator asserted from one ingest derived from a roadmap
+  // bullet. `packet`'s freshness rule accepts both versions; see decision 1102.
+  constexpr std::string_view version = operator_materializer_version;
+
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx.has_value()) {
+    return query_failure();
+  }
+  if (auto created = create_stage(conn); !created.has_value()) {
+    return created;
+  }
+  if (!conn.execute("delete from temp.routing_task_facts_stage").has_value()) {
+    return query_failure();
+  }
+
+  std::string body;
+  std::string next_action;
+  {
+    auto stmt = conn.prepare("select coalesce(body,''),coalesce(next_action,'') from tasks where id=?");
+    if (!stmt.has_value() || !stmt->bind_int64(1, task_id).has_value()) {
+      return query_failure();
+    }
+    const auto stepped = stmt->step();
+    if (!stepped.has_value()) {
+      return query_failure();
+    }
+    if (*stepped != db::step_result::row) {
+      return std::unexpected(materialize_error{.kind_ = materialize_error_kind::task_not_found});
+    }
+    body        = stmt->column_text(0);
+    next_action = stmt->column_text(1);
+  }
+
+  // Derived through the SAME predicates the plan-wide pass uses, so an
+  // operator-staged fact and an ingest-staged one agree on what they mean.
+  const auto acceptance = section(body, "## Acceptance Criteria");
+  if (auto r = stage(conn, task_id, "acceptance_complete", fact_value{acceptance_is_ready(acceptance)}, "task", task_id,
+                     "body#acceptance-criteria", acceptance, version);
+      !r.has_value()) {
+    return r;
+  }
+  if (!acceptance.empty()) {
+    if (auto r = stage(conn, task_id, "acceptance_text", fact_value{acceptance}, "task", task_id, "body#acceptance-criteria",
+                       acceptance, version);
+        !r.has_value()) {
+      return r;
+    }
+  }
+  if (auto r = stage(conn, task_id, "next_action_exact", fact_value{next_action_is_ready(next_action)}, "task", task_id,
+                     "next_action", next_action, version);
+      !r.has_value()) {
+    return r;
+  }
+  if (!next_action.empty()) {
+    if (auto r = stage(conn, task_id, "next_action", fact_value{std::string_view{next_action}}, "task", task_id, "next_action",
+                       next_action, version);
+        !r.has_value()) {
+      return r;
+    }
+  }
+
+  // Citation facts for artifacts this task ALREADY cites through an
+  // entity_links edge. The verb never invents a citation to satisfy a gate:
+  // an artifact the body does not reference explicitly is reported, not
+  // fabricated.
+  std::vector<citation_diagnostic> failures;
+  {
+    auto stmt = conn.prepare(R"(select a.id, coalesce(a.body,'')
+from entity_links el
+join artifacts a on a.id = el.to_id
+where el.from_kind='task' and el.from_id=? and el.to_kind='artifact'
+  and el.relationship='cites'
+order by a.id)");
+    if (!stmt.has_value() || !stmt->bind_int64(1, task_id).has_value()) {
+      return query_failure();
+    }
+    while (true) {
+      const auto stepped = stmt->step();
+      if (!stepped.has_value()) {
+        return query_failure();
+      }
+      if (*stepped == db::step_result::done) {
+        break;
+      }
+      const auto artifact_id   = stmt->column_int64(0);
+      const auto artifact_body = stmt->column_text(1);
+
+      const auto locator = explicit_artifact_locator(body, artifact_id);
+      if (!locator.has_value()) {
+        failures.push_back(
+            build_citation_diagnostic(task_id, artifact_id, std::format("artifact:{}#", artifact_id), artifact_body));
+        continue;
+      }
+      const auto cited_source = artifact_section(artifact_body, *locator);
+      if (!cited_source.has_value()) {
+        // Keep scanning so EVERY bad citation is reported in one pass.
+        failures.push_back(build_citation_diagnostic(task_id, artifact_id, *locator, artifact_body));
+        continue;
+      }
+      if (auto r = stage(conn, task_id, "cited_artifact_section", fact_value{*cited_source}, "artifact", artifact_id, *locator,
+                         *cited_source, version);
+          !r.has_value()) {
+        return r;
+      }
+    }
+  }
+  if (!failures.empty()) {
+    return std::unexpected(
+        materialize_error{.kind_ = materialize_error_kind::invalid_citation, .citations_ = std::move(failures)});
+  }
+
+  // Scoped to THIS task. A plan-wide reconcile deletes every fact under an
+  // anchor; this must not, or staging one row would silently discard the
+  // ingest-materialized facts of every sibling.
+  {
+    auto stmt = conn.prepare("delete from routing_task_facts where task_id=?");
+    if (!stmt.has_value() || !stmt->bind_int64(1, task_id).has_value() || !stmt->step().has_value()) {
+      return query_failure();
+    }
+  }
+  if (!conn.execute(R"(insert into routing_task_facts (
+  task_id, fact_kind, value_type, value_bool, value_integer,
+  value_real, value_text, source_entity_kind, source_entity_id,
+  source_locator, source_digest, materializer_version
+)
+select distinct task_id, fact_kind, value_type, value_bool, value_integer,
+       null, value_text, source_entity_kind, source_entity_id,
+       source_locator, source_digest, materializer_version
+from temp.routing_task_facts_stage
+order by task_id, source_entity_kind, source_entity_id, source_locator,
+         fact_kind, value_type, coalesce(value_text, ''),
+         coalesce(value_integer, value_bool))")
+           .has_value()) {
+    return query_failure();
+  }
+  if (!tx->commit().has_value()) {
     return query_failure();
   }
   return {};

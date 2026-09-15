@@ -76,8 +76,8 @@ export enum class target_kind : std::uint8_t { plan, task };
 
 /// @brief An entity anchor's unambiguous target. File anchors have none.
 export struct entity_target {
-  target_kind  kind;
-  std::int64_t id;
+  target_kind  kind; ///< Whether the anchor points at a plan or a task.
+  std::int64_t id;   ///< That entity's row id.
 };
 
 /// @brief Where the annotation hangs in the source tree. Mirrors zig's
@@ -200,42 +200,51 @@ export enum class command_kind : std::uint8_t {
 
 /// @brief Input to one receipt-backed annotation mutation.
 export struct command_args {
-  command_kind                    operation{};
-  std::string_view                operation_uuid;
-  std::string_view                source_uuid;
-  std::optional<std::string_view> scope;
-  std::optional<entity_target>    target;
-  std::optional<std::int64_t>     annotation_id;
-  std::optional<std::int64_t>     expected_revision;
-  std::optional<std::string_view> title;
+  command_kind                    operation{};         ///< Which mutation to apply.
+  std::string_view                operation_uuid;      ///< Caller-chosen idempotency key; replaying it returns the receipt.
+  std::string_view                source_uuid;         ///< The database source the caller believes it is writing to.
+  std::optional<std::string_view> scope;               ///< Scope-ref slug; unset means global.
+  std::optional<entity_target>    target;              ///< Entity target, for a `create` of an entity annotation.
+  std::optional<std::int64_t>     annotation_id;       ///< The row to mutate; unset for `create`.
+  std::optional<std::int64_t>     expected_revision;   ///< Optimistic lock; a stale value is `revision_conflict`.
+  std::optional<std::string_view> title;               ///< New title, when supplied.
   bool                            clear_title = false; ///< A JSON null title; distinct from omission.
-  std::optional<std::string_view> body;
-  std::vector<std::string>        tags;
-  std::optional<list_filter>      bulk_filter;
-  std::string_view                origin{"local-annotation-writer"};
+  std::optional<std::string_view> body;                ///< New body, when supplied.
+  std::vector<std::string>        tags;                ///< Replacement tag set for `replace_tags`.
+  std::optional<list_filter>      bulk_filter;         ///< Selection for the `bulk_*` operations.
+  std::string_view                origin{"local-annotation-writer"}; ///< Provenance recorded on the annotation.
 };
 
 /// @brief Durable result for a command UUID. Receipts are never purged.
 export struct operation_receipt {
-  std::string                 operation_uuid;
-  std::string                 source_uuid;
-  std::string                 payload_digest;
-  std::optional<std::int64_t> annotation_id;
-  std::optional<std::int64_t> revision;
-  std::string                 outcome;
-  std::string                 created_at;
-  std::optional<std::int64_t> affected_count; ///< Immutable aggregate count for bulk operations.
-  bool                        replayed{false};
+  std::string                 operation_uuid;  ///< The idempotency key this receipt answers for.
+  std::string                 source_uuid;     ///< The database source that committed it.
+  std::string                 payload_digest;  ///< Digest of the request; a reused uuid with another payload conflicts.
+  std::optional<std::int64_t> annotation_id;   ///< The row written, when the operation touched exactly one.
+  std::optional<std::int64_t> revision;        ///< That row's revision after the write.
+  std::string                 outcome;         ///< Stored outcome text for the committed operation.
+  std::string                 created_at;      ///< When the receipt was committed.
+  std::optional<std::int64_t> affected_count;  ///< Immutable aggregate count for bulk operations.
+  bool                        replayed{false}; ///< True when this answers a REPLAY rather than a fresh commit.
 };
 
 /// @brief Atomically apply a command, revision/audit mutation, and receipt.
+/// @param conn An open, migrated database connection.
+/// @param args The command to apply, including its idempotency key.
+/// @return The committed receipt (or the replayed one), or the failure.
 export auto execute_command(db::connection& conn, const command_args& args) -> std::expected<operation_receipt, annotation_error>;
 
 /// @brief Find an already committed operation outcome without mutating state.
+/// @param conn An open, migrated database connection.
+/// @param source_uuid The database source the receipt was committed under.
+/// @param operation_uuid The idempotency key to look up.
+/// @return The receipt, `std::nullopt` when none was ever committed, or the failure.
 export auto show_receipt(db::connection& conn, std::string_view source_uuid, std::string_view operation_uuid)
     -> std::expected<std::optional<operation_receipt>, annotation_error>;
 
 /// @brief Read the immutable UUID assigned to this database source.
+/// @param conn An open, migrated database connection.
+/// @return The source UUID, or the failure.
 export auto source_uuid(db::connection& conn) -> std::expected<std::string, annotation_error>;
 
 /// @brief Parse a status from its stored text.

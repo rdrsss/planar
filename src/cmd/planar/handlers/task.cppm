@@ -131,6 +131,19 @@ export auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handle
 /// (exit 64) for `--touches`.
 export auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar task facts stage <task-id> [--json]`.
+///
+/// Stages the task's routing facts under `operator-v1` provenance and then
+/// reports the resulting packet, because "did the write succeed" is not the
+/// operator's question — "is this task dispatchable now" is.
+///
+/// An unresolvable citation exits non-zero and prints one diagnostic per
+/// offending artifact; nothing is staged in that case.
+/// @param ctx Handler context.
+/// @param args Parsed arguments.
+/// @return Success, or the domain error.
+export auto task_facts_stage(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 /// @brief Handle `planar task update <task-id> [--title] [--status] …`.
 ///
 /// Carries TWO guards the other task verbs do not, in this order:
