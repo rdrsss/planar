@@ -617,6 +617,21 @@ Legal transitions (enforced by `policy.status.check`):
 
 **Verb-gated escape from terminal status.** `planar task reopen <id> [--status todo|doing|blocked] --reason <why>` performs the terminal → open move that bare `task update --status` refuses, and records a `task_reopens` audit row. `task update --force` is the operator override that also performs the move and records a `task_reopens` row with `source='task-update-force'`. Both paths bypass the matrix explicitly; the bypass is the documented exception, not the default.
 
+**Automatic `blocked -> todo` when the last blocker closes** (task 6754,
+decision 1122). Moving a task to `done` or `cancelled` -- through
+`planar task done`, `planar task cancel`, or `planar task update --status`
+alike -- scans the tasks that `depends-on` it. Any such dependent that is
+still `blocked` AND has no remaining blocker outside `done`/`cancelled` is
+moved to `todo` in the same operation. The rule is ALL-CLEAR, not any-clear: a
+dependent with two blockers stays `blocked` until both are terminal. A
+dependent an operator has already moved off `blocked` (to `doing`, say) is
+left alone. The automatic move records its own audit row with the summary
+`unblocked: task <blocker-id> is terminal`, so it stays distinguishable from
+an operator's own `blocked -> todo` after the fact. This is the lifecycle
+event `blocked -> todo` was added for at task 6441; before 6754 it had to be
+performed by hand on every dependent, and in practice was not, leaving stale
+`blocked` rows behind closed blockers.
+
 **Identity transition** (`from == to`) is accepted silently by all arms — a redundant `--status doing` on a `doing` task is a no-op, not a refusal.
 
 Tasks carry a `title`, an optional `body` (Markdown), a `next_action` field for handoff continuity, and a `scope_kind`/`scope_id` pair that records which scope they belong to.

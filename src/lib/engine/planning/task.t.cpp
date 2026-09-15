@@ -590,3 +590,117 @@ TEST_CASE("render_json emits declaration order, nulls, and an UNCLAMPED priority
   CHECK_FALSE(json.ends_with("\n"));
   CHECK(planar::engine::planning::render_text(*t).ends_with("\n"));
 }
+
+// --- task 6754 / decision 1122: auto-clearing an unblocked dependent ------
+
+TEST_CASE("completing the LAST blocker clears the dependent; a partial clear does not", "[task][verbs][6754]") {
+  // Both halves in ONE case deliberately: asserted separately, a
+  // partial-clearance no-op and a full-clearance transition could each pass
+  // against an implementation that got the other backwards. The dependent
+  // must stay `blocked` after the first blocker completes and move to
+  // `todo` only after the second.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            dep  = create_task(conn, task_create_args{.title = "Dependent"});
+  auto            b1   = create_task(conn, task_create_args{.title = "Blocker one", .status = task_status::doing});
+  auto            b2   = create_task(conn, task_create_args{.title = "Blocker two", .status = task_status::doing});
+  REQUIRE(dep.has_value());
+  REQUIRE(b1.has_value());
+  REQUIRE(b2.has_value());
+
+  REQUIRE(mark_blocked(conn, dep->id, b1->id, std::nullopt, false).has_value());
+  REQUIRE(mark_blocked(conn, dep->id, b2->id, std::nullopt, false).has_value());
+
+  // One of two done: still blocked. This is the arm that fails if the
+  // all-clear rule degrades to any-clear.
+  REQUIRE(mark_done(conn, b1->id, false).has_value());
+  auto after_first = show_task(conn, dep->id);
+  REQUIRE(after_first.has_value());
+  CHECK(after_first->status == task_status::blocked);
+
+  // Both done: cleared.
+  REQUIRE(mark_done(conn, b2->id, false).has_value());
+  auto after_second = show_task(conn, dep->id);
+  REQUIRE(after_second.has_value());
+  CHECK(after_second->status == task_status::todo);
+}
+
+TEST_CASE("a CANCELLED blocker clears its dependent, exactly as a done one does", "[task][verbs][6754]") {
+  // `docs/concepts.md`'s closeout gate states cancelled tasks are terminal
+  // and do not block; `is_terminal` agrees. A dependent left blocked behind
+  // a cancelled blocker would be permanently stuck, since nothing will ever
+  // complete it.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            dep  = create_task(conn, task_create_args{.title = "Dependent"});
+  auto            b    = create_task(conn, task_create_args{.title = "Blocker", .status = task_status::doing});
+  REQUIRE(dep.has_value());
+  REQUIRE(b.has_value());
+  REQUIRE(mark_blocked(conn, dep->id, b->id, std::nullopt, false).has_value());
+
+  REQUIRE(mark_cancelled(conn, b->id).has_value());
+  auto after = show_task(conn, dep->id);
+  REQUIRE(after.has_value());
+  CHECK(after->status == task_status::todo);
+}
+
+TEST_CASE("task update --status done clears dependents too, not only mark_done", "[task][verbs][6754]") {
+  // `update_task` writes `status` in its own UPDATE rather than through
+  // `set_status`, so it is a THIRD path to terminal. Wiring only
+  // mark_done/mark_cancelled would make the auto-clear fire on two of three
+  // paths and look arbitrary.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            dep  = create_task(conn, task_create_args{.title = "Dependent"});
+  auto            b    = create_task(conn, task_create_args{.title = "Blocker", .status = task_status::doing});
+  REQUIRE(dep.has_value());
+  REQUIRE(b.has_value());
+  REQUIRE(mark_blocked(conn, dep->id, b->id, std::nullopt, false).has_value());
+
+  REQUIRE(update_task(conn, b->id, task_update_args{.status = task_status::done}).has_value());
+  auto after = show_task(conn, dep->id);
+  REQUIRE(after.has_value());
+  CHECK(after->status == task_status::todo);
+}
+
+TEST_CASE("auto-clearing leaves a distinguishable audit summary", "[task][verbs][6754]") {
+  // An auto-transition and an operator's own `blocked -> todo` must not be
+  // indistinguishable after the fact -- decision 1122 requires the source be
+  // legible in the trail.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            dep  = create_task(conn, task_create_args{.title = "Dependent"});
+  auto            b    = create_task(conn, task_create_args{.title = "Blocker", .status = task_status::doing});
+  REQUIRE(dep.has_value());
+  REQUIRE(b.has_value());
+  REQUIRE(mark_blocked(conn, dep->id, b->id, std::nullopt, false).has_value());
+  REQUIRE(mark_done(conn, b->id, false).has_value());
+
+  auto stmt = conn.prepare("select summary from audit_log where entity_kind='task' and entity_id=? "
+                           "order by id desc limit 1");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_int64(1, dep->id).has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  REQUIRE(*step == planar::db::step_result::row);
+  CHECK(stmt->column_text(0) == std::format("unblocked: task {} is terminal", b->id));
+}
+
+TEST_CASE("a non-blocked dependent is left alone when its blocker completes", "[task][verbs][6754]") {
+  // The status guard: only a row actually AT `blocked` is touched. A
+  // dependent an operator already moved to `doing` must not be yanked back
+  // to `todo` by its blocker completing.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto            dep  = create_task(conn, task_create_args{.title = "Dependent"});
+  auto            b    = create_task(conn, task_create_args{.title = "Blocker", .status = task_status::doing});
+  REQUIRE(dep.has_value());
+  REQUIRE(b.has_value());
+  REQUIRE(mark_blocked(conn, dep->id, b->id, std::nullopt, false).has_value());
+  REQUIRE(update_task(conn, dep->id, task_update_args{.status = task_status::doing}).has_value());
+
+  REQUIRE(mark_done(conn, b->id, false).has_value());
+  auto after = show_task(conn, dep->id);
+  REQUIRE(after.has_value());
+  CHECK(after->status == task_status::doing);
+}

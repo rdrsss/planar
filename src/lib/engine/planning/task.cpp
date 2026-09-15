@@ -393,6 +393,72 @@ auto is_open(task_status s) -> bool {
   return s == task_status::todo || s == task_status::doing || s == task_status::blocked;
 }
 
+/// @brief Clear `blocked` on every dependent of `blocker_id` whose blocker
+/// set is now fully terminal.
+///
+/// Called after a task reaches a terminal status. A dependent moves
+/// `blocked` -> `todo` ONLY when no incomplete blocker remains -- partial
+/// clearance (one of three blockers done) is deliberately a no-op, per
+/// decision 1122.
+///
+/// `blocked` is DERIVED state here, not operator intent: it is set by
+/// `task block <task> --on <blocker>`, which requires naming a blocker, so
+/// the status is defined by the `depends-on` edge. There is no verb that
+/// parks a task as `blocked` for reasons unrelated to a dependency, so
+/// there is no operator intent for this to override -- leaving the row at
+/// `blocked` after its last blocker completes is simply stale.
+///
+/// Cross-entity auto-transition is not novel here: `recompute_plan` below
+/// already transitions a task's parent PLAN from seven call sites in this
+/// file.
+/// @param conn An open, migrated database connection.
+/// @param blocker_id The task that just became terminal.
+/// @return Success, or the first query failure.
+auto clear_unblocked_dependents(db::connection& conn, std::int64_t blocker_id) -> std::expected<void, task_error> {
+  // Dependents still at `blocked` that have NO remaining non-terminal
+  // blocker. The `not exists` clause is the all-clear rule: a single
+  // outstanding blocker keeps the row blocked.
+  auto stmt = conn.prepare("select d.id from tasks d "
+                           "join entity_links el on el.from_kind='task' and el.from_id=d.id "
+                           "                    and el.to_kind='task' and el.relationship='depends-on' "
+                           "where el.to_id = ?1 and d.status = 'blocked' "
+                           "  and not exists (select 1 from entity_links other "
+                           "                  join tasks b on b.id = other.to_id "
+                           "                  where other.from_kind='task' and other.from_id=d.id "
+                           "                    and other.to_kind='task' and other.relationship='depends-on' "
+                           "                    and b.status not in ('done','cancelled')) "
+                           "order by d.id");
+  if (!stmt || !stmt->bind_int64(1, blocker_id)) {
+    return std::unexpected(task_error::query_failed);
+  }
+  std::vector<std::int64_t> ready;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(task_error::query_failed);
+    }
+    if (*stepped == db::step_result::done) {
+      break;
+    }
+    ready.push_back(stmt->column_int64(0));
+  }
+
+  for (auto const dependent : ready) {
+    if (auto r = set_status(conn, dependent, task_status::todo); !r) {
+      return std::unexpected(r.error());
+    }
+    // A distinct summary from an operator's own `blocked -> todo`: the two
+    // must be distinguishable in the audit trail after the fact.
+    if (auto a = record_audit(conn, audit::record_args{.verb    = audit::verb::status_change,
+                                                       .entity  = {.kind = "task", .id = dependent},
+                                                       .summary = std::format("unblocked: task {} is terminal", blocker_id)});
+        !a) {
+      return std::unexpected(a.error());
+    }
+  }
+  return {};
+}
+
 } // namespace
 
 auto task_status_from_text(std::string_view s) -> std::optional<task_status> {
@@ -834,6 +900,17 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
     return std::unexpected(updated.error());
   }
 
+  // `task update --status done|cancelled` reaches a terminal status without
+  // going through `mark_done`/`mark_cancelled` -- it writes `status` in its
+  // own UPDATE above -- so the dependent sweep has to be wired here too, or
+  // the auto-clear would fire on two of the three terminal paths and look
+  // arbitrary (decision 1122).
+  if (patch.status.has_value() && is_terminal(*patch.status) && !is_terminal(current->status)) {
+    if (auto r = clear_unblocked_dependents(conn, id); !r) {
+      return std::unexpected(r.error());
+    }
+  }
+
   if (!patch.no_auto_promote) {
     if (current->plan_id.has_value()) {
       if (auto r = recompute_plan(conn, *current->plan_id); !r) {
@@ -868,6 +945,11 @@ auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expect
                                                                                : task_error::illegal_transition);
   }
   if (auto r = set_status(conn, id, task_status::done); !r) {
+    return std::unexpected(r.error());
+  }
+  // Decision 1122: a dependent whose LAST blocker just became terminal is
+  // no longer blocked, and leaving it at `blocked` is stale state.
+  if (auto r = clear_unblocked_dependents(conn, id); !r) {
     return std::unexpected(r.error());
   }
   // ORACLE: the summary is the literal `done` -- the resulting status
@@ -907,6 +989,12 @@ auto mark_cancelled(db::connection& conn, std::int64_t id) -> std::expected<task
                                                                                : task_error::illegal_transition);
   }
   if (auto r = set_status(conn, id, task_status::cancelled); !r) {
+    return std::unexpected(r.error());
+  }
+  // Cancelled is terminal and does NOT block (docs/concepts.md's closeout
+  // gate says so explicitly), so it clears dependents exactly as `done`
+  // does -- decision 1122.
+  if (auto r = clear_unblocked_dependents(conn, id); !r) {
     return std::unexpected(r.error());
   }
   // ORACLE: `cancelled` -- the STATUS word, so it does not match the verb
