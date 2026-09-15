@@ -130,6 +130,70 @@ TEST_CASE("the embedded migration chain's versions are strictly monotonic", "[db
   }
 }
 
+namespace {
+
+/// @brief A single SQL text with `--`-to-end-of-line comments removed.
+///
+/// This project's migrations use only `--` line comments (`.sqlfluff`'s
+/// dialect is plain lowercase SQLite SQL; no `/* */` block comments appear
+/// anywhere in `migrations/`), so that is the only form this strips. A `--`
+/// inside a single-quoted string literal would be misread as a comment
+/// start, but no migration's string literals contain one — this is a test
+/// helper scoped to the invariant below, not a general SQL comment stripper.
+/// @param sql The full script text.
+/// @return The text with every `-- ...` run to end-of-line removed.
+auto strip_line_comments(std::string_view sql) -> std::string {
+  std::string out;
+  out.reserve(sql.size());
+  std::size_t pos = 0;
+  while (pos < sql.size()) {
+    auto const comment = sql.find("--", pos);
+    auto const eol     = sql.find('\n', pos);
+    if (comment != std::string_view::npos && (eol == std::string_view::npos || comment < eol)) {
+      out.append(sql.substr(pos, comment - pos));
+      pos = sql.find('\n', comment);
+      if (pos == std::string_view::npos) {
+        break;
+      }
+    } else if (eol != std::string_view::npos) {
+      out.append(sql.substr(pos, eol - pos + 1));
+      pos = eol + 1;
+    } else {
+      out.append(sql.substr(pos));
+      break;
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("no migration authors a double-quoted identifier or literal", "[db][migrations][6056]") {
+  // `canonical_schema_dump` (this file, above) strips every `"` from
+  // `sqlite_master.sql` before comparing schemas, because SQLite's own
+  // `ALTER TABLE ... RENAME TO` rewrites a table's stored `CREATE TABLE`
+  // text to double-quote the identifier while a plain `ADD COLUMN` never
+  // does -- pure engine stringification, not a real structural difference
+  // (task 6056; migration 00011's down script is what triggers it). That
+  // strip is safe ONLY because no migration's AUTHORED text contains a `"`
+  // at all: if one ever did (a quoted identifier, or a double-quoted string
+  // literal -- SQLite accepts both, ambiguously, depending on context), the
+  // strip would silently erase real schema content instead of only an
+  // artifact, and the roundtrip test could pass while masking an actual
+  // loss.
+  //
+  // This is the enforcement task 6056 asked for: the invariant the strip
+  // depends on, checked directly against the EMBEDDED migration text (what
+  // actually ships), not the source files on disk -- so it fails the moment
+  // a future migration violates it, at the same `ctest` gate everything
+  // else in this file runs under.
+  for (auto const& record : planar::db::migrations()) {
+    INFO("migration " << record.version_ << " (" << record.name_ << ")");
+    CHECK(strip_line_comments(record.up_sql_).find('"') == std::string::npos);
+    CHECK(strip_line_comments(record.down_sql_).find('"') == std::string::npos);
+  }
+}
+
 TEST_CASE("applying to an already-current database is a no-op", "[db][migrate]") {
   scratch_db_path scratch;
   auto            conn = planar::db::connection::open(scratch.path_.string());
