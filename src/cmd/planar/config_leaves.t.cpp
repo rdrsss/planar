@@ -990,23 +990,23 @@ TEST_CASE("DIVERGENCE semantic-rejection columns are one character left of the o
   cleanup(fx);
 }
 
-TEST_CASE("DIVERGENCE the array rejection drops the offending element from its message", "[cmd][config][validate][divergence]") {
-  // ORACLE: `error: line 2: col 6: TOML parse error: only string arrays are supported; got '1'`
-  // HERE:   `error: line 2: col 5: TOML parse error: only string arrays are supported`
+TEST_CASE("the array rejection names the offending element (task 6266)", "[cmd][config][validate]") {
+  // Was: "DIVERGENCE the array rejection drops the offending element from
+  // its message", pinning the message gap as it stood. `toml.cppm`
+  // documents its semantic rejections as reusing "zig's exact wording";
+  // for this one it did not — the `; got '1'` suffix naming the offending
+  // element was absent. Fixed in `planar.engine.config.toml` (the message
+  // is composed there, not a parser-split consequence like the column
+  // offset one line below, which stays a genuine, accepted divergence and
+  // is NOT touched here).
   //
-  // Column as above, PLUS a message difference the task brief did not
-  // anticipate: `toml.cppm` documents its semantic rejections as reusing
-  // "zig's exact wording", and for this one it does not — the `; got '1'`
-  // suffix naming the offending element is absent. That is a genuine (if
-  // cosmetic) gap in `planar.engine.config.toml` rather than an
-  // unavoidable consequence of the parser split, and it belongs to the
-  // engine bucket rather than to this wiring cycle. Pinned here as it
-  // stands so the follow-up goes red-then-green.
-  auto const fx = make_fixture("divarraymsg");
+  // ORACLE: `error: line 2: col 6: TOML parse error: only string arrays are supported; got '1'`
+  // HERE:   `error: line 2: col 5: TOML parse error: only string arrays are supported; got '1'`
+  auto const fx = make_fixture("arraymsg");
   write_config(fx, "[defaults]\nx = [1, 2]\n");
   auto const r = dispatch(fx, {"config", "validate"});
   CHECK(r.code == 1);
-  CHECK(r.err == "error: line 2: col 5: TOML parse error: only string arrays are supported\n");
+  CHECK(r.err == "error: line 2: col 5: TOML parse error: only string arrays are supported; got '1'\n");
   cleanup(fx);
 }
 
