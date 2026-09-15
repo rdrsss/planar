@@ -1499,8 +1499,9 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
           ctx.err() << std::format("    artifact {} has no `## ` sections to cite\n", cd.artifact_id_);
         }
       }
-      ctx.err() << "  a citation runs to end-of-line unless stopped by `,`, `)` or `]` — "
-                   "write [artifact:<id>#Section] when prose follows on the same line\n";
+      ctx.err() << "  a BARE citation runs to end-of-line unless stopped by `,`, `)` or `]`; wrapping the whole "
+                   "locator in brackets — [artifact:<id>#Section] — suppresses the `,` and `)` stops, so a heading "
+                   "containing one can be cited in full (task 6760)\n";
       ctx.err() << "  no facts were materialized for any task under this anchor\n";
     }
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "apply failed"));

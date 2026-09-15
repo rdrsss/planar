@@ -459,12 +459,27 @@ order by t.id)");
 
 /// @brief Extracts the citation locator for `artifact_id` out of a task body.
 ///
-/// The scan runs from the `artifact:<id>#` marker to end-of-line, stopping
-/// early at `,`, `)` or `]`. That termination rule is ported UNCHANGED — it
-/// decides which citations resolve, so relaxing it here would change behavior
-/// rather than preserve it. Its consequence (a heading containing any of those
-/// characters can never be cited in full) is what the diagnostic's
-/// `truncated_from_` field exists to name.
+/// TWO FORMS (decision 1124, task 6760):
+///
+///   - BARE: the scan runs from the `artifact:<id>#` marker to end-of-line,
+///     stopping early at `,`, `)` or `]`. Unchanged, byte-for-byte — each of
+///     those three characters ends a real writing pattern (`(see
+///     artifact:5#Overview)`, `see artifact:5#Overview, which ...`,
+///     `[artifact:5#Overview]`), and every citation that resolves today must
+///     keep resolving to exactly what it resolves to now.
+///   - BRACKET-DELIMITED: when the marker is immediately preceded by `[`, the
+///     scan runs to the MATCHING `]` (nesting counted) and `,` / `)` are
+///     ordinary characters inside it. This is the mechanism that lets a
+///     heading containing a terminator be cited in full —
+///     `[artifact:5#File-level tree (operator-approved)]` — which no bare form
+///     can express, because "these characters end a locator" and "these
+///     characters may appear inside one" cannot both hold without one.
+///
+/// An UNMATCHED `[` (no closing `]` before end-of-line) falls back to the bare
+/// scan rather than refusing. Deliberate, not incidental: `[` already appears
+/// before citations in existing prose, and a refusal would make a form that
+/// resolves today start failing — exactly the compatibility break that picked
+/// the additive option over redefining the bare form.
 /// @return `nullopt` when the marker is absent or the locator is bare.
 [[nodiscard]] auto explicit_artifact_locator(std::string_view task_body, std::int64_t artifact_id) -> std::optional<std::string> {
   const auto marker = std::format("artifact:{}#", artifact_id);
@@ -472,8 +487,37 @@ order by t.id)");
   if (start == std::string_view::npos) {
     return std::nullopt;
   }
-  const auto  tail = task_body.substr(start);
-  std::size_t end  = 0;
+  const auto tail = task_body.substr(start);
+
+  // Bracket form: only when `[` DIRECTLY precedes the marker. Anything
+  // between them (`[see artifact:5#X]`) stays bare, so the delimiter cannot
+  // be claimed by prose that merely happens to be bracketed somewhere
+  // earlier on the line.
+  if (start > 0 && task_body[start - 1] == '[') {
+    std::size_t depth = 1;
+    std::size_t end   = 0;
+    while (end < tail.size() && tail[end] != '\n' && tail[end] != '\r') {
+      if (tail[end] == '[') {
+        ++depth;
+      } else if (tail[end] == ']') {
+        --depth;
+        if (depth == 0) {
+          break;
+        }
+      }
+      ++end;
+    }
+    if (depth == 0) {
+      const auto bracketed = trim(tail.substr(0, end), whitespace_inline);
+      if (bracketed.size() <= marker.size()) {
+        return std::nullopt;
+      }
+      return std::string{bracketed};
+    }
+    // Unmatched: fall through to the bare scan below.
+  }
+
+  std::size_t end = 0;
   while (end < tail.size() && tail[end] != '\n' && tail[end] != '\r' && tail[end] != ',' && tail[end] != ')' &&
          tail[end] != ']') {
     ++end;
@@ -932,8 +976,8 @@ auto citation_diagnostic::describe() const -> std::string {
   }
   if (!truncated_from_.empty()) {
     out.append(std::format(
-        R"(. The locator looks TRUNCATED: section "{}" starts with the requested name, and a locator stops at the first ',', ')' or ']'. Rename that heading to drop the character, or cite a heading without one)",
-        truncated_from_));
+        R"(. The locator looks TRUNCATED: section "{}" starts with the requested name, and a BARE locator stops at the first ',', ')' or ']'. Wrap the whole locator in brackets — [artifact:<id>#{}] — which suppresses those terminators, or rename the heading to drop the character)",
+        truncated_from_, truncated_from_));
   }
   return out;
 }

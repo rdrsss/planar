@@ -1504,7 +1504,7 @@ Facts are derived through the **same predicates** the plan-wide pass uses, so an
 
 **Staleness is not traded away.** `packet` accepts both materializer versions, but the digest comparison is unchanged: an operator-staged fact goes stale the moment its source text changes, exactly as an ingest-staged one does. A fact that could never go stale would be a weaker contract, and is deliberately not what this verb produces.
 
-**Citations are resolved, never invented.** A `cited_artifact_section` fact is staged only for an artifact the task *already* cites through an `entity_links` edge **and** references explicitly in its body as `artifact:<id>#Section`. An artifact cited without a resolvable locator is reported as a diagnostic naming the task, the artifact, the section asked for, and the sections that artifact actually has — and **nothing is staged** in that case.
+**Citations are resolved, never invented.** A `cited_artifact_section` fact is staged only for an artifact the task *already* cites through an `entity_links` edge **and** references explicitly in its body as `artifact:<id>#Section`. A BARE locator of that form runs to end-of-line but stops at the first `,`, `)` or `]` — each of which ends a real writing pattern (`(see artifact:5#Overview)`, `see artifact:5#Overview, which ...`). To cite a heading that CONTAINS one of those characters, wrap the whole locator in brackets: `[artifact:<id>#File-level tree (operator-approved)]` suppresses the `,` and `)` stops and ends at the matching `]` (nesting counted). An unmatched `[` falls back to the bare scan (task 6760, decision 1124). An artifact cited without a resolvable locator is reported as a diagnostic naming the task, the artifact, the section asked for, and the sections that artifact actually has — and **nothing is staged** in that case.
 
 **Scope:** strictly one task. The delete that precedes the rewrite is keyed on `task_id`, so staging one task never discards a sibling's ingest-materialized facts.
 
@@ -5363,6 +5363,8 @@ planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
 
 Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing. `--apply` is required to commit additions and updates; `--apply --apply-removals` additionally soft-cancels removed entities.
 
+`--dry-run` narrows that further: there are no planning writes on the non-apply path to suppress, but a first run does stage `_pending.json` under `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/`. `--dry-run` suppresses that one filesystem side effect and names the paths it would have used (task 6273, decision 1125).
+
 The LLM never runs in the CLI. The `planar` binary writes a synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar synthesize <repo-root>`; the CLI finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
 
 **Arguments:**
@@ -5378,14 +5380,14 @@ The LLM never runs in the CLI. The `planar` binary writes a synthesis Request to
 | `--apply` | off | Commit additions and updates. |
 | `--apply-removals` | off | Commit removals (soft-cancel). Requires `--apply`. |
 | `--scope <slug>` | cwd-derived | Override scope resolution. |
-| `--threshold <0..1>` | `0.7` | Confidence floor for ambiguous items. |
+| `--threshold <0..1>` | — | **DECLARED AND INERT (task 6273).** Nothing reads it: there is no similarity pass in this binary for it to feed, so passing it is accepted and has no effect. It is kept rather than removed because removing it moves the pinned `schema` catalog and turns every script that passes it into a parse error at exit 2. Designing the pass it would feed is a filed spike, not a wiring job. |
 | `--code-layout <name>` | auto | Override layout detection. One of `swift`, `go`, `node`, `python`, `mixed`. |
 | `--treat-as-greenfield` | off | Force greenfield mode even when code is detected. Forces every task to land `status=todo`. |
 | `--treat-as-nongreenfield` | off | Bypass greenfield auto-detection. Use for non-conventional layouts where codeprobe under-detects. |
 | `--accept-spec <slug>` | interactive | Non-interactive forward-spec selection; `all` accepts every proposed forward spec. |
 | `--no-forward-specs` | off | Skip the forward-spec phase entirely. |
 | `--literal` | off | Delegate to `import` (transcription). Useful when you started with `synthesize` but realize the repo is clean enough for transcription. |
-| `--dry-run` | off | Emit the ImportPlan as JSON without writing, regardless of `--apply`. |
+| `--dry-run` | off | Stage nothing: skip the `_pending.json` write (and the cache directory that holds it) and report the paths that would have been written. Exit 0. Before task 6273 this flag was declared and never read, so it silently did the normal thing. |
 | `--json` | off | Machine-readable output. |
 
 **Workflow:**
