@@ -2,7 +2,8 @@
 #
 # Layer-2 `engine_*` module: may depend on layer-1 modules only, never
 # sideways onto another `engine_*` bucket (D15/D18, FATAL at configure
-# time). Three dependencies, all layer 1: `db`, `json_text`, `scope_ref`.
+# time). Four dependencies, all layer 1: `db`, `json_text`, `scope_ref`,
+# `activity_rollup`.
 #
 # Behavior-preserving port (D2) of zig/src/engine/tree.zig (1284 non-test
 # lines) — the walker, the box-drawing text renderer, and the `--json`
@@ -42,19 +43,23 @@
 #     one place the port is deliberately not byte-identical, and only
 #     outside the oracle's own working range — inside it the bytes match.
 #
-# THE ACTIVITY ROLLUP IS DUPLICATED HERE ON PURPOSE
+# THE ACTIVITY ROLLUP WAS EXTRACTED TO LAYER 1 (task 6282)
 #
 # The oracle's walker calls `engine.runtime.agentactivity.summary
-# .forEntity`. In C++ that lives in `planar_engine_runtime`, and
+# .forEntity`. In C++ that bucket is `planar_engine_runtime`, and
 # `engine_tree -> engine_runtime` is the sideways edge architecture.cmake
-# FATALs on. `walk.cpp`'s `for_entity` is therefore a transcribed copy of
-# those three queries, not a call. `planar_engine_runtime` ports the
-# rollup's two siblings (`recent_actions_for_entity`,
-# `claim_transitions_for_entity`) for `audit trail` but NOT the compact
-# rollup, so this is currently the tree's ONLY copy and has nothing to
-# drift from. The principled fix is a D19 extraction to layer 1 — the
-# same move task 6089 made for scope resolution — and it belongs in a
-# task of its own rather than smuggled into a port cycle.
+# FATALs on — so `walk.cpp` carried a transcribed COPY of those three
+# queries instead of a call.
+#
+# That copy is gone. The rollup now lives in the layer-1
+# `planar.activity_rollup`, which both this bucket and `engine_runtime`
+# can depend on downward without depending on each other — D19's
+# prescribed move, the same one task 6089 made for scope resolution.
+# Doing it while `engine_runtime` still had no copy of its own made this a
+# MOVE; once a second copy existed it would have been a three-way merge.
+#
+# `walk.cppm` keeps the name `tree::activity_summary` as an alias onto the
+# extracted type, so the extraction is invisible to every consumer.
 
 planar_module(engine_tree
   INTERFACE
@@ -65,7 +70,8 @@ planar_module(engine_tree
   DEPENDS
     db
     json_text
-    scope_ref)
+    scope_ref
+    activity_rollup)
 
 if(TARGET planar_engine_tree_tests)
   target_link_libraries(planar_engine_tree_tests PRIVATE SQLite::SQLite3)
