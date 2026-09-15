@@ -410,6 +410,11 @@ auto build_task_body(const parse::work_item& item) -> std::string {
       out.push_back('\n');
     }
   }
+  // Routing reads this section directly from the task body. Keeping it in
+  // the generated projection gives new tasks an explicit validation contract
+  // and lets a reviewed re-ingest repair unchanged legacy generated tasks,
+  // while `is_generated_task_body` protects operator-authored replacements.
+  out.append("\n## Required validation\n\n- Run the authored test-spec scenarios covering this task.\n");
   return out;
 }
 
