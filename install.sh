@@ -380,6 +380,41 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   done
 
   if [[ -d "$PLANAR_HOME" ]]; then
+    # Prefix ownership guard, uninstall side. The --uninstall branch returns
+    # (exit 0) above the INSTALL-side ownership guard further down this file,
+    # so without this check a mistyped --prefix/PLANAR_HOME reaches the
+    # unconditional `rm -rf "$PLANAR_HOME"` below with NO ownership check at
+    # all — `PLANAR_HOME=$HOME ./install.sh --uninstall --force` deletes the
+    # operator's home directory outright, and even without --force the
+    # find-and-delete two lines down removes every top-level entry of
+    # $PLANAR_HOME except a file literally named `planar.db`.
+    #
+    # Two checks, in order:
+    #   1. $PLANAR_HOME normalized (plain `realpath`, not `-m` — GNU's `-m`
+    #      tolerates a nonexistent path but BSD/macOS realpath has no `-m`
+    #      flag at all and errors out, which silently fell through to the
+    #      raw-string fallback below and defeated the whole normalization on
+    #      macOS when this was first written; `-m` is unneeded here anyway,
+    #      since we are already inside `-d "$PLANAR_HOME"`, so the path is
+    #      guaranteed to exist) so a trailing slash or a symlink cannot
+    #      defeat the comparison — the D13 normalization hazard tasks
+    #      6051/6052/6053 described for a different, now-gone code path,
+    #      applied to the real one — must not equal $HOME itself. $HOME is
+    #      never a valid Planar prefix, so this refuses even under --force:
+    #      there is no legitimate reason to override it.
+    #   2. Absent that, the SAME ownership signals the install-side guard
+    #      uses (stamp / bin/planar / planar.db) must be present, unless
+    #      --force overrides — mirroring the install-side guard exactly
+    #      rather than inventing a second policy.
+    _planar_home_real="$(realpath "$PLANAR_HOME" 2>/dev/null || echo "$PLANAR_HOME")"
+    _home_real="$(realpath "$HOME" 2>/dev/null || echo "$HOME")"
+    if [[ "$_planar_home_real" == "$_home_real" ]]; then
+      err "refusing to uninstall: PLANAR_HOME ($PLANAR_HOME) resolves to \$HOME ($HOME) — this would delete your home directory. Set --prefix to the actual Planar install root."
+    fi
+    if [[ ! -e "$PLANAR_HOME/.planar-install" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
+      err "$PLANAR_HOME does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Refusing to remove it. Pass the correct --prefix, or re-run with --force to remove it anyway."
+    fi
+
     log "removing install root: $PLANAR_HOME"
     log "(planar.db is preserved if you have data — re-run with --force or rm manually)"
     if [[ "$FORCE" -eq 1 ]]; then
