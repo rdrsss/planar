@@ -629,6 +629,17 @@ auto read_cached_strategy(db::connection& conn, std::int64_t anchor_plan_id, std
 
 auto list_mirror_links_in_tree(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id)
     -> std::expected<std::vector<mirror_link>, link_error> {
+  // The task arm reads BOTH attachment routes -- `tasks.plan_id` and the
+  // `entity_links` derives-from edge -- matching `descendants::walk_tree`
+  // exactly (task 6307 fixed that function's identical blind spot; this
+  // fixes the same defect here, task 6429/decision 1115). The oracle's
+  // `listMirrorLinksInTree` read the edge alone, so a task attached the
+  // ORDINARY way (`task add --plan <id>`, no entity_links row) was invisible
+  // to `--verify-counterparts` even though `ext propagate` had propagated
+  // it. No `distinct` is needed the way `walk_tree` needed one for `t.id`:
+  // this query returns `external_links` rows keyed by `el.id`, and a task
+  // has at most one mirror link per system, so the two `t.id in (...)`
+  // membership tests cannot double-count a row.
   auto stmt = conn.prepare("with recursive plan_tree(id) as ("
                            "  select ? union all"
                            "  select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id"
@@ -640,9 +651,11 @@ auto list_mirror_links_in_tree(db::connection& conn, std::int64_t anchor_plan_id
                            "    (el.entity_kind = 'plan' and el.entity_id in (select id from plan_tree))"
                            "    or (el.entity_kind = 'task' and el.entity_id in ("
                            "      select t.id from tasks t"
-                           "      join entity_links tl on tl.from_kind = 'task' and tl.from_id = t.id"
-                           "                          and tl.to_kind = 'plan' and tl.relationship = 'derives-from'"
-                           "      where tl.to_id in (select id from plan_tree)"
+                           "      where t.plan_id in (select id from plan_tree)"
+                           "         or exists (select 1 from entity_links tl"
+                           "                    where tl.from_kind = 'task' and tl.from_id = t.id"
+                           "                      and tl.to_kind = 'plan' and tl.relationship = 'derives-from'"
+                           "                      and tl.to_id in (select id from plan_tree))"
                            "    ))"
                            "  )"
                            "order by el.id");

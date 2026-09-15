@@ -509,8 +509,15 @@ TEST_CASE("read_cached_strategy treats an unparseable or keyless config_json as 
   CHECK_FALSE(cached->has_value());
 }
 
-TEST_CASE("list_mirror_links_in_tree walks plan descendants but NOT tasks attached only via tasks.plan_id",
-          "[engine][external][link][strategy]") {
+TEST_CASE("list_mirror_links_in_tree walks plan descendants AND tasks attached only via tasks.plan_id",
+          "[engine][external][link][strategy][6429]") {
+  // Was: "...but NOT tasks attached only via tasks.plan_id" -- pinning an
+  // oracle-inherited asymmetry with `propagate`'s own tree walk
+  // (`descendants::walk_tree`), which already reads both attachment routes
+  // (task 6307 fixed that function's identical blind spot). Decision 1115
+  // (task 6429) widened THIS function to match: `--verify-counterparts` must
+  // walk the same tree `ext propagate` actually propagates, not a narrower
+  // one that silently excludes the ordinary `task add --plan <id>` shape.
   scratch_db_path const scratch;
   auto                  conn      = open_migrated(scratch);
   auto const            system_id = insert_system(conn, "gh");
@@ -519,7 +526,7 @@ TEST_CASE("list_mirror_links_in_tree walks plan descendants but NOT tasks attach
   REQUIRE(link::record_mirror_link(conn, "plan", 1, system_id, "gh#1", "", link::sync_direction::read_only).has_value());
   REQUIRE(link::record_mirror_link(conn, "plan", 2, system_id, "gh#2", "", link::sync_direction::read_only).has_value());
 
-  // A task attached via entity_links(derives-from) IS reachable...
+  // A task attached via entity_links(derives-from)...
   {
     auto stmt = conn.prepare("insert into tasks (id, scope_kind, title) values (1, 'global', 't1')");
     REQUIRE(stmt.has_value());
@@ -531,11 +538,8 @@ TEST_CASE("list_mirror_links_in_tree walks plan descendants but NOT tasks attach
   }
   REQUIRE(link::record_mirror_link(conn, "task", 1, system_id, "gh#3", "", link::sync_direction::read_only).has_value());
 
-  // ...but a second task attached ONLY via tasks.plan_id (no entity_links
-  // row) is NOT -- this is the oracle-inherited asymmetry `ext propagate`'s
-  // CLI bridge documents (propagate.cpp's happy-path walk uses BOTH paths;
-  // this function, ported verbatim from strategy.zig's
-  // `listMirrorLinksInTree`, follows only entity_links).
+  // ...and a second task attached ONLY via tasks.plan_id (no entity_links
+  // row, the shape `task add --plan <id>` writes) are BOTH now reachable.
   {
     auto stmt = conn.prepare("insert into tasks (id, scope_kind, plan_id, title) values (2, 'global', 2, 't2')");
     REQUIRE(stmt.has_value());
@@ -545,10 +549,36 @@ TEST_CASE("list_mirror_links_in_tree walks plan descendants but NOT tasks attach
 
   auto const links = link::list_mirror_links_in_tree(conn, 1, system_id);
   REQUIRE(links.has_value());
-  CHECK(links->size() == 3);
+  CHECK(links->size() == 4);
+  bool saw_plan_id_task = false;
   for (auto const& l : *links) {
-    CHECK(l.external_id != "gh#4");
+    saw_plan_id_task = saw_plan_id_task || l.external_id == "gh#4";
   }
+  CHECK(saw_plan_id_task);
+}
+
+TEST_CASE("list_mirror_links_in_tree does not double-count a task attached BOTH ways", "[engine][external][link][6429]") {
+  // A task can legitimately be both plan_id-attached and entity_links-linked
+  // to the SAME plan. The widened query's two membership tests must not
+  // double-emit its one mirror link.
+  scratch_db_path const scratch;
+  auto                  conn      = open_migrated(scratch);
+  auto const            system_id = insert_system(conn, "gh");
+  insert_plan(conn, 1, "Anchor", "anchor");
+  {
+    auto stmt = conn.prepare("insert into tasks (id, scope_kind, plan_id, title) values (1, 'global', 1, 't1')");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    auto link_stmt = conn.prepare("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                                  "values ('task', 1, 'plan', 1, 'derives-from')");
+    REQUIRE(link_stmt.has_value());
+    REQUIRE(link_stmt->step().has_value());
+  }
+  REQUIRE(link::record_mirror_link(conn, "task", 1, system_id, "gh#1", "", link::sync_direction::read_only).has_value());
+
+  auto const links = link::list_mirror_links_in_tree(conn, 1, system_id);
+  REQUIRE(links.has_value());
+  CHECK(links->size() == 1);
 }
 
 TEST_CASE("record_counterpart_missing writes the audit event and deletes the link only when asked",
