@@ -99,7 +99,9 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // directly (see report.cppm/introspection_adapters.cppm's "WHY NO
   // `collect_configured_preview`" for why this handler does the anytype
   // -equivalent glue by hand rather than the module importing
-  // `engine_config` itself).
+  // `engine_config` itself). Guarded below (task 6356) so a future field on
+  // either struct that this hand-copy forgets fails LOUDLY at build time
+  // instead of being silently dropped.
   ia::transcript_config transcripts{.home_dir = home};
   {
     auto const& t               = cfg_result->introspection.transcripts;
@@ -109,6 +111,30 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     transcripts.codex_path      = t.codex_path;
     transcripts.copilot_enabled = t.copilot_enabled;
     transcripts.copilot_path    = t.copilot_path;
+
+    // `t` and `transcripts` are two SEPARATE structs (`engine_config` and
+    // `engine_introspection_adapters` are both layer 2, and this handler
+    // exists specifically to bridge them by hand rather than adding the
+    // engine<->engine edge D15/D18/D20 forbid — see the header above and
+    // task 6351/decisions 981-982). Nothing but this block keeps their
+    // field lists in sync, and the compiler cannot check a hand-written
+    // assignment list against "every field got copied": a sixth field
+    // added to either struct compiles clean and is silently dropped here.
+    //
+    // TASK 6356'S GUARD: aggregate structured-binding decomposition arity
+    // IS checked by the compiler, so it stands in for that missing check —
+    // a structured binding is well-formed only when the aggregate has
+    // EXACTLY as many public, non-static data members as names given. If
+    // either struct's field count ever changes without a matching edit
+    // here, the line below fails to compile with the count it actually
+    // found, naming this exact spot rather than surfacing only in some
+    // later differential run. (Not written as `static_assert(requires{...})`:
+    // a structured-binding mismatch inside a CONCRETE lambda body — not a
+    // template — is not a substitution failure, so `requires` cannot catch
+    // it and turn it into a custom message; it is a hard compile error
+    // either way, which satisfies "fails loudly at build time" on its own.)
+    [[maybe_unused]] auto const& [cfg_a, cfg_b, cfg_c, cfg_d, cfg_e, cfg_f] = cfg_result->introspection.transcripts;
+    [[maybe_unused]] auto const& [ia_a, ia_b, ia_c, ia_d, ia_e, ia_f, ia_g] = transcripts;
   }
 
   // Bridges `engine::introspect::cli_preview_jsonl` (the authoritative,
