@@ -486,6 +486,9 @@ TEST_CASE("plan next and plan descendants AGREE that a plan_id-attached task is 
   // result rather than a stray anchor-scoped row.
   auto const child = dispatch(fx, {"plan", "next", "2"});
   CHECK(child.code == 0);
-  CHECK(child.out == "plan:2  available:1  claimed:0  stale:0  blocked:0  done:0\n"
-                     "  available  task:6  Foxtrot child  [pri:1]\n");
+  // The task belongs to the shared subtree, but is not dispatchable until
+  // its routing packet is materialized. `plan next` therefore surfaces it
+  // in the same blocked bucket the operator must resolve before claiming.
+  CHECK(child.out == "plan:2  available:0  claimed:0  stale:0  blocked:1  done:0\n"
+                     "  blocked    task:6  Foxtrot child  [pri:1]\n");
 }

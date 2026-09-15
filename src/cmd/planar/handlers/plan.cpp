@@ -10,6 +10,7 @@ import planar.db;
 import planar.json_text;
 import planar.engine.identity;
 import planar.engine.planning;
+import planar.engine.ingest;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentrender;
 import planar.cmd.planar.context;
@@ -859,7 +860,7 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     }
   }
 
-  auto const rows = aa::next_work(**conn, *id);
+  auto rows = aa::next_work(**conn, *id);
   if (!rows) {
     return std::unexpected(
         error_from_body(domain_error_kind::generic_failure, std::format("plan next selector: {}", aa::error_name(rows.error()))));
@@ -869,7 +870,17 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   std::size_t n_claimed = 0;
   std::size_t n_stale   = 0;
   std::size_t n_blocked = 0;
-  for (auto const& row : *rows) {
+  // A claim-aware task selector alone is insufficient for dispatch: a task
+  // whose provenance packet is incomplete must remain blocked until ingest
+  // reconciliation restores its reviewed evidence.
+  for (auto& row : *rows) {
+    if (row.bucket == aa::next_work_bucket::available) {
+      auto packet = engine::ingest::packet::assemble_task(**conn, row.task_id);
+      if (!packet)
+        return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan next packet: QueryFailed"));
+      if (!packet->ready())
+        row.bucket = aa::next_work_bucket::blocked;
+    }
     switch (row.bucket) {
     case aa::next_work_bucket::available:
       ++n_avail;

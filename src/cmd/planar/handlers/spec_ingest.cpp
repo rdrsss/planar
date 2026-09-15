@@ -936,7 +936,9 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     std::int64_t child_plan_id = 0;
     switch (cp.op_) {
     case diff_ns::op::add: {
-      auto created = pl::create_plan(conn, {.title = cp.title_, .parent_plan_id = diff.anchor_plan_id_, .scope = scope_owned});
+      auto created = pl::create_plan(
+          conn,
+          {.title = cp.title_, .status = pl::plan_status::active, .parent_plan_id = diff.anchor_plan_id_, .scope = scope_owned});
       if (!created) {
         return std::unexpected(apply_error{.message = std::string{name_of(created.error())}});
       }
@@ -951,6 +953,19 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     }
     case diff_ns::op::update:
       child_plan_id = cp.existing_id_;
+      // A reviewed ingest is an execution boundary. Previously-ingested
+      // draft milestones must become executable on the same replay path as
+      // newly-created milestones.
+      {
+        auto current = pl::show_plan(conn, child_plan_id);
+        if (!current)
+          return std::unexpected(apply_error{.message = std::string{name_of(current.error())}});
+        if (current->status == pl::plan_status::draft) {
+          auto activated = pl::update_plan(conn, child_plan_id, {.status = pl::plan_status::active});
+          if (!activated)
+            return std::unexpected(apply_error{.message = std::string{name_of(activated.error())}});
+        }
+      }
       res.plans_updated += 1;
       break;
     case diff_ns::op::remove:
