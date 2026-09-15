@@ -298,6 +298,40 @@ auto locate_assignment(std::string_view content, std::string_view dotted_key) ->
   return found;
 }
 
+/// @brief The first character the oracle's hand-rolled array-element
+/// tokenizer would have seen for a non-string element, so the rejection
+/// message can name it the same way (`; got '<char>'`).
+///
+/// The oracle's `parseArray` scans raw source and fails on the first
+/// character that is not a quote (`else => return p.fail("... got '{c}'",
+/// .{ch})`); it never fully parses the token. Glaze has already parsed the
+/// element into a typed node by the time this runs, so there is no raw
+/// character to read back -- this reconstructs it from the node's TOML
+/// canonical rendering instead, which agrees with the oracle's raw scan for
+/// every value TOML can express: a leading `-` and a digit start the same
+/// way whichever route produced them, `true`/`false` start with `t`/`f`,
+/// a nested array starts with `[`, and a table starts with `{`.
+/// @param elem A non-string array element.
+/// @return The single character to report.
+auto offending_char(const glz::generic_i64& elem) -> char {
+  if (elem.is_boolean()) {
+    return elem.get_boolean() ? 't' : 'f';
+  }
+  if (elem.is_int64()) {
+    return std::format("{}", elem.get<std::int64_t>()).front();
+  }
+  if (elem.is_array()) {
+    return '[';
+  }
+  if (elem.is_object()) {
+    return '{';
+  }
+  // Float: `is_double()` without `is_int64()` per the header comment below.
+  // `{}`-formatting a double never starts with anything other than a digit
+  // or `-`, matching the oracle's raw scan the same way integers do.
+  return std::format("{}", elem.get<double>()).front();
+}
+
 /// @brief Recursively flatten a parsed `glz::generic_i64` node into `out`,
 /// joining nested object keys with '.'. `prefix` is the dotted path
 /// accumulated so far ("" at the document root). `source` is the ORIGINAL
@@ -341,7 +375,9 @@ auto flatten(const glz::generic_i64& node, const std::string& prefix, std::strin
         // array-typed default key
         // (external.github-projects.parent_field_names) is a string
         // array; anything else is out of this config schema's shape.
-        return reject("only string arrays are supported");
+        // The oracle names the offending element (task 6266): "only string
+        // arrays are supported; got '<char>'".
+        return reject(std::format("only string arrays are supported; got '{}'", offending_char(elem)));
       }
       items.push_back(elem.get_string());
     }

@@ -86,7 +86,31 @@ TEST_CASE("parse_toml: string array", "[toml]") {
 TEST_CASE("parse_toml: a non-string array element is rejected", "[toml]") {
   auto result = parse_toml("mixed = [\"a\", 1]\n");
   REQUIRE_FALSE(result.has_value());
-  CHECK(result.error().message == "only string arrays are supported");
+  // The offending element is named (task 6266): the oracle's hand-rolled
+  // tokenizer fails on the first raw character it sees, which for an
+  // integer element is that integer's leading digit.
+  CHECK(result.error().message == "only string arrays are supported; got '1'");
+}
+
+TEST_CASE("parse_toml: the offending element is named across every non-string TOML type", "[toml]") {
+  // One case per `offending_char` branch, so the fix cannot be reproducing
+  // only the single-digit-integer case its own reproduction step used.
+  struct case_t {
+    std::string_view doc;
+    char             expect;
+  };
+  for (auto const& c : std::array<case_t, 5>{{
+           {"mixed = [\"a\", 42]\n", '4'},   // multi-digit: NOT the whole "42"
+           {"mixed = [\"a\", -3]\n", '-'},   // negative: the sign, not the digit
+           {"mixed = [\"a\", true]\n", 't'}, // boolean
+           {"mixed = [\"a\", 1.5]\n", '1'},  // float
+           {"mixed = [\"a\", [1]]\n", '['},  // nested array
+       }}) {
+    INFO("doc: " << c.doc);
+    auto result = parse_toml(c.doc);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().message == std::format("only string arrays are supported; got '{}'", c.expect));
+  }
 }
 
 TEST_CASE("parse_toml: a float value is rejected", "[toml]") {
@@ -127,7 +151,7 @@ TEST_CASE("parse_toml: a non-string array rejection carries the offending line",
   REQUIRE_FALSE(result.has_value());
   CHECK(result.error().line == 2);
   CHECK(result.error().column == 9);
-  CHECK(result.error().message == "only string arrays are supported");
+  CHECK(result.error().message == "only string arrays are supported; got '1'");
 }
 
 TEST_CASE("parse_toml: a syntax error carries a line, a column and a message", "[toml]") {
