@@ -33,6 +33,7 @@ CPP_RELEASE_BIN_DIR ?= build/release/bin
 
 CPP_BUILD_DIR ?= build/debug
 CLI_USAGE_LINT := $(CPP_BUILD_DIR)/src/tools/cli_usage_lint/cli_usage_lint
+CLI_DOCS_COVERAGE := $(CPP_BUILD_DIR)/src/tools/cli_docs_coverage/cli_docs_coverage
 SURFACE_LINT := $(CPP_BUILD_DIR)/src/tools/surface_lint/surface_lint
 
 # Extra args forwarded to the relevant underlying build command.
@@ -276,8 +277,9 @@ test-cpp-solver: ## Run the ctest suite against a solver-ON build (decision 1032
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
 	cmake --preset debug
-	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext
+	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext
 	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY)
+	$(CLI_DOCS_COVERAGE) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY)
 	$(SURFACE_LINT) $(CURDIR)
 
 .PHONY: surface-lint
