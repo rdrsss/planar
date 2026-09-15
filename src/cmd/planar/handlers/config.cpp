@@ -486,20 +486,49 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
   //
   // Line-oriented over the RAW file, deliberately: it reports the line
   // number and the key AS WRITTEN, which a flattened map has thrown away.
-  // Skips blanks, comment lines, and lines with no `=` (every table header).
+  // Skips blanks and comment lines. A `[table]` header is now TRACKED
+  // rather than merely skipped (decision 1118, task 6265): the scan used
+  // to be purely lexical over the last path segment before `=`, with no
+  // table context at all, so `[roles]\nmy_token = "large"` refused even
+  // though the value is a tier name -- there is no way to name a role
+  // ending in `_token`/`_secret`/`_password`/`_key` and have the config
+  // validate at all, and the `*_env` remedy the message suggests is
+  // meaningless for a role.
+  //
+  // Scoped to `external.*` (an ALLOWLIST, not a denylist of roles/
+  // role_vendors): that is the only table family `effective.cpp` implements
+  // the `*_env` indirection convention for at all
+  // (`external.jira.token_env`, `external.github-issues.token_env`), so it
+  // is the only place the scan's own suggested remedy could ever apply.
+  // Scoping this way closes the whole false-positive CLASS, not just the
+  // `[roles]` instance that surfaced it: any future table with an
+  // innocuously-named key would be exempt too, the same way `[roles]` now
+  // is.
   {
     std::size_t      line_index = 0;
     std::string_view rest{*content};
+    std::string      current_table; // "" at document root; dotted, e.g. "external.jira"
     while (true) {
       auto const newline = rest.find('\n');
       auto const line    = rest.substr(0, newline == std::string_view::npos ? rest.size() : newline);
       auto const trimmed = trim_any(line, " \t\r");
       if (!trimmed.empty() && trimmed.front() != '#') {
-        if (auto const eq = trimmed.find('='); eq != std::string_view::npos) {
+        if (trimmed.front() == '[') {
+          // `[table]` or `[[array-of-tables]]` — strip one bracket from each
+          // side regardless of which, so a double-bracket header still
+          // yields the bare dotted path.
+          auto header   = trim_any(trimmed, "[]");
+          current_table = std::string{trim_any(header, " \t")};
+        } else if (auto const eq = trimmed.find('='); eq != std::string_view::npos) {
           auto const raw_key = trim_any(trimmed.substr(0, eq), " \t");
           auto const raw_val = strip_inline_comment(trim_any(trimmed.substr(eq + 1), " \t"));
           auto const value   = trim_any(trim_any(raw_val, "\"'"), " \t");
-          if (!value.empty() && cfg::sensitive_name(raw_key)) {
+          // This schema never authors an inline dotted key (`a.b = 1`); every
+          // nesting level is its own `[table]` header, so `raw_key` is always
+          // a single leaf segment and `current_table` alone carries the
+          // dotted context.
+          auto const in_scope = current_table == "external" || current_table.starts_with("external.");
+          if (in_scope && !value.empty() && cfg::sensitive_name(raw_key)) {
             report(std::format("line {}: {}: sensitive key must not carry a literal value in the config file "
                                "(use *_env convention instead)",
                                line_index + 1, raw_key));
