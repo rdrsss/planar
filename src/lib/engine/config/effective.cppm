@@ -146,6 +146,15 @@ export struct external_config {
 
 /// @brief `[introspection.transcripts]` — per-vendor CLI transcript
 /// capture, independently enable/path-overridable.
+///
+/// `report`'s handler hand-copies these fields into
+/// `engine_introspection_adapters`' own `transcript_config` (the two
+/// modules cannot import each other — both are layer 2). A field ADDED
+/// here without a matching edit to that copy site would compile clean and
+/// silently be dropped; `report.cpp` guards against exactly that with a
+/// structured-binding decomposition pinning this struct's field count
+/// (task 6356) — adding, removing, or retyping a field here without
+/// updating that guard fails the build at the copy site, not silently.
 export struct transcripts_config {
   bool        claude_enabled = true;  ///< Whether the Claude transcript adapter is enabled.
   std::string claude_path;            ///< Operator override path; empty selects the built-in vendor location.

@@ -58,6 +58,13 @@
 /// `transcript_config` directly. Same behavior, one fewer indirection, no
 /// forbidden edge.
 ///
+/// That hand-copy at the `report` handler is a field-by-field assignment
+/// list the compiler cannot check against "every field got copied" — a
+/// new field on either struct would compile clean and silently drop.
+/// `report.cpp` guards it with two structured-binding decompositions
+/// pinning both structs' exact field counts, so a change to either one
+/// fails to compile at that exact spot instead (task 6356).
+///
 /// ## Why this is a self-contained layer-2 bucket
 ///
 /// Two dependencies: `planar.json_dom` (layer 1) for parsing each JSONL
