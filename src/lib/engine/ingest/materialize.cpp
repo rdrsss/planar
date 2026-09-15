@@ -607,6 +607,42 @@ order by t.id, a.id)");
   return {};
 }
 
+/// @brief Stage the reviewed source set for every descendant task. These are
+/// whole-document provenance facts, deliberately separate from a task's
+/// pinpoint citation facts: a roadmap bullet remains the actionable citation,
+/// while the reviewed product/tech/test documents are durable packet evidence.
+[[nodiscard]] auto stage_reviewed_artifact_facts(db::connection& conn, std::int64_t anchor_plan_id)
+    -> std::expected<void, materialize_error> {
+  auto stmt = conn.prepare(R"(with recursive plan_tree(id) as (
+  select id from plans where id = ?
+  union all select child.id from plans child join plan_tree parent on child.parent_plan_id = parent.id
+)
+select t.id, a.id, a.kind, coalesce(a.body,'')
+from tasks t join plan_tree pt on pt.id = t.plan_id
+join entity_links el on el.from_kind='artifact' and el.to_kind='plan' and el.to_id=? and el.relationship='derives-from'
+join artifacts a on a.id=el.from_id
+where a.kind in ('product_spec','tech_spec','roadmap','test_spec')
+order by t.id,a.id)");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, anchor_plan_id))
+    return query_failure();
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped)
+      return query_failure();
+    if (*stepped == db::step_result::done)
+      break;
+    const auto task_id     = stmt->column_int64(0);
+    const auto artifact_id = stmt->column_int64(1);
+    const auto kind        = stmt->column_text(2);
+    const auto body        = stmt->column_text(3);
+    if (auto r =
+            stage(conn, task_id, "reviewed_" + kind, fact_value{std::string_view{body}}, "artifact", artifact_id, "body", body);
+        !r)
+      return r;
+  }
+  return {};
+}
+
 [[nodiscard]] auto stage_decision_facts(db::connection& conn, std::int64_t anchor_plan_id)
     -> std::expected<void, materialize_error> {
   auto stmt = conn.prepare(R"(select t.id, de.id, de.body
@@ -1150,6 +1186,9 @@ auto reconcile(db::connection& conn, std::int64_t anchor_plan_id, std::span<cons
     return r;
   }
   if (auto r = stage_artifact_facts(conn, anchor_plan_id, roadmap_citations); !r.has_value()) {
+    return r;
+  }
+  if (auto r = stage_reviewed_artifact_facts(conn, anchor_plan_id); !r.has_value()) {
     return r;
   }
   if (auto r = stage_decision_facts(conn, anchor_plan_id); !r.has_value()) {

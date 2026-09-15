@@ -760,6 +760,9 @@ auto fact_semantic_source(db::connection& conn, std::int64_t task_id, std::strin
     if (!body->has_value()) {
       return none;
     }
+    if (locator == "body") {
+      return body;
+    }
     // Same roadmap-locator rule as the citation path. Fixing only that one
     // left the FACT for the same locator resolving to nothing, so a task's
     // roadmap citation read `current` while its `cited_artifact_section` fact
