@@ -806,8 +806,14 @@ from test_scenarios placeholder
 join entity_links pv on pv.from_kind = 'test_scenario' and pv.from_id = placeholder.id
   and pv.to_kind = 'task' and pv.relationship = 'verifies'
 join tasks t on t.id = pv.to_id
-join plans p on p.id = t.plan_id and p.parent_plan_id = ?
-where placeholder.status != 'retired'
+join plans p on p.id = t.plan_id
+where p.id in (
+  with recursive plan_tree(id) as (
+    select id from plans where id = ?
+    union all select child.id from plans child join plan_tree parent on child.parent_plan_id = parent.id
+  ) select id from plan_tree
+)
+  and placeholder.status != 'retired'
   and placeholder.body like 'Acceptance scenario auto-drafted by the ingestor.%'
   and exists (
     select 1 from entity_links av
