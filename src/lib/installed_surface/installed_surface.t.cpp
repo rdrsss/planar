@@ -15,6 +15,8 @@
 // every fixture shape below.
 
 #include <catch2/catch_test_macros.hpp>
+#include <sys/stat.h> // chmod — the permission-denied fixture below
+#include <unistd.h>   // geteuid — root-skip guard for the same fixture
 
 import std;
 import planar.installed_surface;
@@ -939,4 +941,49 @@ TEST_CASE("a top-level manifest object with an unrecognized key is rejected as i
       .planar_home = home.planar_home().string(), .home = home.root_.string(), .codex_home = home.codex_home().string()});
   REQUIRE(result.has_value());
   CHECK(result->manifest_status == is_::manifest_state::invalid);
+}
+
+TEST_CASE("a genuinely permission-denied staged file degrades to stale rather than aborting", "[installed_surface][6359]") {
+  // Decision 1119 (task 6359): the accepted divergence from the oracle,
+  // which propagates any I/O error besides "not found" out of `status()` as
+  // a hard failure. This is the one fault-injection case that can exercise
+  // it -- `chmod 000` reliably produces EACCES on this platform (measured
+  // directly), PROVIDED the process is not root, where permission bits are
+  // bypassed entirely and this would pass vacuously. Skip rather than
+  // report a false green in that case, matching this project's "no vacuous
+  // green" standard.
+  if (::geteuid() == 0) {
+    SUCCEED("skipped: running as root, chmod 000 would not deny access");
+    return;
+  }
+
+  scratch_root home;
+  const auto   staged    = home.planar_home() / "codex-skills" / "pl-a" / "SKILL.md";
+  const auto   installed = home.codex_home() / "skills" / "pl-a" / "SKILL.md";
+  home.write(staged, "staged content\n");
+  home.write(installed, "installed content\n");
+  REQUIRE(::chmod(staged.c_str(), 0) == 0);
+
+  const auto manifest =
+      std::format("{{\"version\":1,\"build_id\":\"t\",\"install_mode\":\"copy\",\"vendors\":[\"codex\"],\"projections\":"
+                  "[{{\"vendor\":\"codex\",\"kind\":\"skill\",\"name\":\"pl-a\",\"staged_path\":\"{}\",\"installed_path\":\"{}\","
+                  "\"install_kind\":\"copy\",\"source_digest\":\"\",\"projection_digest\":\"\"}}]}}",
+                  staged.string(), installed.string());
+  home.write(home.planar_home() / "install-manifest.json", manifest);
+
+  auto result = is_::status(is_::options{.planar_home = home.planar_home().string(),
+                                         .home        = home.root_.string(),
+                                         .codex_home  = home.codex_home().string(),
+                                         .vendor      = "codex"});
+
+  // Restore permissions before any assertion can throw/REQUIRE-fail, so the
+  // scratch_root guard's own destructor can still remove the tree.
+  ::chmod(staged.c_str(), 0644);
+
+  // The port's accepted behaviour: the run SUCCEEDS (unlike the oracle,
+  // which would die here) and the unreadable staged file classifies exactly
+  // like a missing one -- `try_read_file` returns `nullopt` for BOTH.
+  REQUIRE(result.has_value());
+  REQUIRE(result->projections.size() == 1);
+  CHECK(result->projections[0].status != is_::state::fresh);
 }
