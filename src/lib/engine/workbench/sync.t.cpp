@@ -1002,3 +1002,72 @@ TEST_CASE("the double-wrap survives a full push/pull/push round trip", "[workben
   CHECK(stable->malformed == 0);
   CHECK(*wfs::read_file(file) == wrapped);
 }
+
+// --- task 6422: the `pull_to_db` failure clause ----------------------------
+//
+// `(pull||sync) && fs_content && pull_to_db(...)` had no test reaching
+// `pull_to_db` returning FALSE, so the whole success clause could be made
+// permissive and the suite stayed green (task 6416's sweep).
+//
+// It could not be reached through the public surface, and that was TRACED
+// rather than assumed: for task/plan, `parse::parse`'s `statuses_for_kind`
+// rejects any status that would trip the table's CHECK constraint before
+// `pull_to_db` ever runs; for artifact/decision/question/scenario the pull
+// writes only `body`, which carries no CHECK constraint. There is no
+// operator-reachable input that makes the write fail.
+//
+// The guard is therefore a DEFENSIVE one against future drift between
+// `parse.cpp`'s status lists and the schema's constraints -- drift that is
+// likely over time, because migrations and parser status lists are edited by
+// different changes. So it is closed by fault injection rather than recorded
+// as untestable (task 6422 offered both dispositions and preferred this one).
+//
+// The injection is a temporary BEFORE UPDATE trigger rather than the table
+// rename task 6189 used: a rename would also break the classification pass's
+// READS and the case would pass for the wrong reason. A trigger fails exactly
+// the write under test and nothing else -- which is also what the real drift
+// would look like.
+TEST_CASE("a pull whose DB write fails is reported pending, not applied", "[workbench][sync][pull][6422]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+
+  auto const file = feature_dir_of(a, s.plan_id) / std::format("{}-tech-spec-auth.md", s.artifact);
+  REQUIRE(wfs::path_exists(file));
+  // APPEND to what push rendered rather than hand-writing front matter: a
+  // hand-written header classifies as `malformed`, which is a different arm
+  // and would make this case vacuous.
+  REQUIRE(wfs::write_file_atomic(file, *wfs::read_file(file) + "Edited body from FS.\n"));
+
+  // Confirm the fixture really is the fs_to_db arm before injecting, so a
+  // classification change cannot turn this into a vacuous pass.
+  auto peek = ws::status(a.conn(), s.plan_id, a.root());
+  REQUIRE(peek.has_value());
+  CHECK(peek->pending == 1);
+
+  auto const before = scalar_text(a.conn(), std::format("select body from artifacts where id = {}", s.artifact));
+
+  exec(a.conn(), "create trigger reject_artifact_body_write before update of body on artifacts "
+                 "begin select raise(abort, 'simulated schema drift'); end");
+
+  auto applied = ws::pull(a.conn(), s.plan_id, a.root());
+  // The run SUCCEEDS: a failed entity write is a soft skip, not a failure of
+  // the whole sync. That is the contract the clause encodes.
+  REQUIRE(applied.has_value());
+  CHECK(applied->applied == 0);
+  CHECK(applied->pending == 1);
+  // And nothing landed. The savepoint inside `pull_to_db` rolled the write
+  // back, so a later run still sees the FS edit as outstanding rather than
+  // finding a half-applied row.
+  CHECK(scalar_text(a.conn(), std::format("select body from artifacts where id = {}", s.artifact)) == before);
+
+  exec(a.conn(), "drop trigger reject_artifact_body_write");
+
+  // Non-vacuity: with the injected failure removed, the SAME pull applies.
+  // Without this the case would pass against a pull that never works at all.
+  auto recovered = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(recovered.has_value());
+  CHECK(recovered->applied == 1);
+  CHECK(scalar_text(a.conn(), std::format("select body from artifacts where id = {}", s.artifact))
+            .contains("Edited body from FS."));
+}

@@ -608,6 +608,18 @@ auto reconcile_touches(db::connection& conn, std::int64_t task_id, std::span<con
 /// already hold — the same reason the Zig original uses one.
 /// @return `true` when the entity was updated. A `false` return is NOT an
 /// error: the caller counts the file as pending and moves on.
+// Returning FALSE here is not operator-reachable today, and that was TRACED
+// rather than assumed (task 6416, closed by task 6422): for `task`/`plan`,
+// `parse::parse`'s `statuses_for_kind` rejects any status that would trip the
+// table's CHECK constraint before this runs; for the other four kinds the
+// write touches only `body`, which has no CHECK constraint. The guard exists
+// against future DRIFT between `parse.cpp`'s status lists and the schema --
+// likely over time, because the two are edited by different changes.
+//
+// It is covered by fault injection (a trigger that rejects the write), not by
+// a reachable input. The savepoint's multi-write rollback below is a SEPARATE
+// guard and is still unprobed: only the `task` arm performs two writes, so
+// only it can leave something half-applied. Task 6780.
 auto pull_to_db(db::connection& conn, std::string_view kind, std::int64_t id, std::string_view file_content) -> bool {
   auto const parsed = parse::parse(file_content);
   if (!parsed) {
