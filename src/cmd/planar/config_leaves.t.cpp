@@ -715,29 +715,50 @@ base_url = "https://x.atlassian.net"
   cleanup(fx);
 }
 
-TEST_CASE("config validate FALSE-POSITIVES on a role whose name ends in _token", "[cmd][config][validate][oracle-defect]") {
-  // A REPRODUCED ORACLE DEFECT, confirmed against the built binary in a
-  // pinned arena: exit 1 with the identical message.
-  //
-  // The sensitive-literal scan is purely LEXICAL over `key = value` lines
-  // and knows nothing of TOML table context, so `[roles] my_token =
+TEST_CASE("config validate no longer false-positives on a role whose name ends in _token", "[cmd][config][validate][6265]") {
+  // Was: "config validate FALSE-POSITIVES on a role whose name ends in
+  // _token" [oracle-defect], reproduced under D2. Decision 1118 (task
+  // 6265) fixed the C++ tree only: the scan is now scoped to `external.*`,
+  // the one table family that actually holds credentials and the only
+  // place its own `*_env` remedy could ever apply. `[roles] my_token =
   // "large"` — where the value is a TIER NAME and could not be a secret —
-  // is refused, and the `*_env` remedy the message suggests is meaningless
-  // for a role. There is no way to name a role `my_token` and have the
-  // config validate.
-  //
-  // Reproduced rather than fixed (D2): the scan's line-and-key reporting is
-  // the whole point of it being lexical, and narrowing it by table is a
-  // behaviour change that belongs to the engine's own cycle, not to this
-  // wiring one. `config show` masks the same key, which is the same rule
-  // applied where it is harmless.
-  auto const fx = make_fixture("valfalsepos");
+  // now validates clean. `config show` still masks the same key to `***`,
+  // which is the same rule applied where it is harmless, and is unchanged.
+  auto const fx = make_fixture("valnofalsepos");
   write_config(fx, "[roles]\ncoder = \"medium\"\nmy_token = \"large\"\n");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 0);
+  CHECK(r.out == "config validate: ok\n");
+  CHECK(r.err.empty());
+  cleanup(fx);
+}
+
+TEST_CASE("config validate still refuses a literal external credential", "[cmd][config][validate][6265]") {
+  // The non-vacuity arm: scoping the scan to external.* must not have also
+  // widened it into a no-op. A literal value on the exact key the scan
+  // exists to catch is still refused, unchanged.
+  auto const fx = make_fixture("valexternalstill");
+  write_config(fx, "[external.jira]\ntoken = \"literal-secret-value\"\n");
   auto const r = dispatch(fx, {"config", "validate"});
   CHECK(r.code == 1);
   CHECK(r.out.empty());
-  CHECK(r.err == "error: line 3: my_token: sensitive key must not carry a literal value in the config file "
+  CHECK(r.err == "error: line 2: token: sensitive key must not carry a literal value in the config file "
                  "(use *_env convention instead)\n");
+  cleanup(fx);
+}
+
+TEST_CASE("config validate scopes by the nearest table header, not merely by name anywhere in the file",
+          "[cmd][config][validate][6265]") {
+  // A role AND a genuine external credential in the same file: the role's
+  // literal must be ignored and the credential's must still be caught,
+  // proving the scope is per-table-context rather than a whole-file
+  // on/off switch keyed by whether "external" appears anywhere.
+  auto const fx = make_fixture("valmixedscope");
+  write_config(fx, "[roles]\nmy_token = \"large\"\n\n[external.jira]\ntoken = \"literal-secret-value\"\n");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 1);
+  CHECK_FALSE(r.err.contains("my_token"));
+  CHECK(r.err.contains("line 5: token:"));
   cleanup(fx);
 }
 
