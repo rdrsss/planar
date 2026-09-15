@@ -1071,3 +1071,63 @@ TEST_CASE("a pull whose DB write fails is reported pending, not applied", "[work
   CHECK(scalar_text(a.conn(), std::format("select body from artifacts where id = {}", s.artifact))
             .contains("Edited body from FS."));
 }
+
+// --- task 6780: pull_to_db's savepoint on the TASK arm's two writes -------
+//
+// Task 6422 closed the sibling clause (the pull_to_db success clause itself)
+// but explicitly could not reach the savepoint's OWN rollback: its fixture
+// used `artifact`, which performs exactly one write, so there is nothing
+// partial to undo. The savepoint only earns its keep on `kind == "task"`,
+// which performs TWO writes -- the body/status update, then
+// reconcile_touches -- and this is the case where the first can succeed
+// while the second fails.
+TEST_CASE("pulling a task whose touches reconcile fails rolls back its body update too", "[workbench][sync][pull][6780]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+
+  auto const file = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-first-task.md", s.task_one);
+  // A `touches:` list that DIFFERS from the DB (which has none), so
+  // `reconcile_touches` actually performs an insert -- and a body edit, so
+  // the first write has something to roll back if the second fails.
+  REQUIRE(wfs::write_file_atomic(
+      file, std::format("---\nentity_kind: task\nentity_id: {}\nanchor_plan_id: {}\ntitle: First Task\n"
+                        "status: doing\ntouches:\n- demo\n---\n\n**Status:** doing  \n\nEdited body from FS.\n",
+                        s.task_one, s.plan_id)));
+
+  auto const before = scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one));
+
+  // Reject exactly the entity_links write reconcile_touches performs, leaving
+  // the tasks update free to succeed on its own.
+  exec(a.conn(), "create trigger reject_touch_link before insert on entity_links "
+                 "when new.relationship = 'touches' "
+                 "begin select raise(abort, 'simulated touches-reconcile failure'); end");
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  exec(a.conn(), "drop trigger reject_touch_link");
+
+  // The run still SUCCEEDS -- a failed entity write is a soft skip, matching
+  // task 6422's contract for the sibling clause.
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 0);
+  CHECK(pulled->pending == 1);
+
+  // The savepoint's whole job: the body update, which succeeded on its own,
+  // did NOT survive the later failure. Without the rollback this is false --
+  // the task ends up with an edited body but no touches edge, a
+  // half-applied pull.
+  CHECK(scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one)) == before);
+  CHECK(scalar_id(a.conn(), std::format("select count(*) from entity_links where from_kind = 'task' and from_id = {} "
+                                        "and to_kind = 'repo' and relationship = 'touches'",
+                                        s.task_one)) == 0);
+
+  // Non-vacuity: with the trigger removed, the identical pull applies both
+  // writes.
+  auto recovered = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(recovered.has_value());
+  CHECK(recovered->applied == 1);
+  CHECK(scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one)) == "Edited body from FS.");
+  CHECK(scalar_id(a.conn(), std::format("select count(*) from entity_links where from_kind = 'task' and from_id = {} "
+                                        "and to_kind = 'repo' and relationship = 'touches'",
+                                        s.task_one)) == 1);
+}
