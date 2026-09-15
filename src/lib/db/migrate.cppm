@@ -77,12 +77,14 @@ export auto current_version(connection& conn) -> std::expected<std::uint32_t, db
 /// refuses only `ahead`; `planar-agent`, `planar-watch` and `planar-ext`
 /// consume the schema and refuse BOTH directions (`behind` means "run
 /// `planar init`"). `planar-execute` holds no SQLite handle and is out of
-/// scope entirely. `planar-watch`'s refusal on `behind` is the one arm
-/// that is arguably too strict — a read-only viewer could show what it
-/// can understand rather than lock the operator out at the moment they
-/// most want to look — but it is pinned by
-/// `src/cmd/planar-watch/context.t.cpp` and predates this task, so
-/// changing it is an OPERATOR decision, not this guard's.
+/// scope entirely. `planar-watch`'s refusal on `behind` was raised as an
+/// operator question (task 6691) and DECIDED (decision 1120): keep it. All
+/// five binaries ship and install together as one bundle, so a schema
+/// mismatch on this binary is an installation-integrity signal, not an
+/// ordinary operational state an operator might reasonably run standalone
+/// into — refusing loudly is the correct response to "something is wrong
+/// with this install," not a footgun. Pinned by
+/// `src/cmd/planar-watch/context.t.cpp`.
 ///
 /// **(3) Refuse, or warn?** `ahead` and `behind` refuse: the binary
 /// cannot read the schema correctly and continuing would misread columns
