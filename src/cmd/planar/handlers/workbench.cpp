@@ -544,13 +544,18 @@ auto workbench_extract_questions(context& ctx, const cliapp::parsed_args& args) 
     }
     auto const parsed = wb::parse::parse(*contents);
     if (!parsed) {
-      // A MALFORMED FILE IS SWALLOWED, and that is reproduced deliberately
-      // (D2), not overlooked. The same file `workbench push` rejects as
-      // `MissingRequiredField` at exit 1 is skipped silently here, so a
-      // spec with broken front matter reports zero questions rather than an
-      // error. Filed as planar task 6304; changing it is a behaviour
-      // change that belongs in that task, not smuggled into a port.
-      // TODO(plan:996, task:6304): decide whether to surface these.
+      // A malformed file is EXCLUDED, same as always, but now VISIBLY: the
+      // oracle swallowed this silently (`parse(...) catch continue`), which
+      // made this file's `[]` indistinguishable from a feature with no
+      // questions -- the same file `workbench push` rejects as
+      // `MissingRequiredField` at exit 1. Decision 1116 (task 6304) fixed
+      // the C++ tree only: D2 is no longer a standing obligation (decision
+      // 1067), and the oracle's silence here has no defensible reading.
+      // Exit code and result CONTENT are both unchanged -- this leaf stays
+      // read-only and a parse failure on one file must not fail the whole
+      // command -- only the warning is new, in the same shape as the
+      // ReadFailed warning above.
+      ctx.err() << std::format("warning: parsing {} failed: {}\n", name, wb::parse::error_name(parsed.error()));
       continue;
     }
     results.push_back({.artifact_id = parsed->frontmatter.entity_id,
