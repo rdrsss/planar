@@ -14,6 +14,7 @@ import planar.db;
 import planar.json_text;
 import planar.engine.entitylink;
 import planar.engine.identity;
+import planar.engine.ingest.materialize;
 import planar.engine.ingest.packet;
 import planar.engine.planning;
 import planar.engine.runtime;
@@ -426,6 +427,62 @@ auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   // An unready packet is a SUCCESSFUL answer — see task.cppm. Both renderers
   // return complete stdout payloads including their trailing newline.
   ctx.out() << (cliapp::flag_bool(args, "--json") ? pk::render_json(*packet) : pk::render_text(*packet));
+  return {};
+}
+
+auto task_facts_stage(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  namespace mz = engine::ingest::materialize;
+  namespace pk = engine::ingest::packet;
+
+  auto conn = ctx.ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+  auto const id = entity_id_arg(args, "task-id", "task");
+  if (!id) {
+    return std::unexpected(id.error());
+  }
+
+  if (auto staged = mz::stage_one_task(**conn, *id); !staged.has_value()) {
+    if (staged.error().kind_ == mz::materialize_error_kind::task_not_found) {
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no task with id {}", *id)));
+    }
+    // An unresolvable citation is an operator-fixable authoring error, and the
+    // diagnostic naming the task, artifact, locator and available sections is
+    // the whole value — surface it rather than a bare failure name.
+    if (staged.error().kind_ == mz::materialize_error_kind::invalid_citation) {
+      for (auto const& diagnostic : staged.error().citations_) {
+        ctx.err() << "  " << diagnostic.describe() << "\n";
+      }
+      ctx.err() << "  no facts were staged for this task\n";
+      // Exit 1, matching `spec ingest --apply` for the identical condition.
+      // Exit 2 is reserved for a malformed INVOCATION; an unresolvable
+      // citation is well-formed input naming a section that is not there.
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: InvalidCitation"));
+    }
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: QueryFailed"));
+  }
+
+  // Report the POST-STATE, not the fact that a write returned success: the
+  // operator's question is "is this task dispatchable now", and the packet is
+  // the only authority on that.
+  auto packet = pk::assemble_task(**conn, *id);
+  if (!packet) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: QueryFailed"));
+  }
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << pk::render_json(*packet);
+    return {};
+  }
+  ctx.out() << std::format("staged routing facts for task {} ({})\n", *id, mz::operator_materializer_version);
+  ctx.out() << std::format("  packet ready: {}\n", packet->ready() ? "yes" : "no");
+  if (!packet->ready()) {
+    ctx.out() << "  remaining:";
+    for (auto const& reason : packet->reasons) {
+      ctx.out() << " " << pk::reason_name(reason);
+    }
+    ctx.out() << "\n";
+  }
   return {};
 }
 
@@ -1617,6 +1674,17 @@ auto declare_task_children(CLI::App& task) -> void {
   CLI::App* touches = task.add_subcommand("touches", "Manage repo-touches links on a task.");
   touches->require_subcommand(0);
   declare_task_touches(*touches);
+
+  CLI::App* facts = task.add_subcommand("facts", "Manage routing facts on a task.");
+  facts->require_subcommand(0);
+  CLI::App* facts_stage = facts->add_subcommand(
+      "stage", "Stage this task's routing facts under operator provenance.\n\n  `spec ingest --apply` is the only other "
+               "writer of routing facts, and it\n  rebuilds an entire anchor plan, so a hand-filed task could never obtain\n"
+               "  them and an edited task could never restage them. This stages exactly\n  one task, stamped `operator-v1`, "
+               "and never touches a sibling's facts.\n\n  Citation facts are staged only for artifacts this task already "
+               "cites\n  AND references explicitly in its body; it never invents a citation.");
+  add_json(*facts_stage);
+  add_positional(*facts_stage, "task-id");
 }
 
 } // namespace

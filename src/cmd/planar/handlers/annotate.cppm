@@ -71,6 +71,9 @@ export auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> hand
 ///
 /// This is a source-bound read handshake for local consumers. It advertises
 /// only implemented annotation contracts and does not process annotations.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the mapped engine failure.
 export auto annotate_capabilities(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar annotate show <annotation-id> [--json]`.
@@ -210,9 +213,15 @@ export auto annotate_verify(context& ctx, const cliapp::parsed_args& args) -> ha
 export auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Apply one receipt-backed structured annotation command.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the mapped engine failure.
 export auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Look up a receipt after an uncertain writer outcome.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @return Success, or the mapped engine failure.
 export auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Declare the `annotate` command tree on `root`.

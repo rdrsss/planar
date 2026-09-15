@@ -326,3 +326,110 @@ TEST_CASE("task packet: an id of zero is treated as a lookup, not a default", "[
   CHECK(res.code == 1);
   CHECK(res.err == "error: no task with id 0\n");
 }
+
+// ===========================================================================
+// `task facts stage` — the operator-provenance counterpart (task 6048,
+// decision 1102).
+//
+// These assert the LEAF's contract, not the engine's: the exit codes, what
+// lands on stdout versus stderr, and — the part that matters most to an
+// operator — that the verb answers "is this task dispatchable now" rather than
+// "did a write succeed".
+// ===========================================================================
+
+TEST_CASE("task facts stage: reports the resulting packet, not just success", "[task-facts-stage][6048]") {
+  auto const fx = make_fixture("stage_reports");
+  seed(fx);
+  // Give the body the explicit artifact references an operator would author;
+  // the seed links the artifacts but names none of them in the body.
+  exec_sql(fx, "update tasks set body='Implement the packet compiler.\n"
+               "\n"
+               "## Acceptance Criteria\n"
+               "The packet compiles with zero readiness reasons.\n"
+               "\n"
+               "## Required validation\n"
+               "cmake --build build/debug\n"
+               "\n"
+               "## Citations\n"
+               "artifact:10#Overview\n"
+               "artifact:11#Overview\n"
+               "artifact:12#Overview\n"
+               "artifact:13#Overview\n"
+               "' where id=100");
+
+  auto const res = dispatch(fx, {"task", "facts", "stage", "100"});
+  INFO("stdout: " << res.out << "\nstderr: " << res.err);
+  CHECK(res.code == 0);
+  CHECK(res.err.empty());
+  CHECK(res.out.contains("staged routing facts for task 100 (operator-v1)"));
+  // The post-state is the answer. Exit 0 alone would be satisfied by a verb
+  // that wrote nothing at all.
+  CHECK(res.out.contains("packet ready: yes"));
+}
+
+TEST_CASE("task facts stage: an unresolvable citation refuses and names it", "[task-facts-stage][6048]") {
+  auto const fx = make_fixture("stage_citation");
+  seed(fx);
+
+  // The seeded body cites no artifact explicitly, so all four `cites` edges
+  // are unresolvable. The operator needs to know WHICH — a bare failure name
+  // here is the exact unfindable-diagnostic problem task 6048 recorded.
+  auto const res = dispatch(fx, {"task", "facts", "stage", "100"});
+  INFO("stdout: " << res.out << "\nstderr: " << res.err);
+  CHECK(res.code == 1);
+  CHECK(res.err.contains("task 100"));
+  CHECK(res.err.contains("artifact 10"));
+  CHECK(res.err.contains("no facts were staged for this task"));
+}
+
+TEST_CASE("task facts stage: an unknown task refuses rather than staging nothing quietly", "[task-facts-stage][6048]") {
+  auto const fx = make_fixture("stage_missing");
+  seed(fx);
+
+  auto const res = dispatch(fx, {"task", "facts", "stage", "999999"});
+  CHECK(res.code == 1);
+  CHECK(res.out.empty());
+  CHECK(res.err == "error: no task with id 999999\n");
+}
+
+TEST_CASE("task facts stage: --json emits the packet envelope", "[task-facts-stage][6048]") {
+  auto const fx = make_fixture("stage_json");
+  seed(fx);
+  exec_sql(fx, "update tasks set body='## Acceptance Criteria\n"
+               "The packet compiles with zero readiness reasons.\n"
+               "' where id=200");
+  exec_sql(fx, "update tasks set next_action='Stage the facts and read the packet.' where id=200");
+
+  auto const res = dispatch(fx, {"task", "facts", "stage", "200", "--json"});
+  INFO("stdout: " << res.out << "\nstderr: " << res.err);
+  CHECK(res.code == 0);
+  CHECK(res.out.contains("\"policy_version\":\"routing-packet-v2\""));
+  // Task 200 cites no specs, so it is still unready — and the verb says so
+  // rather than implying that staging is the same thing as readiness.
+  CHECK(res.out.contains("\"ready\":false"));
+  CHECK(res.out.contains("missing_product_spec"));
+  // But the two mandatory facts it CAN stage are no longer missing.
+  CHECK_FALSE(res.out.contains("missing_acceptance_fact"));
+  CHECK_FALSE(res.out.contains("missing_next_action_fact"));
+}
+
+TEST_CASE("task facts stage: text mode says NO and names what is still missing", "[task-facts-stage][6048]") {
+  auto const fx = make_fixture("stage_text_unready");
+  seed(fx);
+  exec_sql(fx, "update tasks set body='## Acceptance Criteria\n"
+               "The packet compiles with zero readiness reasons.\n"
+               "' where id=200");
+  exec_sql(fx, "update tasks set next_action='Stage the facts and read the packet.' where id=200");
+
+  // The non-vacuity arm for the text renderer. Without it, a handler that
+  // printed "packet ready: yes" unconditionally passes every other case in
+  // this file, because they all stage a task that really is ready.
+  auto const res = dispatch(fx, {"task", "facts", "stage", "200"});
+  INFO("stdout: " << res.out << "\nstderr: " << res.err);
+  CHECK(res.code == 0);
+  CHECK(res.out.contains("packet ready: no"));
+  // Naming the survivors is the point: "not ready" with no reasons would send
+  // the operator back to `task packet` to ask the same question again.
+  CHECK(res.out.contains("remaining:"));
+  CHECK(res.out.contains("missing_product_spec"));
+}

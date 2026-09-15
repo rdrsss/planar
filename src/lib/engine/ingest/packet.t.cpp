@@ -52,6 +52,7 @@
 import std;
 import planar.db;
 import planar.db.migrate;
+import planar.engine.ingest.materialize;
 import planar.engine.ingest.packet;
 // TEST-ONLY edge (`TEST_DEPENDS engine_planning` in this bucket's
 // CMakeLists.txt, never `DEPENDS`): lets ONE test assert the duplicated
@@ -1177,4 +1178,325 @@ TEST_CASE("assemble_planning: the milestone-plan walk reaches a CHILD plan's tas
   CHECK(oracle_status->summary.total_scenarios == 2);
   CHECK(coverage.text == std::format("tasks:{};covered:{};scenarios:{}", oracle_status->summary.total_tasks,
                                      oracle_status->summary.tasks_covered, oracle_status->summary.total_scenarios));
+}
+
+// ===========================================================================
+// Operator-staged routing facts (task 6048, decision 1102).
+//
+// `materialize::reconcile` rebuilds every task under an anchor plan and is
+// reachable only from `spec ingest --apply`. So a hand-filed task could never
+// obtain routing facts, and — the case that actually bit — a task whose body
+// an operator EDITED could never restage the facts that edit invalidated.
+// `stage_one_task` is the single-task, operator-provenance counterpart.
+//
+// These cases assert the three properties that make it safe rather than
+// merely convenient: it restores readiness, it does not reach past the one
+// task it was given, and it does NOT buy that by making operator facts
+// permanently fresh.
+// ===========================================================================
+
+namespace {
+
+namespace mz = planar::engine::ingest::materialize;
+
+/// @brief SQL single-quote escaping for a literal embedded in `exec`.
+auto escaped(std::string_view text) -> std::string {
+  std::string out;
+  out.reserve(text.size());
+  for (const char c : text) {
+    if (c == '\'') {
+      out += "''";
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+/// @brief Reason names joined for an `INFO` line.
+auto join(const std::vector<std::string>& names) -> std::string {
+  std::string out;
+  for (const auto& name : names) {
+    if (!out.empty()) {
+      out += ", ";
+    }
+    out += name;
+  }
+  return out;
+}
+
+/// @brief Every fact the packet considers stale, as "kind@locator".
+///
+/// A bare `stale_fact` reason names nothing, which makes a failure here
+/// unreadable; this is what turns it into a diagnosis.
+auto stale_facts(const pk::task_packet& packet) -> std::string {
+  std::string out;
+  for (const auto& fact : packet.input.facts) {
+    if (fact.freshness != "current") {
+      if (!out.empty()) {
+        out += ", ";
+      }
+      out += std::format("{}@{} [{}->{}]", fact.kind, fact.locator, fact.source_digest.substr(0, 8),
+                         fact.current_digest.empty() ? std::string{"<none>"} : fact.current_digest.substr(0, 8));
+    }
+  }
+  return out;
+}
+
+/// @brief Every CITATION the packet considers stale, as "locator".
+///
+/// `input.citations` and `input.facts` are loaded by two different functions
+/// with two different digest comparisons, and a `cited_artifact_section` row
+/// appears in BOTH. Asserting on `input.facts` therefore exercises only
+/// `fact_evidence` and leaves `citation_evidence` uncovered — which is exactly
+/// how a probe that deleted the latter's digest clause survived once.
+auto stale_citations(const pk::task_packet& packet) -> std::string {
+  std::string out;
+  for (const auto& citation : packet.input.citations) {
+    if (citation.freshness != "current") {
+      if (!out.empty()) {
+        out += ", ";
+      }
+      out += citation.locator;
+    }
+  }
+  return out;
+}
+
+/// @brief The `freshness` a packet reports for one fact kind.
+///
+/// Asserted directly because readiness carries its OWN digest comparison, so
+/// `stale_fact` still fires when the freshness FIELD is wrong. A break-probe
+/// that deletes the digest clause from `fact_evidence` survives every
+/// reason-level assertion and is caught only here — the field is what
+/// `task packet --json` shows an operator.
+auto freshness_of(const pk::task_packet& packet, std::string_view kind) -> std::string {
+  for (const auto& fact : packet.input.facts) {
+    if (fact.kind == kind) {
+      return fact.freshness;
+    }
+  }
+  return "<absent>";
+}
+
+/// @brief One scalar integer from a query that returns exactly one row.
+auto row_count(planar::db::connection& conn, std::string_view sql) -> std::int64_t {
+  auto stmt = conn.prepare(sql);
+  REQUIRE(stmt.has_value());
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+  REQUIRE(*stepped == planar::db::step_result::row);
+  return stmt->column_int64(0);
+}
+
+/// @brief The seeded ready task's body, plus the explicit artifact references
+/// `stage_one_task` needs to resolve citation facts.
+///
+/// The seed links task 100 to four artifacts through `entity_links` but its
+/// body names none of them, because ingest staged those citation facts from
+/// parsed roadmap provenance rather than from the body. An operator staging
+/// the same task has only the body to go on — which is the contract: the verb
+/// resolves citations the author wrote, and never invents one.
+constexpr std::string_view cited_body = "Implement the packet compiler.\n"
+                                        "\n"
+                                        "## Acceptance Criteria\n"
+                                        "The packet compiles with zero readiness reasons.\n"
+                                        "\n"
+                                        "## Required validation\n"
+                                        "cmake --build build/debug\n"
+                                        "\n"
+                                        "## Citations\n"
+                                        "artifact:10#Overview\n"
+                                        "artifact:11#Overview\n"
+                                        "artifact:12#Overview\n"
+                                        "artifact:13#Overview\n";
+
+/// @brief Every stored materializer version for a task's facts, deduplicated.
+auto fact_versions(planar::db::connection& conn, std::int64_t task_id) -> std::set<std::string> {
+  auto stmt = conn.prepare("select distinct materializer_version from routing_task_facts where task_id=? order by 1");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_int64(1, task_id).has_value());
+  std::set<std::string> out;
+  while (true) {
+    auto stepped = stmt->step();
+    REQUIRE(stepped.has_value());
+    if (*stepped != planar::db::step_result::row) {
+      break;
+    }
+    out.insert(stmt->column_text(0));
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("an operator edit strands a task's facts, and staging restores them", "[packet][6048]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  // Give the body its explicit citations. The acceptance section is byte
+  // identical, so its digest does not move and the fixture stays ready —
+  // proving the added text is not itself what breaks or fixes anything.
+  exec(conn, std::format("update tasks set body='{}' where id={}", escaped(cited_body), ready_task));
+  {
+    auto packet = pk::assemble_task(conn, ready_task);
+    REQUIRE(packet.has_value());
+    INFO("reasons: " << join(reason_names(*packet)));
+    CHECK(packet->ready());
+  }
+
+  // THE MOTIVATING CASE: edit the acceptance criteria. The stored digest no
+  // longer matches the live section, so the fact is stale and the task is
+  // undispatchable — with no operator-reachable way to restage it.
+  exec(conn, std::format("update tasks set body='{}' where id={}",
+                         escaped("Implement the packet compiler.\n"
+                                 "\n"
+                                 "## Acceptance Criteria\n"
+                                 "The packet compiles with zero readiness reasons, and says so.\n"
+                                 "\n"
+                                 "## Required validation\n"
+                                 "cmake --build build/debug\n"
+                                 "\n"
+                                 "## Citations\n"
+                                 "artifact:10#Overview\n"
+                                 "artifact:11#Overview\n"
+                                 "artifact:12#Overview\n"
+                                 "artifact:13#Overview\n"),
+                         ready_task));
+  {
+    auto packet = pk::assemble_task(conn, ready_task);
+    REQUIRE(packet.has_value());
+    CHECK_FALSE(packet->ready());
+    auto const names = reason_names(*packet);
+    CHECK(std::ranges::find(names, "stale_fact") != names.end());
+  }
+
+  // Staging restores readiness, and the facts now carry operator provenance
+  // rather than silently claiming to be ingest output.
+  auto staged = mz::stage_one_task(conn, ready_task);
+  REQUIRE(staged.has_value());
+  {
+    auto packet = pk::assemble_task(conn, ready_task);
+    REQUIRE(packet.has_value());
+    INFO("reasons after staging: " << join(reason_names(*packet)));
+    INFO("stale: " << stale_facts(*packet));
+    CHECK(packet->ready());
+    // Both halves of the two-materializer rule: a recognised version AND a
+    // matching digest make the fact current. A citation fact travels the
+    // separate `citation_evidence` path, so pin one of each.
+    CHECK(freshness_of(*packet, "acceptance_complete") == "current");
+    CHECK(freshness_of(*packet, "cited_artifact_section") == "current");
+  }
+  CHECK(fact_versions(conn, ready_task) == std::set<std::string>{"operator-v1"});
+}
+
+TEST_CASE("an operator-staged fact still goes stale when its source changes", "[packet][6048]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+  exec(conn, std::format("update tasks set body='{}' where id={}", escaped(cited_body), ready_task));
+  REQUIRE(mz::stage_one_task(conn, ready_task).has_value());
+  REQUIRE(pk::assemble_task(conn, ready_task)->ready());
+
+  // The freshness rule accepts `operator-v1` as a version routing understands.
+  // It must NOT also stop comparing digests: a fact that can never go stale is
+  // a weaker contract than the one ingest facts carry, and would let an
+  // operator certify text that has since changed underneath them.
+  exec(conn, std::format("update tasks set next_action='{}' where id={}", escaped("Something else entirely."), ready_task));
+  auto packet = pk::assemble_task(conn, ready_task);
+  REQUIRE(packet.has_value());
+  CHECK_FALSE(packet->ready());
+  auto const names = reason_names(*packet);
+  CHECK(std::ranges::find(names, "stale_fact") != names.end());
+  // The FIELD, not only the reason: readiness compares digests itself, so the
+  // reason fires either way and would hide a freshness rule that had stopped
+  // comparing them.
+  CHECK(freshness_of(*packet, "next_action_exact") == "stale");
+}
+
+TEST_CASE("staging one task does not disturb a sibling's facts", "[packet][6048]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+  exec(conn, std::format("update tasks set body='{}' where id={}", escaped(cited_body), ready_task));
+
+  // A sibling under the same plan, carrying ingest facts of its own. A
+  // plan-wide reconcile deletes every fact below its anchor; if the
+  // single-task path reused that delete, staging task 100 would silently
+  // discard task 101's facts and the only symptom would be a sibling that
+  // stopped being dispatchable for no visible reason.
+  exec(conn, "insert into routing_task_facts (task_id, fact_kind, value_type, value_bool, source_entity_kind, "
+             "source_entity_id, source_locator, source_digest, materializer_version) values "
+             "(101,'acceptance_complete','bool',1,'task',101,'body#acceptance-criteria','deadbeef','spec-ingest-v1')");
+
+  REQUIRE(mz::stage_one_task(conn, ready_task).has_value());
+
+  CHECK(fact_versions(conn, 101) == std::set<std::string>{"spec-ingest-v1"});
+  CHECK(row_count(conn, "select count(*) from routing_task_facts where task_id=101") == 1);
+}
+
+TEST_CASE("staging refuses an id no task has", "[packet][6048]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+  auto staged = mz::stage_one_task(conn, 999999);
+  REQUIRE_FALSE(staged.has_value());
+  CHECK(staged.error().kind_ == mz::materialize_error_kind::task_not_found);
+}
+
+TEST_CASE("staging reports an unresolvable citation and stages nothing", "[packet][6048]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  // The seed's `cites` edges are intact but the body names no artifact, so no
+  // locator resolves. The verb must say which task cites which artifact rather
+  // than inventing a citation to satisfy the gate — and must leave the stored
+  // facts alone, so a failed stage is not also a destructive one.
+  auto staged = mz::stage_one_task(conn, ready_task);
+  REQUIRE_FALSE(staged.has_value());
+  CHECK(staged.error().kind_ == mz::materialize_error_kind::invalid_citation);
+  CHECK(staged.error().citations_.size() == 4);
+  CHECK(fact_versions(conn, ready_task) == std::set<std::string>{"spec-ingest-v1"});
+}
+
+TEST_CASE("the six fact-sourced reasons still apply to a task with no facts", "[packet][6048]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  // Non-vacuity for the whole feature: accepting a second materializer version
+  // must not soften grading for a task that has staged nothing at all.
+  auto packet = pk::assemble_task(conn, 200);
+  REQUIRE(packet.has_value());
+  auto const names = reason_names(*packet);
+  for (auto const* expected : {"missing_product_spec", "missing_tech_spec", "missing_roadmap", "missing_test_spec",
+                               "missing_acceptance_fact", "missing_next_action_fact"}) {
+    INFO("expected reason: " << expected);
+    CHECK(std::ranges::find(names, expected) != names.end());
+  }
+}
+
+TEST_CASE("an operator-staged citation goes stale when the cited artifact moves", "[packet][6048]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+  exec(conn, std::format("update tasks set body='{}' where id={}", escaped(cited_body), ready_task));
+  REQUIRE(mz::stage_one_task(conn, ready_task).has_value());
+  REQUIRE(pk::assemble_task(conn, ready_task)->ready());
+
+  // Citation facts travel `citation_evidence`, a different loader from the one
+  // the sibling case covers, with its own digest comparison. Editing the CITED
+  // ARTIFACT (not the task) is the only thing that exercises it: the operator
+  // certified a section that has since been rewritten underneath them, and
+  // must be told rather than dispatched on stale evidence.
+  exec(conn, "update artifacts set body='## Overview\nRewritten after the operator staged it.\n' where id=10");
+
+  auto packet = pk::assemble_task(conn, ready_task);
+  REQUIRE(packet.has_value());
+  INFO("stale facts: " << stale_facts(*packet));
+  INFO("stale citations: " << stale_citations(*packet));
+  CHECK_FALSE(packet->ready());
+  CHECK(stale_citations(*packet).contains("artifact:10#Overview"));
 }

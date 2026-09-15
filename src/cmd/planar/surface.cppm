@@ -196,6 +196,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar task link", "Create an entity link from a task to another entity."},
       {"planar task reopen", "Reopen a done or cancelled task with an audit-trail entry."},
       {"planar task touches", "Manage repo-touches links on a task."},
+      {"planar task facts stage", "Stage this task's routing facts under operator provenance."},
       {"planar task touches add", "Link a task to a repo via a 'touches' relationship."},
       {"planar task touches infer", "Propose path-level touches from the task's own text (preview by default)."},
       {"planar task touches list", "List the repo- and path-level touches declared on a task."},

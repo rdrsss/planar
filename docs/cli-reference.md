@@ -1486,6 +1486,48 @@ planar task link <task-id> <to-kind:to-id> --relationship <kind>
 
 ---
 
+### `planar task facts stage <task-id>`
+
+**Synopsis:**
+```
+planar task facts stage <task-id> [--json]
+```
+
+**Description:** Rebuild one task's routing facts (`routing_task_facts`) under **operator** provenance, then report the resulting packet.
+
+`planar spec ingest --apply` is the only other writer of routing facts, and it rebuilds every task below an anchor plan. That left two gaps this verb closes (task 6048, decision 1102):
+
+- a hand-filed task — one created with `planar task add` rather than materialized from a roadmap bullet — could never obtain routing facts at all, so `planar task packet` reported `missing_acceptance_fact` / `missing_next_action_fact` and the four `missing_*_spec` reasons permanently;
+- editing a task body moves the acceptance section's digest, which strands the facts ingest staged from it. The task becomes `stale_fact` with no operator-reachable way to restage short of re-ingesting the whole anchor plan.
+
+Facts are derived through the **same predicates** the plan-wide pass uses, so an operator-staged fact and an ingest-staged one agree on what they mean. They are stamped `operator-v1` rather than `spec-ingest-v1`, so provenance stays legible in the row and in `task packet --json`.
+
+**Staleness is not traded away.** `packet` accepts both materializer versions, but the digest comparison is unchanged: an operator-staged fact goes stale the moment its source text changes, exactly as an ingest-staged one does. A fact that could never go stale would be a weaker contract, and is deliberately not what this verb produces.
+
+**Citations are resolved, never invented.** A `cited_artifact_section` fact is staged only for an artifact the task *already* cites through an `entity_links` edge **and** references explicitly in its body as `artifact:<id>#Section`. An artifact cited without a resolvable locator is reported as a diagnostic naming the task, the artifact, the section asked for, and the sections that artifact actually has — and **nothing is staged** in that case.
+
+**Scope:** strictly one task. The delete that precedes the rewrite is keyed on `task_id`, so staging one task never discards a sibling's ingest-materialized facts.
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<task-id>` | Task whose facts are rebuilt (required). |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--json` | Emit the resulting routing packet as JSON, identical in shape to `task packet --json`. | off |
+
+**Output:** text mode prints the provenance stamp, whether the packet is now ready, and — when it is not — the readiness reasons that remain. Reporting the post-state rather than a bare success is deliberate: the operator's question is whether the task is dispatchable now, and the packet is the only authority on that.
+
+**Exit codes:** `0` on success (including a successful stage that leaves the packet unready — that is a real answer). `1` when the task id does not exist, and `1` for an unresolvable citation, matching `spec ingest --apply` for the identical condition. `2` for a non-integer id.
+
+**Schema effects:** Deletes and reinserts `routing_task_facts` rows for `<task-id>` only, inside one immediate transaction.
+
+---
+
 ### `planar task touches add <task-id> <repo-slug> [--path <p>]`
 
 **Synopsis:**
@@ -6990,7 +7032,7 @@ For quick reference, all documented commands grouped by domain:
 | `scope` | `scope show`, `scope suggest` (`scope use`/`pop`/`clear` removed in plan 153 M5) |
 | `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members`, `assoc detect` |
 | `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan descendants`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |
-| `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task touches add`, `task touches remove` |
+| `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task facts stage`, `task touches add`, `task touches remove` |
 | `question` | `question add`, `question answer`, `question wontfix`, `question list`, `question show`, `question edit`, `question view`, `question diff`, `question review`, `question link` |
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |

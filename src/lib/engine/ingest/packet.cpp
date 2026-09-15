@@ -873,20 +873,28 @@ order by a.kind,a.id,f.source_locator)");
     std::string current        = section.has_value() ? mz::source_digest("artifact", artifact_id, locator, *section) : "";
     const auto  source         = stmt->column_text(7);
     const auto  stored_version = stmt->column_text(8);
-    const bool  fresh          = !current.empty() && source == current && stored_version == mz::materializer_version;
+    // Same two-materializer rule as `fact_evidence` below: a citation fact
+    // staged by `task facts stage` carries `operator-v1` and must not be
+    // stale merely for saying so (decision 1102).
+    const bool known = stored_version == mz::materializer_version || stored_version == mz::operator_materializer_version;
+    const bool fresh = !current.empty() && source == current && known;
 
     evidence item;
-    item.kind                         = stmt->column_text(0);
-    item.id                           = artifact_id;
-    item.locator                      = locator;
-    item.text                         = section.value_or(std::string{});
-    item.display_label                = stmt->column_text(6);
-    item.source_digest                = source;
-    item.current_digest               = std::move(current);
-    item.status                       = stmt->column_text(4);
-    item.provenance                   = stmt->column_text(5);
-    item.materializer_version         = stored_version;
-    item.current_materializer_version = std::string{mz::materializer_version};
+    item.kind                 = stmt->column_text(0);
+    item.id                   = artifact_id;
+    item.locator              = locator;
+    item.text                 = section.value_or(std::string{});
+    item.display_label        = stmt->column_text(6);
+    item.source_digest        = source;
+    item.current_digest       = std::move(current);
+    item.status               = stmt->column_text(4);
+    item.provenance           = stmt->column_text(5);
+    item.materializer_version = stored_version;
+    // Report the stored version back as "current" when routing recognises it,
+    // so readiness's `materializer_version != current_materializer_version`
+    // comparison agrees with the freshness rule above rather than flagging
+    // every operator fact.
+    item.current_materializer_version = known ? item.materializer_version : std::string{mz::materializer_version};
     item.freshness                    = fresh ? "current" : "stale";
     out.push_back(std::move(item));
   }
@@ -1092,19 +1100,34 @@ order by s.id)");
       return std::unexpected(semantic.error());
     }
     std::string current = semantic->has_value() ? mz::source_digest(row.source_kind, row.source_id, row.locator, **semantic) : "";
-    const bool  fresh   = !current.empty() && row.source == current && row.stored_version == mz::materializer_version;
+    // Two materializers now write facts: `spec ingest --apply` for a whole
+    // anchor subtree, and `task facts stage` for one operator-owned task
+    // (decision 1102). Both are versions routing still understands, so the
+    // check is set membership rather than equality with one constant --
+    // stamping an operator fact with an unrecognised version would make it
+    // unconditionally stale and `stale_fact` is a blanket reason over every
+    // fact, so the packet could never be ready. The DIGEST comparison is
+    // deliberately untouched: an operator-staged fact still goes stale the
+    // moment its source text changes.
+    const bool known = row.stored_version == mz::materializer_version || row.stored_version == mz::operator_materializer_version;
+    const bool fresh = !current.empty() && row.source == current && known;
 
     evidence item;
-    item.kind                         = std::move(row.fact_kind);
-    item.id                           = row.id;
-    item.locator                      = std::move(row.locator);
-    item.text                         = std::move(row.text);
-    item.source_digest                = std::move(row.source);
-    item.current_digest               = std::move(current);
-    item.status                       = "materialized";
-    item.provenance                   = std::format("{}:{}", row.source_kind, row.source_id);
-    item.materializer_version         = std::move(row.stored_version);
-    item.current_materializer_version = std::string{mz::materializer_version};
+    item.kind                 = std::move(row.fact_kind);
+    item.id                   = row.id;
+    item.locator              = std::move(row.locator);
+    item.text                 = std::move(row.text);
+    item.source_digest        = std::move(row.source);
+    item.current_digest       = std::move(current);
+    item.status               = "materialized";
+    item.provenance           = std::format("{}:{}", row.source_kind, row.source_id);
+    item.materializer_version = std::move(row.stored_version);
+    // Report a RECOGNISED stored version back as the current one, so
+    // readiness's `materializer_version != current_materializer_version`
+    // clause agrees with the freshness rule above. Reporting the ingest
+    // constant unconditionally would fire `stale_fact` for every
+    // operator-staged fact even though its digest matches.
+    item.current_materializer_version = known ? item.materializer_version : std::string{mz::materializer_version};
     item.freshness                    = fresh ? "current" : "stale";
     out.push_back(std::move(item));
   }

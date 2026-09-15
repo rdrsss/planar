@@ -237,6 +237,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // The three that landed earlier also unblocked the `--touches` filter on
   // `plan list` and `task list`, which refused at exit 64 from task 6141
   // for want of `listTouching`.
+  table.emplace("task facts stage", handlers::task_facts_stage);
   table.emplace("task touches add", handlers::task_touches_add);
   table.emplace("task touches infer", handlers::task_touches_infer);
   table.emplace("task touches list", handlers::task_touches_list);

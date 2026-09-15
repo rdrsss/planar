@@ -49,6 +49,15 @@ namespace planar::engine::ingest::materialize {
 /// whether a fact was produced by a materializer it still understands.
 export inline constexpr std::string_view materializer_version = "spec-ingest-v1";
 
+/// @brief Materializer version stamped on facts an OPERATOR staged for a
+/// single task, rather than ones ingest derived from a roadmap bullet.
+///
+/// Kept distinct from `materializer_version` so provenance stays legible in
+/// the row and in `task packet --json`. `packet`'s freshness rule accepts
+/// both versions; the digest comparison is untouched, so an operator-staged
+/// fact still goes stale the moment its source text changes (decision 1102).
+export inline constexpr std::string_view operator_materializer_version = "operator-v1";
+
 // Semantic-source labels for the aggregate facts `stage_count` produces.
 //
 // `stage_count` stores `"<counted_kind>:<count>"` as a fact's semantic source
@@ -115,8 +124,9 @@ export struct citation_diagnostic {
 
 /// @brief What went wrong in `reconcile`.
 export enum class materialize_error_kind : std::uint8_t {
-  query_failed,    ///< A SQLite operation failed.
-  invalid_citation ///< At least one task cites a section its artifact does not have.
+  query_failed,     ///< A SQLite operation failed.
+  invalid_citation, ///< At least one task cites a section its artifact does not have.
+  task_not_found    ///< `stage_one_task` was given an id no task has.
 };
 
 /// @brief Failure surface for `reconcile`.
@@ -148,6 +158,30 @@ export struct materialize_error {
 export [[nodiscard]] auto reconcile(db::connection& conn, std::int64_t anchor_plan_id,
                                     std::span<const roadmap_citation> roadmap_citations)
     -> std::expected<void, materialize_error>;
+
+/// @brief Replaces the complete fact set for ONE task, under operator
+/// provenance.
+///
+/// The operator-facing counterpart to `reconcile`: that function rebuilds
+/// every task below an anchor plan and is reachable only from `spec ingest
+/// --apply`, which is why a hand-filed task could never obtain routing facts
+/// and an edited task could never restage them (task 6048, decision 1102).
+///
+/// Facts are derived through the SAME predicates the plan-wide pass uses, and
+/// stamped `operator_materializer_version`. Citation facts are staged only for
+/// artifacts the task already cites through an `entity_links` edge AND
+/// references explicitly in its body; an artifact it cites without a resolvable
+/// locator is reported as a `citation_diagnostic`, never fabricated.
+///
+/// Unlike `reconcile`, this function OWNS its transaction (immediate), and its
+/// delete is scoped to `task_id` — staging one task must never discard a
+/// sibling's ingest-materialized facts.
+///
+/// @param conn An open connection to a migrated database.
+/// @param task_id The task whose facts are rebuilt.
+/// @return Success, or the failure — `task_not_found` for an unknown id, or
+/// `invalid_citation` carrying every unresolvable citation from the pass.
+export [[nodiscard]] auto stage_one_task(db::connection& conn, std::int64_t task_id) -> std::expected<void, materialize_error>;
 
 /// @brief Computes a fact's `source_digest`.
 ///
