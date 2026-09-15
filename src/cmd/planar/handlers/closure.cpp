@@ -43,7 +43,9 @@ auto closure_compute(context& ctx, const cliapp::parsed_args& args) -> handler_r
     return std::unexpected(resolved.error());
   auto e = entity->has_value() ? std::optional<std::string_view>{**entity} : std::nullopt;
   auto w = resolved->scope.has_value() ? std::optional<std::string_view>{*resolved->scope} : std::nullopt;
-  if (!engine::identity::check_scope_guard(e, w)) {
+  // Membership-aware, not strict equality (decision 1121, task 6735) --
+  // see the same change at task.cpp's `task update` guard for why.
+  if (!guard_with_membership(**conn, e, w)) {
     auto el = entity->value_or("global"), wl = resolved->scope.value_or("global");
     return std::unexpected(error_from_body(domain_error_kind::scope_mismatch,
                                            std::format("scope mismatch: task {} is in scope '{}' but operator write scope is "

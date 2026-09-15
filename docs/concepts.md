@@ -306,7 +306,7 @@ This composes naturally with `plan list`, `task list`, `question list`, `scenari
 
 Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against a target entity's stored `(scope_kind, scope_id)` and refuses if they disagree.
 
-**It runs on ten verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. Eight of the ten are membership-aware, through six shared call sites (an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`); two use strict equality instead. The reverse direction — operator project, entity org — refuses under both with exit 5.
+**It runs on ten verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All ten are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
 
 ### Removed: the active scope stack
 
@@ -340,22 +340,24 @@ call sites (`sync push` and `sync pull` share one; `decision accept` and
 | `planar-ext sync resolve <event-id>` | membership-aware |
 | `decision accept` | membership-aware |
 | `decision withdraw` | membership-aware |
-| `task update` | **strict equality** |
-| `closure compute` | **strict equality** |
+| `task update` | membership-aware |
+| `closure compute` | membership-aware |
 
 The two classes the guard was designed around — bulk-write-from-parent (the lectio incident pattern) and mutating-an-existing-entity — describe its *intent*. They do not describe its coverage. Most mutating-existing-entity verbs are **not** guarded: `plan update`, `plan step add/done/skip`, `task done/reopen/block`, `question edit`, `scenario edit`, `decision edit`, `decision supersede`, `artifact update`, `annotate update`, `planar-ext ext create --from`, `planar-ext ext propagate-one`, `link`, `unlink`. Earlier editions of this document listed those as guarded; they never were.
 
 `planar links update` appears in older editions of both documents. That verb does not exist — `planar schema` declares `links add`, `links list`, `links remove`, `links trail` only, and invoking `links update` fails at parse time with exit 2.
 
-### Two comparisons, not one
+### One comparison, since decision 1121
 
-Six guarded call sites use the cmd-layer `guard_with_membership`; two — `task update` and `closure compute` — call `engine::identity::check_scope_guard` directly, which is strict equality after `assoc:` normalization.
+Every guarded call site uses the cmd-layer `guard_with_membership`.
 
-The observable consequence: an `assoc:<org>` → `repo:<member>` write is **accepted** by `spec ingest --apply` and **refused** by `task update`, from the identical working directory. This is recorded here as fact, not endorsed. Reconciling the two flavours — and which direction to reconcile them in — is an open operator decision, because either choice changes behaviour that ships today.
+This was not always true. `task update` and `closure compute` called `engine::identity::check_scope_guard` directly — strict equality after `assoc:` normalization — so an `assoc:<org>` → `repo:<member>` write was **accepted** by `spec ingest --apply` and **refused** by `task update`, from the identical working directory. Task 6075 measured the split; decision 1121 (task 6735) resolved it by widening those two to match the other eight.
+
+The reasoning: strict equality could not distinguish "my own member repo" from "an unrelated repo" — it refused both identically. That is not a stricter reading of the guard's purpose but a blind one. The guard exists to stop a write leaking *sideways* (repo A mutating an entity owned by unrelated repo B), not to stop an association acting on its own member, which is the ordinary case the association scope exists to serve.
 
 ### Membership-aware coverage
 
-For the eight verbs that use it, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
+For all ten guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
 
 ### `--scope` does not mean the same thing on every verb
 

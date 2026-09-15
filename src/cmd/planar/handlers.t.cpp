@@ -4882,6 +4882,46 @@ TEST_CASE("task update refuses a cross-scope write at exit 5", "[cmd][handlers][
   CHECK(read_tasks(fx)[3].title == "GlobalRenamed");
 }
 
+TEST_CASE("task update admits an association-to-member write", "[cmd][handlers][task][6735]") {
+  // Decision 1121 (task 6735): `task update` and `closure compute` were the
+  // only two of the eight guarded verbs comparing scopes by STRICT EQUALITY;
+  // the other six were already membership-aware. Strict equality could not
+  // tell "my own member repo" from "an unrelated repo" -- it refused both
+  // identically -- so an `assoc:<org>` operator writing to an entity stored
+  // at `repo:<member>` was refused here while `spec ingest --apply` accepted
+  // the identical write from the identical directory.
+  auto const fx = make_fixture("tkmembership");
+  seed_planning(fx);
+  REQUIRE(dispatch(fx, {"assoc", "create", "umbrella"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "umbrella", (fx.root / "proj").string()}).code == 0);
+
+  // A task scoped to the MEMBER repo, written from the ASSOCIATION scope.
+  REQUIRE(dispatch(fx, {"task", "add", "Member task", "--scope", "repo:proj"}).code == 0);
+  auto const member_id = std::format("{}", read_tasks(fx).back().id);
+
+  auto const got = dispatch(fx, {"task", "update", member_id, "--scope", "umbrella", "--title", "Renamed by assoc"});
+  INFO("stderr: " << got.err);
+  CHECK(got.code == 0);
+  CHECK(read_tasks(fx).back().title == "Renamed by assoc");
+}
+
+TEST_CASE("task update still refuses a member-to-association write", "[cmd][handlers][task][6735]") {
+  // The relation is DIRECTIONAL, and widening must not have made the guard
+  // symmetric: a member repo cannot authorize a write to an
+  // association-owned task. Without this arm, decision 1121's widening
+  // would be indistinguishable from removing the guard.
+  auto const fx = make_fixture("tkmembershiprev");
+  seed_planning(fx);
+  REQUIRE(dispatch(fx, {"assoc", "create", "umbrella"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "umbrella", (fx.root / "proj").string()}).code == 0);
+
+  // Task 1 is association-scoped (`acme`) per seed_planning; a repo scope
+  // must not reach it.
+  auto const refused = dispatch(fx, {"task", "update", "1", "--scope", "repo:proj", "--title", "X"});
+  CHECK(refused.code == 5);
+  CHECK(read_tasks(fx)[0].title == "T low pri"); // refused means UNCHANGED
+}
+
 TEST_CASE("task done / cancel / block / reopen write the row and the audit rows", "[cmd][handlers][task][parity][6141]") {
   auto const fx = make_fixture("tkflip");
   seed_planning(fx);
