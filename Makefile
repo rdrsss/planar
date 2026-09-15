@@ -152,10 +152,12 @@ test-vendor-mtkahypar-offline: ## Recurrence guard (task 6461): -DPLANAR_WITH_MT
 #   1. An explicit LLVM_PREFIX= / CLANG_FORMAT_BIN= / CLANG_TIDY_BIN= on
 #      the command line or in the environment always wins.
 #   2. Otherwise the prefix is read out of $(CPP_BUILD_DIR)'s CMakeCache —
-#      i.e. the LLVM that ACTUALLY BUILT this tree, resolved from
-#      CMAKE_CXX_COMPILER. This is the strongest available binding: the
-#      formatter and the compiler cannot drift apart, which a second
-#      independent lookup (even a correct one) does not guarantee.
+#      i.e. the LLVM that ACTUALLY BUILT this tree: PLANAR_LLVM_PREFIX,
+#      which cmake/llvm-toolchain.cmake resolves and caches (task 6755),
+#      else CMAKE_CXX_COMPILER's grandparent directory for a build dir
+#      configured before that existed. This is the strongest available
+#      binding: the formatter and the compiler cannot drift apart, which a
+#      second independent lookup (even a correct one) does not guarantee.
 #   3. Failing that (no build dir yet), `brew --prefix llvm`.
 #
 # There is deliberately NO fallback to a PATH-resolved clang-format: the
@@ -163,8 +165,10 @@ test-vendor-mtkahypar-offline: ## Recurrence guard (task 6461): -DPLANAR_WITH_MT
 # linting with another release's formatter is exactly the outcome the pin
 # exists to prevent. See docs/toolchain-parity.md § clang-format.
 LLVM_PREFIX      ?= $(shell \
+	pfx=$$(sed -n 's|^PLANAR_LLVM_PREFIX:[^=]*=||p' $(CPP_BUILD_DIR)/CMakeCache.txt 2>/dev/null); \
 	cxx=$$(sed -n 's|^CMAKE_CXX_COMPILER:[^=]*=||p' $(CPP_BUILD_DIR)/CMakeCache.txt 2>/dev/null); \
-	if [ -n "$$cxx" ]; then dirname "$$(dirname "$$cxx")"; \
+	if [ -n "$$pfx" ]; then printf '%s' "$$pfx"; \
+	elif [ -n "$$cxx" ]; then dirname "$$(dirname "$$cxx")"; \
 	else brew --prefix llvm 2>/dev/null; fi)
 CLANG_FORMAT_BIN ?= $(LLVM_PREFIX)/bin/clang-format
 CLANG_TIDY_BIN   ?= $(LLVM_PREFIX)/bin/clang-tidy
@@ -174,7 +178,7 @@ CLANG_TIDY_BIN   ?= $(LLVM_PREFIX)/bin/clang-tidy
 define require_pinned_llvm
 	@test -x "$(1)" || { \
 	  echo "make cpp-lint: pinned LLVM tool not found at '$(1)'."; \
-	  echo "  Resolved LLVM_PREFIX='$(LLVM_PREFIX)' (from $(CPP_BUILD_DIR)/CMakeCache.txt, else 'brew --prefix llvm')."; \
+	  echo "  Resolved LLVM_PREFIX='$(LLVM_PREFIX)' (from $(CPP_BUILD_DIR)/CMakeCache.txt's PLANAR_LLVM_PREFIX or CMAKE_CXX_COMPILER, else 'brew --prefix llvm')."; \
 	  echo "  Install the pinned LLVM (docs/toolchain-parity.md), configure $(CPP_BUILD_DIR) first,"; \
 	  echo "  or override explicitly:  make cpp-lint LLVM_PREFIX=/path/to/llvm"; \
 	  exit 1; }

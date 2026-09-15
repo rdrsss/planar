@@ -161,11 +161,61 @@ do not reach for a suppression.
 | macOS (Homebrew, Intel) | `/usr/local/opt/llvm` | Not verified on this task (no Intel Mac available); same keg-only layout, different prefix root — Homebrew's own convention. |
 | Linux (apt.llvm.org, Debian/Ubuntu) | `/usr/lib/llvm-<N>/bin/clang++`, alternatives symlink `clang++-<N>` at `/usr/bin/clang++-<N>` | **Specified, not yet verified.** Derived from centurion's `docs/toolchain-parity.md` (its `linux-container-base` preset pins `/usr/bin/clang-22` / `/usr/bin/clang++-22` against `llvm-toolchain-<codename>-22`, matching apt.llvm.org's major-and-codename-pinned repository naming). Planar's own Linux lane does not exist yet (tech-spec § Presets: `linux-container` "follows post-cutover"); when it lands, pin apt.llvm.org's `llvm-toolchain-<codename>-<major>` for whatever major this table currently pins (23 once stable, else the same major as the macOS row) and verify with the same probes under the target Debian/Ubuntu base image before trusting this row. |
 
+## How the prefix is found (task 6755, decision 1123)
+
+`CMakePresets.json` no longer carries absolute compiler paths. Its `base`
+preset names a toolchain file, `cmake/llvm-toolchain.cmake`, which
+DISCOVERS the prefix and derives the flag set below against it.
+
+**The pin is unchanged.** Discovery changes how the toolchain is located,
+not which toolchain is required: a candidate is accepted only if it has
+`bin/clang`, `bin/clang++`, `include/c++/v1`, a `libc++.modules.json`
+(the artifact that proves this libc++ was built with module support —
+without it `import std` cannot work), and a clang major at or above the
+pinned floor. Anything else is REFUSED with a message naming the fix. A
+stock system clang fails on the modules manifest and is never silently
+accepted.
+
+Resolution order, mirroring the lint path's (`Makefile` § `LLVM_PREFIX`):
+
+1. `-DPLANAR_LLVM_PREFIX=<path>` (or the same name in the environment)
+   ALWAYS wins, unconditionally. Discovery is a fallback, never an
+   override. An explicit prefix that fails validation is a hard error
+   naming what was wrong with it — it never falls through to discovery.
+2. `brew --prefix llvm`. Homebrew's LLVM is keg-only, so it is never on
+   `PATH` and this is the only way to find it. This is what resolves on
+   the macOS row of the table above.
+3. apt.llvm.org's `/usr/lib/llvm-<major>` prefixes, newest first, then the
+   prefix of a `PATH`-resolved `clang++` / `clang++-<major>`. This is what
+   the Linux row is meant to resolve through.
+
+The resolved prefix is written to the cache as `PLANAR_LLVM_PREFIX`, which
+is also where `make cpp-lint` now reads it from — so the formatter and the
+compiler still cannot drift apart.
+
+**An ALREADY-CONFIGURED build directory is unaffected.** CMake reads a
+toolchain file only when a build tree is first configured; re-running
+`cmake --preset debug` over a `build/debug` created before this change
+keeps its cached compiler paths and prints `CMake Warning (unused-cli):
+CMAKE_TOOLCHAIN_FILE`. That is expected, and harmless on the host those
+paths came from. Delete the build directory to pick up discovery.
+
+**Linux is still specified, not verified.** Everything above was verified
+on macOS ARM (see the probe transcript below); the Linux branch of step 3
+is structural, and the platform table's Linux row remains
+"specified, not yet verified". Discovery makes a Linux configure possible;
+it does not by itself make Linux a tested host.
+
 ## Derived import-std / embed flag set (macOS, verified)
 
 Configure-time flags, mirroring the pattern in `centurion/CMakeLists.txt`
 and `centurion/CMakePresets.json`'s `base` preset (Homebrew LLVM is
-keg-only, so nothing here is discoverable from a bare `clang++` on `PATH`):
+keg-only, so nothing here is discoverable from a bare `clang++` on `PATH`).
+Since task 6755 these are produced by `cmake/llvm-toolchain.cmake` against
+the DISCOVERED prefix rather than written literally into the preset; the
+values below are what that resolves to on this machine, and the libc++
+library directory is read out of `libc++.modules.json`'s location rather
+than assumed to be `lib/c++` (apt.llvm.org puts it under `lib/<triple>`):
 
 ```
 CMAKE_EXPERIMENTAL_CXX_IMPORT_STD = f35a9ac6-8463-4d38-8eec-5d6008153e7d   # CMake 4.4.x gate UUID

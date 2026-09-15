@@ -74,7 +74,8 @@
 | Path | Role |
 |------|------|
 | `CMakeLists.txt` | Top-level CMake project (`project(planar ...)`, C++26, modules). Rejects in-source builds, wires the pinned-toolchain presets, and adds `src/` and `src/tools/`. |
-| `CMakePresets.json` | `debug` / `release` configure presets, both pinning the exact Homebrew LLVM `clang`/`clang++` paths and `libc++` flags (see `docs/toolchain-parity.md`). CMake `>= 4.3` required (module-aware `file(CODEGEN)`/import-std support). |
+| `CMakePresets.json` | `debug` / `release` configure presets. Both inherit a `base` preset that names the toolchain file `cmake/llvm-toolchain.cmake`, which DISCOVERS the pinned LLVM and derives the `libc++` flag set from it (task 6755; `-DPLANAR_LLVM_PREFIX=<path>` always overrides, discovery never accepts a toolchain that cannot build this tree). See `docs/toolchain-parity.md`. CMake `>= 4.3` required (module-aware `file(CODEGEN)`/import-std support). |
+| `cmake/llvm-toolchain.cmake` | Discovers the pinned LLVM prefix and derives the compiler paths and `import std` / `libc++` flag set from it (task 6755, decision 1123). Named as the `base` preset's `toolchainFile`. An explicit `-DPLANAR_LLVM_PREFIX` always wins; a candidate without a modules-enabled `libc++` or below the pinned major is refused loudly. |
 | `cmake/dependencies.cmake` | Every third-party dependency as one `CPMAddPackage(...)` block each, pinned by `URL` + `URL_HASH SHA256=...`, cached under root `vendor/`. |
 | `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/*.sql` and `templates/defaults/` into generated C++ modules the runtime applies/reads at startup. Replaces the Zig-era `tools/gen_migrations.zig` / `tools/gen_templates.zig` build-time codegen. |
 | `cmake/module.cmake` | `planar_module()` — the project's CMake helper for declaring a modules-only C++ library/target (Catch2 test wiring, warnings-as-errors, `SYSTEM`/`EXCLUDE_FROM_ALL` third-party isolation). |
@@ -140,7 +141,7 @@ cmake --build build/debug
 ctest --test-dir build/debug --output-on-failure
 ```
 
-Presets `debug` and `release` both pin the exact Homebrew LLVM `clang`/`clang++` paths and `libc++` flags declared in `CMakePresets.json`; see [docs/toolchain-parity.md](docs/toolchain-parity.md) for why the pin is load-bearing and how to resolve it on a non-Homebrew-ARM-macOS host. CMake `>= 4.3` is required.
+Presets `debug` and `release` both resolve the pinned LLVM through `cmake/llvm-toolchain.cmake`, which discovers the prefix (explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and derives the `clang`/`clang++` paths and `libc++` flags from it; see [docs/toolchain-parity.md](docs/toolchain-parity.md) for why the pin is load-bearing, what discovery validates before accepting a toolchain, and how to point at one explicitly. CMake `>= 4.3` is required.
 
 There is no second build. `zig/` and every Makefile target that drove it were deleted at the M10 cutover (task 6045); `make fmt` / `make fmt-check` now run the pinned `clang-format` over first-party C++ instead of `zig fmt`.
 

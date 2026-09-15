@@ -10,16 +10,12 @@
       "name": "base",
       "hidden": true,
       "displayName": "Base (pinned LLVM)",
-      "description": "Shared settings: pinned Homebrew LLVM 23.1.0, Ninja, compile_commands.json, out-of-source build. See docs/toolchain-parity.md.",
+      "description": "Shared settings: the pinned LLVM (discovered, override with -DPLANAR_LLVM_PREFIX), Ninja, compile_commands.json, out-of-source build. See docs/toolchain-parity.md.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/llvm-toolchain.cmake",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
-        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_CXX_FLAGS": "-stdlib=libc++ -nostdinc++ -isystem /opt/homebrew/opt/llvm/include/c++/v1",
-        "CMAKE_EXE_LINKER_FLAGS": "-stdlib=libc++ -L/opt/homebrew/opt/llvm/lib/c++ -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++",
-        "CMAKE_CXX_STDLIB_MODULES_JSON": "/opt/homebrew/opt/llvm/lib/c++/libc++.modules.json"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
