@@ -530,7 +530,8 @@ auto synthesize(context& ctx, const cliapp::parsed_args& args) -> handler_result
                         {.code_layout            = flag_string(args, "--code-layout"),
                          .apply                  = apply,
                          .treat_as_greenfield    = flag_bool(args, "--treat-as-greenfield"),
-                         .treat_as_nongreenfield = flag_bool(args, "--treat-as-nongreenfield")},
+                         .treat_as_nongreenfield = flag_bool(args, "--treat-as-nongreenfield"),
+                         .dry_run                = flag_bool(args, "--dry-run")},
                         ctx.env());
   if (!staged) {
     if (staged.error() == sy::error::not_found)

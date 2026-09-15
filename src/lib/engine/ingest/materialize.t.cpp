@@ -633,3 +633,166 @@ insert into tasks (scope_kind, plan_id, title, body, next_action) values (
   CHECK(int_query(conn, "select count(*) from routing_task_facts "
                         "where fact_kind = 'next_action_exact' and value_bool = 1") == 1);
 }
+
+// --- task 6760 / decision 1124: bracket-delimited citation locators ---------
+//
+// The BARE form's three terminators (',', ')', ']') each end a real writing
+// pattern, so none of them can simply be dropped; the cost is that a heading
+// CONTAINING one can never be cited in full. Decision 1124 adds the missing
+// mechanism rather than redefining the bare form: `[` directly before the
+// marker suppresses ',' and ')', and the matching ']' closes the locator.
+//
+// Every case below is pinned PER CHARACTER in BOTH forms (task 6361's
+// granularity rule): a composite fixture covering all three at once would
+// pass against an implementation that got one of them backwards.
+
+/// @brief Seeds an anchor plan, a child plan, a tech-spec artifact with one
+/// `## <heading>` section, and a task citing it via `citation_line`.
+/// @param conn Open, migrated scratch connection.
+/// @param heading The artifact's sole authored section heading.
+/// @param citation_line The task body's citation line, verbatim.
+auto seed_citation(planar::db::connection& conn, std::string_view heading, std::string_view citation_line) -> void {
+  must_execute(conn,
+               std::format(R"(insert into plans (scope_kind, title, slug, status) values ('global', 'Anchor', 'anchor', 'active');
+insert into plans (scope_kind, title, slug, status, parent_plan_id) values ('global', 'M1', 'm1', 'active', 1);
+insert into artifacts (scope_kind, kind, title, body) values (
+  'global', 'tech_spec', 'Spec',
+  '## {}
+
+BRACKET_SENTINEL
+');
+insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('artifact', 1, 'plan', 1, 'derives-from');
+insert into tasks (scope_kind, plan_id, title, body, next_action) values (
+  'global', 2, 'Cites a heading',
+  '## Spec Citations
+
+{}',
+  'Read the spec.'
+);
+insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', 1, 'artifact', 1, 'cites'))",
+                           heading, citation_line));
+}
+
+TEST_CASE("BARE form: each of the three terminators still truncates, separately", "[ingest][materialize][citation][6760]") {
+  // The compatibility half of decision 1124. Any of these resolving would
+  // mean the bare form had been redefined -- which is precisely what the
+  // additive option was chosen to avoid.
+  SECTION("a comma") {
+    const scratch_db_path scratch;
+    auto                  conn = open_migrated(scratch);
+    seed_citation(conn, "Design, revisited", "- artifact:1#Design, revisited");
+    const auto result = mat::reconcile(conn, 1, {});
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error().citations_.size() == 1);
+    CHECK(result.error().citations_[0].wanted_ == "Design");
+  }
+  SECTION("a closing paren") {
+    const scratch_db_path scratch;
+    auto                  conn = open_migrated(scratch);
+    seed_citation(conn, "Design (revisited)", "- artifact:1#Design (revisited)");
+    const auto result = mat::reconcile(conn, 1, {});
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error().citations_.size() == 1);
+    CHECK(result.error().citations_[0].wanted_ == "Design (revisited");
+  }
+  SECTION("a closing bracket") {
+    const scratch_db_path scratch;
+    auto                  conn = open_migrated(scratch);
+    seed_citation(conn, "Design [draft]", "- artifact:1#Design [draft]");
+    const auto result = mat::reconcile(conn, 1, {});
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error().citations_.size() == 1);
+    CHECK(result.error().citations_[0].wanted_ == "Design [draft");
+  }
+}
+
+TEST_CASE("BRACKET form: a comma inside the locator is an ordinary character", "[ingest][materialize][citation][6760]") {
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+  seed_citation(conn, "Design, revisited", "- [artifact:1#Design, revisited]");
+  REQUIRE(mat::reconcile(conn, 1, {}).has_value());
+  CHECK(int_query(conn, R"(select count(*) from routing_task_facts
+where task_id = 1 and fact_kind = 'cited_artifact_section'
+  and value_text = 'BRACKET_SENTINEL'
+  and source_locator = 'artifact:1#Design, revisited')") == 1);
+}
+
+TEST_CASE("BRACKET form: a closing paren inside the locator is an ordinary character", "[ingest][materialize][citation][6760]") {
+  // The motivating case from task 6048: `## File-level tree
+  // (operator-approved)` was permanently uncitable.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+  seed_citation(conn, "File-level tree (operator-approved)", "- [artifact:1#File-level tree (operator-approved)]");
+  REQUIRE(mat::reconcile(conn, 1, {}).has_value());
+  CHECK(int_query(conn, R"(select count(*) from routing_task_facts
+where task_id = 1 and fact_kind = 'cited_artifact_section'
+  and source_locator = 'artifact:1#File-level tree (operator-approved)')") == 1);
+}
+
+TEST_CASE("BRACKET form: the closing bracket is the DELIMITER, so a ']' in a heading still ends it",
+          "[ingest][materialize][citation][6760]") {
+  // Not an oversight -- a delimited form cannot also treat its own delimiter
+  // as content. Pinned so the asymmetry with ',' and ')' is deliberate and
+  // visible rather than discovered later.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+  seed_citation(conn, "Design [draft]", "- [artifact:1#Design [draft]");
+  const auto result = mat::reconcile(conn, 1, {});
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error().citations_.size() == 1);
+  CHECK(result.error().citations_[0].wanted_ == "Design [draft");
+}
+
+TEST_CASE("BRACKET form: nesting is counted, so a bracketed span inside a heading survives",
+          "[ingest][materialize][citation][6760]") {
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+  seed_citation(conn, "Design [draft] notes", "- [artifact:1#Design [draft] notes]");
+  REQUIRE(mat::reconcile(conn, 1, {}).has_value());
+  CHECK(int_query(conn, R"(select count(*) from routing_task_facts
+where task_id = 1 and fact_kind = 'cited_artifact_section'
+  and source_locator = 'artifact:1#Design [draft] notes')") == 1);
+}
+
+TEST_CASE("an UNMATCHED opening bracket falls back to the bare scan", "[ingest][materialize][citation][6760]") {
+  // Decided, not incidental: `[` already appears before citations in existing
+  // prose, so refusing here would make a form that resolves today start
+  // failing -- the compatibility break the additive option exists to avoid.
+  // With no closing ']' on the line, this must behave exactly as the bare
+  // form does, terminators and all.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+  seed_citation(conn, "Design", "- [artifact:1#Design");
+  REQUIRE(mat::reconcile(conn, 1, {}).has_value());
+  CHECK(int_query(conn, R"(select count(*) from routing_task_facts
+where task_id = 1 and fact_kind = 'cited_artifact_section'
+  and source_locator = 'artifact:1#Design')") == 1);
+}
+
+TEST_CASE("a bracket NOT directly before the marker does not open the delimited form", "[ingest][materialize][citation][6760]") {
+  // `[see artifact:1#Design, revisited]` is ordinary prose that happens to be
+  // bracketed. Letting an earlier '[' anywhere on the line claim the
+  // delimiter would silently change what such a line resolves to.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+  seed_citation(conn, "Design, revisited", "- [see artifact:1#Design, revisited]");
+  const auto result = mat::reconcile(conn, 1, {});
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error().citations_.size() == 1);
+  CHECK(result.error().citations_[0].wanted_ == "Design");
+}
+
+TEST_CASE("the truncation diagnostic advises the bracket form that actually works", "[ingest][materialize][citation][6760]") {
+  // Before this task the message advised renaming the heading only, and the
+  // handler's guidance elsewhere advised a `[...]` form that did NOT work
+  // (the scan ignored the brackets entirely). Both are now accurate.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+  seed_citation(conn, "File-level tree (operator-approved)", "- artifact:1#File-level tree (operator-approved)");
+  const auto result = mat::reconcile(conn, 1, {});
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error().citations_.size() == 1);
+  const auto described = result.error().citations_[0].describe();
+  CHECK(described.contains("TRUNCATED"));
+  CHECK(described.contains("[artifact:<id>#File-level tree (operator-approved)]"));
+}

@@ -53,6 +53,7 @@ export struct options {
   bool                       apply                  = false; ///< Whether to reconcile a validated cache into SQLite.
   bool                       treat_as_greenfield    = false; ///< Force greenfield handling regardless of detection.
   bool                       treat_as_nongreenfield = false; ///< Force non-greenfield handling regardless of detection.
+  bool                       dry_run                = false; ///< Report what would be staged without writing anything.
 };
 
 /// @brief A staged/cached synthesis result visible to the handler.
