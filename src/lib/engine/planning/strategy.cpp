@@ -150,7 +150,10 @@ auto ensure_plan_exists(db::connection& conn, std::int64_t plan_id) -> std::expe
 /// candidate set, so a `doing` or `blocked` task still blocks a dependant even
 /// though it is never itself a candidate.
 auto load_not_done_ids(db::connection& conn, std::int64_t plan_id) -> std::expected<std::set<std::int64_t>, strategy_error> {
-  auto stmt = conn.prepare("select id from tasks where plan_id = ? and status not in ('done','cancelled')");
+  auto stmt =
+      conn.prepare("with recursive plan_tree(id) as (select id from plans where id = ? union all "
+                   "select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id) "
+                   "select id from tasks where plan_id in (select id from plan_tree) and status not in ('done','cancelled')");
   if (!stmt) {
     return std::unexpected(strategy_error::query_failed);
   }
@@ -267,8 +270,10 @@ auto load_closure_touches(db::connection& conn, std::int64_t task_id) -> std::ex
 /// zero extra DB work — matching the oracle's byte-for-byte pre-D4 claim.
 auto load_open_tasks(db::connection& conn, std::int64_t plan_id, closure_source source)
     -> std::expected<std::vector<work_task>, strategy_error> {
-  auto stmt = conn.prepare("select id, slug, title from tasks "
-                           "where plan_id = ? and status = 'todo' order by priority, id");
+  auto stmt = conn.prepare("with recursive plan_tree(id) as (select id from plans where id = ? union all "
+                           "select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id) "
+                           "select id, slug, title from tasks where plan_id in (select id from plan_tree) "
+                           "and status = 'todo' order by priority, id");
   if (!stmt) {
     return std::unexpected(strategy_error::query_failed);
   }

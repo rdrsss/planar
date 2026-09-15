@@ -400,6 +400,8 @@ struct apply_result {
   std::size_t decisions_added = 0;
   /// @brief Number of added test scenarios.
   std::size_t scenarios_added = 0;
+  /// @brief Number of generated placeholders retired after authored coverage landed.
+  std::size_t scenarios_retired = 0;
   /// @brief Number of added questions.
   std::size_t questions_added = 0;
   /// @brief Number of answered questions.
@@ -794,6 +796,48 @@ auto draft_scenario(db::connection& conn, std::int64_t task_id, std::string_view
   return {};
 }
 
+/// @brief Retire only ingestor-owned placeholders that duplicate an authored
+/// scenario's coverage. The body marker is the durable ownership boundary:
+/// user-authored scenarios are never inferred from a title or removed here.
+auto retire_covered_placeholders(db::connection& conn, std::int64_t anchor_plan_id, apply_result& res)
+    -> std::expected<void, std::string> {
+  auto stmt = conn.prepare(R"(select distinct placeholder.id
+from test_scenarios placeholder
+join entity_links pv on pv.from_kind = 'test_scenario' and pv.from_id = placeholder.id
+  and pv.to_kind = 'task' and pv.relationship = 'verifies'
+join tasks t on t.id = pv.to_id
+join plans p on p.id = t.plan_id and p.parent_plan_id = ?
+where placeholder.status != 'retired'
+  and placeholder.body like 'Acceptance scenario auto-drafted by the ingestor.%'
+  and exists (
+    select 1 from entity_links av
+    join test_scenarios authored on authored.id = av.from_id
+    where av.from_kind = 'test_scenario' and av.to_kind = 'task'
+      and av.relationship = 'verifies' and av.to_id = t.id
+      and authored.id != placeholder.id and authored.status != 'retired'
+      and authored.body not like 'Acceptance scenario auto-drafted by the ingestor.%'
+  ) order by placeholder.id)");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id)) {
+    return std::unexpected(std::string{"QueryFailed"});
+  }
+  std::vector<std::int64_t> ids;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped)
+      return std::unexpected(std::string{"QueryFailed"});
+    if (*stepped == db::step_result::done)
+      break;
+    ids.push_back(stmt->column_int64(0));
+  }
+  for (const auto id : ids) {
+    auto retired = pl::retire_scenario(conn, id, "authored test-spec coverage supersedes generated placeholder");
+    if (!retired)
+      return std::unexpected(std::string{name_of(retired.error())});
+    ++res.scenarios_retired;
+  }
+  return {};
+}
+
 /// @brief Records the best-effort ingestor read-session entry for preview.
 /// @param conn Database connection.
 /// @param anchor_plan_id Previewed anchor plan id.
@@ -854,7 +898,14 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
   std::optional<std::string_view> scope_slug =
       scope_owned.has_value() ? std::optional<std::string_view>{*scope_owned} : std::nullopt;
 
-  auto const default_repo_id = sole_member_repo_id(conn, diff.anchor_plan_id_);
+  auto const                         default_repo_id = sole_member_repo_id(conn, diff.anchor_plan_id_);
+  std::set<std::string, std::less<>> authored_coverage;
+  for (auto const& scenario : diff.scenarios_) {
+    for (auto const& verified : scenario.verifies_) {
+      if (verified.kind_ == "task" && !verified.slug_.empty())
+        authored_coverage.insert(verified.slug_);
+    }
+  }
 
   // ---- removals ---------------------------------------------------------
   if (opts.apply_removals) {
@@ -931,7 +982,7 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
         if (!touched) {
           return std::unexpected(apply_error{.message = touched.error()});
         }
-        if (diff_ns::is_non_trivial(te.body_)) {
+        if (diff_ns::is_non_trivial(te.body_) && !authored_coverage.contains(te.slug_)) {
           auto drafted = draft_scenario(conn, created->id, te.title_, scope_slug);
           if (!drafted) {
             return std::unexpected(apply_error{.message = drafted.error()});
@@ -1103,6 +1154,10 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     case diff_ns::op::remove:
       continue;
     }
+  }
+
+  if (auto retired = retire_covered_placeholders(conn, diff.anchor_plan_id_, res); !retired) {
+    return std::unexpected(apply_error{.message = retired.error()});
   }
 
   // ---- new questions ------------------------------------------------------
@@ -1370,6 +1425,9 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
                              result->decisions_added, result->questions_added, result->questions_answered);
     if (result->tasks_cancelled > 0) {
       ctx.err() << std::format(", {} tasks cancelled", result->tasks_cancelled);
+    }
+    if (result->scenarios_retired > 0) {
+      ctx.err() << std::format(", {} generated scenarios retired", result->scenarios_retired);
     }
     if (result->touch_paths_written > 0) {
       ctx.err() << std::format(", {} path touches declared", result->touch_paths_written);
