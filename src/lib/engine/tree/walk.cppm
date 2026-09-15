@@ -16,25 +16,28 @@
 ///
 /// Read-only: no writes, no transactions, no audit rows.
 ///
-/// ## Why the activity rollup is duplicated here rather than imported
+/// ## The activity rollup lives in layer 1 (task 6282)
 ///
 /// The oracle's walker calls `engine.runtime.agentactivity.summary
 /// .forEntity` to fold a compact per-entity activity rollup onto every
-/// entity node. In C++ that function's home is `planar_engine_runtime`,
-/// and `engine_tree -> engine_runtime` is an `engine_* -> engine_*` edge,
-/// which cmake/architecture.cmake FATALs on at configure time (D15/D18).
+/// entity node. In C++ that function's natural home is
+/// `planar_engine_runtime`, and `engine_tree -> engine_runtime` is an
+/// `engine_* -> engine_*` edge that cmake/architecture.cmake FATALs on at
+/// configure time (D15/D18) — still true, and pinned by a probe: adding
+/// that edge fails configure with "layer 2, which is not strictly
+/// downward".
 ///
-/// So `for_entity` below is a deliberate, documented DUPLICATE of the
-/// oracle's three queries rather than a call into the runtime bucket. It
-/// is not a rewrite: the SQL, the ordering, the `coalesce` choices and the
-/// no-actions-but-claims fallback are transcribed verbatim. Note that
-/// `planar_engine_runtime` ports the rollup's two SIBLINGS
-/// (`recent_actions_for_entity`, `claim_transitions_for_entity`) for
-/// `audit trail` but NOT the compact rollup itself, so this is the tree's
-/// first and currently only copy — there is no second one to drift from
-/// today. The principled fix is a D19 extraction of the rollup to layer 1,
-/// which is the same move task 6089 made for scope resolution; it is a
-/// task of its own and NOT smuggled into a port cycle.
+/// So `for_entity` was a deliberate, documented DUPLICATE of the oracle's
+/// three queries. It is no longer: task 6282 extracted it downward to the
+/// layer-1 `planar.activity_rollup`, which both this bucket and
+/// `engine_runtime` can reach without depending on each other — D19's
+/// prescribed move, the same one task 6089 made for scope resolution.
+///
+/// It was done while `engine_runtime` still had no copy of its own
+/// (it ports the rollup's two SIBLINGS, `recent_actions_for_entity` and
+/// `claim_transitions_for_entity`, for `audit trail`, but not the compact
+/// rollup). With one implementation this was a MOVE; with two it would
+/// have been a three-way merge.
 ///
 /// ## `--sort` IS WIRED (task 6281); IT USED TO BE INERT
 ///
@@ -80,6 +83,7 @@ module;
 export module planar.engine.tree.walk;
 
 import std;
+import planar.activity_rollup;
 import planar.db;
 
 namespace planar::engine::tree {
@@ -90,12 +94,11 @@ namespace planar::engine::tree {
 /// Absent is NOT the same as zeroed: the text renderer prints no sub-line
 /// and the JSON renderer omits the `activity_summary` key entirely, so a
 /// consumer never sees an empty placeholder.
-export struct activity_summary {
-  std::string  latest_action_kind;     ///< Latest `agent_actions.action_kind`; empty on the claim-only fallback.
-  std::string  latest_vendor;          ///< Vendor of the latest action, or of the latest claim on the fallback.
-  std::string  last_event_at;          ///< ISO8601 stamp of the latest action or claim transition.
-  std::int64_t active_claim_count = 0; ///< Count of active, unexpired claims.
-};
+/// Aliased rather than redeclared: the type moved to the layer-1
+/// `planar.activity_rollup` at task 6282, and every existing consumer spells
+/// it `tree::activity_summary`. Keeping the name here makes the extraction a
+/// pure move for callers.
+export using activity_summary = planar::activity_rollup::activity_summary;
 
 /// @brief One entity in the tree.
 ///
