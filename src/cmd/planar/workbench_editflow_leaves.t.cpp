@@ -305,7 +305,15 @@ TEST_CASE("extract-questions skips README.md and does not descend into subdirect
   CHECK_FALSE(res.out.contains("which-format"));
 }
 
-TEST_CASE("extract-questions SWALLOWS a malformed spec that push would refuse", "[cmd][workbench][extract-questions]") {
+TEST_CASE("extract-questions WARNS on a malformed spec that push would refuse, instead of swallowing it",
+          "[cmd][workbench][extract-questions][6304]") {
+  // Was: "extract-questions SWALLOWS a malformed spec ... push would
+  // refuse", pinning the oracle's `parse(...) catch continue` under D2.
+  // Decision 1116 (task 6304) fixed the C++ tree only: the same file
+  // `push` rejects at exit 1 used to produce an indistinguishable `[]` at
+  // exit 0 here. It still exits 0 — this is a read-only reporting leaf and
+  // one bad file must not fail the whole command — but the file is now
+  // named on stderr instead of disappearing.
   auto const fx = make_fixture("eqmalformed");
   seed(fx);
   REQUIRE(dispatch(fx, {"workbench", "push", "1"}).code == 0);
@@ -326,13 +334,15 @@ TEST_CASE("extract-questions SWALLOWS a malformed spec that push would refuse", 
   auto const pulled = dispatch(fx, {"workbench", "pull", "1"});
   CHECK(pulled.code == 1);
 
-  // ...and extract-questions reports the file as ABSENT, at exit 0. This
-  // pins the oracle's `parse(...) catch continue`, reproduced under D2
-  // rather than improved. TODO(plan:996, task:6304).
+  // ...and extract-questions now NAMES the file on stderr rather than
+  // reporting it as absent. The question content still does not appear in
+  // the results: the CONTENT contract is unchanged, only its visibility.
   auto const res = dispatch(fx, {"workbench", "extract-questions", "1"});
   CHECK(res.code == 0);
   CHECK(res.out.empty());
   CHECK_FALSE(res.out.contains("Is this reported?"));
+  CHECK(res.err.contains("1-bullet-spec.md"));
+  CHECK(res.err.starts_with("warning: parsing"));
 }
 
 TEST_CASE("extract-questions on an unpushed plan hints instead of failing", "[cmd][workbench][extract-questions]") {
