@@ -7,4 +7,5 @@
 # planar_* module graph D15 polices. See each tool's own CMakeLists.txt.
 
 add_subdirectory(cli_usage_lint)
+add_subdirectory(cli_docs_coverage)
 add_subdirectory(surface_lint)
