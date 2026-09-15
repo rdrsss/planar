@@ -103,13 +103,18 @@ TEST_CASE("build_task_body treats the roadmap item as the acceptance criterion",
 
 - touches: repo-a
 - touches: repo-b
+
+## Required validation
+
+- Run the authored test-spec scenarios covering this task.
 )";
   CHECK(diff::build_task_body(item) == expected);
 }
 
 TEST_CASE("build_task_body omits the Repository Scope section without touches", "[ingest][diff]") {
   const parse::work_item item{.title_ = "Add bar", .touches_ = {}, .depends_ = {}, .slug_ = "", .source_text_ = "- Add bar"};
-  CHECK(diff::build_task_body(item) == "## Acceptance Criteria\n\n- Add bar\n");
+  CHECK(diff::build_task_body(item) == "## Acceptance Criteria\n\n- Add bar\n\n## Required validation\n\n"
+                                       "- Run the authored test-spec scenarios covering this task.\n");
 }
 
 TEST_CASE("both shipped generated body shapes are recognised as generated", "[ingest][diff]") {
@@ -322,7 +327,8 @@ TEST_CASE("compute replaces a still-legacy next action but not a refined one", "
   REQUIRE(result->child_plans_[0].tasks_.size() == 1);
   const auto& task = result->child_plans_[0].tasks_[0];
   // The legacy-suffixed body IS generated, so it upgrades to the current shape.
-  CHECK(task.body_ == "## Acceptance Criteria\n\n- Add foo\n");
+  CHECK(task.body_ == "## Acceptance Criteria\n\n- Add foo\n\n## Required validation\n\n"
+                      "- Run the authored test-spec scenarios covering this task.\n");
   CHECK(task.next_action_ == "Deliver roadmap milestone 1 item 1: Add foo");
 }
 

@@ -10,6 +10,7 @@ import planar.db;
 import planar.json_text;
 import planar.engine.identity;
 import planar.engine.planning;
+import planar.engine.ingest;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentrender;
 import planar.cmd.planar.context;
@@ -184,6 +185,42 @@ void warn_open_descendants(context& ctx, db::connection& conn, std::int64_t plan
                            "them, and nothing will resurface them\n"
                            "         `planar plan closeout {}` gates on descendants and reports what blocks\n",
                            plan_id, open, plan_id);
+}
+
+/// @brief Whether the task's authoritative routing packet is dispatchable.
+///
+/// `plan next` calls this for every available task and therefore blocks an
+/// absent packet. `recommend-strategy` first checks for materialized routing
+/// provenance, retaining planning-time recommendations for tasks not yet
+/// ingested; after provenance exists, it calls this same verdict.
+/// @param conn An open database connection.
+/// @param task_id The task to inspect.
+/// @param verb The caller's verb for its query-failure diagnostic.
+/// @return Whether the assembled packet is ready.
+auto routing_packet_ready(db::connection& conn, std::int64_t task_id, std::string_view verb)
+    -> std::expected<bool, domain_error> {
+  auto packet = engine::ingest::packet::assemble_task(conn, task_id);
+  if (!packet) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{} packet: QueryFailed", verb)));
+  }
+  return packet->ready();
+}
+
+/// @brief Whether ingest has materialized routing provenance for a task.
+auto has_routing_provenance(db::connection& conn, std::int64_t task_id, std::string_view verb)
+    -> std::expected<bool, domain_error> {
+  auto fact = conn.prepare("select 1 from routing_task_facts where task_id = ? limit 1");
+  if (!fact || !fact->bind_int64(1, task_id)) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{} packet: QueryFailed", verb)));
+  }
+  auto stepped = fact->step();
+  if (!stepped) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{} packet: QueryFailed", verb)));
+  }
+  if (*stepped == db::step_result::done) {
+    return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -859,7 +896,7 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     }
   }
 
-  auto const rows = aa::next_work(**conn, *id);
+  auto rows = aa::next_work(**conn, *id);
   if (!rows) {
     return std::unexpected(
         error_from_body(domain_error_kind::generic_failure, std::format("plan next selector: {}", aa::error_name(rows.error()))));
@@ -869,7 +906,18 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   std::size_t n_claimed = 0;
   std::size_t n_stale   = 0;
   std::size_t n_blocked = 0;
-  for (auto const& row : *rows) {
+  // A claim-aware task selector alone is insufficient for dispatch: a task
+  // whose provenance packet is incomplete must remain blocked until ingest
+  // reconciliation restores its reviewed evidence.
+  for (auto& row : *rows) {
+    if (row.bucket == aa::next_work_bucket::available) {
+      auto ready = routing_packet_ready(**conn, row.task_id, "plan next");
+      if (!ready) {
+        return std::unexpected(ready.error());
+      }
+      if (!*ready)
+        row.bucket = aa::next_work_bucket::blocked;
+    }
     switch (row.bucket) {
     case aa::next_work_bucket::available:
       ++n_avail;
@@ -1056,13 +1104,38 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
     return std::unexpected(conn.error());
   }
 
-  auto const rec = st::recommend_with(**conn, *id, *source);
+  auto rec = st::recommend_with(**conn, *id, *source);
   if (!rec) {
     if (rec.error() == st::strategy_error::not_found) {
       return std::unexpected(strategy_plan_not_found(*id));
     }
     return std::unexpected(strategy_query_failed("recommend-strategy"));
   }
+
+  std::vector<st::task_ref> packet_ready;
+  packet_ready.reserve(rec->parallel_eligible.size());
+  for (auto& task : rec->parallel_eligible) {
+    auto provenance = has_routing_provenance(**conn, task.id, "recommend-strategy");
+    if (!provenance) {
+      return std::unexpected(provenance.error());
+    }
+    if (!*provenance) {
+      packet_ready.push_back(std::move(task));
+      continue;
+    }
+    auto ready = routing_packet_ready(**conn, task.id, "recommend-strategy");
+    if (!ready) {
+      return std::unexpected(ready.error());
+    }
+    if (*ready) {
+      packet_ready.push_back(std::move(task));
+      continue;
+    }
+    task.excluded_by.push_back(st::exclusion{.rule = 7, .reason = "excluded by rule 7: routing packet is not ready"});
+    rec->serialized.push_back(std::move(task));
+  }
+  rec->parallel_eligible = std::move(packet_ready);
+  rec->fan_out_available = rec->parallel_eligible.size() >= 2;
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? st::render_recommendation_json(*rec, *source)
                                                   : st::render_recommendation_text(*rec, *source));

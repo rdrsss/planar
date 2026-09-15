@@ -400,6 +400,8 @@ struct apply_result {
   std::size_t decisions_added = 0;
   /// @brief Number of added test scenarios.
   std::size_t scenarios_added = 0;
+  /// @brief Number of generated placeholders retired after authored coverage landed.
+  std::size_t scenarios_retired = 0;
   /// @brief Number of added questions.
   std::size_t questions_added = 0;
   /// @brief Number of answered questions.
@@ -794,6 +796,102 @@ auto draft_scenario(db::connection& conn, std::int64_t task_id, std::string_view
   return {};
 }
 
+/// @brief Retire only ingestor-owned placeholders that duplicate an authored
+/// scenario's coverage. The body marker is the durable ownership boundary:
+/// user-authored scenarios are never inferred from a title or removed here.
+auto retire_covered_placeholders(db::connection& conn, std::int64_t anchor_plan_id, apply_result& res)
+    -> std::expected<void, std::string> {
+  auto stmt = conn.prepare(R"(select distinct placeholder.id
+from test_scenarios placeholder
+join entity_links pv on pv.from_kind = 'test_scenario' and pv.from_id = placeholder.id
+  and pv.to_kind = 'task' and pv.relationship = 'verifies'
+join tasks t on t.id = pv.to_id
+join plans p on p.id = t.plan_id
+where p.id in (
+  with recursive plan_tree(id) as (
+    select id from plans where id = ?
+    union all select child.id from plans child join plan_tree parent on child.parent_plan_id = parent.id
+  ) select id from plan_tree
+)
+  and placeholder.status != 'retired'
+  and placeholder.body like 'Acceptance scenario auto-drafted by the ingestor.%'
+  and exists (
+    select 1 from entity_links av
+    join test_scenarios authored on authored.id = av.from_id
+    where av.from_kind = 'test_scenario' and av.to_kind = 'task'
+      and av.relationship = 'verifies' and av.to_id = t.id
+      and authored.id != placeholder.id and authored.status != 'retired'
+      and authored.body not like 'Acceptance scenario auto-drafted by the ingestor.%'
+  ) order by placeholder.id)");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id)) {
+    return std::unexpected(std::string{"QueryFailed"});
+  }
+  std::vector<std::int64_t> ids;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped)
+      return std::unexpected(std::string{"QueryFailed"});
+    if (*stepped == db::step_result::done)
+      break;
+    ids.push_back(stmt->column_int64(0));
+  }
+  for (const auto id : ids) {
+    auto retired = pl::retire_scenario(conn, id, "authored test-spec coverage supersedes generated placeholder");
+    if (!retired)
+      return std::unexpected(std::string{name_of(retired.error())});
+    ++res.scenarios_retired;
+  }
+  return {};
+}
+
+/// @brief Attach the accepted decisions reviewed for an anchor to every
+/// descendant task through normal audited entity-link writes.
+auto reconcile_accepted_decision_links(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<void, std::string> {
+  auto stmt = conn.prepare(R"(with recursive plan_tree(id) as (
+  select id from plans where id=?
+  union all select child.id from plans child join plan_tree parent on child.parent_plan_id=parent.id
+)
+select t.id,d.id from tasks t join plan_tree pt on pt.id=t.plan_id
+join entity_links el on el.from_kind='decision' and el.to_kind='plan' and el.to_id=? and el.relationship='derives-from'
+join decisions d on d.id=el.from_id and d.status='accepted' order by t.id,d.id)");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, anchor_plan_id))
+    return std::unexpected(std::string{"QueryFailed"});
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped)
+      return std::unexpected(std::string{"QueryFailed"});
+    if (*stepped == db::step_result::done)
+      break;
+    auto linked = ensure_link(conn, el::entity_kind::task, stmt->column_int64(0), el::entity_kind::decision,
+                              stmt->column_int64(1), el::relationship::cites);
+    if (!linked)
+      return linked;
+  }
+  return {};
+}
+
+auto reconcile_reviewed_artifact_links(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<void, std::string> {
+  auto stmt = conn.prepare(R"(with recursive plan_tree(id) as (
+  select id from plans where id=? union all select child.id from plans child join plan_tree parent on child.parent_plan_id=parent.id
+) select t.id,a.id from tasks t join plan_tree pt on pt.id=t.plan_id
+join entity_links el on el.from_kind='artifact' and el.to_kind='plan' and el.to_id=? and el.relationship='derives-from'
+join artifacts a on a.id=el.from_id where a.kind in ('product_spec','tech_spec','roadmap','test_spec') order by t.id,a.id)");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, anchor_plan_id))
+    return std::unexpected(std::string{"QueryFailed"});
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped)
+      return std::unexpected(std::string{"QueryFailed"});
+    if (*stepped == db::step_result::done)
+      break;
+    auto linked = ensure_link(conn, el::entity_kind::task, stmt->column_int64(0), el::entity_kind::artifact,
+                              stmt->column_int64(1), el::relationship::cites);
+    if (!linked)
+      return linked;
+  }
+  return {};
+}
+
 /// @brief Records the best-effort ingestor read-session entry for preview.
 /// @param conn Database connection.
 /// @param anchor_plan_id Previewed anchor plan id.
@@ -854,7 +952,14 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
   std::optional<std::string_view> scope_slug =
       scope_owned.has_value() ? std::optional<std::string_view>{*scope_owned} : std::nullopt;
 
-  auto const default_repo_id = sole_member_repo_id(conn, diff.anchor_plan_id_);
+  auto const                         default_repo_id = sole_member_repo_id(conn, diff.anchor_plan_id_);
+  std::set<std::string, std::less<>> authored_coverage;
+  for (auto const& scenario : diff.scenarios_) {
+    for (auto const& verified : scenario.verifies_) {
+      if (verified.kind_ == "task" && !verified.slug_.empty())
+        authored_coverage.insert(verified.slug_);
+    }
+  }
 
   // ---- removals ---------------------------------------------------------
   if (opts.apply_removals) {
@@ -885,7 +990,9 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     std::int64_t child_plan_id = 0;
     switch (cp.op_) {
     case diff_ns::op::add: {
-      auto created = pl::create_plan(conn, {.title = cp.title_, .parent_plan_id = diff.anchor_plan_id_, .scope = scope_owned});
+      auto created = pl::create_plan(
+          conn,
+          {.title = cp.title_, .status = pl::plan_status::active, .parent_plan_id = diff.anchor_plan_id_, .scope = scope_owned});
       if (!created) {
         return std::unexpected(apply_error{.message = std::string{name_of(created.error())}});
       }
@@ -900,6 +1007,19 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     }
     case diff_ns::op::update:
       child_plan_id = cp.existing_id_;
+      // A reviewed ingest is an execution boundary. Previously-ingested
+      // draft milestones must become executable on the same replay path as
+      // newly-created milestones.
+      {
+        auto current = pl::show_plan(conn, child_plan_id);
+        if (!current)
+          return std::unexpected(apply_error{.message = std::string{name_of(current.error())}});
+        if (current->status == pl::plan_status::draft) {
+          auto activated = pl::update_plan(conn, child_plan_id, {.status = pl::plan_status::active});
+          if (!activated)
+            return std::unexpected(apply_error{.message = std::string{name_of(activated.error())}});
+        }
+      }
       res.plans_updated += 1;
       break;
     case diff_ns::op::remove:
@@ -931,7 +1051,7 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
         if (!touched) {
           return std::unexpected(apply_error{.message = touched.error()});
         }
-        if (diff_ns::is_non_trivial(te.body_)) {
+        if (diff_ns::is_non_trivial(te.body_) && !authored_coverage.contains(te.slug_)) {
           auto drafted = draft_scenario(conn, created->id, te.title_, scope_slug);
           if (!drafted) {
             return std::unexpected(apply_error{.message = drafted.error()});
@@ -1105,6 +1225,10 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     }
   }
 
+  if (auto retired = retire_covered_placeholders(conn, diff.anchor_plan_id_, res); !retired) {
+    return std::unexpected(apply_error{.message = retired.error()});
+  }
+
   // ---- new questions ------------------------------------------------------
   for (auto const& q : diff.new_questions_) {
     auto created = pl::create_question(conn, {.title   = q.title_,
@@ -1131,6 +1255,13 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
       return std::unexpected(apply_error{.message = std::string{name_of(answered.error())}});
     }
     res.questions_answered += 1;
+  }
+
+  if (auto linked = reconcile_reviewed_artifact_links(conn, diff.anchor_plan_id_); !linked) {
+    return std::unexpected(apply_error{.message = linked.error()});
+  }
+  if (auto linked = reconcile_accepted_decision_links(conn, diff.anchor_plan_id_); !linked) {
+    return std::unexpected(apply_error{.message = linked.error()});
   }
 
   auto reconciled = mat_ns::reconcile(conn, diff.anchor_plan_id_, *citations);
@@ -1370,6 +1501,9 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
                              result->decisions_added, result->questions_added, result->questions_answered);
     if (result->tasks_cancelled > 0) {
       ctx.err() << std::format(", {} tasks cancelled", result->tasks_cancelled);
+    }
+    if (result->scenarios_retired > 0) {
+      ctx.err() << std::format(", {} generated scenarios retired", result->scenarios_retired);
     }
     if (result->touch_paths_written > 0) {
       ctx.err() << std::format(", {} path touches declared", result->touch_paths_written);

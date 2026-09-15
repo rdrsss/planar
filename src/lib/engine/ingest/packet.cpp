@@ -133,9 +133,11 @@ constexpr std::string_view whitespace = " \t\r\n";
          value.freshness == "current" && !trim(value.provenance).empty();
 }
 
-/// @brief Whether a locator names a SECTION rather than a whole entity —
-/// a `#` that is neither first nor last.
+/// @brief Whether a locator names a materialized citation source.
 [[nodiscard]] auto section_locator(std::string_view locator) -> bool {
+  if (locator == "body") {
+    return true;
+  }
   const auto hash = locator.find('#');
   return hash != std::string_view::npos && hash > 0 && !trim(locator.substr(hash + 1)).empty();
 }
@@ -760,6 +762,9 @@ auto fact_semantic_source(db::connection& conn, std::int64_t task_id, std::strin
     if (!body->has_value()) {
       return none;
     }
+    if (locator == "body") {
+      return body;
+    }
     // Same roadmap-locator rule as the citation path. Fixing only that one
     // left the FACT for the same locator resolving to nothing, so a task's
     // roadmap citation read `current` while its `cited_artifact_section` fact
@@ -840,6 +845,12 @@ join entity_links el on el.from_kind='task' and el.from_id=f.task_id
  and el.to_kind='artifact' and el.to_id=a.id and el.relationship='cites'
 where f.task_id=? and f.fact_kind='cited_artifact_section'
  and f.source_entity_kind='artifact'
+ and (f.source_locator='body' or not exists (
+   select 1 from routing_task_facts reviewed
+   where reviewed.task_id=f.task_id and reviewed.fact_kind='cited_artifact_section'
+     and reviewed.source_entity_kind='artifact' and reviewed.source_entity_id=f.source_entity_id
+     and reviewed.source_locator='body'
+ ))
 order by a.kind,a.id,f.source_locator)");
   if (!stmt) {
     return std::unexpected(packet_error::query_failed);
@@ -864,7 +875,9 @@ order by a.kind,a.id,f.source_locator)");
     // instant ingestion wrote it, and no amount of operator work could make
     // the packet ready.
     std::optional<std::string> section;
-    if (locator.starts_with("roadmap#")) {
+    if (locator == "body") {
+      section = body;
+    } else if (locator.starts_with("roadmap#")) {
       section = mz::roadmap_section(body, locator);
     } else if (const auto found = mz::artifact_section(body, locator); found.has_value()) {
       section = std::string{*found};
@@ -922,6 +935,7 @@ from test_scenarios s
 join entity_links verifies on verifies.from_kind='test_scenario'
  and verifies.from_id=s.id and verifies.to_kind='task'
  and verifies.to_id=? and verifies.relationship='verifies'
+where s.status != 'retired'
 order by s.id)");
   if (!stmt) {
     return std::unexpected(packet_error::query_failed);

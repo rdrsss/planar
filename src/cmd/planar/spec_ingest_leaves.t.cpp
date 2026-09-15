@@ -29,6 +29,7 @@
 
 import std;
 import planar.db;
+import planar.json_dom;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
@@ -200,6 +201,32 @@ auto seed_anchor(const fixture& fx) -> std::string {
               .code == 0);
   auto const pushed = dispatch(fx, {"workbench", "push", "1", "--json"});
   REQUIRE(pushed.code == 0);
+  return "1";
+}
+
+auto seed_reviewed_reconcile_anchor(const fixture& fx) -> std::string {
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Reviewed Reconcile Fixture", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Product", "--kind", "product_spec", "--plan", "1", "--body",
+                        "## Intent\n\nDeliver the reviewed task.\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech", "--kind", "tech_spec", "--plan", "1", "--body",
+                        "## Decisions\n\n### Durable decision\n\nUse the reviewed route.\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- Deliver the reviewed task [slug: reviewed-root] [touches: planar]\n", "--json"})
+              .code == 0);
+  // The first apply deliberately has no authored coverage, so it creates the
+  // normal ingestor placeholder which the replay below must retire.
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tests", "--kind", "test_spec", "--plan", "1", "--body", "## Scenarios\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "update", "1", "--status", "active", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "update", "2", "--status", "active", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "update", "3", "--status", "active", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "update", "4", "--status", "active", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
   return "1";
 }
 
@@ -467,6 +494,113 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
   // on every apply, not appended to; a stable count is the idempotency
   // signature there, same as everywhere else.
   CHECK(count(conn_after_second, "routing_task_facts") == facts_after_first);
+}
+
+TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authored coverage", "[cmd][spec][ingest][reconcile]") {
+  auto const fx     = make_fixture("reviewed_reconcile_full");
+  auto const anchor = seed_reviewed_reconcile_anchor(fx);
+
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+  REQUIRE(dispatch(fx, {"decision", "accept", "1", "--json"}).code == 0);
+  auto before = open_db(fx);
+  CHECK(count(before,
+              "test_scenarios where body like 'Acceptance scenario auto-drafted by the ingestor.%' and status != 'retired'") ==
+        1);
+  REQUIRE(before.execute("update plans set status='draft' where parent_plan_id=1"));
+  REQUIRE(before.execute("update tasks set body='## Acceptance Criteria\n\n- Deliver the reviewed task\n\n## Repository "
+                         "Scope\n\n- touches: planar\n' where id=1"));
+  REQUIRE(dispatch(fx, {"artifact", "update", "4", "--body",
+                        "## Scenarios\n\n### Scenario: reviewed root\n\n**Verifies:** task:reviewed-root\n\n**Acceptance:** The "
+                        "reviewed root is dispatchable.\n",
+                        "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  // Replay restores generated routing state, stages all four reviewed source
+  // documents through the direct task->artifact citation path, and retires
+  // only the ingestor-owned duplicate scenario.
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+  auto after = open_db(fx);
+  CHECK(count(after, "plans where parent_plan_id=1 and status='active'") == 1);
+  CHECK(count(after, "entity_links where from_kind='task' and from_id=1 and to_kind='artifact' and relationship='cites'") == 4);
+  CHECK(count(after, "routing_task_facts where task_id=1 and fact_kind='cited_artifact_section' and "
+                     "source_entity_kind='artifact' and source_locator='body'") == 4);
+  CHECK(count(after,
+              "routing_task_facts where task_id=1 and fact_kind='validation_gate' and source_entity_kind='test_scenario'") == 1);
+  CHECK(count(after,
+              "entity_links where from_kind='task' and from_id=1 and to_kind='decision' and to_id=1 and relationship='cites'") ==
+        1);
+  CHECK(count(after,
+              "test_scenarios where body like 'Acceptance scenario auto-drafted by the ingestor.%' and status='retired'") == 1);
+  CHECK(count(after,
+              "test_scenarios where body like '%**Acceptance:** The reviewed root is dispatchable.%' and status != 'retired'") ==
+        1);
+
+  auto packet = dispatch(fx, {"task", "packet", "1", "--json"});
+  REQUIRE(packet.code == 0);
+  auto packet_json = planar::json_dom::parse_json(packet.out);
+  REQUIRE(packet_json.has_value());
+  REQUIRE(packet_json->find("ready") != nullptr);
+  CHECK(packet_json->find("ready")->boolean);
+  auto const* input = packet_json->find("input");
+  REQUIRE(input != nullptr);
+  auto const* citations = input->find("citations");
+  REQUIRE(citations != nullptr);
+  REQUIRE(citations->kind == planar::json_dom::json_kind::array);
+  CHECK(citations->array.size() == 4);
+  for (auto const& citation : citations->array) {
+    CHECK(citation.find("freshness")->string == "current");
+    CHECK(citation.find("locator")->string == "body");
+  }
+
+  auto next = dispatch(fx, {"plan", "next", "1", "--json"});
+  REQUIRE(next.code == 0);
+  auto next_json = planar::json_dom::parse_json(next.out);
+  REQUIRE(next_json.has_value());
+  REQUIRE(next_json->find("available") != nullptr);
+  CHECK(next_json->find("available")->array.size() == 1);
+  CHECK(next_json->find("blocked")->array.empty());
+
+  auto strategy = dispatch(fx, {"plan", "recommend-strategy", "1", "--json"});
+  REQUIRE(strategy.code == 0);
+  auto strategy_json = planar::json_dom::parse_json(strategy.out);
+  REQUIRE(strategy_json.has_value());
+  auto const* summary = strategy_json->find("summary");
+  REQUIRE(summary != nullptr);
+  CHECK(summary->find("open_tasks")->integer == 1);
+  CHECK(summary->find("eligible")->integer == 1);
+  CHECK(strategy_json->find("parallel_eligible")->array.size() == 1);
+  CHECK(strategy_json->find("serialized")->array.empty());
+
+  // Reconciliation is deliberately not repeated here. Removing one cited
+  // evidence row leaves a materialized but incomplete routing packet; both
+  // dispatch views must now remove the task from availability.
+  REQUIRE(after.execute("delete from routing_task_facts where id = (select id from routing_task_facts where task_id=1 "
+                        "and fact_kind='cited_artifact_section' limit 1)"));
+  auto incomplete_next = dispatch(fx, {"plan", "next", "1", "--json"});
+  REQUIRE(incomplete_next.code == 0);
+  auto incomplete_next_json = planar::json_dom::parse_json(incomplete_next.out);
+  REQUIRE(incomplete_next_json.has_value());
+  CHECK(incomplete_next_json->find("available")->array.empty());
+  CHECK(incomplete_next_json->find("blocked")->array.size() == 1);
+
+  auto incomplete_strategy = dispatch(fx, {"plan", "recommend-strategy", "1", "--json"});
+  REQUIRE(incomplete_strategy.code == 0);
+  auto incomplete_strategy_json = planar::json_dom::parse_json(incomplete_strategy.out);
+  REQUIRE(incomplete_strategy_json.has_value());
+  auto const* incomplete_summary = incomplete_strategy_json->find("summary");
+  REQUIRE(incomplete_summary != nullptr);
+  CHECK(incomplete_summary->find("open_tasks")->integer == 1);
+  CHECK(incomplete_summary->find("eligible")->integer == 0);
+  CHECK(incomplete_strategy_json->find("parallel_eligible")->array.empty());
+  auto const* serialized = incomplete_strategy_json->find("serialized");
+  REQUIRE(serialized != nullptr);
+  REQUIRE(serialized->array.size() == 1);
+  auto const* excluded = serialized->array[0].find("excluded_by");
+  REQUIRE(excluded != nullptr);
+  REQUIRE(excluded->array.size() == 1);
+  CHECK(excluded->array[0].find("rule")->integer == 7);
+  CHECK(excluded->array[0].find("reason")->string == "excluded by rule 7: routing packet is not ready");
 }
 
 TEST_CASE("spec ingest membership-authorized apply preserves the anchor repository scope on every descendant",
