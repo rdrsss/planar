@@ -244,6 +244,31 @@ TEST_CASE("closure compute is wired end-to-end and preserves its Zig JSON contra
   CHECK(refusal.err == "error: closure compute: task 2 declares no path-level touches (task_touch_paths); nothing to compute\n");
 }
 
+TEST_CASE("closure compute admits an association-to-member write", "[cmd][closure][compute][6735]") {
+  // Decision 1121 (task 6735): `closure compute` was one of only two guarded
+  // verbs still comparing scopes by STRICT EQUALITY, so an `assoc:<org>`
+  // operator was refused on an entity stored at `repo:<member>` even though
+  // that repo belongs to that association -- while six sibling verbs
+  // accepted the identical write. `seed_plan` already registers `feat` with
+  // `proj` as a member, which is the relation this exercises.
+  auto const fx = make_fixture("clomembership");
+  seed_plan(fx);
+  REQUIRE(dispatch(fx, {"task", "add", "T1", "--plan", "1", "--scope", "repo:proj", "--editor=false", "--json"}).code == 0);
+  std::ofstream{fx.root / "proj" / "seed.zig"} << "fn run() void {}\n";
+  {
+    auto conn = open_db(fx);
+    exec(conn, "insert into task_touch_paths(task_id,repo_id,path) values(1,1,'seed.zig')");
+  }
+
+  auto const computed = dispatch(fx, {"closure", "compute", "1", "--scope", "feat", "--json"});
+  INFO("stderr: " << computed.err);
+  CHECK(computed.code == 0);
+  {
+    auto conn = open_db(fx);
+    CHECK(query(conn, "select count(*) from closures", 1) == "1");
+  }
+}
+
 TEST_CASE("closure show orders by role, then PATH, then symbol", "[cmd][closure][show]") {
   auto const fx = make_fixture("closorder");
   seed_plan(fx);

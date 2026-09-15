@@ -195,7 +195,14 @@ auto check_task_scope(context& ctx, db::connection& conn, std::int64_t id, std::
 
   auto const entity_view = entity_scope->has_value() ? std::optional<std::string_view>{**entity_scope} : std::nullopt;
   auto const write_view  = resolved->scope.has_value() ? std::optional<std::string_view>{*resolved->scope} : std::nullopt;
-  if (engine::identity::check_scope_guard(entity_view, write_view)) {
+  // Membership-aware, not strict equality (decision 1121, task 6735): an
+  // `assoc:<org>` write scope legitimately reaches an entity stored at
+  // `repo:<member>` when that repo belongs to that association. Strict
+  // equality could not tell "my own member" from "an unrelated repo" --
+  // it refused both identically -- which is not a stricter reading of the
+  // guard's purpose but a blind one. The other six guarded verbs already
+  // used this comparison; these two called the raw primitive directly.
+  if (guard_with_membership(conn, entity_view, write_view)) {
     return {};
   }
   // The message names the entity's scope THREE times — twice as the scope
