@@ -571,6 +571,36 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
   CHECK(summary->find("eligible")->integer == 1);
   CHECK(strategy_json->find("parallel_eligible")->array.size() == 1);
   CHECK(strategy_json->find("serialized")->array.empty());
+
+  // Reconciliation is deliberately not repeated here. Removing one cited
+  // evidence row leaves a materialized but incomplete routing packet; both
+  // dispatch views must now remove the task from availability.
+  REQUIRE(after.execute("delete from routing_task_facts where id = (select id from routing_task_facts where task_id=1 "
+                        "and fact_kind='cited_artifact_section' limit 1)"));
+  auto incomplete_next = dispatch(fx, {"plan", "next", "1", "--json"});
+  REQUIRE(incomplete_next.code == 0);
+  auto incomplete_next_json = planar::json_dom::parse_json(incomplete_next.out);
+  REQUIRE(incomplete_next_json.has_value());
+  CHECK(incomplete_next_json->find("available")->array.empty());
+  CHECK(incomplete_next_json->find("blocked")->array.size() == 1);
+
+  auto incomplete_strategy = dispatch(fx, {"plan", "recommend-strategy", "1", "--json"});
+  REQUIRE(incomplete_strategy.code == 0);
+  auto incomplete_strategy_json = planar::json_dom::parse_json(incomplete_strategy.out);
+  REQUIRE(incomplete_strategy_json.has_value());
+  auto const* incomplete_summary = incomplete_strategy_json->find("summary");
+  REQUIRE(incomplete_summary != nullptr);
+  CHECK(incomplete_summary->find("open_tasks")->integer == 1);
+  CHECK(incomplete_summary->find("eligible")->integer == 0);
+  CHECK(incomplete_strategy_json->find("parallel_eligible")->array.empty());
+  auto const* serialized = incomplete_strategy_json->find("serialized");
+  REQUIRE(serialized != nullptr);
+  REQUIRE(serialized->array.size() == 1);
+  auto const* excluded = serialized->array[0].find("excluded_by");
+  REQUIRE(excluded != nullptr);
+  REQUIRE(excluded->array.size() == 1);
+  CHECK(excluded->array[0].find("rule")->integer == 7);
+  CHECK(excluded->array[0].find("reason")->string == "excluded by rule 7: routing packet is not ready");
 }
 
 TEST_CASE("spec ingest membership-authorized apply preserves the anchor repository scope on every descendant",
