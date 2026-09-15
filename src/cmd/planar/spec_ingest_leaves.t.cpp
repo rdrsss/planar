@@ -469,6 +469,28 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
   CHECK(count(conn_after_second, "routing_task_facts") == facts_after_first);
 }
 
+TEST_CASE("spec ingest re-apply repairs reviewed descendant lifecycle and generated validation",
+          "[cmd][spec][ingest][reconcile]") {
+  auto const fx     = make_fixture("reviewed_reconcile");
+  auto const anchor = seed_anchor(fx);
+
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+  auto before = open_db(fx);
+  REQUIRE(before.execute("update plans set status='draft' where parent_plan_id=1"));
+  REQUIRE(before.execute("update tasks set body='## Acceptance Criteria\n\n- Implement the thing\n' where id=1"));
+
+  // The replay is the supported reconciliation path for an already-ingested
+  // anchor. It restores only generated material, activates its milestone,
+  // and leaves the derived graph idempotent.
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+  auto after = open_db(fx);
+  CHECK(count(after, "plans where parent_plan_id=1 and status='active'") == 1);
+  auto body = after.prepare("select body from tasks where id=1");
+  REQUIRE(body.has_value());
+  REQUIRE(body->step().has_value());
+  CHECK(body->column_text(0).contains("## Required validation"));
+}
+
 TEST_CASE("spec ingest membership-authorized apply preserves the anchor repository scope on every descendant",
           "[cmd][spec][ingest][apply][scope][membership]") {
   auto const fx = make_fixture("membership_provenance");

@@ -439,7 +439,14 @@ auto build_task_next_action(const parse::work_item& item, std::size_t milestone_
 }
 
 auto is_generated_task_body(std::string_view stored, const parse::work_item& item) -> bool {
-  return stored == build_task_body(item) || stored == build_legacy_task_body(item);
+  if (stored == build_task_body(item) || stored == build_legacy_task_body(item))
+    return true;
+  auto                       prior = build_task_body(item);
+  constexpr std::string_view validation =
+      "\n## Required validation\n\n- Run the authored test-spec scenarios covering this task.\n";
+  if (prior.ends_with(validation))
+    prior.resize(prior.size() - validation.size());
+  return stored == prior;
 }
 
 auto build_scenario_body(const parse::scenario& s) -> std::string {

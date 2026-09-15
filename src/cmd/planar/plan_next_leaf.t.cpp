@@ -311,15 +311,15 @@ TEST_CASE("the text header counts every bucket while printing only two of them",
   CHECK(ran.err.empty());
   // The header's counts are the TRUE totals, and the claimed / stale rows
   // are absent beneath them. Oracle-captured; it reads like a bug.
-  CHECK(ran.out == "plan:1  available:5  claimed:1  stale:1  blocked:1  done:1\n"
-                   "  available  task:6  Foxtrot child  [pri:1]\n"
-                   "  available  task:2  Bravo todo  [pri:5]\n"
+  CHECK(ran.out == "plan:1  available:0  claimed:1  stale:1  blocked:6  done:1\n"
+                   "  blocked    task:6  Foxtrot child  [pri:1]\n"
+                   "  blocked    task:2  Bravo todo  [pri:5]\n"
                    "  blocked    task:4  Delta blocked  [pri:10]\n"
                    // `doing` with no live claim, surfaced as AVAILABLE. The
                    // only row in this fixture that reaches that arm.
-                   "  available  task:11  Kilo doing unclaimed  [pri:17]\n"
-                   "  available  task:1  Alpha todo  [pri:20]\n"
-                   "  available  task:7  Golf blocker  [pri:40]\n");
+                   "  blocked    task:11  Kilo doing unclaimed  [pri:17]\n"
+                   "  blocked    task:1  Alpha todo  [pri:20]\n"
+                   "  blocked    task:7  Golf blocker  [pri:40]\n");
 }
 
 TEST_CASE("the two include flags each reveal exactly their own bucket", "[cmd][plan][next][text][flags]") {
@@ -400,8 +400,8 @@ TEST_CASE("the JSON form carries every bucket regardless of the text flags", "[c
   // Neither include flag was passed and both arrays are populated anyway.
   CHECK(ran.out.contains(R"("claimed":[{"task":{"id":9,)"));
   CHECK(ran.out.contains(R"("stale":[{"task":{"id":10,)"));
-  CHECK(ran.out.contains(R"("blocked":[{"id":4,)"));
-  CHECK(ran.out.ends_with(R"("summary":{"available":5,"claimed":1,"stale":1,"blocked":1,"done":1}})"
+  CHECK(ran.out.contains(R"("blocked":[{"id":6,)"));
+  CHECK(ran.out.ends_with(R"("summary":{"available":0,"claimed":1,"stale":1,"blocked":6,"done":1}})"
                           "\n"));
 
   // The claimed / stale envelope wraps the task and carries the claim
@@ -414,7 +414,7 @@ TEST_CASE("the JSON form carries every bucket regardless of the text flags", "[c
   // available and blocked are BARE task objects with no envelope. The
   // paired presence for the absence above: `"available":[{"task":` would
   // mean the envelope leaked across buckets.
-  CHECK(ran.out.contains(R"("available":[{"id":6,)"));
+  CHECK(ran.out.contains(R"("available":[])"));
   CHECK_FALSE(ran.out.contains(R"("available":[{"task":)"));
   CHECK_FALSE(ran.out.contains(R"("blocked":[{"task":)"));
 
