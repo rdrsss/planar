@@ -870,6 +870,28 @@ join decisions d on d.id=el.from_id and d.status='accepted' order by t.id,d.id)"
   return {};
 }
 
+auto reconcile_reviewed_artifact_links(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<void, std::string> {
+  auto stmt = conn.prepare(R"(with recursive plan_tree(id) as (
+  select id from plans where id=? union all select child.id from plans child join plan_tree parent on child.parent_plan_id=parent.id
+) select t.id,a.id from tasks t join plan_tree pt on pt.id=t.plan_id
+join entity_links el on el.from_kind='artifact' and el.to_kind='plan' and el.to_id=? and el.relationship='derives-from'
+join artifacts a on a.id=el.from_id where a.kind in ('product_spec','tech_spec','roadmap','test_spec') order by t.id,a.id)");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, anchor_plan_id))
+    return std::unexpected(std::string{"QueryFailed"});
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped)
+      return std::unexpected(std::string{"QueryFailed"});
+    if (*stepped == db::step_result::done)
+      break;
+    auto linked = ensure_link(conn, el::entity_kind::task, stmt->column_int64(0), el::entity_kind::artifact,
+                              stmt->column_int64(1), el::relationship::cites);
+    if (!linked)
+      return linked;
+  }
+  return {};
+}
+
 /// @brief Records the best-effort ingestor read-session entry for preview.
 /// @param conn Database connection.
 /// @param anchor_plan_id Previewed anchor plan id.
@@ -1235,6 +1257,9 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     res.questions_answered += 1;
   }
 
+  if (auto linked = reconcile_reviewed_artifact_links(conn, diff.anchor_plan_id_); !linked) {
+    return std::unexpected(apply_error{.message = linked.error()});
+  }
   if (auto linked = reconcile_accepted_decision_links(conn, diff.anchor_plan_id_); !linked) {
     return std::unexpected(apply_error{.message = linked.error()});
   }

@@ -580,6 +580,11 @@ order by t.id, a.id)");
 
     const auto locator = explicit_artifact_locator(task_body, artifact_id);
     if (!locator.has_value()) {
+      // Reviewed whole-body evidence is staged separately for the four
+      // canonical spec artifacts. A direct link created by reconciliation is
+      // therefore not an invalid operator citation.
+      if (kind == "product_spec" || kind == "tech_spec" || kind == "roadmap" || kind == "test_spec")
+        continue;
       // No usable locator at all. The original returns a bare error here; name
       // it the same way every other citation failure is named.
       failures.push_back(build_citation_diagnostic(task_id, artifact_id, std::format("artifact:{}#", artifact_id), body));
@@ -617,7 +622,7 @@ order by t.id, a.id)");
   select id from plans where id = ?
   union all select child.id from plans child join plan_tree parent on child.parent_plan_id = parent.id
 )
-select t.id, a.id, a.kind, coalesce(a.body,'')
+select t.id, a.id, coalesce(a.body,'')
 from tasks t join plan_tree pt on pt.id = t.plan_id
 join entity_links el on el.from_kind='artifact' and el.to_kind='plan' and el.to_id=? and el.relationship='derives-from'
 join artifacts a on a.id=el.from_id
@@ -633,10 +638,9 @@ order by t.id,a.id)");
       break;
     const auto task_id     = stmt->column_int64(0);
     const auto artifact_id = stmt->column_int64(1);
-    const auto kind        = stmt->column_text(2);
-    const auto body        = stmt->column_text(3);
-    if (auto r =
-            stage(conn, task_id, "reviewed_" + kind, fact_value{std::string_view{body}}, "artifact", artifact_id, "body", body);
+    const auto body        = stmt->column_text(2);
+    if (auto r = stage(conn, task_id, "cited_artifact_section", fact_value{std::string_view{body}}, "artifact", artifact_id,
+                       "body", body);
         !r)
       return r;
   }
