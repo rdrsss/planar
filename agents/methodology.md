@@ -722,6 +722,66 @@ which enforces all five checks around one probe and reports
 `killed` (exit 0) / `SURVIVOR` (exit 1) / `INERT` (exit 3), with exit 2
 reserved for a broken probe. Prefer it over a hand-run sequence.
 
+### Prefer permissive mutations, and probe each clause separately
+
+An inversion-style mutation (`!=` to `==`, `<` to `>=`, `return true` to
+`return false`) always kills when a fixture already asserts the positive
+case — because it breaks that case, not because the negative case is
+covered. It proves nothing about the direction most defects actually live
+in: a validation check that has quietly become a no-op.
+
+A **permissive** mutation — always-pass, always-true, always-fresh,
+`return true` unconditionally — survives exactly when the discriminating
+negative fixture is missing. That is the gap worth finding, and it is a
+different mutation from inversion, not a rephrasing of it.
+
+Measured on one module (task 6357/6361): a probe set of ten inversion-style
+mutations reported ten kills, twice re-audited by reading rather than
+running. Switching to permissive mutations and probing every module ported
+in that milestone found **21 survivors out of 27 checks probed** — a
+`copy` row forced to classify `fresh` regardless of its bytes, an
+unknown-field rejection forced to accept, `planar health`'s own
+`stale > 0 || missing > 0` term forced to `false` and surviving at
+full-suite level. Each round's "the others are symmetric" claim, established
+by re-reading code rather than running the mutation, missed a check the
+next round's actual run found. Read-based audits do not substitute for
+running the mutation.
+
+**Granularity matters as much as direction.** A function-level permissive
+mutation (replacing a whole multi-clause `if` with `return true`) kills if
+ANY ONE clause of the conjunction or OR-chain is covered — masking gaps in
+every other clause it also disabled. On the same sweep, `is_digest`'s
+whole-function mutation killed and read as "covered"; mutating only its
+`size() != 64` clause survived, because the fixture (`"not-a-digest"`,
+12 characters and non-hex) never discriminated the length guard at all —
+an 8-character valid-hex string would have validated post-mutation with
+every other test green. Probe **each clause of a composite predicate
+separately**, never the whole predicate at once.
+
+Two more traps found on the same sweep, worth carrying forward:
+
+- **A "kill" can be an artifact of undefined behaviour, not of the test.**
+  A permissive mutation that disables a null/bounds guard ahead of an
+  unconditional dereference can "kill" by crashing on garbage rather than
+  by the test asserting real behaviour — indistinguishable from a genuine
+  kill in the pass/fail signal alone. Where the guarded dereference has no
+  safe fallback, do not probe it; record why instead (see task 6363's
+  installed-surface OR-chains for the standing precedent) — a verdict
+  manufactured this way is the same false-confidence trap one level down.
+- **An equivalent mutant is a real outcome, and must be traced, not
+  assumed.** Two survivors on that sweep stayed survivors after a
+  discriminating fixture was added, because the guarded code path was
+  provably unreachable for every input (confirmed by reading the callee's
+  implementation, not by argument). Distinguish "no fixture reaches this"
+  from "no fixture CAN discriminate this" before closing a survivor as
+  fixed.
+
+Always **re-probe after adding a fixture** — a new test going green is not
+evidence it closed the gap it was written for; two fixtures on that same
+sweep initially passed for an unrelated reason (dereferencing a disengaged
+`std::optional` tripped a different, already-tested check) and only a
+re-run of the identical mutation caught it.
+
 ### Probes come before gates, and never beside them
 
 Break-probes are the one piece of evidence only the coder can produce; the
