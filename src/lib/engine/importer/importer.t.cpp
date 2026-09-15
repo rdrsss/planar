@@ -96,6 +96,18 @@ TEST_CASE("import rejects a malformed or mismatched interpretation cache before 
 
 namespace {
 
+/// @brief A cache envelope with a caller-supplied `phases` / `decisions` /
+/// `deferred_items` body, for the task-6405 validation classes.
+///
+/// The three forward specs and the non-empty title/provenance are fixed at
+/// values the envelope accepts, so any rejection below is attributable to the
+/// member under test rather than to the frame around it.
+auto envelope_with(std::string_view fingerprint, std::string_view phases, std::string_view extra) -> std::string {
+  return std::format(R"({{"schema_version":1,"fingerprint":"{}","anchor_title":"t","provenance":"p",)"
+                     R"("phases":[{}]{},"forward_specs":[{{"slug":"a"}},{{"slug":"b"}},{{"slug":"c"}}]}})",
+                     fingerprint, phases, extra);
+}
+
 /// @brief A cache envelope carrying the real fingerprint, parameterised on
 /// exactly the three fields task 6406 leaves uncovered.
 auto envelope(std::string_view fingerprint, std::size_t spec_count, std::string_view title, std::string_view provenance)
@@ -177,6 +189,136 @@ TEST_CASE("the untrusted cache envelope is rejected outside its documented bound
     auto const empty = stage_and_run(repo, home, cache, envelope(fingerprint, 3, "x", ""));
     REQUIRE_FALSE(empty.has_value());
     CHECK(empty.error() == im::error::invalid_input);
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+// --- task 6405: the validation classes the port silently accepted ----------
+//
+// `cache_anchor` validated the envelope's shape but not its CONTENT, so the
+// C++ `import` accepted a broader class of malformed cache JSON than the
+// contract allows -- at both preview (cache-hit) and apply time, on a verb
+// that writes planning entities.
+//
+// The contract is `skills/src/pl-import.md` § "Hard contract rules", NOT the
+// sibling `synthesize` validator. Transcribing synthesize verbatim demanded a
+// `source` and `citation` on EVERY decision and rejected the vendor skill's
+// own documented output; the fixtures below pin the documented rule instead.
+//
+// Each case pairs the rejection with the positive control that differs only
+// in the member under test.
+
+TEST_CASE("the import cache is rejected on content the contract forbids", "[engine][importer][6405]") {
+  auto const root = std::filesystem::temp_directory_path() /
+                    std::format("planar-importer-content-{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  auto const home = root / "home";
+  std::filesystem::create_directories(root / "repo" / "docs");
+  {
+    std::ofstream out(root / "repo" / "README.md");
+    out << "# Imported title\n";
+  }
+  {
+    std::ofstream out(root / "repo" / "docs" / "tech-spec.md");
+    out << "# Tech spec\n";
+  }
+
+  auto staged = im::run(root / "repo", home, true);
+  REQUIRE(staged.has_value());
+  auto const repo  = root / "repo";
+  auto const cache = staged->cache_path;
+  auto const fp    = staged->request_.fingerprint;
+  std::filesystem::create_directories(cache.parent_path());
+
+  auto run_with = [&](std::string_view phases, std::string_view extra) {
+    return stage_and_run(repo, home, cache, envelope_with(fp, phases, extra));
+  };
+  constexpr std::string_view one_todo = R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"todo"}]})";
+
+  SECTION("task status must be one Planar recognises") {
+    REQUIRE(run_with(one_todo, "").has_value());
+    auto const bad = run_with(R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"not-a-status"}]})", "");
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(bad.error() == im::error::invalid_input);
+  }
+
+  SECTION("phase status must be one Planar recognises") {
+    REQUIRE(run_with(R"({"slug":"p1","status":"paused","tasks":[]})", "").has_value());
+    auto const bad = run_with(R"({"slug":"p1","status":"in-progress","tasks":[]})", "");
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(bad.error() == im::error::invalid_input);
+  }
+
+  SECTION("at most one task per phase may be doing") {
+    // One `doing` is legal, and a SECOND `doing` in a DIFFERENT phase is too:
+    // the rule is per-phase, and a fixture that only ever tried two in one
+    // phase could not tell the two readings apart.
+    REQUIRE(run_with(R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"doing"}]})", "").has_value());
+    REQUIRE(run_with(R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"doing"}]},)"
+                     R"({"slug":"p2","status":"active","tasks":[{"slug":"t2","status":"doing"}]})",
+                     "")
+                .has_value());
+    auto const bad = run_with(R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"doing"},)"
+                              R"({"slug":"t2","status":"doing"}]})",
+                              "");
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(bad.error() == im::error::invalid_input);
+  }
+
+  SECTION("task priority is optional but bounded at BOTH ends when present") {
+    REQUIRE(run_with(R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"todo","priority":0}]})", "").has_value());
+    REQUIRE(
+        run_with(R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"todo","priority":1000}]})", "").has_value());
+    // Absent entirely is still fine -- the bound must not become a
+    // requirement.
+    REQUIRE(run_with(one_todo, "").has_value());
+
+    auto const low = run_with(R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"todo","priority":-1}]})", "");
+    REQUIRE_FALSE(low.has_value());
+    CHECK(low.error() == im::error::invalid_input);
+    auto const high = run_with(R"({"slug":"p1","status":"active","tasks":[{"slug":"t1","status":"todo","priority":1001}]})", "");
+    REQUIRE_FALSE(high.has_value());
+    CHECK(high.error() == im::error::invalid_input);
+  }
+
+  SECTION("a decision names a source Planar understands, or none at all") {
+    // No `source` is the deterministic-import case and stays legal: the
+    // contract requires a citation only OF an `llm-inferred` decision.
+    REQUIRE(run_with(one_todo, R"(,"decisions":[{"title":"d","body":"b"}])").has_value());
+    REQUIRE(run_with(one_todo, R"(,"decisions":[{"title":"d","source":"tech-spec"}])").has_value());
+
+    auto const bad = run_with(one_todo, R"(,"decisions":[{"title":"d","source":"vibes"}])");
+    REQUIRE_FALSE(bad.has_value());
+    CHECK(bad.error() == im::error::invalid_input);
+  }
+
+  SECTION("an llm-inferred decision must cite a path, and the path must exist") {
+    REQUIRE(
+        run_with(one_todo, R"(,"decisions":[{"source":"llm-inferred","citation":{"path":"docs/tech-spec.md"}}])").has_value());
+
+    auto const no_citation = run_with(one_todo, R"(,"decisions":[{"source":"llm-inferred"}])");
+    REQUIRE_FALSE(no_citation.has_value());
+    auto const empty_path = run_with(one_todo, R"(,"decisions":[{"source":"llm-inferred","citation":{"path":""}}])");
+    REQUIRE_FALSE(empty_path.has_value());
+    // A named path is a provenance claim the apply pass records as fact, so a
+    // path that is not there is a claim the cache cannot support.
+    auto const missing = run_with(one_todo, R"(,"decisions":[{"source":"llm-inferred","citation":{"path":"docs/nope.md"}}])");
+    REQUIRE_FALSE(missing.has_value());
+    CHECK(missing.error() == im::error::invalid_input);
+  }
+
+  SECTION("deferred items are validate-only, and still validated") {
+    REQUIRE(run_with(one_todo, R"(,"deferred_items":[{"priority":150,"phase_slug":"p1"}])").has_value());
+
+    auto const low = run_with(one_todo, R"(,"deferred_items":[{"priority":149,"phase_slug":"p1"}])");
+    REQUIRE_FALSE(low.has_value());
+    // A deferral must point at a phase THIS cache proposes; anywhere else
+    // means the two halves disagree about the plan shape.
+    auto const dangling = run_with(one_todo, R"(,"deferred_items":[{"priority":150,"phase_slug":"nonexistent"}])");
+    REQUIRE_FALSE(dangling.has_value());
+    CHECK(dangling.error() == im::error::invalid_input);
+    auto const not_array = run_with(one_todo, R"(,"deferred_items":{"priority":150})");
+    REQUIRE_FALSE(not_array.has_value());
   }
 
   std::filesystem::remove_all(root);

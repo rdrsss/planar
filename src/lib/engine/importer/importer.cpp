@@ -61,6 +61,49 @@ auto write_atomic(const std::filesystem::path& path, std::string_view body) -> b
   return !ec;
 }
 
+/// @brief A string member, or null when absent or not a string.
+/// @param value The object to read.
+/// @param key The member name.
+/// @return Pointer to the stored string, or `nullptr`.
+auto string_member(const json_dom::json_value& value, std::string_view key) -> const std::string* {
+  auto const* member = value.find(key);
+  return member != nullptr && member->kind == json_dom::json_kind::string ? &member->string : nullptr;
+}
+
+/// @brief An integer member, or null when absent or not an integer.
+/// @param value The object to read.
+/// @param key The member name.
+/// @return Pointer to the stored integer, or `nullptr`.
+auto integer_member(const json_dom::json_value& value, std::string_view key) -> const std::int64_t* {
+  auto const* member = value.find(key);
+  return member != nullptr && member->kind == json_dom::json_kind::integer ? &member->integer : nullptr;
+}
+
+/// @brief The five statuses a cached PHASE proposal may carry.
+/// @param value The candidate status.
+/// @return True when it is one Planar recognises.
+auto valid_plan_status(std::string_view value) -> bool {
+  return value == "draft" || value == "active" || value == "paused" || value == "done" || value == "abandoned";
+}
+
+/// @brief The five statuses a cached task proposal may carry.
+/// @param value The candidate status.
+/// @return True when it is one Planar recognises.
+auto valid_task_status(std::string_view value) -> bool {
+  return value == "todo" || value == "doing" || value == "blocked" || value == "done" || value == "cancelled";
+}
+
+/// @brief Whether a cited documentation path exists under the repo root.
+///
+/// An empty path is vacuously fine; a NAMED one must be there, because the
+/// cache is asserting provenance the apply pass will record.
+/// @param req The staged request, carrying the repo root.
+/// @param rel A repo-relative path.
+/// @return True when the path is empty or exists.
+auto valid_doc_path(const request& req, std::string_view rel) -> bool {
+  return rel.empty() || std::filesystem::exists(std::filesystem::path(req.repo_root) / rel);
+}
+
 // The interpretation cache is an untrusted hand-off boundary: it is written
 // by a vendor skill, not by this process.  Do the envelope validation here,
 // before a layer-3 caller is allowed to turn its contents into rows.  In
@@ -93,16 +136,32 @@ auto cache_anchor(std::string_view body, const request& req) -> std::optional<st
     auto const* status = phase.find("status");
     auto const* tasks  = phase.find("tasks");
     if (phase.kind != json_dom::json_kind::object || slug == nullptr || slug->kind != json_dom::json_kind::string ||
-        slug->string.empty() || status == nullptr || status->kind != json_dom::json_kind::string || tasks == nullptr ||
-        tasks->kind != json_dom::json_kind::array || !phase_slugs.insert(slug->string).second)
+        slug->string.empty() || status == nullptr || status->kind != json_dom::json_kind::string ||
+        // Any non-empty string used to pass. The contract names exactly five.
+        !valid_plan_status(status->string) || tasks == nullptr || tasks->kind != json_dom::json_kind::array ||
+        !phase_slugs.insert(slug->string).second)
       return std::nullopt;
     std::set<std::string> task_slugs;
+    // `doing` is a per-phase exclusivity rule, not a per-cache one: a phase
+    // proposing two in-flight tasks is describing a state the planning model
+    // does not allow, so reject it here rather than materializing it.
+    std::size_t doing = 0;
     for (auto const& task : tasks->array) {
-      auto const* task_slug = task.find("slug");
+      auto const* task_slug   = task.find("slug");
+      auto const* task_status = string_member(task, "status");
+      auto const* priority    = integer_member(task, "priority");
       if (task.kind != json_dom::json_kind::object || task_slug == nullptr || task_slug->kind != json_dom::json_kind::string ||
-          task_slug->string.empty() || !task_slugs.insert(task_slug->string).second)
+          task_slug->string.empty() || !task_slugs.insert(task_slug->string).second || task_status == nullptr ||
+          !valid_task_status(*task_status) ||
+          // Priority is OPTIONAL, but a present one must be in range. The
+          // port did not parse it at all, so an out-of-range value was
+          // accepted and then written.
+          (priority != nullptr && (*priority < 0 || *priority > 1000)))
         return std::nullopt;
+      doing += static_cast<std::size_t>(*task_status == "doing");
     }
+    if (doing > 1)
+      return std::nullopt;
   }
   for (auto const& spec : forward_specs->array) {
     auto const* slug = spec.find("slug");
@@ -110,6 +169,54 @@ auto cache_anchor(std::string_view body, const request& req) -> std::optional<st
         slug->string.empty() || !spec_slugs.insert(slug->string).second)
       return std::nullopt;
   }
+
+  // Decisions carry PROVENANCE the apply pass records as fact. The contract
+  // is `skills/src/pl-import.md` § "Hard contract rules", which requires a
+  // citation only of an `llm-inferred` decision -- `source` itself is
+  // OPTIONAL. The sibling `synthesize` validator demands both unconditionally
+  // and is NOT the contract here: transcribing it verbatim rejected the
+  // vendor skill's own documented output, which is how this was caught.
+  if (auto const* decisions = parsed->find("decisions"); decisions != nullptr) {
+    if (decisions->kind != json_dom::json_kind::array)
+      return std::nullopt;
+    for (auto const& decision : decisions->array) {
+      if (decision.kind != json_dom::json_kind::object)
+        return std::nullopt;
+      auto const* source = string_member(decision, "source");
+      // A source the cache DOES name must be one Planar understands; an
+      // unnamed one is the deterministic-import case and carries no claim.
+      if (source != nullptr && *source != "tech-spec" && *source != "llm-inferred")
+        return std::nullopt;
+      auto const* citation = decision.find("citation");
+      if (citation != nullptr && citation->kind != json_dom::json_kind::object)
+        return std::nullopt;
+      auto const* path = citation != nullptr ? string_member(*citation, "path") : nullptr;
+      // "Each decision with source: llm-inferred carries a non-empty
+      // citation.path" -- the one unconditional requirement in the contract.
+      if (source != nullptr && *source == "llm-inferred" && (path == nullptr || path->empty()))
+        return std::nullopt;
+      if (path != nullptr && !path->empty() && !valid_doc_path(req, *path))
+        return std::nullopt;
+    }
+  }
+
+  // `deferred_items` is VALIDATE-ONLY: nothing materializes it. It is checked
+  // anyway because the port previously did not parse it at all, so a cache
+  // carrying a malformed deferral was silently ACCEPTED -- a divergence on a
+  // verb that writes planning entities.
+  if (auto const* deferred = parsed->find("deferred_items"); deferred != nullptr) {
+    if (deferred->kind != json_dom::json_kind::array)
+      return std::nullopt;
+    for (auto const& item : deferred->array) {
+      auto const* priority = integer_member(item, "priority");
+      auto const* phase    = string_member(item, "phase_slug");
+      // A deferral must point at a phase this same cache proposes; pointing
+      // anywhere else means the two halves disagree about the plan shape.
+      if (priority == nullptr || *priority < 150 || phase == nullptr || !phase_slugs.contains(*phase))
+        return std::nullopt;
+    }
+  }
+
   return title->string;
 }
 } // namespace

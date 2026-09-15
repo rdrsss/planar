@@ -97,13 +97,26 @@ auto inventory(const fixture& fx) -> std::string {
                      query_count(*conn, "select count(*) from decisions"),
                      query_count(*conn, "select count(*) from entity_links"));
 }
-auto cache_body(std::string_view fingerprint, bool bad_task = false) -> std::string {
+/// @brief The fixture cache.
+///
+/// `bad_decision` drops the decision's `body`, which is what makes
+/// reconciliation fail PART WAY THROUGH — the property the rollback case
+/// exists to prove.
+///
+/// It used to be an invalid task STATUS instead. That stopped working at task
+/// 6405: envelope validation now rejects an unknown task status, so the cache
+/// never reached reconciliation and the rollback path went uncovered while the
+/// case still passed for the wrong reason. A missing decision body is checked
+/// by `reconcile_cache` and deliberately NOT by the envelope (the contract in
+/// `skills/src/pl-import.md` says nothing about it), and decisions reconcile
+/// AFTER plans and tasks — so there are real prior writes to roll back.
+auto cache_body(std::string_view fingerprint, bool bad_decision = false) -> std::string {
   return std::format(
-      R"({{"schema_version":1,"fingerprint":"{}","anchor_title":"Imported Anchor","provenance":"fixture","phases":[{{"slug":"phase-one","title":"Phase One","status":"active","tasks":[{{"slug":"task-one","title":"Task One","status":"todo"}}]}},{{"slug":"phase-two","title":"Phase Two","status":"draft","tasks":[{{"slug":"task-two","title":"Task Two","status":"{}"}}]}}],"decisions":[{{"title":"Keep transaction","body":"Every reconciliation write is atomic."}}],"forward_specs":[{{"slug":"forward-a","title":"Forward A"}},{{"slug":"forward-b","title":"Forward B"}},{{"slug":"forward-c","title":"Forward C"}}]}})",
-      fingerprint, bad_task ? "not-a-task-status" : "doing");
+      R"({{"schema_version":1,"fingerprint":"{}","anchor_title":"Imported Anchor","provenance":"fixture","phases":[{{"slug":"phase-one","title":"Phase One","status":"active","tasks":[{{"slug":"task-one","title":"Task One","status":"todo"}}]}},{{"slug":"phase-two","title":"Phase Two","status":"draft","tasks":[{{"slug":"task-two","title":"Task Two","status":"doing"}}]}}],"decisions":[{{"title":"Keep transaction"{}}}],"forward_specs":[{{"slug":"forward-a","title":"Forward A"}},{{"slug":"forward-b","title":"Forward B"}},{{"slug":"forward-c","title":"Forward C"}}]}})",
+      fingerprint, bad_decision ? "" : R"(,"body":"Every reconciliation write is atomic.")");
 }
 
-auto stage_cache(const fixture& fx, bool bad_task = false) -> std::filesystem::path {
+auto stage_cache(const fixture& fx, bool bad_decision = false) -> std::filesystem::path {
   write(fx.root / "repo" / "README.md", "# Imported fixture\n");
   write(fx.root / "repo" / "docs" / "tech-spec.md", "# Imported tech spec\n");
   auto preview = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--json"});
@@ -125,7 +138,7 @@ auto stage_cache(const fixture& fx, bool bad_task = false) -> std::filesystem::p
   // the handler actually looks, not a copy of that logic that can drift
   // from it silently.
   auto const cache = std::filesystem::path{field(preview.out, "cache_path")};
-  write(cache, cache_body(fingerprint, bad_task));
+  write(cache, cache_body(fingerprint, bad_decision));
   // This second preview contains a non-empty proposal cache but must still
   // perform no database write. It falsifies a handler that treats cache-hit
   // as implicit apply.
