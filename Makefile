@@ -261,6 +261,19 @@ cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C+
 test-cpp-report: ## Run the C++ ctest suite and REPORT its skip tally (a skipped case asserted nothing)
 	scripts/ctest-report.sh --build-dir build/debug $(ARGS)
 
+.PHONY: ctest-registry-check
+ctest-registry-check: ## Prove ctest runs every case the test binaries contain (task 6790; needs build/debug built)
+	scripts/ctest-registry-check.sh --build-dir $(CPP_BUILD_DIR)
+
+# The registry can drift in BOTH directions while ctest reports a clean pass:
+# a truncated discovery file silently DROPS cases, and a file that is appended
+# rather than truncated for an unrebuilt target registers every name TWICE.
+# Measured 2026-09-16: fifteen targets at exactly 2x, inflating the reported
+# total from its true 3,553 to 4,871. Neither shows up as a failure, because
+# every test that DID run passed. This compares each binary's own
+# --list-tests count against the add_test lines registered for it, so it
+# needs no baseline to drift and catches both directions.
+
 .PHONY: test-cpp-solver
 test-cpp-solver: ## Run the ctest suite against a solver-ON build (decision 1032)
 	cmake --preset debug -DPLANAR_WITH_MTKAHYPAR=ON
@@ -353,7 +366,7 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 # discipline. Tidy drift still does, as does everything else, because this
 # repo has no .github/workflows at all today.
 .PHONY: test-all
-test-all: test coverage cli-usage-check surface-check cpp-lint-gate ## Run the unit suite, coverage, the authored-surface gates, and the gating half of cpp-lint
+test-all: test ctest-registry-check coverage cli-usage-check surface-check cpp-lint-gate ## Run the unit suite, coverage, the authored-surface gates, and the gating half of cpp-lint
 
 # RE-POINTED AT clang-format (plan 996, task 6045). These ran `zig fmt` over
 # `zig/`. With that tree deleted the formatter of record is the PINNED LLVM's

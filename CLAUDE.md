@@ -132,6 +132,8 @@ make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
                         # cmake --install into PREFIX (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build; ctest
 make test-cpp-report    # same ctest suite, plus its SKIP TALLY (expected: 0)
+make ctest-registry-check # prove ctest RUNS every case the binaries contain (task 6790)
+make ctest-registry-check # prove ctest RUNS every case the binaries contain (task 6790)
 make test-cpp-solver    # ctest against a -DPLANAR_WITH_MTKAHYPAR=ON build
 make test-all           # unit (ctest) + coverage + cli-usage-check
 
@@ -165,6 +167,36 @@ distinction is load-bearing — never collapse them.
   module directly (plus the `db` module when they need one) and run under
   `ctest` (`make test`). These catch logic and SQL regressions. `make
   test-cpp-report` runs the same ctest suite and reports its skip tally.
+  **A GREEN ctest RUN IS NOT PROOF THE SUITE RAN.** `catch_discover_tests`
+  writes one `<target>-<hash>_tests.cmake` per target and ctest runs exactly
+  what those files say, with nothing checking that the registry still matches
+  the binaries. It drifts in BOTH directions while ctest reports "100% tests
+  passed": a truncated discovery file silently DROPS cases (a run once
+  executed 3,685 of 4,984 registered tests and reported a clean pass), and a
+  file APPENDED rather than truncated for an unrebuilt target registers every
+  name twice (measured 2026-09-16: fifteen targets at exactly 2x, inflating
+  the reported total from its true 3,553 to 4,871, with ctest running 1,333
+  duplicate executions). `make ctest-registry-check` (task 6790) compares each
+  binary's own `--list-tests` count against the `add_test` lines registered
+  for it, so it needs no baseline and fails on a mismatch either way. It is
+  part of `make test-all`. DO NOT quote a ctest total as a count of distinct
+  tests without it.
+
+  **A GREEN ctest RUN IS NOT PROOF THE SUITE RAN.** `catch_discover_tests`
+  writes one `<target>-<hash>_tests.cmake` per target and ctest runs exactly
+  what those files say, with nothing checking that the registry still matches
+  the binaries. It drifts in BOTH directions while ctest reports "100% tests
+  passed": a truncated discovery file silently DROPS cases (a run once
+  executed 3,685 of 4,984 registered tests and reported a clean pass), and a
+  file APPENDED rather than truncated for an unrebuilt target registers every
+  name twice (measured 2026-09-16: fifteen targets at exactly 2x, inflating
+  the reported total from its true 3,553 to 4,871, with ctest running 1,333
+  duplicate executions). `make ctest-registry-check` (task 6790) compares each
+  binary's own `--list-tests` count against the `add_test` lines registered
+  for it, so it needs no baseline and fails on a mismatch either way. It is
+  part of `make test-all`. DO NOT quote a ctest total as a count of distinct
+  tests without it.
+
   **THE EXPECTED TALLY IS ZERO.** Every skip this repo ever reported was
   oracle-conditional, and there is no oracle; a nonzero tally means a NEW
   skip was introduced. `scripts/ctest-report.sh --max-skips 0` makes that a
