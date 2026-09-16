@@ -211,14 +211,14 @@ export [[nodiscard]] auto source_digest(std::string_view source_kind, std::int64
 /// real count was FIVE: those two, this one, `engine/planning/annotation.cpp`
 /// (which the note missed), and the layer-1 module `planar.sha256`.
 ///
-/// `engine/external/sha256.hpp` is now GONE -- task 6407 pointed that bucket
-/// at `planar.sha256` and moved its padding-boundary vectors into the
-/// module's own tests. THREE copies remain: this one, `manifest.cpp`, and
-/// `annotation.cpp`. All five were verified byte-identical in their ordered
-/// constant tables before the first was removed, so no digest changed.
-///
-/// Consolidating the rest onto `planar.sha256` is D19's remedy and is still
-/// worth doing; it is a cross-bucket refactor rather than a line item.
+/// ONE implementation remains in the tree: layer-1 `planar.sha256`, which
+/// this is now a thin wrapper over (task 6759, finishing what 6407 began).
+/// There were five, counted by their FIPS 180-4 round constants. Each was
+/// verified to agree as an ORDERED constant sequence -- a sorted-set
+/// comparison cannot see a misordering, which is exactly the bug task 6106
+/// fixed -- and each one's tests were checked for vectors the module lacked
+/// before it was deleted, so no stored digest changed and no coverage was
+/// lost on the way.
 /// @param input The bytes to digest.
 /// @return The 64-character lowercase hex digest.
 export [[nodiscard]] auto sha256_hex(std::string_view input) -> std::string;
