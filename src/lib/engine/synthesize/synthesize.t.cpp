@@ -172,3 +172,59 @@ TEST_CASE("a dry run against an existing cache still reports the hit", "[engine]
   CHECK(hit->message.starts_with("Loaded cached synthesis result"));
   std::filesystem::remove_all(root);
 }
+
+// --- break-probe survivors closed by task 6785 ---------------------------
+//
+// `validate_cache` is the gate over an LLM's JSON response: untrusted model
+// output that decides what `planar synthesize` may write. The envelope case
+// above pins the top-level fields, but a sweep found the PER-ITEM rules
+// almost entirely unpinned -- 14 of 15 clauses droppable with the suite
+// still green. These close the ones where a bad verdict admits content the
+// validator exists to refuse.
+
+TEST_CASE("the cache validator refuses malformed per-item content", "[engine][synthesize][cache]") {
+  auto const root = arena("cache-items");
+  write(root / "repo" / "README.md", "# Cache\n");
+  auto staged = synth::run(root / "repo", root / "home", {.treat_as_greenfield = true}, no_env);
+  REQUIRE(staged.has_value());
+
+  // Same shape as the envelope case above; only the disputed part varies.
+  auto const envelope = [&](std::string_view phases, std::string_view specs, std::string_view extra) {
+    return std::format(R"({{"schema_version":1,"fingerprint":"{}","synthesized":true,"anchor_title":"Anchor",)"
+                       R"("phases":[{}],"forward_specs":[{}]{},"provenance":"fixture"}})",
+                       staged->request_.fingerprint, phases, specs, extra);
+  };
+  auto const accepted = [&](std::string_view body) {
+    write(staged->cache_path, body);
+    auto out = synth::run(root / "repo", root / "home", {.treat_as_greenfield = true}, no_env);
+    return out.has_value() && out->mode_ == synth::mode::cache_hit;
+  };
+
+  constexpr std::string_view one_phase = R"({"slug":"phase","status":"draft"})";
+  constexpr std::string_view three     = R"({"slug":"a"},{"slug":"b"},{"slug":"c"})";
+
+  SECTION("the baseline is accepted, so the refusals below mean something") {
+    CHECK(accepted(envelope(one_phase, three, "")));
+  }
+
+  SECTION("a forward spec with an EMPTY slug is refused") {
+    CHECK_FALSE(accepted(envelope(one_phase, R"({"slug":"a"},{"slug":""},{"slug":"c"})", "")));
+  }
+
+  SECTION("a DUPLICATE forward-spec slug is refused") {
+    CHECK_FALSE(accepted(envelope(one_phase, R"({"slug":"a"},{"slug":"a"},{"slug":"c"})", "")));
+  }
+
+  SECTION("a deferred item below the priority floor is refused") {
+    CHECK_FALSE(accepted(envelope(one_phase, three, R"(,"deferred_items":[{"priority":149,"phase_slug":"phase"}])")));
+    // ... and exactly at the floor it is accepted, which is what makes the
+    // bound a bound rather than an unconditional refusal.
+    CHECK(accepted(envelope(one_phase, three, R"(,"deferred_items":[{"priority":150,"phase_slug":"phase"}])")));
+  }
+
+  SECTION("a deferred item naming an UNKNOWN phase is refused") {
+    CHECK_FALSE(accepted(envelope(one_phase, three, R"(,"deferred_items":[{"priority":200,"phase_slug":"nope"}])")));
+  }
+
+  std::filesystem::remove_all(root);
+}
