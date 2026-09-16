@@ -145,7 +145,7 @@ planar synthesize <repo-root> --treat-as-nongreenfield
 planar synthesize <repo-root> --accept-spec <slug>
 planar synthesize <repo-root> --accept-spec all
 planar synthesize <repo-root> --no-forward-specs
-planar synthesize <repo-root> --threshold 0.0
+planar synthesize <repo-root>
 planar synthesize <repo-root> --literal
 planar synthesize <repo-root> --scope assoc:<slug> --apply
 ```

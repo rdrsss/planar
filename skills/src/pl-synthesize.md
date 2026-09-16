@@ -6,7 +6,7 @@ shared_notes:
 slug: pl-synthesize
 vendor:
     claude:
-        argument_hint: <repo-root> [--apply] [--scope <slug>] [--accept-spec <slug>] [--code-layout <name>] [--no-forward-specs] [--literal] [--treat-as-greenfield] [--treat-as-nongreenfield] [--threshold N]
+        argument_hint: <repo-root> [--apply] [--scope <slug>] [--accept-spec <slug>] [--code-layout <name>] [--no-forward-specs] [--literal] [--treat-as-greenfield] [--treat-as-nongreenfield]
         invocation_examples: |
             /pl-synthesize .                          # preview the current repo
             /pl-synthesize . --apply                  # commit the synthesis
@@ -223,7 +223,11 @@ The canonical result types and validation live in [`src/lib/engine/synthesize/sy
 
 ## Confidence Floor
 
-The default 0.7 confidence floor still applies in synthesis mode. LLM-only tasks land with `confidence=0` (no deterministic signal), so the floor trips unless `--threshold 0.0` is passed. This is by design — operators acknowledge they are trusting the LLM's grounding.
+There is NO confidence floor in this binary. The Go-era 0.7 default, its
+`--threshold` control and the refusals built on it were never ported, and
+`--threshold` itself was removed at task 6802 after the task-6788 spike
+found it declared-but-never-read here and in the Zig oracle. LLM-only
+tasks land with `confidence=0` and nothing refuses them on that basis.
 
 ## CLI Commands
 
@@ -242,7 +246,7 @@ planar synthesize <repo-root> --no-forward-specs       # skip forward specs enti
 planar synthesize <repo-root> --literal                # delegate to import (transcription)
 planar synthesize <repo-root> --treat-as-greenfield    # force greenfield mode despite code
 planar synthesize <repo-root> --treat-as-nongreenfield # bypass greenfield auto-detection
-planar synthesize <repo-root> --threshold 0.0          # disable confidence floor
+planar synthesize <repo-root>                          # no confidence floor exists to disable
 planar synthesize <repo-root> --scope <slug>           # override cwd-derived scope
 ```
 

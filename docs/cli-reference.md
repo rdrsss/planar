@@ -5207,7 +5207,7 @@ See also: `spec ingest` (decompose workbench planning docs), `ext propagate` (pu
 **Synopsis:**
 ```
 planar import <repo-root> [--from-github] [--dry-run] [--strict]
-                            [--threshold <float>] [--roadmap <path>]
+                            [--roadmap <path>]
                             [--apply] [--apply-removals] [--scope <slug>]
                             [--no-status-inference] [--interpret] [--no-interpret]
                             [--accept-spec] [--no-forward-specs]
@@ -5234,7 +5234,6 @@ Idempotency: items already present in the database (matched by title and source-
 | `--from-github` | off | Also import open GitHub issues as tasks. Requires the `gh` CLI on PATH and a GitHub remote at the `origin`. If `gh` is not found, a warning is emitted and the flag is silently skipped. |
 | `--dry-run` | off | Emit JSON report instead of human preview. Never writes, regardless of `--apply`. |
 | `--strict` | off | Refuse to import ambiguous items (below the confidence threshold). Default (lenient) mode imports them as `status='todo'` with a warning annotation. |
-| `--threshold <float>` | `0.7` | Confidence threshold for git-log correlation (0.0–1.0). Items whose best git-log match scores below this value are considered ambiguous. |
 | `--roadmap <path>` | auto | Explicit path to the roadmap file. Overrides auto-discovery. Useful when the roadmap has a non-standard name or location. |
 | `--apply` | off | Commit the import to the database. Without this flag, preview only. |
 | `--apply-removals` | off | When applying, also remove entities that are gone from the source. |
@@ -5244,12 +5243,13 @@ Idempotency: items already present in the database (matched by title and source-
 | `--no-interpret` | off | Force the deterministic-only path, skipping the LLM interpretation pass. |
 | `--accept-spec` / `--no-forward-specs` | off | Spec-forwarding controls for imported planning specs. |
 
-**>25% auto-done refusal (not yet in the Zig port):** The Go implementation
-refused an import when `--threshold 0.0` disabled the [confidence
-floor](#confidence-floor) and more than 25% of inferred tasks would land as
-`status=done`, offering `--trust-status-inference` as the explicit bypass.
-Neither the refusal nor the `--trust-status-inference` flag is wired into
-the current Zig binary. For an unreliable correlation today, reach for
+**>25% auto-done refusal (never ported):** The Go implementation refused an
+import when `--threshold 0.0` disabled the confidence floor and more than
+25% of inferred tasks would land as `status=done`, offering
+`--trust-status-inference` as the explicit bypass. None of that survives:
+the refusal, the `--trust-status-inference` flag and `--threshold` itself
+are all absent from this binary (`--threshold` was removed at task 6802 —
+it had been declared but never read, here or in the Zig oracle). For an unreliable correlation today, reach for
 `--no-status-inference` (which IS implemented) to default every task to
 `status=todo`, and `task reopen <id>` to recover any individually
 wrongly-marked tasks from an earlier import.
@@ -5353,7 +5353,7 @@ Use `import` instead when docs are clean and structured. See [Transcription vs S
 **Synopsis:**
 ```
 planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
-                                 [--threshold <float>] [--code-layout <name>]
+                                 [--code-layout <name>]
                                  [--treat-as-greenfield] [--treat-as-nongreenfield]
                                  [--accept-spec <slug>] [--no-forward-specs]
                                  [--literal] [--dry-run] [--json]
@@ -5380,7 +5380,6 @@ The LLM never runs in the CLI. The `planar` binary writes a synthesis Request to
 | `--apply` | off | Commit additions and updates. |
 | `--apply-removals` | off | Commit removals (soft-cancel). Requires `--apply`. |
 | `--scope <slug>` | cwd-derived | Override scope resolution. |
-| `--threshold <0..1>` | — | **DECLARED AND INERT (task 6273).** Nothing reads it: there is no similarity pass in this binary for it to feed, so passing it is accepted and has no effect. It is kept rather than removed because removing it moves the pinned `schema` catalog and turns every script that passes it into a parse error at exit 2. Designing the pass it would feed is a filed spike, not a wiring job. |
 | `--code-layout <name>` | auto | Override layout detection. One of `swift`, `go`, `node`, `python`, `mixed`. |
 | `--treat-as-greenfield` | off | Force greenfield mode even when code is detected. Forces every task to land `status=todo`. |
 | `--treat-as-nongreenfield` | off | Bypass greenfield auto-detection. Use for non-conventional layouts where codeprobe under-detects. |
