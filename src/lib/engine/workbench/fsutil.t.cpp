@@ -160,3 +160,24 @@ TEST_CASE("make_path_all reports FAILURE when a path component is a regular file
   CHECK_FALSE(wfs::make_path_all(blocker / "nested"));
   CHECK_FALSE(wfs::path_exists(blocker / "nested"));
 }
+
+TEST_CASE("collect_markdown skips a DIRECTORY whose name ends in .md", "[workbench][fsutil]") {
+  // The recursive walk filters on two independent things: the `.md`
+  // extension and `is_regular_file`. The existing case's only
+  // subdirectories are `tasks/` and `tasks/cross/`, neither of which ends
+  // in `.md`, so the extension filter rejects them first and the
+  // regular-file check never has to do any work. Closes a break-probe
+  // SURVIVOR (task 6781): dropping it collected the directory itself,
+  // which the caller then tries to read as a file.
+  scratch_dir scratch;
+  REQUIRE(wfs::write_file_atomic(scratch.path_ / "real.md", "x"));
+  REQUIRE(wfs::make_path_all(scratch.path_ / "archive.md"));
+  REQUIRE(wfs::write_file_atomic(scratch.path_ / "archive.md" / "inner.md", "x"));
+
+  auto found = wfs::collect_markdown(scratch.path_);
+  std::ranges::sort(found);
+  // The nested file counts; the `.md`-suffixed DIRECTORY holding it does not.
+  REQUIRE(found.size() == 2);
+  CHECK(found[0] == (scratch.path_ / "archive.md" / "inner.md").string());
+  CHECK(found[1] == (scratch.path_ / "real.md").string());
+}

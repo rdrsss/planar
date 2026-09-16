@@ -291,3 +291,126 @@ TEST_CASE("render_json spells an empty result set as [] and an empty question li
   std::vector<q::file_questions> const one{{.artifact_id = 3, .file = "3-empty-spec.md", .questions = {}}};
   CHECK(q::render_json(one) == R"([{"artifact_id":3,"file":"3-empty-spec.md","questions":[]}])");
 }
+
+// --- break-probe survivors closed by task 6781 ---------------------------
+//
+// Every clause below is a DELIMITER rule in the hand-rolled section walker:
+// what ends the section, and what counts as a heading or a bullet. Each
+// distinguishes real structure from prose that merely begins with the same
+// character, and none had a negative fixture.
+
+TEST_CASE("a BARE `#` or `##` line ends the section, not just the spaced forms", "[engine][workbench][questions]") {
+  // `is_h1_or_h2` spells four alternatives; the existing terminator case
+  // uses `## Next Section`, so only the two SPACED ones ever ran. A bare
+  // `#` is a legal (if odd) Markdown heading and must still terminate.
+  constexpr std::string_view bare_h1 = R"(## Open Questions
+
+- a real question.
+
+#
+
+- past the terminator
+)";
+  auto const                 got_h1  = q::extract_questions(bare_h1);
+  REQUIRE(got_h1.size() == 1);
+  CHECK(got_h1[0].title == "a real question.");
+
+  constexpr std::string_view bare_h2 = R"(## Open Questions
+
+- a real question.
+
+##
+
+- past the terminator
+)";
+  auto const                 got_h2  = q::extract_questions(bare_h2);
+  REQUIRE(got_h2.size() == 1);
+  CHECK(got_h2[0].title == "a real question.");
+}
+
+TEST_CASE("`###` WITHOUT a space is not an H3, so the section stays on the bullet branch", "[engine][workbench][questions]") {
+  // The space is what separates a heading from a line that merely starts
+  // with three hashes. Dropping it flips the whole section to the H3
+  // branch -- `has_h3` is computed over the same predicate -- and the
+  // bullets stop being questions at all.
+  constexpr std::string_view body = R"(## Open Questions
+
+###notaheading
+
+- the only question.
+)";
+  auto const                 got  = q::extract_questions(body);
+  REQUIRE(got.size() == 1);
+  CHECK(got[0].title == "the only question.");
+}
+
+TEST_CASE("a bullet marker WITHOUT a following space is not a bullet", "[engine][workbench][questions]") {
+  // `-5 degrees` and `*emphasis*` are prose, not list items. Dropping
+  // either space requirement turns them into questions whose titles are
+  // the text with its first two characters eaten.
+  constexpr std::string_view dash     = R"(## Open Questions
+
+-5 degrees is not a bullet
+- the only question.
+)";
+  auto const                 got_dash = q::extract_questions(dash);
+  REQUIRE(got_dash.size() == 1);
+  CHECK(got_dash[0].title == "the only question.");
+
+  constexpr std::string_view star     = R"(## Open Questions
+
+*emphasis* is not a bullet
+* the only question.
+)";
+  auto const                 got_star = q::extract_questions(star);
+  REQUIRE(got_star.size() == 1);
+  CHECK(got_star[0].title == "the only question.");
+}
+
+TEST_CASE("the earliest terminator wins when a later k_terms entry matches LATER in the text", "[engine][workbench][questions]") {
+  // The sibling case above this one moves `earliest` BACKWARD, which is
+  // also what a mutant that overwrites unconditionally does -- so it
+  // cannot tell the two apart, despite its name. This is the other
+  // direction: `k_terms` reaches `? ` (index 9) before `! ` (index 15),
+  // so the comparison must REJECT the later match and keep the earlier
+  // split. A mutant that drops `punct < *earliest` splits at `Yes!`.
+  constexpr std::string_view body = R"(## Open Questions
+
+- Is it done? Yes! Truly.
+)";
+  auto const                 got  = q::extract_questions(body);
+  REQUIRE(got.size() == 1);
+  CHECK(got[0].title == "Is it done?");
+  CHECK(got[0].body == "Yes! Truly.");
+}
+
+TEST_CASE("render_text prints a SHORT body whole, with a dash and no ellipsis", "[engine][workbench][questions]") {
+  // The existing render case pins only the two extremes -- a 61-byte body
+  // that gets cut, and a body-less question that omits the dash. The
+  // ordinary middle case (present, under the limit) was unpinned, so a
+  // mutant that always took the elision arm went unnoticed: `substr(0,
+  // 60)` of a short body is the whole body, and only the trailing U+2026
+  // gives it away.
+  std::vector<q::file_questions> const results{
+      {.artifact_id = 7,
+       .file        = "7-short.md",
+       .questions   = {q::question{.title = "Short one?", .body = "Yes.", .source_line = 3}}}};
+  CHECK(q::render_text(results) == "7-short.md (artifact 7): 1 question(s)\n"
+                                   "  [line 3] Short one? — Yes.\n");
+}
+
+TEST_CASE("collect_top_level_specs skips a DIRECTORY whose name ends in .md", "[engine][workbench][questions]") {
+  // The case above is named for skipping subdirectories, but its only
+  // subdirectory is `questions/` -- no `.md` suffix -- so the extension
+  // filter rejects it before the regular-file check is ever consulted.
+  // Closes a break-probe SURVIVOR (task 6781): dropping that check
+  // returned the directory as though it were a spec, and the caller then
+  // reads it as a file.
+  auto const dir = make_dir("collect-dir-md");
+  write_file(dir / "1-alpha.md", "x");
+  write_file(dir / "archive.md" / "inner.md", "x");
+
+  auto const got = q::collect_top_level_specs(dir);
+  REQUIRE(got.size() == 1);
+  CHECK(got[0] == "1-alpha.md");
+}
