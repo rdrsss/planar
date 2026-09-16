@@ -257,3 +257,132 @@ TEST_CASE("glaze: a bare generic_i64 at the document root still mis-dispatches",
   CHECK_FALSE(static_cast<bool>(map_ec)); // The readable_map_t path is table-header aware.
   REQUIRE(as_map.contains("defaults"));
 }
+
+// --- break-probe survivors closed by task 6783 ---------------------------
+//
+// `header_body` decides what counts as a table header and what the
+// section-splitting pass does with the rest of the file. A sweep found 13
+// of its 15 clauses undiscriminated -- control probes confirm both it and
+// `locate_assignment` are heavily reached, so these were unpinned rather
+// than dead.
+
+TEST_CASE("parse_toml: `[[array-of-tables]]` is NOT a table header", "[toml]") {
+  // The code refuses it deliberately -- the comment on `header_body` says
+  // so -- because an array-of-tables is a different construct and treating
+  // the line as a plain header would silently reinterpret the document.
+  // Nothing proved the refusal: dropping the `starts_with("[[")` clause
+  // left every test green.
+  //
+  // Handing it to Glaze unchanged is what must happen; what must NOT happen
+  // is this layer quietly turning it into a table named `[products`.
+  auto result = parse_toml("[[products]]\nname = \"hammer\"\n");
+  if (result.has_value()) {
+    // If it parses at all, it must never have become a section whose name
+    // carries the extra bracket.
+    for (const auto& [key, value] : *result) {
+      INFO("key: " << key);
+      CHECK_FALSE(key.starts_with("[products"));
+    }
+  }
+  // A single-bracket header of the same name still works, which is what
+  // makes the double-bracket case a genuine discrimination.
+  auto plain = parse_toml("[products]\nname = \"hammer\"\n");
+  REQUIRE(plain.has_value());
+  CHECK(plain->at("products.name").string_ == "hammer");
+}
+
+TEST_CASE("parse_toml: a header may carry a trailing comment but not trailing junk", "[toml]") {
+  // Two clauses on one line. Anything after the closing `]` is refused
+  // UNLESS it opens a comment -- and neither half had a fixture, so a
+  // mutant could accept arbitrary junk after a header, or reject the
+  // perfectly ordinary commented header.
+  SECTION("a trailing comment is accepted") {
+    // Reordering-sensitive on purpose: if the commented header stopped
+    // counting as a header, the sub-table would no longer be hoisted and
+    // Glaze would reject the document outright.
+    auto result = parse_toml("[external.jira.status]\n"
+                             "todo = \"To Do\"\n"
+                             "[external.jira]  # the jira table\n"
+                             "base_url = \"https://x\"\n");
+    REQUIRE(result.has_value());
+    CHECK(result->at("external.jira.base_url").string_ == "https://x");
+    CHECK(result->at("external.jira.status.todo").string_ == "To Do");
+  }
+
+  // CHARACTERISATION, not a clause pin. Both of the sections below assert
+  // real behaviour, but neither DISCRIMINATES the scanner clause it is
+  // about: Glaze rejects these documents whether or not the pre-pass
+  // treated the line as a header, so the outcome is masked. Probes for
+  // `trailing-junk-refused` and `refuses-array-of-tables` still survive,
+  // and are recorded as unobservable through `parse_toml` rather than as
+  // closed. Only `normalize_sections`, which is not exported, could tell
+  // them apart.
+  SECTION("trailing junk is not silently treated as a header") {
+    // `[external.jira] garbage` is not a header, so the sub-table above it
+    // is NOT hoisted and Glaze is left to diagnose the document -- which is
+    // what the code comment says should happen.
+    auto result = parse_toml("[external.jira.status]\n"
+                             "todo = \"To Do\"\n"
+                             "[external.jira] garbage\n"
+                             "base_url = \"https://x\"\n");
+    CHECK_FALSE(result.has_value());
+  }
+
+  SECTION("an array-of-tables header is not a plain table header") {
+    // `[[...]]` is a different construct; the code refuses it deliberately
+    // so it reaches Glaze unchanged rather than being reinterpreted here.
+    auto result = parse_toml("[external.jira.status]\n"
+                             "todo = \"To Do\"\n"
+                             "[[external.jira]]\n"
+                             "base_url = \"https://x\"\n");
+    CHECK_FALSE(result.has_value());
+  }
+}
+
+TEST_CASE("parse_toml: a commented-out header is not a section boundary", "[toml]") {
+  // Same reasoning as the multi-line case: the scanner only shows through
+  // when the reordering changes. A `#`-commented `[header]` must NOT split
+  // the document -- if it does, the assignments after it are attributed to
+  // a table the operator never wrote.
+  // CHARACTERISATION. An odd quote inside the comment was meant to make
+  // this discriminate the `#` clause -- scanner string state would swallow
+  // the header below it -- but the probe still survives: Glaze recovers the
+  // same map either way. Recorded as unobservable through `parse_toml`.
+  auto result = parse_toml("[external.jira.status]\n"
+                           "todo = \"To Do\"\n"
+                           "# a comment with an odd \" quote\n"
+                           "[external.jira]\n"
+                           "base_url = \"https://x\"\n");
+  REQUIRE(result.has_value());
+  CHECK(result->at("external.jira.base_url").string_ == "https://x");
+  CHECK(result->at("external.jira.status.todo").string_ == "To Do");
+}
+
+TEST_CASE("parse_toml: a `#` inside a quoted value is DATA, not a comment", "[toml]") {
+  auto result = parse_toml("[core]\nname = \"a#b\"  # trailing\nother = \"z\"\n");
+  REQUIRE(result.has_value());
+  CHECK(result->at("core.name").string_ == "a#b");
+  CHECK(result->at("core.other").string_ == "z");
+}
+
+TEST_CASE("parse_toml: a header-looking line INSIDE a multi-line string is not a section", "[toml]") {
+  // The scanner is a REORDERING pre-pass -- its output text is what goes to
+  // `glz::read_toml` -- so a scanner clause only changes the outcome when a
+  // mis-scan changes the reordering. That is why this case needs a document
+  // that actually REQUIRES reordering (a sub-table before its super-table)
+  // AND a `[...]`-looking line inside a triple-quoted string. Without the
+  // triple-quote scan the fake header splits the document mid-string and
+  // the text handed to Glaze is no longer the document the operator wrote.
+  auto result = parse_toml("[external.jira.status]\n"
+                           "todo = \"To Do\"\n"
+                           "[external.jira]\n"
+                           "blurb = \"\"\"\n"
+                           "[external.jira.status]\n"
+                           "not a real header\n"
+                           "\"\"\"\n"
+                           "base_url = \"https://x\"\n");
+  REQUIRE(result.has_value());
+  CHECK(result->at("external.jira.base_url").string_ == "https://x");
+  CHECK(result->at("external.jira.status.todo").string_ == "To Do");
+  CHECK(result->at("external.jira.blurb").string_.find("not a real header") != std::string::npos);
+}
