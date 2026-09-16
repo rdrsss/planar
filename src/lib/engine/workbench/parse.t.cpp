@@ -586,3 +586,66 @@ TEST_CASE("strip_yaml_quotes removes exactly one matching pair", "[workbench][pa
   // the double-quote match.
   CHECK(wp::strip_yaml_quotes("abc\"") == "abc\"");
 }
+
+// --- task 6781: gaps found by the permissive-mutation sweep ----------------
+//
+// Three of this file's checks had NO covering case: each one's guard could be
+// made permissive and the whole 237-case workbench suite still passed. The
+// probes are recorded on task 6781 with the full verdict table; these are the
+// negative-direction cases that close them.
+//
+// Four other survivors are EQUIVALENT MUTANTS, not gaps, and are deliberately
+// NOT given tests here -- a test asserting a difference that cannot exist
+// would be a lie about coverage. They are traced in task 6781's report:
+// `!saw_entity_id` (redundant with `entity_id <= 0`, since the variable is
+// initialized to 0 and only assigned alongside the flag), `id_text.empty()`
+// in `valid_entity_ref` (redundant with `parse_int64_zig("")` returning
+// nullopt on its own empty check), the interior `!is_digit(c)` in
+// `parse_int64_zig` (redundant with the `from_chars` ptr/ec guard beneath
+// it), and the `rest.size() >= k_close_at_eof.size()` length test (redundant
+// with `ends_with`, which is false for any shorter string).
+
+TEST_CASE("a scalar value that starts with `- ` is refused, not read as a value", "[workbench][parse][reject][6781]") {
+  // `title: - draft` is an author starting a list on the wrong line. The
+  // parser refuses it as `leading_dash_scalar` -- SURVIVOR P11: dropping
+  // that guard made the value literally `- draft` and every other case
+  // still passed, so a list started on a scalar line would have been
+  // silently accepted as text.
+  auto const bad = refused("---\nentity_kind: task\nentity_id: 1\ntitle: - draft\nstatus: todo\n---\n");
+  CHECK(bad.reason == diagnostic_reason::leading_dash_scalar);
+  CHECK(bad.line == 4);
+}
+
+TEST_CASE("a file with NO status key reports MISSING, not an invalid value", "[workbench][parse][reject][6781]") {
+  // SURVIVOR P18. Both paths refuse the file, so acceptance never changes --
+  // what changes is WHICH diagnostic an author sees. Without the
+  // `!saw_status` guard the empty status falls through to the value check
+  // and reports `invalid_field_value` with the whole status vocabulary as
+  // "expected", instead of `missing_required_field` naming the key that is
+  // absent. The vocabulary is useless advice for a key that was never
+  // written, which is why the two are separate diagnostics at all.
+  auto const bad = refused("---\nentity_kind: task\nentity_id: 1\nanchor_plan_id: 1\ntitle: T\n---\n");
+  CHECK(bad.err == parse_error_kind::missing_required_field);
+  CHECK(bad.reason == diagnostic_reason::missing_required_field);
+  CHECK(bad.field == "status");
+}
+
+TEST_CASE("a list item with NO colon is refused, even when it is all digits", "[workbench][parse][reject][6781]") {
+  // SURVIVOR P23, and the one with teeth. `valid_entity_ref` refuses a ref
+  // without a colon FIRST. Drop that, and `value.substr(0, npos)` and
+  // `value.substr(npos + 1)` both yield the WHOLE string -- so `- 42`
+  // becomes kind "42", id 42, and parses as a valid entity ref. A bare
+  // number in a `derives-from` list would have been accepted as a
+  // reference to an entity of kind "42".
+  //
+  // Both halves are asserted: the all-digit item is the one the mutation
+  // accepts, and a non-numeric item is the one that keeps failing either
+  // way -- pinning only the second would not have discriminated the guard.
+  auto const digits = refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\nderives-from:\n- 42\n---\n");
+  CHECK(digits.reason == diagnostic_reason::invalid_entity_ref);
+  CHECK(digits.line == 7);
+
+  auto const word = refused("---\nentity_kind: task\nentity_id: 1\ntitle: T\nstatus: todo\nderives-from:\n- plan\n---\n");
+  CHECK(word.reason == diagnostic_reason::invalid_entity_ref);
+  CHECK(word.line == 7);
+}
