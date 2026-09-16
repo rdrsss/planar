@@ -862,6 +862,9 @@ TEST_CASE("a TAB after the hashes opens a heading, and trailing hashes are strip
   REQUIRE_FALSE(result.has_value());
   REQUIRE(result.error().citations_.size() == 1);
   const auto& available = result.error().citations_[0].available_;
+  // The TAB-separated heading is a heading, and is offered.
+  CHECK(std::ranges::find(available, "Tabbed") != available.end());
+  // The closing hash run is decoration, not part of the name.
   CHECK(std::ranges::find(available, "Goals") != available.end());
   CHECK(std::ranges::find(available, "Goals ##") == available.end());
 }

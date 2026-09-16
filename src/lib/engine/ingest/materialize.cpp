@@ -466,10 +466,13 @@ order by t.id)");
   while (offset < body.size()) {
     const auto line_end = body.find('\n', offset);
     const auto line     = body.substr(offset, line_end == std::string_view::npos ? std::string_view::npos : line_end - offset);
-    if (line.starts_with("## ")) {
-      if (const auto name = trim(line.substr(3), " \t\r"); name != "Content") {
-        diagnostic.available_.emplace_back(name);
-      }
+    // Use the SAME parser resolution uses. A scan of its own would drift
+    // from it -- and did: it reported `## Goals ##` as `Goals ##`, which
+    // resolves to nothing, while hiding the `Goals` that does; and it saw
+    // only H2 at column zero, so a tabbed, indented, H1 or H3 section was
+    // citable but never offered.
+    if (const auto head = atx_heading(line); head.has_value() && head->title_ != "Content") {
+      diagnostic.available_.emplace_back(head->title_);
     }
     if (line_end == std::string_view::npos) {
       break;
