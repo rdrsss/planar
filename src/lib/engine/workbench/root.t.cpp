@@ -275,3 +275,58 @@ TEST_CASE("expand_tilde leaves an absolute path alone", "[workbench][root]") {
   REQUIRE(embedded.has_value());
   CHECK(*embedded == "/a/~/b");
 }
+
+// --- break-probe survivors closed by task 6781 ---------------------------
+//
+// The sweep that produced these ran with a BROKEN runner first (`timeout`
+// is not installed on the build host, so every probe reported a kill
+// without executing a test). These five are what the corrected re-run
+// found; four are real gaps and are closed below.
+//
+// EQUIVALENT MUTANT, deliberately left untested: dropping the `close > 0`
+// half of the header check. `close` is `line.rfind(']')` on a line whose
+// `front()` is already known to be `[`, so `close == 0` would require
+// `line[0]` to be both `[` and `]`. The clause is unreachable-false and
+// removing it cannot change an outcome.
+
+TEST_CASE("a set-but-EMPTY HOME leaves a BARE `~` unresolved too", "[workbench][root]") {
+  // expand_tilde's OWN empty-check, which no existing fixture reaches: "a
+  // set-but-EMPTY HOME is unresolved" leaves PLANAR_WORKBENCH_ROOT unset and
+  // so never calls expand_tilde at all, and "a tilde with no HOME" leaves
+  // HOME absent rather than present-and-empty.
+  auto const root = wr::resolve_root(map_env({{"PLANAR_WORKBENCH_ROOT", "~"}, {"HOME", ""}}), no_files());
+  REQUIRE_FALSE(root.has_value());
+  CHECK(root.error() == wr::root_error::unresolved);
+}
+
+TEST_CASE("a set-but-EMPTY HOME leaves a `~/` PREFIX unresolved too", "[workbench][root]") {
+  // The `starts_with("~/")` arm carries its own copy of the same guard, and
+  // the bare-`~` fixture above does not exercise it.
+  auto const root = wr::resolve_root(map_env({{"PLANAR_WORKBENCH_ROOT", "~/wb"}, {"HOME", ""}}), no_files());
+  REQUIRE_FALSE(root.has_value());
+  CHECK(root.error() == wr::root_error::unresolved);
+}
+
+TEST_CASE("read_config_workbench_root rejects a value too short to be quoted", "[workbench][root][toml]") {
+  // A lone quote character is not a quoted empty string. Without unquote's
+  // `text.size() < 2` guard, `front()` and `back()` are the SAME character,
+  // so `'` satisfies the matched-pair test and yields an empty root.
+  CHECK_FALSE(wr::read_config_workbench_root("[workbench]\nroot = '\n").has_value());
+  CHECK_FALSE(wr::read_config_workbench_root("[workbench]\nroot = \"\n").has_value());
+}
+
+TEST_CASE("an UNTERMINATED table header does not open a section", "[workbench][root][toml]") {
+  // `[workbench` has no closing bracket, so it is not a header and must not
+  // put the scan inside the `workbench` section. Without the `close != npos`
+  // half, `rfind(']')`'s npos flows into `substr(1, close - 1)`, which
+  // clamps to the rest of the line and names the section `workbench` anyway.
+  CHECK_FALSE(wr::read_config_workbench_root("[workbench\nroot = \"/x\"\n").has_value());
+}
+
+TEST_CASE("a bare key line with no `=` is skipped, not read as its own value", "[workbench][root][toml]") {
+  // Forcing the `eq != npos` branch makes `substr(0, eq)` and
+  // `substr(eq + 1)` BOTH the whole line, so a malformed bare `root` line
+  // becomes `root = root` -- an unquotable value that aborts the scan and
+  // hides the real assignment on the line after it.
+  CHECK(wr::read_config_workbench_root("[workbench]\nroot\nroot = \"/x\"\n") == "/x");
+}

@@ -253,9 +253,18 @@ TEST_CASE("an absent target and a non-.md file are DIFFERENT failures", "[workbe
   // Oracle-probed, and the distinction is operator-visible: a missing path
   // exits 1, a non-Markdown file exits 2.
   arena a;
-  CHECK(wl::run(a.conn(), a.tree() / "nope.md").error() == wl::lint_error::not_found);
-  auto const txt = a.write("notes.txt", "x\n");
-  CHECK(wl::run(a.conn(), txt).error() == wl::lint_error::invalid_input);
+  // REQUIRE_FALSE before `.error()`: reading the error of an expected that
+  // HOLDS A VALUE is undefined behaviour, and a mutant that made either
+  // refusal succeed used to slip through this case rather than failing it
+  // (task 6781 break-probe survivors L01a/L01b/L02). Assert the refusal
+  // happened first, then assert which refusal it was.
+  auto const absent = wl::run(a.conn(), a.tree() / "nope.md");
+  REQUIRE_FALSE(absent.has_value());
+  CHECK(absent.error() == wl::lint_error::not_found);
+  auto const txt    = a.write("notes.txt", "x\n");
+  auto const not_md = wl::run(a.conn(), txt);
+  REQUIRE_FALSE(not_md.has_value());
+  CHECK(not_md.error() == wl::lint_error::invalid_input);
 }
 
 TEST_CASE("severity_name emits the operator-visible words", "[workbench][lint]") {

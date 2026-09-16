@@ -1169,3 +1169,92 @@ TEST_CASE("a SUCCESSFUL pull leaves the connection in autocommit, savepoint rele
   // The assertion this case exists for.
   CHECK_FALSE(a.conn().in_transaction());
 }
+
+TEST_CASE("a scenario's own status is read, so a RETIRED one filters", "[workbench][sync][filter][scenario]") {
+  // The seed above carries no scenario at all -- its comment notes the
+  // oracle's seed had one and this one does not -- so `fetch_status`'s
+  // `test_scenario` arm was never reached by any fixture. Closes a
+  // break-probe SURVIVOR (task 6781): dropping that arm makes the status
+  // lookup return an EMPTY string, which classifies as active, so a
+  // retired scenario is projected forever and `workbench gc` never
+  // reclaims its file.
+  //
+  // Which of the clause's two spellings is live was settled by probing,
+  // not by reading the schema: `entity_links.from_kind` stores
+  // `test_scenario` (migration 00004 admits no `scenario`), but
+  // `append_derived_entities` CANONICALISES it in SQL --
+  // `case when from_kind = 'test_scenario' then 'scenario' else from_kind
+  // end` -- so `fetch_status` only ever sees `scenario`. The
+  // `test_scenario` spelling in the same clause is therefore unreachable
+  // on this path and is recorded as dead rather than given its own
+  // fixture; dropping it leaves every test green.
+  auto const with_status = [](planar::db::connection& conn, const seeded& s, std::string_view status) {
+    exec(conn, std::format("insert into test_scenarios (scope_kind, scope_id, title, body, status) "
+                           "values ('association', {}, 'Login Scenario', 'Given a user.', '{}')",
+                           s.assoc_id, status));
+    auto const id = scalar_id(conn, "select id from test_scenarios where title = 'Login Scenario'");
+    exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                           "values ('test_scenario', {}, 'plan', {}, 'derives-from')",
+                           id, s.plan_id));
+  };
+
+  // `retired` is the scenario table's failure terminal, so it filters.
+  arena      a;
+  auto const s = seed(a.conn());
+  with_status(a.conn(), s, "retired");
+  auto retired = ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false);
+  REQUIRE(retired.has_value());
+  CHECK(retired->filtered == 1);
+
+  // `ready` is active, and the SAME push filters nothing -- which is what
+  // proves the status was actually read rather than the scenario being
+  // dropped for its kind.
+  arena      b;
+  auto const t = seed(b.conn());
+  with_status(b.conn(), t, "ready");
+  auto ready = ws::push(b.conn(), t.plan_id, b.root(), wt::mode::failures, false);
+  REQUIRE(ready.has_value());
+  CHECK(ready->filtered == 0);
+}
+
+TEST_CASE("status is READ-ONLY and creates no feature directory", "[workbench][sync][status]") {
+  // `run` skips `make_path_all` for `mode::status` alone. Closes a
+  // break-probe SURVIVOR (task 6781): dropping that mode check let a plain
+  // `workbench status` MATERIALISE the feature directory on disk, and no
+  // fixture noticed -- every other status case runs after a push has
+  // already created it, so the directory existed either way.
+  arena      a;
+  auto const s   = seed(a.conn());
+  auto const dir = feature_dir_of(a, s.plan_id);
+  REQUIRE_FALSE(wfs::path_exists(dir));
+
+  auto value = ws::status(a.conn(), s.plan_id, a.root());
+  REQUIRE(value.has_value());
+  CHECK_FALSE(wfs::path_exists(dir));
+}
+
+TEST_CASE("a workbench root with a TRAILING SLASH stores the same paths", "[workbench][sync][path]") {
+  // `to_stored_path` strips the separator between the root and the rest
+  // only when one is actually there: with a trailing-slash root the
+  // remainder already begins at the first real character. Closes a
+  // break-probe SURVIVOR (task 6781): dropping the `front() == '/'` half
+  // made the strip unconditional, which eats the first character of every
+  // stored path (`tasks/...` -> `asks/...`). Every existing fixture passes
+  // a root WITHOUT a trailing slash, so nothing noticed.
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root() + "/", wt::mode::failures, false).has_value());
+
+  // The strip is only REACHED for a file on disk that no manifest row
+  // claims, so a push alone cannot see it -- the second pass is what makes
+  // `to_stored_path` recompute a name and compare it against the rows the
+  // push wrote. A mutant that strips unconditionally yields
+  // `roject_demo/...`, which matches nothing, so every already-synced file
+  // reappears as UNCLAIMED.
+  auto second = ws::status(a.conn(), s.plan_id, a.root() + "/");
+  REQUIRE(second.has_value());
+  auto const unclaimed =
+      std::ranges::count_if(second->entries, [](const ws::entry& e) { return e.value == ws::classification::new_on_fs; });
+  INFO("unclaimed entries: " << unclaimed);
+  CHECK(unclaimed == 0);
+}
