@@ -340,6 +340,10 @@ auto connection::is_read_only() const noexcept -> bool {
   return _read_only;
 }
 
+auto connection::in_transaction() const noexcept -> bool {
+  return _handle != nullptr && sqlite3_get_autocommit(_handle) == 0;
+}
+
 auto connection::execute(std::string_view sql) -> std::expected<void, db_error> {
   const std::string csql(sql);
   return exec_simple(_handle, csql.c_str());

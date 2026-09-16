@@ -319,6 +319,24 @@ public:
   /// @return `true` if this connection is read-only.
   [[nodiscard]] auto is_read_only() const noexcept -> bool;
 
+  /// @brief True while ANY transaction or savepoint is open on this
+  /// connection -- SQLite's own autocommit flag, inverted.
+  ///
+  /// Exists so a caller can ASSERT that a scope it just finished actually
+  /// closed the transaction it opened (task 6787). A leaked `savepoint`
+  /// does not fail loudly: SQLite permits re-entering a same-named nested
+  /// savepoint, so the next call in a loop appears to work while the
+  /// connection quietly stays non-autocommit, and every write after it
+  /// hangs off a scope nobody will commit. Without this accessor that
+  /// state is unobservable from a test, which is how the leak in
+  /// `workbench::sync::pull_to_db` survived every mutation probe.
+  ///
+  /// Note this reports the CONNECTION's state, not any particular scope's:
+  /// it is `true` inside a nested savepoint as well as an outermost
+  /// `BEGIN`.
+  /// @return `true` when a transaction or savepoint is open.
+  [[nodiscard]] auto in_transaction() const noexcept -> bool;
+
   /// @brief Executes one or more `;`-separated SQL statements with no
   /// bound parameters and no result rows (DDL, scripts).
   /// @param sql The SQL script to execute.
