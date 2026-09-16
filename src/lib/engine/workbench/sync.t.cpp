@@ -1253,8 +1253,8 @@ TEST_CASE("a workbench root with a TRAILING SLASH stores the same paths", "[work
   // reappears as UNCLAIMED.
   auto second = ws::status(a.conn(), s.plan_id, a.root() + "/");
   REQUIRE(second.has_value());
-  auto const unclaimed = std::ranges::count_if(
-      second->entries, [](const ws::entry& e) { return e.value == ws::classification::new_on_fs; });
+  auto const unclaimed =
+      std::ranges::count_if(second->entries, [](const ws::entry& e) { return e.value == ws::classification::new_on_fs; });
   INFO("unclaimed entries: " << unclaimed);
   CHECK(unclaimed == 0);
 }

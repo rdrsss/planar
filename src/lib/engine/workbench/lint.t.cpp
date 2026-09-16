@@ -261,8 +261,8 @@ TEST_CASE("an absent target and a non-.md file are DIFFERENT failures", "[workbe
   auto const absent = wl::run(a.conn(), a.tree() / "nope.md");
   REQUIRE_FALSE(absent.has_value());
   CHECK(absent.error() == wl::lint_error::not_found);
-  auto const txt      = a.write("notes.txt", "x\n");
-  auto const not_md   = wl::run(a.conn(), txt);
+  auto const txt    = a.write("notes.txt", "x\n");
+  auto const not_md = wl::run(a.conn(), txt);
   REQUIRE_FALSE(not_md.has_value());
   CHECK(not_md.error() == wl::lint_error::invalid_input);
 }
