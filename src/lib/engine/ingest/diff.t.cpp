@@ -435,3 +435,81 @@ TEST_CASE("compute proposes scenarios and skips ones whose body is unchanged", "
   CHECK(result->scenarios_[0].op_ == diff::op::add);
   CHECK(result->scenarios_[0].title_ == "Fresh");
 }
+
+// --- break-probe survivors closed by task 6782 ---------------------------
+//
+// These four clauses decide what an ingest WRITES: whether a stored
+// question's status is flipped, and whether a decision row is created. A
+// wrong verdict re-answers a question an operator already closed, or
+// duplicates a decision that already exists.
+
+TEST_CASE("only an OPEN question is flipped, and only WITH a resolution", "[ingest][diff]") {
+  // Two clauses on one line. The existing flip case pins the positive
+  // path only: an open question plus a resolution. Neither half of the
+  // guard had a negative fixture, so a mutant that dropped either one
+  // re-answered a question the operator had already settled, or flipped a
+  // question on a spec that offers no answer at all.
+  const scratch_db_path scratch;
+  auto                  conn      = open_migrated(scratch);
+  const auto            anchor_id = seed_anchor(conn, "anchor", "active");
+  // The schema refuses `answered` without both an answer and a timestamp:
+  // "answered" with no answer is a contradiction it will not store.
+  must_execute(conn, "insert into questions (scope_kind, title, body, status, answer_body, answered_at) "
+                     "values ('global', 'Settled already', 'body', 'answered', 'Postgres', "
+                     "strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
+  must_execute(conn, "insert into questions (scope_kind, title, body, status) "
+                     "values ('global', 'Still open', 'body', 'open')");
+
+  SECTION("an ALREADY-ANSWERED question is left alone even when the spec resolves it") {
+    const std::vector<parse::question> questions{{.title_ = "Settled already", .body_ = "body", .resolution_ = "SQLite"}};
+    const auto                         result = diff::compute(conn, anchor_id, {}, {}, questions, {});
+    REQUIRE(result.has_value());
+    CHECK(result->updated_question_status_.empty());
+  }
+
+  SECTION("an OPEN question with NO resolution is not flipped") {
+    const std::vector<parse::question> questions{{.title_ = "Still open", .body_ = "body", .resolution_ = ""}};
+    const auto                         result = diff::compute(conn, anchor_id, {}, {}, questions, {});
+    REQUIRE(result.has_value());
+    CHECK(result->updated_question_status_.empty());
+    // ... and it derives no decision either, having nothing to record.
+    CHECK(result->decisions_.empty());
+  }
+}
+
+TEST_CASE("a resolution does not duplicate a decision that already exists", "[ingest][diff]") {
+  // The derive-a-decision path is guarded three ways: there must BE a
+  // resolution, no stored decision may already carry that title, and the
+  // same title must not already be queued in this very diff. Only the
+  // first had a fixture.
+  const scratch_db_path scratch;
+  auto                  conn      = open_migrated(scratch);
+  const auto            anchor_id = seed_anchor(conn, "anchor", "active");
+
+  SECTION("a decision STORED under that title suppresses the derived one") {
+    // The question is NOT stored, so this takes the new-question arm. The
+    // stored-question arm carries its OWN copy of the same suppression
+    // check, a few lines up, and is exercised by the sibling case below.
+    // A decision only counts when it is LINKED to the anchor -- that is how
+    // `load_decisions_for_anchor` scopes what already exists.
+    must_execute(conn, "insert into decisions (scope_kind, title, body, status) "
+                       "values ('global', 'Which store?', 'Decided earlier', 'accepted')");
+    must_execute(conn, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                       "values ('decision', 1, 'plan', 1, 'derives-from')");
+    const std::vector<parse::question> questions{{.title_ = "Which store?", .body_ = "body", .resolution_ = "SQLite"}};
+    const auto                         result = diff::compute(conn, anchor_id, {}, {}, questions, {});
+    REQUIRE(result.has_value());
+    // It is proposed as a new question, and the decision is NOT duplicated.
+    CHECK(result->new_questions_.size() == 1);
+    CHECK(result->decisions_.empty());
+  }
+
+  SECTION("the same title twice in ONE spec derives a single decision") {
+    const std::vector<parse::question> questions{{.title_ = "Twice asked", .body_ = "body", .resolution_ = "Yes"},
+                                                 {.title_ = "Twice asked", .body_ = "body", .resolution_ = "Yes"}};
+    const auto                         result = diff::compute(conn, anchor_id, {}, {}, questions, {});
+    REQUIRE(result.has_value());
+    const auto derived = std::ranges::count_if(result->decisions_, [](const auto& d) { return d.title_ == "Twice asked"; });
+    CHECK(derived == 1);
+  }
+}
