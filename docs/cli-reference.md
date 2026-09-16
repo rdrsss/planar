@@ -5970,6 +5970,446 @@ List every recorded install across both kinds and all vendors. Status column:
 
 Test hook: when set, `planar local` uses this directory as the operator's `$HOME` for resolving `~/.planar/local/` and the per-vendor install targets. Production use never sets this.
 
+## The editflow quartet: `edit` / `view` / `diff` / `review`
+
+Six entity families — `plan`, `task`, `question`, `decision`, `scenario`
+and `artifact` — each expose the same four editor-first verbs over their
+workbench file. Twenty-four leaves, one shared implementation
+(`handlers/drafting.cppm`): the bodies are identical modulo the family
+noun and its positional name, so they are documented once here rather
+than twenty-four times.
+
+| verb | what it does |
+|------|--------------|
+| `edit` | open the entity's workbench file in `$EDITOR` |
+| `view` | print the entity's workbench file |
+| `diff` | diff the workbench file against the database-stored version |
+| `review` | reviewer entry point over that same diff |
+
+**Synopsis:**
+```
+planar <family> edit   <id> [--no-pull] [--json]
+planar <family> view   <id>
+planar <family> diff   <id>
+planar <family> review <id> [--approve] [--request-changes] [--json]
+```
+
+`<family>` is one of `plan`, `task`, `question`, `decision`, `scenario`,
+`artifact`. The positional is that family's id (`plan-id`, `task-id`, …).
+
+The twenty-four concrete leaves this covers:
+
+| family | leaves |
+|--------|--------|
+| `plan` | `planar plan edit`, `planar plan view`, `planar plan diff`, `planar plan review` |
+| `task` | `planar task edit`, `planar task view`, `planar task diff`, `planar task review` |
+| `question` | `planar question edit`, `planar question view`, `planar question diff`, `planar question review` |
+| `decision` | `planar decision edit`, `planar decision view`, `planar decision diff`, `planar decision review` |
+| `scenario` | `planar scenario edit`, `planar scenario view`, `planar scenario diff`, `planar scenario review` |
+| `artifact` | `planar artifact edit`, `planar artifact view`, `planar artifact diff`, `planar artifact review` |
+
+### The four verbs do NOT validate alike
+
+This asymmetry is operator-visible on every failing invocation, and is
+reproduced from the oracle deliberately rather than smoothed over:
+
+| verb | rejects `id <= 0`? | maps failures to prose? |
+|------|--------------------|-------------------------|
+| `view` | no | no |
+| `edit` | no | no |
+| `diff` | **yes** | **yes** |
+| `review` | **yes** | **yes** |
+
+So `planar question diff 0` exits 2 with `question id must be a positive
+integer, got 0`, while `planar question view 0` falls through to the
+resolver and reports a missing plan link instead. `view` and `edit` have
+no failure-mapping arms at all: a failure surfaces as the bare error tag.
+
+### A nonexistent id reports differently per family
+
+`plan` and `task` resolve their anchor directly (`plans.parent_plan_id`,
+`tasks.plan_id`); the other four resolve theirs through `entity_links`.
+That changes the refusal text:
+
+```
+planar plan diff 999      →  no plan with id 999
+planar task diff 999      →  no task with id 999
+planar question diff 999  →  question 999 is not linked to a plan; ...
+```
+
+### `--no-pull` and `--json` on `edit` are DECLARED AND INERT
+
+Both flags appear in `planar schema` and are accepted, and the handler
+reads neither. They exist because the oracle declares them and dropping
+them would break catalog parity; refusing them would reject an invocation
+the oracle accepts. Recorded here rather than left for an operator to
+discover — do not expect `edit --json` to produce JSON.
+
+**Description:** `view` renders the entity to its workbench path. For
+`plan`, the ANCHOR plan renders to the feature's `README.md` and every
+other plan to `plans/<slug>.md`.
+
+**Schema effects:** Reads the family's table and (for the four
+link-anchored families) `entity_links`. `edit` may write the workbench
+file; none of the four writes the entity row.
+
+**Capture:** None.
+
+**Exit codes:**
+- `2` — `diff` / `review` only: non-positive id.
+- `1` — id not found, or (link-anchored families) no plan link.
+
+---
+
+### `planar workbench edit <plan>`
+
+Not part of the quartet: it edits a whole feature's workbench files rather
+than one entity's.
+
+**Synopsis:**
+```
+planar workbench edit <plan> [--editor <cmd>] [--json]
+```
+
+**Description:** Edit a feature's workbench files in `$EDITOR`.
+
+**Schema effects:** Reads `plans`; writes workbench files under
+`$PLANAR_WORKBENCH_ROOT`.
+
+**Capture:** None.
+
+**Exit codes:**
+- `1` — plan not found.
+
+---
+
+## Domain: `models`
+
+Routing-model discovery, the advisory evals scorecard, and the operator
+candidate registry. Planar does NOT decide what model to use: it records
+the vendor and candidate an agent reports when it claims work, and never
+validates that string against a supported list. Everything here either
+reports what is installed, aggregates evidence after the fact, or manages
+operator-declared candidates.
+
+`planar models` and `planar models evals` are documented in the agent
+routing guide; the remaining leaves are below.
+
+### `planar models resolve`
+
+**Synopsis:**
+```
+planar models resolve [--json]
+```
+
+**Description:** Resolve a role's routing tier from its authoritative
+packet, or report the fallback and why it was used. A fallback is always
+reported WITH its reason — an absent or unready packet is never presented
+as a derived classification.
+
+**Schema effects:** Reads routing packet and policy tables.
+
+**Capture:** None (read-only).
+
+---
+
+### `planar models experiments`
+
+**Synopsis:**
+```
+planar models experiments [--json]
+```
+
+**Description:** List declared routing experiments and how much evidence
+each has produced. Evidence volume is the point: `planar models evals`
+reports `insufficient_data` for an under-sampled cohort rather than a
+recommendation, and this is where you see which cohorts are thin.
+
+**Schema effects:** Reads the routing experiment tables.
+
+**Capture:** None (read-only).
+
+---
+
+### `planar models outcomes`
+
+**Synopsis:**
+```
+planar models outcomes [--json]
+```
+
+**Description:** List recorded terminal outcomes, **including excluded
+ones and why they were excluded**. An outcome can be excluded from the
+scorecard (below an evidence floor, outside a declared experiment) and
+still be listed here with its exclusion reason, so a surprising evals
+result can be traced to the rows behind it.
+
+**Schema effects:** Reads the dispatch-outcome tables.
+
+**Capture:** None (read-only).
+
+---
+
+### Domain: `models registry`
+
+Opaque operator candidates and host observations. "Opaque" is the
+contract: a candidate is an exact identifier string Planar stores and
+compares, never parses or normalises.
+
+| leaf | purpose |
+|------|---------|
+| `planar models registry list` | List registrations, bindings, and latest observations. |
+| `planar models registry add` | Register one exact opaque candidate identifier. |
+| `planar models registry update` | Update enabled state and deterministic fallback order. |
+| `planar models registry remove` | Remove a candidate when no immutable evidence references it. |
+| `planar models registry bind` | Allow one role and tier for a candidate. |
+| `planar models registry unbind` | Remove one explicit role and tier binding. |
+| `planar models registry observe` | Append an exact, versioned host capability observation. |
+| `planar models registry eligibility` | Report every independent eligibility gate and named exclusion reason. |
+| `planar models registry verify-identity` | Compare requested and actual spawn identity without aliasing. |
+| `planar models registry export` | Export the versioned registry compatibility document. |
+
+**Three properties worth knowing before using these:**
+
+- **`remove` refuses while evidence references the candidate.** Recorded
+  outcomes are immutable, so a candidate that has produced any is not
+  removable — deregister it with `update` instead.
+- **`observe` APPENDS.** Observations are versioned and additive; a new
+  observation never rewrites an older one, which is what makes
+  `eligibility` able to explain itself historically.
+- **`eligibility` reports EVERY gate**, not just the first failure, and
+  names each exclusion reason. `verify-identity` exists because a host may
+  alias one candidate onto another; it compares requested against actual
+  without resolving aliases.
+
+**Schema effects:** `list`, `eligibility`, `verify-identity` and `export`
+read; `add`, `update`, `remove`, `bind`, `unbind` and `observe` write the
+registry tables.
+
+**Capture:** None.
+
+---
+
+## Domain: `bench`
+
+Record and query benchmark run data — the measurement rig. A run is minted
+once, accumulates journal events and file touches, and is then closed with
+a terminal status. Nothing here changes planning state.
+
+| leaf | purpose |
+|------|---------|
+| `planar bench start` | Mint a new run record and print its `run_uid`. |
+| `planar bench event` | Append a journal event to a run. |
+| `planar bench touch` | Record a declared or actual file touch for a run. |
+| `planar bench harvest` | Harvest `git diff` as actual touches for a run/task. |
+| `planar bench finish` | Set the terminal status on a run. |
+| `planar bench show` | Show a run's full state (header + events + touches). |
+
+**The declared-vs-actual distinction is the point.** `touch` records what a
+run SAID it would change; `harvest` records what it actually changed, read
+out of `git diff`. Comparing the two is why both exist — a run that touched
+files it never declared is the finding the rig is built to surface.
+
+`start` prints the `run_uid` every other verb takes, so a session is
+normally `start` → repeated `event`/`touch` → `harvest` → `finish`.
+
+**Schema effects:** `show` reads; the other five write the benchmark run
+tables. No planning entity is read or written.
+
+**Capture:** None.
+
+---
+
+## Miscellaneous leaves
+
+Commands that do not group into a larger domain page.
+
+### `planar version`
+
+**Synopsis:**
+```
+planar version
+```
+
+**Description:** Print the planar version, commit, and C++ toolchain. Git
+metadata (sha, date, dirty flag) is embedded only in builds configured with
+`-DPLANAR_VERSION_META=ON`; a dev build prints the stable sentinel `dev`
+instead. That is deliberate — resolving it by default bakes the live sha
+into a module every binary imports, so every commit invalidates the whole
+build graph.
+
+**Capture:** None.
+
+---
+
+### `planar completion`
+
+**Synopsis:**
+```
+planar completion <shell>
+```
+
+**Description:** Generate the autocompletion script for the specified
+shell.
+
+**Capture:** None.
+
+---
+
+### `planar skills`
+
+**Synopsis:**
+```
+planar skills
+```
+
+**Description:** **Retired.** Rendering and drift detection moved to the
+external `scriptorium` binary (plan 918 M5). Planar no longer renders
+vendor projections nor tracks their install-drift in-band. The command
+remains so that an operator running it gets told where the functionality
+went rather than a bare unknown-command error.
+
+**Capture:** None.
+
+---
+
+### `planar task cancel <task-id>`
+
+**Synopsis:**
+```
+planar task cancel <task-id>
+```
+
+**Description:** Cancel a task. `cancelled` is a terminal status, reachable
+from `todo` or `doing`; see the status lifecycle under `planar task`.
+Single-argument form only.
+
+**Schema effects:** Writes `tasks.status`.
+
+**Capture:** Yes.
+
+---
+
+### `planar plan step list <plan-id>`
+
+**Synopsis:**
+```
+planar plan step list <plan-id>
+```
+
+**Description:** List a plan's steps with their status and any linked task.
+The same step data `planar plan show` renders inline, without the
+surrounding plan detail.
+
+**Schema effects:** Reads `plan_steps`.
+
+**Capture:** None (read-only).
+
+---
+
+### `planar plan divergence <plan-id>`
+
+**Synopsis:**
+```
+planar plan divergence <plan-id> [--json]
+```
+
+**Description:** Report the declared-vs-derived closure divergence for a
+plan's open tasks (decision D4). Declared closure is what the tasks say
+they touch; derived closure is what the graph implies. A divergence means
+one of the two is wrong, and the report names which tasks disagree rather
+than silently reconciling them.
+
+**Schema effects:** Reads `tasks`, `entity_links`, and the closure tables.
+
+**Capture:** None (read-only).
+
+---
+
+### `planar groups recommend <plan-id>`
+
+**Synopsis:**
+```
+planar groups recommend <plan-id> [--json]
+```
+
+**Description:** Recommend closure-minimizing task slices for a plan —
+groupings that keep each slice's touched surface as small as possible.
+Advisory: it proposes slices, it does not create or reorder anything.
+
+**Schema effects:** Reads `tasks` and the closure/touches tables.
+
+**Capture:** None (read-only).
+
+---
+
+### `planar decision link` / `planar scenario link`
+
+**Synopsis:**
+```
+planar decision link <decision-id> <kind>:<id> [--relationship <rel>]
+planar scenario link <scenario-id> <kind>:<id> [--relationship <rel>]
+```
+
+**Description:** Create an entity link from a decision (or scenario) to
+another entity. Two arms of the same seven-arm entity-link surface `planar
+link` exposes; see that domain for the relationship vocabulary and the
+note that link verbs are **deliberately unguarded** by the cross-scope
+guard, because `entity_links` edges legitimately cross scopes.
+
+**Schema effects:** Writes `entity_links`.
+
+**Capture:** Yes.
+
+---
+
+### `planar workflow run`
+
+**Synopsis:**
+```
+planar workflow run <workflow> [--args <json>]
+```
+
+**Description:** Run an installed workflow. See the `workflow` domain above
+for discovery and the workflow contract.
+
+**Capture:** Yes.
+
+---
+
+### Domain: `annotate` — the remaining leaves
+
+The `annotate` domain's core verbs (`add`, `list`, `show`, `update`,
+`remove`, `tag`, `capabilities`) are documented under their own domain.
+These six complete it.
+
+| leaf | purpose |
+|------|---------|
+| `planar annotate dismiss` | Dismiss an annotation. |
+| `planar annotate archive` | Archive an annotation. |
+| `planar annotate bulk-dismiss` | Dismiss every ACTIVE annotation matching the filter. |
+| `planar annotate bulk-archive` | Archive every annotation matching the filter, **including non-active rows**. |
+| `planar annotate command` | Apply a receipt-backed annotation JSON request from stdin (`--request @-`). |
+| `planar annotate receipt` | Look up a durable annotation command receipt. |
+
+**The two bulk verbs do not have the same reach**, and the asymmetry is
+easy to miss: `bulk-dismiss` acts only on ACTIVE rows, while
+`bulk-archive` acts on everything the filter matches regardless of state.
+A filter that looks equivalent between the two will not affect the same
+set.
+
+**`command` and `receipt` are a pair.** `command` applies a JSON request
+read from stdin and mints a durable receipt for it; `receipt` looks that
+receipt up afterwards. The receipt is what makes a bulk mutation auditable
+after the fact, so the two are only useful together.
+
+**Schema effects:** All six write or read `annotations`; `command` and
+`receipt` also touch the receipt store.
+
+**Capture:** Yes for the mutating verbs; none for `receipt`.
+
+---
+
 ## Domain: `tree`
 
 > **Stale section (task 6140, 2026-09-09).** `planar tree`'s actual flag set
