@@ -366,7 +366,7 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 # discipline. Tidy drift still does, as does everything else, because this
 # repo has no .github/workflows at all today.
 .PHONY: test-all
-test-all: test ctest-registry-check coverage cli-usage-check surface-check cpp-lint-gate ## Run the unit suite, coverage, the authored-surface gates, and the gating half of cpp-lint
+test-all: test ctest-registry-check coverage cli-usage-check surface-check eval-contracts cpp-lint-gate ## Run the unit suite, coverage, the authored-surface and agent-contract gates, and the gating half of cpp-lint
 
 # RE-POINTED AT clang-format (plan 996, task 6045). These ran `zig fmt` over
 # `zig/`. With that tree deleted the formatter of record is the PINNED LLVM's
@@ -420,6 +420,25 @@ eval-orchestrator-fast: eval-orchestrator-unit ## Provider-free contract lane (d
 eval-orchestrator-unit: ## Harness unit tests
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 		-s evals/orchestrator -p 'test_*.py'
+
+.PHONY: eval-contracts
+eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-fixtures ## The PROVIDER-FREE eval lanes, composed into test-all
+
+# Why this exists separately from `make eval`, and why test-all uses it:
+#
+# `make eval` also runs `eval-render`, which shells the external
+# `scriptorium` binary. That binary is NOT in install.sh's BUILD_DEPS or
+# RUN_DEPS, so a contributor without it would find `test-all` unrunnable —
+# the "gate that cannot run" failure this repo keeps closing. These three
+# lanes need only python3 and the checkout.
+#
+# They are worth gating because they police the AGENT CONTRACTS: the
+# executable prompts under agents/ and skills/src/ that the orchestrator and
+# its specialists actually follow. Those had no gate at all until now, and a
+# real violation (a language-specific `.zig-cache` reference in
+# agents/methodology.md, forbidden because the core surfaces must stay
+# language-agnostic) sat undetected for EIGHT DAYS because nothing ran the
+# suite that catches it. An ungated suite is one nobody runs.
 
 .PHONY: eval-orchestrator-contract
 eval-orchestrator-contract: ## Backward-compatible alias for the contract lane
