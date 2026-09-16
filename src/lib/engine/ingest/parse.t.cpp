@@ -360,3 +360,116 @@ TEST_CASE("section_has_content distinguishes an absent section from an empty one
   CHECK_FALSE(parse::section_has_content(empty, "## Scenarios"));
   CHECK_FALSE(parse::section_has_content(absent, "## Scenarios"));
 }
+
+// --- break-probe survivors closed by task 6782 ---------------------------
+//
+// Every clause below decides WHAT A SPEC TURNS INTO -- which lines become
+// milestones, which become work items, which become scenarios. A sweep of
+// parse.cpp found the delimiter rules reached by the suite but not
+// discriminated by it: control probes that negate each predicate outright
+// die, while probes that merely LOOSEN it (drop the required space, drop
+// the "not an H3" half) survived.
+
+TEST_CASE("a bullet marker requires its following space", "[ingest][parse]") {
+  // `-5 degrees` and `*emphasis*` are prose. Without the space requirement
+  // each becomes a work item whose title is the text with its first two
+  // characters eaten.
+  constexpr std::string_view body       = R"(# Roadmap
+
+## M1
+
+Intent.
+
+-5 degrees is prose, not an item
+*emphasis* is prose too
+- Add the only item
+)";
+  const auto                 milestones = parse::parse_roadmap(body);
+  REQUIRE(milestones.size() == 1);
+  REQUIRE(milestones[0].work_items_.size() == 1);
+  CHECK(milestones[0].work_items_[0].title_ == "Add the only item");
+}
+
+TEST_CASE("a milestone heading requires its space and must not be an H3", "[ingest][parse]") {
+  // Two separate clauses on one line: `## ` needs the space (so `##notes`
+  // is prose), and an H3 must NOT open a milestone even though `### x`
+  // also starts with `##`.
+  constexpr std::string_view body       = R"(# Roadmap
+
+##notes is not a heading
+
+## M1
+
+Intent.
+
+- Item one
+
+### M1 detail
+
+- Still inside M1
+)";
+  const auto                 milestones = parse::parse_roadmap(body);
+  REQUIRE(milestones.size() == 1);
+  CHECK(milestones[0].name_ == "M1");
+  // The H3 did not open a second milestone, and its bullet stayed in M1.
+  CHECK(milestones[0].work_items_.size() == 2);
+}
+
+TEST_CASE("a scenario H3 requires its space, and `Scenario:` requires one too", "[ingest][parse]") {
+  // `###detail` is not a heading, so it cannot open a scenario; and the
+  // `Scenario: ` prefix is stripped only with its space, so `Scenario:x`
+  // keeps the whole string as the title.
+  constexpr std::string_view body      = R"(## Scenarios
+
+###notaheading cannot open a scenario
+
+### Scenario: Real one
+
+**Verifies:** task:add-foo
+**Kind:** unit
+**Acceptance:** exit 0
+
+### Scenario:tight keeps its whole title
+
+**Verifies:** task:add-bar
+)";
+  const auto                 scenarios = parse::parse_test_spec(body);
+  REQUIRE(scenarios.size() == 2);
+  // `###notaheading` produced nothing; the spaced H3 did.
+  CHECK(scenarios[0].title_ == "Real one");
+  // `Scenario:` without its space is NOT a prefix, so the title survives
+  // whole rather than being cut at the prefix's length.
+  CHECK(scenarios[1].title_ == "Scenario:tight keeps its whole title");
+}
+
+TEST_CASE("a decision bullet falls back to its first sentence when there is no bold run", "[ingest][parse]") {
+  // The sentence-terminator fallback in `extract_bullet_decision_title` was
+  // UNREACHED by the suite: a control probe that matched NO terminator at
+  // all still left every test green, because every existing decision
+  // bullet opens with a `**bold**` run that short-circuits the fallback.
+  // Each of `.`, `?` and `!` is pinned separately here.
+  constexpr std::string_view body      = R"(## Decisions
+
+- We will ship SQLite. The rest of this sentence is body text.
+- Should we vendor curl? That question is the title.
+- Ship it now! The urgency is the title.
+)";
+  const auto                 decisions = parse::parse_tech_spec_decisions(body);
+  REQUIRE(decisions.size() == 3);
+  CHECK(decisions[0].title_ == "We will ship SQLite.");
+  CHECK(decisions[1].title_ == "Should we vendor curl?");
+  CHECK(decisions[2].title_ == "Ship it now!");
+}
+
+TEST_CASE("a decision bullet's bold run only counts at the START", "[ingest][parse]") {
+  // `starts_with("**")` guards the bold branch. Dropping it makes any
+  // LATER `**` pair win, so a bullet with mid-text emphasis yields a title
+  // cut out of the middle of the sentence.
+  constexpr std::string_view body      = R"(## Decisions
+
+- Use **SQLite** here. Body follows.
+)";
+  const auto                 decisions = parse::parse_tech_spec_decisions(body);
+  REQUIRE(decisions.size() == 1);
+  CHECK(decisions[0].title_ == "Use **SQLite** here.");
+}
