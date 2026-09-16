@@ -643,6 +643,58 @@ def grade_coherence_negative_control() -> None:
         raise EvalFailure("coherence negative control was not detected")
 
 
+def grade_contract_negative_control() -> None:
+    """Prove `grade_contract` can actually REJECT, per assertion mode.
+
+    A grader that has never been shown to fail is indistinguishable from one
+    that returns pass. `grade_coherence` has had a control since this suite
+    landed; this is the same proof for the contract grader, exercising every
+    arm that is supposed to refuse.
+    """
+    probe = "agents/methodology.md"
+    if not (ROOT / probe).is_file():  # pragma: no cover - checkout invariant
+        raise EvalFailure(f"contract negative control needs {probe}")
+
+    def case(assertion_id: str, pattern: str, mode: str, paths: list[str]) -> dict[str, Any]:
+        return {
+            "id": "contract-negative-control",
+            "contract_assertions": [
+                {
+                    "id": assertion_id,
+                    "description": f"negative control: {assertion_id}",
+                    "paths": paths,
+                    "pattern": pattern,
+                    "mode": mode,
+                }
+            ],
+        }
+
+    # Each of these MUST raise. `ZZZ` is chosen to be absent from any authored
+    # surface; `\\bthe\\b` is chosen to be present in all of them.
+    must_reject = [
+        case("all-requires-every-path", "ZZZ_NEVER_PRESENT", "all", [probe]),
+        case("any-requires-one-path", "ZZZ_NEVER_PRESENT", "any", [probe]),
+        case("none-forbids-a-match", r"\bthe\b", "none", [probe]),
+        case("missing-path-is-an-error", r"\bthe\b", "any", ["agents/does-not-exist.md"]),
+    ]
+    for probe_case in must_reject:
+        assertion_id = probe_case["contract_assertions"][0]["id"]
+        try:
+            grade_contract(Path("<negative-control>"), probe_case)
+        except EvalFailure:
+            continue
+        raise EvalFailure(
+            f"contract grader negative control was not detected: {assertion_id}"
+        )
+
+    # ... and the positive arm, so the control proves DISCRIMINATION rather
+    # than a grader that rejects everything it is handed.
+    grade_contract(
+        Path("<negative-control>"),
+        case("any-accepts-a-real-match", r"\bthe\b", "any", [probe]),
+    )
+
+
 def create_artifacts(
     case_id: str, label: str, results_dir: Path | None
 ) -> Path:
@@ -1913,6 +1965,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         pass_line("orchestrator cross-role coherence")
         grade_coherence_negative_control()
         pass_line("coherence grader negative control")
+        grade_contract_negative_control()
+        pass_line("contract grader negative control")
         for path, case in selected:
             if "contract" in case["tiers"]:
                 grade_contract(path, case)

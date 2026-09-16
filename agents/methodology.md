@@ -623,9 +623,9 @@ this repo before anyone checked the environment instead of the diff (tasks
 | A backgrounded `ctest` reads as an incomplete or truncated suite, or as nothing at all | The OS OOM-killed the ctest process for low memory; no verdict was ever reached (task 6662, M11 wave 5) | **No summary line at all.** A real run — pass or fail — always prints `N tests failed out of M`. Absence of that line means the suite did not finish, not that it finished badly. Re-run; do not investigate the code. Long-lived orchestrations that keep a build directory hot for hours (many `clang++` processes, shrinking free disk) are exactly the workload that meets this one. |
 
 The third one generalizes past its own signature, and that is the part worth
-carrying forward. A historical variant — two `test-parity-cpp` runs sharing
-one `.zig-cache`, both since deleted at the M10 cutover — built cleanly, ran,
-and reported `276 CRASH` out of 652 where the truth on the same commit was 18.
+carrying forward. A historical variant — two parity runs sharing one build
+cache, both since retired — built cleanly, ran, and reported `276 CRASH` out
+of 652 where the truth on the same commit was 18.
 There was **no exit-code tell at all**, and the reflex it invited was not
 re-running but bisecting, or reverting a merge that was never at fault.
 
