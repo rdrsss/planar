@@ -234,7 +234,7 @@ TEST_CASE("ext propagate creates the parent issue, both sub-issues, and records 
   CHECK(remote.request_count() == 8);
 }
 
-TEST_CASE("a repeated ext propagate SKIPS every entity and sends only the probe", "[cmd][ext][propagate][idempotent]") {
+TEST_CASE("a repeated ext propagate SKIPS every entity and sends NOTHING", "[cmd][ext][propagate][idempotent]") {
   issue_counter                 counter;
   planar::http::fixture::server remote(make_respond(counter, 422));
   auto const                    fx = make_fixture("idem");
@@ -252,11 +252,19 @@ TEST_CASE("a repeated ext propagate SKIPS every entity and sends only the probe"
   CHECK(again.out.contains(R"("skipped":4)"));
   CHECK(again.out.contains(R"("failed":0)"));
 
-  // THE ASSERTION THIS CASE EXISTS FOR: the repeat sends only the sub-issue
-  // support probe (which is not cached across a fresh process the way the
-  // oracle's own run-1/run-2/run-3 trace requires -- see
-  // `detect_parent_issue_support`'s header) and zero creates or links.
-  CHECK(remote.request_count() == first_requests + 1);
+  // THE ASSERTION THIS CASE EXISTS FOR: the repeat sends NOTHING AT ALL --
+  // zero creates, zero links, and not even the sub-issue support probe.
+  //
+  // It used to send one request here, the probe, because the cache took
+  // three propagates to hit (run 1's write no-opped against a row that did
+  // not exist yet, and run 2's read missed because the strategy write had
+  // replaced `config_json` wholesale). Task 6354 / decision 1126 fixed both
+  // halves, so the cache answers on run 2 and this count went from
+  // `first_requests + 1` to `first_requests`. That delta IS the fix,
+  // measured end-to-end against a real HTTP fixture server rather than a
+  // call-counting double -- one fewer round-trip against a provider on
+  // every early propagate.
+  CHECK(remote.request_count() == first_requests);
   CHECK(scalar(fx, "select count(*) from external_links") == 4);
 }
 

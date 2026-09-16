@@ -390,26 +390,25 @@ TEST_CASE("propagate_zero_repo rejects empty and malformed lead_repo", "[engine]
         parent_issue::parent_issue_error::bad_config);
 }
 
-TEST_CASE("detect_parent_issue_support's cache write is a no-op until the anchor link row exists, "
-          "so it takes THREE propagate calls to observe a cache hit",
-          "[engine][external][parent_issue]") {
-  // This is oracle-derived, not the intuitive two-call shape (see this
-  // file's header and CLAUDE.md's "derive from the oracle" warning).
-  // `write_sub_issue_support_cache` is a no-op when the anchor has no
-  // `external_links` mirror row yet:
+TEST_CASE("the sub-issue-support cache hits on the SECOND propagate, not the third", "[engine][external][parent_issue][6354]") {
+  // BEFORE task 6354 this case asserted THREE runs, and was right to: the
+  // cache genuinely cost two wasted probe round-trips against a real GitHub
+  // before it ever helped, for two compounding reasons.
   //
-  //   run 1: detect_parent_issue_support probes, then tries to cache —
-  //          NO-OP, because the anchor's mirror row does not exist until
-  //          `create_or_skip_github_issue`'s `record_mirror_link` call a
-  //          few lines later in the SAME run. `probes_` becomes 1.
-  //   run 2: the anchor row now exists, but its `config_json` is
-  //          `{"strategy":...}` with no `sub_issue_supported` key — that
-  //          key was never written on run 1 — so the cache READ misses
-  //          again, the probe runs a SECOND time, and THIS write lands
-  //          (the row exists now). `probes_` becomes 1 again (a fresh
-  //          fake client).
-  //   run 3: the cache finally holds `sub_issue_supported`, so the probe
-  //          does not run at all — `probes_` stays 0.
+  //   run 1: `detect_parent_issue_support` probed, then tried to cache --
+  //          a NO-OP, because the anchor's `external_links` mirror row does
+  //          not exist until `create_or_skip_github_issue` creates it a few
+  //          lines later IN THE SAME CALL.
+  //   run 2: the row existed, but the strategy-cache write had replaced
+  //          `config_json` wholesale, so `sub_issue_supported` was gone
+  //          again -- the read missed and the probe ran a SECOND time.
+  //   run 3: first actual cache hit.
+  //
+  // Decision 1126 fixed both halves: the strategy write MERGES instead of
+  // replacing, and the probe result is re-written once the row exists. The
+  // case still spans THREE runs deliberately -- asserting the new count in
+  // isolation would not show that it CHANGED, and run 3 is what proves the
+  // hit persists rather than alternating.
   scratch_db_path scratch;
   auto            conn      = open_migrated(scratch);
   auto const      system_id = insert_system(conn, "gh");
@@ -421,15 +420,17 @@ TEST_CASE("detect_parent_issue_support's cache write is a no-op until the anchor
   REQUIRE_FALSE(err(rep1).has_value());
   CHECK(fake1.probes_ == 1);
 
+  // The arm that changed: run 2 used to probe again. A probe that would
+  // REFUSE proves the cache is what answered -- if the probe ran, this
+  // returns sub_issue_unsupported instead of succeeding.
   fake_client fake2;
-  auto        rep2 = parent_issue::propagate_parent_issue_with_repo(conn, fake2, anchor_id, "acme", "checkout", opts_val);
+  fake2.probe_supported_ = false;
+  auto rep2              = parent_issue::propagate_parent_issue_with_repo(conn, fake2, anchor_id, "acme", "checkout", opts_val);
   REQUIRE_FALSE(err(rep2).has_value());
-  CHECK(fake2.probes_ == 1);
+  CHECK(fake2.probes_ == 0);
   CHECK(rep2->skipped == 1);
 
-  // Now the cache is actually populated: a THIRD run with a probe that
-  // would otherwise refuse must still succeed, because the probe never
-  // runs at all.
+  // And it stays hit: run 3 must not re-probe either.
   fake_client fake3;
   fake3.probe_supported_ = false;
   auto rep3              = parent_issue::propagate_parent_issue_with_repo(conn, fake3, anchor_id, "acme", "checkout", opts_val);
@@ -437,13 +438,10 @@ TEST_CASE("detect_parent_issue_support's cache write is a no-op until the anchor
   CHECK(fake3.probes_ == 0);
   CHECK(rep3->skipped == 1);
 
-  // M8: write_sub_issue_support_cache's merge must not CLOBBER the
-  // strategy fields run 1 wrote — it is a MERGE, keyed on preserving
-  // every other object member while only touching `sub_issue_supported`.
-  // A mutation that dropped the `merged.object.emplace_back(key, val)`
-  // preserve-arm would still leave every run above green (none of them
-  // reads `config_json` after run 2's write), so this is the one
-  // assertion that actually exercises the preserve path.
+  // Both concerns coexist in `config_json`. The strategy write and the
+  // probe-result write happen at different moments on different paths, so
+  // either one replacing the object wholesale silently deletes the other's
+  // state -- that overwrite WAS the run-2 half of the defect.
   {
     auto stmt = conn.prepare("select config_json from external_links where entity_kind='plan' and entity_id=?");
     REQUIRE(stmt.has_value());
