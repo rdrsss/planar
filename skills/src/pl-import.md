@@ -6,14 +6,14 @@ shared_notes:
 slug: pl-import
 vendor:
     claude:
-        argument_hint: <repo-root> [--apply] [--apply-removals] [--interpret|--no-interpret] [--accept-spec <slug>|all] [--no-forward-specs] [--strict] [--threshold N] [--roadmap <path>] [--scope <slug>] [--no-status-inference] [--trust-status-inference]
+        argument_hint: <repo-root> [--apply] [--apply-removals] [--interpret|--no-interpret] [--accept-spec <slug>|all] [--no-forward-specs] [--strict] [--roadmap <path>] [--scope <slug>] [--no-status-inference] [--trust-status-inference]
         invocation_examples: |
             /pl-import .                                # preview the current repo
             /pl-import . --apply                        # commit the import
             /pl-import . --interpret                    # opt into the LLM pass
             /pl-import . --interpret --apply
             /pl-import /path/to/other-repo --dry-run
-            /pl-import . --strict --threshold 0.85 --apply
+            /pl-import . --strict --apply
             /pl-import . --scope assoc:project:my-app --apply
 ---
 
@@ -66,41 +66,41 @@ Two visually distinct sections in the preview:
 
 pl-import walks `docs/`, `planning/`, `specs/`, and the repo root for `*roadmap*.md`. When multiple roadmaps match, the shortest path wins; the rest are listed in the preview as a warning. Pass `--roadmap <path>` to override discovery.
 
-## Confidence Floor
+## Confidence Floor — NOT IMPLEMENTED
 
-The preview refuses (exit 1) when more than 50% of extracted tasks score below `--threshold` (default 0.7). The refusal names the threshold, lists the low-confidence tasks, and points at `--threshold 0.0` to relax or `--strict` to require every task clear the threshold. The floor runs before the LLM merge so a noisy preview cannot be rescued by good LLM output.
+There is no confidence floor in this binary, and no `--threshold` to tune
+it. The Go implementation refused (exit 1) when more than 50% of extracted
+tasks scored below `--threshold` (default 0.7), listed the low-confidence
+tasks, and offered `--threshold 0.0` to relax or `--strict` to require
+every task clear it. None of that was ported: the C++ tree has no
+confidence scoring at all, and `--threshold` itself was removed at task
+6802 after the task-6788 spike found it declared-but-never-read here AND
+in the Zig oracle.
+
+**Do not wait for a floor refusal, and do not tell an operator one is
+coming.** What survives is `--strict`, which refuses ambiguous items
+outright.
 
 ## Status-Inference Safety (Greenfield + Docs-Only Repos)
 
-Status inference layers 2-3 (branch name and git-log correlation) produce false positives in repos where the git history records doc-authoring commits but no implementation. The literal example: a docs-only repo with `add v2 technical roadmap` in the log will match task titles inside that roadmap and auto-mark them as `status=done`.
+Status inference layers 2-3 (branch name and git-log correlation) produce
+false positives in repos where the git history records doc-authoring
+commits but no implementation. The literal example: a docs-only repo with
+`add v2 technical roadmap` in the log will match task titles inside that
+roadmap and auto-mark them as `status=done`.
 
-Three knobs cover the cases:
+**The >25% auto-done refusal described by the Go implementation is also
+absent**, along with its `--trust-status-inference` bypass. One knob
+covers this today:
 
-- `--no-status-inference` defaults every task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 entirely; layer 1 (operator-explicit checkbox state) still runs. Use this for greenfield repos, docs-only repos, fresh forks, or any case where you do not trust the git log as a signal of implementation status.
-- `--trust-status-inference` is the explicit opt-in to the >25% auto-done bypass below. Use this only when you have a clean repo with a genuinely high done-count and have manually verified the inferred done marks.
-- `--threshold 0.0` disables the confidence floor and is the legacy escape hatch. It now triggers the safety net described next.
+- `--no-status-inference` defaults every task to `status=todo`,
+  `signal=no-inference`, `confidence=0`. It skips layers 2-3 entirely;
+  layer 1 (operator-explicit checkbox state) still runs. Use it for
+  greenfield repos, docs-only repos, fresh forks, or any case where the
+  git log is not a trustworthy signal of implementation status.
 
-### >25% Auto-Done Refusal
-
-When `--threshold 0.0` disables the confidence floor AND more than 25% of inferred tasks would land as `status=done` via git-log correlation, pl-import refuses the import with:
-
-```
-warning: --threshold 0.0 would auto-mark <N>/<TOTAL> tasks (<P>%) as `status=done`
-         based on git-log correlation. In docs-only or fresh repos this is
-         almost always wrong. Refusing the import.
-
-Options:
-  --no-status-inference         skip inference entirely; default every task
-                                to status=todo
-  --trust-status-inference      explicit bypass; commit the done-marks (only
-                                when you've verified them)
-```
-
-`--no-status-inference` short-circuits the check (no git-log signal means no done marks to refuse over). `--trust-status-inference` bypasses the refusal so a clean repo with a legitimate high done-count can still apply.
-
-### Recovery: `planar task reopen <id>`
-
-If an earlier import landed wrong done marks before this safety net existed, use `planar task reopen <task-id> [--status todo] [--reason "..."]` to walk individual tasks back to a non-terminal status. The transition is recorded in the `task_reopens` audit table so the lifecycle remains reconstructible. `planar task update --force --status todo` is the lower-level escape hatch; the dedicated `task reopen` verb is the documented entry point.
+Because nothing refuses an over-confident import automatically, REVIEW THE
+PREVIEW before `--apply` on any repo whose history is mostly documentation.
 
 ## --interpret Pass
 
@@ -238,8 +238,8 @@ planar import <path> --apply --apply-removals     # commit + soft-cancel removed
 planar import <path> --interpret                  # opt into LLM pass
 planar import <path> --interpret --apply
 planar import <path> --no-interpret               # explicitly deterministic-only (cli-lint-ignore: etcli-zig implicit bool negation, valid at runtime)
-planar import <path> --strict --apply             # every task must clear --threshold
-planar import <path> --threshold 0.0 --apply      # disable the confidence floor
+planar import <path> --strict --apply             # refuse ambiguous items
+planar import <path> --no-status-inference --apply  # do not guess statuses
 planar import <path> --no-status-inference --apply # docs-only / greenfield: all tasks land todo
 planar import <path> --roadmap <path>             # override roadmap auto-discovery
 planar import <path> --accept-spec <slug>         # non-interactive forward-spec selection

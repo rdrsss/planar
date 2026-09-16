@@ -524,7 +524,6 @@ auto declare_import(CLI::App& root) -> void {
   add_bool(*importer, "--from-github", "Pull source from GitHub issues");
   add_bool(*importer, "--dry-run");
   add_bool(*importer, "--strict");
-  add_string(*importer, "--threshold", "Similarity threshold, e.g. 0.7");
   add_string(*importer, "--roadmap", "Path to a roadmap source");
   add_bool(*importer, "--apply");
   add_bool(*importer, "--apply-removals");

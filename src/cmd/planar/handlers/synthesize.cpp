@@ -582,7 +582,6 @@ auto declare_synthesize(CLI::App& root) -> void {
   add_string(*synthesize, "--code-layout");
   add_bool(*synthesize, "--treat-as-greenfield");
   add_bool(*synthesize, "--treat-as-nongreenfield");
-  add_string(*synthesize, "--threshold", "Similarity threshold, e.g. 0.7");
   add_bool(*synthesize, "--literal");
   add_string(*synthesize, "--accept-spec", "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'");
   add_bool(*synthesize, "--no-forward-specs", "Skip forward-spec processing entirely");
