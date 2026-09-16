@@ -291,51 +291,64 @@ auto read_sub_issue_support_cache(db::connection& conn, std::int64_t anchor_plan
   return std::optional<bool>{v->boolean};
 }
 
-/// @brief `writeSubIssueSupportCache` — best-effort merge-write of
-/// `sub_issue_supported` into the anchor mirror link's `config_json`,
-/// preserving every other key already present. A no-op (not an error) when
-/// the row does not exist yet — the very first `create_or_skip_github_issue`
-/// call on the anchor writes the strategy cache that establishes it.
+/// @brief Best-effort merge-write of `sub_issue_supported` into the anchor
+/// mirror link's `config_json`, preserving every other key already present.
+/// A no-op (not an error) when the row does not exist yet.
 ///
-/// See `detect_parent_issue_support`'s doc comment (parent_issue.cppm) and
-/// task 6354 for why this no-op means the cache needs THREE propagate
-/// calls, not two, before it ever short-circuits a probe.
-auto write_sub_issue_support_cache(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id, bool supported)
-    -> void {
+/// That no-op is why the probe result has to be written a SECOND time after
+/// the anchor row is created — see `propagate_parent_issue_with_repo` and
+/// task 6354 / decision 1122's sibling 1126. Before that, the sequence cost
+/// two wasted probe round-trips against a real GitHub before the cache ever
+/// helped.
+/// @brief Merge `updates` (a JSON object) into the anchor mirror link's
+/// `config_json`, key by key: a key present in both takes the new value,
+/// every other existing key survives.
+///
+/// Every writer of that column goes through here (task 6354, decision 1126).
+/// The column carries two independent concerns -- the propagation strategy
+/// and the sub-issue-support probe result -- written at different moments by
+/// different code paths, so a whole-object write by either one silently
+/// deletes the other's state. That is exactly the bug this closes.
+/// @param conn Open connection.
+/// @param anchor_plan_id The anchor plan whose mirror link is updated.
+/// @param system_id External system id.
+/// @param updates A JSON object literal whose members are merged in.
+/// @return False when the update statement itself failed. A MISSING row is
+/// reported as success: the caller cannot create it, and a first propagate
+/// legitimately reaches here before the row exists.
+auto merge_anchor_mirror_config(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id,
+                                std::string_view updates) -> bool {
   auto stmt = conn.prepare("select coalesce(config_json, '{}') from external_links "
                            "where entity_kind = 'plan' and entity_id = ? and system_id = ? and link_role = 'mirror' limit 1");
   if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, system_id)) {
-    return;
+    return false;
   }
   auto stepped = stmt->step();
-  if (!stepped || *stepped == db::step_result::done) {
-    return;
+  if (!stepped) {
+    return false;
+  }
+  if (*stepped == db::step_result::done) {
+    return true;
   }
   auto const existing = stmt->column_text(0);
 
-  json_dom::json_value merged;
-  merged.kind          = json_dom::json_kind::object;
-  bool wrote_supported = false;
+  auto incoming = json_dom::parse_json(updates);
+  if (!incoming || incoming->kind != json_dom::json_kind::object) {
+    return false;
+  }
 
-  auto parsed = json_dom::parse_json(existing);
-  if (parsed && parsed->kind == json_dom::json_kind::object) {
+  json_dom::json_value merged;
+  merged.kind = json_dom::json_kind::object;
+  if (auto parsed = json_dom::parse_json(existing); parsed && parsed->kind == json_dom::json_kind::object) {
     for (auto& [key, val] : parsed->object) {
-      if (key == "sub_issue_supported") {
-        json_dom::json_value b;
-        b.kind    = json_dom::json_kind::boolean;
-        b.boolean = supported;
-        merged.object.emplace_back("sub_issue_supported", std::move(b));
-        wrote_supported = true;
-        continue;
-      }
-      merged.object.emplace_back(key, val);
+      auto const* replacement = incoming->find(key);
+      merged.object.emplace_back(key, replacement != nullptr ? *replacement : val);
     }
   }
-  if (!wrote_supported) {
-    json_dom::json_value b;
-    b.kind    = json_dom::json_kind::boolean;
-    b.boolean = supported;
-    merged.object.emplace_back("sub_issue_supported", std::move(b));
+  for (auto& [key, val] : incoming->object) {
+    if (merged.find(key) == nullptr) {
+      merged.object.emplace_back(key, val);
+    }
   }
 
   std::string encoded;
@@ -344,9 +357,15 @@ auto write_sub_issue_support_cache(db::connection& conn, std::int64_t anchor_pla
   auto write = conn.prepare("update external_links set config_json = ? "
                             "where entity_kind = 'plan' and entity_id = ? and system_id = ? and link_role = 'mirror'");
   if (!write || !write->bind_text(1, encoded) || !write->bind_int64(2, anchor_plan_id) || !write->bind_int64(3, system_id)) {
-    return;
+    return false;
   }
-  static_cast<void>(write->step());
+  return write->step().has_value();
+}
+
+auto write_sub_issue_support_cache(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t system_id, bool supported)
+    -> void {
+  static_cast<void>(merge_anchor_mirror_config(conn, anchor_plan_id, system_id,
+                                               std::format(R"({{"sub_issue_supported":{}}})", supported ? "true" : "false")));
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +680,7 @@ auto propagate_parent_issue_with_repo(db::connection& conn, gh_client& client, s
   report                     rep;
   std::vector<entity_result> results;
 
+  std::optional<bool> detected;
   if (!options.dry_run) {
     auto supported = detect_parent_issue_support(conn, client, owner, repo, anchor_plan_id, options.sys_id);
     if (!supported) {
@@ -669,6 +689,7 @@ auto propagate_parent_issue_with_repo(db::connection& conn, gh_client& client, s
     if (!*supported) {
       return std::unexpected(parent_issue_error::sub_issue_unsupported);
     }
+    detected = *supported;
   }
 
   // ---- step 1: create or skip the anchor parent issue ----
@@ -678,12 +699,28 @@ auto propagate_parent_issue_with_repo(db::connection& conn, gh_client& client, s
   }
 
   if (!options.dry_run && !parent->external_id.empty()) {
-    auto const cfg  = std::format(R"({{"strategy":"github-parent-issue","parent_issue_repo":"{}/{}","parent_issue_num":{}}})",
-                                  owner, repo, parent->number);
-    auto       stmt = conn.prepare("update external_links set config_json = ? "
-                                   "where entity_kind = 'plan' and entity_id = ? and system_id = ? and link_role = 'mirror'");
-    if (!stmt || !stmt->bind_text(1, cfg) || !stmt->bind_int64(2, anchor_plan_id) || !stmt->bind_int64(3, options.sys_id) ||
-        !stmt->step()) {
+    // MERGE, never replace (task 6354, decision 1126). Writing this object
+    // wholesale clobbered `sub_issue_supported` on its way past, which was
+    // the run-2 half of the three-run cache defect: even once the row
+    // existed, the key the probe had written was gone again by the time the
+    // next run read it.
+    // Re-write the probe result now that the row exists. The write inside
+    // `detect_parent_issue_support` above is a no-op on a first propagate --
+    // the anchor's mirror row is not created until
+    // `create_or_skip_github_issue` a few lines up, IN THE SAME CALL. This
+    // second write is what makes run 2 a cache hit instead of run 3.
+    //
+    // It goes FIRST, before the strategy cache below, deliberately: that
+    // ordering puts the strategy write's merge on the path this file's
+    // three-run test actually walks, so a regression to a whole-object
+    // write there fails a test instead of being silently repaired by a
+    // later write.
+    if (detected.has_value()) {
+      write_sub_issue_support_cache(conn, anchor_plan_id, options.sys_id, *detected);
+    }
+    auto const cfg = std::format(R"({{"strategy":"github-parent-issue","parent_issue_repo":"{}/{}","parent_issue_num":{}}})",
+                                 owner, repo, parent->number);
+    if (!merge_anchor_mirror_config(conn, anchor_plan_id, options.sys_id, cfg)) {
       return std::unexpected(parent_issue_error::query_failed);
     }
   }

@@ -273,16 +273,18 @@ export auto resolve_target_repo(db::connection& conn, std::int64_t anchor_plan_i
 ///
 /// The write is best-effort: when the anchor has no mirror link row yet
 /// (the very first call, before `propagate_parent_issue_with_repo` has
-/// written one), the write is a silent no-op — the first `create` call
-/// establishes the row and its `config_json` in the same pass.
+/// written one), the write here is a silent no-op — the first `create`
+/// call establishes the row in the same pass. `propagate_parent_issue_
+/// with_repo` therefore re-writes the probe result once that row exists,
+/// so **the cache hits on the SECOND propagate** (task 6354, decision
+/// 1126).
 ///
-/// **This means the cache takes THREE propagate calls to ever hit, not
-/// two** — see task 6354 (`oracle-subissue-cache-three-runs`) for the
-/// full run-by-run trace. Short version: run 1's cache write no-ops
-/// because the row does not exist yet (it's created later in the SAME
-/// call); run 2's write lands, but only after ANOTHER probe, because run
-/// 1 never wrote the key the run-2 read is looking for; run 3 is the
-/// first actual cache hit. Reproduced deliberately, not a port defect.
+/// It used to take THREE, for two compounding reasons: run 1's write
+/// no-opped as above, and run 2's read then missed anyway because the
+/// strategy-cache write had REPLACED `config_json` wholesale, deleting
+/// the key. Both halves are fixed — that write merges now — and the cost
+/// was two wasted probe round-trips against a real GitHub on every early
+/// propagate.
 /// @param conn An open, migrated connection.
 /// @param client The GitHub client to probe with.
 /// @param owner The repo owner.
