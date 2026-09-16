@@ -1131,3 +1131,41 @@ TEST_CASE("pulling a task whose touches reconcile fails rolls back its body upda
                                         "and to_kind = 'repo' and relationship = 'touches'",
                                         s.task_one)) == 1);
 }
+
+TEST_CASE("a SUCCESSFUL pull leaves the connection in autocommit, savepoint released", "[workbench][sync][pull][6787]") {
+  // The sibling defect to 6780's rollback clause, and deliberately probed
+  // SEPARATELY (6780's acceptance criteria said so outright): deleting
+  // `pull_to_db`'s SUCCESS-path `release savepoint` survived the whole
+  // suite, because a leaked savepoint fails silently. Nothing wraps the
+  // per-file loop in a transaction, so the leak carries into the NEXT
+  // file's `pull_to_db`, which re-enters a same-named NESTED savepoint --
+  // legal in SQLite, no error -- and the connection is simply left
+  // non-autocommit, with every later write hanging off a scope nobody will
+  // commit.
+  //
+  // That state was unobservable from a test until `connection::
+  // in_transaction()` (added for this task), which is why the mutation
+  // survived. Asserting it directly is the discriminating strategy chosen
+  // here, over contriving a multi-file scenario where the leak changes
+  // another file's outcome.
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+
+  // Precondition: nothing is open before the pull, so a `true` afterwards
+  // can only have come from the pull itself.
+  REQUIRE_FALSE(a.conn().in_transaction());
+
+  auto const file = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-first-task.md", s.task_one);
+  REQUIRE(
+      wfs::write_file_atomic(file, std::format("---\nentity_kind: task\nentity_id: {}\nanchor_plan_id: {}\ntitle: First Task\n"
+                                               "status: doing\n---\n\n**Status:** doing  \n\nEdited body from FS.\n",
+                                               s.task_one, s.plan_id)));
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 1);
+
+  // The assertion this case exists for.
+  CHECK_FALSE(a.conn().in_transaction());
+}
