@@ -192,6 +192,8 @@ public:
   /// proves a comment landed on the right issue, not that its two halves
   /// were not swapped.
   std::vector<std::string> comment_bodies_;
+  /// @brief (parent, child) issue numbers passed to each `link_sub_issue`.
+  std::vector<std::pair<std::int64_t, std::int64_t>> linked_;
 
   auto probe(std::string_view, std::string_view) -> std::expected<void, parent_issue::gh_client_error> override {
     ++probes_;
@@ -211,9 +213,15 @@ public:
     return parent_issue::created_issue{.number = issue_counter_, .node_id = std::format("N{}", issue_counter_)};
   }
 
-  auto link_sub_issue(std::string_view, std::string_view, std::int64_t, std::int64_t)
+  auto link_sub_issue(std::string_view, std::string_view, std::int64_t parent_number, std::int64_t child_number)
       -> std::expected<void, parent_issue::gh_client_error> override {
     ++links_;
+    // RECORD the pair, do not just count it. Discarding these numbers is
+    // what made `parse_issue_number_from_external_id` unobservable: a
+    // control probe forcing it to fail outright left every case green,
+    // because the parent number it recovers was thrown away here (task
+    // 6784).
+    linked_.emplace_back(parent_number, child_number);
     return {};
   }
 
@@ -769,4 +777,81 @@ TEST_CASE("distinct_repo_count_in_feature propagates query_failed rather than si
   auto count = parent_issue::distinct_repo_count_in_feature(conn, anchor_id);
   REQUIRE(err(count).has_value());
   CHECK(*err(count) == parent_issue::parent_issue_error::query_failed);
+}
+
+TEST_CASE("a child added AFTER the first propagate attaches to the recovered parent number", "[engine][external][parent_issue]") {
+  // `parse_issue_number_from_external_id` recovers the anchor's issue
+  // number from its stored `owner/repo#N` when the anchor itself is
+  // SKIPPED on a later run. Nothing asserted the recovered value: a
+  // control probe forcing the parser to fail outright left the whole file
+  // green, because `num.value_or(0)` fed a `link_sub_issue` whose
+  // arguments the test double discarded.
+  //
+  // With the pair now recorded, this is the case that observes it. The new
+  // child must be attached to the anchor's REAL number, not to 0.
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      system_id = insert_system(conn, "gh");
+  auto const      anchor_id = insert_plan(conn, "anchor", "a");
+  insert_plan(conn, "child", "c", anchor_id);
+
+  fake_client fake;
+  auto const  opts = parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"};
+  REQUIRE_FALSE(err(parent_issue::propagate_parent_issue_with_repo(conn, fake, anchor_id, "acme", "x", opts)).has_value());
+  REQUIRE(fake.creates_ == 2);
+  REQUIRE(fake.linked_.size() == 1);
+  // The anchor was issue 1; the first child attached to it.
+  const auto anchor_number = fake.linked_[0].first;
+  CHECK(anchor_number == 1);
+
+  // A second child appears after the first propagation.
+  insert_plan(conn, "late child", "lc", anchor_id);
+  auto const second = parent_issue::propagate_parent_issue_with_repo(conn, fake, anchor_id, "acme", "x", opts);
+  REQUIRE_FALSE(err(second).has_value());
+
+  REQUIRE(fake.linked_.size() == 2);
+  // The anchor was skipped this run, so its number came back through the
+  // parser rather than from a fresh create. It must be the same parent.
+  CHECK(fake.linked_[1].first == anchor_number);
+  CHECK(fake.linked_[1].first != 0);
+}
+
+TEST_CASE("dry_run writes nothing even when the anchor ALREADY has an external id", "[engine][external][parent_issue]") {
+  // The existing dry-run case runs against a fresh anchor, so
+  // `!parent->external_id.empty()` is false and BOTH write branches are
+  // skipped on that half alone -- the `dry_run` half is never the deciding
+  // clause. Probes for it survived (task 6784: N09, N09b, N10).
+  //
+  // It does NOT isolate it, and the reason is worth recording:
+  // `per_entity_result.external_id` is populated ONLY on the freshly-
+  // created path. Both the skip path and the dry-run path return it EMPTY,
+  // so on a dry run the second clause already blocks both writes and the
+  // `dry_run` half can never be the deciding one. N09/N09b are therefore
+  // EQUIVALENT MUTANTS -- the promise is protected by two independent
+  // mechanisms, which is defence in depth rather than a gap.
+  //
+  // The case is kept as CHARACTERISATION of an operator-facing promise: a
+  // dry run must write nothing. That is worth pinning even though no
+  // single clause owns it.
+  scratch_db_path scratch;
+  auto            conn      = open_migrated(scratch);
+  auto const      system_id = insert_system(conn, "gh");
+  auto const      anchor_id = insert_plan(conn, "anchor", "a");
+  insert_plan(conn, "child", "c", anchor_id);
+
+  fake_client fake;
+  auto const  live = parent_issue::opts{.sys_id = system_id, .sys_slug = "gh"};
+  REQUIRE_FALSE(err(parent_issue::propagate_parent_issue_with_repo(conn, fake, anchor_id, "acme", "x", live)).has_value());
+  REQUIRE(fake.creates_ == 2);
+
+  const auto creates_before  = fake.creates_;
+  const auto comments_before = fake.comments_;
+  const auto links_before    = fake.links_;
+
+  auto const dry = parent_issue::opts{.sys_id = system_id, .sys_slug = "gh", .dry_run = true};
+  REQUIRE_FALSE(err(parent_issue::propagate_parent_issue_with_repo(conn, fake, anchor_id, "acme", "x", dry)).has_value());
+
+  CHECK(fake.creates_ == creates_before);
+  CHECK(fake.comments_ == comments_before);
+  CHECK(fake.links_ == links_before);
 }
