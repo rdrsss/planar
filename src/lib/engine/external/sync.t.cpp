@@ -999,3 +999,44 @@ TEST_CASE("a link on an entity kind with no syncable triple pulls as noop", "[en
   REQUIRE_FALSE(pushed.has_value());
   CHECK(err(pushed) == std::optional{sync_ns::sync_error::unsupported_entity_kind});
 }
+
+// --- break-probe survivors closed by task 6784 ---------------------------
+
+TEST_CASE("D4d: an EMPTY remote field is 'no opinion' on the CONFLICT path too", "[engine][external][sync]") {
+  // `!remote->title.empty()` is clause 1 of `*_remote_changed`, and an
+  // empty remote field means the adapter expressed NO OPINION -- not that
+  // the field was cleared. The existing empty-remote cases only exercise
+  // the no-local-change path, where the outcome is the same either way.
+  //
+  // This is the path that discriminates it: the local side HAS changed, so
+  // if an empty remote counted as "changed" the two would be declared in
+  // conflict and the operator would be asked to resolve an edit the remote
+  // never made. Closes break-probe survivors X03/X05 (task 6784).
+  SECTION("an empty remote TITLE against a local title change is not a conflict") {
+    rig          fixture;
+    stub_adapter provider;
+    provider.remote = remote_of("Baseline", "todo", "v1");
+    REQUIRE(sync_ns::pull_link(fixture.conn, fixture.row, provider).has_value());
+
+    fixture.set_task("Locally renamed", "todo");
+    provider.remote   = remote_of("", "todo", "v2");
+    auto const result = sync_ns::pull_link(fixture.conn, fixture.row, provider);
+    REQUIRE(result.has_value());
+    CHECK(result->result != sync_ns::outcome::conflict);
+    CHECK(std::ranges::find(result->fields_changed, "title") == result->fields_changed.end());
+  }
+
+  SECTION("an empty remote STATUS against a local status change is not a conflict") {
+    rig          fixture;
+    stub_adapter provider;
+    provider.remote = remote_of("Baseline", "todo", "v1");
+    REQUIRE(sync_ns::pull_link(fixture.conn, fixture.row, provider).has_value());
+
+    fixture.set_task("Baseline", "doing");
+    provider.remote   = remote_of("Baseline", "", "v2");
+    auto const result = sync_ns::pull_link(fixture.conn, fixture.row, provider);
+    REQUIRE(result.has_value());
+    CHECK(result->result != sync_ns::outcome::conflict);
+    CHECK(std::ranges::find(result->fields_changed, "status") == result->fields_changed.end());
+  }
+}
