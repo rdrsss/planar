@@ -54,13 +54,40 @@ Source annotations on success: `[from flag]`, `[from cwd]`. The resolved scope a
 
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success. |
-| `1` | User-fixable error: entity not found, validation failure, missing required argument. |
-| `2` | System error: database open failure, I/O error, network error on sync. |
-| `3` | Conflict: sync conflict detected; requires explicit `sync resolve`. |
-| `64` | Usage error: bad flag combination, unrecognized subcommand (per `sysexits.h EX_USAGE`). |
+Taken from `src/cmd/planar/exit.cppm`, which is the authoritative table for
+the `planar` binary.
+
+| Code | Meaning | Raised by |
+|------|---------|-----------|
+| `0` | Success. | — |
+| `1` | Generic failure: entity **not found**, an unmapped error, a busy source. | `not_found`, `generic_failure`, `busy_source` |
+| `2` | **Bad input**: invalid value, invalid entity ref, and every **parse failure** — unknown flag, missing argument, missing flag value, too many positionals. | `invalid_input`, `invalid_entity_ref`, `parse_error` |
+| `3` | Operational-plane **sync conflict**; requires an explicit `sync resolve`. | `sync_conflict` |
+| `5` | **Cross-scope write refused** (see the cross-scope guard above). | `scope_mismatch` |
+| `6` | Precondition conflict: slug conflict, or the entity already exists. | `slug_conflict`, `already_exists` |
+| `7` | Database schema is **newer** than this binary supports. | `schema_version_ahead` |
+| `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
+
+**Usage errors exit `2`, not `64`.** An unknown flag, a missing required
+positional and a missing flag value are all `parse_error` on this binary. This
+is oracle-matched: 536 pinned refusals in
+`scripts/parity-data/6316-refusal-differential.jsonl` agree on `2` for those
+arms. `64` is reserved for a verb whose handler does not exist yet.
+
+### The code for a usage error depends on WHICH BINARY
+
+The four binaries do not share one table, deliberately — `planar-watch`'s
+`exit.cppm` header records why a shared, binary-parameterized helper was
+removed (a call site one token short silently applied the operator binary's
+policy). Measured, and confirmed live:
+
+| condition | `planar` | `planar-agent` / `-watch` / `-ext` |
+|-----------|----------|------------------------------------|
+| parse failure (unknown flag, missing arg) | `2` | `1` |
+| schema version **behind** | `1` | `7` |
+
+So a script that branches on an exit code must know which binary produced it.
+Do not port a `planar` expectation onto `planar-agent` unchanged.
 
 ### Capture Behavior
 
