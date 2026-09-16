@@ -398,3 +398,19 @@ TEST_CASE("render_text prints a SHORT body whole, with a dash and no ellipsis", 
   CHECK(q::render_text(results) == "7-short.md (artifact 7): 1 question(s)\n"
                                    "  [line 3] Short one? — Yes.\n");
 }
+
+TEST_CASE("collect_top_level_specs skips a DIRECTORY whose name ends in .md", "[engine][workbench][questions]") {
+  // The case above is named for skipping subdirectories, but its only
+  // subdirectory is `questions/` -- no `.md` suffix -- so the extension
+  // filter rejects it before the regular-file check is ever consulted.
+  // Closes a break-probe SURVIVOR (task 6781): dropping that check
+  // returned the directory as though it were a spec, and the caller then
+  // reads it as a file.
+  auto const dir = make_dir("collect-dir-md");
+  write_file(dir / "1-alpha.md", "x");
+  write_file(dir / "archive.md" / "inner.md", "x");
+
+  auto const got = q::collect_top_level_specs(dir);
+  REQUIRE(got.size() == 1);
+  CHECK(got[0] == "1-alpha.md");
+}
