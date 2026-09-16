@@ -28,9 +28,17 @@ errors.
 
 ## Workflow
 
-1. Run `planar health --json`. Treat exit 0 (`ok`), exit 1 (`degraded`), and
-   exit 2 (`critical`) as health results to report, not merely command failures.
-   A parse failure or an unrecognized exit is an error outcome.
+1. Run `planar health --json` and read the verdict from the `overall` FIELD,
+   never from the exit code. `overall` is one of `ok`, `degraded`, `critical`.
+
+   **Do not map the exit code to a health state.** `planar` returns exit 2 for
+   every usage error — unknown flag, missing argument, bad value — so a
+   mistyped invocation is indistinguishable from a critical system. Keying off
+   the code makes the skill report CRITICAL for a typo.
+
+   If the payload does not parse, that is a COMMAND failure, not a health
+   finding: report it as such, name the exit code and the stderr, and stop.
+   Do not fall back to the exit code for a verdict it cannot carry.
 2. Explain only contributors that are unhealthy or useful for orientation:
    database reachability, schema currency, SQLite integrity, resumability,
    stale handoffs, and `projection_freshness`. Include the field value, why it

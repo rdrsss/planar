@@ -156,7 +156,7 @@ planar plan show <plan-id> [--json]
 
 ## When To Invoke
 
-When `planar health` exits 1 (degraded) and the operator wants to clear the causes rather than just read the report. Also useful after an unclean shutdown, a died agent session, or a long idle period that left handoffs pending.
+When `planar health --json` reports `overall` as `degraded` or `critical` and the operator wants to clear the causes rather than just read the report. Read the `overall` FIELD, not the exit code: `planar` returns exit 2 for any usage error, so a mistyped command otherwise reads as a critical system. Also useful after an unclean shutdown, a died agent session, or a long idle period that left handoffs pending.
 
 ## Context
 
