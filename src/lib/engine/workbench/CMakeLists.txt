@@ -159,4 +159,5 @@ planar_module(engine_workbench
     render_cli.cpp
   DEPENDS
     db
-    json_text)
+    json_text
+    sha256)

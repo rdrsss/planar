@@ -41,6 +41,27 @@ TEST_CASE("sha256 matches the PADDING BOUNDARY vectors", "[sha256][6407]") {
   CHECK(planar::sha256::hex(std::string_view("a\0b", 3)) != planar::sha256::hex("a"));
 }
 
+TEST_CASE("sha256 keeps the vectors the deleted per-bucket copies carried", "[sha256][6759]") {
+  // MOVED HERE at task 6759, from the tests of the three remaining
+  // hand-rolled copies (`ingest/materialize.cpp`, `planning/annotation.cpp`,
+  // `workbench/manifest.cpp`) before those copies were deleted. Each copy's
+  // tests were diffed against this file's FIRST -- deleting an
+  // implementation silently deletes whatever its tests covered that the
+  // survivor's did not, which is the trap task 6407 already hit once with
+  // `engine/external/sha256.hpp`'s padding-boundary vectors.
+  //
+  // From `annotation.t.cpp`: a real file's digest, and the FIPS 180-4
+  // million-character vector -- by far the longest input any of these
+  // implementations was ever checked against, and the only one that
+  // exercises a long block loop rather than one or two blocks.
+  CHECK(planar::sha256::hex("hello\n") == "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03");
+  CHECK(planar::sha256::hex(std::string(1000000, 'a')) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+
+  // From `manifest.t.cpp`: the 120-byte boundary, one past the 119 above --
+  // the first input that needs a THIRD padding block.
+  CHECK(planar::sha256::hex(std::string(120, 'a')) == "2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c");
+}
+
 TEST_CASE("sha256 matches the canonical synthesis request stream", "[sha256][synthesize]") {
   std::string material;
   auto        rec = [&](std::initializer_list<std::string_view> parts) {

@@ -12,6 +12,7 @@ module planar.engine.ingest.materialize;
 import std;
 import planar.db;
 import planar.engine.ingest.parse;
+import planar.sha256;
 
 namespace planar::engine::ingest::materialize {
 namespace {
@@ -55,108 +56,15 @@ constexpr std::string_view whitespace_block  = " \t\r\n";
   return std::ranges::equal(a, b, [&](char x, char y) { return lower(x) == lower(y); });
 }
 
-// --- SHA-256 ---------------------------------------------------------------
-//
-// Implemented here rather than pulled in as a dependency: this is the only
-// consumer in the tree, and the project's vendoring rule (pinned release
-// archive plus SHA256 in cmake/dependencies.cmake) is a real cost to pay for
-// ~80 lines of a fully specified, test-vector-verifiable algorithm. If a
-// second bucket ever needs digests, D19 says extract it to a layer-1 module at
-// that point — one consumer does not trigger the rule.
-//
-// FIPS 180-4. Verified against the standard test vectors in materialize.t.cpp.
-
-constexpr std::array<std::uint32_t, 64> sha256_k = {
-    0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
-    0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
-    0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
-    0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
-    0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U, 0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
-    0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
-    0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
-    0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U};
-
-[[nodiscard]] constexpr auto rotr(std::uint32_t x, unsigned n) -> std::uint32_t {
-  return (x >> n) | (x << (32U - n));
-}
-
-/// The algorithm itself. `sha256_hex` below is the exported thin wrapper
-/// (task 6324) — kept separate so the module-scope name and this
-/// internal-linkage one cannot collide in unqualified lookup.
-[[nodiscard]] auto sha256_hex_raw(std::string_view input) -> std::string {
-  std::array<std::uint32_t, 8> h = {0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
-                                    0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U};
-
-  // Message + 0x80 + zero padding to 56 mod 64 + 64-bit big-endian bit length.
-  std::vector<std::uint8_t> msg(input.size());
-  std::ranges::transform(input, msg.begin(), [](char c) { return static_cast<std::uint8_t>(c); });
-  const std::uint64_t bit_len = static_cast<std::uint64_t>(input.size()) * 8U;
-  msg.push_back(0x80U);
-  while (msg.size() % 64U != 56U) {
-    msg.push_back(0x00U);
-  }
-  for (int i = 7; i >= 0; --i) {
-    msg.push_back(static_cast<std::uint8_t>((bit_len >> (static_cast<unsigned>(i) * 8U)) & 0xFFU));
-  }
-
-  std::array<std::uint32_t, 64> w{};
-  for (std::size_t chunk = 0; chunk < msg.size(); chunk += 64U) {
-    for (std::size_t i = 0; i < 16U; ++i) {
-      w[i] = (static_cast<std::uint32_t>(msg[chunk + (i * 4U) + 0]) << 24U) |
-             (static_cast<std::uint32_t>(msg[chunk + (i * 4U) + 1]) << 16U) |
-             (static_cast<std::uint32_t>(msg[chunk + (i * 4U) + 2]) << 8U) |
-             (static_cast<std::uint32_t>(msg[chunk + (i * 4U) + 3]));
-    }
-    for (std::size_t i = 16U; i < 64U; ++i) {
-      const auto s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3U);
-      const auto s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10U);
-      w[i]          = w[i - 16] + s0 + w[i - 7] + s1;
-    }
-
-    auto a  = h[0];
-    auto b  = h[1];
-    auto c  = h[2];
-    auto d  = h[3];
-    auto e  = h[4];
-    auto f  = h[5];
-    auto g  = h[6];
-    auto hh = h[7];
-
-    for (std::size_t i = 0; i < 64U; ++i) {
-      const auto s1    = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-      const auto ch    = (e & f) ^ (~e & g);
-      const auto temp1 = hh + s1 + ch + sha256_k[i] + w[i];
-      const auto s0    = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-      const auto maj   = (a & b) ^ (a & c) ^ (b & c);
-      const auto temp2 = s0 + maj;
-
-      hh = g;
-      g  = f;
-      f  = e;
-      e  = d + temp1;
-      d  = c;
-      c  = b;
-      b  = a;
-      a  = temp1 + temp2;
-    }
-
-    h[0] += a;
-    h[1] += b;
-    h[2] += c;
-    h[3] += d;
-    h[4] += e;
-    h[5] += f;
-    h[6] += g;
-    h[7] += hh;
-  }
-
-  std::string out;
-  out.reserve(64);
-  for (const auto word : h) {
-    out.append(std::format("{:08x}", word));
-  }
-  return out;
-}
+// SHA-256 lives in layer-1 `planar.sha256` (task 6759). The note that stood
+// here said "this is the only consumer in the tree, and one consumer does not
+// trigger D19's extract-to-layer-1 rule". That premise was wrong when written
+// and stayed wrong: there were FIVE independent implementations of FIPS 180-4
+// in this tree, counted by their round constants. `source_digest` below is a
+// STORED contract, so all five were compared as ORDERED constant sequences --
+// a sorted-set comparison cannot see a misordering, which is precisely the
+// bug fixed at task 6106 -- and confirmed to hash identically before any was
+// removed.
 
 // --- Markdown heading / fence recognition ----------------------------------
 
@@ -998,7 +906,12 @@ auto materialize_error::describe() const -> std::string {
 }
 
 auto sha256_hex(std::string_view input) -> std::string {
-  return sha256_hex_raw(input);
+  // One implementation, in layer 1 (task 6759). This module carried its own
+  // copy of FIPS 180-4; `source_digest` is a STORED contract, so the copies
+  // were verified to agree as ORDERED constant sequences -- not as a sorted
+  // set, which cannot see a misordering, the exact shape of the bug fixed at
+  // task 6106 -- before any of them was removed.
+  return planar::sha256::hex(input);
 }
 
 auto source_digest(std::string_view source_kind, std::int64_t source_id, std::string_view locator,

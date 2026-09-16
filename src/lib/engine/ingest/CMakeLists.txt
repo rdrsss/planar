@@ -93,9 +93,10 @@
 # iteration 2, review finding BLOCKING 2).
 #
 # This module added ONE export to `materialize.cppm`: `sha256_hex`, which
-# `packet` digests whole evidence texts with. See its doc comment for the
-# standing note that three other sha256 copies exist in the tree and that
-# consolidating them is a cross-bucket refactor, not a port-cycle line item.
+# `packet` digests whole evidence texts with. It is now a thin wrapper over
+# layer-1 `planar.sha256` (task 6759): the copies that note described --
+# five of them in the end, not three -- were consolidated, so `DEPENDS
+# sha256` below is what carries the algorithm.
 
 planar_module(engine_ingest
   INTERFACE
@@ -116,5 +117,6 @@ planar_module(engine_ingest
   DEPENDS
     db
     json_text
+    sha256
   TEST_DEPENDS
     engine_planning)
