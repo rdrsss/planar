@@ -796,3 +796,132 @@ TEST_CASE("the truncation diagnostic advises the bracket form that actually work
   CHECK(described.contains("TRUNCATED"));
   CHECK(described.contains("[artifact:<id>#File-level tree (operator-approved)]"));
 }
+
+// --- break-probe survivors closed by task 6782 ---------------------------
+//
+// `atx_heading` decides which lines are section headings at all, and so
+// which `artifact:N#Section` citations an operator can resolve. Disabling it
+// outright fails 28 cases, so it is heavily exercised -- but a sweep found
+// NONE of its seven clauses discriminated: every probe that merely loosened
+// one (drop the required space, allow a 4-space indent, allow 7 hashes,
+// stop stripping trailing hashes) left the suite green.
+
+TEST_CASE("a `#` with no following space is not a heading, so it is not citable", "[ingest][materialize][citation]") {
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+
+  must_execute(conn, R"(insert into plans (scope_kind, title, slug, status) values ('global', 'Anchor', 'anchor', 'active');
+insert into plans (scope_kind, title, slug, status, parent_plan_id) values ('global', 'M1', 'm1', 'active', 1);
+insert into artifacts (scope_kind, kind, title, body) values (
+  'global', 'tech_spec', 'Spec',
+  '#NoSpace
+
+text
+
+## Goals
+
+text
+');
+insert into tasks (scope_kind, plan_id, title, body, next_action) values (
+  'global', 2, 'Cites a non-heading', '- artifact:1#NoSpace', 'go');
+insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', 1, 'artifact', 1, 'cites'))");
+
+  // `#NoSpace` is prose. The citation must NOT resolve.
+  const auto result = mat::reconcile(conn, 1, {});
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error().citations_.size() == 1);
+  CHECK(result.error().citations_[0].wanted_ == "NoSpace");
+}
+
+TEST_CASE("a TAB after the hashes opens a heading, and trailing hashes are stripped", "[ingest][materialize][citation]") {
+  // Two clauses at once. A tab counts as the separator after the hash run,
+  // and a CLOSING run of hashes is decoration that must not become part of
+  // the section name -- `## Goals ##` is citable as `Goals`, never as
+  // `Goals ##`.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+
+  must_execute(conn,
+               "insert into plans (scope_kind, title, slug, status) values ('global', 'Anchor', 'anchor', 'active');"
+               "insert into plans (scope_kind, title, slug, status, parent_plan_id) values ('global', 'M1', 'm1', 'active', 1);"
+               "insert into artifacts (scope_kind, kind, title, body) values ('global', 'tech_spec', 'Spec',"
+               "  '##\tTabbed"
+               "\n\n"
+               "text"
+               "\n\n"
+               "## Goals ##"
+               "\n\n"
+               "text"
+               "\n');"
+               "insert into tasks (scope_kind, plan_id, title, body, next_action) values ("
+               "  'global', 2, 'Cites a missing one', '- artifact:1#Absent', 'go');"
+               "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values"
+               "  ('task', 1, 'artifact', 1, 'cites')");
+
+  const auto result = mat::reconcile(conn, 1, {});
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error().citations_.size() == 1);
+  const auto& available = result.error().citations_[0].available_;
+  // The TAB-separated heading is a heading, and is offered.
+  CHECK(std::ranges::find(available, "Tabbed") != available.end());
+  // The closing hash run is decoration, not part of the name.
+  CHECK(std::ranges::find(available, "Goals") != available.end());
+  CHECK(std::ranges::find(available, "Goals ##") == available.end());
+}
+
+TEST_CASE("a heading indented four spaces is not a heading, so it is not citable", "[ingest][materialize][citation]") {
+  // Up to three spaces of indent still makes a heading; the fourth makes it
+  // an indented code block. NOTE: `atx_heading`'s own `indent > 3` guard is
+  // unreachable -- the caller already excludes the line via
+  // `is_indented_code` -- so this pins the BEHAVIOUR, not that clause.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+
+  must_execute(conn, R"(insert into plans (scope_kind, title, slug, status) values ('global', 'Anchor', 'anchor', 'active');
+insert into plans (scope_kind, title, slug, status, parent_plan_id) values ('global', 'M1', 'm1', 'active', 1);
+insert into artifacts (scope_kind, kind, title, body) values (
+  'global', 'tech_spec', 'Spec',
+  '    ## TooIndented
+
+text
+
+## Goals
+
+text
+');
+insert into tasks (scope_kind, plan_id, title, body, next_action) values (
+  'global', 2, 'Cites an indented block', '- artifact:1#TooIndented', 'go');
+insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', 1, 'artifact', 1, 'cites'))");
+
+  const auto result = mat::reconcile(conn, 1, {});
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error().citations_.size() == 1);
+  CHECK(result.error().citations_[0].wanted_ == "TooIndented");
+}
+
+TEST_CASE("seven hashes is not a heading, so it is not citable", "[ingest][materialize][citation]") {
+  // ATX tops out at six levels; a seventh hash makes the run prose.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+
+  must_execute(conn, R"(insert into plans (scope_kind, title, slug, status) values ('global', 'Anchor', 'anchor', 'active');
+insert into plans (scope_kind, title, slug, status, parent_plan_id) values ('global', 'M1', 'm1', 'active', 1);
+insert into artifacts (scope_kind, kind, title, body) values (
+  'global', 'tech_spec', 'Spec',
+  '####### TooDeep
+
+text
+
+## Goals
+
+text
+');
+insert into tasks (scope_kind, plan_id, title, body, next_action) values (
+  'global', 2, 'Cites a seven-hash run', '- artifact:1#TooDeep', 'go');
+insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', 1, 'artifact', 1, 'cites'))");
+
+  const auto result = mat::reconcile(conn, 1, {});
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error().citations_.size() == 1);
+  CHECK(result.error().citations_[0].wanted_ == "TooDeep");
+}
