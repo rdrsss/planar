@@ -1500,3 +1500,70 @@ TEST_CASE("an operator-staged citation goes stale when the cited artifact moves"
   CHECK_FALSE(packet->ready());
   CHECK(stale_citations(*packet).contains("artifact:10#Overview"));
 }
+
+TEST_CASE("compile_planning: an OPTIONAL row never blocks readiness, however bad it is", "[packet][planning]") {
+  // `evidence::required` defaults to true and no fixture had ever set it
+  // false, so the distinction that gates dispatch was untested at EVERY
+  // site: spec sections, decisions, coverage, citations and scenarios each
+  // guard their checks with `value.required`, and a sweep (task 6782) found
+  // all five clauses droppable with the suite still green.
+  //
+  // That direction matters more than it looks. `ready: false` is a hard
+  // stop in the orchestrator contract, so a required-check that stopped
+  // being read would let ADVISORY evidence -- a stale optional citation, an
+  // uncovered optional scenario -- hold up work that is genuinely ready.
+  const auto optional_but_broken = [](std::string_view kind) {
+    pk::evidence item   = current_evidence(kind);
+    item.required       = false;
+    item.current_digest = "drifted";  // not current
+    item.covered        = false;      // not covered
+    item.status         = "rejected"; // not an accepted status
+    return item;
+  };
+
+  pk::planning_input input;
+  input.role        = pk::planning_role::orchestrator;
+  input.goal        = "Ship the thing.";
+  input.scope_facts = {current_evidence("scope")};
+
+  const auto baseline = pk::compile_planning(input);
+  REQUIRE(baseline.ready());
+
+  SECTION("an optional stale, rejected artifact does not block") {
+    input.artifacts = {optional_but_broken("product_spec")};
+    CHECK(pk::compile_planning(input).ready());
+  }
+
+  SECTION("an optional stale, rejected decision does not block") {
+    input.decisions = {optional_but_broken("decision")};
+    CHECK(pk::compile_planning(input).ready());
+  }
+}
+
+TEST_CASE("compile_task: an OPTIONAL citation or scenario raises no reason", "[packet]") {
+  // The task-packet half of the same gap. `citation.required` and
+  // `scenario.required` each guard their reason, and neither had a fixture
+  // that set `required = false` -- so a mutant dropping either made an
+  // ADVISORY row emit `unresolved_citation` / `uncovered_required_scenario`
+  // and hold up a task that is genuinely dispatchable.
+  pk::task_input input;
+
+  pk::evidence citation   = {};
+  citation.kind           = "citation";
+  citation.required       = false;
+  citation.locator        = "artifact:1"; // no `#Section`, so not a section locator
+  citation.source_digest  = "same";
+  citation.current_digest = "drifted"; // and not current either
+  input.citations         = {citation};
+
+  pk::evidence scenario = {};
+  scenario.kind         = "scenario";
+  scenario.required     = false;
+  scenario.covered      = false;
+  input.scenarios       = {scenario};
+
+  const auto names = reason_names(pk::compile_task(input));
+  INFO("reasons: " << std::format("{}", names));
+  CHECK(std::ranges::find(names, "unresolved_citation") == names.end());
+  CHECK(std::ranges::find(names, "uncovered_required_scenario") == names.end());
+}
