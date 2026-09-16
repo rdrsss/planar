@@ -9,73 +9,19 @@
 # writing docs for one does (delete its line, or run the tool's --update
 # mode once that exists).
 #
-# This is a REGROWTH GUARD, not a todo list to clear in order. The 61
-# (measured 2026-09-12, 60 as of the tree this baseline was captured
-# against) fall into four clusters documented on task 6758 -- most are the
-# editflow quartet (edit/view/diff/review) repeated across seven entity
-# families and the models registry subtree, which are near-identical by
-# construction and better served by one shared page each than 25+13
-# near-duplicate ones. See task 6758 and its five per-cluster follow-ups
-# for the actual authoring work; this file only prevents the gap from
-# growing while that work is pending.
+# This is a REGROWTH GUARD. It is now EMPTY: all 60 leaves it tracked were
+# documented at task 6786 (2026-09-16), so `cli_usage_lint` currently
+# requires every leaf in the catalog to appear in docs/cli-reference.md.
+#
+# An empty file is the strongest state this guard can be in -- any NEW
+# undocumented leaf now fails the gate immediately rather than being
+# absorbed into a backlog. Keep it that way: add a line here only for a
+# leaf that is DELIBERATELY undocumented, with the reason, and never as a
+# way to get a red gate green.
+#
+# The 60 were authored as four clusters rather than 60 pages: one shared
+# page for the editflow quartet (24 leaves + `workbench edit`), one for
+# the models domain and its registry subtree (13), one for bench (6), and
+# individual entries for the miscellaneous 16. See task 6758 for the
+# original cluster analysis.
 
-planar annotate archive
-planar annotate bulk-archive
-planar annotate bulk-dismiss
-planar annotate command
-planar annotate dismiss
-planar annotate receipt
-planar artifact diff
-planar artifact edit
-planar artifact review
-planar artifact view
-planar bench event
-planar bench finish
-planar bench harvest
-planar bench show
-planar bench start
-planar bench touch
-planar completion
-planar decision diff
-planar decision edit
-planar decision link
-planar decision review
-planar decision view
-planar groups recommend
-planar models experiments
-planar models outcomes
-planar models registry add
-planar models registry bind
-planar models registry eligibility
-planar models registry export
-planar models registry list
-planar models registry observe
-planar models registry remove
-planar models registry unbind
-planar models registry update
-planar models registry verify-identity
-planar models resolve
-planar plan diff
-planar plan divergence
-planar plan edit
-planar plan review
-planar plan step list
-planar plan view
-planar question diff
-planar question edit
-planar question review
-planar question view
-planar scenario diff
-planar scenario edit
-planar scenario link
-planar scenario review
-planar scenario view
-planar skills
-planar task cancel
-planar task diff
-planar task edit
-planar task review
-planar task view
-planar version
-planar workbench edit
-planar workflow run
