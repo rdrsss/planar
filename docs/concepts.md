@@ -506,6 +506,8 @@ See [docs/cli-reference.md](cli-reference.md) for the full `import` and `synthes
 
 ## Plan
 
+> Every status lifecycle on this page, plus the engine roll-ups and multi-verb workflows, is drawn as a diagram in [lifecycles.md](lifecycles.md).
+
 A plan is the anchor unit of work. It is a structured intent — a named body of work with a status lifecycle. Plans are hierarchical: a child plan has a `parent_plan_id` and belongs to its parent's feature tree.
 
 ### Status lifecycle

@@ -93,6 +93,7 @@
 | `docs/skill-reference.md` | Skill and agent role overview |
 | `docs/concepts.md` | Mental model — scope, association, plan, task, handoff |
 | `docs/workflows.md` | End-to-end recipes |
+| `docs/lifecycles.md` | Every state machine and workflow as a Mermaid diagram — transition matrices with the verb on each edge, engine roll-ups (auto-promotion, dependency unblock, closeout), the claim ritual, sync/propagation/handoff flows. Measured against the binary; § 7 lists prose that disagrees with it. |
 | `docs/toolchain-parity.md` | The pinned CMake/LLVM toolchain contract — exact compiler paths, CMake floor, git floor, and why each is load-bearing. |
 | `docs/` | All user-facing reference documentation |
 | `skills/src/` | Unified authored skill sources (`pl-*.md`); the only skills tree checked into the repo. Scriptorium (invoked by `install.sh`, driven by `scriptorium.yaml`) produces the per-vendor outputs at install time. |
@@ -134,8 +135,6 @@ make test               # cmake --preset debug; cmake --build; ctest
 make test-cpp-report    # same ctest suite, plus its SKIP TALLY (expected: 0)
 make ctest-registry-check # prove ctest RUNS every case the binaries contain (task 6790)
 make exit-code-contract  # prove the DOCUMENTED exit codes are the ones returned (6813)
-make exit-code-contract  # prove the DOCUMENTED exit codes are the ones returned (6813)
-make ctest-registry-check # prove ctest RUNS every case the binaries contain (task 6790)
 make test-cpp-solver    # ctest against a -DPLANAR_WITH_MTKAHYPAR=ON build
 make test-all           # unit (ctest) + coverage + cli-usage-check
 
@@ -184,53 +183,25 @@ distinction is load-bearing — never collapse them.
   part of `make test-all`. DO NOT quote a ctest total as a count of distinct
   tests without it.
 
-- **The documented EXIT CODES are gated** (`make exit-code-contract`, tasks
-  6813/6814). `docs/cli-reference.md` § Exit Codes is a contract skills and
-  scripts branch on, and it had drifted far enough to invert a retry
-  decision: it claimed `64` for an unknown flag (actually `2`; `64` means
-  NOT IMPLEMENTED), glossed `2` as "system error" so a typo read as a
-  database failure, and omitted `5`/`6`/`7`. `pl-health` then mapped exit 2
-  to `critical`, so `planar health --typo` reported a CRITICAL system. The
-  gate runs representative refusals on all four binaries and also fails when
-  the table OMITS a code a checked case returns. Note the per-binary split it
-  asserts: a parse failure is `2` on `planar` and `1` on
-  `planar-agent`/`-watch`/`-ext`. Authoritative source is
-  `src/cmd/planar/exit.cppm`; the binaries are oracle-matched, so prefer
-  fixing the table.
-
-- **The documented EXIT CODES are gated** (`make exit-code-contract`, tasks
-  6813/6814). `docs/cli-reference.md` § Exit Codes is a contract skills and
-  scripts branch on, and it had drifted far enough to invert a retry
-  decision: it claimed `64` for an unknown flag (actually `2`; `64` means
-  NOT IMPLEMENTED), glossed `2` as "system error" so a typo read as a
-  database failure, and omitted `5`/`6`/`7`. `pl-health` then mapped exit 2
-  to `critical`, so `planar health --typo` reported a CRITICAL system. The
-  gate runs representative refusals on all four binaries and also fails when
-  the table OMITS a code a checked case returns. Note the per-binary split it
-  asserts: a parse failure is `2` on `planar` and `1` on
-  `planar-agent`/`-watch`/`-ext`. Authoritative source is
-  `src/cmd/planar/exit.cppm`; the binaries are oracle-matched, so prefer
-  fixing the table.
-
-  **A GREEN ctest RUN IS NOT PROOF THE SUITE RAN.** `catch_discover_tests`
-  writes one `<target>-<hash>_tests.cmake` per target and ctest runs exactly
-  what those files say, with nothing checking that the registry still matches
-  the binaries. It drifts in BOTH directions while ctest reports "100% tests
-  passed": a truncated discovery file silently DROPS cases (a run once
-  executed 3,685 of 4,984 registered tests and reported a clean pass), and a
-  file APPENDED rather than truncated for an unrebuilt target registers every
-  name twice (measured 2026-09-16: fifteen targets at exactly 2x, inflating
-  the reported total from its true 3,553 to 4,871, with ctest running 1,333
-  duplicate executions). `make ctest-registry-check` (task 6790) compares each
-  binary's own `--list-tests` count against the `add_test` lines registered
-  for it, so it needs no baseline and fails on a mismatch either way. It is
-  part of `make test-all`. DO NOT quote a ctest total as a count of distinct
-  tests without it.
-
   **THE EXPECTED TALLY IS ZERO.** Every skip this repo ever reported was
   oracle-conditional, and there is no oracle; a nonzero tally means a NEW
   skip was introduced. `scripts/ctest-report.sh --max-skips 0` makes that a
   failure.
+
+- **The documented EXIT CODES are gated** (`make exit-code-contract`, tasks
+  6813/6814). `docs/cli-reference.md` § Exit Codes is a contract skills and
+  scripts branch on, and it had drifted far enough to invert a retry
+  decision: it claimed `64` for an unknown flag (actually `2`; `64` means
+  NOT IMPLEMENTED), glossed `2` as "system error" so a typo read as a
+  database failure, and omitted `5`/`6`/`7`. `pl-health` then mapped exit 2
+  to `critical`, so `planar health --typo` reported a CRITICAL system. The
+  gate runs representative refusals on all four binaries and also fails when
+  the table OMITS a code a checked case returns. Note the per-binary split it
+  asserts: a parse failure is `2` on `planar` and `1` on
+  `planar-agent`/`-watch`/`-ext`. Authoritative source is
+  `src/cmd/planar/exit.cppm`; the binaries are oracle-matched, so prefer
+  fixing the table.
+
 - **CLI black-box tests** — the cross-process lane, now IN-TREE rather than
   in a separate suite. `src/cmd/parity_harness.hpp`'s `run_pinned()` execs a
   built binary over fixed argv in a scratch environment `make_arena()`
