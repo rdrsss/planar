@@ -1281,7 +1281,11 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     if (reconciled.error().kind_ == mat_ns::materialize_error_kind::invalid_citation) {
       return std::unexpected(apply_error{.message = "InvalidCitation", .citations = reconciled.error().citations_});
     }
-    return std::unexpected(apply_error{.message = "QueryFailed"});
+    // Keep the `QueryFailed` prefix (callers and tests match on it) but carry
+    // the materializer's own detail -- the SQLite result code, the driver
+    // message, and the statement's origin. A bare `QueryFailed` names nothing
+    // an operator can act on.
+    return std::unexpected(apply_error{.message = std::format("QueryFailed: {}", reconciled.error().detail_)});
   }
 
   // ---- flip anchor draft -> active -------------------------------------------

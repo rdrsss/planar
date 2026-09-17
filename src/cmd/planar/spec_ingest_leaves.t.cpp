@@ -496,6 +496,57 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
   CHECK(count(conn_after_second, "routing_task_facts") == facts_after_first);
 }
 
+TEST_CASE("spec ingest --apply replays cleanly when a task hangs directly off the anchor plan",
+          "[cmd][spec][ingest][apply][reconcile][regression]") {
+  // REGRESSION. `materialize::reconcile` staged facts for a wider set of tasks
+  // than it deleted facts for. Most stagers are scoped to
+  // `plans.parent_plan_id = <anchor>`, but `stage_reviewed_artifact_facts`
+  // walks the RECURSIVE plan tree, whose root is the anchor plan itself -- so a
+  // task attached directly to the anchor got rows staged that the delete never
+  // cleared. The first apply still worked (nothing stored yet to collide with),
+  // and every later apply hit `routing_task_facts`'s unique key
+  // (task_id, fact_kind, source kind/id, locator, digest, materializer_version)
+  // -- which excludes the value columns, so a byte-identical replay collides
+  // with itself. The whole apply then rolled back as `QueryFailed`, and because
+  // apply is the only trigger for the routing materializer, every task under
+  // the anchor stayed permanently `stale_fact` and undispatchable.
+  //
+  // The same mismatch also made `fact_sets_equal` compare a staged set against
+  // a narrower stored set, so the "nothing changed, write nothing" short-circuit
+  // could never fire for such an anchor.
+  auto const fx     = make_fixture("anchor_level_task_replay");
+  auto const anchor = seed_reviewed_reconcile_anchor(fx);
+
+  REQUIRE(dispatch(fx, {"task", "add", "Anchor-level task", "--plan", "1", "--json"}).code == 0);
+
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+
+  std::int64_t anchor_task_id = 0;
+  {
+    auto conn = open_db(fx);
+    auto stmt = conn.prepare("select id from tasks where plan_id = 1 order by id");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    anchor_task_id = stmt->column_int64(0);
+    // The first apply really did write for the anchor-level task; without
+    // these rows the replay below would pass for the wrong reason.
+    CHECK(count(conn, std::format("routing_task_facts where task_id = {}", anchor_task_id)) > 0);
+  }
+
+  auto const replay = dispatch(fx, {"spec", "ingest", anchor, "--apply"});
+  INFO(replay.err);
+  CHECK(replay.code == 0);
+  CHECK_FALSE(replay.err.contains("QueryFailed"));
+
+  auto after = open_db(fx);
+  // Replacement, not accumulation: the anchor-level task keeps exactly one row
+  // per fact identity.
+  CHECK(count(after, std::format("routing_task_facts where task_id = {}", anchor_task_id)) ==
+        count(after, std::format("(select distinct task_id, fact_kind, source_entity_kind, source_entity_id, source_locator, "
+                                 "source_digest, materializer_version from routing_task_facts where task_id = {})",
+                                 anchor_task_id)));
+}
+
 TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authored coverage", "[cmd][spec][ingest][reconcile]") {
   auto const fx     = make_fixture("reviewed_reconcile_full");
   auto const anchor = seed_reviewed_reconcile_anchor(fx);

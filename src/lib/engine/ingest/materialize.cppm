@@ -139,6 +139,16 @@ export enum class materialize_error_kind : std::uint8_t {
 export struct materialize_error {
   materialize_error_kind           kind_ = materialize_error_kind::query_failed; ///< What went wrong.
   std::vector<citation_diagnostic> citations_;                                   ///< Every unresolvable citation from the pass.
+  /// @brief The underlying SQLite failure, plus the origin that raised it.
+  ///
+  /// `query_failed` used to be a bare enumerator, so every database failure in
+  /// this module surfaced as the single word `QueryFailed` — no result code,
+  /// no `sqlite3_errmsg`, no hint which of the module's ~40 statements broke.
+  /// Isolating one such failure cost an operator an hour of bisection (the
+  /// constraint violation fixed alongside this field), which is exactly the
+  /// cost the `invalid_citation` diagnostics above were added to avoid. Empty
+  /// only when the kind is not `query_failed`.
+  std::string detail_;
 
   /// @brief Renders the error, including one line per unresolvable citation.
   /// @return The rendered error.

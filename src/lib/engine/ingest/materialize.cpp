@@ -178,8 +178,27 @@ constexpr std::array<evidence_flag, 12> evidence_flags = {{
     {.needle_ = "enumerated", .fact_kind_ = "mechanicality_evidence"},
 }};
 
-[[nodiscard]] auto query_failure() -> std::unexpected<materialize_error> {
-  return std::unexpected(materialize_error{.kind_ = materialize_error_kind::query_failed, .citations_ = {}});
+/// @brief The file name alone, for an error string a human has to read.
+[[nodiscard]] auto origin(const std::source_location& loc) -> std::string {
+  const std::string_view file  = loc.file_name();
+  const auto             slash = file.find_last_of('/');
+  return std::format("{}:{}", slash == std::string_view::npos ? file : file.substr(slash + 1), loc.line());
+}
+
+/// @brief A `query_failed` with no driver error to hand (the caller folded
+/// several fallible steps into one boolean), tagged with its origin.
+[[nodiscard]] auto query_failure(std::source_location loc = std::source_location::current())
+    -> std::unexpected<materialize_error> {
+  return std::unexpected(
+      materialize_error{.kind_ = materialize_error_kind::query_failed, .citations_ = {}, .detail_ = origin(loc)});
+}
+
+/// @brief A `query_failed` carrying the driver's own result code and message.
+[[nodiscard]] auto query_failure(const db::db_error& err, std::source_location loc = std::source_location::current())
+    -> std::unexpected<materialize_error> {
+  return std::unexpected(materialize_error{.kind_      = materialize_error_kind::query_failed,
+                                           .citations_ = {},
+                                           .detail_ = std::format("sqlite {}: {} ({})", err.code_, err.message_, origin(loc))});
 }
 
 /// @brief Inserts one fact into the staging table.
@@ -195,7 +214,7 @@ constexpr std::array<evidence_flag, 12> evidence_flags = {{
   source_digest, materializer_version
 ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))");
   if (!stmt.has_value()) {
-    return query_failure();
+    return query_failure(stmt.error());
   }
 
   const std::string_view value_type = std::visit(
@@ -225,8 +244,8 @@ constexpr std::array<evidence_flag, 12> evidence_flags = {{
   if (!ok) {
     return query_failure();
   }
-  if (!stmt->step().has_value()) {
-    return query_failure();
+  if (auto stepped = stmt->step(); !stepped.has_value()) {
+    return query_failure(stepped.error());
   }
   return {};
 }
@@ -280,7 +299,7 @@ constexpr std::array<evidence_flag, 12> evidence_flags = {{
   materializer_version text not null
 ))");
   if (!created.has_value()) {
-    return query_failure();
+    return query_failure(created.error());
   }
   return {};
 }
@@ -832,6 +851,15 @@ order by t.id, el.from_kind, el.from_id, el.to_kind, el.to_id)");
 ///
 /// A symmetric EXCEPT on both sides: equal sets mean the rewrite is skipped
 /// entirely, which is what keeps stored fact ids stable across a replay.
+///
+/// The compared scope must be the SET OF TASKS THIS PASS WRITES FOR, not the
+/// narrower `parent_plan_id = ?` shape the stagers mostly use.
+/// `stage_reviewed_artifact_facts` walks the whole recursive plan tree, so it
+/// also stages for tasks hanging DIRECTLY off the anchor plan (and off any
+/// grandchild). Comparing those staged rows against a stored set that excludes
+/// them made the two sets permanently unequal, so every replay decided to
+/// rewrite. See the delete in `reconcile` for the other half of the same
+/// invariant.
 [[nodiscard]] auto fact_sets_equal(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<bool, materialize_error> {
   auto stmt = conn.prepare(R"(with current_facts as (
   select task_id, fact_kind, value_type, value_bool, value_integer,
@@ -842,6 +870,8 @@ order by t.id, el.from_kind, el.from_id, el.to_kind, el.to_id)");
     select t.id from tasks t
     join plans p on p.id = t.plan_id
     where p.parent_plan_id = ?
+    union
+    select task_id from temp.routing_task_facts_stage
   )
 ),
 delta as (
@@ -856,12 +886,15 @@ delta as (
   )
 )
 select count(*) from delta)");
-  if (!stmt.has_value() || !stmt->bind_int64(1, anchor_plan_id).has_value()) {
+  if (!stmt.has_value()) {
+    return query_failure(stmt.error());
+  }
+  if (!stmt->bind_int64(1, anchor_plan_id).has_value()) {
     return query_failure();
   }
   const auto stepped = stmt->step();
   if (!stepped.has_value()) {
-    return query_failure();
+    return query_failure(stepped.error());
   }
   if (*stepped == db::step_result::done) {
     return false;
@@ -895,7 +928,8 @@ auto citation_diagnostic::describe() const -> std::string {
 
 auto materialize_error::describe() const -> std::string {
   if (kind_ == materialize_error_kind::query_failed) {
-    return "materializing routing facts: a database query failed";
+    return detail_.empty() ? std::string{"materializing routing facts: a database query failed"}
+                           : std::format("materializing routing facts: {}", detail_);
   }
   if (kind_ == materialize_error_kind::task_not_found) {
     return "materializing routing facts: no task with that id";
@@ -1139,8 +1173,8 @@ auto reconcile(db::connection& conn, std::int64_t anchor_plan_id, std::span<cons
   if (auto r = create_stage(conn); !r.has_value()) {
     return r;
   }
-  if (!conn.execute("delete from temp.routing_task_facts_stage").has_value()) {
-    return query_failure();
+  if (auto cleared = conn.execute("delete from temp.routing_task_facts_stage"); !cleared.has_value()) {
+    return query_failure(cleared.error());
   }
 
   if (auto r = stage_task_facts(conn, anchor_plan_id); !r.has_value()) {
@@ -1176,22 +1210,40 @@ auto reconcile(db::connection& conn, std::int64_t anchor_plan_id, std::span<cons
     return {};
   }
 
+  // The delete's scope must cover EVERY task the staging pass produced rows
+  // for, or the rewrite re-inserts a row the delete did not remove and trips
+  // `routing_task_facts`'s unique key (task_id, fact_kind, source kind/id,
+  // locator, digest, materializer_version) -- a key that excludes the value
+  // columns, so a byte-identical replay collides with itself. Most stagers are
+  // scoped to `parent_plan_id = ?`, but `stage_reviewed_artifact_facts` walks
+  // the recursive plan tree and therefore also stages for tasks on the anchor
+  // plan itself. Unioning the staged task ids in keeps the "clear tasks that
+  // no longer stage anything" behaviour of the plan-scoped half while making
+  // the pass own everything it writes.
   {
     auto stmt = conn.prepare(R"(delete from routing_task_facts
 where task_id in (
   select t.id from tasks t
   join plans p on p.id = t.plan_id
   where p.parent_plan_id = ?
+  union
+  select task_id from temp.routing_task_facts_stage
 ))");
-    if (!stmt.has_value() || !stmt->bind_int64(1, anchor_plan_id).has_value() || !stmt->step().has_value()) {
+    if (!stmt.has_value()) {
+      return query_failure(stmt.error());
+    }
+    if (!stmt->bind_int64(1, anchor_plan_id).has_value()) {
       return query_failure();
+    }
+    if (auto stepped = stmt->step(); !stepped.has_value()) {
+      return query_failure(stepped.error());
     }
   }
 
   // `distinct` plus the explicit ORDER BY are contractual: they make the
   // rewritten row order deterministic, so a replay that DOES change one fact
   // does not reshuffle every unrelated row's id along with it.
-  if (!conn.execute(R"(insert into routing_task_facts (
+  if (auto rewritten = conn.execute(R"(insert into routing_task_facts (
   task_id, fact_kind, value_type, value_bool, value_integer,
   value_real, value_text, source_entity_kind, source_entity_id,
   source_locator, source_digest, materializer_version
@@ -1202,9 +1254,9 @@ select distinct task_id, fact_kind, value_type, value_bool, value_integer,
 from temp.routing_task_facts_stage
 order by task_id, source_entity_kind, source_entity_id, source_locator,
          fact_kind, value_type, coalesce(value_text, ''),
-         coalesce(value_integer, value_bool))")
-           .has_value()) {
-    return query_failure();
+         coalesce(value_integer, value_bool))");
+      !rewritten.has_value()) {
+    return query_failure(rewritten.error());
   }
   return {};
 }
@@ -1222,8 +1274,8 @@ auto stage_one_task(db::connection& conn, std::int64_t task_id) -> std::expected
   if (auto created = create_stage(conn); !created.has_value()) {
     return created;
   }
-  if (!conn.execute("delete from temp.routing_task_facts_stage").has_value()) {
-    return query_failure();
+  if (auto cleared = conn.execute("delete from temp.routing_task_facts_stage"); !cleared.has_value()) {
+    return query_failure(cleared.error());
   }
 
   std::string body;
@@ -1327,11 +1379,17 @@ order by a.id)");
   // ingest-materialized facts of every sibling.
   {
     auto stmt = conn.prepare("delete from routing_task_facts where task_id=?");
-    if (!stmt.has_value() || !stmt->bind_int64(1, task_id).has_value() || !stmt->step().has_value()) {
+    if (!stmt.has_value()) {
+      return query_failure(stmt.error());
+    }
+    if (!stmt->bind_int64(1, task_id).has_value()) {
       return query_failure();
     }
+    if (auto stepped = stmt->step(); !stepped.has_value()) {
+      return query_failure(stepped.error());
+    }
   }
-  if (!conn.execute(R"(insert into routing_task_facts (
+  if (auto rewritten = conn.execute(R"(insert into routing_task_facts (
   task_id, fact_kind, value_type, value_bool, value_integer,
   value_real, value_text, source_entity_kind, source_entity_id,
   source_locator, source_digest, materializer_version
@@ -1342,12 +1400,12 @@ select distinct task_id, fact_kind, value_type, value_bool, value_integer,
 from temp.routing_task_facts_stage
 order by task_id, source_entity_kind, source_entity_id, source_locator,
          fact_kind, value_type, coalesce(value_text, ''),
-         coalesce(value_integer, value_bool))")
-           .has_value()) {
-    return query_failure();
+         coalesce(value_integer, value_bool))");
+      !rewritten.has_value()) {
+    return query_failure(rewritten.error());
   }
-  if (!tx->commit().has_value()) {
-    return query_failure();
+  if (auto committed = tx->commit(); !committed.has_value()) {
+    return query_failure(committed.error());
   }
   return {};
 }
