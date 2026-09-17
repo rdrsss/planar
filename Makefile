@@ -366,7 +366,7 @@ coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current
 # discipline. Tidy drift still does, as does everything else, because this
 # repo has no .github/workflows at all today.
 .PHONY: test-all
-test-all: test ctest-registry-check coverage cli-usage-check surface-check eval-contracts cpp-lint-gate ## Run the unit suite, coverage, the authored-surface and agent-contract gates, and the gating half of cpp-lint
+test-all: test ctest-registry-check coverage cli-usage-check surface-check exit-code-contract eval-contracts cpp-lint-gate ## Run the unit suite, coverage, the authored-surface and agent-contract gates, and the gating half of cpp-lint
 
 # RE-POINTED AT clang-format (plan 996, task 6045). These ran `zig fmt` over
 # `zig/`. With that tree deleted the formatter of record is the PINNED LLVM's
@@ -420,6 +420,22 @@ eval-orchestrator-fast: eval-orchestrator-unit ## Provider-free contract lane (d
 eval-orchestrator-unit: ## Harness unit tests
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 		-s evals/orchestrator -p 'test_*.py'
+
+.PHONY: exit-code-contract
+exit-code-contract: ## Prove the DOCUMENTED exit codes are the ones the binaries return (tasks 6813/6814)
+	scripts/exit-code-contract.sh --bin-dir $(CPP_BUILD_DIR)/bin
+
+# docs/cli-reference.md's Exit Codes table is a CONTRACT — skills and scripts
+# branch on it to decide whether a failure is the operator's fault, a system
+# fault, or a health verdict. Nothing checked it, and it drifted far enough to
+# invert that decision: it claimed 64 for unknown flags (actually 2, and 64
+# means NOT IMPLEMENTED), glossed 2 as "system error" so a typo read as a
+# database failure, and omitted 5/6/7 entirely. pl-health then mapped exit 2 to
+# `critical`, so `planar health --typo` reported a CRITICAL system.
+#
+# Every other gate stayed green: cli_usage_lint checks flag EXISTENCE,
+# surface_lint checks links and shapes, the parity pins cover specific leaves.
+# None compares a documented CONVENTION against observed behaviour.
 
 .PHONY: eval-contracts
 eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-fixtures ## The PROVIDER-FREE eval lanes, composed into test-all
