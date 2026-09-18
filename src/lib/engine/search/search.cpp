@@ -106,11 +106,15 @@ auto query(db::connection& conn, std::string_view query_str, const search_filter
     // compile-time constants reached only through `config_for`, never
     // operator input, and a bound parameter cannot appear in the select
     // list position the oracle puts it in.
-    sql += std::format("SELECT '{}' AS kind, f.rowid AS id, COALESCE(b.slug,'') AS slug, b.title AS title, "
+    // Only plans and tasks carry a slug column; migration 00037 dropped the
+    // four that never held a value (task 6808). The other kinds always
+    // rendered as `kind:id`, and still do, so the hit shape is unchanged.
+    std::string_view const slug_expr = (kind == "plan" || kind == "task") ? "COALESCE(b.slug,'')" : "''";
+    sql += std::format("SELECT '{}' AS kind, f.rowid AS id, {} AS slug, b.title AS title, "
                        "snippet({}, -1, '<mark>', '</mark>', '…', 32) AS snippet, -bm25({}) AS rank, "
                        "COALESCE(b.status,'') AS status, b.scope_kind AS scope_kind, b.scope_id AS scope_id "
                        "FROM {} AS f JOIN {} AS b ON b.id = f.rowid WHERE {} MATCH ?",
-                       kind, cfg.fts_table, cfg.fts_table, cfg.fts_table, cfg.base_table, cfg.fts_table);
+                       kind, slug_expr, cfg.fts_table, cfg.fts_table, cfg.fts_table, cfg.base_table, cfg.fts_table);
     binds.push_back(bind_value{.is_text = true, .text = std::string{query_str}});
 
     if (!filter.statuses.empty()) {

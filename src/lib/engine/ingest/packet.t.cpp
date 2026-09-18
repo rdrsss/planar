@@ -154,10 +154,10 @@ auto seed(planar::db::connection& conn) -> void {
              "(11, 'global', null, 'tech_spec', 'Tech', '## Overview\nSpec section body for tech_spec.\n', 'active'),"
              "(12, 'global', null, 'roadmap', 'Roadmap', '## Overview\nSpec section body for roadmap.\n', 'active'),"
              "(13, 'global', null, 'test_spec', 'Tests', '## Overview\nSpec section body for test_spec.\n', 'active')");
-  exec(conn, "insert into decisions (id, scope_kind, scope_id, title, body, status, slug) "
-             "values (20, 'global', null, 'Locked', 'Decision body.', 'accepted', 'pkt-dec')");
-  exec(conn, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status, slug) "
-             "values (30, 'global', null, 'Scenario', 'Scenario body.', 'ready', 'pkt-scn')");
+  exec(conn, "insert into decisions (id, scope_kind, scope_id, title, body, status) "
+             "values (20, 'global', null, 'Locked', 'Decision body.', 'accepted')");
+  exec(conn, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status) "
+             "values (30, 'global', null, 'Scenario', 'Scenario body.', 'ready')");
   exec(conn, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values "
              "('task', 100, 'artifact', 10, 'cites'),"
              "('task', 100, 'artifact', 11, 'cites'),"
@@ -367,8 +367,8 @@ TEST_CASE("an open question blocks and an answered one does not", "[packet]") {
     scratch_db_path scratch;
     auto            conn = open_migrated(scratch);
     seed(conn);
-    exec(conn, "insert into questions (id, scope_kind, scope_id, title, body, status, slug) "
-               "values (40,'global',null,'Q','Q body.','open','pkt-q')");
+    exec(conn, "insert into questions (id, scope_kind, scope_id, title, body, status) "
+               "values (40,'global',null,'Q','Q body.','open')");
     exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
                "values ('task',100,'question',40,'addresses')");
     auto linked = pk::assemble_task(conn, ready_task);
@@ -382,8 +382,8 @@ TEST_CASE("an open question blocks and an answered one does not", "[packet]") {
     scratch_db_path scratch;
     auto            conn = open_migrated(scratch);
     seed(conn);
-    exec(conn, "insert into questions (id, scope_kind, scope_id, title, body, status, answer_body, answered_at, slug) "
-               "values (40,'global',null,'Q','Q body.','answered','A','2020-01-01T00:00:00.000Z','pkt-q')");
+    exec(conn, "insert into questions (id, scope_kind, scope_id, title, body, status, answer_body, answered_at) "
+               "values (40,'global',null,'Q','Q body.','answered','A','2020-01-01T00:00:00.000Z')");
     exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
                "values ('task',100,'question',40,'addresses')");
     auto packet = pk::assemble_task(conn, ready_task);
@@ -1149,8 +1149,8 @@ TEST_CASE("assemble_planning: the milestone-plan walk reaches a CHILD plan's tas
   exec(conn, "insert into tasks (id, scope_kind, scope_id, plan_id, title, status, priority, slug) values "
              "(300, 'global', null, 2, 'Milestone task, covered', 'todo', 100, 'pkt-m1-a'),"
              "(301, 'global', null, 2, 'Milestone task, uncovered', 'todo', 100, 'pkt-m1-b')");
-  exec(conn, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status, slug) "
-             "values (31, 'global', null, 'Milestone scenario', 'Scenario body.', 'ready', 'pkt-m1-scn')");
+  exec(conn, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status) "
+             "values (31, 'global', null, 'Milestone scenario', 'Scenario body.', 'ready')");
   exec(conn, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values "
              "('test_scenario', 31, 'task', 300, 'verifies'),"
              "('test_scenario', 31, 'plan', 1, 'derives-from')");

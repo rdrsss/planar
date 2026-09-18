@@ -731,11 +731,11 @@ TEST_CASE("planar_focus counts repo-scoped work and follows touches for plans on
              "values ('t2', 't2', 'blocked', 'repo', 1)");
   exec(conn, "insert into tasks (title, slug, status, scope_kind, scope_id) "
              "values ('t3', 't3', 'done', 'repo', 1)");
-  exec(conn, "insert into questions (title, slug, status, scope_kind, scope_id) "
-             "values ('q1', 'q1', 'open', 'repo', 1)");
+  exec(conn, "insert into questions (title, status, scope_kind, scope_id) "
+             "values ('q1', 'open', 'repo', 1)");
   // An `answered` question needs both answer columns — the schema enforces it.
-  exec(conn, "insert into questions (title, slug, status, scope_kind, scope_id, answer_body, answered_at) "
-             "values ('q2', 'q2', 'answered', 'repo', 1, 'a', 'T')");
+  exec(conn, "insert into questions (title, status, scope_kind, scope_id, answer_body, answered_at) "
+             "values ('q2', 'answered', 'repo', 1, 'a', 'T')");
 
   auto table = routing::build(conn, 1, "acme", "Acme", routing::default_capability_rules());
   REQUIRE(table.has_value());
@@ -764,10 +764,10 @@ TEST_CASE("cross_repo collects org-scoped plans and OPEN questions only", "[engi
   // Plans are collected regardless of status; questions only when open.
   exec(conn, "insert into plans (title, slug, status, scope_kind, scope_id) "
              "values ('orgp', 'orgp', 'draft', 'association', 1)");
-  exec(conn, "insert into questions (title, slug, status, scope_kind, scope_id) "
-             "values ('oq', 'oq', 'open', 'association', 1)");
-  exec(conn, "insert into questions (title, slug, status, scope_kind, scope_id, answer_body, answered_at) "
-             "values ('aq', 'aq', 'answered', 'association', 1, 'a', 'T')");
+  exec(conn, "insert into questions (title, status, scope_kind, scope_id) "
+             "values ('oq', 'open', 'association', 1)");
+  exec(conn, "insert into questions (title, status, scope_kind, scope_id, answer_body, answered_at) "
+             "values ('aq', 'answered', 'association', 1, 'a', 'T')");
 
   auto table = routing::build(conn, 1, "acme", "Acme", routing::default_capability_rules());
   REQUIRE(table.has_value());
