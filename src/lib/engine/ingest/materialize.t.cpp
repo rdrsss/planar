@@ -365,6 +365,58 @@ insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) valu
   CHECK(described.contains("File-level tree (operator-approved)"));
 }
 
+TEST_CASE("a citation followed by trailing prose names the whole absorbed locator", "[ingest][materialize][citation][5714]") {
+  // The case that opened task 5714: a BARE locator runs to end-of-line, so
+  // `artifact:1#Acceptance signals - credential-free fixtures` asks for a
+  // section that includes the prose after the heading. The operator can only
+  // repair it if the diagnostic shows the locator AS PARSED next to the
+  // heading the artifact really has.
+  const scratch_db_path scratch;
+  auto                  conn = open_migrated(scratch);
+
+  must_execute(conn, R"(insert into plans (scope_kind, title, slug, status) values ('global', 'Anchor', 'anchor', 'active');
+insert into plans (scope_kind, title, slug, status, parent_plan_id) values ('global', 'M1', 'm1', 'active', 1);
+insert into artifacts (scope_kind, kind, title, body) values (
+  'global', 'product_spec', 'Spec',
+  '## Acceptance signals
+
+text
+');
+insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('artifact', 1, 'plan', 1, 'derives-from');
+insert into tasks (scope_kind, plan_id, title, body, next_action) values (
+  'global', 2, 'Cites with trailing prose',
+  '## Spec Citations
+
+- Product intent: artifact:1#Acceptance signals - credential-free fixtures',
+  'Read the spec.'
+);
+insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values ('task', 1, 'artifact', 1, 'cites'))");
+
+  const auto result = mat::reconcile(conn, 1, {});
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error().kind_ == mat::materialize_error_kind::invalid_citation);
+  REQUIRE(result.error().citations_.size() == 1);
+
+  const auto& diagnostic = result.error().citations_[0];
+  CHECK(diagnostic.task_id_ == 1);
+  CHECK(diagnostic.artifact_id_ == 1);
+  CHECK(diagnostic.locator_ == "artifact:1#Acceptance signals - credential-free fixtures");
+  CHECK(diagnostic.wanted_ == "Acceptance signals - credential-free fixtures");
+  REQUIRE(diagnostic.available_.size() == 1);
+  CHECK(diagnostic.available_[0] == "Acceptance signals");
+  // This is the REVERSE of the truncation trap -- the request is longer than
+  // the heading, not shorter -- so the truncation advice must not fire.
+  CHECK(diagnostic.truncated_from_.empty());
+
+  const auto described = diagnostic.describe();
+  CHECK(described.contains("task 1"));
+  CHECK(described.contains("artifact 1"));
+  CHECK(described.contains("Acceptance signals - credential-free fixtures"));
+  CHECK(described.contains("it offers: Acceptance signals"));
+  CHECK_FALSE(described.contains("TRUNCATED"));
+  CHECK(int_query(conn, "select count(*) from routing_task_facts") == 0);
+}
+
 TEST_CASE("the diagnostic does not offer the synthetic Content wrapper as citable", "[ingest][materialize][citation]") {
   // `## Content` is the wrapper `planar artifact show` adds, not authored
   // content. Offering it would send an operator to cite a heading that does
