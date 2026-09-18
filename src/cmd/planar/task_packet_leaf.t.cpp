@@ -150,10 +150,10 @@ auto seed(const fixture& fx) -> void {
                "(11,'global',null,'tech_spec','Tech','## Overview\nSpec section body for tech_spec.\n','active'),"
                "(12,'global',null,'roadmap','Roadmap','## Overview\nSpec section body for roadmap.\n','active'),"
                "(13,'global',null,'test_spec','Tests','## Overview\nSpec section body for test_spec.\n','active')");
-  exec_sql(fx, "insert into decisions (id, scope_kind, scope_id, title, body, status, slug) "
-               "values (20, 'global', null, 'Locked', 'Decision body.', 'accepted', 'pkt-dec')");
-  exec_sql(fx, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status, slug) "
-               "values (30, 'global', null, 'Scenario', 'Scenario body.', 'ready', 'pkt-scn')");
+  exec_sql(fx, "insert into decisions (id, scope_kind, scope_id, title, body, status) "
+               "values (20, 'global', null, 'Locked', 'Decision body.', 'accepted')");
+  exec_sql(fx, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status) "
+               "values (30, 'global', null, 'Scenario', 'Scenario body.', 'ready')");
   exec_sql(fx, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) values "
                "('task',100,'artifact',10,'cites'),('task',100,'artifact',11,'cites'),"
                "('task',100,'artifact',12,'cites'),('task',100,'artifact',13,'cites'),"

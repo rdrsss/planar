@@ -122,12 +122,14 @@
 /// entirely when NULL and prints it when present — including when present
 /// and empty.
 ///
-/// ## `slug` is a real column this port does NOT read
+/// ## There is no `artifacts.slug`
 ///
-/// `artifacts.slug` exists (migration 00013) under a partial unique index.
-/// The oracle's `readRow` does not select it and no `artifact` leaf emits
-/// it, so neither does this port. Adding it to the JSON would be a silent
-/// contract change.
+/// Migration 00011 added one (re-declared by the 00013 rebuild) under a
+/// partial unique index, but nothing ever selected or bound it and no
+/// `artifact` leaf emitted it; migration 00037 dropped it along with the
+/// equally dormant `questions` / `test_scenarios` / `decisions` columns
+/// (task 6808). Do not reintroduce a setter: `tasks.slug` and `plans.slug`
+/// are the only slugs the planning layer reads.
 module;
 
 export module planar.engine.planning.artifact;
