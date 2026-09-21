@@ -107,7 +107,7 @@ Vendor identity for auto-created sessions is taken from the `PLANAR_VENDOR` envi
 planar [GLOBAL FLAGS] <subcommand> [subcommand args]
 ```
 
-**Bare invocation.** When `planar` is called with no subcommand and no flags on a TTY, the interactive cockpit launches automatically (landing on the Scope Explorer). On a non-TTY (pipe, redirect, CI), with `TERM=dumb`, with `PLANAR_NO_TUI` set, or when `-h`/`--help` is passed, it falls back to the standard help/usage output. The explicit alias `planar explore` is always available by name. See [Domain: `explore`](#domain-explore) for the full gate contract.
+**Bare invocation.** When `planar` is called with no subcommand it prints the root help/usage text and exits 0, on a TTY or otherwise. There is no interactive cockpit in this tree (decisions 980/982): `planar explore` is a declared leaf that prints its own help page and exits 0 — see [Domain: `explore`](#domain-explore).
 
 ### Global Flags
 
@@ -116,11 +116,8 @@ The database path is overridden via the `PLANAR_DB` environment variable (not a 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--json` | Emit machine-readable newline-delimited JSON instead of human text. | off |
-| `--quiet` / `-q` | Suppress informational output; only emit errors and explicit results. | off |
-| `-v` | Enable info-level logging. | off |
-| `-vv` | Enable debug-level logging. | off |
 
-There is no `--no-scope-check` flag — see [Cross-scope guard § No escape hatch](#cross-scope-guard) — and no `--color` / `--no-color` flag or `NO_COLOR` handling: the binary does not colorize any output today, so there is no color mode to select or suppress (task 6140; these three were documented aspirationally and never implemented / were removed without the docs following).
+`--json` is the only flag accepted before the subcommand; the root node declares no others. There is no quiet flag (neither the long nor the `-q` short form) and no `-v` / `-vv` verbosity flags — passing any of them fails at parse time with `error: <cmd>: The following argument was not expected: <flag>`, exit 2 — no `--no-scope-check` — see [Cross-scope guard § No escape hatch](#cross-scope-guard) — and no `--color` / `--no-color` flag or `NO_COLOR` handling: the binary does not colorize any output today, so there is no color mode to select or suppress (task 6140; these were documented aspirationally and never implemented / were removed without the docs following). Every leaf that supports JSON output also declares its own `--json`, which is the form the per-command tables below show.
 
 Global flags must appear before the subcommand. They are not repeated in per-command option tables below.
 
@@ -128,7 +125,7 @@ Global flags must appear before the subcommand. They are not repeated in per-com
 
 ## Cross-scope guard
 
-The cross-scope guard is a refusal mechanism that runs at the top of every mutating verb that takes an existing entity id, or that walks from a parent entity to derived rows. It is layered on top of the strict write-scope resolver described in [Scope Shorthand](#scope-shorthand): the resolver picks the operator's intended scope; the guard then compares that against the *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. See [docs/concepts.md § Cross-scope guard](./concepts.md#cross-scope-guard) for the conceptual model.
+The cross-scope guard is a refusal mechanism that runs at the top of ten specific verbs — those that walk from a parent entity to derived rows, or mutate one existing entity in a way the audit judged worth guarding (see [Guarded verbs](#guarded-verbs); it is NOT on every mutating verb). It is layered on top of the strict write-scope resolver described in [Scope Shorthand](#scope-shorthand): the resolver picks the operator's intended scope; the guard then compares that against the *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. See [docs/concepts.md § Cross-scope guard](./concepts.md#cross-scope-guard) for the conceptual model.
 
 ### Resolution → guard pipeline
 
@@ -136,7 +133,7 @@ For every guarded verb:
 
 1. Look up the target entity's stored scope. Global-scoped entities short-circuit and are accepted from any operator scope.
 2. Resolve the operator's write scope through the cwd-primary algorithm (explicit `--scope` flag → cwd derivation, most-specific-wins → otherwise global).
-3. Compare the two scopes with the membership-aware coverage rule: equality matches, and an operator scope `assoc:<org>` covers any entity scoped to one of the org's member projects (via `project_associations`). Otherwise refuse with exit 1. The reverse direction (operator project, entity org) does not cover.
+3. Compare the two scopes with the membership-aware coverage rule: equality matches, and an operator scope `assoc:<org>` covers any entity scoped to one of the org's member projects (via `project_associations`). Otherwise refuse with exit 5. The reverse direction (operator project, entity org) does not cover.
 
 ### Refusal message
 
@@ -188,18 +185,22 @@ does not exist for them, and could not be offered without a new flag.
 
 ### Guarded verbs
 
-**Measured against the source at task 6075 (2026-09-11), not aspirational.**
-Eight verbs carry a cross-scope check; seven call sites implement them
-(`sync push` and `sync pull` share one). Every other mutating verb — including
-several this table claimed for years — performs **no** scope comparison.
+**Measured against the source at task 6075 (2026-09-11) and re-measured at
+task 6825 (2026-09-21), not aspirational.** Ten verbs carry a cross-scope
+check; eight `guard_with_membership` call sites implement them (`sync push`
+and `sync pull` share one; `decision accept` and `decision withdraw` share
+their transition helper). Every other mutating verb — including several this
+table claimed for years — performs **no** scope comparison.
 
 | Verb | Guards against | Comparison | Call site |
 |------|---------------|-----------|-----------|
 | `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec_ingest.cpp` |
 | `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback.cpp` |
 | `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit.cpp` |
-| `task update <task-id>` | `task` | **strict equality** | `src/cmd/planar/handlers/task.cpp` |
-| `closure compute` | resolved write scope | **strict equality** | `src/cmd/planar/handlers/closure.cpp` |
+| `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision.cpp` |
+| `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision.cpp` |
+| `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task.cpp` |
+| `closure compute` | resolved write scope | membership-aware | `src/cmd/planar/handlers/closure.cpp` |
 | `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
 | `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
 | `planar-ext sync resolve <event-id>` | the event's target entity | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
@@ -207,19 +208,22 @@ several this table claimed for years — performs **no** scope comparison.
 `--all` forms of `sync push` / `sync pull` are unguarded; the bulk fan-out is
 an explicit opt-in.
 
-#### Two comparisons, not one
+#### One comparison, since decision 1121
 
-The `Comparison` column is a real behavioural split, not a note about
-implementation. Five verbs call `guard_with_membership`, which accepts an
-entity at `repo:<project>` when the operator's write scope is an association
-that project belongs to. Two — `task update` and `closure compute` — call
-`engine::identity::check_scope_guard` directly, which is strict equality after
-`assoc:` normalization.
+Every guarded call site uses the cmd-layer `guard_with_membership`, which
+accepts an entity at `repo:<project>` when the operator's write scope is an
+association that project belongs to (via `project_associations`). The reverse
+direction — operator `repo:`, entity `assoc:` — still refuses with exit 5.
 
-So an `assoc:<org>` → `repo:<member>` write is **accepted** by
-`spec ingest --apply` and **refused** by `task update`, from the identical
-working directory. This divergence is recorded, not endorsed; reconciling it
-is an open operator decision.
+This was not always true. Until decision 1121 (task 6735), `task update` and
+`closure compute` called `engine::identity::check_scope_guard` directly —
+strict equality after `assoc:` normalization — so an `assoc:<org>` →
+`repo:<member>` write was **accepted** by `spec ingest --apply` and
+**refused** by `task update`, from the identical working directory. Task 6075
+measured the split; decision 1121 widened those two to match the rest, on the
+grounds that strict equality could not tell "my own member repo" from "an
+unrelated repo" and refused both identically. The guard stops a write leaking
+sideways, not an association acting on its own member.
 
 ### Verbs with no scope guard
 
@@ -263,21 +267,22 @@ Initializes the Planar database and registers the current directory as a project
 
 **Synopsis:**
 ```
-planar init [--name <text>] [--skip-project] [--allow-no-repo] [--force]
+planar init [--name <text>] [--slug <slug>] [--skip-project] [--allow-no-repo] [--force]
 ```
 
 **Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at configure time from `migrations/` via `cmake/generate_migrations.cmake`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Human output names the `assoc create` and `assoc add` commands that establish the project's planning scope; `--json` retains the stable initialization result shape without prose guidance. Order: ensure config → apply migrations → create project row.
 
-**Workspace-shape guardrail:** when cwd has no `.git` of its own but contains one or more immediate child directories that do, `planar init` refuses with a hint pointing at `planar workspace init`. A bare init in a polyrepo workspace directory would otherwise register a semantically-wrong project row for the workspace itself. Pass `--allow-no-repo` (alias `--force`) to override and register the non-repo cwd as a standalone project anyway. See [Domain: `workspace`](#domain-workspace) and [concepts.md § Workspace](concepts.md#workspace).
+**Workspace-shape guardrail:** when cwd has no `.git` of its own but contains one or more immediate child directories that do, `planar init` refuses with a hint pointing at `planar workspace init`. A bare init in a polyrepo workspace directory would otherwise register a semantically-wrong project row for the workspace itself. Pass `--allow-no-repo` to override and register the non-repo cwd as a standalone project anyway (`--force` is a different flag — see the options table). See [Domain: `workspace`](#domain-workspace) and [concepts.md § Workspace](concepts.md#workspace).
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--name <text>` | Human-readable project name. | Basename of current working directory. |
+| `--slug <slug>` | Explicit project slug; with `--force`, names the existing registration to repoint. | Slug derived from the directory basename. |
 | `--skip-project` | Apply migrations only; do not register a project. | off |
 | `--allow-no-repo` | Proceed even when cwd has no `.git` but contains child repos (escape hatch for the workspace-shape guardrail). | off |
-| `--force` | Alias for `--allow-no-repo`. | off |
+| `--force` | Overwrite an existing project registration: repoint the slug's existing row (`root_path`, name, git remote) under the same id instead of the default insert-or-ignore, which leaves an existing row unchanged. Use after moving a checkout. | off |
 
 **Output (human):**
 ```
@@ -428,9 +433,9 @@ When no proposals match, `--json` emits `{"proposals":[]}`.
 
 ---
 
-## Domain: `association` (alias: `assoc`)
+## Domain: `assoc`
 
-Manages associations — the many-to-many tags that group repos into named scopes. Both `association` and `assoc` are valid subcommand names.
+Manages associations — the many-to-many tags that group repos into named scopes. The subcommand name is `assoc` only; there is no `association` alias (`planar association list` fails at parse time, exit 2).
 
 ---
 
@@ -448,7 +453,8 @@ planar assoc list [--kind <kind>] [--json]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--kind <kind>` | Filter by association kind: `org`, `project`, `client`, `personal`, `ad-hoc`, `host`, `path`, `lang`. | all |
-| `--workbench` | Only show workbench-enabled associations. | off |
+
+There is no `--workbench` filter; the `workbench` column is reported but not filterable.
 
 **Output (human):**
 ```
@@ -1795,27 +1801,35 @@ question 3: "What is the Stripe API rate limit?"  [open]  (scope: association:3 
 
 ---
 
-### `planar question answer <question-id> <answer>`
+### `planar question answer <question-id>`
 
 **Synopsis:**
 ```
-planar question answer <question-id> <answer>
+planar question answer <question-id> --answer <text> [--json]
 ```
 
-**Description:** Provide an answer to an open question, transitioning its status to `answered`. The `<answer>` argument may be inline text or `@<file>` to read from a file.
+**Description:** Provide an answer to an open question, transitioning its status to `answered`. The answer is passed as the `--answer` flag, not as a positional: `planar question answer 12 "text"` fails at parse time with exit 2. The flag takes literal text; there is no `@<file>` expansion (use `--answer "$(cat file)"`).
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
 | `<question-id>` | Id of the question to answer. |
-| `<answer>` | Answer text or `@<file>`. |
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--answer <text>` | The answer text. Required; must be non-empty. | none |
+| `--json` | Emit the updated question as JSON. | off |
 
 **Schema effects:** Updates `questions(status='answered', answer_body=<answer>, answered_at=now(), updated_at)`.
 
 **Capture:** Appends `session_entries` row with `prefix='decision'` (answers are resolved decisions).
 
 **Exit codes:**
+- `2` — `--answer` omitted (`--answer is required`).
+- `1` — `--answer` present but empty.
 - `1` — question not found.
 - `1` — question is already answered or wontfix.
 
@@ -3012,7 +3026,7 @@ planar workbench publish <plan-id> --system <slug> [--json]
 
 **Description:** Render the workbench files for the named anchor plan and push the rendered content to a registered external operational system (Jira, GitHub Issues) via the adapter layer. The destination system, credentials, and per-entity projection template come from the system registration (see `planar-ext ext list` / `planar-ext ext create`).
 
-For richer per-entity counterpart creation (epics, issues, sub-issues with parent/child links) walking the full plan tree, use `planar-ext ext propagate <plan-id> --system <slug>` once it lands (not yet implemented — see [that command's page](#planar-ext-ext-propagate-plan)) or `planar-ext ext propagate-one <system> --from <kind:id>` today for a single entity. `workbench publish` pushes the rendered Markdown body; `ext propagate` creates one external counterpart per entity in the plan subtree.
+For richer per-entity counterpart creation (epics, issues, sub-issues with parent/child links) walking the full plan tree, use [`planar-ext ext propagate <plan-id> --system <slug>`](#planar-ext-ext-propagate-plan) (implemented for every strategy except the cut `github-projects-v2`), or `planar-ext ext propagate-one <system> --from <kind:id>` for a single entity. `workbench publish` pushes the rendered Markdown body; `ext propagate` creates one external counterpart per entity in the plan subtree.
 
 **Arguments:**
 
@@ -3468,29 +3482,26 @@ link id: 7  (two-way mirror)
 
 ### `planar-ext ext propagate <plan>`
 
-> **GitHub parent-issue only (task 6421, done).** The `ext`/`sync` verb
-> family moved to `planar-ext` at task 6419, and the whole-feature tree walk
-> documented below now runs there — but task 6421 deliberately scoped its
-> implementation to the single-repo `github-parent-issue` strategy only.
-> Calling this verb against a **Jira** system, or a GitHub feature that
-> resolves to any strategy other than `github-parent-issue`, refuses with
-> exit `1` and a message naming the unimplemented strategy (`github-projects-v2`
-> refuses with a decision-1001-specific message; any other non-`github-parent-issue`
-> strategy — including `jira-epic` — refuses with a generic "not yet
-> implemented in planar-ext" message). There is no tracked follow-up task for
-> Jira-epic support in this whole-tree verb at time of writing (see task 6046
-> for where this was found). For Jira, or for a GitHub feature that isn't
-> single-repo, use [`planar-ext ext propagate-one`](#planar-ext-ext-propagate-one-system---from-kindid)
-> entity-by-entity instead.
+> **Every reachable strategy is implemented except `github-projects-v2`.**
+> The `ext`/`sync` verb family moved to `planar-ext` at task 6419; task 6421
+> ported the single-repo `github-parent-issue` engine, and task 6451 added
+> the generic per-entity tree walk that `jira-epic`, `github-zero-repo` and
+> `github-tracking-issue` run through (the same `propagate_one_entity` core
+> `ext propagate-one` uses, applied to every entry of the feature tree). The
+> only refusal is `github-projects-v2` — the multi-repo GitHub strategy was
+> cut from the C++ rewrite by decision 1001 — which exits `1` with a message
+> naming that cut, whether it was auto-detected for a multi-repo feature or
+> requested via `--github-strategy projects-v2`.
 
 **Synopsis:**
 ```
-planar-ext ext propagate <plan> [--system <slug>] [--dry-run] [--restrategize [--yes]]
+planar-ext ext propagate <plan> [--system <slug>] [--dry-run] [--github-strategy <s>]
+                            [--restrategize [--yes]]
                             [--verify-counterparts [--unlink | --recreate]]
                             [--scope <slug>] [--sync <direction>] [--json]
 ```
 
-**Description:** Push a feature tree to the operational plane. For a GitHub system whose feature touches exactly one repo, creates external counterparts (parent-issue/sub-issues) for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): Jira always uses the epic hierarchy (not yet implemented in this whole-tree verb — see the note above); GitHub always uses the single-repo parent-issue strategy when the feature is single-repo. The multi-repo `projects-v2` strategy is permanently cut (decision 1001) and will not exist; a multi-repo GitHub feature refuses with a message pointing at that cut rather than attempting it.
+**Description:** Push a feature tree to the operational plane: create external counterparts for the anchor plan and all descendant child plans and tasks that do not yet have a `mirror` link. The propagation strategy is selected per [ADR-0006](adrs.md): a Jira system always uses the epic hierarchy (`jira-epic`); a GitHub system uses `github-parent-issue` (parent issue plus sub-issues) when the feature touches exactly one repo, `github-zero-repo` when it touches none, and `github-projects-v2` when it touches several — the last of which refuses (decision 1001). `--github-strategy` overrides the auto-detected GitHub strategy outright.
 
 **Strategy stickiness (Phase C):** The chosen strategy is cached on `external_links.config_json` of the anchor plan at first propagation. Subsequent reruns honor the cached strategy even if the repo count later changes. Strategy is not re-evaluated automatically; use `--restrategize` to rebuild.
 
@@ -3512,6 +3523,7 @@ After propagation, run `planar workbench push <plan>` separately to update workb
 |------|-------------|---------|
 | `--system <slug>` | External system slug. | First registered system. |
 | `--dry-run` | Print what would be created without contacting the remote. | `false` |
+| `--github-strategy <s>` | Override the auto-detected GitHub strategy: `parent-issue`, `projects-v2` (always refused, decision 1001) or `tracking-issue`. Bypasses the repo-count detection entirely. Only valid against a `github-issues` system (exit 1 otherwise) and mutually exclusive with `--restrategize`. | auto-detected |
 | `--restrategize` | Force fresh strategy detection; prompts for confirmation if the strategy changes. On confirmation, prior counterparts are abandoned (NOT deleted from the remote) and `sync_events(outcome='strategy-abandoned')` rows are written for audit. Fresh propagation then proceeds under the new strategy. | `false` |
 | `--yes` | Auto-confirm the `--restrategize` prompt without interactive input. No effect without `--restrategize`. | `false` |
 | `--verify-counterparts` | Probe the remote to confirm every already-linked entity still exists. Missing counterparts (404) are reported as `Missing` and `sync_events(outcome='counterpart-missing')` rows are written. Off by default — probing on every run is expensive on large features. | `false` |
@@ -3641,7 +3653,7 @@ planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--s
 | `--to <system-slug>:<external-id>` | External reference, e.g. `acme-jira:PROJ-1234`. | Required. |
 | `--role <link-role>` | One of `mirror`, `parent`, `child`, `reference`. | `reference` |
 | `--sync <direction>` | One of `read-only`, `write-back`, `two-way`. | `read-only` |
-| `--propagate` | After creating the link, propagate the anchor plan of the linked entity to its registered external system. Runs the equivalent of `planar-ext ext propagate` against the top-level plan. Whole-tree `ext propagate` is not yet implemented (see its page); `--propagate` shares that dependency. | `false` |
+| `--propagate` | After creating the link, propagate the anchor plan of the linked entity to its registered external system. Runs the equivalent of `planar-ext ext propagate` against the top-level plan and shares its one refusal (`github-projects-v2`, decision 1001). | `false` |
 
 **Output (`--json`):**
 ```json
@@ -4045,7 +4057,8 @@ planar handoff list [--status <status>]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--status <status>` | Filter: `pending`, `validated`, `consumed`, `abandoned`. Repeatable. | `pending` |
-| `--task <task-id>` | Filter to handoffs for a specific task. | all |
+
+There is no `--task` filter on `handoff list` (passing it exits 2); filter the output by the `task` column instead.
 
 **Output (human):**
 ```
@@ -4580,161 +4593,6 @@ ordinary command errors.
 
 ---
 
-## Domain: `models`
-
-Provider + model capability discovery (plan 540/543). Reports which supported provider CLIs are installed on the local machine and the curated model catalog each exposes, classified into the canonical `small`/`medium`/`large` tiers, plus the default role→tier→model routing. **No database handle** is used — discovery is PATH + subprocess + a curated in-repo catalog.
-
-> The provider CLIs (`claude`, `codex`) do **not** expose a machine-readable "list models" command, so the per-vendor model list is curated in-repo (`src/engine/models.zig`); discovery confirms which CLIs are *callable* by invoking `<bin> --version` (instant, auth-free). This is the interim discovery surface; the plan-540 shared resolver and main-config tier maps (phases 1–2/4) supersede it, and the role→tier defaults here reflect the shared resolver defaults.
-
----
-
-### `planar models list`
-
-**Synopsis:**
-```
-planar models list [--json]
-```
-
-**Description:** Probe each provider CLI (installed-state + `--version`) and print its curated model catalog plus the default role→tier→model routing. Read-only.
-
-**Output (human):**
-```
-providers:
-  claude   [installed] 2.1.170 (Claude Code)
-      large    claude-opus-4-8
-      large    claude-fable-5
-      medium   claude-sonnet-5
-      small    claude-haiku-4-5
-  codex    [installed] codex-cli 0.137.0
-      large    gpt-5.6-sol
-      large    gpt-5.5
-      medium   gpt-5.6-terra
-      medium   gpt-5.4
-      small    gpt-5.6-luna
-      small    gpt-5.4-mini
-      small    gpt-5.3-codex-spark
-default routing (role → tier → vendor model):
-  coder      → medium claude claude-sonnet-5
-  reviewer   → large  claude claude-opus-4-8
-  test-coder → medium claude claude-sonnet-5
-  documenter → medium claude claude-sonnet-5
-  doc-author → large  claude claude-opus-4-8
-  sync-reconciler → large claude claude-opus-4-8
-```
-
-**Output (`--json`):** `{ "providers": [ { "vendor", "bin", "installed", "version", "models": [ { "id", "tier" } ] } ], "default_routing": [ { "role", "tier", "vendor", "model" } ] }`.
-
-**Exit codes:** `0` on success.
-
----
-
-### `planar models refresh`
-
-**Synopsis:**
-```
-planar models refresh [--json]
-```
-
-**Description:** Same probe as `list`, and additionally write the result to `${PLANAR_HOME:-~/.planar}/models/catalog.json` as a deterministic cache (creating `models/`). Prints a `wrote model cache: <path>` provenance line to stderr so `--json` stdout stays clean for scripts.
-
-**Exit codes:** `0` on success.
-
----
-
-### `planar models routing`
-
-**Synopsis:**
-```
-planar models routing [--json]
-```
-
-**Description:** Resolve the effective config through the shared model resolver and print each runtime-resolvable role's vendor, tier, concrete model, and provenance. It composes `[defaults].vendor`, `[roles]`, `[role_vendors]`, and `[models.<vendor>]`. Read-only.
-
-`--json` is the machine form used by external workflow callers that need a per-role dispatch table without linking Planar internals.
-
-**Output (`--json`):** An array of `{ "role", "vendor", "tier", "model", "source" }` rows.
-
-**Exit codes:** `0` on success; `1` for config resolution errors.
-
----
-
-### `planar models apply`
-
-**Synopsis:**
-```
-planar models apply [--force]
-```
-
-**Description:** Append a generated `[models.<vendor>]` tier map plus `[roles]` scaffold to the resolved config file as an editable starting point. Skips when a `[models]` section is already present; `--force` appends again. This command writes only the config file, not the database.
-
-**Exit codes:** `0` on success or already-present skip; `1` for config path or filesystem failures.
-
----
-
-### `planar models candidates`
-
-**Synopsis:**
-```
-planar models candidates [--json]
-```
-
-**Description:** Resolve the effective config's per-vendor-tier candidate lists (`[models.<vendor>.<tier>]` — scalar or ordered list, plan 899 D3) and the work-type routing map (`[routing.<vendor>.<tier>]`, plan 899 D4/D9/D10/D11), and print both with provenance. `list[0]` in a candidate list is always the tier default; the routing map names, per work type (`schema`/`engine`/`architectural`/`cli`/`feature`/`mechanical`), which candidate in that list `resolve(role, work_type)` selects. Only work types with an actual routing entry (file override or embedded default) are reported — an unmapped work type falls back to the tier default at resolve time and is simply absent from this listing. Read-only.
-
-**Output (human):**
-```
-tier candidate lists (models.<vendor>.<tier>):
-  claude   small  → claude-haiku-4-5  [embedded default]
-  claude   medium → claude-sonnet-5  [embedded default]
-  claude   large  → claude-opus-4-8, claude-fable-5  [embedded default]
-  codex    small  → gpt-5.6-luna, gpt-5.4-mini, gpt-5.3-codex-spark  [embedded default]
-  codex    medium → gpt-5.6-terra, gpt-5.4  [embedded default]
-  codex    large  → gpt-5.6-sol, gpt-5.5  [embedded default]
-  copilot  small  → gpt-5-mini  [embedded default]
-  copilot  medium → gpt-5  [embedded default]
-  copilot  large  → claude-opus-4  [embedded default]
-
-work-type routing map (routing.<vendor>.<tier>.<work-type>):
-  claude   small  mechanical     → claude-haiku-4-5       [embedded default]
-  claude   medium mechanical     → claude-sonnet-5        [embedded default]
-  claude   large  architectural  → claude-fable-5         [embedded default]
-  claude   large  mechanical     → claude-opus-4-8        [embedded default]
-  codex    small  mechanical     → gpt-5.6-luna           [embedded default]
-  codex    medium mechanical     → gpt-5.6-terra          [embedded default]
-  codex    large  mechanical     → gpt-5.6-sol            [embedded default]
-  copilot  small  mechanical     → gpt-5-mini             [embedded default]
-  copilot  medium mechanical     → gpt-5                  [embedded default]
-  copilot  large  mechanical     → claude-opus-4          [embedded default]
-```
-
-A config-file override to a candidate list (e.g. `[models.codex] large = ["gpt-5.6-sol", "gpt-5.5"]`) shows all listed candidates with `[config file]` provenance; a config-file `[routing.<vendor>.<tier>]` entry naming a non-`mechanical` work type appears as an additional row.
-
-**Output (`--json`):** `{ "candidates": [ { "vendor", "tier", "candidates": [...], "source" } ], "routing": [ { "vendor", "tier", "work_type", "model", "source" } ] }`.
-
-**Exit codes:** `0` on success.
-
----
-
-### `planar models evals`
-
-**Synopsis:**
-```
-planar models evals [--json]
-```
-
-**Description:** Aggregate completed dispatch outcomes into a per-`(work_type, candidate)` routing scorecard and preview-only recommendation list. The command reads the `dispatch_shape:` / `model_choice:` note convention in `session_entries`, terminal `agent_work_claims` status, and `agent_actions(action_kind='test_coder')` rows. It is read-only and writes nothing: no routing-map mutation, no database write, no config write.
-
-`model_choice` entries must carry a `{tier,candidate,work_type}` triple per task. Dispatch notes recorded before that convention, or malformed `model_choice` JSON, are counted in `legacy_dispatch_notes_skipped` and excluded from scoring rather than guessed.
-
-**Signals sourced:** reviewer disposition is recovered from terminal claim status (`completed` as approve, `aborted` as abort); iteration count is recovered from repeated dispatch notes for the same task; test-coder expansion is recovered from `test_coder` action outcomes. Quality-gate pass/fail is not persisted as a discrete field, so the command reports `quality_gate_pass_fail=false` in `signals_sourced`.
-
-**Output (human):** A ranked scorecard by work type, followed by preview-only recommendations and the `signals sourced` line.
-
-**Output (`--json`):** `{ "scorecard": [ScoreRow], "recommendations": [Recommendation], "signals_sourced": {...}, "legacy_dispatch_notes_skipped": N }`. A candidate with no completed-dispatch history in an observed sibling candidate list reports `insufficient_data: true` instead of a fabricated score.
-
-**Exit codes:** `0` on success; `1` for database or config aggregation errors.
-
----
-
 ### `planar dashboard`
 
 **Synopsis:**
@@ -4991,68 +4849,29 @@ existing row as skipped. The second previews fresh creation after unlink. The
 final command creates a new remote counterpart, URL, config, sync state, and
 history; it does not restore the old values. Strategy is selected from
 current state and may differ from the deleted `config_json`; for GitHub
-systems `parent-issue` is the only strategy this binary executes today.
+systems the strategy is re-detected from the current repo count (or forced
+with `--github-strategy`).
 
-**Synopsis:**
-```
-planar links update <link-id> --sync <direction>
-```
-
-**Description:** Mutate the `sync_direction` column on an existing `external_links` row. Use this to change the sync direction for a link that was already created by `ext propagate`, `link`, or `ext create`. The change takes effect on the next `planar-ext sync push` or `planar-ext sync pull` invocation. An audit row is written to `sync_events` with `outcome='ok'` and a payload recording the old and new directions.
-
-**Scope guard:** Not applicable — the verb does not exist.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<link-id>` | The `external_links.id` to update. |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--sync <direction>` | New sync direction. Accepted values: `read-only`, `write-back`, `two-way`. | Required. |
-
-**Output (human):**
-```
-link 7: sync_direction read-only → write-back
-```
-
-**Output (`--json`):**
-```json
-{"ok":true,"id":7,"prev":"read-only","new":"write-back"}
-```
-
-**Schema effects:** Updates `external_links(sync_direction)` for the given row. Inserts a `sync_events(outcome='ok')` audit row with the old and new direction in the payload. Both writes are in a single transaction.
-
-**Capture:** Appends `session_entries` row with `prefix='action'`.
-
-**Exit codes:**
-- `0` — direction updated.
-- `1` — link id not found, or `--sync` value is invalid.
+The design sketch for a `links update --sync <direction>` verb that earlier
+editions of this page carried has been removed; nothing of that shape exists
+in the binary.
 
 ---
 
 ## Domain: `help`
 
-**Note:** `planar help` and `planar <command> --help` are rendered by Planar's own help renderer in `src/lib/cliapp/` (decision 948: CLI11 handles tokenization and value coercion only, because the help text is an oracle-pinned parity surface); this section is preserved for discoverability.
+**Retirement notice.** There is no `planar help` verb: `planar help` fails at parse time with
+`error: planar: The following argument was not expected: help`, exit 2.
+Help is reached only through the `--help` / `-h` flag on any node —
+`planar --help` for the top-level command list, `planar <subcommand> --help`
+for a group or leaf. The text is rendered by Planar's own help renderer in
+`src/lib/cliapp/` (decision 948: CLI11 handles tokenization and value
+coercion only, because the help text is an oracle-pinned parity surface).
 
----
-
-### `planar help [<subcommand>]`
-
-**Synopsis:**
-```
-planar help [<subcommand> [<sub-subcommand>]]
-```
-
-**Description:** Show help text. Without arguments, shows the top-level command list with one-line descriptions. With a subcommand argument, shows that subcommand's full usage. Equivalent to `planar <subcommand> --help`.
-
-**Output:** Plain text to stdout. Not affected by `--json`.
+**Output:** Plain text to stdout, exit 0. Not affected by `--json`.
 
 **Exit codes:**
-- `64` — subcommand not found.
+- `2` — the node the flag was attached to does not exist (`planar plan nosuch --help` prints `plan`'s help and exits 0, because CLI11 stops at the last valid node; `planar plan nosuch` without `--help` exits 2).
 
 ---
 
@@ -5519,11 +5338,11 @@ entry naming a model id absent from that tier's candidate list — a stale or
 typo'd routing target is a configuration error, not a silent fall-through.
 `planar config show --effective` shows each resolved
 `models.<vendor>.<tier>` / `routing.<vendor>.<tier>.<work-type>` /
-`roles.<role>` / `role_vendors.<role>` key with its provenance;
-`planar models routing` prints the resolved role→vendor/model table;
-`planar models candidates` prints the effective tier candidate lists and the
-work-type routing map with provenance; `planar models` reports which provider
-CLIs are installed. This is the **single authoritative routing source** — the
+`roles.<role>` / `role_vendors.<role>` key with its provenance. (There is
+no `planar models routing` / `planar models candidates` / `planar models
+list` — that discovery family was removed; `planar models resolve --role
+<role>` answers what tier a role gets and whether the packet or the static
+fallback produced it.) This is the **single authoritative routing source** — the
 skill-render Tier Table (hand-maintained in `agents/models.md`), the
 orchestrator's Phase 3 dispatch-preview routed-model column (`resolve(role,
 work_type)`; see `skills/src/pl-orchestrator.md` § Dispatch preview and model
@@ -6118,20 +5937,104 @@ validates that string against a supported list. Everything here either
 reports what is installed, aggregates evidence after the fact, or manages
 operator-declared candidates.
 
-`planar models` and `planar models evals` are documented in the agent
-routing guide; the remaining leaves are below.
+The subcommand set is exactly `evals`, `resolve`, `experiments`, `outcomes`
+and `registry`. The plan-540 discovery family — `models list`, `models
+refresh`, `models routing`, `models apply`, `models candidates` — was
+removed with the curated catalog and the `[models]` / `[roles]` config
+blocks (see `skills/src/pl-models-config.md`); every one of them now fails
+at parse time with exit 2. Tier→model presets live in the orchestration
+layer's `agents/models.md`, hand-maintained, and no `planar` verb writes
+them.
+
+### `planar models evals`
+
+**Synopsis:**
+```
+planar models evals [--vendor <vendor> --role <role> --tier <tier> --work-type <type>
+                     --complexity <complexity> --project <id> --validation-policy <v>
+                     --routing-policy <v>] [--min-samples <n>] [--quality-floor <f>] [--json]
+```
+
+**Description:** Read-only candidate ranking. It has two modes, selected by
+whether a non-empty `--vendor` is supplied:
+
+- **Cohort ranking (evidence-backed).** With `--vendor` set, the other seven
+  cohort flags (`--role`, `--tier`, `--work-type`, `--complexity`,
+  `--project`, `--validation-policy`, `--routing-policy`) are required, and
+  the command ranks candidates in that exact cohort over
+  declared-experiment terminal samples (`routing_terminal_samples`): sample
+  and success counts, the raw rate, the 95% Wilson lower bound,
+  gate-failure rate, and expected excess iterations. Candidates with fewer
+  than `--min-samples` (default 5) samples are labelled `insufficient_data`
+  and never ranked; candidates whose Wilson lower bound is below
+  `--quality-floor` (default 0.5) are excluded before any iteration or
+  gate-failure ordering, so a fast-but-wrong candidate cannot outrank a
+  slower correct one. "No recommendation" is a valid outcome and means keep
+  the configured default.
+- **Legacy scorecard.** With no `--vendor`, the command falls back to the
+  pre-evidence-plane aggregation over the `dispatch_shape:` /
+  `model_choice:` note convention in `session_entries`, joined with
+  terminal `agent_work_claims` status and `agent_actions(action_kind='test_coder')`
+  rows. It emits a per-`(work_type, candidate)` scorecard and preview-only
+  recommendations, counts malformed or pre-convention notes in
+  `legacy_dispatch_notes_skipped`, and reports `quality_gate_pass_fail=false`
+  in `signals_sourced` because that signal is not persisted. It is
+  inspectable but not evidence-backed.
+
+Both modes write nothing: no routing-map mutation, no database write, no
+config write. Applying a recommendation is a separate operator action in
+`agents/models.md`.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--vendor <vendor>` | Cohort vendor; a non-empty value selects cohort ranking. | none (legacy mode) |
+| `--role <role>` | Cohort role. Required with `--vendor`. | none |
+| `--tier <tier>` | Cohort tier: `small`, `medium`, `large`. Required with `--vendor`. | none |
+| `--work-type <type>` | Cohort work type. Required with `--vendor`. | none |
+| `--complexity <c>` | Cohort complexity: `bounded`, `standard`, `high-risk`. Required with `--vendor`. | none |
+| `--project <id>` | Cohort project id. Required with `--vendor`. | none |
+| `--validation-policy <v>` | Cohort validation policy version. Required with `--vendor`. | none |
+| `--routing-policy <v>` | Cohort routing policy version. Required with `--vendor`. | none |
+| `--min-samples <n>` | Minimum samples before a candidate is ranked. | 5 |
+| `--quality-floor <f>` | Wilson lower-bound floor below which a candidate is excluded. | 0.5 |
+| `--json` | Emit the ranking / scorecard as JSON. | off |
+
+**Schema effects:** Reads routing evidence tables (cohort mode) or
+`session_entries` / `agent_work_claims` / `agent_actions` (legacy mode).
+
+**Capture:** None (read-only).
+
+**Exit codes:** `0` on success; `2` when a cohort flag is missing or malformed with `--vendor` set; `1` for database or aggregation errors.
+
+---
 
 ### `planar models resolve`
 
 **Synopsis:**
 ```
-planar models resolve [--json]
+planar models resolve --role <role> [--task <id>] [--plan <id>] [--fallback-tier <tier>] [--json]
 ```
 
 **Description:** Resolve a role's routing tier from its authoritative
 packet, or report the fallback and why it was used. A fallback is always
 reported WITH its reason — an absent or unready packet is never presented
 as a derived classification.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--role <role>` | Required. One of `planner`, `spec-reviewer`, `ingestor`, `orchestrator`, `coder`, `test-coder`, `reviewer`, `research`, `janitor`. | none |
+| `--task <id>` | Task id; required for task-bound roles (coder, test-coder, reviewer, research, janitor), which resolve from the task's compiled profile. | none |
+| `--plan <id>` | Anchor plan id for pre-task roles (planner, spec-reviewer, ingestor, orchestrator), which resolve from a planning packet. | none |
+| `--fallback-tier <tier>` | Configured static fallback tier reported when the packet is absent or unready. | `medium` |
+| `--json` | Emit `{source: packet \| static_fallback, tier, reason, work_type, complexity}` as JSON. | off |
+
+`source: packet` means the tier came from the compiled profile;
+`static_fallback` names its reason (`no_packet`, `packet_not_ready`,
+`policy_not_ready`) and reports work type and complexity as null.
 
 **Schema effects:** Reads routing packet and policy tables.
 
@@ -6161,14 +6064,15 @@ recommendation, and this is where you see which cohorts are thin.
 
 **Synopsis:**
 ```
-planar models outcomes [--json]
+planar models outcomes [--limit <n>] [--json]
 ```
 
 **Description:** List recorded terminal outcomes, **including excluded
 ones and why they were excluded**. An outcome can be excluded from the
 scorecard (below an evidence floor, outside a declared experiment) and
 still be listed here with its exclusion reason, so a surprising evals
-result can be traced to the rows behind it.
+result can be traced to the rows behind it. `--limit <n>` caps the rows
+shown (default 50).
 
 **Schema effects:** Reads the dispatch-outcome tables.
 
@@ -6570,9 +6474,10 @@ The `children` array is always present, even when empty (the empty-`global` sign
 ## Binary: `planar-agent`
 
 `planar-agent` is the agent-callable coordination binary. It owns coordination
-writes to `agent_work_claims`, `agent_actions`, `workflow_runs`, and
-`context_records`, plus the bounded `tasks.status` transitions performed by
-atomic terminal operations. Operator-recovery verbs (`reconcile`, `abort`) live
+writes to `agent_work_claims`, `agent_actions`, `workflow_runs`,
+`context_records`, and the `routing_dispatch_*` authorization tables (behind
+`dispatch preview` / `dispatch confirm`), plus the bounded `tasks.status`
+transitions performed by atomic terminal operations. Operator-recovery verbs (`reconcile`, `abort`) live
 here because the capability boundary tracks write ownership, not audience. See
 [Five-binary architecture](architecture.md#five-binary-architecture) for the
 binary split.
@@ -6596,6 +6501,10 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 # --no-transition is supplied; plan and plan-step state is never changed.
 planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
+
+# Associate an already-acquired active claim with a workflow run (and
+# optional stage) after the fact, for claims taken before the run existed.
+planar-agent claim-associate --claim <token> --run <run-id> [--stage <s>] [--json]
 
 # `--model` records the model actually used, verbatim, as an OPAQUE STRING.
 # Planar does not decide, validate, or publish what is "supported": an
@@ -6641,6 +6550,22 @@ planar-agent context add     --claim <token> --kind <kind> --body <text> [--comp
 planar-agent context capsule --run <run-id> --stage <s> --body <text> [--compiled-from <id,...>] [--session <id>] [--json]
 planar-agent context list    --run <run-id> [--stage <s>] [--status active|consumed|superseded] [--kind <k>] [--json]
 planar-agent context resolve --status consumed|superseded (--id <record-id> | --run <run-id> --stage <s>) [--json]
+
+# Dispatch authorization — the two-phase routing handshake that writes
+# routing_dispatch_previews and routing_dispatch_snapshots (the
+# routing_dispatch_events ledger is read by `planar models evals`; nothing in
+# this tree appends to it). `preview` records the resolved candidate plus the packet / profile /
+# policy / capability digests it was resolved against and mints a
+# single-use token; `confirm` spends that token before --expires-at, and
+# refuses if any currently observed digest, candidate, or policy version
+# differs from the preview (drift is a refusal, not a warning). Every flag
+# is an opaque value the orchestration layer supplies; Planar compares and
+# never interprets them. Run `planar-agent dispatch preview --help` /
+# `dispatch confirm --help` for the full flag set.
+planar-agent dispatch preview --work-item <id> --project <id> --validation-policy <v> --routing-policy <v> --profile-rule <v> --vendor <s> --role <s> --tier small|medium|large --work-type <t> --complexity bounded|standard|high-risk --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --host <id> --class fallback|default|override|declared_experiment --evidence-state evidential|observational --expires-at <rfc3339> [--task <id>] [--experiment <id>] [--claim <token>] [--claim-status <s>] [--json]
+planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now <rfc3339> --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --vendor <s> --role <s> --tier <t> --work-type <t> --complexity <c> --validation-policy <v> --routing-policy <v> [--claim <token>] [--claim-status <s>] [--reviewer <disposition>] [--decision confirmed|overridden] [--json]
+
+# `version` prints the binary version; `schema` dumps the flat JSON catalog.
 ```
 
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
@@ -6765,7 +6690,7 @@ bounded planning-state blast radius.
 
 ## Binary: `planar-watch`
 
-`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third of Planar's now-five binaries to be added (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit `planar explore` (bare `planar` on a TTY) is registered but NOT implemented — decision 980 records it as a rewrite candidate rather than a port, and the Zig implementation that used to provide it was deleted with `zig/` at the M10 cutover (decision 982; see [docs/architecture.md § Interactive cockpit](architecture.md#interactive-cockpit--specified-not-implemented)) — see [Domain: `explore`](#domain-explore).
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third of Planar's now-five binaries to be added (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit `planar explore` is registered but NOT implemented (bare `planar` prints the root help) — decision 980 records it as a rewrite candidate rather than a port, and the Zig implementation that used to provide it was deleted with `zig/` at the M10 cutover (decision 982; see [docs/architecture.md § Interactive cockpit](architecture.md#interactive-cockpit--specified-not-implemented)) — see [Domain: `explore`](#domain-explore).
 
 Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
 
@@ -6773,7 +6698,7 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/handlers/cmd.zig`) registers exactly eight read verbs plus the conventional `version` / `completion` helpers. There is no write verb anywhere in the tree.
+1. The command tree (`src/cmd/planar-watch/`) registers exactly nine read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
 2. The bootstrap calls `runtime.ensureDbStrictReadOnly` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
@@ -7345,9 +7270,12 @@ planar report --days 14 --json
 ## Domain: `explore`
 
 > **NOT IMPLEMENTED — and no longer implemented anywhere.** `explore` is
-> registered in the `planar` binary's command surface, but its handler is a
-> stub that exits 64 with "not implemented in this build"; it is the only
-> entry in that binary's `unported_paths()` inventory, pinned by
+> registered in the `planar` binary's command surface, but its handler
+> prints the leaf's own help page and exits 0 (`explore_fallback` in
+> `src/cmd/planar/dispatch.cpp`, decision 1003 / task 6444 — the oracle's
+> cockpit gate always refused in a non-TTY environment and every refusal
+> path printed exactly that); it is the only entry in that binary's
+> `unported_paths()` inventory, pinned by
 > `src/cmd/planar/unported_inventory.t.cpp`. Decision 980 records the cockpit
 > as a rewrite candidate rather than a straight port (its screen output has
 > no byte-level contract for the pins, state differential, or break-probes
@@ -7366,7 +7294,7 @@ planar report --days 14 --json
 
 The cockpit provides a live, multi-view TUI over the full planning graph: agent activity, tasks, decisions, questions, sessions, audit log, CLI history, external systems, topology, and utility inspectors. Views are read-only projections of existing tables; no schema changes are required.
 
-**Bare-invocation shortcut.** When `planar` is invoked with no verb on a TTY, the cockpit launches automatically (landing on the Scope Explorer). `planar explore` is the named alias for discoverability and for contexts where bare-invocation detection may not fire.
+**Bare-invocation shortcut (specified, not shipped).** The Zig cockpit launched automatically when `planar` was invoked with no verb on a TTY (landing on the Scope Explorer), with `planar explore` as the named alias. The current binary prints the root help on bare invocation regardless of TTY; see [Top-Level Usage](#top-level-usage).
 
 **Terminal-capability gate.** Before entering the alt-screen, both the bare-invocation path and `planar explore` run the same gate. The gate refuses and falls back to help/usage when any of the following are true:
 
@@ -7422,7 +7350,7 @@ Tab / Shift-Tab cycle through views; `1`–`9` jump to the first nine by positio
 | DB schema ahead of binary | `database schema is newer than this binary — rebuild/reinstall planar` | non-zero |
 | Other open failure | `failed to open database` | non-zero |
 
-**`planar-watch` is unchanged.** `planar-watch` remains the scriptable, read-only NDJSON streaming viewer (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`). It is not the cockpit. See [Binary: `planar-watch`](#binary-planar-watch).
+**`planar-watch` is unchanged.** `planar-watch` remains the scriptable, read-only NDJSON streaming viewer (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`). It is not the cockpit. See [Binary: `planar-watch`](#binary-planar-watch).
 
 **Schema effects:** No writes. No new tables or columns. Reads project existing tables (`plans`, `tasks`, `decisions`, `questions`, `test_scenarios`, `artifacts`, `entity_links`, `agent_work_claims`, `agent_actions`, `sessions`, `session_entries`, `context_snapshots`, `handoffs`, `session_commits`, `external_systems`, `external_links`, `sync_events`, `audit_log`, `cli_invocations`, `config`, `annotations`, `annotation_tags`, `workbench_sync_state`, `associations`, `projects`, `project_associations`). Edits write through the same paths as the corresponding `planar` verbs.
 
@@ -7560,8 +7488,8 @@ For quick reference, all documented commands grouped by domain:
 | `capture` | `capture session`, `capture end`, `capture commits`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
 | `audit` | `audit trail`, `audit session`, `audit commits`, `audit publish-decision`, `audit handoff-readiness` |
 | `health` | `health` |
-| `models` | `models list`, `models refresh`, `models routing`, `models apply`, `models candidates`, `models evals` |
-| `links` | `links add`, `links list`, `links remove`, `links trail`, `links update` (deferred to M11) |
+| `models` | `models evals`, `models resolve`, `models experiments`, `models outcomes`, `models registry list\|add\|update\|remove\|bind\|unbind\|observe\|eligibility\|verify-identity\|export` |
+| `links` | `links add`, `links list`, `links remove`, `links trail` (no `links update`) |
 | `report` | `report [--days <n>] [--tail <n>] [--json]` |
 | `search` | `search <query>` |
 | `explore` | `explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]` |
@@ -7570,7 +7498,7 @@ For quick reference, all documented commands grouped by domain:
 | `import` | `import <repo-root>` |
 | `synthesize` | `synthesize <repo-root>` |
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
-| `help` | `help` |
+| `--help` | `--help` / `-h` on any node (no `help` verb) |
 | `run` | `run start`, `run event`, `run finish`, `run show` |
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
@@ -7613,9 +7541,9 @@ wrong result — see the association-less-repo advisory under
 [`task touches add`](#planar-task-touches-add-task-id).
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees
-with the task's, using **strict equality** (see
-[Cross-scope guard](#cross-scope-guard) — this is one of the two verbs that
-does not use the membership-aware comparison).
+with the task's, using the membership-aware comparison (see
+[Cross-scope guard](#cross-scope-guard); strict equality here was widened to
+match the other guarded verbs by decision 1121).
 
 **Arguments:**
 
@@ -7694,7 +7622,7 @@ resolved write scope disagrees with the OWNING entity's, using the
 membership-aware comparison — an operator scope `assoc:<org>` covers a finding
 on a `repo:<member>` task. `list` and `show` are reads and are unguarded. See
 [Cross-scope guard](#cross-scope-guard); `feedback triage set` is one of the
-eight verbs in that table.
+ten verbs in that table.
 
 Disposition values are `untriaged`, `needs-reproduction`, `accepted`,
 `retained-question`, `dismissed`, `reported-external`, and `duplicate`.
