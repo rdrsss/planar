@@ -19,6 +19,13 @@
 /// binary does not have and would make this binary look like a fifth
 /// member of a family it is deliberately not in.
 ///
+/// That exemption ended with decision 1030 (D18, plan 1033 M0, task 6486):
+/// the oracle is gone, and `planar-execute schema` now emits the same flat
+/// JSON catalog the other four binaries do so `cli_usage_lint` can police
+/// authored references to its verbs. The PARSER did not move — the catalog
+/// is a description built in `planar.cmd.planar_execute.catalog` and pinned
+/// against `parse_run_args` by test; every argv shape above is unchanged.
+///
 /// ## The capability boundary here is what is ABSENT
 ///
 /// `planar-execute` holds NO SQLite handle at all — it reaches Planar
@@ -64,6 +71,7 @@
 ///   run                               —       usage                      2
 ///   run wf.lua                        —       usage                      2   (no --phase)
 ///   run wf.lua --phase p              —       "cannot read workflow: …"   1   (file absent)
+///   schema                            catalog —                          0   (task 6486, D18)
 module;
 
 export module planar.cmd.planar_execute.cli;
@@ -112,6 +120,7 @@ export enum class verb : std::uint8_t {
   none,    ///< No arguments at all: usage, exit 2.
   help,    ///< `--help` / `-h` / `help`: usage, exit 0.
   run,     ///< The `run` verb.
+  schema,  ///< The `schema` verb: the JSON catalog on stdout, exit 0 (task 6486).
   unknown, ///< Anything else: "unknown verb" + usage, exit 2.
 };
 

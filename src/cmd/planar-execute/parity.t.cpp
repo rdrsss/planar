@@ -86,6 +86,7 @@ TEST_CASE("planar-execute parity: every ported argv shape matches byte for byte"
                                               "Usage:\n"
                                               "  planar-execute run <workflow.lua> --phase <name> [--args <json>]\n"
                                               "                     [--worktree <dir>] [--sandbox-root <dir>]\n"
+                                              "  planar-execute schema\n"
                                               "\n"
                                               "Loads the workflow in the sandbox, registers the deterministic host\n"
                                               "surface (cli/git/fs/flow/ctx), calls the named phase, and prints the\n"
@@ -123,6 +124,30 @@ TEST_CASE("planar-execute parity: every ported argv shape matches byte for byte"
     // "fixed" onto stdout by a well-meaning port.
     CHECK(cpp.out.empty());
   }
+}
+
+TEST_CASE("planar-execute schema prints the catalog on STDOUT, nothing on stderr, exit 0", "[cmd][execute][schema][6486]") {
+  // The one verb whose payload is stdout. Every other shape in this file
+  // keeps stdout empty; a `schema` that leaked to stderr would be invisible
+  // to `cli_usage_lint`, which captures stdout only.
+  auto const cpp = run_cpp("schema", {"schema"});
+  CHECK(cpp.code == 0);
+  CHECK(cpp.err.empty());
+  CHECK(cpp.out.starts_with("{"));
+  CHECK(cpp.out.ends_with("}\n"));
+  CHECK(cpp.out.contains(R"("root":"planar-execute")"));
+  CHECK(cpp.out.contains(R"("command":"planar-execute run")"));
+  CHECK(cpp.out.contains(R"("command":"planar-execute schema")"));
+  CHECK(cpp.out.contains(R"("long":"--sandbox-root")"));
+  // The other binaries' catalogs share this envelope; the lint tool keys
+  // on these two fields before it reads a single command.
+  CHECK(cpp.out.contains(R"("schemaVersion":)"));
+  CHECK(cpp.out.contains(R"("layout":)"));
+  // `schema` takes no arguments: extra tokens are ignored by the
+  // classifier, exactly as `--help extra` is, so the catalog still prints.
+  auto const noisy = run_cpp("schema_extra", {"schema", "--json"});
+  CHECK(noisy.code == 0);
+  CHECK(noisy.out == cpp.out);
 }
 
 TEST_CASE("planar-execute parity: --help and a bare invocation differ ONLY in exit code", "[cmd][execute][parity][exitcode]") {

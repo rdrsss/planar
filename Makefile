@@ -294,8 +294,8 @@ test-cpp-solver: ## Run the ctest suite against a solver-ON build (decision 1032
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
 	cmake --preset debug
-	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext
-	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY)
+	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext planar_cmd_planar_execute
+	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY) $(CPP_BIN_ABS)/$(EXECUTE_BINARY)
 	$(CLI_DOCS_COVERAGE) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY)
 	$(SURFACE_LINT) $(CURDIR)
 

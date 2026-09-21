@@ -33,13 +33,15 @@
 # stronger than any test, because a test can only observe the handle a
 # binary chose to open.
 #
-# It also links no `cli`, and that too is inherited rather than a shortcut:
-# zig/integration_tests/capability_boundary_test.zig states that
-# planar-execute "uses manual arg parsing (not the etcli-zig COMMANDS
-# table), so we cannot apply the parseHelpVerbs/assertExactSet pattern",
-# and CLAUDE.md records that `tools/cli_usage_lint.zig` excludes this binary
-# because it has NO `schema` catalog. Wiring it onto planar.cli would
-# manufacture a catalog the reference binary does not have.
+# It links `cliapp` for ONE reason — `planar.cliapp.schema`'s emitter, so
+# `planar-execute schema` prints the same flat JSON catalog the other four
+# binaries do (decision 1030 / D18, task 6486) — and NOT for parsing. The
+# argument surface stays hand-rolled (cli.cppm explains why; the Zig
+# original "uses manual arg parsing (not the etcli-zig COMMANDS table)"
+# and its usage/exit-code bytes are pinned). Until D18 this binary was
+# exempt from `cli_usage_lint` precisely because it had no catalog; that
+# exemption is closed. `cliapp` reaches `json_text` and CLI11 only, never
+# `planar_db`, so the guard below is untouched.
 #
 # --- what is landed --------------------------------------------------------
 #
@@ -93,11 +95,14 @@ planar_binary(planar_execute
     main.cpp
   INTERFACE
     cli.cppm
+    catalog.cppm
     engine.cppm
   SOURCES
     cli.cpp
+    catalog.cpp
     engine.cpp
   DEPENDS
+    cliapp
     engine_execute)
 
 if(TARGET planar_cmd_planar_execute_tests)

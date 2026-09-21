@@ -52,6 +52,7 @@
 
 import std;
 import planar.cmd.planar_execute.cli;
+import planar.cmd.planar_execute.catalog;
 import planar.cmd.planar_execute.engine;
 
 namespace {
@@ -103,6 +104,11 @@ TEST_CASE("planar-execute advertises no spawn affordance", "[cmd][execute][capab
   for (auto const& name : denied) {
     INFO("denied name found as a word in the advertised surface: " << name);
     CHECK_FALSE(contains_word(usage_text(), name));
+    // The catalog is an advertised surface too (task 6486): a host function
+    // that leaked into a flag description would be as much of an affordance
+    // as one in the banner.
+    INFO("denied name found as a word in the schema catalog: " << name);
+    CHECK_FALSE(contains_word(planar::cmd::execute::catalog_json(), name));
   }
 }
 
@@ -122,6 +128,7 @@ TEST_CASE("planar-execute classifies its top-level argv shapes", "[cmd][execute]
   CHECK(classify(argv_of({"-h"})) == verb::help);
   CHECK(classify(argv_of({"help"})) == verb::help);
   CHECK(classify(argv_of({"run"})) == verb::run);
+  CHECK(classify(argv_of({"schema"})) == verb::schema);
   CHECK(classify(argv_of({"bogus"})) == verb::unknown);
   // `--version` is NOT a flag this binary knows — it is an unknown VERB,
   // which is why the oracle answers `planar-execute: unknown verb:
@@ -236,4 +243,60 @@ TEST_CASE("planar-execute resolves its trusted sibling directory", "[cmd][execut
   auto const dir = planar::cmd::execute::executable_dir();
   REQUIRE_FALSE(dir.empty());
   CHECK(std::filesystem::is_directory(dir));
+}
+
+TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the same flags", "[cmd][execute][cli][6486]") {
+  // The catalog (task 6486, D18) is a DESCRIPTION built separately from
+  // `parse_run_args`; nothing stops the two drifting except this case. Both
+  // directions are checked: every flag the catalog advertises on `run` is
+  // accepted by the parser, and every flag the parser accepts is advertised.
+  auto const catalog = planar::cmd::execute::catalog_json();
+  CHECK(catalog.starts_with("{"));
+  CHECK(catalog.contains(R"("root":"planar-execute")"));
+  CHECK(catalog.contains(R"("command":"planar-execute run")"));
+  CHECK(catalog.contains(R"("command":"planar-execute schema")"));
+  // Single line, no trailing newline: the write site appends exactly one.
+  CHECK_FALSE(catalog.contains('\n'));
+
+  // Catalog -> parser. Harvest every `"long":"--x"` the catalog declares.
+  std::vector<std::string> advertised;
+  for (std::size_t at = catalog.find(R"("long":"--)"); at != std::string::npos; at = catalog.find(R"("long":"--)", at + 1)) {
+    auto const start = at + std::string_view{R"("long":")"}.size();
+    auto const end   = catalog.find('"', start);
+    advertised.emplace_back(catalog.substr(start, end - start));
+  }
+  REQUIRE(advertised.size() == 4);
+  for (auto const& flag : advertised) {
+    INFO("advertised flag not accepted by parse_run_args: " << flag);
+    std::vector<std::string> args{"wf.lua", "--phase", "p"};
+    if (flag != "--phase") {
+      args.push_back(flag);
+      args.push_back("v");
+    }
+    CHECK(parse_run_args(args).has_value());
+  }
+
+  // Parser -> catalog. The parser's accepted set is closed and small; name
+  // it here so a flag added to `parse_run_args` without a catalog entry
+  // fails this loop rather than shipping undescribed.
+  for (auto const flag : {"--phase", "--args", "--worktree", "--sandbox-root"}) {
+    INFO("parser flag missing from the catalog: " << flag);
+    CHECK(std::ranges::find(advertised, flag) != advertised.end());
+  }
+  // And the parser still refuses what the catalog does not list.
+  std::vector<std::string> const unlisted{"wf.lua", "--phase", "p", "--engine", "x"};
+  CHECK_FALSE(parse_run_args(unlisted).has_value());
+
+  // The three optional flags default to the empty string, matching the
+  // parser (absent == empty) and `planar workflow run`'s declaration.
+  for (auto const flag : {"--args", "--worktree", "--sandbox-root"}) {
+    INFO(flag);
+    auto const at = catalog.find(std::format(R"("long":"{}")", flag));
+    REQUIRE(at != std::string::npos);
+    auto const entry = catalog.substr(at, catalog.find('}', at) - at);
+    CHECK(entry.contains(R"("default":"")"));
+    CHECK(entry.contains(R"("required":false)"));
+  }
+  auto const phase = catalog.substr(catalog.find(R"("long":"--phase")"));
+  CHECK(phase.substr(0, phase.find('}')).contains(R"("required":true)"));
 }
