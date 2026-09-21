@@ -23,9 +23,11 @@
 /// KEPT EXACTLY: the `cli-lint-ignore` escape hatch (a line containing that
 /// marker is skipped entirely), and the subprocess contract — this tool
 /// shells `<bin-path> schema`, so it lints the ACTUAL SHIPPED BINARY
-/// rather than any in-process command declaration. `planar-execute` has no
-/// `schema` catalog and is deliberately never passed as a bin-path here;
-/// its Lua host-function manifest is covered by unit tests instead.
+/// rather than any in-process command declaration. Since decision 1030
+/// (D18, task 6486) `planar-execute schema` exists too, so all FIVE
+/// binaries are passed as bin-paths; the binary's Lua host-function
+/// manifest is a separate surface, still covered by unit tests, not by
+/// this tool.
 
 #include <cstdio>
 #include <cstdlib>

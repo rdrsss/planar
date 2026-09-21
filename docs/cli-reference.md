@@ -7038,23 +7038,66 @@ Each `--follow` verb installs a SIGINT handler that flips an atomic flag. The po
 
 ## Introspection: `schema` (all planning-state binaries)
 
-Every Planar planning-state binary — `planar`, `planar-agent`,
-`planar-watch`, and `planar-ext` (decision 998, added when `planar-ext` was
-extracted) — exposes a `schema` verb that prints a deterministic flat JSON
-catalog of its entire command tree: each command's full path, subcommands,
-aliases, positionals, and flags (with inherited flags merged in). Output is
-always JSON. `planar-execute` is deliberately excluded — it has no comparable
-command-tree catalog, and its frozen Lua host-function manifest is covered by
-unit tests instead.
+Every Planar binary — `planar`, `planar-agent`, `planar-watch`, `planar-ext`
+(decision 998, added when `planar-ext` was extracted) and, since decision
+1030 (D18, plan 1033 M0, task 6486), `planar-execute` — exposes a `schema`
+verb that prints a deterministic flat JSON catalog of its entire command
+tree: each command's full path, subcommands, aliases, positionals, and flags
+(with inherited flags merged in). Output is always JSON. `planar-execute`'s
+catalog describes its hand-rolled `run` surface without moving the parser
+onto CLI11; its frozen Lua host-function manifest is a separate surface,
+still covered by unit tests rather than by the catalog.
 
 ```sh
 planar schema
 planar-agent schema
 planar-watch schema
 planar-ext schema
+planar-execute schema
 ```
 
-The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig tree's `tools/cli_usage_lint.zig` at task 6402). The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone.
+The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig tree's `tools/cli_usage_lint.zig` at task 6402). All five binaries are passed to that pass. The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone.
+
+---
+
+## Binary: `planar-execute`
+
+The deterministic, spawn-free Lua workflow engine (plan 633; plan 1033 is
+turning it into a client over a Centurion host, and its verb shape is kept
+through that change). It holds **no SQLite handle** and reaches Planar state
+only by shelling `planar` / `planar-agent` from inside a workflow. Unlike the
+other four binaries it parses its own arguments and writes its usage banner
+to **stderr** — on `--help` too, where stdout stays empty. The exit codes
+are its own, not the `planar` table above: a bare invocation and every usage
+failure exit `2`, an unreadable workflow or a failed phase exits `1`, and
+`--help` / `schema` exit `0`.
+
+### `planar-execute run <workflow.lua> --phase <name>`
+
+Load the workflow in the sandbox, register the deterministic host surface
+(`cli` / `git` / `fs` / `flow` / `ctx`), call the named phase, and print the
+workflow's `flow.result(table)` payload as JSON on stdout.
+
+- `<workflow.lua>` — required positional; the workflow file path.
+- `--phase <name>` — required; the phase function to invoke.
+- `--args <json>` — JSON blob exposed to the phase as `ctx.args` (default `""`).
+- `--worktree <dir>` — directory the `git` / `fs` host functions are confined to (default `""`).
+- `--sandbox-root <dir>` — root bounding every `fs` path the workflow may touch (default `""`).
+
+An unrecognised `--flag`, a second bare positional, a flag with no value, or
+a missing `--phase` all print the usage and exit `2`; `run --help` is one of
+those, not a help request. `planar workflow run <name>` (see the `workflow`
+domain below) resolves a workflow by name and execs this verb with the same
+flags.
+
+### `planar-execute schema`
+
+Print the flat JSON catalog for this binary — the same envelope
+(`schemaVersion`, `layout`, `root`, `commands`) the other four emit — on
+stdout, exit `0`, nothing on stderr. Added by decision 1030 so
+`cli_usage_lint` polices authored references to `planar-execute` verbs; the
+catalog is a description of the hand-rolled parser, pinned against it by
+test, not a second parser.
 
 ---
 

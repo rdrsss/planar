@@ -23,6 +23,7 @@
 // Not a module unit: `main` must have external linkage in the global module.
 import std;
 import planar.cmd.planar_execute.cli;
+import planar.cmd.planar_execute.catalog;
 import planar.cmd.planar_execute.engine;
 
 namespace {
@@ -65,6 +66,14 @@ auto main(int argc, char** argv) -> int {
     std::cerr << "planar-execute: unknown verb: " << args[1] << '\n';
     print_usage();
     code = 2;
+    break;
+
+  case planar::cmd::execute::verb::schema:
+    // The one verb whose payload is stdout: the catalog is a machine
+    // channel read by `cli_usage_lint`, exactly like the other binaries'
+    // `schema`. Nothing goes to stderr.
+    std::cout << planar::cmd::execute::catalog_json() << '\n';
+    code = 0;
     break;
 
   case planar::cmd::execute::verb::run: {

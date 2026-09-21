@@ -10,12 +10,14 @@ namespace planar::cmd::execute {
 auto usage_text() -> std::string_view {
   // Transcribed from zig/src/cmd/planar-execute/main.zig's `usage`
   // multiline literal and then diffed against the oracle's actual stderr
-  // bytes. The em dash on the first line is the oracle's own UTF-8.
+  // bytes. The em dash on the first line is the oracle's own UTF-8. The
+  // `schema` line is the one post-oracle addition (task 6486, D18).
   return "planar-execute — deterministic, spawn-free Lua workflow engine.\n"
          "\n"
          "Usage:\n"
          "  planar-execute run <workflow.lua> --phase <name> [--args <json>]\n"
          "                     [--worktree <dir>] [--sandbox-root <dir>]\n"
+         "  planar-execute schema\n"
          "\n"
          "Loads the workflow in the sandbox, registers the deterministic host\n"
          "surface (cli/git/fs/flow/ctx), calls the named phase, and prints the\n"
@@ -95,6 +97,9 @@ auto classify(std::span<const std::string> argv) -> verb {
   }
   if (token == "--help" || token == "-h" || token == "help") {
     return verb::help;
+  }
+  if (token == "schema") {
+    return verb::schema;
   }
   return verb::unknown;
 }
