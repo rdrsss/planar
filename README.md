@@ -137,14 +137,14 @@ The fastest answer to "what work do I have, where does it live, and what's the s
 ```bash
 planar tree                              # active scope: plans → tasks → derived artifacts
 planar tree --all-scopes                 # every scope (global section always rendered)
-planar tree --status todo --prune        # only open work, empty branches hidden
+planar tree --status todo                # only open work
 planar tree --kind plan --depth 2        # plan outline, two levels deep
 planar tree --json | jq                  # nested machine-readable shape
 ```
 
 The verb walks `plans.parent_plan_id` for plan hierarchy, `tasks.plan_id` / `parent_task_id` for tasks and subtasks, and `entity_links(derives-from)` for artifacts / decisions / scenarios / questions attached to each plan. Read-only — no schema writes, no external calls.
 
-The flag surface mirrors Unix `tree(1)` wherever the semantic translates (`-L` / `--depth`, `-I` / `--ignore`, `-P` / `--match`, `--ignore-case`, `-r`, `-t` / `-c` / `-U`, `--dirsfirst`, `--noreport`, `--prune`, `--ascii`, `-J` / `--json`), so muscle memory transfers. Filesystem-specific flags that have no Planar analog (`-a`, `-d`, `-f`, `-s`, `-p`, `-u`, `-g`, `-D`, `--inodes`, `--device`, `-Q`, `-X`, `-H`, `-v`, `--filelimit`, `--matchdirs`, `-C`, `-o`) are rejected at parse time with a clean error pointing at the Planar alternative — see [docs/cli-reference.md § Domain: `tree`](docs/cli-reference.md#domain-tree).
+The flag surface is exactly seven flags — `--scope`, `--all-scopes`, `--depth`, `--kind`, `--status`, `--sort`, `--json` — and `--kind` / `--status` each take a single value. It does not mirror Unix `tree(1)`: none of the `tree(1)` flags an earlier edition of this README listed (`-L`, `-I`, `-P`, `--prune`, `--noreport`, `--dirsfirst`, `-J`, …) are accepted, and every one of them fails at parse time with exit 2. See [docs/cli-reference.md § Domain: `tree`](docs/cli-reference.md#domain-tree).
 
 ## Operational plane sync
 
@@ -249,7 +249,7 @@ default_template_set = "my-custom-set"
 
 ## Templates
 
-JSON template files under `~/.planar/templates/<set>/<system>/<kind>.json` control the payloads sent to Jira and GitHub when `planar ext propagate` creates or updates external counterparts. Ten defaults ship with the binary (5 github-issues + 1 github-projects + 4 jira) and are extracted to `~/.planar/templates/default/` on `planar init`. Inspect them with `planar templates list` and render a preview with `planar templates render --entity task:42`. Override per association via the `default_template_set` config key. See `docs/architecture.md` for the full template shape and rendering context.
+JSON template files under `~/.planar/templates/<set>/<system>/<kind>.json` control the payloads sent to Jira and GitHub when `planar-ext ext propagate` creates or updates external counterparts. Ten defaults ship with the binary (5 github-issues + 1 github-projects + 4 jira) and are extracted to `~/.planar/templates/default/` on `planar init`. Inspect them with `planar templates list` and render a preview with `planar templates render --entity task:42`. Override per association via the `default_template_set` config key. See `docs/architecture.md` for the full template shape and rendering context.
 
 ## Concepts
 
@@ -271,7 +271,7 @@ The bundled agent specs and reference workflows use unified source + generated v
 
 | Surface | Canonical or staged path | Install destination |
 |--------|-------------|---------------------|
-| Unified skill source | `skills/src/` | Rendered by `planar skills render`; never installed directly |
+| Unified skill source | `skills/src/` | Rendered by `scriptorium` at install time (`planar skills` is a retirement notice with no subcommands); never installed directly |
 | Claude | `$PLANAR_HOME/commands/claude/` (generated stage) | `~/.claude/commands/` |
 | Codex | `$PLANAR_HOME/codex-skills/` (generated stage) | `$CODEX_HOME/skills/` (normally `~/.codex/skills/`) |
 | Copilot | `$PLANAR_HOME/copilot-skills/` (generated stage), `copilot/` (authored prompts/instructions) | `~/.copilot/skills/`, `~/.copilot/` |
@@ -295,7 +295,8 @@ knowledge, operational observation, the complete local lifecycle (with
 introspection and feedback triage, guarded sync reconciliation, and gated
 documentation maintenance. Repo-relative vendor trees are not checked in;
 canonical edits belong in `skills/src/`, and drift is gated by semantic lint
-plus `planar skills render --check` against an out-of-tree staging directory.
+plus scriptorium's own `scriptorium check` / `scriptorium status` against an
+out-of-tree staging directory (`planar skills render` no longer exists).
 
 ## Repository layout
 

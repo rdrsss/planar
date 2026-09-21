@@ -819,9 +819,9 @@ Source: `skills/src/pl-templates.md`
 
 ### `/pl-models-config`
 
-Guided inspection and configuration of per-role model routing. It shells the supported CLI surfaces (`planar models list|routing|candidates|evals|refresh|apply` and `planar config show|validate`) rather than reading or writing config directly. Use it to see installed provider CLIs, effective role -> vendor/model resolution, tier candidate lists, work-type routing, and read-only routing evals.
+Inspect the opaque candidate registry, routing evidence, and role resolution, and guide operator-gated preset edits. It shells only read-only verbs: `planar models registry list --json` (each exact candidate id, its role/tier bindings, and the latest host observation), `planar models resolve --role <role> [--task <id>] [--plan <id>]` (the tier a role gets, with `source: packet` or `static_fallback` plus its reason), `planar models experiments --json` / `planar models outcomes --json` (recorded vs counted samples, and terminal outcomes including excluded rows with their reasons), and `planar models evals --vendor … --role … --tier … --work-type … --complexity … --project … --validation-policy … --routing-policy …` (cohort ranking by the 95% Wilson lower bound). The retired `models list|routing|candidates|refresh|apply` family and the `[models]` / `[roles]` config scaffold are gone; the skill never invokes them.
 
-`models evals` is advisory only: it aggregates completed dispatch history from `session_entries`, `agent_work_claims`, and test-coder `agent_actions`, reports insufficient-data rows honestly, and writes nothing. Any recommended routing-map change requires an explicit operator-confirmed edit to `~/.planar/config.toml`, followed by `planar models candidates --json` verification.
+Every verb here writes nothing, so `applied` is zero unless the operator explicitly confirmed a preset edit. Presets live in the orchestration layer's `agents/models.md`, which the skill guides but never edits: a `models evals` recommendation is a preview, an unverified candidate is ineligible rather than unproven, and a fallback tier is always reported with its reason.
 
 Source: `skills/src/pl-models-config.md`
 

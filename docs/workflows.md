@@ -101,7 +101,7 @@ Add `--strict` to the apply call when the test-spec is meant to be complete — 
 Tasks, child plans, and decisions are now in the database. The anchor plan status is unchanged (still `draft`). Activate it before execution:
 
 ```
-planar plan active 42
+planar plan update 42 --status active
 ```
 
 ---
@@ -485,7 +485,7 @@ planar workbench publish 42 --system github
 
 The `--system` flag names a registered external system slug (see
 `planar-ext ext list`). For richer per-entity counterpart creation
-(epics, issues, sub-issues with parent/child links) use `planar ext
+(epics, issues, sub-issues with parent/child links) use `planar-ext ext
 propagate <plan-id> --system <slug>` instead — `propagate` walks the
 full plan tree and creates one external counterpart per entity, while
 `workbench publish` pushes the rendered Markdown body.
@@ -519,8 +519,10 @@ Use this after a feature ships and the on-disk workbench tree is no longer activ
 ### Mark the plan done
 
 ```
-planar plan done 42
+planar plan update 42 --status done
 ```
+
+(`planar plan closeout 42` is the gated alternative: it checks that every task and descendant is terminal and no claim is live before flipping the status.)
 
 Verify:
 ```
@@ -932,12 +934,12 @@ When a coder is spawned for a task that touches `repo-a`, the dispatcher `cd`s t
 
 ```bash
 cd ~/work/repo-a
-planar task doing 142
+planar task update 142 --status doing
 # … coder works …
 planar task done 142
 ```
 
-No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. The cross-scope guard then confirms that task 142 actually belongs to `project:repo-a`; if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, the guard refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass.
+No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the ten verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. `task done` runs **no** scope guard: it flips the status from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
 
 This is the dominant pattern. Every coder, ingestor, and planner skill that runs against a known repo cwd works without scope plumbing.
 
@@ -2617,93 +2619,92 @@ For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concep
 
 ---
 
-## Recipe 25 — Review and configure per-role model routing
+## Recipe 25 — Inspect model routing evidence and resolve a role's tier
 
-Inspect which models your agent roles will spawn, and re-route them — across Claude and Codex — through the unified config (plan 540). Scriptorium's rendered skill/agent `model:` fields and external workflow harnesses resolve from one source via the shared resolver. The Tier Table lives in `agents/models.md`, hand-maintained; Planar does not generate it.
+Inspect which tier an agent role resolves to, which opaque candidates are
+registered and eligible on this host, and what the recorded routing evidence
+says — then, if a change is warranted, edit the preset in `agents/models.md`.
+Planar stores candidate ids as opaque strings, records evidence, and resolves
+a role to a *tier* from the task's own packet; it never decides which models
+exist. The tier→model presets are hand-maintained in `agents/models.md` (the
+Tier Table); there is no `[models]` / `[roles]` scaffold verb and no
+`planar models apply` — that family (`list`, `refresh`, `routing`,
+`candidates`, `apply`) was removed with the curated catalog. The
+`pl-models-config` skill walks this same sequence.
 
-**1. Discover installed providers + their catalogs.**
-
-```bash
-planar models list
-# providers:
-#   claude   [installed] 2.1.170 (Claude Code)
-#       large    claude-opus-4-8
-#       large    claude-fable-5          Claude Fable 5 — Mythos-class, above opus; routable candidate, not the tier default
-#       medium   claude-sonnet-5
-#       small    claude-haiku-4-5
-#   codex    [installed] codex-cli 0.137.0
-#       large    gpt-5.6-sol             GPT-5.6-sol (current) — frontier coding/research
-#       large    gpt-5.5                 GPT-5.5 — prior frontier
-#       medium   gpt-5.6-terra           GPT-5.6-terra — strong everyday coding
-#       small    gpt-5.6-luna            GPT-5.6-luna — fast, cost-efficient
-```
-
-**2. See the effective role routing (with provenance).**
+**1. Inspect the candidate registry.**
 
 ```bash
-planar models routing
-#   coder      → claude claude-sonnet-5      (medium) [embedded default]
-#   reviewer   → claude claude-opus-4-8        (large)  [embedded default]
+planar models registry list --json
 ```
 
-`planar models routing --json` is the machine form an external workflow harness shells to pick its worker model per role.
+Each row is one exact candidate id with its role/tier bindings and the
+latest host observation. A candidate whose id has not been verified
+spawn-safe on this host is ineligible for routing, not merely unproven;
+`planar models registry eligibility --candidate <id> --host <host> --role <r> --tier <t> --now <rfc3339>`
+reports every gate and the named exclusion reason.
 
-**3. Inspect candidate lists and work-type routing.**
+**2. Resolve a role's tier — with provenance.**
 
 ```bash
-planar models candidates
-# tier candidate lists (models.<vendor>.<tier>):
-#   codex    large  -> gpt-5.6-sol, gpt-5.5  [embedded default]
-#
-# work-type routing map (routing.<vendor>.<tier>.<work-type>):
-#   codex    large  mechanical -> gpt-5.6-sol  [embedded default]
+planar models resolve --role coder --task 142 --json
+#   {"source":"packet","tier":"medium","work_type":"engine","complexity":"standard", ...}
+planar models resolve --role planner --plan 42 --json
+#   {"source":"static_fallback","tier":"medium","reason":"packet_not_ready","work_type":null, ...}
 ```
 
-Candidate lists let a tier hold multiple model ids while keeping `list[0]` as the tier default. The `[routing.<vendor>.<tier>]` map selects a specific candidate for work types such as `schema`, `engine`, `architectural`, `cli`, `feature`, and `mechanical`.
+Task-bound roles (`coder`, `test-coder`, `reviewer`, `research`, `janitor`)
+take `--task`; pre-task roles (`planner`, `spec-reviewer`, `ingestor`,
+`orchestrator`) take `--plan`. `source: packet` means the tier came from the
+task's compiled profile; `static_fallback` names why it did not
+(`no_packet`, `packet_not_ready`, `policy_not_ready`) and reports work type
+and complexity as null. Report a fallback with its reason, never as a derived
+tier. `--fallback-tier` overrides the configured static fallback (default
+`medium`).
 
-**4. Review routing evals when there is dispatch history.**
+**3. Review the evidence.**
 
 ```bash
-planar models evals --json
+planar models experiments --json    # declared experiments: recorded vs counted samples
+planar models outcomes --json       # terminal outcomes, INCLUDING excluded rows and why
 ```
 
-The evals command is read-only. It aggregates completed dispatch notes into a per-`(work_type, candidate)` scorecard and preview-only recommendations. Do not treat a recommendation as applied; ask the operator before changing the routing map.
+The two totals in `experiments` differ whenever a run was recorded but
+excluded from the evidence boundary; `outcomes` shows each excluded row with
+its reason so a thin-looking cohort can be traced to the rows behind it.
 
-**5. Override routing in `~/.planar/config.toml`.** Optionally scaffold an editable block first:
+**4. Rank candidates in one exact cohort.**
 
 ```bash
-planar models apply        # writes [models.*] + [roles] into the config (idempotent)
+planar models evals --vendor claude --role coder --tier medium --work-type engine \
+  --complexity standard --project 3 --validation-policy v1 --routing-policy v1 \
+  --min-samples 5 --quality-floor 0.5 --json
 ```
 
-Then edit:
+Ranking is by the 95% Wilson lower bound over declared-experiment terminal
+samples in that cohort and is read-only. Candidates under `--min-samples`
+report `insufficient_data` and are never ranked; candidates below
+`--quality-floor` are excluded before any iteration or cost ordering. "No
+recommendation" is a valid outcome and means keep the configured default.
+Without `--vendor` the command falls back to the legacy note-convention
+scorecard, which is inspectable but not evidence-backed.
 
-```toml
-# Route the coder to Codex's frontier model:
-[role_vendors]
-coder = "codex"
+**5. Change a preset (operator-gated).**
 
-# …and (optionally) which codex model the medium tier resolves to:
-[models.codex]
-medium = "gpt-5.6-terra"
-large = ["gpt-5.6-sol", "gpt-5.5"]
+Presets live in the orchestration layer's `agents/models.md`, not in the
+database or `~/.planar/config.toml`. Guide the operator to edit that file; a
+`Use when` cell must rest on a product fact or recorded dispatch evidence
+(vendor capability claims, benchmark scores and release ordering are not
+admissible). Nothing in `planar models` writes.
 
-[routing.codex.large]
-schema = "gpt-5.6-sol"
+**6. Confirm the change took.** Re-run step 2 for the affected role; the
+resolved tier is what the preset table is keyed by, and the rendered
+skill/agent `model:` fields come from scriptorium's render step against
+`agents/models.md`.
 
-# Or just bump a role to a different tier:
-[roles]
-reviewer = "large"
-```
-
-**6. Confirm the change took** — provenance flips to `[config file]`:
-
-```bash
-planar models routing
-#   coder      → codex  gpt-5.6-terra          (medium) [config file]
-planar models candidates --json
-```
-
-See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and the `pl-models-config` skill.
+See [`docs/concepts.md § Model routing`](./concepts.md#model-routing),
+[`docs/cli-reference.md § Domain: models`](./cli-reference.md#domain-models)
+and the `pl-models-config` skill.
 
 ## Recipe 26 — Self-report a usage finding to GitHub Issues
 

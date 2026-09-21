@@ -6,19 +6,22 @@ This document explains the core concepts in Planar. Read it after `planar init` 
 
 ## Binaries
 
-Planar ships as four executables. Three are **planning-state executables**, each with a disjoint capability boundary over the shared SQLite DB enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
+Planar ships as five executables. Four are **planning-state executables**, each with a disjoint capability boundary over the shared SQLite DB enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
 
-The fourth, `planar-execute`, is **not** a planning-state executable: it is the deterministic, spawn-free Lua workflow engine (plan 633) and holds no DB handle at all. A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result; it reaches Planar state only by shelling the planning-state binaries. It exposes no model-spawning host function, so it is a workflow *runner*, not a harness. See [the workflow-engine section](#deterministic-workflow-engine) below; do not conflate it with an external full-harness project described under [External workflow harness control plane](#external-workflow-harness-control-plane).
+The fifth, `planar-execute`, is **not** a planning-state executable: it is the deterministic, spawn-free Lua workflow engine (plan 633) and holds no DB handle at all. A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result; it reaches Planar state only by shelling the planning-state binaries. It exposes no model-spawning host function, so it is a workflow *runner*, not a harness. See [the workflow-engine section](#deterministic-workflow-engine) below; do not conflate it with an external full-harness project described under [External workflow harness control plane](#external-workflow-harness-control-plane).
 
 | Binary | Audience | Writes to |
 |---|---|---|
-| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. Also hosts the interactive operator cockpit (bare `planar` on a TTY, or `planar explore`). |
-| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`), `workflow_runs` (via `run start`/`end`), `context_records` (via `context add`/`resolve`). **Never** to plan / decision / question / scenario / artifact / annotation. |
+| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. Also registers the `explore` leaf, which prints help (there is no cockpit — see [§ Interactive cockpit](#interactive-cockpit)). |
+| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`), `workflow_runs` (via `run start`/`end`), `context_records` (via `context add`/`capsule`/`resolve`), and the `routing_dispatch_previews` / `routing_dispatch_snapshots` authorization tables (via `dispatch preview`/`confirm`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
+| `planar-ext` | Operator + ext-sync agent (operational plane) | Exactly `external_links`, `external_systems`, `sync_events`. Planning tables (`plans`, `tasks`, `questions`, `artifacts`, …) are opened read-only, and the allowlist is enforced at the SQLite layer by a `sqlite3_set_authorizer` callback that fires on the parsed table name, not by convention (decisions 995–1001). Owns both operational adapters, Jira and GitHub Issues. |
 
-**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `run start`/`end`, `context add`/`list`/`resolve`, `ingest`, `reconcile`, `abort`, `version`, `schema`.
+**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `claim-associate`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `run start`/`end`, `context add`/`capsule`/`list`/`resolve`, `dispatch preview`/`confirm`, `ingest`, `reconcile`, `abort`, `version`, `schema`.
 
-**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle. `planar-watch` is **not** the interactive cockpit — it is and remains the scriptable, read-only NDJSON streaming viewer. The cockpit lives in the read-write `planar` binary because editing requires a read-write DB handle (see [§ Interactive cockpit](#interactive-cockpit)).
+**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle. `planar-watch` is the scriptable, read-only NDJSON streaming viewer; it is not, and was never, the cockpit.
+
+**Capability invariant — `planar-ext`:** the verb set is `ext register jira|github`, `ext list`, `ext test`, `ext create`, `ext propagate`, `ext propagate-one`, `sync pull`, `sync push`, `sync status`, `sync resolve`, `version`, `schema`. A write to any table outside the three-table allowlist is refused by the authorizer before it executes; `sync pull` emits `remote_title`/`remote_status` proposals rather than writing planning entities (decision 996).
 
 
 The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). See `agents/methodology.md` § Coordination claims and the tech spec § "Agent methodology contract" for the full sequence.
@@ -80,73 +83,28 @@ Inside the harness:
 
 ## Interactive cockpit
 
-The interactive cockpit is an operator-facing TUI embedded in the `planar` binary. It provides a live, multi-view window into the full planning graph — agent activity, tasks, decisions, questions, sessions, external systems, and more — with support for editing planning entities and triggering workbench or sync actions directly from the interface.
+> **NOT IMPLEMENTED, AND NO LONGER IMPLEMENTED ANYWHERE.** There is no
+> interactive TUI in the `planar` binary. `explore` is registered as a leaf,
+> but its handler prints the leaf's own help page and exits 0
+> (`explore_fallback` in `src/cmd/planar/dispatch.cpp`, decision 1003 /
+> task 6444); it is the sole entry in that binary's `unported_paths()`
+> inventory. Bare `planar` prints the root help regardless of TTY. Decision
+> 980 records the cockpit as a **rewrite candidate, not a port**, and
+> decision 982 excluded it from the zig-deletion gate, so the Zig
+> implementation that provided it (libvaxis-based, under
+> `src/cmd/planar/cockpit/`) was deleted with `zig/` at the M10 cutover
+> without a replacement. There is no `vendor/libvaxis/` in this tree.
 
-### Entry
-
-There are two entry points:
-
-- **Bare invocation.** `planar` with no verb on a TTY launches the cockpit, landing on the Scope Explorer. This is the "open the dashboard" idiom: `planar` becomes `vim` in the sense that the bare binary is the interactive entry point when stdout is a terminal.
-- **Explicit alias.** `planar explore` is the explicit, always-available verb that does the same thing. Use it when you want to name the intent explicitly, or from a context where bare-invocation TTY detection may not fire (e.g. a tmux pane launched by a script).
-
-Both paths run the same terminal-capability gate before entering the alt-screen.
-
-### Terminal-capability gate
-
-The gate determines whether to launch the cockpit or fall back to help/usage output. **Any one** of the following conditions triggers fallback:
-
-- stdout is not a TTY (piped, redirected, CI, the integration test harness)
-- `TERM=dumb` (terminal cannot handle VT sequences)
-- `PLANAR_NO_TUI` environment variable is set (any value, including empty)
-- `--plain` flag passed to `planar explore`
-
-Skills, agents, and scripts always invoke explicit verbs and run in non-TTY contexts, so the cockpit never activates in automated pipelines — `TERM=dumb` / `PLANAR_NO_TUI` are available as belt-and-suspenders overrides when needed.
-
-### Views
-
-The cockpit ships thirteen views. Tab / Shift-Tab cycle through them; `1`–`9` jump to the first nine by position:
-
-| View | Default key | What it shows |
-|------|-------------|---------------|
-| Scope Explorer | `1` / landing | Collapsible plan tree filtered to cwd-derived scope; scope toggle reveals all scopes; split detail pane renders artifact or task body |
-| Agent Monitor | `2` | Live agent-claim roster with heartbeat coloring; event stream tails `agent_actions` and claim transitions |
-| Task Board | `3` | Tasks grouped by status (`todo` / `doing` / `blocked` / `done`) with reopen history and touched-path detail |
-| Decision Log | `4` | Decisions in chronological order; selecting one renders body and derives-from edges |
-| Open Questions | `5` | Questions filtered by status; jump-to-linked entity |
-| Test Scenario & Coverage | `6` | Scenarios with `verifies` edges; surfaces uncovered tasks and orphan scenarios |
-| Entity-Link Graph | `7` | Related entities via `entity_links`; navigate an edge to refocus |
-| External / Ops Plane | `8` | External systems, sync status, unresolved conflicts |
-| Sessions & Handoff | `9` | Session lineage, resume-readiness, commit attribution |
-| Audit Log | Tab | `audit_log` rows in chronological order, filterable by entity |
-| CLI Invocation History | Tab | `cli_invocations` rows with verb / args-shape / outcome, filterable by verb |
-| Scope / Association Topology | Tab | Associations mapped to member projects with scope-resolution context |
-| Utility | Tab | Config inspector, annotations, workbench-sync state |
-
-All views are **read-only projections** — they read existing tables and add no schema. The cockpit opens the DB read-write (as `planar` already does) only to support the editing tiers described below; the views themselves never write.
-
-The default landing view is the Scope Explorer. On launch the cockpit filters to the cwd-derived scope and offers a one-key all-scopes toggle; it falls back to showing all scopes when launched outside any registered repository.
-
-The wake loop behind the views is edge-triggered: a dedicated thread owns the `Wake` (kqueue on macOS, inotify on Linux, on the SQLite `-wal` file) and posts a `db_changed` event to the libvaxis event queue on a WAL change, and on a ≤1 second heartbeat as the coalesced/missed-wake backstop. The main loop re-queries the active view's data on each `db_changed` event with no polling.
-
-### Editing tiers
-
-The cockpit offers three editing tiers. All edits route through `planar`'s existing write engine paths and scope guards — no new write code or schema.
-
-| Tier | Key | What it does | Guard |
-|------|-----|--------------|-------|
-| Entity-field editing | `e` | Edit a planning entity's title, body, or field (e.g. answer a question, update a task body) | Strict scope resolver — cross-scope edit refused without explicit scope; confirm-on-overwrite for destructive changes |
-| Task lifecycle editing | `L` | Move a task through its status lifecycle (open → doing → done, block, reopen, reprioritize) | Claim-atomic: when the engine returns `ActiveClaimRefused`, the cockpit enters `force_confirm` mode — the overlay shows the active claim and prompts `f` to force-override or Esc to cancel. Never a silent raw flip under a live claim. |
-| External / workbench actions | `S` | Trigger a sync/propagate or workbench push/pull/status | Confirmation-gated before executing |
-
-Agent-claim mutation (releasing, reassigning claims) stays on `planar-agent` and is not available from the cockpit.
-
-### Why the cockpit is in `planar`, not `planar-watch`
-
-Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver (the driver rejects every write SQL string; this is load-bearing for its capability invariant). `planar-watch` is unchanged and remains the scriptable, NDJSON-streaming, read-only viewer for agents and monitoring pipelines. The cockpit is in `planar` — the operator binary that already owns mutation — so the read-only boundary of `planar-watch` is preserved in full.
-
-**SQLite tables:** projections of all existing application tables (no new tables or columns). **Primary entry points:** bare `planar` on a TTY, `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`. **TUI framework:** libvaxis (vendored under `vendor/libvaxis/`). **Source:** `src/cmd/planar/cockpit/` (`gate.zig`, `app.zig`, the `view_model.zig` facade and `view_model/` query domains, `views/`, `widgets/`, `edit/`).
-
-See [`docs/cli-reference.md § Domain: explore`](cli-reference.md#domain-explore) for the full flag reference and fallback conditions.
+What the cockpit was specified to be — thirteen read-only views over the
+planning graph, three editing tiers routed through `planar`'s existing write
+paths, and a terminal-capability gate (`TERM=dumb`, `PLANAR_NO_TUI`,
+`--plain`, non-TTY stdout) that fell back to help — is preserved as the
+design record in
+[`docs/architecture.md § Interactive cockpit`](architecture.md#interactive-cockpit--specified-not-implemented)
+and [`docs/cli-reference.md § Domain: explore`](cli-reference.md#domain-explore).
+One design point survives as doctrine: any future cockpit belongs in the
+read-write `planar` binary, not in `planar-watch`, whose `SQLITE_OPEN_READONLY`
+handle and zero-write verb set are load-bearing capability invariants.
 
 ---
 
@@ -429,7 +387,7 @@ Use `--scope repo:<slug>` when a plan, task, question, scenario, decision, or ar
 
 `planar plan create` refuses an implicit write from a registered project that has no association, because treating the missing association as global would hide an ownership mistake. Add the project to an association first, or pass `--scope global` explicitly when the plan is intentionally global.
 
-**SQLite table:** `projects`. **Primary verbs:** `planar init`, `planar project list`, `planar project show`.
+**SQLite table:** `projects`. **Primary verbs:** `planar init` (there is no `project` domain; registered projects are visible through `planar assoc members <slug>`, `planar scope show`, and `planar tree --all-scopes`).
 
 ---
 
@@ -552,9 +510,9 @@ Two operator-visible consequences:
 
 The opt-out is `--no-auto-promote` on the task verbs, used by migrations and scripted bulk edits that don't intend the plan-level transition.
 
-Each transition emits a `session_entries` row with `prefix='note'` and a body that begins with the sentinel line `plan_status: <id>` — recoverable via `planar audit trail --kind plan <plan-id> --grep "^plan_status:"`.
+Each roll-up transition writes an `audit_log` row with `verb='status_change'` and a free-text summary; read it back with `planar audit trail --kind plan <plan-id>`. (Earlier editions of this page described a `session_entries` note beginning with a `plan_status: <id>` sentinel; no such sentinel is written anywhere in `src/` — see `docs/lifecycles.md` § 7.)
 
-**SQLite table:** `plans`. **Primary verbs:** `planar plan create`, `planar plan show`, `planar plan list`, `planar plan active`, `planar plan done`, `planar plan abandon`.
+**SQLite table:** `plans`. **Primary verbs:** `planar plan create`, `planar plan show`, `planar plan list`, `planar plan update --status active|paused|done|abandoned`, `planar plan closeout`. (There are no `plan active` / `plan done` / `plan abandon` verbs; each fails at parse time with exit 2.)
 
 ### Closeout gate
 
@@ -646,7 +604,7 @@ This closes the TOCTOU window where an operator `task done` would strand a live 
 
 Expired claims (`lease_expires_at < now()`) are NOT active and do not trigger the guard. The check is real-time on every operator status-flip.
 
-**SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task doing`, `planar task done`, `planar task block`, `planar task cancel`, `planar task reopen`.
+**SQLite table:** `tasks`. **Primary verbs:** `planar task add`, `planar task list`, `planar task show`, `planar task update --status doing` (there is no `task doing` verb), `planar task done`, `planar task block`, `planar task cancel`, `planar task reopen`.
 
 ### Claim-owned task state and recovery
 
@@ -695,7 +653,7 @@ The three `barrel-*` shapes formalize what was previously an emergent shortcut: 
 
 **Iteration-5 cap.** Applies per reviewer dispatch under `strict`/`grouped`/`single`/`barrel-grouped`. Applies to the boundary reviewer dispatch under `barrel-deferred` (on the union diff). Undefined under `barrel-bypass` (no reviewer → no `request-changes` → no iteration).
 
-**Audit trail.** Every cycle emits a `session_entries` row with `prefix='note'` and a structured body that begins with the sentinel line `dispatch_shape: <shape>`. The `session_entries.prefix` CHECK constraint allows a fixed set (`action / observation / decision / question / file / command / note / error / read`); the dispatch convention reuses `note` with the sentinel body as the grep-recoverable alternative — the same pattern used by plan 304's `plan_status:` audit trail.
+**Audit trail.** Every cycle emits a `session_entries` row with `prefix='note'` and a structured body that begins with the sentinel line `dispatch_shape: <shape>`. The `session_entries.prefix` CHECK constraint allows a fixed set (`action / observation / decision / question / file / command / note / error / read`); the dispatch convention reuses `note` with the sentinel body as the grep-recoverable alternative — the same sentinel-in-note pattern plan 304 originally specified for plan-status flips (which the C++ roll-up records in `audit_log` instead).
 
 ```
 dispatch_shape: <one of the six>
@@ -1124,15 +1082,15 @@ Which model an agent role spawns is **config-driven and unified** (plan 540, ext
 - `[roles]` — **role → tier** (e.g. `coder = "medium"`, `reviewer = "large"` — the "sonnet coder, opus reviewer" default).
 - `[role_vendors]` — optional **role → vendor** override; unset roles use `[defaults].vendor`.
 
-A single **shared resolver** (`src/engine/models.zig`) composes these into a concrete `(vendor, model)`. The tier-only path (`resolveTier`, `resolveRole`, `resolveRoleAuto`) is unchanged and always returns the tier default (`list[0]`). A parallel `resolve(role, work_type)` entry point (`resolveTierWorkType` / `resolveRoleWorkType` / `resolveRoleAutoWorkType`) additionally consults the routing map: a hit returns the named candidate, a miss (or a stale routing target absent from the candidate list) falls back to the tier default. Every consumer resolves through one of these — there are no parallel per-tool model tables:
+A single **shared resolver** (`src/lib/engine/config/effective.cppm` plus `src/lib/engine/models/`) composes these into a concrete `(vendor, model)`. The tier-only path (`resolveTier`, `resolveRole`, `resolveRoleAuto`) is unchanged and always returns the tier default (`list[0]`). A parallel `resolve(role, work_type)` entry point (`resolveTierWorkType` / `resolveRoleWorkType` / `resolveRoleAutoWorkType`) additionally consults the routing map: a hit returns the named candidate, a miss (or a stale routing target absent from the candidate list) falls back to the tier default. Every consumer resolves through one of these — there are no parallel per-tool model tables:
 
-- **`planar models`** — `list` (discover installed provider CLIs + curated catalog), `routing` (effective role→vendor/model with provenance; `--json` is what an external workflow harness shells to build its per-role dispatch table), `candidates` (effective tier candidate lists + the work-type routing map with provenance, plan 899), `refresh` (write the `~/.planar/models/catalog.json` cache), `apply` (scaffold the config block).
+- **`planar models`** — `resolve --role <role> [--task <id>|--plan <id>]` (the tier a role gets from its packet, or the static fallback with its reason), `registry list|add|update|remove|bind|unbind|observe|eligibility|verify-identity|export` (the opaque candidate registry), `experiments` and `outcomes` (routing evidence), and `evals` (below). The plan-540 discovery family — `list`, `routing`, `candidates`, `refresh`, `apply` — was removed with the curated catalog; `planar config show --effective` is where the resolved `models.*` / `routing.*` / `roles.*` keys are inspected.
 - **The Tier Table** (hand-maintained in `agents/models.md`; Planar does not generate it) + rendered skill/agent `model:` fields — rendered skill/agent `model:` fields come from scriptorium's render step, which always renders `list[0]` for a candidate-list tier (static surfaces show the tier default; per-task routing is runtime-only).
-- **External workflow harnesses** — shell `planar models routing --json` to build a per-role dispatch table (no engine handle), falling back to compiled defaults when `planar` is unreachable.
+- **External workflow harnesses** — shell `planar models resolve --role <role> --json` per role (no engine handle), falling back to compiled defaults when `planar` is unreachable.
 - **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see `agents/orchestrator.md` dispatch step 8a and `skills/src/pl-orchestrator.md` § Dispatch preview and model tiers).
-- **`planar models evals`** — read-only routing evaluation. It mines completed dispatch notes (`dispatch_shape:` / `model_choice:`), terminal claim status, and test-coder action outcomes into a per-`(work_type, candidate)` scorecard plus preview-only recommendations. Quality-gate pass/fail is not persisted today, so the command reports that signal as unsourced rather than guessing. It writes nothing; applying a recommendation is a separate operator-gated config edit.
+- **`planar models evals`** — read-only routing evaluation. With `--vendor` and the cohort flags it ranks candidates in one exact cohort by the 95% Wilson lower bound over declared-experiment evidence; without them it falls back to the legacy scorecard mined from dispatch notes (`dispatch_shape:` / `model_choice:`), terminal claim status, and test-coder action outcomes. Quality-gate pass/fail is not persisted today, so the legacy path reports that signal as unsourced rather than guessing. It writes nothing; applying a recommendation is a separate operator-gated edit to `agents/models.md`.
 
-The provider CLIs (`claude`, `codex`) do not expose a machine-readable model list, so the per-vendor catalog is curated in the binary; discovery confirms which CLIs are installed by invoking `<bin> --version`. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the `pl-models-config` skill.
+Planar does not discover or validate provider model lists: candidate ids are opaque strings recorded as agents report them, and spawn verification belongs to the host adapter. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the `pl-models-config` skill.
 
 ## Color output
 
