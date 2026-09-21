@@ -200,6 +200,29 @@ keeps its cached compiler paths and prints `CMake Warning (unused-cli):
 CMAKE_TOOLCHAIN_FILE`. That is expected, and harmless on the host those
 paths came from. Delete the build directory to pick up discovery.
 
+**The same staleness bites when Homebrew moves the keg.** The cache
+stores the tools by ABSOLUTE cellar path
+(`/opt/homebrew/Cellar/llvm/<version>/bin/clang-scan-deps`,
+`.../llvm-ar`, ...), not through the `/opt/homebrew/opt/llvm` symlink.
+Homebrew installs every bottle revision into its own cellar directory and
+removes the previous one, so a package-revision bump that changes no
+compiler bits at all — `23.1.1` → `23.1.1_1` on 2026-09-21 — leaves an
+idle build tree pointing at a directory that no longer exists. The
+symptom is a build step failing with `code=127` and
+`/bin/sh: /opt/homebrew/Cellar/llvm/<old>/bin/clang-scan-deps: No such
+file or directory`, usually from the first third-party target
+(`_deps/spdlog-build/...`) because that is what ninja reaches first. It
+looks like a missing tool; it is a stale path. `rm -rf build/<preset>`
+and re-run the configure or `make install`; discovery resolves the new
+prefix. EVERY build tree configured before the bump is affected —
+`build/debug` and `build/release` alike — and each one fails only when it
+next has something to compile, so `make test` can keep passing on a tree
+whose objects are all up to date while `make install` fails on the other
+tree the same afternoon (2026-09-21: `release` failed first, `debug`
+failed an hour later on `make surface-lint`, which needed to rebuild the
+lint tool). Re-running configure over the stale tree is NOT enough: the
+cached tool paths survive it (see the previous paragraph). Delete it.
+
 **Linux is still specified, not verified.** Everything above was verified
 on macOS ARM (see the probe transcript below); the Linux branch of step 3
 is structural, and the platform table's Linux row remains
