@@ -1124,19 +1124,28 @@ TEST_CASE("two connections pulling the same plan take DIFFERENT tasks", "[agenta
   REQUIRE(scalar_int(first, "select count(*) from agent_work_claims") == 2);
 }
 
-TEST_CASE("an open immediate transaction locks out a concurrent terminal verb", "[agentatomic][concurrency]") {
+TEST_CASE("an open immediate transaction locks out a concurrent terminal verb", "[agentatomic][concurrency][6843]") {
   // A terminal verb interleaved with another writer. The first connection
   // holds an UNCOMMITTED immediate transaction; the second's terminal verb
   // cannot begin, so it is refused outright rather than reading through to
   // a half-applied state or committing on top of one.
   //
-  // The refusal maps to `query_failed`, which is what the CLI reports as
-  // `error: complete: QueryFailed` — an operator seeing that under
-  // contention is seeing the lock work, not a corruption.
+  // The refusal is a genuine post-timeout SQLITE_BUSY -- `first` never
+  // releases the lock for the whole scope below, so `second`'s BEGIN
+  // IMMEDIATE retries for the full busy_timeout window and then reports
+  // SQLITE_BUSY, not some other failure. Task 6843: that maps to
+  // `agent_error::busy` ("Busy" on the CLI, `error: complete: Busy`), never
+  // to `query_failed` -- an operator seeing contention needs a different
+  // signal (retry) than one seeing corruption (escalate).
   scratch_db_path  scratch;
   auto             first  = open_migrated(scratch);
   auto             second = open_second(scratch);
-  auto const       fx     = seed(first, 1);
+  // Task 6842 made connection::open set busy_timeout=5000 by default.
+  // Lower `second`'s override so this test's guaranteed-busy assertion
+  // below doesn't block for 5 real seconds; the property under test is the
+  // ERROR MAPPING once the timeout is exhausted, not the timeout's length.
+  REQUIRE(second.execute("pragma busy_timeout = 50;"));
+  auto const       fx = seed(first, 1);
   recording_policy policy;
 
   auto const pulled = atomic::pull_next(
@@ -1147,12 +1156,12 @@ TEST_CASE("an open immediate transaction locks out a concurrent terminal verb", 
   {
     auto blocker = first.begin_transaction(planar::db::lock_mode::immediate);
     REQUIRE(blocker.has_value());
-    // The lock is held for the whole scope. `busy_timeout` is not set on
-    // these test connections, so the second writer fails immediately
-    // rather than after a wait — which is what makes this deterministic.
+    // The lock is held for the whole scope, past `second`'s 50ms
+    // busy_timeout, so this is a genuine post-timeout SQLITE_BUSY, not a
+    // race against how fast the test runs.
     auto const refused = atomic::complete_work(second, token, std::nullopt, policy.bind());
     REQUIRE_FALSE(refused.has_value());
-    REQUIRE(refused.error() == aa::agent_error::query_failed);
+    REQUIRE(refused.error() == aa::agent_error::busy);
   }
 
   // Nothing moved, and once the lock is released the verb succeeds — the
