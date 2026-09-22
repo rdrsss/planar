@@ -881,6 +881,53 @@ TEST_CASE("reconcile_runs abandons dead-pid runs and spares live ones", "[agenta
   REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'live'") == "running");
 }
 
+TEST_CASE("reconcile_runs abandons an expired-lease pid-less run and spares a live one, never pid-probing either",
+          "[agentactivity][6847]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+
+  // Expired: a seeded PAST expires_at, deterministic rather than sleeping.
+  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, expires_at, repo_root) "
+                         "values ({}, 'wf', 'lapsed', '2000-01-01T00:00:00.000Z', '/tmp')",
+                         fx.plan_id));
+  // Not yet expired.
+  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, expires_at, repo_root) "
+                         "values ({}, 'wf', 'live-lease', '2999-01-01T00:00:00.000Z', '/tmp')",
+                         fx.plan_id));
+
+  auto const preview = aa::reconcile_runs(conn, true, std::nullopt);
+  REQUIRE(preview.has_value());
+  REQUIRE(preview->candidates.size() == 1);
+  REQUIRE(preview->candidates[0].run_identifier == "lapsed");
+  REQUIRE(preview->abandoned == 0);
+  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'lapsed'") == "running");
+
+  auto const swept = aa::reconcile_runs(conn, false, std::nullopt);
+  REQUIRE(swept.has_value());
+  REQUIRE(swept->abandoned == 1);
+  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'lapsed'") == "abandoned");
+  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'live-lease'") == "running");
+}
+
+TEST_CASE("a dead-pid run is abandoned by its pid probe alone, even carrying a far-future expires_at", "[agentactivity][6847]") {
+  // A pid-bound run's liveness is decided by the pid probe alone, exactly
+  // as before task 6847 — the new lease branch must not read `expires_at`
+  // for a row that HAS a pid, even if one happens to be present.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+
+  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, expires_at, repo_root) "
+                         "values ({}, 'wf', 'dead-pid', -1, '2999-01-01T00:00:00.000Z', '/tmp')",
+                         fx.plan_id));
+
+  auto const swept = aa::reconcile_runs(conn, false, std::nullopt);
+  REQUIRE(swept.has_value());
+  REQUIRE(swept->abandoned == 1);
+  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'dead-pid'") == "abandoned");
+}
+
 // ===========================================================================
 // reads
 // ===========================================================================

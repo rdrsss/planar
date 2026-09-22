@@ -869,7 +869,7 @@ export auto reconcile_stale(db::connection& conn, const reconcile_policy& policy
 export struct run_candidate {
   std::int64_t                id{};           ///< Row id.
   std::string                 run_identifier; ///< The caller-supplied identifier.
-  std::int64_t                pid{};          ///< The recorded process id.
+  std::int64_t                pid{};          ///< The recorded process id (0 for a pid-less, lease-supervised run).
   std::optional<std::int64_t> plan_id;        ///< The owning plan, when set.
 };
 
@@ -890,13 +890,16 @@ export struct reconcile_runs_result {
 /// @return `true` when the process appears to exist.
 export auto pid_alive(std::int64_t pid) -> bool;
 
-/// @brief Abandon `running` workflow runs whose recorded pid is gone.
+/// @brief Abandon `running` workflow runs that are dead: a pid-bound run
+/// whose recorded pid is gone, or a pid-less run whose `expires_at` lease
+/// has lapsed (decision D11, task 6847). A pid-less run with a live lease
+/// is left running — reconcile never probes a lease it has not seen expire.
 /// @param conn An open, migrated connection.
 /// @param dry_run When true, collect candidates and write nothing.
 /// A `centurion` run's liveness is the Centurion host's to judge, not a pid
 /// probe's, so it is reported as skipped unless `override_supervisor`.
 /// @param plan_id Scope to one plan; unset sweeps globally.
-/// @param override_supervisor Abandon dead-pid `centurion` runs too.
+/// @param override_supervisor Abandon dead-pid/expired-lease `centurion` runs too.
 /// @return The sweep result, or `query_failed`.
 export auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id,
                            bool override_supervisor = false) -> std::expected<reconcile_runs_result, agent_error>;

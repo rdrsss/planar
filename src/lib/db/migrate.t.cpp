@@ -661,8 +661,7 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
 }
 
-TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, without a table rebuild",
-          "[db][migrate][6846]") {
+TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, without a table rebuild", "[db][migrate][6846]") {
   scratch_db_path scratch;
   auto            conn = planar::db::connection::open(scratch.path_.string());
   REQUIRE(conn.has_value());

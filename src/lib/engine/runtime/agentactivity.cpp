@@ -1549,8 +1549,13 @@ auto pid_alive(std::int64_t pid) -> bool {
 
 auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id, bool override_supervisor)
     -> std::expected<reconcile_runs_result, agent_error> {
-  std::string select_sql =
-      "select id, run_identifier, pid, plan_id, engine = 'centurion' from workflow_runs where status = 'running'";
+  // `lapsed` is computed IN SQL, against the same clock expression (`k_now`)
+  // every other write in this module uses, rather than fetched and compared
+  // in C++ — one fewer place a clock/format mismatch could hide.
+  std::string select_sql = std::format("select id, run_identifier, pid, plan_id, engine = 'centurion', "
+                                       "pid is null and expires_at is not null and expires_at < {} "
+                                       "from workflow_runs where status = 'running'",
+                                       k_now);
   if (plan_id.has_value()) {
     select_sql += std::format(" and plan_id = {}", *plan_id);
   }
@@ -1569,11 +1574,16 @@ auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64
       if (*stepped != db::step_result::row) {
         break;
       }
+      auto const    pid_opt = opt_int(*stmt, 2);
       run_candidate row{.id             = stmt->column_int64(0),
                         .run_identifier = stmt->column_text(1),
-                        .pid            = stmt->column_int64(2),
+                        .pid            = pid_opt.value_or(0),
                         .plan_id        = opt_int(*stmt, 3)};
-      if (pid_alive(row.pid)) {
+      // A pid-bound run is probed for liveness exactly as before. A
+      // pid-less run is NEVER pid-probed (there is no pid to probe) — its
+      // liveness is entirely the `lapsed` predicate computed above.
+      bool const dead = pid_opt.has_value() ? !pid_alive(*pid_opt) : stmt->column_int64(5) != 0;
+      if (!dead) {
         continue;
       }
       if (stmt->column_int64(4) != 0 && !override_supervisor) {
