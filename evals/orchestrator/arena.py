@@ -35,11 +35,15 @@ does not follow into a scratch `CLAUDE_CONFIG_DIR` at all. Every
 live/lifecycle call site in `evals/orchestrator/harness.py` runs the same
 four steps in order — `make_arena()` -> `assert_isolated()` ->
 `stage_vendor_config()` -> `assert_vendor_auth()` — before any vendor host
-process starts. Not every caller runs all four: the planning harness
-(`evals/planning/harness.py`) only ever prompts its vendor host with prose
-(no slash commands, skills, or agents to resolve), so it calls
-`make_arena()` -> `assert_isolated()` -> `assert_vendor_auth()` and
-deliberately skips `stage_vendor_config()`.
+process starts. The planning harness (`evals/planning/harness.py`, task
+hh-planning-grader-split) runs the same four steps for its live
+`draft-quality` trial loop: its drafter now invokes the installed
+`pl-spec-draft` slash command (`/pl-spec-draft "<goal>"`) rather than bare
+prose, so it needs `commands/` staged into the scratch `CLAUDE_CONFIG_DIR`
+the same way an orchestrator skill run does. Its `--dry-run` path (every
+kind) and its grader call (plain prose, no slash command) never need
+`stage_vendor_config()`, so only the live drafter call site pairs it with
+`assert_vendor_auth()`.
 
 Callers own an arena's lifecycle. This module never deletes a root; a
 run's `--keep` / failure rules decide whether the artifact directory (and
