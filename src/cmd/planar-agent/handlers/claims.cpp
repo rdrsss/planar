@@ -266,7 +266,11 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 
   auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::string{"600"});
   auto const ttl     = parse_ttl_seconds(ttl_raw);
-  if (!ttl.has_value()) {
+  // A zero-second result mints an already-lapsed lease (task 6906); unlike
+  // `--stale-after` (whose own zero is a legitimate "no grace" default),
+  // `--ttl` has no meaningful zero, so it takes the same error shape as a
+  // malformed value.
+  if (!ttl.has_value() || *ttl == 0) {
     return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
   }
 

@@ -192,25 +192,13 @@ TEST_CASE("parse_ttl_seconds reads a bare integer as SECONDS", "[cmd][agent][arg
   // The ergonomic default the flag's own help promises. A port that read
   // it as nanoseconds would give every claim a zero-second lease.
   CHECK(agent::parse_ttl_seconds("600") == 600);
+  // The parser itself stays neutral on a literal zero (task 6906): it is
+  // shared with `--stale-after`, whose own "0" default is legitimate
+  // ("no additional grace"). The refusal lives at the `--ttl`
+  // lease-minting call sites instead -- see the `claim`/`run start`
+  // end-to-end cases below.
+  CHECK(agent::parse_ttl_seconds("0") == 0);
   CHECK(agent::parse_ttl_seconds("1") == 1);
-}
-
-TEST_CASE("parse_ttl_seconds refuses a literal zero duration (task 6906)", "[cmd][agent][args]") {
-  // `--ttl 0` (in any unit) used to be ACCEPTED and yielded an
-  // already-lapsed lease — a claim minted expired on arrival. A negative
-  // duration was already unreachable (the parser never accepts a leading
-  // `-`, so it falls out through the malformed-input path below), but a
-  // literal zero magnitude was not. This is the same "invalid" answer as
-  // garbage input, not a value to accept and immediately expire.
-  //
-  // This is distinct from the SUB-SECOND rounding case (`500ms` -> 0,
-  // pinned separately below and still legal under D2): here the parsed
-  // MAGNITUDE itself is zero, not merely its truncation to whole seconds.
-  CHECK_FALSE(agent::parse_ttl_seconds("0").has_value());
-  CHECK_FALSE(agent::parse_ttl_seconds("0s").has_value());
-  CHECK_FALSE(agent::parse_ttl_seconds("0m").has_value());
-  CHECK_FALSE(agent::parse_ttl_seconds("0h").has_value());
-  CHECK_FALSE(agent::parse_ttl_seconds("0ns").has_value());
 }
 
 TEST_CASE("parse_ttl_seconds handles every declared unit", "[cmd][agent][args]") {
@@ -350,6 +338,12 @@ TEST_CASE("the handler-level refusals carry the oracle's exact messages and code
       {{"claim", "--entity", "task:1", "--ttl", "zzz"},
        1,
        "error: invalid --ttl 'zzz': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n"},
+      // Task 6906: a zero-second result mints an already-lapsed lease, so
+      // it takes the SAME error shape as a malformed value -- unlike
+      // `--stale-after 0` just below, which is legitimate.
+      {{"claim", "--entity", "task:1", "--ttl", "0"},
+       1,
+       "error: invalid --ttl '0': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n"},
       {{"reconcile", "--stale-after", "zzz"},
        1,
        "error: invalid --stale-after 'zzz': expected bare seconds (e.g. 0) or suffixed duration (e.g. 10m, 1h, 500ms)\n"},
@@ -518,6 +512,20 @@ TEST_CASE("run start refuses --pid and --ttl together, writing no row", "[cmd][a
   CHECK(refused.err.contains("--pid"));
   CHECK(refused.err.contains("--ttl"));
   CHECK(refused.err.contains("not both"));
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
+}
+
+TEST_CASE("run start refuses --ttl 0, writing no row (task 6906)", "[cmd][agent][runs][6906]") {
+  // A zero-second lease would set `expires_at` in the past the instant the
+  // run is minted -- the same bug the `claim --ttl 0` case above closes,
+  // applied to the second verb the decision names.
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const refused = run_verb(
+      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "ttl-zero", "--ttl", "0", "--repo-root", "/tmp"});
+  CHECK(refused.code != 0);
+  CHECK(refused.err ==
+        "error: invalid --ttl '0': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n");
   CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
 }
 

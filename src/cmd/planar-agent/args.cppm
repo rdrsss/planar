@@ -54,6 +54,15 @@ namespace planar::cmd::agent {
 ///
 /// Overflowing the unsigned nanosecond range is malformed input, not a
 /// value to clamp — it maps to the same "invalid" answer as garbage.
+///
+/// This parser is shared by TWO different semantics, which is why it does
+/// NOT itself refuse a zero result (task 6906 considered and rejected
+/// that): `--stale-after 0` is a legitimate, meaningful value (no
+/// additional grace beyond lease expiry — `reconcile`'s own default), while
+/// `--ttl 0` is not (it mints an already-lapsed lease). The lease-minting
+/// call sites (`claim`, `run start`) refuse a zero RESULT themselves,
+/// after calling this parser; `--stale-after` does not. See those call
+/// sites' own comments.
 /// @param text The raw flag value.
 /// @return The whole seconds, or unset when the value is malformed.
 export auto parse_ttl_seconds(std::string_view text) -> std::optional<std::int64_t> {

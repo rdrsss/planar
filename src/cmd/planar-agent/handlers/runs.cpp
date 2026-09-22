@@ -100,7 +100,10 @@ auto run_start(context& ctx, const cliapp::parsed_args& a) -> handler_result {
     pid = *parsed;
   } else if (ttl_raw.has_value()) {
     auto const parsed = parse_ttl_seconds(*ttl_raw);
-    if (!parsed)
+    // A zero-second result sets an already-lapsed `expires_at` (task
+    // 6906): the run would be reconcile-eligible for abandonment the
+    // instant it is started. Same error shape as a malformed value.
+    if (!parsed || *parsed == 0)
       return std::unexpected(duration_error("--ttl", *ttl_raw, "600"));
     ttl_secs = *parsed;
   } else {
