@@ -22,6 +22,7 @@ export enum class error : std::uint8_t {
   run_not_found,  ///< No workflow run has the supplied identifier.
   not_running,    ///< A terminal transition was requested for a non-running row.
   pid_bound,      ///< `heartbeat` was called on a run supervised by pid, not by lease.
+  unsupervised,   ///< `start` was given neither a pid nor a lease ttl.
 };
 
 /// @brief Input for starting an external workflow run.

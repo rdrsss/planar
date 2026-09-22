@@ -72,9 +72,16 @@ auto start(db::connection& c, const start_input& input) -> std::expected<run, er
   if (*present == db::step_result::done)
     return std::unexpected(error::plan_not_found);
 
-  // Exactly one of pid / ttl_secs is expected (the caller — the CLI
-  // handler — validates that before this is reached; the migration-00039
-  // CHECK is the database's own backstop either way).
+  // Exactly one of pid / ttl_secs is expected. The CLI handler validates
+  // that before this is reached and the migration-00039 CHECK is the
+  // database's own backstop, but this boundary refuses the contradiction
+  // itself rather than binding `ttl_secs.value_or(0)`: that fabricated a
+  // lease expiring `now + 0 seconds`, which the CHECK admits and the very
+  // next `reconcile` sweep abandons — a silently dead run from a caller
+  // that simply misused the API (task 6847, reviewer finding 2).
+  if (!input.pid.has_value() && !input.ttl_secs.has_value())
+    return std::unexpected(error::unsupervised);
+
   if (input.pid.has_value()) {
     auto insert = c.prepare("insert into workflow_runs(plan_id,workflow_name,run_identifier,pid,repo_root) values(?,?,?,?,?)");
     if (!insert || !insert->bind_int64(1, input.plan_id) || !insert->bind_text(2, input.workflow_name) ||
@@ -88,7 +95,7 @@ auto start(db::connection& c, const start_input& input) -> std::expected<run, er
                             "values(?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now','+'||?||' seconds'))");
     if (!insert || !insert->bind_int64(1, input.plan_id) || !insert->bind_text(2, input.workflow_name) ||
         !insert->bind_text(3, input.run_identifier) || !insert->bind_text(4, input.repo_root) ||
-        !insert->bind_int64(5, input.ttl_secs.value_or(0)))
+        !insert->bind_int64(5, *input.ttl_secs))
       return db_failure();
     if (!insert->step())
       return db_failure();

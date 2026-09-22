@@ -13,6 +13,11 @@
 -- task's own down contract. `agent_work_claims.run_id` is
 -- `ON DELETE SET NULL`, so a claim that happened to reference a deleted
 -- pid-less run is left with a NULL `run_id` rather than being destroyed.
+-- `context_records.run_id` is `ON DELETE CASCADE`, though, so this DELETE
+-- also destroys every context record belonging to a pid-less run. That is
+-- accepted for the same reason — those records exist only for runs the
+-- pre-00039 schema could not hold — but it IS data loss on rollback and is
+-- named here rather than left to be discovered from the schema.
 
 delete from workflow_runs where pid is null;
 

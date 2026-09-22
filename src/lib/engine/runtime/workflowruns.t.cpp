@@ -141,3 +141,19 @@ TEST_CASE("workflow run start links only existing plans and preserves duplicate 
   CHECK(duplicate.error() == planar::engine::runtime::workflowruns::error::query_failed);
   CHECK(scalar(c, "select count(*) from workflow_runs where run_identifier='duplicate'") == 1);
 }
+
+TEST_CASE("start refuses a run with neither pid nor lease instead of fabricating a dead one", "[runtime][workflowruns]") {
+  scratch s;
+  auto    c    = open_db(s);
+  auto    plan = seed_plan(c);
+
+  // The CLI handler validates this, but the engine boundary is its own
+  // contract: binding `ttl_secs.value_or(0)` used to insert a lease
+  // expiring `now + 0 seconds`, which the migration-00039 CHECK admits and
+  // the next reconcile sweep abandons — a silently dead run (task 6847).
+  auto const refused = planar::engine::runtime::workflowruns::start(
+      c, {.plan_id = plan, .workflow_name = "wf", .run_identifier = "unsupervised", .repo_root = "/repo"});
+  CHECK_FALSE(refused);
+  CHECK(refused.error() == planar::engine::runtime::workflowruns::error::unsupervised);
+  CHECK(scalar(c, "select count(*) from workflow_runs where run_identifier='unsupervised'") == 0);
+}

@@ -488,6 +488,22 @@ TEST_CASE("run start refuses when neither --pid nor --ttl is given, writing no r
   CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
 }
 
+TEST_CASE("run start refuses --pid and --ttl together, writing no row", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  // Both given is a contradiction. Before task 6847's reviewer caught it,
+  // --pid silently won and --ttl was discarded, so a caller asking for a
+  // lease got a pid-supervised run whose every later `run heartbeat`
+  // refused with `pid-supervised`.
+  auto const refused = run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "both", "--pid", "4242",
+                                          "--ttl", "600", "--repo-root", "/tmp"});
+  CHECK(refused.code != 0);
+  CHECK(refused.err.contains("--pid"));
+  CHECK(refused.err.contains("--ttl"));
+  CHECK(refused.err.contains("not both"));
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
+}
+
 TEST_CASE("run heartbeat extends a pid-less run's lease forward", "[cmd][agent][runs][6847]") {
   scratch_dir scratch;
   seed(scratch, 1);

@@ -21,6 +21,9 @@ auto fail(domain_error_kind kind, std::string body) -> handler_result {
 auto from_start_error(wr::error e, std::int64_t plan) -> handler_result {
   if (e == wr::error::plan_not_found)
     return fail(domain_error_kind::not_found, std::format("plan {} not found", plan));
+  if (e == wr::error::unsupervised)
+    return fail(domain_error_kind::invalid_input,
+                "a workflow run must be supervised: supply --pid (pid-supervised) or --ttl (lease-supervised)");
   return fail(domain_error_kind::generic_failure, "insert workflow_runs: StepFailed");
 }
 auto from_end_error(wr::error e, std::string_view identifier, std::string_view status = {}) -> handler_result {
@@ -81,6 +84,15 @@ auto run_start(context& ctx, const cliapp::parsed_args& a) -> handler_result {
 
   std::optional<std::int64_t> pid;
   std::optional<std::int64_t> ttl_secs;
+  if (pid_raw.has_value() && ttl_raw.has_value()) {
+    // Both given is a contradiction, not a precedence question: silently
+    // preferring --pid would hand back a pid-supervised run to a caller
+    // that asked for a lease, and every later `run heartbeat` on it would
+    // refuse with `pid-supervised` (task 6847, reviewer finding 1).
+    return fail(domain_error_kind::invalid_input,
+                "planar-agent run start takes either --pid (pid-supervised) or --ttl (lease-supervised), "
+                "not both; they are mutually exclusive supervision modes");
+  }
   if (pid_raw.has_value()) {
     auto const parsed = cliapp::flag_int(a, "--pid");
     if (!parsed)
