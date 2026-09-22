@@ -35,12 +35,22 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 EVAL_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = EVAL_ROOT.parents[1]
+
+# `arena.py` lives under evals/orchestrator/ (task hh-eval-arena); it is the
+# shared isolation module both harnesses use, so the planning harness need
+# not keep its own copy of the arena env / isolation-assertion logic.
+# Appended, not inserted at 0: both directories have a `harness.py`, and a
+# caller that runs this file as a script must not have `import harness`
+# elsewhere resolve to the orchestrator's module instead of this one.
+sys.path.append(str(EVAL_ROOT.parent / "orchestrator"))
+import arena  # noqa: E402
 
 EXIT_PASS, EXIT_FAIL, EXIT_CONFIG, EXIT_BLOCKED = 0, 1, 2, 75
 
@@ -408,16 +418,20 @@ def redact_diagnostics(text: str, sentinels: list[Sentinel], source_bodies: list
     return out
 
 
-def assert_isolated_db(path: Path, created_by_eval: bool) -> None:
-    """Refuse to touch a database this eval did not create.
+def build_host_env(root: Path) -> dict[str, str]:
+    """Build and isolation-check the subprocess environment for a live host call.
 
-    The same class of accident that migrated an operator's live database twice
-    during plan 950: a fixture path that silently resolved somewhere real.
+    Generalizes the former `assert_isolated_db(path, created_by_eval)`: a
+    database path under an arena root that only `arena.make_arena()`
+    created is, by construction, one this eval created — the same class of
+    accident (a fixture path that silently resolved somewhere real, plan
+    950) that guard existed to catch, now caught for every arena-owned
+    variable rather than only `PLANAR_DB`. Raises `arena.ArenaIsolationError`
+    before any host process starts if isolation does not hold.
     """
-    if not created_by_eval:
-        raise ConfigError(f"refusing to use a database the eval did not create: {path}")
-    if path.name == "planar.db" and ".planar" in str(path):
-        raise ConfigError(f"refusing to use what looks like the operator database: {path}")
+    env = arena.make_arena(root)
+    arena.assert_isolated(env, root)
+    return env
 
 
 @dataclass
@@ -533,7 +547,7 @@ def aggregate(trials: list[TrialResult]) -> dict[str, float]:
     }
 
 
-def run_model(argv: list[str], prompt: str, timeout: int) -> str:
+def run_model(argv: list[str], prompt: str, timeout: int, env: Mapping[str, str]) -> str:
     try:
         proc = subprocess.run(
             [*argv, prompt],
@@ -542,6 +556,7 @@ def run_model(argv: list[str], prompt: str, timeout: int) -> str:
             text=True,
             timeout=timeout,
             cwd=REPO_ROOT,
+            env=dict(env),
         )
     except FileNotFoundError as exc:
         raise ConfigError(f"host CLI not found: {argv[0]}") from exc
@@ -713,9 +728,26 @@ def main() -> int:
         if bad.ok:
             print("dry-run: structural gate accepted a known-bad draft", file=sys.stderr)
             return EXIT_FAIL
+        # Every live run calls arena.assert_isolated(env, root) before the host
+        # starts (decision D2). Prove the isolated env passes here, and that a
+        # PLANAR_DB leaked outside the arena root is refused before spending a
+        # live call.
+        with tempfile.TemporaryDirectory(prefix="planar-eval-planning-dryrun-") as tmp:
+            arena_root = Path(tmp)
+            isolated_env = build_host_env(arena_root)
+            leaked_env = dict(isolated_env)
+            leaked_env["PLANAR_DB"] = str(Path.home() / ".planar" / "planar.db")
+            try:
+                arena.assert_isolated(leaked_env, arena_root)
+            except arena.ArenaIsolationError:
+                pass
+            else:
+                print("dry-run: accepted a PLANAR_DB leaked outside the arena", file=sys.stderr)
+                return EXIT_FAIL
         print(f"  goal chars : {len(goal)}")
         print(f"  grader len : {len(grader_prompt)}")
         print(f"  structural gate rejects a known-bad draft: {'; '.join(bad.reasons())}")
+        print("  isolation  : arena env resolves under root; leaked PLANAR_DB is refused")
         print("\ndry-run OK: case, fixture, grader, and structural gate are usable.")
         return EXIT_PASS
 
@@ -731,36 +763,51 @@ def main() -> int:
             "questions sections. Claim only what you actually did.\n\n"
             f"GOAL:\n{goal}"
         )
-        try:
-            draft = run_model(host_argv(args.model), draft_prompt, args.timeout)
-        except Blocked as exc:
-            print(f"blocked: {exc}", file=sys.stderr)
-            return EXIT_BLOCKED
-        except (GraderError, ConfigError) as exc:
-            print(f"trial {i}: host failure: {exc}", file=sys.stderr)
-            return EXIT_FAIL
+        # Each trial gets its own arena, isolation-checked before the host
+        # starts (decision D2). Unlike the orchestrator harness (which has a
+        # `--keep` flag and a failure-retention path), this planning harness
+        # retains nothing: `TemporaryDirectory` deletes the arena the moment
+        # the `with` block exits, win or lose, one arena per trial.
+        with tempfile.TemporaryDirectory(prefix=f"planar-eval-planning-trial{i}-") as trial_dir:
+            trial_root = Path(trial_dir)
+            try:
+                trial_env = build_host_env(trial_root)
+                # This harness always spawns the claude CLI (host_argv);
+                # staged config is not the same as authenticated — Keychain
+                # login does not follow into a scratch CLAUDE_CONFIG_DIR
+                # (Planar artifact 626 / task 6872). Fail closed before the
+                # host spawns.
+                arena.assert_vendor_auth(trial_env, "claude")
+                draft = run_model(host_argv(args.model), draft_prompt, args.timeout, trial_env)
+            except Blocked as exc:
+                print(f"blocked: {exc}", file=sys.stderr)
+                return EXIT_BLOCKED
+            except (GraderError, ConfigError, arena.ArenaIsolationError, arena.VendorAuthError) as exc:
+                print(f"trial {i}: host failure: {exc}", file=sys.stderr)
+                return EXIT_FAIL
 
-        structural = check_structure(draft, case["structural"])
-        if not structural.ok:
-            # Fail before paying for semantic grading.
-            print(f"  trial {i}: STRUCTURAL FAIL — {'; '.join(structural.reasons())}")
-            results.append(TrialResult(i, 0.0, {}, structural))
-            continue
+            structural = check_structure(draft, case["structural"])
+            if not structural.ok:
+                # Fail before paying for semantic grading.
+                print(f"  trial {i}: STRUCTURAL FAIL — {'; '.join(structural.reasons())}")
+                results.append(TrialResult(i, 0.0, {}, structural))
+                continue
 
-        try:
-            raw = run_model(
-                host_argv(args.model),
-                f"{grader_prompt}\n\n--- DRAFT UNDER REVIEW ---\n{draft}",
-                args.timeout,
-            )
-            scores = parse_grader_output(raw)
-        except Blocked as exc:
-            print(f"blocked: {exc}", file=sys.stderr)
-            return EXIT_BLOCKED
-        except GraderError as exc:
-            # Never a pass, never a silent skip.
-            print(f"\nFAIL: grader error on trial {i}: {exc}", file=sys.stderr)
-            return EXIT_FAIL
+            try:
+                raw = run_model(
+                    host_argv(args.model),
+                    f"{grader_prompt}\n\n--- DRAFT UNDER REVIEW ---\n{draft}",
+                    args.timeout,
+                    trial_env,
+                )
+                scores = parse_grader_output(raw)
+            except Blocked as exc:
+                print(f"blocked: {exc}", file=sys.stderr)
+                return EXIT_BLOCKED
+            except GraderError as exc:
+                # Never a pass, never a silent skip.
+                print(f"\nFAIL: grader error on trial {i}: {exc}", file=sys.stderr)
+                return EXIT_FAIL
 
         score = statistics.fmean(scores.values())
         print(f"  trial {i}: {score:.2f}  " + " ".join(f"{k}={v:.2f}" for k, v in sorted(scores.items())))
