@@ -7090,6 +7090,30 @@ resolves but is refused at dispatch until the host lands in plan 1033 M2:
 Centurion host lands in plan 1033 M2`, exit `1`, nothing on stdout. The
 selection never changes `run`'s stdout.
 
+### Command policy (`workflows/command-policy.json`)
+
+Under the Centurion engine (plan 1033, tech-spec D2/D14) a workflow reaches
+`planar`, `planar-agent`, `planar-watch` and `git` only through Centurion's
+stock `command.exec` activity, and only for a `(binary, verb path)` listed in
+this closed policy, which ships with the workflow bundle. Each entry carries
+an `effect` (`idempotent` for a read, `reconcilable` for a write whose outcome
+recovery can re-establish), a `cwd` rule (`any` for a command that addresses
+its target by id or token, `workspace` for one that must run inside the
+registered lane workspace), and `used_by`, the workflows that call it.
+`planned_workflows` names workflows not shipped yet (the M4
+claim-supervision workflow); their entries must become used once they are.
+
+Two gates keep it honest. `src/cmd/planar-execute/policy.t.cpp` extracts
+every host call from the shipped workflows (`cli.*`, the `ctx.*` reads, and
+`git.*`) and fails if one resolves to no entry, if an entry is unused, or if
+an entry's `used_by` is not exactly the workflows that use it; it also
+requires every Planar entry a shipped workflow uses to pass the embedded
+engine's own allowlist, until the embedded runner is retired. `make
+cli-usage-check` fails when an entry names a verb path that is not a runnable
+leaf in the live schema catalogs. Nothing enforces the policy at run time
+until the Centurion host lands (M2/M3); the embedded engine still enforces
+its own allowlist.
+
 ### `planar-execute profile show [--profile <name>] [--json]`
 
 Print the resolved engine (with the provenance that chose it) and the

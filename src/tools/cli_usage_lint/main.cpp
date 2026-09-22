@@ -527,6 +527,67 @@ void scan_dir(catalog_t& catalog, std::vector<std::string> const& bin_names, fs:
 
 } // namespace
 
+/// @brief Lint `workflows/command-policy.json` (plan 1033 task 6707): every
+/// entry whose binary is one of the linted binaries must name a LEAF command
+/// in that binary's schema catalog, so the closed policy Centurion enforces
+/// can never list a verb path the binary does not have. Entries for other
+/// programs (`git`) are skipped: they have no catalog.
+/// @param catalog The loaded catalogs.
+/// @param bin_names The linted binaries' basenames.
+/// @param repo_root The repository root.
+/// @return One message per bad entry (empty when clean), plus the number of
+/// entries checked; or a reason the file could not be read or parsed.
+auto check_command_policy(catalog_t const& catalog, std::vector<std::string> const& bin_names, fs::path const& repo_root)
+    -> std::expected<std::pair<std::vector<std::string>, std::size_t>, std::string> {
+  constexpr std::string_view rel = "workflows/command-policy.json";
+  // A tree without a policy has nothing to check (the lint also runs over
+  // synthetic roots); this repository's own file is required to exist by
+  // src/cmd/planar-execute/policy.t.cpp.
+  std::error_code exists_ec;
+  if (!fs::exists(repo_root / rel, exists_ec)) {
+    return std::pair{std::vector<std::string>{}, std::size_t{0}};
+  }
+  std::ifstream in(repo_root / rel, std::ios::binary);
+  if (!in) {
+    return std::unexpected{std::format("{}: cannot read", rel)};
+  }
+  std::ostringstream buf;
+  buf << in.rdbuf();
+  auto const parsed = parse_json(buf.str());
+  if (!parsed.has_value()) {
+    return std::unexpected{std::format("{}: not valid JSON", rel)};
+  }
+  json_value const* entries = parsed->find("entries");
+  if (entries == nullptr || entries->kind != json_kind::array) {
+    return std::unexpected{std::format("{}: no \"entries\" array", rel)};
+  }
+  std::vector<std::string> problems;
+  std::size_t              checked = 0;
+  for (auto const& e : entries->array) {
+    json_value const* binary = e.find("binary");
+    json_value const* path   = e.find("path");
+    if (binary == nullptr || binary->kind != json_kind::string || path == nullptr || path->kind != json_kind::array) {
+      problems.push_back(std::format("{}: an entry lacks a string \"binary\" or an array \"path\"", rel));
+      continue;
+    }
+    if (std::ranges::find(bin_names, binary->string) == bin_names.end()) {
+      continue;
+    }
+    std::string command = binary->string;
+    for (auto const& token : path->array) {
+      command += " " + (token.kind == json_kind::string ? token.string : std::string{"?"});
+    }
+    ++checked;
+    auto const it = catalog.commands.find(command);
+    if (it == catalog.commands.end()) {
+      problems.push_back(std::format("{}: `{}` is not a command in the schema catalogs", rel, command));
+    } else if (!it->second.is_leaf) {
+      problems.push_back(std::format("{}: `{}` is a command group, not a runnable leaf", rel, command));
+    }
+  }
+  return std::pair{std::move(problems), checked};
+}
+
 /// @brief Entry point: validate authored CLI invocations under
 /// `<repo-root>/{agents,skills/src,docs}` against the live `<bin> schema`
 /// catalog of every `<bin-path>` given.
@@ -563,8 +624,18 @@ auto main(int argc, char** argv) -> int {
   for (auto rel : k_scan_dirs)
     scan_dir(catalog, bin_names, fs::path{repo_root} / rel, violations, files_scanned);
 
-  if (violations.empty()) {
-    std::println("cli-usage-lint: clean ({} files, {} commands)", files_scanned, catalog.commands.size());
+  auto const policy = check_command_policy(catalog, bin_names, fs::path{repo_root});
+  if (!policy.has_value()) {
+    std::println(stderr, "error: {}", policy.error());
+    return 2;
+  }
+  for (auto const& problem : policy->first) {
+    std::println("{}", problem);
+  }
+
+  if (violations.empty() && policy->first.empty()) {
+    std::println("cli-usage-lint: clean ({} files, {} commands, {} command-policy entries)", files_scanned,
+                 catalog.commands.size(), policy->second);
     return 0;
   }
 
@@ -580,6 +651,7 @@ auto main(int argc, char** argv) -> int {
       std::println("{}:{}: `{}` has no flag `{}`", v.file, v.line, v.command, v.flag);
     }
   }
-  std::println("cli-usage-lint: {} violation(s) across {} files", violations.size(), files_scanned);
+  std::println("cli-usage-lint: {} violation(s) across {} files, {} command-policy problem(s)", violations.size(), files_scanned,
+               policy->first.size());
   return 1;
 }

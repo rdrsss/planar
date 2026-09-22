@@ -264,6 +264,9 @@ distinction is load-bearing — never collapse them.
   `parse_run_args` by test). Its frozen Lua host-function manifest is a
   separate surface, still covered by unit tests, not by the catalog. Lines
   containing `cli-lint-ignore` remain the narrow schema-lint escape hatch.
+  The same pass lints `workflows/command-policy.json` (plan 1033 task 6707):
+  every entry for a Planar binary must name a runnable leaf command in that
+  binary's live catalog.
   Second, `surface_lint` checks repository-relative links, retired
   references, artifact-set agreement, read-only capabilities, and semantic
   command shapes. Feedback/recovery contract checks enforce the seven literal
