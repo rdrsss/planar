@@ -85,6 +85,8 @@ import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 import planar.engine.grouping.mtkahypar;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -240,7 +242,7 @@ TEST_CASE("closure compute is wired end-to-end and preserves its Zig JSON contra
   REQUIRE(no_seeds.code == 0);
   auto const refusal = dispatch(fx, {"closure", "compute", "2", "--json"});
   CHECK(refusal.code == 2);
-  CHECK(refusal.out.empty());
+  CHECK(refusal.out == planar::cmd::testsupport::json_error_envelope_line("closure compute", "invalid_input"));
   CHECK(refusal.err == "error: closure compute: task 2 declares no path-level touches (task_touch_paths); nothing to compute\n");
 }
 

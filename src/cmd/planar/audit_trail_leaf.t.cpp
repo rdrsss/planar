@@ -92,6 +92,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -526,11 +528,12 @@ TEST_CASE("audit trail's four argv refusals each carry their own code and wordin
   auto const missing_link = dispatch(fx, {"audit", "trail", "--link", "99"});
   CHECK(missing_link.code == 1);
   CHECK(missing_link.err == "error: external link 99 not found\n");
-  // `--json` does not wrap the refusal in an envelope.
+  // `--json` adds the additive error envelope on stdout (decision 1145,
+  // task 6844).
   auto const missing_link_json = dispatch(fx, {"audit", "trail", "--link", "99", "--json"});
   CHECK(missing_link_json.code == 1);
   CHECK(missing_link_json.err == "error: external link 99 not found\n");
-  CHECK(missing_link_json.out.empty());
+  CHECK(missing_link_json.out == planar::cmd::testsupport::json_error_envelope_line("audit trail", "not_found"));
 }
 
 TEST_CASE("audit trail does NOT validate --kind, unlike search", "[cmd][audit][trail][kind]") {

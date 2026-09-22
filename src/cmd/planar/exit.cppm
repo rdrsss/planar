@@ -241,18 +241,21 @@ export auto kind_name(domain_error_kind kind) -> std::string_view {
 }
 
 /// @brief Writes the additive `--json` error envelope (task 6844, decision
-/// D5): one line, `{"error":{"verb":"<verb>","tag":"<tag>"}}`, to
-/// `err_stream`. `tag` is `kind_name(err.kind)`.
+/// 1145, supersedes D5): one line, `{"error":{"verb":"<verb>","tag":"<tag>"}}`,
+/// to `out_stream`. `tag` is `kind_name(err.kind)`.
 ///
 /// This is ADDITIVE ONLY. Callers gate it on `--json` themselves and call
-/// it alongside `report()`, never instead of it -- `report()`'s pinned
-/// `error: <verb>: <Tag>` text and this binary's exit codes stay
-/// byte-identical either way (D5: "the pinned stays byte-identical").
+/// it alongside `report()`, never instead of it. The envelope is written
+/// to STDOUT -- the same stream a successful handler's `--json` output
+/// already uses -- so `report()`'s pinned `error: <verb>: <Tag>` stderr
+/// text and this binary's exit codes stay byte-identical either way
+/// (decision 1145: the byte-pinned stderr oracle stays intact; D5's
+/// original stderr placement collided with those pins and was reversed).
 /// @param verb The resolved verb path (e.g. `"task done"`).
 /// @param err The handler failure.
-/// @param err_stream The stream to write to.
-export auto report_json_envelope(std::string_view verb, const domain_error& err, std::ostream& err_stream) -> void {
-  err_stream << R"({"error":{"verb":)" << json_text::json_string(verb) << R"(,"tag":)"
+/// @param out_stream The stream to write to (stdout).
+export auto report_json_envelope(std::string_view verb, const domain_error& err, std::ostream& out_stream) -> void {
+  out_stream << R"({"error":{"verb":)" << json_text::json_string(verb) << R"(,"tag":)"
              << json_text::json_string(kind_name(err.kind)) << "}}\n";
 }
 

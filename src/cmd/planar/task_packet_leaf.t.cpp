@@ -293,15 +293,12 @@ TEST_CASE("task packet: an unknown task refuses instead of emitting an empty pac
   seed(fx);
 
   auto const res = dispatch(fx, {"task", "packet", "999999", "--json"});
-  // Exit 1 and NOTHING on stdout. A well-formed all-empty packet here would
-  // read as "not ready enough", which is the worse failure: it is
-  // indistinguishable from a real answer about a real task.
+  // Exit 1. The pinned stderr line stays byte-identical (task 6844,
+  // decision 1145, supersedes D5); the --json envelope lands on stdout
+  // instead, the same stream a successful `--json` packet would use.
   CHECK(res.code == 1);
-  CHECK(res.out.empty());
-  // Task 6844: the pinned line stays byte-identical; the --json envelope is
-  // an ADDITIVE second stderr line, not a replacement.
-  CHECK(res.err == "error: no task with id 999999\n"
-                   R"({"error":{"verb":"task packet","tag":"not_found"}})"
+  CHECK(res.err == "error: no task with id 999999\n");
+  CHECK(res.out == R"({"error":{"verb":"task packet","tag":"not_found"}})"
                    "\n");
 }
 
@@ -315,9 +312,8 @@ TEST_CASE("task packet: a non-integer id is refused at the argument layer", "[ta
   // wrongly" from "it isn't there". The id positional is declared as a STRING
   // precisely so the message carries the oracle's own wording.
   CHECK(res.code == 2);
-  CHECK(res.out.empty());
-  CHECK(res.err == "error: task id must be an integer, got 'abc'\n"
-                   R"({"error":{"verb":"task packet","tag":"invalid_input"}})"
+  CHECK(res.err == "error: task id must be an integer, got 'abc'\n");
+  CHECK(res.out == R"({"error":{"verb":"task packet","tag":"invalid_input"}})"
                    "\n");
 }
 
@@ -330,8 +326,8 @@ TEST_CASE("task packet: an id of zero is treated as a lookup, not a default", "[
   // 0 and acting on row 0 is the shape this port keeps closing.
   auto const res = dispatch(fx, {"task", "packet", "0", "--json"});
   CHECK(res.code == 1);
-  CHECK(res.err == "error: no task with id 0\n"
-                   R"({"error":{"verb":"task packet","tag":"not_found"}})"
+  CHECK(res.err == "error: no task with id 0\n");
+  CHECK(res.out == R"({"error":{"verb":"task packet","tag":"not_found"}})"
                    "\n");
 }
 

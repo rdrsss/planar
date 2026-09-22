@@ -128,6 +128,8 @@ import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 import planar.engine.identity;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -345,11 +347,17 @@ TEST_CASE("an unknown --scope writes BOTH stderr lines and exits 1", "[cmd][scop
     INFO("json arm: " << (json == nullptr ? "text" : json));
     auto const got = dispatch(fx, args);
     CHECK(got.code == 1);
-    // NOTHING on stdout — not a partial payload, not an empty
+    // NOTHING PARTIAL on stdout — not a partial payload, not an empty
     // `resolved_scopes` array. The JSON arm refuses BEFORE it writes its
     // opening brace, and a port that resolved the set after emitting the
-    // prefix would leave truncated JSON behind on this path.
-    CHECK(got.out.empty());
+    // prefix would leave truncated JSON behind on this path. Under
+    // `--json` (decision 1145, task 6844) the ADDITIVE error envelope is
+    // the only thing on stdout; the text arm still writes nothing there.
+    if (json != nullptr) {
+      CHECK(got.out == planar::cmd::testsupport::json_error_envelope_line("scope show", "generic_failure"));
+    } else {
+      CHECK(got.out.empty());
+    }
     CHECK(got.err == "error: resolving scope: scope slug not found: nosuchscope\nerror: SlugNotFound\n");
   }
 }

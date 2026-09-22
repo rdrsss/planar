@@ -34,6 +34,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -157,7 +159,7 @@ TEST_CASE("report refuses at exit 1 when config.toml exists but fails to parse",
   auto const result = dispatch(fx, {"report", "--json"});
   CHECK(result.code == 1);
   CHECK(result.err == "error: resolving report config\n");
-  CHECK(result.out.empty());
+  CHECK(result.out == planar::cmd::testsupport::json_error_envelope_line("report", "generic_failure"));
 }
 
 TEST_CASE("report's cli_log adapter turns a genuine query failure into cli_adapter_failed, not silence",

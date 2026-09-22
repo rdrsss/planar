@@ -112,6 +112,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -859,7 +861,7 @@ TEST_CASE("models evals cohort validation fires in the oracle's exact ORDER", "[
     auto const refused = dispatch(fx, args);
     INFO("probe: " << one.message);
     CHECK(refused.code == 2);
-    CHECK(refused.out.empty());
+    CHECK(refused.out == planar::cmd::testsupport::json_error_envelope_line("models evals", "invalid_input"));
     CHECK(refused.err == "error: " + one.message);
   }
 }

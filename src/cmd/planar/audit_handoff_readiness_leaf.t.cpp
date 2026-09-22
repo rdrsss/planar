@@ -62,6 +62,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -182,8 +184,11 @@ TEST_CASE("handoff-readiness reports the pass rate over in-flight tasks", "[cmd]
   // Two of three pass, so the DEFAULT threshold of 90 is not met and the
   // verb refuses — the payload is still written in full.
   CHECK(res.code == 1);
+  // The additive --json error envelope (decision 1145, task 6844) is
+  // APPENDED after the payload, on a second line, not substituted for it.
   CHECK(res.out == R"({"total":3,"passing":2,"failing":1,"percentage":66.67,"threshold":90,"ok":false})"
-                   "\n");
+                   "\n" +
+                       planar::cmd::testsupport::json_error_envelope_line("audit handoff-readiness", "not_found"));
   CHECK(res.err == "error: handoff readiness below threshold\n");
 }
 
@@ -201,7 +206,8 @@ TEST_CASE("the threshold gate TRUNCATES while the display ROUNDS", "[cmd][audit]
   auto const at67 = dispatch(fx, {"audit", "handoff-readiness", "--threshold", "67", "--json"});
   CHECK(at67.code == 1);
   CHECK(at67.out == R"({"total":3,"passing":2,"failing":1,"percentage":66.67,"threshold":67,"ok":false})"
-                    "\n");
+                    "\n" +
+                        planar::cmd::testsupport::json_error_envelope_line("audit handoff-readiness", "not_found"));
 
   // THE SELF-CONTRADICTORY LINE. `percentage` renders 67 and the threshold
   // is 67, and it still reports "not met" — because the comparison saw 66.

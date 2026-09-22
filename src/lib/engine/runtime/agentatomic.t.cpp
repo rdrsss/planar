@@ -1093,8 +1093,7 @@ TEST_CASE("16 threads claiming 16 DISTINCT tasks via claim_entity produce 16 dis
   REQUIRE(query_failed.load() == 0);
   REQUIRE(other.load() == 0);
   REQUIRE(scalar_int(control, "select count(*) from agent_work_claims where status = 'active'") == k_threads);
-  REQUIRE(scalar_int(control, "select count(distinct entity_id) from agent_work_claims where status = 'active'") ==
-          k_threads);
+  REQUIRE(scalar_int(control, "select count(distinct entity_id) from agent_work_claims where status = 'active'") == k_threads);
   REQUIRE(scalar_int(control, "select count(*) from tasks where status = 'doing'") == k_threads);
 }
 
@@ -1203,9 +1202,9 @@ TEST_CASE("an open immediate transaction locks out a concurrent terminal verb", 
   // `agent_error::busy` ("Busy" on the CLI, `error: complete: Busy`), never
   // to `query_failed` -- an operator seeing contention needs a different
   // signal (retry) than one seeing corruption (escalate).
-  scratch_db_path  scratch;
-  auto             first  = open_migrated(scratch);
-  auto             second = open_second(scratch);
+  scratch_db_path scratch;
+  auto            first  = open_migrated(scratch);
+  auto            second = open_second(scratch);
   // Task 6842 made connection::open set busy_timeout=5000 by default.
   // Lower `second`'s override so this test's guaranteed-busy assertion
   // below doesn't block for 5 real seconds; the property under test is the

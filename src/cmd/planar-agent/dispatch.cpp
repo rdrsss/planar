@@ -171,14 +171,15 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   auto       args  = cliapp::harvest(root);
   auto const key   = cliapp::path_key(args.path);
   auto const found = table.find(key);
-  // Task 6844: additive on stderr, gated on the same flag a successful
-  // handler would have rendered JSON output under.
+  // Task 6844 (decision 1145, supersedes D5): additive on stdout -- the
+  // same stream a successful handler's JSON output already uses -- gated
+  // on the same flag. report()'s pinned stderr text is unchanged.
   auto const want_json_envelope = cliapp::flag_bool(args, "--json");
   if (found == table.end()) {
     auto const err = error_from_body(domain_error_kind::not_implemented, "not implemented yet");
     report(err, ctx.err());
     if (want_json_envelope) {
-      report_json_envelope(key, err, ctx.err());
+      report_json_envelope(key, err, ctx.out());
     }
     return exit_code(err);
   }
@@ -187,7 +188,7 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   if (!outcome) {
     report(outcome.error(), ctx.err());
     if (want_json_envelope) {
-      report_json_envelope(key, outcome.error(), ctx.err());
+      report_json_envelope(key, outcome.error(), ctx.out());
     }
     return exit_code(outcome.error());
   }

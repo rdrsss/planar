@@ -237,9 +237,9 @@ auto looks_like_bare_tag(std::string_view s) -> bool {
 /// @return The envelope's `tag` value.
 export auto derive_tag(const domain_error& err) -> std::string {
   if (!err.rendered) {
-    auto const              sep       = err.text.rfind(": ");
-    std::string_view const  candidate = sep == std::string::npos ? std::string_view{err.text}
-                                                                  : std::string_view{err.text}.substr(sep + 2);
+    auto const             sep = err.text.rfind(": ");
+    std::string_view const candidate =
+        sep == std::string::npos ? std::string_view{err.text} : std::string_view{err.text}.substr(sep + 2);
     if (looks_like_bare_tag(candidate)) {
       return std::string{candidate};
     }
@@ -248,19 +248,22 @@ export auto derive_tag(const domain_error& err) -> std::string {
 }
 
 /// @brief Writes the additive `--json` error envelope (task 6844, decision
-/// D5): one line, `{"error":{"verb":"<verb>","tag":"<tag>"}}`, to
-/// `err_stream`. `tag` is `derive_tag(err)`.
+/// 1145, supersedes D5): one line, `{"error":{"verb":"<verb>","tag":"<tag>"}}`,
+/// to `out_stream`. `tag` is `derive_tag(err)`.
 ///
 /// This is ADDITIVE ONLY. Callers gate it on `--json` themselves and call
-/// it alongside `report()`, never instead of it -- `report()`'s pinned
-/// `error: <verb>: <Tag>` text and this binary's exit codes stay
-/// byte-identical either way.
+/// it alongside `report()`, never instead of it. The envelope is written
+/// to STDOUT -- the same stream a successful handler's `--json` output
+/// already uses -- so `report()`'s pinned `error: <verb>: <Tag>` stderr
+/// text and this binary's exit codes stay byte-identical either way
+/// (decision 1145: the byte-pinned stderr oracle stays intact; D5's
+/// original stderr placement collided with those pins and was reversed).
 /// @param verb The resolved verb path (e.g. `"claim"`, `"complete"`).
 /// @param err The handler failure.
-/// @param err_stream The stream to write to.
-export auto report_json_envelope(std::string_view verb, const domain_error& err, std::ostream& err_stream) -> void {
-  err_stream << R"({"error":{"verb":)" << json_text::json_string(verb) << R"(,"tag":)"
-             << json_text::json_string(derive_tag(err)) << "}}\n";
+/// @param out_stream The stream to write to (stdout).
+export auto report_json_envelope(std::string_view verb, const domain_error& err, std::ostream& out_stream) -> void {
+  out_stream << R"({"error":{"verb":)" << json_text::json_string(verb) << R"(,"tag":)" << json_text::json_string(derive_tag(err))
+             << "}}\n";
 }
 
 } // namespace planar::cmd::agent

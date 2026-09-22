@@ -56,6 +56,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -399,7 +401,13 @@ TEST_CASE("templates validate --json emits its envelope on STDOUT and still exit
   auto const r = dispatch(fx, {"templates", "validate", "probe", "px", "broken", "--json"});
   CHECK(r.code == 2);
   CHECK(r.out.starts_with(R"({"ok":false,"set":"probe","system":"px","kind":"broken","issues":[)"));
-  CHECK(r.out.ends_with("]}\n"));
+  // The handler's own `{"ok":false,...}` body is unchanged; the additive
+  // --json error envelope (decision 1145, task 6844) is APPENDED after it,
+  // on a second line, not substituted for it.
+  auto const envelope = planar::cmd::testsupport::json_error_envelope_line("templates validate", "invalid_input");
+  CHECK(r.out.ends_with(envelope));
+  REQUIRE(r.out.size() >= envelope.size());
+  CHECK(r.out.substr(0, r.out.size() - envelope.size()).ends_with("]}\n"));
   CHECK(r.err == "error: 2 issue(s) in probe/px/broken\n");
   cleanup(fx);
 }

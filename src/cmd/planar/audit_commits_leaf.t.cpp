@@ -73,6 +73,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -331,7 +333,7 @@ TEST_CASE("audit commits refuses --json with --shas BEFORE resolving any id", "[
 
   auto const combined = dispatch(fx, {"audit", "commits", "--json", "--shas"});
   CHECK(combined.code == 2);
-  CHECK(combined.out.empty());
+  CHECK(combined.out == planar::cmd::testsupport::json_error_envelope_line("audit commits", "invalid_input"));
   CHECK(combined.err == "error: cannot combine --json with --shas\n");
 
   // ORDERING. With a nonexistent session ALSO named, the combination still

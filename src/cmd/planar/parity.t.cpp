@@ -243,7 +243,14 @@ TEST_CASE("the no-database leaves are pinned", "[cmd][parity][cli-surface]") {
       {"wlj", {"workflow", "list", "--json"}, 0, "", ""},
       {"wll", {"workflow", "list", "--local"}, 0, "no sandbox workflows found\n", ""},
       {"wsmiss", {"workflow", "show", "nope"}, 1, "", "error: workflow 'nope' not found\n"},
-      {"wsmissj", {"workflow", "show", "nope", "--json"}, 1, "", "error: workflow 'nope' not found\n"},
+      // The additive --json error envelope (decision 1145, task 6844) is
+      // the only thing on stdout here; stderr is unchanged.
+      {"wsmissj",
+       {"workflow", "show", "nope", "--json"},
+       1,
+       R"({"error":{"verb":"workflow show","tag":"generic_failure"}})"
+       "\n",
+       "error: workflow 'nope' not found\n"},
       // A HANDLER-level refusal, not a parser one: still a true oracle
       // match after task 6123, and deliberately kept here as the control
       // showing the re-baselining is confined to parser- and help-produced
@@ -377,7 +384,14 @@ TEST_CASE("the task-6106 no-fixture leaves are pinned", "[cmd][parity][cli-surfa
       // The id parser, end to end. `1_0` and `007` reach the not-found path
       // naming the PARSED value; `_10` and the overflow are refusals.
       {"ulmiss", {"unlink", "999"}, 1, "", "error: link 999 not found\n"},
-      {"ulmissj", {"unlink", "999", "--json"}, 1, "", "error: link 999 not found\n"},
+      // The additive --json error envelope (decision 1145, task 6844) is
+      // the only thing on stdout here; stderr is unchanged.
+      {"ulmissj",
+       {"unlink", "999", "--json"},
+       1,
+       R"({"error":{"verb":"unlink","tag":"generic_failure"}})"
+       "\n",
+       "error: link 999 not found\n"},
       {"ulsep", {"unlink", "1_0"}, 1, "", "error: link 10 not found\n"},
       {"ulpad", {"unlink", "007"}, 1, "", "error: link 7 not found\n"},
       {"ulplus", {"unlink", "+12"}, 1, "", "error: link 12 not found\n"},

@@ -361,21 +361,21 @@ TEST_CASE("the handler-level refusals carry the oracle's exact messages and code
   }
 }
 
-TEST_CASE("--json adds a one-line error envelope after the pinned text; without --json there is none",
-          "[cmd][agent][handlers][6844]") {
+TEST_CASE("json flag adds a one-line error envelope on stdout; without it there is none", "[cmd][agent][handlers][6844]") {
   scratch_dir scratch;
   seed(scratch, 1);
 
-  // Task 6844: additive on stderr, and the envelope's `tag` is the SAME
+  // Task 6844 (decision 1145, supersedes D5): additive on STDOUT -- the
+  // same stream a successful `--json` result would use -- so the pinned
+  // stderr text stays byte-identical. The envelope's `tag` is the SAME
   // CamelCase Zig-style tag the pinned line already carries
   // (`derive_tag`'s primary path), not this binary's own
   // `domain_error_kind` (which would collapse `ClaimNotFound` into the
   // useless `generic_failure` bucket).
   auto const with_json = run_verb(scratch, {"complete", "--claim", "deadbeef", "--json"});
   CHECK(with_json.code == 1);
-  CHECK(with_json.out.empty());
-  CHECK(with_json.err == "error: complete: ClaimNotFound\n"
-                         R"({"error":{"verb":"complete","tag":"ClaimNotFound"}})"
+  CHECK(with_json.err == "error: complete: ClaimNotFound\n");
+  CHECK(with_json.out == R"({"error":{"verb":"complete","tag":"ClaimNotFound"}})"
                          "\n");
 
   // Negative control: the exact same failure, no --json, no envelope --
