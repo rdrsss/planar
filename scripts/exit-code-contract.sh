@@ -71,6 +71,16 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export PLANAR_DB="$tmp/db.sqlite" HOME="$tmp/home" PLANAR_WORKBENCH_ROOT="$tmp/wb"
 mkdir -p "$HOME"
+# Run from a scratch directory outside any repository. The cases invoke
+# PLANNING verbs, which refuse outright (exit 8) when the cwd is inside a
+# git worktree -- before the argument validation whose exit code is under
+# test. Run from a worktree, `planar task add` returned 8 where this gate
+# wants 2, and the gate failed on WHERE it ran rather than on what the
+# binary does.
+# Both paths are resolved to absolute FIRST: everything below runs from $tmp.
+bin_dir="$(cd "$bin_dir" && pwd)" || exit 1
+doc="$(cd "$(dirname "$doc")" && pwd)/$(basename "$doc")"
+cd "$tmp" || exit 1
 "$bin_dir/planar" init --name contract >/dev/null 2>&1 || true
 
 failures=0
