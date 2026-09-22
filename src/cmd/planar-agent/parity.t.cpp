@@ -534,6 +534,29 @@ auto token_for(const std::filesystem::path& root, int claim_id) -> std::string {
   return stmt->column_text(0);
 }
 
+/// @brief Evaluate a scalar-integer (or boolean-as-integer) query against
+/// an arena's database. Used by the dependency-roll-up scenario below to
+/// assert on row state a text/JSON transcript would make unreadable.
+/// @param root The arena root.
+/// @param sql The query; must return exactly one row, one integer column.
+/// @return The scalar, or `-1` if the query/row is absent (a REQUIRE at
+/// the call site turns that into a clear failure rather than a silent 0).
+auto scalar_int_state(const std::filesystem::path& root, std::string_view sql) -> std::int64_t {
+  auto conn = planar::db::connection::open((root / "planar.db").string());
+  if (!conn) {
+    return -1;
+  }
+  auto stmt = conn->prepare(sql);
+  if (!stmt) {
+    return -1;
+  }
+  auto stepped = stmt->step();
+  if (!stepped || *stepped != planar::db::step_result::row) {
+    return -1;
+  }
+  return stmt->column_int64(0);
+}
+
 /// @brief Substitute `@TOKEN<n>` placeholders against one arena.
 /// @param args The scripted arguments.
 /// @param root The arena root.
@@ -880,4 +903,75 @@ TEST_CASE("planar-agent parity: the two databases end in identical states", "[cm
     INFO("query: " << item.sql);
     CHECK(dump(arena.cpp_root, item.sql) == item.expected);
   }
+}
+
+TEST_CASE("planar-agent parity: pull respects an open depends-on blocker, and completion auto-unblocks a dependent",
+         "[cmd][agent][parity][claims][deps]") {
+  // End-to-end proof of both plan-1068 M2 engine fixes (tasks 6841 and
+  // 6875), walked through the REAL binaries rather than the engine layer
+  // directly — the shape a real orchestrator hits.
+  //
+  //   A = task:1  (no dependency)
+  //   B = task:2  `task block --on 1`        -- depends-on A, status BLOCKED
+  //   D = task:3  `task link --relationship depends-on` on B, priority 5
+  //               (the LOWEST of the three) -- depends-on B, status stays
+  //               TODO the whole time
+  //
+  // D's priority is the load-bearing part: a selector that ignored
+  // dependencies entirely would pick D FIRST at both pulls below, because
+  // 5 < 100 < 100. That it never does is task 6841's regression test,
+  // exercised twice — once while its blocker (B) is `blocked`, once after
+  // B is `todo` but still not `done`.
+  //
+  // Task 6875's regression is the middle step: `complete`, not
+  // `task done`, is what finishes A. Before the fix, B stayed `blocked`
+  // forever because `planar-agent complete`'s terminal transaction never
+  // ran the dependency roll-up — only `mark_done`/`mark_cancelled`/
+  // `update_task` (the `planar task ...` paths) did.
+  auto const arena = make_arena("depspull");
+  seed_arena(arena.cpp_root, 3);
+
+  (void)run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "update", "3", "--priority", "5"}, arena.cpp_root,
+                   "set-priority-d");
+  (void)run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "block", "2", "--on", "1", "--reason", "waiting"},
+                   arena.cpp_root, "block-b-on-a");
+  (void)run_pinned(cpp_planar_bin(),
+                   std::vector<std::string>{"task", "link", "3", "task:2", "--relationship", "depends-on"}, arena.cpp_root,
+                   "link-d-on-b");
+
+  // Sanity on the fixture itself, so a failure below is unambiguous about
+  // WHICH invariant broke.
+  REQUIRE(scalar_int_state(arena.cpp_root, "select status = 'blocked' from tasks where id = 2") == 1);
+  REQUIRE(scalar_int_state(arena.cpp_root, "select priority from tasks where id = 3") == 5);
+
+  // --- pull #1: D is excluded despite the lowest priority; B is not
+  //     `todo` at all; A is the only real candidate. ---
+  auto const pull1 = run_pinned(cpp_bin(), std::vector<std::string>{"pull", "1"}, arena.cpp_root, "pull-1");
+  CHECK(pull1.code == 0);
+  CHECK(normalise(pull1.out, arena.cpp_root) == "pulled task:1 claim:<TOKEN> action:1\n");
+
+  // --- complete A via the AGENT plane, not `planar task done` — the
+  //     exact path task 6875 fixes. ---
+  auto const token1 = token_for(arena.cpp_root, 1);
+  REQUIRE_FALSE(token1.empty());
+  auto const complete1 =
+      run_pinned(cpp_bin(), std::vector<std::string>{"complete", "--claim", token1, "--summary", "done"}, arena.cpp_root,
+                "complete-1");
+  CHECK(complete1.code == 0);
+  CHECK(complete1.out == "ok task:1 status:done claim_status:completed\n");
+
+  // B's roll-up: `blocked` -> `todo`, WITHOUT going through `task done`.
+  CHECK(scalar_int_state(arena.cpp_root, "select status = 'todo' from tasks where id = 2") == 1);
+  // D is untouched by the roll-up (it was never `blocked`) and its OWN
+  // blocker (B) is still not `done` — still excluded.
+  CHECK(scalar_int_state(arena.cpp_root, "select status = 'todo' from tasks where id = 3") == 1);
+
+  // --- pull #2: B is now eligible (its blocker A is `done`); D is STILL
+  //     excluded (its blocker B is `todo`, not `done`), despite still
+  //     having the lower priority. If either the 6841 exclusion or the
+  //     6875 roll-up regressed, this claims task:3 or reports `no_work`
+  //     instead of task:2. ---
+  auto const pull2 = run_pinned(cpp_bin(), std::vector<std::string>{"pull", "1"}, arena.cpp_root, "pull-2");
+  CHECK(pull2.code == 0);
+  CHECK(normalise(pull2.out, arena.cpp_root) == "pulled task:2 claim:<TOKEN> action:2\n");
 }

@@ -175,6 +175,10 @@ struct recording_policy {
   /// Observed inside `recompute_plan`, which runs INSIDE the transaction:
   /// the task status the roll-up would see.
   std::string status_seen_by_recompute;
+  /// Every blocker id `clear_unblocked_dependents` was called with (task
+  /// 6875) — a test asserts on this to prove the roll-up ran, and on its
+  /// absence to prove it did NOT run for `fail`/`release`.
+  std::vector<std::int64_t> unblock_calls;
 
   auto bind() -> atomic::task_policy {
     return atomic::task_policy{
@@ -194,6 +198,11 @@ struct recording_policy {
           if (fail_recompute) {
             return std::unexpected(aa::agent_error::query_failed);
           }
+          return {};
+        },
+        .clear_unblocked_dependents =
+            [this](planar::db::connection&, std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
+          unblock_calls.push_back(blocker_id);
           return {};
         },
     };
@@ -544,6 +553,113 @@ TEST_CASE("complete flips task and claim together and recomputes the plan inside
 
   // The guard was fed the ACTUAL current status.
   REQUIRE(policy.transitions.back() == std::pair<std::string, std::string>{"doing", "done"});
+}
+
+// ===========================================================================
+// Dependency auto-unblock on completion (task 6875)
+// ===========================================================================
+
+TEST_CASE("complete_work runs the dependency roll-up in the SAME transaction as the flip to done",
+         "[agentatomic][deps]") {
+  // `planar task done` already runs `clear_unblocked_dependents` right
+  // after its own flip to `done` (planning/task.cpp's `mark_done`).
+  // `planar-agent complete` is a second entry point onto the identical
+  // "a task just went terminal" event and used to skip the roll-up
+  // entirely, observed 2026-09-22: a dependent stayed `blocked` after its
+  // blocker completed via `planar-agent complete`. This asserts the
+  // callable is invoked, with the completed task's id, exactly once.
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy policy;
+
+  auto const pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+
+  auto const done = atomic::complete_work(conn, pulled->acquired->claim_token, "finished", policy.bind());
+  REQUIRE(done.has_value());
+
+  REQUIRE(policy.unblock_calls.size() == 1);
+  CHECK(policy.unblock_calls[0] == pulled->task_id);
+}
+
+TEST_CASE("fail_work and release_work do NOT run the dependency roll-up", "[agentatomic][deps]") {
+  // Neither verb reaches a terminal status (both return the task to
+  // `todo`), so calling the roll-up would be pure overhead at best and a
+  // misleading audit row ("unblocked: task N is terminal" on a task that
+  // is very much not terminal) at worst.
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 2);
+  recording_policy policy;
+
+  auto const first = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(first.has_value());
+  REQUIRE(atomic::fail_work(conn, first->acquired->claim_token, "broke", aa::failure_category::tool_failure, policy.bind())
+              .has_value());
+
+  auto const second = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(second.has_value());
+  REQUIRE(atomic::release_work(conn, second->acquired->claim_token, "gave up", policy.bind()).has_value());
+
+  CHECK(policy.unblock_calls.empty());
+}
+
+TEST_CASE("complete_work's roll-up ACTUALLY clears a blocked dependent, end to end", "[agentatomic][deps]") {
+  // Uses the REAL `set_status` path a production policy would run
+  // (recording_policy's lambda is a spy elsewhere, but here it must
+  // actually perform the SQL clearance for this test to mean anything) —
+  // so this fixture wires a policy whose `clear_unblocked_dependents`
+  // performs the same `blocked -> todo` update `planning::task`'s does,
+  // to prove the CALL SITE (inside the terminal transaction, after the
+  // flip) is where it matters, independent of which concrete function is
+  // bound at layer 3.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 2);
+
+  auto const blocker   = task_id_at(conn, 0);
+  auto const dependent = task_id_at(conn, 1);
+  exec(conn, std::format("update tasks set status = 'blocked' where id = {}", dependent));
+  exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                         "values ('task', {}, 'task', {}, 'depends-on')",
+                         dependent, blocker));
+
+  recording_policy policy;
+  auto const       pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+  REQUIRE(pulled->task_id == blocker); // `dependent` is excluded (task 6841) AND not `todo` anyway.
+
+  auto real_policy                       = policy.bind();
+  real_policy.clear_unblocked_dependents = [&conn](planar::db::connection&,
+                                                    std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
+    auto stmt = conn.prepare("update tasks set status = 'todo' where status = 'blocked' and id in ("
+                             "  select d.id from tasks d "
+                             "  join entity_links el on el.from_kind='task' and el.from_id=d.id "
+                             "                      and el.to_kind='task' and el.relationship='depends-on' "
+                             "  where el.to_id = ?1)");
+    if (!stmt || !stmt->bind_int64(1, blocker_id) || !stmt->step()) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    return {};
+  };
+
+  auto const done = atomic::complete_work(conn, pulled->acquired->claim_token, "finished", real_policy);
+  REQUIRE(done.has_value());
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", dependent)) == "todo");
+
+  // And now that `dependent` is `todo` with a `done` blocker, `pull`
+  // (which already excludes `blocked` and open-dependency tasks) takes it
+  // next.
+  auto const next = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(next.has_value());
+  REQUIRE_FALSE(next->no_work);
+  CHECK(next->task_id == dependent);
 }
 
 TEST_CASE("a refused terminal verb leaves NOTHING behind", "[agentatomic]") {

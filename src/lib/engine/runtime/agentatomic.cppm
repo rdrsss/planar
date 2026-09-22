@@ -80,10 +80,10 @@ using agentactivity::entity_kind;
 using agentactivity::failure_category;
 using agentactivity::locality;
 
-/// @brief The two planning-policy decisions this module must make but may
+/// @brief The three planning-policy decisions this module must make but may
 /// not own. See the file header for why these are callables.
 ///
-/// Both are REQUIRED — neither has a permissive default, deliberately. A
+/// All three are REQUIRED — none has a permissive default, deliberately. A
 /// defaulted `check_transition` that returned success would turn every
 /// status guard in this module into a no-op, and nothing in the type
 /// system would say so.
@@ -104,6 +104,19 @@ export struct task_policy {
   /// point: a plan whose last task just completed must not report its old
   /// status to the next reader.
   std::function<std::expected<void, agent_error>(db::connection& conn, std::int64_t plan_id)> recompute_plan;
+
+  /// @brief Clear `blocked` on every dependent of a task that just reached
+  /// `done` (task 6875).
+  ///
+  /// Layer 3 binds this to `planar.engine.planning.task`'s
+  /// `clear_unblocked_dependents`. Called INSIDE the terminal transaction,
+  /// immediately after the flip to `done`, for the same reason
+  /// `recompute_plan` is: `planar task done` and `planar-agent complete`
+  /// are two different entry points onto the same "a task just went
+  /// terminal" event, and a dependent left stale at `blocked` because it
+  /// happened to unblock through the agent plane rather than the
+  /// operator-facing verb is the defect this callable exists to close.
+  std::function<std::expected<void, agent_error>(db::connection& conn, std::int64_t blocker_id)> clear_unblocked_dependents;
 };
 
 // =========================================================================
