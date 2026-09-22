@@ -1152,3 +1152,24 @@ TEST_CASE("no config leaf opens the database", "[cmd][config][db]") {
   CHECK_FALSE(std::filesystem::exists(fx.db_path));
   cleanup(fx);
 }
+
+TEST_CASE("config show --json escapes values, so every line is valid JSON", "[cmd][config][show][json]") {
+  // Found by plan 1033 task 6494: `planar-execute` reads its execution
+  // profiles out of this output, and an array value rendered as JSON text
+  // (`["~/a","/b"]`) came out as `"value":"["~/a","/b"]"` — not JSON. Any
+  // operator value holding a quote or a backslash broke the line the same
+  // way; none of the shipped defaults happens to.
+  auto const fx = make_fixture("showjsonescape");
+  write_config(fx, "[defaults]\nvendor = 'a\"b\\c'\n");
+  auto const r = dispatch(fx, {"config", "show", "--json"});
+  CHECK(r.code == 0);
+  std::vector<std::string> hits;
+  for (auto const& line : lines_of(r.out)) {
+    if (line.starts_with(R"({"key":"defaults.vendor",)")) {
+      hits.push_back(line);
+    }
+  }
+  REQUIRE(hits.size() == 1);
+  CHECK(hits.front() == R"({"key":"defaults.vendor","value":"a\"b\\c","provenance":"config file"})");
+  cleanup(fx);
+}
