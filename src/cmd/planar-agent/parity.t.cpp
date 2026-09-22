@@ -906,7 +906,7 @@ TEST_CASE("planar-agent parity: the two databases end in identical states", "[cm
 }
 
 TEST_CASE("planar-agent parity: pull respects an open depends-on blocker, and completion auto-unblocks a dependent",
-         "[cmd][agent][parity][claims][deps]") {
+          "[cmd][agent][parity][claims][deps]") {
   // End-to-end proof of both plan-1068 M2 engine fixes (tasks 6841 and
   // 6875), walked through the REAL binaries rather than the engine layer
   // directly — the shape a real orchestrator hits.
@@ -935,9 +935,8 @@ TEST_CASE("planar-agent parity: pull respects an open depends-on blocker, and co
                    "set-priority-d");
   (void)run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "block", "2", "--on", "1", "--reason", "waiting"},
                    arena.cpp_root, "block-b-on-a");
-  (void)run_pinned(cpp_planar_bin(),
-                   std::vector<std::string>{"task", "link", "3", "task:2", "--relationship", "depends-on"}, arena.cpp_root,
-                   "link-d-on-b");
+  (void)run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "link", "3", "task:2", "--relationship", "depends-on"},
+                   arena.cpp_root, "link-d-on-b");
 
   // Sanity on the fixture itself, so a failure below is unambiguous about
   // WHICH invariant broke.
@@ -954,9 +953,8 @@ TEST_CASE("planar-agent parity: pull respects an open depends-on blocker, and co
   //     exact path task 6875 fixes. ---
   auto const token1 = token_for(arena.cpp_root, 1);
   REQUIRE_FALSE(token1.empty());
-  auto const complete1 =
-      run_pinned(cpp_bin(), std::vector<std::string>{"complete", "--claim", token1, "--summary", "done"}, arena.cpp_root,
-                "complete-1");
+  auto const complete1 = run_pinned(cpp_bin(), std::vector<std::string>{"complete", "--claim", token1, "--summary", "done"},
+                                    arena.cpp_root, "complete-1");
   CHECK(complete1.code == 0);
   CHECK(complete1.out == "ok task:1 status:done claim_status:completed\n");
 

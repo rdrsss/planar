@@ -200,8 +200,8 @@ struct recording_policy {
           }
           return {};
         },
-        .clear_unblocked_dependents =
-            [this](planar::db::connection&, std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
+        .clear_unblocked_dependents = [this](planar::db::connection&,
+                                             std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
           unblock_calls.push_back(blocker_id);
           return {};
         },
@@ -428,8 +428,7 @@ TEST_CASE("peek runs pull's selector and writes nothing at all", "[agentatomic]"
 // Dependency exclusion (task 6841 / decision D6, closes task 5535)
 // ===========================================================================
 
-TEST_CASE("peek_next excludes a task with an outbound depends-on edge to a non-terminal blocker",
-         "[agentatomic][deps]") {
+TEST_CASE("peek_next excludes a task with an outbound depends-on edge to a non-terminal blocker", "[agentatomic][deps]") {
   // A `depends-on` edge can exist on a `todo` task WITHOUT the task itself
   // being `blocked` — `task block --on` is not the only writer of that
   // edge (the generic `link` verb is another). So a selector that only
@@ -486,8 +485,7 @@ TEST_CASE("peek_next excludes a task with an outbound depends-on edge to a non-t
   }
 }
 
-TEST_CASE("peek_next and pull_next agree when a depends-on edge excludes the lower-priority candidate",
-         "[agentatomic][deps]") {
+TEST_CASE("peek_next and pull_next agree when a depends-on edge excludes the lower-priority candidate", "[agentatomic][deps]") {
   // Proves two things at once: (1) the exclusion is not merely an
   // artifact of priority ordering — `dependent` is given the LOWEST
   // priority, so a selector ignoring the dependency would wrongly pick it
@@ -559,8 +557,7 @@ TEST_CASE("complete flips task and claim together and recomputes the plan inside
 // Dependency auto-unblock on completion (task 6875)
 // ===========================================================================
 
-TEST_CASE("complete_work runs the dependency roll-up in the SAME transaction as the flip to done",
-         "[agentatomic][deps]") {
+TEST_CASE("complete_work runs the dependency roll-up in the SAME transaction as the flip to done", "[agentatomic][deps]") {
   // `planar task done` already runs `clear_unblocked_dependents` right
   // after its own flip to `done` (planning/task.cpp's `mark_done`).
   // `planar-agent complete` is a second entry point onto the identical
@@ -636,7 +633,7 @@ TEST_CASE("complete_work's roll-up ACTUALLY clears a blocked dependent, end to e
 
   auto real_policy                       = policy.bind();
   real_policy.clear_unblocked_dependents = [&conn](planar::db::connection&,
-                                                    std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
+                                                   std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
     auto stmt = conn.prepare("update tasks set status = 'todo' where status = 'blocked' and id in ("
                              "  select d.id from tasks d "
                              "  join entity_links el on el.from_kind='task' and el.from_id=d.id "

@@ -395,36 +395,12 @@ auto is_open(task_status s) -> bool {
 
 } // namespace
 
-/// @brief Clear `blocked` on every dependent of `blocker_id` whose blocker
-/// set is now fully terminal.
-///
-/// Called after a task reaches a terminal status. A dependent moves
-/// `blocked` -> `todo` ONLY when no incomplete blocker remains -- partial
-/// clearance (one of three blockers done) is deliberately a no-op, per
-/// decision 1122.
-///
-/// `blocked` is DERIVED state here, not operator intent: it is set by
-/// `task block <task> --on <blocker>`, which requires naming a blocker, so
-/// the status is defined by the `depends-on` edge. There is no verb that
-/// parks a task as `blocked` for reasons unrelated to a dependency, so
-/// there is no operator intent for this to override -- leaving the row at
-/// `blocked` after its last blocker completes is simply stale.
-///
-/// Cross-entity auto-transition is not novel here: `recompute_plan` below
-/// already transitions a task's parent PLAN from seven call sites in this
-/// file.
-///
-/// EXPORTED (task 6875): the `planar-agent complete` terminal path
-/// (`planar.engine.runtime.agentatomic`) needs this same roll-up when a
-/// claim completes a task to `done` -- that path is layer 2 same as this
-/// module and cannot import it directly (D15/D18), so it is injected as a
-/// `task_policy` callable and layer 3
-/// (`planar.cmd.planar_agent.policy::task_policy()`) binds it to this
-/// function, exactly as it already does for `check_transition` and
-/// `recompute_plan`.
-/// @param conn An open, migrated database connection.
-/// @param blocker_id The task that just became terminal.
-/// @return Success, or the first query failure.
+// Contract documented on the `export` declaration in task.cppm (decision
+// 1122; exported at task 6875 so `planar.cmd.planar_agent.policy` can bind
+// it into `planar.engine.runtime.agentatomic::task_policy`). Not repeated
+// here as a `///` block: Doxygen merges the declaration's and the
+// definition's documentation comments onto the same entity, and a second
+// `@param conn` here reads as a duplicate rather than a repetition.
 auto clear_unblocked_dependents(db::connection& conn, std::int64_t blocker_id) -> std::expected<void, task_error> {
   // Dependents still at `blocked` that have NO remaining non-terminal
   // blocker. The `not exists` clause is the all-clear rule: a single
