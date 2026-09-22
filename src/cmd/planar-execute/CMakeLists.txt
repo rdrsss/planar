@@ -101,6 +101,7 @@ planar_binary(planar_execute
     profile.cppm
     host.cppm
     compat.cppm
+    runflow.cppm
   SOURCES
     cli.cpp
     catalog.cpp
@@ -109,7 +110,8 @@ planar_binary(planar_execute
     profile.cpp
     host.cpp
     compat.cpp
-    client_probe.cpp
+    runflow.cpp
+    client_bridge.cpp
   DEPENDS
     cliapp
     engine_execute
@@ -126,7 +128,7 @@ target_link_libraries(planar_cmd_planar_execute PRIVATE glaze::glaze)
 # edge cmake/architecture.cmake's Centurion boundary exists to police: rule 1
 # refuses any other centurion_* target, rule 2 refuses a non-execute binary
 # reaching this one, and rule 3 grades the client's own closure for execution
-# components. `client_probe.cpp` is the only translation unit that uses it.
+# components. `client_bridge.cpp` is the only translation unit that uses it.
 target_link_libraries(planar_cmd_planar_execute PRIVATE centurion::client)
 
 if(TARGET planar_cmd_planar_execute_tests)
