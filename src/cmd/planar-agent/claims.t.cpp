@@ -361,6 +361,32 @@ TEST_CASE("the handler-level refusals carry the oracle's exact messages and code
   }
 }
 
+TEST_CASE("--json adds a one-line error envelope after the pinned text; without --json there is none",
+          "[cmd][agent][handlers][6844]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+
+  // Task 6844: additive on stderr, and the envelope's `tag` is the SAME
+  // CamelCase Zig-style tag the pinned line already carries
+  // (`derive_tag`'s primary path), not this binary's own
+  // `domain_error_kind` (which would collapse `ClaimNotFound` into the
+  // useless `generic_failure` bucket).
+  auto const with_json = run_verb(scratch, {"complete", "--claim", "deadbeef", "--json"});
+  CHECK(with_json.code == 1);
+  CHECK(with_json.out.empty());
+  CHECK(with_json.err == "error: complete: ClaimNotFound\n"
+                         R"({"error":{"verb":"complete","tag":"ClaimNotFound"}})"
+                         "\n");
+
+  // Negative control: the exact same failure, no --json, no envelope --
+  // the pinned line is untouched (this row is already covered in the
+  // table-driven case above; repeated here so the pair sits together).
+  auto const without_json = run_verb(scratch, {"complete", "--claim", "deadbeef"});
+  CHECK(without_json.code == 1);
+  CHECK(without_json.out.empty());
+  CHECK(without_json.err == "error: complete: ClaimNotFound\n");
+}
+
 // NOTE ON THE NAME: it deliberately does not begin with `--`.
 // `catch_discover_tests` registers each Catch2 case with CTest by passing
 // its NAME as an argument, and a name starting with `--` is parsed as a

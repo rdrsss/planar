@@ -58,6 +58,7 @@ module;
 export module planar.cmd.planar_agent.exit;
 
 import std;
+import planar.json_text;
 
 namespace planar::cmd::agent {
 
@@ -168,6 +169,98 @@ export auto report(const domain_error& err, std::ostream& err_stream) -> void {
     return;
   }
   err_stream << "error: " << err.text << '\n';
+}
+
+/// @brief `kind`'s own enumerator spelling (task 6844), used as the JSON
+/// error envelope's `tag` when `err.text` does not itself end in a bare
+/// CamelCase tag (see `derive_tag`).
+/// @param kind The domain-error kind.
+/// @return The kind's snake_case name.
+export auto kind_name(domain_error_kind kind) -> std::string_view {
+  switch (kind) {
+  case domain_error_kind::generic_failure:
+    return "generic_failure";
+  case domain_error_kind::not_found:
+    return "not_found";
+  case domain_error_kind::invalid_input:
+    return "invalid_input";
+  case domain_error_kind::invalid_entity_ref:
+    return "invalid_entity_ref";
+  case domain_error_kind::parse_error:
+    return "parse_error";
+  case domain_error_kind::sync_conflict:
+    return "sync_conflict";
+  case domain_error_kind::scope_mismatch:
+    return "scope_mismatch";
+  case domain_error_kind::slug_conflict:
+    return "slug_conflict";
+  case domain_error_kind::already_exists:
+    return "already_exists";
+  case domain_error_kind::schema_version_ahead:
+    return "schema_version_ahead";
+  case domain_error_kind::schema_version_behind:
+    return "schema_version_behind";
+  case domain_error_kind::not_implemented:
+    return "not_implemented";
+  }
+  return "generic_failure";
+}
+
+namespace {
+
+/// @brief True when every character of `s` is ASCII alphanumeric and the
+/// first is a letter -- the shape of a bare Zig-style error tag
+/// (`Busy`, `ClaimNotActive`, `QueryFailed`, `SchemaVersionBehind`).
+auto looks_like_bare_tag(std::string_view s) -> bool {
+  if (s.empty() || (std::isalpha(static_cast<unsigned char>(s.front())) == 0)) {
+    return false;
+  }
+  return std::ranges::all_of(s, [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0; });
+}
+
+} // namespace
+
+/// @brief The JSON error envelope's `tag` for this binary (task 6844).
+///
+/// Almost every handler failure here already ends its (unrendered) text in
+/// the exact CamelCase Zig-style tag the pinned `error: <verb>: <Tag>` line
+/// prints (`handlers.support`'s `verb_error`/`session_error_message`, the
+/// schema-handshake bodies in `context.cpp`, and more) -- reusing that tag
+/// is strictly MORE useful to a caller than this binary's own
+/// `domain_error_kind`, which collapses nearly every one of them into the
+/// single `generic_failure` bucket (task 6843's whole point was giving
+/// `Busy` its own distinct tag; an envelope that reported `generic_failure`
+/// for it would erase that distinction again). A body that is not in that
+/// shape (prose, or containing punctuation/spaces after the last `: `)
+/// falls back to `kind_name(err.kind)`.
+/// @param err The handler failure.
+/// @return The envelope's `tag` value.
+export auto derive_tag(const domain_error& err) -> std::string {
+  if (!err.rendered) {
+    auto const              sep       = err.text.rfind(": ");
+    std::string_view const  candidate = sep == std::string::npos ? std::string_view{err.text}
+                                                                  : std::string_view{err.text}.substr(sep + 2);
+    if (looks_like_bare_tag(candidate)) {
+      return std::string{candidate};
+    }
+  }
+  return std::string{kind_name(err.kind)};
+}
+
+/// @brief Writes the additive `--json` error envelope (task 6844, decision
+/// D5): one line, `{"error":{"verb":"<verb>","tag":"<tag>"}}`, to
+/// `err_stream`. `tag` is `derive_tag(err)`.
+///
+/// This is ADDITIVE ONLY. Callers gate it on `--json` themselves and call
+/// it alongside `report()`, never instead of it -- `report()`'s pinned
+/// `error: <verb>: <Tag>` text and this binary's exit codes stay
+/// byte-identical either way.
+/// @param verb The resolved verb path (e.g. `"claim"`, `"complete"`).
+/// @param err The handler failure.
+/// @param err_stream The stream to write to.
+export auto report_json_envelope(std::string_view verb, const domain_error& err, std::ostream& err_stream) -> void {
+  err_stream << R"({"error":{"verb":)" << json_text::json_string(verb) << R"(,"tag":)"
+             << json_text::json_string(derive_tag(err)) << "}}\n";
 }
 
 } // namespace planar::cmd::agent

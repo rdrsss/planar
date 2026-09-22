@@ -707,15 +707,25 @@ auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> r
   auto       args  = cliapp::harvest(root);
   auto const key   = cliapp::path_key(args.path);
   auto const found = table.find(key);
+  // Task 6844: the --json error envelope is additive on stderr, gated on
+  // the SAME flag a successful handler would have rendered JSON output
+  // under. Checked once here rather than per report() call site.
+  auto const want_json_envelope = cliapp::flag_bool(args, "--json");
   if (found == table.end()) {
     auto const err = error_from_body(domain_error_kind::not_implemented, "not implemented yet");
     report(err, ctx.err());
+    if (want_json_envelope) {
+      report_json_envelope(key, err, ctx.err());
+    }
     return run_outcome{.code = exit_code(err), .kind = err.kind};
   }
 
   auto const outcome = found->second(ctx, args);
   if (!outcome) {
     report(outcome.error(), ctx.err());
+    if (want_json_envelope) {
+      report_json_envelope(key, outcome.error(), ctx.err());
+    }
     return run_outcome{.code = exit_code(outcome.error()), .kind = outcome.error().kind};
   }
   return run_outcome{.code = exit_success};

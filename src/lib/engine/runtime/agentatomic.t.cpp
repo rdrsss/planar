@@ -1032,6 +1032,72 @@ TEST_CASE("racing threads pulling one plan never double-claim a task", "[agentat
   REQUIRE(scalar_int(control, "select count(*) from tasks where status = 'doing'") == k_tasks);
 }
 
+TEST_CASE("16 threads claiming 16 DISTINCT tasks via claim_entity produce 16 distinct tokens, "
+          "and never see Busy or QueryFailed",
+          "[agentatomic][concurrency][6842][6843]") {
+  // The direct engine equivalent of "16 concurrent `planar-agent claim
+  // --entity task:<id>` on 16 distinct tasks" from the same host process --
+  // this is what tasks 6842 (shared WAL + busy_timeout) and 6843 (Busy vs
+  // QueryFailed classification) are FOR. Unlike the single-entity race
+  // above, no two threads compete for the same row here: each of the 16
+  // gets its own task id, so a correct implementation should see 16 clean
+  // winners and NOTHING else -- no contention errors of any kind, busy or
+  // otherwise. `busy_timeout=5000` (now set by `connection::open` itself,
+  // task 6842) is what turns a transient `BEGIN IMMEDIATE` collision on
+  // SQLite's own file-level locks (unrelated rows, same file) into a short
+  // wait instead of an immediate failure.
+  constexpr int k_threads = 16;
+
+  scratch_db_path scratch;
+  auto            control = open_migrated(scratch);
+  auto const      fx      = seed(control, k_threads);
+
+  std::latch                gate{k_threads};
+  std::atomic<int>          winners{0};
+  std::atomic<int>          busy{0};
+  std::atomic<int>          query_failed{0};
+  std::atomic<int>          other{0};
+  std::vector<std::jthread> workers;
+  workers.reserve(k_threads);
+
+  for (int i = 0; i < k_threads; ++i) {
+    workers.emplace_back([&, i] {
+      auto conn = planar::db::connection::open(scratch.path_.string());
+      if (!conn) {
+        other.fetch_add(1);
+        return;
+      }
+      recording_policy policy;
+      auto const       task = task_id_at(*conn, i);
+      gate.arrive_and_wait();
+      auto const held = atomic::claim_entity(*conn, basic_args(fx, task), true, policy.bind());
+      if (held) {
+        winners.fetch_add(1);
+        return;
+      }
+      if (held.error() == aa::agent_error::busy) {
+        busy.fetch_add(1);
+      } else if (held.error() == aa::agent_error::query_failed) {
+        query_failed.fetch_add(1);
+      } else {
+        other.fetch_add(1);
+      }
+    });
+  }
+  workers.clear();
+
+  INFO("winners=" << winners.load() << " busy=" << busy.load() << " query_failed=" << query_failed.load()
+                  << " other=" << other.load());
+  REQUIRE(winners.load() == k_threads);
+  REQUIRE(busy.load() == 0);
+  REQUIRE(query_failed.load() == 0);
+  REQUIRE(other.load() == 0);
+  REQUIRE(scalar_int(control, "select count(*) from agent_work_claims where status = 'active'") == k_threads);
+  REQUIRE(scalar_int(control, "select count(distinct entity_id) from agent_work_claims where status = 'active'") ==
+          k_threads);
+  REQUIRE(scalar_int(control, "select count(*) from tasks where status = 'doing'") == k_threads);
+}
+
 TEST_CASE("racing threads terminalising one claim produce exactly one winner", "[agentatomic][concurrency]") {
   // A terminal verb interleaved with other terminal verbs, raced for real.
   // Eight threads all try to end the same claim with DIFFERENT verbs, so a

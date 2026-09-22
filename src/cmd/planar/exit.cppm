@@ -66,6 +66,7 @@ module;
 export module planar.cmd.planar.exit;
 
 import std;
+import planar.json_text;
 
 namespace planar::cmd {
 
@@ -198,6 +199,61 @@ export auto report(const domain_error& err, std::ostream& err_stream) -> void {
     return;
   }
   err_stream << "error: " << err.text << '\n';
+}
+
+/// @brief `kind`'s own enumerator spelling (task 6844), e.g. `busy_source`,
+/// `not_found`. This is the JSON error envelope's `tag` for this binary --
+/// unlike `category_for` (`cli_log.cppm`), which buckets kinds together for
+/// Explorer's retry UI, every `domain_error_kind` gets its own distinct
+/// name here.
+/// @param kind The domain-error kind.
+/// @return The kind's snake_case name.
+export auto kind_name(domain_error_kind kind) -> std::string_view {
+  switch (kind) {
+  case domain_error_kind::generic_failure:
+    return "generic_failure";
+  case domain_error_kind::busy_source:
+    return "busy_source";
+  case domain_error_kind::not_found:
+    return "not_found";
+  case domain_error_kind::invalid_input:
+    return "invalid_input";
+  case domain_error_kind::invalid_entity_ref:
+    return "invalid_entity_ref";
+  case domain_error_kind::parse_error:
+    return "parse_error";
+  case domain_error_kind::sync_conflict:
+    return "sync_conflict";
+  case domain_error_kind::scope_mismatch:
+    return "scope_mismatch";
+  case domain_error_kind::slug_conflict:
+    return "slug_conflict";
+  case domain_error_kind::already_exists:
+    return "already_exists";
+  case domain_error_kind::schema_version_ahead:
+    return "schema_version_ahead";
+  case domain_error_kind::schema_version_behind:
+    return "schema_version_behind";
+  case domain_error_kind::not_implemented:
+    return "not_implemented";
+  }
+  return "generic_failure";
+}
+
+/// @brief Writes the additive `--json` error envelope (task 6844, decision
+/// D5): one line, `{"error":{"verb":"<verb>","tag":"<tag>"}}`, to
+/// `err_stream`. `tag` is `kind_name(err.kind)`.
+///
+/// This is ADDITIVE ONLY. Callers gate it on `--json` themselves and call
+/// it alongside `report()`, never instead of it -- `report()`'s pinned
+/// `error: <verb>: <Tag>` text and this binary's exit codes stay
+/// byte-identical either way (D5: "the pinned stays byte-identical").
+/// @param verb The resolved verb path (e.g. `"task done"`).
+/// @param err The handler failure.
+/// @param err_stream The stream to write to.
+export auto report_json_envelope(std::string_view verb, const domain_error& err, std::ostream& err_stream) -> void {
+  err_stream << R"({"error":{"verb":)" << json_text::json_string(verb) << R"(,"tag":)"
+             << json_text::json_string(kind_name(err.kind)) << "}}\n";
 }
 
 } // namespace planar::cmd
