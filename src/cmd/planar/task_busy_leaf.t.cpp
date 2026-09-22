@@ -98,7 +98,7 @@ TEST_CASE("planar task update reports Busy / busy_source, not QueryFailed / gene
   auto const fx = make_fixture("update");
   REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
 
-  auto       conn = open_db(fx);
+  auto       conn    = open_db(fx);
   auto const created = planar::engine::planning::create_task(
       conn, planar::engine::planning::task_create_args{.title = "Contended", .scope = "global"});
   REQUIRE(created.has_value());

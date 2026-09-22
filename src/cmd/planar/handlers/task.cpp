@@ -85,8 +85,8 @@ auto zig_error_name(pl::task_error err) -> std::string_view {
 /// @return The mapped failure.
 auto map_task_error(pl::task_error err) -> domain_error {
   auto const kind = err == pl::task_error::slug_conflict ? domain_error_kind::slug_conflict
-                     : err == pl::task_error::busy_source ? domain_error_kind::busy_source
-                                                           : domain_error_kind::generic_failure;
+                    : err == pl::task_error::busy_source ? domain_error_kind::busy_source
+                                                         : domain_error_kind::generic_failure;
   return error_from_body(kind, std::format("task add: {}", zig_error_name(err)));
 }
 
@@ -97,8 +97,8 @@ auto map_task_error(pl::task_error err) -> domain_error {
 /// @return The mapped failure.
 auto map_task_error_for(pl::task_error err, std::string_view verb) -> domain_error {
   auto const kind = err == pl::task_error::slug_conflict ? domain_error_kind::slug_conflict
-                     : err == pl::task_error::busy_source ? domain_error_kind::busy_source
-                                                           : domain_error_kind::generic_failure;
+                    : err == pl::task_error::busy_source ? domain_error_kind::busy_source
+                                                         : domain_error_kind::generic_failure;
   return error_from_body(kind, std::format("{}: {}", verb, zig_error_name(err)));
 }
 

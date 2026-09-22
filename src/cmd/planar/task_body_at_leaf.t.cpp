@@ -126,7 +126,7 @@ TEST_CASE("task add --body @missing refuses at exit 2 and creates no row", "[cmd
   CHECK(refused.code == 2);
   CHECK(refused.err == "error: read --body: FileNotFound\n");
 
-  auto conn      = open_db(fx);
+  auto conn       = open_db(fx);
   auto count_stmt = conn.prepare("select count(*) from tasks");
   REQUIRE(count_stmt.has_value());
   REQUIRE(count_stmt->step().has_value());
@@ -145,7 +145,7 @@ TEST_CASE("task add/update --body @realfile reads the file's bytes, not the lite
   auto const abs = path.string();
 
   REQUIRE(dispatch(fx, {"task", "add", "T", "--scope", "global", "--body", "@" + abs, "--json"}).code == 0);
-  auto conn = open_db(fx);
+  auto       conn         = open_db(fx);
   auto const created_body = task_body(conn, 1);
   REQUIRE(created_body.has_value());
   CHECK(*created_body == "file contents, with an @ sign in it too");
