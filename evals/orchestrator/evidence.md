@@ -8,15 +8,18 @@ stronger claims of another tier.
 
 | Surface | Invocation | Uses an LLM | Evidence produced | Does not prove |
 |---|---|---:|---|---|
-| Fast CI | `make eval-orchestrator-fast` | No | Python harness unit tests, seeded grader failures, case decoding, source contracts, cross-role coherence | Stack installation, rendered projections, Planar integration, or model behavior |
-| Full Stack CI | Pinned install, parity check, and `make eval` | No | Renderability, installed projection parity, contracts, controlled fixture execution, Planar post-state and fixture-content grading | That an LLM will choose or execute the workflow |
-| Live preview | `--live --vendor … --surface …` | Yes | One installed host reaches the Phase 3 preview gate with task identity, tier/model routing, and no observed pre-gate mutation | Post-confirmation delivery, broad prompt robustness, or another vendor/model |
-| Controlled lifecycle | `--lifecycle --vendor … --surface agent` | Yes | One installed orchestrator drives controlled specialists through asserted event ordering and post-state | Production specialist quality, arbitrary repositories, external sync, documentation, propagation, or archive behavior |
+| Fast contract lane | `make eval-orchestrator-fast` (composed into `make eval-contracts`, and so into `make test-all`) | No | Python harness unit tests, seeded grader failures, case decoding, source contracts, cross-role coherence | Stack installation, rendered projections, Planar integration, or model behavior |
+| Installed contract lane | `make eval-installed`, then `make eval` | No | Renderability, installed projection parity, contracts, controlled fixture execution, Planar post-state and fixture-content grading | That an LLM will choose or execute the workflow |
+| Live preview | `make eval-orchestrator-live` (operator-invoked only; not composed into `make eval` or `make test-all`) | Yes | One installed host reaches the Phase 3 preview gate with task identity, tier/model routing, and no observed pre-gate mutation | Post-confirmation delivery, broad prompt robustness, or another vendor/model |
+| Controlled lifecycle | `make eval-orchestrator-lifecycle` (operator-invoked only; not composed into `make eval` or `make test-all`) | Yes | One installed orchestrator drives controlled specialists through asserted event ordering and post-state | Production specialist quality, arbitrary repositories, external sync, documentation, propagation, or archive behavior |
 | Artifact regrade | `--grade-artifacts …` | No | Current graders still accept the retained observations and machine state | Artifact authenticity, a fresh provider run, or behavior not recorded in the artifact set |
 
 The deterministic lanes invoke no provider. Codex and Claude are the only
 live harness vendors. Copilot projections are rendered and contract-checked,
-but Copilot is not invoked as a live host.
+but Copilot is not invoked as a live host. No result of the live or
+controlled-lifecycle lanes is retained in this repository today; results
+will eventually be recorded in the results ledger, `evals/RESULTS.md`
+(planned).
 
 ## Concern coverage
 

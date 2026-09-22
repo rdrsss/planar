@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1725,6 +1726,72 @@ class LiveInvocationGrantTest(unittest.TestCase):
         arg = harness.CLAUDE_LIVE_ALLOWED_TOOLS_ARG
         self.assertTrue(arg.startswith("--allowedTools="))
         self.assertNotIn(" ", arg)
+
+
+class DocsHonestyTest(unittest.TestCase):
+    """The eval docs claim only gated targets (task 6834, spec § C6).
+
+    `evals/README.md` and `evals/orchestrator/evidence.md` must not claim an
+    unowned cadence (CI, nightly, "Full Stack"). Every such term may appear
+    only inside a line that names a `make <target>` this repo's Makefile
+    actually defines, or that references the results ledger
+    (`evals/RESULTS.md`). There is no CI configuration in this repository
+    (`.github/` does not exist) and `evals/RESULTS.md` does not exist yet
+    (planned for a later milestone), so a bare cadence claim with neither
+    anchor is a documentation-honesty violation.
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+    CHECKED_FILES = (
+        REPO_ROOT / "evals" / "README.md",
+        REPO_ROOT / "evals" / "orchestrator" / "evidence.md",
+    )
+    TERMS = ("CI", "nightly", "Full Stack")
+    RESULTS_LEDGER = "evals/RESULTS.md"
+
+    @classmethod
+    def _makefile_targets(cls) -> set[str]:
+        makefile_text = (cls.REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        return set(re.findall(r"(?m)^([A-Za-z0-9_.-]+):", makefile_text))
+
+    @staticmethod
+    def _line_matches_term(line: str, term: str) -> bool:
+        if term == "CI":
+            return re.search(r"\bCI\b", line) is not None
+        return term in line
+
+    def test_cadence_claims_name_a_gated_target_or_the_results_ledger(self) -> None:
+        targets = self._makefile_targets()
+        target_pattern = re.compile(r"`make ([A-Za-z0-9_.-]+)")
+        violations: list[str] = []
+
+        for path in self.CHECKED_FILES:
+            text = path.read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                for term in self.TERMS:
+                    if not self._line_matches_term(line, term):
+                        continue
+                    if self.RESULTS_LEDGER in line:
+                        continue
+                    named_targets = target_pattern.findall(line)
+                    if any(t in targets for t in named_targets):
+                        continue
+                    violations.append(
+                        f"{path.relative_to(self.REPO_ROOT)}:{lineno}: "
+                        f"claims {term!r} without naming a Makefile target "
+                        f"or {self.RESULTS_LEDGER}: {line.strip()!r}"
+                    )
+
+        self.assertEqual(
+            violations,
+            [],
+            "cadence claim not anchored to a gated target or the results "
+            "ledger:\n" + "\n".join(violations),
+        )
+
+    def test_no_ci_configuration_exists(self) -> None:
+        """Guards the premise: if CI ever lands, this test (and the docs) must change."""
+        self.assertFalse((self.REPO_ROOT / ".github").exists())
 
 
 if __name__ == "__main__":
