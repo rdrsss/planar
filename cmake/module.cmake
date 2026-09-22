@@ -217,7 +217,7 @@ endfunction()
 #     point so this function knows which source to drop; it is also
 #     compiled into the executable, so callers list it only once.
 #
-# A cmd binary with *.t.cpp but no MAIN is a configure-time FATAL rather
+# A cmd binary with *.t.cpp in its tree but no MAIN is a configure-time FATAL rather
 # than a silent skip: without knowing the entry point this function cannot
 # build a Catch2 binary at all, and silently not building one is the exact
 # failure mode this lane exists to close.
@@ -306,7 +306,8 @@ function(planar_binary name)
   set_property(GLOBAL APPEND PROPERTY PLANAR_MODULE_TARGETS "${_target}")
 
   # --- test binary ------------------------------------------------------
-  file(GLOB _test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.t.cpp")
+  # Command-family tests live beside their handlers in nested directories.
+  file(GLOB_RECURSE _test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.t.cpp")
   if(NOT _test_sources)
     return()
   endif()

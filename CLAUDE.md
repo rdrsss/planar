@@ -299,7 +299,7 @@ suite; the harness is `src/cmd/parity_harness.hpp`.
 
 Two case styles co-exist; both earn their keep:
 
-- **Focused per-leaf tests** (`src/cmd/planar/*_leaves.t.cpp`,
+- **Focused per-leaf tests** (`src/cmd/planar/handlers/<family>/*_leaves.t.cpp`,
   `*_leaf.t.cpp`) pin one verb's contract — flags, JSON shape, exit code,
   error wording. Most call the binary's own `dispatch(fx, {"verb", "sub"})`
   in-process, which is cheap and precise; they reach for `run_pinned` when

@@ -871,7 +871,7 @@ installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
 stages skills, agents, workflows, and vendor wiring under `~/.planar`, by
 shelling the `scriptorium` binary after the CMake build.
 
-The black-box lane follows two stylistic conventions documented in [`CLAUDE.md` § Black-box CLI test methodology](../CLAUDE.md#black-box-cli-test-methodology): focused per-leaf tests (`src/cmd/planar/*_leaves.t.cpp`) pin one verb's contract, and cross-process scenario tests (`src/cmd/planar/cross_process.t.cpp`, `src/cmd/*/parity.t.cpp`) walk realistic operator workflows end-to-end through many verbs and several binaries.
+The black-box lane follows two stylistic conventions documented in [`CLAUDE.md` § Black-box CLI test methodology](../CLAUDE.md#black-box-cli-test-methodology): focused per-leaf tests live beside their command family under `src/cmd/planar/handlers/<family>/` and pin that verb's contract; tests spanning several families remain beside the binary entry point. Cross-process scenario tests (`src/cmd/planar/cross_process.t.cpp`, `src/cmd/*/parity.t.cpp`) walk realistic operator workflows end-to-end through many verbs and several binaries. `planar_binary()` discovers nested `*.t.cpp` files so colocated tests remain in the binary's test target.
 
 ---
 
