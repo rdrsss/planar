@@ -239,6 +239,8 @@ Revived in plan 633, `planar-execute` is a deterministic, spawn-free Lua workflo
 
 Its source tree lives under `src/cmd/planar-execute/` (separate `addExecutable` entry in `build.zig`); it links the Lua 5.5 C library (vendored) but does not link `src/db/` or `vendor/sqlite/`. See [`docs/concepts.md` § Deterministic workflow engine](concepts.md#deterministic-workflow-engine) for the concept overview and host-surface reference.
 
+> **Being reversed deliberately — decision 1007, plan 1033.** Centurion becomes Planar's workflow engine and harness, and `planar-execute` becomes its configuration, bootstrap and client entry point: it stops executing workflows locally and never opens Centurion's database. The spawn-free property is not dropped — supervision, leases, cancellation fencing and budgets move to Centurion as designed responsibilities, with exactly one supervisor per Planar claim. Planar itself still does not shell out to provider CLIs. Until plan 1033's cutover milestone lands, this section describes the shipped binary: the embedded runner is preserved and the guards and boundary tests that pin it are unchanged.
+
 ### Live tail wake abstraction
 
 The `planar-watch <verb> --follow` family runs a poll loop: take an
