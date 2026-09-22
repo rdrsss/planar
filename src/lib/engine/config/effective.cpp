@@ -13,6 +13,7 @@ module planar.engine.config.effective;
 
 import std;
 import planar.engine.config.toml;
+import planar.json_text;
 
 namespace planar::engine::config {
 
@@ -281,6 +282,51 @@ void resolve_models_routing_roles(const env_view& env, const toml_map& file_map,
   }
 }
 
+/// @brief Surface every `execute.profiles.<name>.<key>` the config FILE sets,
+/// verbatim, so `planar-execute` can read its execution profiles through
+/// `planar config show --json` (plan 1033 task 6494; it holds no config
+/// reader of its own — see the `execute.engine` pick below).
+///
+/// File-only, like the custom-role sweep: profiles have no embedded default
+/// and no env override here (the defaults are `planar-execute`'s). Values
+/// are rendered losslessly for a machine reader: strings verbatim, integers
+/// in decimal, booleans as `true` / `false`, and an ARRAY as a JSON array
+/// text (`["~/a","/b"]`), because the `, `-joined form other array keys use
+/// cannot carry a path that contains a comma. Validation is the consumer's:
+/// an unknown key is surfaced, not dropped, so `planar-execute` can refuse
+/// it by name.
+void resolve_execute_profiles(const toml_map& file_map, effective_map& eff) {
+  constexpr std::string_view prefix = "execute.profiles.";
+  for (const auto& [key, value] : file_map) {
+    if (!key.starts_with(prefix)) {
+      continue;
+    }
+    std::string text;
+    switch (value.kind_) {
+    case toml_value::kind::string:
+      text = value.string_;
+      break;
+    case toml_value::kind::integer:
+      text = std::to_string(value.int_);
+      break;
+    case toml_value::kind::boolean:
+      text = value.bool_ ? "true" : "false";
+      break;
+    case toml_value::kind::array:
+      text = "[";
+      for (std::size_t i = 0; i < value.array_.size(); ++i) {
+        if (i > 0) {
+          text += ',';
+        }
+        json_text::append_json_string(text, value.array_[i]);
+      }
+      text += ']';
+      break;
+    }
+    record(eff, key, std::move(text), provenance::config_file);
+  }
+}
+
 /// @brief Look up `associations.<slug>.<subkey>` in `file_map`. Only the
 /// bare (unquoted) dotted form is checked — the zig oracle's second lookup
 /// attempt (a quoted `associations."<slug>".<subkey>"` form) is dead code
@@ -394,6 +440,15 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
   const auto claude_path  = pick_str("introspection.transcripts.claude_path", "", env, std::nullopt, file_map, *def_map, eff);
   const auto codex_path   = pick_str("introspection.transcripts.codex_path", "", env, std::nullopt, file_map, *def_map, eff);
   const auto copilot_path = pick_str("introspection.transcripts.copilot_path", "", env, std::nullopt, file_map, *def_map, eff);
+
+  // `planar-execute`'s engine selector (plan 1033, task 6485, decision 1017).
+  // Recorded only in `eff`, not in the `config` struct: `planar` itself never
+  // acts on it. `planar-execute` holds no config reader (engine_config
+  // reaches `db`, which its execute-carrier guard forbids), so it reads this
+  // key from `planar config show --json` — which is why the key has to be
+  // picked here at all: an unpicked key never reaches that view.
+  static_cast<void>(pick_str("execute.engine", "PLANAR_EXECUTE_ENGINE", env, std::nullopt, file_map, *def_map, eff));
+  resolve_execute_profiles(file_map, eff);
 
   return resolved{
       .cfg =

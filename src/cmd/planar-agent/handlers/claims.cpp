@@ -110,8 +110,11 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // unknown kind outright: `--role` is a free-text label the tree's own
   // help describes as `planner|coder|reviewer|test_coder|...`, and the
   // trailing ellipsis is doing real work.
-  auto const role = cliapp::flag_string(args, "--role");
-  auto const kind = role.has_value() ? aa::action_kind_from_text(*role).value_or(aa::action_kind::coder) : aa::action_kind::coder;
+  // A supervision kind (plan 1033) is treated like any other unrecognised
+  // role: the dispatch row is a `coder` row, never a forged audit row.
+  auto const role   = cliapp::flag_string(args, "--role");
+  auto const parsed = role.has_value() ? aa::action_kind_from_text(*role) : std::nullopt;
+  auto const kind   = parsed.has_value() && !aa::is_supervision_kind(*parsed) ? *parsed : aa::action_kind::coder;
 
   // Two independent reasons to skip: the operator asked, or this action
   // kind does not probe by default. Pull picks a role kind, so its
@@ -320,20 +323,15 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     ttl = *parsed;
   }
   auto const token = cliapp::flag_string(args, "--claim").value_or(std::string{});
-
-  auto tx = (*conn)->begin_transaction(db::lock_mode::immediate);
-  if (!tx) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "BEGIN IMMEDIATE: QueryFailed"));
-  }
-
-  auto refreshed = aa::heartbeat_claim(**conn, token, ttl);
-  if (!refreshed) {
-    return std::unexpected(verb_error("heartbeat", refreshed.error()));
+  auto const flags = parse_gate_flags(args);
+  if (!flags) {
+    return std::unexpected(flags.error());
   }
 
   // `--status` present-and-empty is NOT the same as absent: an omitted
   // flag writes no action row at all, while `--status ""` writes one with
-  // an empty summary. `flag_string` distinguishes them for us.
+  // an empty summary. `flag_string` distinguishes them for us. Capped
+  // BEFORE the transaction.
   auto const status = cliapp::flag_string(args, "--status");
   if (status.has_value()) {
     constexpr std::size_t k_status_cap = 256;
@@ -341,23 +339,14 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
       return std::unexpected(invalid_input_error(
           std::format("--status payload is {} bytes; the cap is {}. Shorten the status string.", status->size(), k_status_cap)));
     }
-    auto const action_id = aa::start_action(**conn, aa::start_action_args{
-                                                        .session_id = refreshed->session_id,
-                                                        .claim_id   = refreshed->id,
-                                                        .kind       = aa::action_kind::heartbeat,
-                                                        .vendor     = refreshed->vendor,
-                                                    });
-    if (!action_id) {
-      return std::unexpected(verb_error("heartbeat: startAction", action_id.error()));
-    }
-    auto const closed = aa::end_action(**conn, *action_id, aa::outcome::ok, view(status));
-    if (!closed) {
-      return std::unexpected(verb_error("heartbeat: endAction", closed.error()));
-    }
   }
 
-  if (!tx->commit()) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "COMMIT: QueryFailed"));
+  // One immediate transaction in the engine: the supervisor check, the
+  // lease (untouched for a caller status report on an engine claim, plan
+  // 1033 D3), and the status action land together or not at all.
+  auto const refreshed = atomic::supervised_heartbeat(**conn, token, ttl, view(status), flags->gate());
+  if (!refreshed) {
+    return std::unexpected(verb_error("heartbeat", refreshed.error()));
   }
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? render::claim_json(*refreshed) : render::heartbeat_text(*refreshed));
@@ -369,13 +358,51 @@ auto claim_associate(context& ctx, const cliapp::parsed_args& args) -> handler_r
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const token   = cliapp::flag_string(args, "--claim").value_or(std::string{});
-  auto const stage   = cliapp::flag_string(args, "--stage");
-  auto const updated = aa::associate_claim_run(**conn, token, cliapp::flag_int(args, "--run").value_or(0), view(stage));
-  if (!updated) {
-    return std::unexpected(verb_error("claim-associate", updated.error()));
+  auto const token      = cliapp::flag_string(args, "--claim").value_or(std::string{});
+  auto const run        = cliapp::flag_int(args, "--run");
+  auto const stage      = cliapp::flag_string(args, "--stage");
+  auto const supervisor = cliapp::flag_string(args, "--supervisor");
+  auto const attempt    = cliapp::flag_string(args, "--attempt");
+  if (!run.has_value() && !supervisor.has_value()) {
+    return std::unexpected(invalid_input_error("claim-associate needs --run <id>, --supervisor <caller|engine>, or both"));
   }
-  ctx.out() << (cliapp::flag_bool(args, "--json") ? render::associate_json(*updated) : render::associate_text(*updated, token));
+  if (auto const refusal = check_stage_requires_run(args); refusal.has_value()) {
+    return std::unexpected(*refusal);
+  }
+  auto const engine = supervisor == std::optional<std::string>{"engine"};
+  if (engine && (!attempt.has_value() || attempt->empty())) {
+    return std::unexpected(invalid_input_error("--supervisor engine requires --attempt <id>"));
+  }
+  if (!engine && attempt.has_value()) {
+    return std::unexpected(invalid_input_error("--attempt applies only with --supervisor engine"));
+  }
+
+  // Supervisor first: it is the half that can be refused (one-way, live
+  // claim), and a refusal must not leave a half-applied --run stamp behind.
+  std::optional<atomic::associate_result> associated;
+  if (supervisor.has_value()) {
+    auto result = atomic::associate_supervisor(**conn, token, engine, view(attempt));
+    if (!result) {
+      return std::unexpected(verb_error("claim-associate", result.error()));
+    }
+    associated = std::move(*result);
+  }
+
+  std::optional<std::int64_t> updated;
+  if (run.has_value()) {
+    auto const stamped = aa::associate_claim_run(**conn, token, *run, view(stage));
+    if (!stamped) {
+      return std::unexpected(verb_error("claim-associate", stamped.error()));
+    }
+    updated = *stamped;
+  }
+
+  auto const json = cliapp::flag_bool(args, "--json");
+  if (associated.has_value()) {
+    ctx.out() << (json ? render::supervisor_json(*associated, updated) : render::supervisor_text(*associated, updated));
+  } else {
+    ctx.out() << (json ? render::associate_json(*updated) : render::associate_text(*updated, token));
+  }
   return {};
 }
 

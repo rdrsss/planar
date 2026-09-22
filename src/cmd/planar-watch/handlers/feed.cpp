@@ -21,6 +21,7 @@ auto failure(aa::agent_error e) -> domain_error {
 
 struct event {
   std::string at, kind, body;
+  std::string detail; ///< Appended to the text line; set only for the supervision action kinds (plan 1033).
 };
 
 /// @brief Collect the events matching `args`' filters, restricted to those
@@ -68,11 +69,14 @@ auto collect_events(context& ctx, const cliapp::parsed_args& args, std::optional
         (!row.entity || !row.entity_id || !aa::action_belongs_to_plan(**conn, *row.entity, *row.entity_id, *plan)))
       continue;
     auto task = row.entity.has_value() && aa::to_text(*row.entity) == "task" ? row.entity_id : std::nullopt;
-    auto add  = [&](std::string_view at, std::string_view kind) {
+    // The supervision kinds (plan 1033) name themselves on the text line;
+    // every other action's line is what it always was.
+    auto const detail = aa::is_supervision_kind(row.kind) ? std::string{aa::to_text(row.kind)} : std::string{};
+    auto       add    = [&](std::string_view at, std::string_view kind) {
       if (include(at, row.vendor, task)) {
         std::string body;
         ar::append_action(body, row);
-        events.push_back({std::string{at}, std::string{kind}, std::move(body)});
+        events.push_back({std::string{at}, std::string{kind}, std::move(body), detail});
       }
     };
     add(row.started_at, "action_started");
@@ -83,12 +87,13 @@ auto collect_events(context& ctx, const cliapp::parsed_args& args, std::optional
     if (auto plan = cliapp::flag_int(args, "--plan");
         plan.has_value() && !aa::claim_belongs_to_plan(**conn, claim.kind, claim.entity_id, *plan))
       continue;
-    auto task = aa::to_text(claim.kind) == "task" ? std::optional{claim.entity_id} : std::nullopt;
-    auto add  = [&](std::string_view at, std::string_view kind) {
+    auto       task = aa::to_text(claim.kind) == "task" ? std::optional{claim.entity_id} : std::nullopt;
+    auto const sup  = aa::get_supervision(**conn, claim.claim_token);
+    auto       add  = [&](std::string_view at, std::string_view kind) {
       if (include(at, claim.vendor, task)) {
         std::string body;
-        ar::append_claim_view(body, claim, {});
-        events.push_back({std::string{at}, std::string{kind}, std::move(body)});
+        ar::append_claim_view(body, claim, ar::claim_view_extras{.supervision = sup ? std::optional{*sup} : std::nullopt});
+        events.push_back({std::string{at}, std::string{kind}, std::move(body), {}});
       }
     };
     add(claim.claimed_at, "claim_acquired");
@@ -119,8 +124,10 @@ auto emit_events(context& ctx, bool json, std::span<event const> events) -> void
       out.append(e.kind.starts_with("action") ? ",\"action\":" : ",\"claim\":");
       out.append(e.body);
       out.append("}\n");
-    } else
+    } else if (e.detail.empty())
       out.append(std::format("  {}  {}\n", e.at, e.kind));
+    else
+      out.append(std::format("  {}  {}  {}\n", e.at, e.kind, e.detail));
   }
   ctx.out() << out;
   ctx.out().flush();

@@ -6491,20 +6491,22 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 # task status transition) in a single BEGIN IMMEDIATE transaction.
 planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent peek       <plan-id> [--json]
-planar-agent complete   --claim <token> [--summary <text>] [--json]
-planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
-planar-agent release    --claim <token> [--reason <text>] [--json]
-planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [--json]
+planar-agent complete   --claim <token> [--summary <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
+planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
+planar-agent release    --claim <token> [--reason <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
+planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
 
 # Direct claims — for orchestrator dispatch when the caller already knows the
 # target entity by id. Task claims atomically transition todo → doing unless
 # --no-transition is supplied; plan and plan-step state is never changed.
 planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
-planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
+planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--as caller|engine] [--attempt <id>] [--json]
 
 # Associate an already-acquired active claim with a workflow run (and
-# optional stage) after the fact, for claims taken before the run existed.
-planar-agent claim-associate --claim <token> --run <run-id> [--stage <s>] [--json]
+# optional stage) after the fact, for claims taken before the run existed,
+# and/or hand it to the engine supervisor (plan 1033; see "Engine
+# supervision" below). At least one of --run or --supervisor.
+planar-agent claim-associate --claim <token> [--run <run-id> [--stage <s>]] [--supervisor caller|engine [--attempt <id>]] [--json]
 
 # `--model` records the model actually used, verbatim, as an OPAQUE STRING.
 # Planar does not decide, validate, or publish what is "supported": an
@@ -6525,8 +6527,8 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # Operator recovery — agent_* table writers, which is why they live on
 # planar-agent (not planar). The operator invokes them directly; vendor
 # hooks never do.
-planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
-planar-agent abort      --claim <token> [--reason <text>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
+planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--override-supervisor] [--json]
+planar-agent abort      --claim <token> [--reason <text>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--vendor <s>] [--vendor-session <vendor:id>] [--override-supervisor] [--json]
 
 # Workflow run lifecycle — used by an external workflow harness to manage
 # workflow_runs rows while staying DB-handle-free (decision 444). The caller
@@ -6644,6 +6646,49 @@ With `--dry-run`:
 ```
 
 ---
+
+### Engine supervision (plan 1033 D3/D4)
+
+A claim is **caller-supervised** until `claim-associate --supervisor engine
+--attempt <id>` hands it to the engine supervisor (decision 1007). A
+caller-supervised claim — every claim nobody associates — takes every verb
+exactly as before, and a claim never goes back: `--supervisor caller` on an
+engine claim is refused.
+
+On an **engine-supervised** claim the engine alone extends the lease and
+issues the one terminal verb, acting as `--as engine --attempt <id>` with
+the attempt the claim is associated with:
+
+| Verb | Caller (no `--as`) | `--as engine --attempt <associated>` | `--as engine`, other attempt |
+|---|---|---|---|
+| `heartbeat` | only with `--status` and no `--ttl`: records the status, lease **unchanged** | extends the lease | `AttemptMismatch` |
+| `complete` / `fail` / `release` / `block` | `SupervisorMismatch`, unless `--override-supervisor` | lands once; a repeat after it landed is exit 0 with no change | `AttemptMismatch` |
+| `claim-associate --supervisor engine` | same attempt: no-op; new attempt: moves the claim to it | — | — |
+
+**Recovery leaves engine work to the engine** (task 6489). `reconcile`
+skips expired engine-supervised claims and dead-pid `engine = 'centurion'`
+runs — their recovery is the Centurion host's — and reports them: JSON gains
+`skipped_engine_claims` / `skipped_engine_runs`, text gains a `skipped
+(engine-supervised; ...)` block, both emitted only when something was
+skipped, so a caller-only sweep prints exactly what it always did. `abort`
+on an engine claim is `SupervisorMismatch`. `--override-supervisor` on
+either takes the work over and logs one `supervisor_override` action per
+engine claim. `planar-watch claims` renders an expired engine claim that
+reconcile left alone as `status:lapsed (engine)` (it appears under
+`--status stale` and `--status all`).
+
+`--as engine` on a caller claim is `SupervisorMismatch`. Every refusal is
+`error: <verb>: <Tag>` at exit 1 and leaves claim, task and lease untouched.
+Flag misuse is refused before anything is written, at exit 2: `--as engine`
+without `--attempt`, `--attempt` without `--as engine`, `--override-supervisor`
+with `--as engine`, and `claim-associate` with neither `--run` nor
+`--supervisor`.
+
+Each supervised write leaves one closed `agent_actions` row:
+`claim_associate` (association or a new attempt), `claim_terminal` (the
+engine's terminal verb), `supervisor_override` (an operator override). These
+kinds are written only by these verbs — `action start --kind` refuses them
+and `pull --role` treats them as unknown (falls back to `coder`).
 
 ### Locality flags
 
@@ -6819,7 +6864,7 @@ Lists runs from one or both source tables, newest first. All filters combine wit
 | `--arm <a>` | Source table filter: `wf` (workflow_runs / context-plane runs written by `planar-agent run start`), `op` (runs table / op-arm runs written by `planar run start`), `all` (both). | `all` |
 | `--json` | Emit a single JSON object `{generated_at, runs:[RunRow]}`. | false (human text) |
 
-Each `RunRow` in the JSON output carries a `source` field (`"wf"` or `"op"`) indicating which table the row came from. For `wf`-source rows, `planar-watch run show <id>` provides context_records. For `op`-source rows, `planar run show <run_identifier>` provides journal events.
+Each `RunRow` in the JSON output carries a `source` field (`"wf"` or `"op"`) indicating which table the row came from, followed by `engine` (plan 1033 task 6493): `"embedded"` or `"centurion"` for a `wf` row (a pre-migration-00038 row reads `"embedded"`), `null` for an `op` row, whose table has no engine. `plan_id` is `null` for a workflow run bound to no plan (allowed since migration 00038) — never `0`. The text line gains `engine:<e>` after `source:` (`-` for an op row) and prints `plan:-` for a plan-less run. For `wf`-source rows, `planar-watch run show <id>` provides context_records. For `op`-source rows, `planar run show <run_identifier>` provides journal events.
 
 **`run show <id> [--json]`**
 
@@ -6829,9 +6874,11 @@ Shows the full `workflow_runs` row for `<id>` (wf-arm only) plus all `context_re
 |------|-------------|---------|
 | `--json` | Emit `{run: RunRow, context_records: [ContextRecord]}`. | false (human text) |
 
-Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
+Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, `engine:<e>`, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
 
-**Implementation:** `src/cmd/planar-watch/handlers/run.zig` (plan 585, task 3906; op-arm inclusion added task 4349).
+**Implementation:** `src/cmd/planar-watch/handlers/run.cpp` (plan 585, task 3906; op-arm inclusion added task 4349; engine and nullable plan task 6493).
+
+**Engine supervision in `claims` and `feed` (plan 1033 task 6493).** Every claim object `claims --json` and `feed --json` emit carries `"supervisor":"caller"|"engine"` and `"attempt_id"` immediately after `stage` — a claim never handed to the engine reads `"supervisor":"caller","attempt_id":null`, the keys are never omitted. `ps`, `log` and `planar-agent`'s payloads keep the lean claim object. In text, an engine claim's `claims` line gains `supervisor:engine  attempt:<id>` before `token:` (a caller claim's line is unchanged), an expired engine claim reads `status:lapsed (engine)`, and a `feed` line for one of the supervision action kinds (`claim_associate`, `claim_terminal`, `supervisor_override`, `run_submitted`, `run_reconciled`) appends the kind.
 
 ### `planar-watch sync-events` — per-row view over sync_events (plan 638)
 
@@ -6994,8 +7041,12 @@ only by shelling `planar` / `planar-agent` from inside a workflow. Unlike the
 other four binaries it parses its own arguments and writes its usage banner
 to **stderr** — on `--help` too, where stdout stays empty. The exit codes
 are its own, not the `planar` table above: a bare invocation and every usage
-failure exit `2`, an unreadable workflow or a failed phase exits `1`, and
-`--help` / `schema` exit `0`.
+failure exit `2`, an unreadable workflow, undecodable `--args`, an
+unusable engine selection, or a failed phase exits `1`, and `--help` /
+`schema` / `profile show` exit `0`. Nothing else is produced:
+every refusal, with its exact stderr line, is pinned as a fixture under
+`src/cmd/planar-execute/golden/errors/` (plan 1033 M0), and that test also
+asserts the observed exit-code set is exactly `{0, 1, 2}`.
 
 ### `planar-execute run <workflow.lua> --phase <name>`
 
@@ -7005,15 +7056,104 @@ workflow's `flow.result(table)` payload as JSON on stdout.
 
 - `<workflow.lua>` — required positional; the workflow file path.
 - `--phase <name>` — required; the phase function to invoke.
-- `--args <json>` — JSON blob exposed to the phase as `ctx.args` (default `""`).
+- `--args <json>` — JSON blob exposed to the phase as `ctx.args` (default `""`, which is an empty table). Any JSON value is accepted, not only an object: an array or a string becomes `ctx.args` as-is. Text that is not JSON, or JSON with trailing bytes, is refused before the workflow loads with `planar-execute: args error: --args is not valid JSON` (nesting deeper than 200 levels: `--args is nested too deeply`) and exit `1`.
 - `--worktree <dir>` — directory the `git` / `fs` host functions are confined to (default `""`).
 - `--sandbox-root <dir>` — root bounding every `fs` path the workflow may touch (default `""`).
+- `--engine <embedded|centurion>` — execution engine (plan 1033, decision 1017). Any other value is a usage failure, exit `2`. See [Engine selection](#engine-selection) below.
 
 An unrecognised `--flag`, a second bare positional, a flag with no value, or
 a missing `--phase` all print the usage and exit `2`; `run --help` is one of
 those, not a help request. `planar workflow run <name>` (see the `workflow`
 domain below) resolves a workflow by name and execs this verb with the same
 flags.
+
+### Engine selection
+
+Decision 1007 moves workflow execution to a Centurion host; until plan 1033's
+cutover the embedded runner stays the default, and both are selectable by
+name. The first of these that is set wins:
+
+1. `--engine <embedded|centurion>` on `run`.
+2. `$PLANAR_EXECUTE_ENGINE` (an empty value counts as unset).
+3. The `execute.engine` config key (`[execute] engine = "…"` in
+   `~/.planar/config.toml`), read by running the sibling
+   `planar config show --json` — `planar-execute` has no config reader of
+   its own. `planar config show` lists the key with its provenance.
+4. `embedded`.
+
+Tier 3 costs one `planar` process and is skipped whenever tier 1 or 2 is
+set. An invalid env or config value is refused before the workflow loads
+(`planar-execute: PLANAR_EXECUTE_ENGINE must be embedded or centurion, got:
+…`, or `execute.engine must be … (config file)`), exit `1`. `centurion`
+resolves but is refused at dispatch until the host lands in plan 1033 M2:
+`planar-execute: engine 'centurion' is not available yet (<source>); the
+Centurion host lands in plan 1033 M2`, exit `1`, nothing on stdout. The
+selection never changes `run`'s stdout.
+
+### Command policy (`workflows/command-policy.json`)
+
+Under the Centurion engine (plan 1033, tech-spec D2/D14) a workflow reaches
+`planar`, `planar-agent`, `planar-watch` and `git` only through Centurion's
+stock `command.exec` activity, and only for a `(binary, verb path)` listed in
+this closed policy, which ships with the workflow bundle. Each entry carries
+an `effect` (`idempotent` for a read, `reconcilable` for a write whose outcome
+recovery can re-establish), a `cwd` rule (`any` for a command that addresses
+its target by id or token, `workspace` for one that must run inside the
+registered lane workspace), and `used_by`, the workflows that call it.
+`planned_workflows` names workflows not shipped yet (the M4
+claim-supervision workflow); their entries must become used once they are.
+
+Two gates keep it honest. `src/cmd/planar-execute/policy.t.cpp` extracts
+every host call from the shipped workflows (`cli.*`, the `ctx.*` reads, and
+`git.*`) and fails if one resolves to no entry, if an entry is unused, or if
+an entry's `used_by` is not exactly the workflows that use it; it also
+requires every Planar entry a shipped workflow uses to pass the embedded
+engine's own allowlist, until the embedded runner is retired. `make
+cli-usage-check` fails when an entry names a verb path that is not a runnable
+leaf in the live schema catalogs. Nothing enforces the policy at run time
+until the Centurion host lands (M2/M3); the embedded engine still enforces
+its own allowlist.
+
+### `planar-execute profile show [--profile <name>] [--json]`
+
+Print the resolved engine (with the provenance that chose it) and the
+resolved **execution profile** on stdout, exit `0`. `--profile` defaults to
+`default`. Text is `key: value` lines (`engine`, `engine_source`, `profile`,
+`configured`, `state_dir`, `planar_db`, one `allowed_root:` per root or
+`allowed_roots: -`, `idle_grace_seconds`, `command_policy`, `bundle`, one
+`provider.<vendor>.<key>:` per setting or `providers: -`); `--json` is
+`{"engine":…,"engine_source":…,"profile":{"name":…,"configured":…,"state_dir":…,"planar_db":…,"allowed_roots":[…],"idle_grace_seconds":…,"command_policy":…|null,"bundle":…|null,"providers":{…}}}`.
+Any other `profile` shape prints the usage and exits `2`.
+
+A profile (plan 1033 task 6494, tech-spec D10) is the unit a Centurion host
+runs for — one host per profile, identified by its canonical state
+directory. It is configured as
+
+```toml
+[execute.profiles.<name>]
+state_dir          = "~/.planar/execute/<name>"   # default: $PLANAR_HOME/execute/<name>, else ~/.planar/execute/<name>
+planar_db          = "~/.planar/planar.db"        # default: $PLANAR_DB, else ~/.planar/planar.db
+allowed_roots      = ["~/code"]                   # default: none
+idle_grace_seconds = 300                          # default 300
+command_policy     = "…"                          # default: unset
+bundle             = "…"                          # default: unset
+
+[execute.profiles.<name>.providers.<vendor>]
+<key> = "…"                                       # passed to Centurion verbatim
+```
+
+`default` always exists; unconfigured, it is exactly the defaults. Every
+path is `~`-expanded, made absolute and canonicalised (`weakly_canonical`,
+since the state directory may not exist yet), so two profiles whose
+`state_dir` is a path and a symlink to it report the same identity. The
+profile is read like every other `planar-execute` setting, through the
+sibling `planar config show --json` (whose resolver surfaces every
+`execute.profiles.*` key the file sets). Every configured profile is
+validated, not only the one asked for; an unknown key (`unknown key
+'execute.profiles.x.state_dirr' in <config file>`), a profile name that is
+not configured, `allowed_roots` that is not an array, or an
+`idle_grace_seconds` that is not a positive integer is refused naming the
+config file, exit `1`.
 
 ### `planar-execute schema`
 

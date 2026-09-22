@@ -28,17 +28,34 @@ namespace {
 /// `run_uid` -> `run_identifier`, and sets `pid = 0` / `repo_root = ""`
 /// (sentinels — neither column exists on `runs`).
 struct run_row {
-  std::int64_t               id      = 0;
-  std::int64_t               plan_id = 0;
-  std::string                workflow_name;
-  std::string                run_identifier;
-  std::int64_t               pid = 0;
-  std::string                repo_root;
-  std::string                started_at;
-  std::optional<std::string> ended_at;
-  std::string                status;
-  std::string_view           source; ///< `"wf"` or `"op"`.
+  std::int64_t                id = 0;
+  std::optional<std::int64_t> plan_id; ///< Null for a workflow run bound to no plan (migration 00038).
+  std::string                 workflow_name;
+  std::string                 run_identifier;
+  std::int64_t                pid = 0;
+  std::string                 repo_root;
+  std::string                 started_at;
+  std::optional<std::string>  ended_at;
+  std::string                 status;
+  std::string_view            source; ///< `"wf"` or `"op"`.
+  /// `workflow_runs.engine` (`embedded` / `centurion`, migration 00038); unset
+  /// for an op-source row, whose table has no such column.
+  std::optional<std::string> engine;
 };
+
+/// @brief `plan_id` as JSON: the id, or `null` for a plan-less run.
+/// @param plan_id The plan id.
+/// @return The JSON token.
+auto plan_json(std::optional<std::int64_t> plan_id) -> std::string {
+  return plan_id.has_value() ? std::to_string(*plan_id) : std::string{"null"};
+}
+
+/// @brief `plan_id` as text: the id, or `-` for a plan-less run.
+/// @param plan_id The plan id.
+/// @return The text.
+auto plan_text(std::optional<std::int64_t> plan_id) -> std::string {
+  return plan_id.has_value() ? std::to_string(*plan_id) : std::string{"-"};
+}
 
 /// @brief Build the `where` clause `list_workflow_runs` / `list_op_runs`
 /// share: zero, one, or both of `plan_id = ?` / `status = ?`, in that bind
@@ -88,9 +105,9 @@ auto bind_filters(db::statement& stmt, std::optional<std::int64_t> plan_filter, 
 /// @return Rows ordered `started_at desc, id desc`, or the query failure.
 auto list_workflow_runs(db::connection& conn, std::optional<std::int64_t> plan_filter, std::optional<std::string> status_filter)
     -> std::expected<std::vector<run_row>, db::db_error> {
-  auto const sql  = std::format("select id, plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status "
-                                "from workflow_runs{} order by started_at desc, id desc",
-                                where_clause(plan_filter, status_filter));
+  auto const sql = std::format("select id, plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status, "
+                               "engine from workflow_runs{} order by started_at desc, id desc",
+                               where_clause(plan_filter, status_filter));
   auto       stmt = conn.prepare(sql);
   if (!stmt) {
     return std::unexpected(stmt.error());
@@ -108,7 +125,7 @@ auto list_workflow_runs(db::connection& conn, std::optional<std::int64_t> plan_f
       break;
     }
     out.push_back(run_row{.id             = stmt->column_int64(0),
-                          .plan_id        = stmt->column_int64(1),
+                          .plan_id        = stmt->is_null(1) ? std::nullopt : std::optional{stmt->column_int64(1)},
                           .workflow_name  = stmt->column_text(2),
                           .run_identifier = stmt->column_text(3),
                           .pid            = stmt->column_int64(4),
@@ -116,7 +133,8 @@ auto list_workflow_runs(db::connection& conn, std::optional<std::int64_t> plan_f
                           .started_at     = stmt->column_text(6),
                           .ended_at       = stmt->is_null(7) ? std::nullopt : std::optional{stmt->column_text(7)},
                           .status         = stmt->column_text(8),
-                          .source         = "wf"});
+                          .source         = "wf",
+                          .engine         = stmt->column_text(9)});
   }
   return out;
 }
@@ -152,7 +170,7 @@ auto list_op_runs(db::connection& conn, std::optional<std::int64_t> plan_filter,
       break;
     }
     out.push_back(run_row{.id             = stmt->column_int64(0),
-                          .plan_id        = stmt->column_int64(1),
+                          .plan_id        = stmt->is_null(1) ? std::nullopt : std::optional{stmt->column_int64(1)},
                           .workflow_name  = stmt->column_text(2),
                           .run_identifier = stmt->column_text(3),
                           .pid            = 0,
@@ -170,9 +188,9 @@ auto list_op_runs(db::connection& conn, std::optional<std::int64_t> plan_filter,
 /// @param run_id The row id.
 /// @return The row, `std::nullopt` when absent, or the query failure.
 auto fetch_workflow_run(db::connection& conn, std::int64_t run_id) -> std::expected<std::optional<run_row>, db::db_error> {
-  auto stmt = conn.prepare(
-      "select id, plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status from workflow_runs "
-      "where id = ?");
+  auto stmt =
+      conn.prepare("select id, plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status, engine "
+                   "from workflow_runs where id = ?");
   if (!stmt) {
     return std::unexpected(stmt.error());
   }
@@ -187,7 +205,7 @@ auto fetch_workflow_run(db::connection& conn, std::int64_t run_id) -> std::expec
     return std::optional<run_row>{};
   }
   return std::optional<run_row>{run_row{.id             = stmt->column_int64(0),
-                                        .plan_id        = stmt->column_int64(1),
+                                        .plan_id        = stmt->is_null(1) ? std::nullopt : std::optional{stmt->column_int64(1)},
                                         .workflow_name  = stmt->column_text(2),
                                         .run_identifier = stmt->column_text(3),
                                         .pid            = stmt->column_int64(4),
@@ -195,7 +213,8 @@ auto fetch_workflow_run(db::connection& conn, std::int64_t run_id) -> std::expec
                                         .started_at     = stmt->column_text(6),
                                         .ended_at       = stmt->is_null(7) ? std::nullopt : std::optional{stmt->column_text(7)},
                                         .status         = stmt->column_text(8),
-                                        .source         = "wf"}};
+                                        .source         = "wf",
+                                        .engine         = stmt->column_text(9)}};
 }
 
 /// @brief Append one run as a JSON object, in the oracle's field order.
@@ -203,7 +222,7 @@ auto fetch_workflow_run(db::connection& conn, std::int64_t run_id) -> std::expec
 /// @param row The run.
 auto append_run(std::string& out, const run_row& row) -> void {
   out.append(std::format("{{\"id\":{}", row.id));
-  out.append(std::format(",\"plan_id\":{}", row.plan_id));
+  out.append(std::format(",\"plan_id\":{}", plan_json(row.plan_id)));
   out.append(",\"workflow_name\":");
   append_json_string(out, row.workflow_name);
   out.append(",\"run_identifier\":");
@@ -223,6 +242,13 @@ auto append_run(std::string& out, const run_row& row) -> void {
   append_json_string(out, row.status);
   out.append(",\"source\":");
   append_json_string(out, row.source);
+  // After `source`, so every pre-00038 byte keeps its position (task 6493).
+  out.append(",\"engine\":");
+  if (row.engine.has_value()) {
+    append_json_string(out, *row.engine);
+  } else {
+    out.append("null");
+  }
   out.push_back('}');
 }
 
@@ -317,8 +343,9 @@ auto run_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   out.append(std::format("runs: {}\n", rows.size()));
   for (auto const& row : rows) {
     std::string_view const ended = row.ended_at.has_value() ? std::string_view{*row.ended_at} : std::string_view{"-"};
-    out.append(std::format("  run:{}  plan:{}  status:{}  source:{}  started:{}  ended:{}  workflow:{}\n", row.id, row.plan_id,
-                           row.status, row.source, row.started_at, ended, row.workflow_name));
+    out.append(std::format("  run:{}  plan:{}  status:{}  source:{}  engine:{}  started:{}  ended:{}  workflow:{}\n", row.id,
+                           plan_text(row.plan_id), row.status, row.source, row.engine.value_or("-"), row.started_at, ended,
+                           row.workflow_name));
   }
   ctx.out() << out;
   return {};
@@ -380,11 +407,12 @@ auto run_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 
   std::string_view const ended = run.ended_at.has_value() ? std::string_view{*run.ended_at} : std::string_view{"-"};
   out.append(std::format("run:{}  plan:{}  status:{}  pid:{}  workflow:{}\n"
+                         "  engine:{}\n"
                          "  started:{}  ended:{}\n"
                          "  identifier:{}\n"
                          "  repo_root:{}\n",
-                         run.id, run.plan_id, run.status, run.pid, run.workflow_name, run.started_at, ended, run.run_identifier,
-                         run.repo_root));
+                         run.id, plan_text(run.plan_id), run.status, run.pid, run.workflow_name, run.engine.value_or("-"),
+                         run.started_at, ended, run.run_identifier, run.repo_root));
   if (records->empty()) {
     out.append("  (no context records)\n");
     ctx.out() << out;

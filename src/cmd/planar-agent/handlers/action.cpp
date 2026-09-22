@@ -86,6 +86,13 @@ auto action_start(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   if (!kind.has_value()) {
     return std::unexpected(invalid_input_error(std::format("unknown action kind '{}'", kind_text)));
   }
+  // The supervision kinds are the audit trail of who terminated an
+  // engine-supervised claim (plan 1033 task 6488); only the atomic verbs
+  // that do the terminating write them.
+  if (aa::is_supervision_kind(*kind)) {
+    return std::unexpected(invalid_input_error(
+        std::format("action kind '{}' is written only by the supervised claim verbs, not by action start", kind_text)));
+  }
 
   auto const skip = cliapp::flag_bool(args, "--no-locality-probe") || !aa::probe_default(*kind);
   auto const loc  = resolve_locality(cliapp::flag_string(args, "--repo-root"), ctx.cwd(), skip);

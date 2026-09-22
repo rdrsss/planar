@@ -58,6 +58,7 @@ import planar.cmd.planar_execute.engine;
 namespace {
 
 using planar::cmd::execute::classify;
+using planar::cmd::execute::parse_profile_args;
 using planar::cmd::execute::parse_run_args;
 using planar::cmd::execute::usage_text;
 using planar::cmd::execute::verb;
@@ -265,31 +266,52 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
     auto const end   = catalog.find('"', start);
     advertised.emplace_back(catalog.substr(start, end - start));
   }
-  REQUIRE(advertised.size() == 4);
+  // Five on `run` plus `profile show --profile` and `--json` (task 6485
+  // added `--engine` and the `profile` verb; task 6494 `--profile`).
+  REQUIRE(advertised.size() == 7);
   for (auto const& flag : advertised) {
-    INFO("advertised flag not accepted by parse_run_args: " << flag);
+    INFO("advertised flag not accepted by its parser: " << flag);
+    if (flag == "--profile") {
+      std::vector<std::string> const profile{"show", "--profile", "work"};
+      auto const                     parsed = parse_profile_args(profile);
+      REQUIRE(parsed.has_value());
+      CHECK(parsed->name == "work");
+      continue;
+    }
+    if (flag == "--json") {
+      std::vector<std::string> const profile{"show", "--json"};
+      auto const                     parsed = parse_profile_args(profile);
+      REQUIRE(parsed.has_value());
+      CHECK(parsed->json);
+      continue;
+    }
     std::vector<std::string> args{"wf.lua", "--phase", "p"};
     if (flag != "--phase") {
       args.push_back(flag);
-      args.push_back("v");
+      // `--engine` validates its value at parse time; every other flag
+      // takes anything.
+      args.emplace_back(flag == "--engine" ? "embedded" : "v");
     }
     CHECK(parse_run_args(args).has_value());
   }
 
-  // Parser -> catalog. The parser's accepted set is closed and small; name
-  // it here so a flag added to `parse_run_args` without a catalog entry
+  // Parser -> catalog. The parsers' accepted sets are closed and small; name
+  // them here so a flag added to either parser without a catalog entry
   // fails this loop rather than shipping undescribed.
-  for (auto const flag : {"--phase", "--args", "--worktree", "--sandbox-root"}) {
+  for (auto const flag : {"--phase", "--args", "--worktree", "--sandbox-root", "--engine", "--profile", "--json"}) {
     INFO("parser flag missing from the catalog: " << flag);
     CHECK(std::ranges::find(advertised, flag) != advertised.end());
   }
-  // And the parser still refuses what the catalog does not list.
-  std::vector<std::string> const unlisted{"wf.lua", "--phase", "p", "--engine", "x"};
+  // And the parser still refuses what the catalog does not list, and an
+  // engine name it does not know.
+  std::vector<std::string> const unlisted{"wf.lua", "--phase", "p", "--nope", "x"};
   CHECK_FALSE(parse_run_args(unlisted).has_value());
+  std::vector<std::string> const bad_engine{"wf.lua", "--phase", "p", "--engine", "zig"};
+  CHECK_FALSE(parse_run_args(bad_engine).has_value());
 
-  // The three optional flags default to the empty string, matching the
+  // The optional `run` flags default to the empty string, matching the
   // parser (absent == empty) and `planar workflow run`'s declaration.
-  for (auto const flag : {"--args", "--worktree", "--sandbox-root"}) {
+  for (auto const flag : {"--args", "--worktree", "--sandbox-root", "--engine"}) {
     INFO(flag);
     auto const at = catalog.find(std::format(R"("long":"{}")", flag));
     REQUIRE(at != std::string::npos);
@@ -299,4 +321,49 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   }
   auto const phase = catalog.substr(catalog.find(R"("long":"--phase")"));
   CHECK(phase.substr(0, phase.find('}')).contains(R"("required":true)"));
+}
+
+TEST_CASE("planar-execute run --engine accepts exactly the two engine names", "[cmd][execute][cli][6485]") {
+  // Validated at PARSE time so a misspelt engine is a usage failure (exit 2),
+  // never a dispatch-time surprise after the config has been read.
+  for (auto const name : {"embedded", "centurion"}) {
+    INFO(name);
+    std::vector<std::string> const args{"wf.lua", "--phase", "p", "--engine", name};
+    auto const                     parsed = parse_run_args(args);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->engine == name);
+  }
+  for (auto const bad : {"Embedded", "zig", "", "centurion "}) {
+    INFO("'" << bad << "'");
+    std::vector<std::string> const args{"wf.lua", "--phase", "p", "--engine", bad};
+    CHECK_FALSE(parse_run_args(args).has_value());
+  }
+  // A value-less `--engine` is a usage failure like every other flag.
+  std::vector<std::string> const dangling{"wf.lua", "--phase", "p", "--engine"};
+  CHECK_FALSE(parse_run_args(dangling).has_value());
+  // Absent is empty, which the selector reads as "no flag".
+  std::vector<std::string> const plain{"wf.lua", "--phase", "p"};
+  CHECK(parse_run_args(plain)->engine.empty());
+}
+
+TEST_CASE("planar-execute profile accepts `show` with --json and --profile in any order", "[cmd][execute][cli][6485][6494]") {
+  using args       = std::vector<std::string>;
+  auto const plain = parse_profile_args(args{"show"});
+  REQUIRE(plain.has_value());
+  CHECK_FALSE(plain->json);
+  CHECK(plain->name == "default"); // an absent --profile resolves `default`
+  for (auto const& ok : {args{"show", "--json", "--profile", "w"}, args{"show", "--profile", "w", "--json"}}) {
+    auto const parsed = parse_profile_args(ok);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->json);
+    CHECK(parsed->name == "w");
+  }
+  for (auto const& bad :
+       {args{}, args{"list"}, args{"--json"}, args{"show", "--yaml"}, args{"show", "--json", "x"},
+        args{"show", "--json", "--json"}, args{"show", "--profile"}, args{"show", "--profile", "a", "--profile", "b"}}) {
+    INFO(bad.size());
+    CHECK_FALSE(parse_profile_args(bad).has_value());
+  }
+  std::vector<std::string> const argv{"planar-execute", "profile", "show"};
+  CHECK(planar::cmd::execute::classify(argv) == planar::cmd::execute::verb::profile);
 }

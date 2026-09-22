@@ -132,6 +132,10 @@ auto append_claim_view(std::string& out, const aa::claim& value, const claim_vie
   field_int(out, "run_id", value.run_id);
   out.push_back(',');
   field_text(out, "stage", value.stage);
+  if (extras.supervision.has_value()) {
+    out.append(extras.supervision->engine ? ",\"supervisor\":\"engine\"," : ",\"supervisor\":\"caller\",");
+    field_text(out, "attempt_id", extras.supervision->attempt_id);
+  }
   if (extras.include_latest_action) {
     out.append(",\"latest_action\":");
     if (extras.latest_action.has_value()) {
@@ -317,6 +321,33 @@ auto associate_text(std::int64_t updated, std::string_view claim_token) -> std::
   return std::format("ok updated:{} claim:{}\n", updated, claim_token);
 }
 
+auto supervisor_json(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string {
+  std::string out = "{\"ok\":true,\"claim_token\":";
+  append_json_string(out, result.held.claim_token);
+  out += result.engine ? ",\"supervisor\":\"engine\",\"attempt_id\":" : ",\"supervisor\":\"caller\",\"attempt_id\":";
+  if (result.attempt_id.has_value()) {
+    append_json_string(out, *result.attempt_id);
+  } else {
+    out += "null";
+  }
+  out += std::format(",\"changed\":{}", result.changed ? "true" : "false");
+  if (run_updated.has_value()) {
+    out += std::format(",\"updated\":{}", *run_updated);
+  }
+  out += "}\n";
+  return out;
+}
+
+auto supervisor_text(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string {
+  auto out = std::format("ok claim:{} supervisor:{} attempt:{} changed:{}", result.held.claim_token,
+                         result.engine ? "engine" : "caller", result.attempt_id.value_or("-"), result.changed ? "true" : "false");
+  if (run_updated.has_value()) {
+    out += std::format(" updated:{}", *run_updated);
+  }
+  out += "\n";
+  return out;
+}
+
 // =========================================================================
 // action start / end
 // =========================================================================
@@ -369,14 +400,66 @@ auto reconcile_json(const aa::reconcile_result& result, const aa::reconcile_runs
     }
     out.push_back(']');
   }
+  // Engine-supervised claims and `centurion` runs the sweep left alone
+  // (plan 1033 task 6489). Emitted only when there are any, so a
+  // caller-only sweep prints exactly the bytes it always did.
+  if (!result.skipped_engine.empty() || !runs.skipped_engine.empty()) {
+    out.append(",\"skipped_engine_claims\":[");
+    for (std::size_t i = 0; i < result.skipped_engine.size(); ++i) {
+      if (i > 0) {
+        out.push_back(',');
+      }
+      auto const& skipped = result.skipped_engine[i];
+      out.append("{\"kind\":");
+      append_json_string(out, aa::to_text(skipped.kind));
+      out.append(std::format(",\"id\":{},\"claim_token\":", skipped.entity_id));
+      append_json_string(out, skipped.claim_token);
+      out.push_back('}');
+    }
+    out.append("],\"skipped_engine_runs\":[");
+    for (std::size_t i = 0; i < runs.skipped_engine.size(); ++i) {
+      if (i > 0) {
+        out.push_back(',');
+      }
+      auto const& skipped = runs.skipped_engine[i];
+      out.append(std::format("{{\"id\":{},\"run_identifier\":", skipped.id));
+      append_json_string(out, skipped.run_identifier);
+      out.append(std::format(",\"pid\":{}}}", skipped.pid));
+    }
+    out.push_back(']');
+  }
   out.append("}\n");
   return out;
 }
 
+namespace {
+
+/// @brief The engine-supervised lines `reconcile_text` appends, or nothing.
+/// @param result The claim sweep.
+/// @param runs The run sweep.
+/// @return The lines, newline-terminated; empty when nothing was skipped.
+auto skipped_text(const aa::reconcile_result& result, const aa::reconcile_runs_result& runs) -> std::string {
+  if (result.skipped_engine.empty() && runs.skipped_engine.empty()) {
+    return {};
+  }
+  std::string out = std::format("skipped (engine-supervised; --override-supervisor to take over): {} claim(s), {} run(s)\n",
+                                result.skipped_engine.size(), runs.skipped_engine.size());
+  for (auto const& skipped : result.skipped_engine) {
+    out.append(std::format("  {}:{} token:{}\n", aa::to_text(skipped.kind), skipped.entity_id, skipped.claim_token));
+  }
+  for (auto const& skipped : runs.skipped_engine) {
+    out.append(std::format("  run:{} pid:{} identifier:{}\n", skipped.id, skipped.pid, skipped.run_identifier));
+  }
+  return out;
+}
+
+} // namespace
+
 auto reconcile_text(const aa::reconcile_result& result, const aa::reconcile_runs_result& runs, bool dry_run) -> std::string {
   if (!dry_run) {
     return std::format("reconciled: {} claim(s) stale, {} action(s) closed, {} run(s) abandoned\n", result.claims_marked_stale,
-                       result.actions_closed, runs.abandoned);
+                       result.actions_closed, runs.abandoned) +
+           skipped_text(result, runs);
   }
   std::string out =
       std::format("dry-run: {} claim candidate(s), {} run candidate(s)\n", result.candidates.size(), runs.candidates.size());
@@ -386,7 +469,7 @@ auto reconcile_text(const aa::reconcile_result& result, const aa::reconcile_runs
   for (auto const& candidate : runs.candidates) {
     out.append(std::format("  run:{} pid:{} identifier:{}\n", candidate.id, candidate.pid, candidate.run_identifier));
   }
-  return out;
+  return out + skipped_text(result, runs);
 }
 
 } // namespace planar::engine::runtime::agentrender

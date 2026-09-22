@@ -1,0 +1,1 @@
+{"lane_count":3,"merge_order":["cycle/p1/alpha","cycle/p1/charlie","cycle/p1/delta"],"plan_id":1,"retained_worktrees":[".worktrees/cycle/p1/bravo"],"teardown_worktrees":[".worktrees/cycle/p1/alpha",".worktrees/cycle/p1/charlie",".worktrees/cycle/p1/delta"]}

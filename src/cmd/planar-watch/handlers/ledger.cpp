@@ -202,21 +202,39 @@ auto claims(context& ctx, const cliapp::parsed_args& args) -> handler_result {
       continue;
     }
     auto scope = aa::resolve_claim_scope(**conn, row);
+    auto sup   = aa::get_supervision(**conn, row.claim_token);
+    if (!sup) {
+      return std::unexpected(engine_failure("claims", sup.error()));
+    }
     if (json) {
       if (!first) {
         out.push_back(',');
       }
       first = false;
-      ar::append_claim_view(out, row, ar::claim_view_extras{.entity_scope = std::move(scope)});
+      ar::append_claim_view(out, row, ar::claim_view_extras{.entity_scope = std::move(scope), .supervision = *sup});
       continue;
     }
+    // An engine-supervised claim whose lease has passed is `lapsed (engine)`,
+    // not `active`: reconcile deliberately leaves it for the engine's own
+    // recovery (plan 1033 task 6489), so it would otherwise read as live.
+    std::string status{aa::to_text(row.status)};
+    if (row.status == aa::claim_status::active && sup->engine) {
+      auto const live = aa::is_claim_active_unexpired(**conn, row.claim_token);
+      if (live && !*live) {
+        status = "lapsed (engine)";
+      }
+    }
+    // Engine claims name their supervisor and attempt; a caller claim's line
+    // is exactly what it always was (task 6493).
+    std::string const supervised =
+        sup->engine ? std::format("  supervisor:engine  attempt:{}", sup->attempt_id.value_or("-")) : std::string{};
     if (row.category.has_value()) {
-      out.append(std::format("  {}:{}  scope:{}  status:{}  vendor:{}  category:{}  token:{}\n", aa::to_text(row.kind),
-                             row.entity_id, scope.label(), aa::to_text(row.status), row.vendor, aa::to_text(*row.category),
+      out.append(std::format("  {}:{}  scope:{}  status:{}  vendor:{}  category:{}{}  token:{}\n", aa::to_text(row.kind),
+                             row.entity_id, scope.label(), status, row.vendor, aa::to_text(*row.category), supervised,
                              row.claim_token));
     } else {
-      out.append(std::format("  {}:{}  scope:{}  status:{}  vendor:{}  token:{}\n", aa::to_text(row.kind), row.entity_id,
-                             scope.label(), aa::to_text(row.status), row.vendor, row.claim_token));
+      out.append(std::format("  {}:{}  scope:{}  status:{}  vendor:{}{}  token:{}\n", aa::to_text(row.kind), row.entity_id,
+                             scope.label(), status, row.vendor, supervised, row.claim_token));
     }
   }
   if (json) {

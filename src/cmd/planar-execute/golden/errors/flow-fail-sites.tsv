@@ -1,0 +1,32 @@
+bench_run_ritual.lua	require_arg	"bench_run_ritual: missing required --args field: " .. name
+bench_run_ritual.lua	task_id_list	"bench_run_ritual: --args.tasks must be a non-empty array of task ids"
+finalize_closeout.lua	require_arg	"finalize_closeout: missing required --args field: " .. name
+parallel-dispatch.lua	require_arg	"parallel-dispatch.lua: missing required ctx.args field: " .. name
+parallel-dispatch.lua	require_only_args	"parallel-dispatch.lua/" .. phase .. ": unknown top-level ctx.args field '" .. unknown[1] .. "'"
+parallel-dispatch.lua	assert_not_serialized	"parallel-dispatch.lua/" .. phase .. ": eligibility-guard violation — task " .. tostr(task_id) .. " is BOTH parallel_eligible and serialized in recommend-strategy output;" .. " a serialized task must never be placed in a wave (the six eligibility" .. " rules stay authoritative). Refusing to construct a wave over it."
+parallel-dispatch.lua	plan	"parallel-dispatch.lua/plan: recommend-strategy returned no table for plan " .. tostr(plan_id)
+parallel-dispatch.lua	cycle_plan	"parallel-dispatch.lua/cycle_plan: task_show returned no table for task " .. tostr(task_id)
+parallel-dispatch.lua	cycle_plan	"parallel-dispatch.lua/cycle_plan: task " .. tostr(task_id) .. " belongs to plan " .. tostr(task_info.plan_id) .. ", not requested plan " .. tostr(plan_id)
+parallel-dispatch.lua	waves	"parallel-dispatch.lua/waves: recommend-strategy returned no table for plan " .. tostr(plan_id)
+parallel-dispatch.lua	barrier_check	"parallel-dispatch.lua/barrier_check: lanes must be an array"
+parallel-dispatch.lua	barrier_check	"parallel-dispatch.lua/barrier_check: each lane requires task_id"
+parallel-dispatch.lua	fan_in	"parallel-dispatch.lua/fan_in: lanes must be an array"
+parallel-dispatch.lua	fan_in	"parallel-dispatch.lua/fan_in: each lane requires task_id and branch"
+parallel-dispatch.lua	fan_in	"parallel-dispatch.lua/fan_in: unknown lane outcome '" .. outcome .. "' for task " .. tostr(l.task_id) .. " (expected succeeded | failed)"
+parallel-dispatch.lua	conflict_escalation	"parallel-dispatch.lua/conflict_escalation: paths must be an array"
+parallel-dispatch.lua	reconcile_plan	"parallel-dispatch.lua/reconcile_plan: lanes must be an array"
+parallel-dispatch.lua	reconcile_plan	"parallel-dispatch.lua/reconcile_plan: each lane requires task_id and outcome"
+parallel-dispatch.lua	reconcile_plan	"parallel-dispatch.lua/reconcile_plan: unknown outcome '" .. o .. "' for task " .. tostr(l.task_id)
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: plan_id must be a positive integer"
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: lanes must be a non-empty array"
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: each lane must be an object"
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: unknown lane field '" .. tostr(field) .. "'"
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: each task_id must be a positive integer"
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: duplicate task_id " .. tostr(task_id)
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: task " .. tostr(task_id) .. " requires a non-empty provider"
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: unknown or malformed outcome for task " .. tostr(task_id)
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: unknown or malformed category for task " .. tostr(task_id)
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: category is only valid for a failed or abandoned task " .. tostr(task_id)
+parallel-dispatch.lua	capacity_reconcile	"parallel-dispatch.lua/capacity_reconcile: lanes must be a dense array"
+parallel-dispatch.lua	teardown	"parallel-dispatch.lua/teardown: lanes must be an array"
+parallel-dispatch.lua	teardown	"parallel-dispatch.lua/teardown: each lane requires task_id"
