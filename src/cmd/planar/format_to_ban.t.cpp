@@ -48,9 +48,16 @@ auto first_party_source(const std::filesystem::path& p) -> bool {
 /// @brief Every first-party source naming the banned append form.
 /// @return Repo-relative paths, each with the 1-based line number.
 auto offenders() -> std::vector<std::string> {
-  // Matched as two fragments so this file's own prose cannot trip it.
-  constexpr std::string_view k_call   = "format_to";
-  constexpr std::string_view k_target = "back_inserter";
+  // The BARE token, not `format_to` + `back_inserter` on one line: the
+  // two-fragment form missed a call split across lines
+  //
+  //     std::format_to(
+  //         std::back_inserter(out), ...);
+  //
+  // which is the same hazard (reviewer, cycle 5). No first-party source
+  // has a legitimate use left, so banning the token outright also covers
+  // `format_to_n` and any future overload.
+  constexpr std::string_view k_call = "format_to";
 
   std::vector<std::string> found;
   auto const               root = source_root();
@@ -68,7 +75,7 @@ auto offenders() -> std::vector<std::string> {
     std::string line;
     for (std::size_t n = 1; std::getline(input, line); ++n) {
       auto const call = line.find(k_call);
-      if (call == std::string::npos || line.find(k_target, call) == std::string::npos) {
+      if (call == std::string::npos) {
         continue;
       }
       // Prose about the hazard is not the hazard: every file that explains
