@@ -1373,3 +1373,131 @@ TEST_CASE("a task body of 256 bytes followed by a next action renders", "[workbe
   REQUIRE(rendered.has_value());
   CHECK(rendered->content.find("\n" + boundary + "\n**Next action:** do the thing\n") != std::string::npos);
 }
+
+// --- task 6881: pull strips exactly what push wrote --------------------------
+//
+// Observed on artifact 619 of plan 1065: after editing the numbered workbench
+// file and pulling, the stored body began `## Content\n\n...`. `push` renders
+// front matter, the `# <Kind> N: <title>` heading, the `**Label:**` lines and
+// -- per kind -- a `## Content` heading, a `## Body` / `## Rationale` pair, a
+// trailing `**Answer:**` or `**Next action:**`. `pull` stripped only the
+// heading-and-labels PREFIX, so every other piece of the wrapper landed in
+// the body and was re-wrapped by the next push. The round trip must be
+// byte-stable: push, edit the prose, pull, and the stored body is the edited
+// prose alone; push again and the file is the edited file.
+
+namespace {
+
+/// @brief Replace `from` with `to` in the file at `path`; the edit is an
+/// operator's in-place prose change, everything else byte-identical.
+auto edit_file(const std::filesystem::path& path, std::string_view from, std::string_view to) -> std::string {
+  auto content = wfs::read_file(path);
+  REQUIRE(content.has_value());
+  auto const at = content->find(from);
+  REQUIRE(at != std::string::npos);
+  content->replace(at, from.size(), to);
+  REQUIRE(wfs::write_file_atomic(path, *content));
+  return *content;
+}
+
+/// @brief The file with its `**Updated:**` stamp blanked, for kinds whose
+/// header carries one (a pull bumps `updated_at`, so the re-pushed stamp
+/// legitimately differs).
+auto without_updated_stamp(std::string text) -> std::string {
+  auto const at = text.find("**Updated:** ");
+  if (at == std::string::npos) {
+    return text;
+  }
+  auto const nl = text.find('\n', at);
+  text.replace(at, nl - at, "**Updated:** <TS>");
+  return text;
+}
+
+} // namespace
+
+TEST_CASE("an artifact body round-trips through push/pull/push without its `## Content` wrapper",
+          "[workbench][sync][pull][6881]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file   = feature_dir_of(a, s.plan_id) / std::format("{}-tech-spec-auth.md", s.artifact);
+  auto const edited = edit_file(file, "Spec body.", "# Edited spec\n\nWith **bold** prose.");
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 1);
+  CHECK(scalar_text(a.conn(), std::format("select body from artifacts where id = {}", s.artifact)) ==
+        "# Edited spec\n\nWith **bold** prose.");
+
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  CHECK(*wfs::read_file(file) == edited);
+}
+
+TEST_CASE("a decision body round-trips without its `## Body` / `## Rationale` scaffolding",
+          "[workbench][sync][pull][6881]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  exec(a.conn(), std::format("insert into decisions (scope_kind, scope_id, title, body, rationale, status) "
+                             "values ('association', {}, 'Use SQLite', 'We use SQLite.', 'Simple.', 'proposed')",
+                             s.assoc_id));
+  auto const id = scalar_id(a.conn(), "select id from decisions where title = 'Use SQLite'");
+  exec(a.conn(), std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                             "values ('decision', {}, 'plan', {}, 'derives-from')",
+                             id, s.plan_id));
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file   = feature_dir_of(a, s.plan_id) / "decisions" / std::format("{}-use-sqlite.md", id);
+  auto const edited = edit_file(file, "We use SQLite.", "We use SQLite,\nedited.");
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 1);
+  CHECK(scalar_text(a.conn(), std::format("select body from decisions where id = {}", id)) == "We use SQLite,\nedited.");
+  // Pull writes only `body`; the rationale is untouched.
+  CHECK(scalar_text(a.conn(), std::format("select rationale from decisions where id = {}", id)) == "Simple.");
+
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  CHECK(without_updated_stamp(*wfs::read_file(file)) == without_updated_stamp(edited));
+}
+
+TEST_CASE("an answered question's body round-trips without its `**Answer:**` tail", "[workbench][sync][pull][6881]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  exec(a.conn(), std::format("insert into questions (scope_kind, scope_id, title, body, answer_body, answered_at, status) "
+                             "values ('association', {}, 'Which format', 'JSON or TOML?', 'JSON.\nTwo lines.', "
+                             "'2026-01-01T00:00:00.000Z', 'answered')",
+                             s.assoc_id));
+  auto const id = scalar_id(a.conn(), "select id from questions where title = 'Which format'");
+  exec(a.conn(), std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                             "values ('question', {}, 'plan', {}, 'derives-from')",
+                             id, s.plan_id));
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file   = feature_dir_of(a, s.plan_id) / "questions" / std::format("{}-which-format.md", id);
+  auto const edited = edit_file(file, "JSON or TOML?", "JSON or TOML, edited?");
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 1);
+  CHECK(scalar_text(a.conn(), std::format("select body from questions where id = {}", id)) == "JSON or TOML, edited?");
+  CHECK(scalar_text(a.conn(), std::format("select answer_body from questions where id = {}", id)) == "JSON.\nTwo lines.");
+
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  CHECK(without_updated_stamp(*wfs::read_file(file)) == without_updated_stamp(edited));
+}
+
+TEST_CASE("a task's body round-trips without its `**Next action:**` tail", "[workbench][sync][pull][6881]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  exec(a.conn(), std::format("update tasks set next_action = 'Ship it.' where id = {}", s.task_one));
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file   = feature_dir_of(a, s.plan_id) / "tasks" / "cross" / std::format("{}-first-task.md", s.task_one);
+  auto const edited = edit_file(file, "Task body here.", "Task body, edited.");
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 1);
+  CHECK(scalar_text(a.conn(), std::format("select body from tasks where id = {}", s.task_one)) == "Task body, edited.");
+  CHECK(scalar_text(a.conn(), std::format("select next_action from tasks where id = {}", s.task_one)) == "Ship it.");
+
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  CHECK(without_updated_stamp(*wfs::read_file(file)) == without_updated_stamp(edited));
+}
