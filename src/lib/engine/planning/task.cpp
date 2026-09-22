@@ -83,6 +83,18 @@ auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique;
 }
 
+/// @brief Maps a transaction-boundary `db_error` to `task_error`, distinguishing
+/// a post-`busy_timeout` SQLITE_BUSY (retry unchanged) from any other failure.
+///
+/// Scoped to the two places a real contended write actually surfaces this —
+/// `begin_transaction` and `transaction::commit` — mirroring
+/// `annotation.cpp`'s `command_db_error` (task 6843).
+/// @param err The transaction-boundary error.
+/// @return `task_error::busy_source` or `task_error::query_failed`.
+auto command_db_error(const db::db_error& err) -> task_error {
+  return db::is_busy(err) ? task_error::busy_source : task_error::query_failed;
+}
+
 /// @brief Whether every character of `s` is an ASCII decimal digit.
 ///
 /// Ports zig's `allDigits`. `std::isdigit` is deliberately not used: it is
@@ -381,7 +393,7 @@ auto set_status(db::connection& conn, std::int64_t id, task_status status) -> st
   }
   auto step = stmt->step();
   if (!step) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(step.error()));
   }
   return {};
 }
@@ -711,7 +723,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
 
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
 
   auto current = show_task(conn, id);
@@ -856,6 +868,13 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
     if (is_unique_violation(step.error())) {
       return std::unexpected(task_error::slug_conflict);
     }
+    if (db::is_busy(step.error())) {
+      // Not routed through `exec_failed`: a post-timeout SQLITE_BUSY is not
+      // the oracle's `StepFailed` diagnostic seam (task 6843) — it is a
+      // retryable contention outcome, distinct from a genuine write
+      // failure, and gets its own tag end to end.
+      return std::unexpected(task_error::busy_source);
+    }
     return std::unexpected(exec_failed("task.update", "StepFailed"));
   }
 
@@ -910,7 +929,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
   }
 
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
@@ -918,7 +937,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
 auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expected<task, task_error> {
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
   auto current = show_task(conn, id);
   if (!current) {
@@ -954,7 +973,7 @@ auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expect
     }
   }
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
@@ -962,7 +981,7 @@ auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expect
 auto mark_cancelled(db::connection& conn, std::int64_t id) -> std::expected<task, task_error> {
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
   auto current = show_task(conn, id);
   if (!current) {
@@ -1000,7 +1019,7 @@ auto mark_cancelled(db::connection& conn, std::int64_t id) -> std::expected<task
     }
   }
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
@@ -1015,7 +1034,7 @@ auto mark_blocked(db::connection& conn, std::int64_t id, std::int64_t blocked_on
 
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
   auto current = show_task(conn, id);
   if (!current) {
@@ -1070,7 +1089,7 @@ auto mark_blocked(db::connection& conn, std::int64_t id, std::int64_t blocked_on
     }
   }
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
@@ -1079,7 +1098,7 @@ auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::
     -> std::expected<task, task_error> {
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
   auto current = show_task(conn, id);
   if (!current) {
@@ -1125,7 +1144,7 @@ auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::
     }
   }
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
