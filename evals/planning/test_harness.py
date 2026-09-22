@@ -3,13 +3,21 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Appended, not inserted at 0: both directories have a `harness.py`, and
+# `import harness` here must resolve to THIS harness, not the orchestrator's.
+sys.path.append(str(Path(__file__).resolve().parents[1] / "orchestrator"))
 
 import harness  # noqa: E402
+import arena  # noqa: E402
+
+HARNESS_PATH = Path(__file__).resolve().parent / "harness.py"
 
 
 class CaseLoadingTests(unittest.TestCase):
@@ -236,13 +244,64 @@ class SentinelLineageTests(unittest.TestCase):
         self.assertIn(sentinels[0].value, out)
         self.assertNotIn("confidential paragraph", out)
 
-    def test_refuses_a_database_it_did_not_create(self) -> None:
-        # The exact accident that migrated a live database during plan 950.
-        with self.assertRaises(harness.ConfigError):
-            harness.assert_isolated_db(Path("/tmp/x.db"), created_by_eval=False)
-        with self.assertRaises(harness.ConfigError):
-            harness.assert_isolated_db(Path.home() / ".planar" / "planar.db", created_by_eval=True)
-        harness.assert_isolated_db(Path("/tmp/fixture-run1.db"), created_by_eval=True)
+    def test_old_isolation_symbol_is_gone(self) -> None:
+        # assert_isolated_db was replaced by the shared arena.assert_isolated
+        # (task hh-isolation-assert); the old name must not resurface.
+        self.assertFalse(hasattr(harness, "assert_isolated_db"))
+
+    def test_shares_the_arena_isolation_assertion(self) -> None:
+        # The exact accident that migrated a live database during plan 950,
+        # now caught by the same assertion the orchestrator harness uses.
+        with tempfile.TemporaryDirectory(prefix="planar-eval-planning-test-") as tmp:
+            root = Path(tmp)
+            env = harness.build_host_env(root)
+            arena.assert_isolated(env, root)  # a fresh arena passes
+
+            leaked = dict(env)
+            leaked["PLANAR_DB"] = str(Path.home() / ".planar" / "planar.db")
+            with self.assertRaises(arena.ArenaIsolationError) as ctx:
+                arena.assert_isolated(leaked, root)
+            self.assertIn("PLANAR_DB", str(ctx.exception))
+
+
+class DryRunEndToEndTests(unittest.TestCase):
+    """Test-spec 621, scenario 3 (edge): the dry-run CLI path, for real.
+
+    Every other isolation test in this file calls `build_host_env` /
+    `assert_isolated` directly, in-process. That proves the functions work
+    but never proves `harness.py --dry-run` actually reaches them: a
+    mistake in `main()`'s dry-run branch (wrong case kind, an exception
+    swallowed before the isolation check runs, exit code wired to the
+    wrong constant) would pass every other test in this file while the
+    real CLI invocation silently skipped the isolation self-check. This
+    launches the harness as the subprocess a user or CI actually runs.
+    """
+
+    def test_dry_run_subprocess_exits_pass_and_proves_isolation(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(HARNESS_PATH), "--case", "spec-draft-quality", "--dry-run"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(
+            result.returncode,
+            harness.EXIT_PASS,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn("isolation", result.stdout.lower())
+        self.assertIn("dry-run OK", result.stdout)
+
+    def test_dry_run_subprocess_fails_on_an_unknown_case(self) -> None:
+        # The negative half: the same subprocess path must exit non-zero
+        # (config error) rather than exiting 0 on a typo.
+        result = subprocess.run(
+            [sys.executable, str(HARNESS_PATH), "--case", "no-such-case", "--dry-run"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, harness.EXIT_CONFIG)
 
 
 class PacketReadinessTests(unittest.TestCase):

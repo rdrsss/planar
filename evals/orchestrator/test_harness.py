@@ -9,9 +9,11 @@ import time
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import arena
 import harness
 
 
@@ -272,6 +274,157 @@ class ProcessTests(unittest.TestCase):
             )
             self.assertEqual(rc, 124)
             self.assertLess(time.monotonic() - started, 7)
+
+
+class ArenaIsolationBeforeHostStartTests(unittest.TestCase):
+    """A poisoned arena env must fail closed before any host process starts.
+
+    `run_phase3_preview` calls `arena.assert_isolated` immediately after
+    `arena.make_arena`, before `git init`, `planar init`, or the vendor
+    host invocation (`run_to_file`). Proving the exception TYPE is raised
+    is not enough — a caller could catch it and continue. This proves the
+    call never reaches `run_command` or `run_to_file` at all.
+    """
+
+    def test_poisoned_env_is_rejected_before_run_to_file_in_the_live_path(self) -> None:
+        case = {
+            "id": "isolation-guard-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant prompt text",
+                "expected_models": {
+                    "codex": "gpt-5.6-terra",
+                    "claude": "claude-sonnet-5",
+                },
+            },
+        }
+
+        # Captured before patching: `arena.make_arena` is about to become a
+        # Mock, so calling it BY NAME from inside the side effect below
+        # would recurse into itself instead of building a real arena.
+        real_make_arena = arena.make_arena
+
+        def leaking_make_arena(root: Path, base_env=None) -> dict[str, str]:
+            env = real_make_arena(root, base_env=base_env)
+            env["HOME"] = str(Path.home())  # leak outside the arena root
+            return env
+
+        with tempfile.TemporaryDirectory(prefix="planar-eval-isolation-guard-") as results_root:
+            options = harness.Options(
+                mode="live",
+                vendor="codex",
+                surface="skill",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+            with mock.patch.object(
+                harness.arena, "make_arena", side_effect=leaking_make_arena
+            ), mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
+                mock.patch.object(harness, "run_command") as run_command_mock:
+                with self.assertRaises(arena.ArenaIsolationError) as ctx:
+                    harness.run_phase3_preview(
+                        Path("<isolation-guard-probe>"), case, options
+                    )
+                self.assertIn("HOME", str(ctx.exception))
+            run_to_file_mock.assert_not_called()
+            run_command_mock.assert_not_called()
+
+
+class VendorStagingBeforeHostStartTests(unittest.TestCase):
+    """A missing REQUIRED vendor surface must fail closed before the host starts.
+
+    Mirrors `ArenaIsolationBeforeHostStartTests` for the staging step added
+    for Planar question 983. `evals/orchestrator/test_arena.py` already
+    proves `arena.stage_vendor_config` itself rejects a missing required
+    surface — that is necessary but not sufficient: it does not prove
+    either LIVE call site (`run_phase3_preview`, `prepare_lifecycle_fixture`)
+    actually calls it before spawning a host. A no-op in place of either
+    call would leave `stage_vendor_config`'s own tests green while the
+    live path silently ran against an unstaged (or wrong) vendor config.
+    """
+
+    def test_run_phase3_preview_claude_fails_closed_on_missing_commands(self) -> None:
+        case = {
+            "id": "staging-guard-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant prompt text",
+                "expected_models": {
+                    "codex": "gpt-5.6-terra",
+                    "claude": "claude-sonnet-5",
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory(
+            prefix="planar-eval-staging-guard-"
+        ) as results_root, tempfile.TemporaryDirectory(
+            prefix="planar-eval-staging-guard-fakehome-"
+        ) as fake_home:
+            # Created, but deliberately empty: no `commands` subdirectory,
+            # so `claude`'s one REQUIRED surface is missing.
+            fake_real_root = Path(fake_home) / "fake-claude"
+            fake_real_root.mkdir()
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+            with mock.patch.object(
+                arena, "real_vendor_root", return_value=fake_real_root
+            ), mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
+                mock.patch.object(harness, "run_command") as run_command_mock:
+                with self.assertRaises(arena.VendorStagingError) as ctx:
+                    harness.run_phase3_preview(
+                        Path("<staging-guard-probe>"), case, options
+                    )
+                self.assertIn("commands", str(ctx.exception))
+            run_to_file_mock.assert_not_called()
+            run_command_mock.assert_not_called()
+
+    def test_prepare_lifecycle_fixture_codex_fails_closed_on_missing_auth(self) -> None:
+        case = {
+            "id": "staging-guard-lifecycle-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "setup": {
+                "fixture": "controlled-classic",
+                "specialist_scenario": "baseline",
+            },
+        }
+        with tempfile.TemporaryDirectory(
+            prefix="planar-eval-staging-guard-"
+        ) as results_root, tempfile.TemporaryDirectory(
+            prefix="planar-eval-staging-guard-fakehome-"
+        ) as fake_home:
+            # Created, but deliberately empty: no `auth.json`, so codex's
+            # one REQUIRED surface is missing.
+            fake_real_root = Path(fake_home) / "fake-codex"
+            fake_real_root.mkdir()
+            options = harness.Options(
+                mode="lifecycle",
+                vendor="codex",
+                surface="agent",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+            with mock.patch.object(
+                arena, "real_vendor_root", return_value=fake_real_root
+            ), mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
+                mock.patch.object(harness, "run_command") as run_command_mock:
+                with self.assertRaises(arena.VendorStagingError) as ctx:
+                    harness.prepare_lifecycle_fixture(
+                        Path("<staging-guard-lifecycle-probe>"),
+                        case,
+                        options,
+                        "fixture",
+                    )
+                self.assertIn("auth.json", str(ctx.exception))
+            run_to_file_mock.assert_not_called()
+            run_command_mock.assert_not_called()
 
 
 class SemanticGraderNegativeControlTests(unittest.TestCase):

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+import arena
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES_DIR = ROOT / "evals" / "orchestrator" / "cases"
@@ -1046,9 +1047,17 @@ def run_phase3_preview(
     )
     repo = artifact_dir / "repo"
     repo.mkdir()
-    env = os.environ.copy()
-    env["PLANAR_DB"] = str(artifact_dir / "planar.db")
-    env["PLANAR_CONFIG_PATH"] = str(artifact_dir / "config.toml")
+    arena_root = artifact_dir / "arena"
+    env = arena.make_arena(arena_root)
+    arena.assert_isolated(env, arena_root)
+    # Stage the running vendor's read surfaces (slash commands, skills,
+    # agents, auth) from the real install into the scratch arena before
+    # anything runs (Planar question 983): the live prompt below is
+    # `/pl-orchestrator <plan-id>` / a codex `$orchestrator` invocation,
+    # which resolves from the vendor's real config dir, not an empty
+    # scratch one. Fails closed (VendorStagingError) before `git init` or
+    # any host process if a required surface is missing.
+    arena.stage_vendor_config(env, options.vendor)
     try:
         run_command(["git", "init", "-q"], cwd=repo, env=env)
         opposite = "claude" if options.vendor == "codex" else "codex"
@@ -1258,9 +1267,16 @@ def prepare_lifecycle_fixture(
     artifacts = create_artifacts(case_id, label, options.results_dir)
     repo = artifacts / "repo"
     shutil.copytree(fixture_root / "repo", repo)
-    env = os.environ.copy()
-    env["PLANAR_DB"] = str(artifacts / "planar.db")
-    env["PLANAR_CONFIG_PATH"] = str(artifacts / "config.toml")
+    arena_root = artifacts / "arena"
+    env = arena.make_arena(arena_root)
+    arena.assert_isolated(env, arena_root)
+    # Only the live-host lifecycle mode spawns a real vendor CLI; the
+    # fixture-replay mode (options.vendor == "") drives `.eval/control.sh`
+    # instead and never needs the real vendor config, so it must not be
+    # made to fail closed over a surface (e.g. codex `auth.json`) it never
+    # reads.
+    if options.vendor:
+        arena.stage_vendor_config(env, options.vendor)
     try:
         run_command(["git", "init", "-q"], cwd=repo, env=env)
         run_command(["git", "config", "user.name", "Planar Eval"], cwd=repo, env=env)
