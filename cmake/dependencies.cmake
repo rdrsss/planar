@@ -61,7 +61,7 @@ endif()
 # expected to add them:
 #
 #   * Catch2   3.15.3 — tests (cmake/module.cmake's planar_module(); task 6023) [vendored]
-#   * SQLite   3.50.2 (amalgamation) — storage [vendored]
+#   * SQLite   3.53.3 (amalgamation) — storage [vendored]
 #   * Lua      5.5    — planar-execute sandbox
 #   * Glaze    8.1.0  — JSON / YAML front matter / TOML config (D8, D12) [vendored]
 #   * libcurl          — HTTP for Jira/GitHub adapters
@@ -120,14 +120,18 @@ endif()
 #
 # THAT CONSTRAINT IS NOW LIFTED: the M10 cutover (task 6045) deleted zig/,
 # so there is no second tree to stay format-compatible with and sqlite is
-# free to move independently. The version is held here only because nothing
-# yet needs a newer one — re-verify a fresh SHA256 against sqlite.org before
-# bumping.
+# free to move independently.
+#
+# Bumped to 3.53.3 at task 6496 (plan 1033 M1) to match Centurion's pin, so
+# that the one `sqlite3` target both trees link is the version both declare
+# (cmake/centurion.cmake § One pin per shared package). SHA256 re-verified
+# independently by downloading the archive from sqlite.org and running
+# `shasum -a 256`; it equals Centurion's. Re-verify again before any bump.
 CPMAddPackage(
   NAME sqlite
-  VERSION 3.50.2
-  URL https://www.sqlite.org/2025/sqlite-amalgamation-3500200.zip
-  URL_HASH SHA256=387991de2834b5da2894119ff4173a9ea0779ea55ebcf53d9a40b24d1dc2484e
+  VERSION 3.53.3
+  URL https://sqlite.org/2026/sqlite-amalgamation-3530300.zip
+  URL_HASH SHA256=646421e12aac110282ef8cc68f1a62d4bb15fc7b8f09da0b53e29ee690500431
   DOWNLOAD_ONLY YES
   EXCLUDE_FROM_ALL YES
   SYSTEM YES
@@ -223,8 +227,13 @@ CPMAddPackage(
 # The consumer target is `CURL::libcurl` (curl's own alias for whichever of
 # the static/shared libraries its build selected — here always the static
 # one, since BUILD_SHARED_LIBS is OFF).
+#
+# VERSION is stated explicitly (task 6496): CPM cannot parse one out of the
+# `curl-8_7_1` tag and recorded this package as version "1", which made
+# Centurion's own `curl 8.21.0` request compare against a meaningless number.
 CPMAddPackage(
   NAME curl
+  VERSION 8.7.1
   URL https://github.com/curl/curl/archive/refs/tags/curl-8_7_1.tar.gz
   URL_HASH SHA256=0e46c856f517602c347bb5fe5b73174f8ee798bc87f1a97235c95761f75fcc28
   SYSTEM YES
@@ -562,3 +571,73 @@ CPMAddPackage(
     "KAHYPAR_PYTHON OFF"
     "KAHYPAR_BUILD_DEBIAN_PACKAGE OFF"
 )
+
+# --- First-party dependencies: external/, never committed -------------------
+#
+# The vendoring rule above (pinned archive, committed under vendor/) exists to
+# protect against THIRD-PARTY upstreams moving or vanishing. It does not apply
+# to repositories this project's owner controls (decision recorded on plan
+# 1033, amending tech-spec D8): they are still pinned by URL + URL_HASH
+# SHA-256, so a build is still exact, but their cache lives under the
+# gitignored `external/` directory and is NEVER committed. Only the hash is
+# the contract; the bytes are re-fetched once per checkout.
+#
+# Mechanism: CPM derives its cache directory from CPM_SOURCE_CACHE at call
+# time, so a NORMAL variable set around a first-party CPMAddPackage call
+# shadows the vendor/ cache entry for that call only. A populated
+# external/<name>/<CUSTOM_CACHE_KEY> is reused without any download, exactly
+# as vendor/ is; an empty one is fetched and hash-checked.
+set(PLANAR_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE PATH
+  "Where CPM caches first-party (owner-controlled) dependency sources; gitignored, never committed")
+
+# --- Centurion (plan 1033 M1, tasks 6495/6496; tech-spec D8, decision 1041) --
+#
+# Centurion becomes Planar's workflow engine (decision 1007); `planar-execute`
+# links `centurion::client` and NOTHING else of it (tech-spec D1, guarded by
+# cmake/architecture.cmake). Pinned to Centurion's first pre-release tag,
+# v0.1.0-alpha.1 (commit 174257e7), cut for this milestone.
+#
+# First-party, so external/, not vendor/: the archive is Centurion's WHOLE
+# source tree including its own committed vendor/ (gRPC 1.82.1, BoringSSL,
+# protobuf 35.1, abseil, ...), ~590 MB expanded (question 984). Centurion
+# vendors gRPC deliberately (its ADR-0032 rejects a system gRPC so generated
+# wire code and runtime share one pinned protobuf).
+#
+# The repository is PRIVATE, so the first configure of a checkout needs a
+# token (the pinned URL 404s anonymously), exactly as Centurion itself does
+# for `etc`:
+#   GITHUB_TOKEN=$(gh auth token) cmake --preset debug
+# Later configures read external/centurion/v0.1.0-alpha.1 and need none.
+# CUSTOM_CACHE_KEY pins that path independently of the auth header (CPM
+# otherwise hashes every download argument into the cache key).
+#
+# DOWNLOAD_ONLY: cmake/centurion.cmake adds the tree as a subdirectory and
+# owns its options, the dependency sharing, and the redirect that points
+# Centurion at its own vendor/ tree.
+#
+# The pin is held in PLANAR_CENTURION_* variables (task 6709) because it has a
+# second reader: cmake/centurion.cmake writes it to centurion-pin.env in the
+# build tree, which install.sh hands to scripts/install-centuriond.sh so the
+# installed daemon is built from, and records, this exact pin.
+set(PLANAR_CENTURION_TAG "v0.1.0-alpha.1")
+set(PLANAR_CENTURION_VERSION "0.1.0-alpha.1")
+set(PLANAR_CENTURION_COMMIT "174257e73dad285716f393043977fecf5ad3f57a")
+set(PLANAR_CENTURION_URL
+  "https://codeload.github.com/rdrsss/centurion/tar.gz/refs/tags/${PLANAR_CENTURION_TAG}")
+set(PLANAR_CENTURION_SHA256 "bd0a09f4309ef303b5385b394f4f0568b5ae0c3a33578e860dd9f28b93018f45")
+if(DEFINED ENV{GITHUB_TOKEN})
+  set(_planar_centurion_auth HTTP_HEADER "Authorization: Bearer $ENV{GITHUB_TOKEN}")
+else()
+  set(_planar_centurion_auth "")
+endif()
+set(CPM_SOURCE_CACHE "${PLANAR_EXTERNAL_DIR}") # normal variable: this call only
+CPMAddPackage(
+  NAME centurion
+  VERSION ${PLANAR_CENTURION_VERSION}
+  URL ${PLANAR_CENTURION_URL}
+  URL_HASH SHA256=${PLANAR_CENTURION_SHA256}
+  CUSTOM_CACHE_KEY ${PLANAR_CENTURION_TAG}
+  ${_planar_centurion_auth}
+  DOWNLOAD_ONLY YES)
+unset(CPM_SOURCE_CACHE) # the vendor/ cache entry is visible again
+unset(_planar_centurion_auth)

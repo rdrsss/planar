@@ -201,6 +201,30 @@
 # cmake/tests/architecture-guard-fixture/layer1-cycle/ for the standing
 # proof.
 
+#
+# The Centurion boundary (plan 1033 M1, task 6708 — pass 4 below): Centurion
+# is added as a subdirectory (cmake/centurion.cmake), so its whole target
+# graph exists in this configure. Planar's planar-execute becomes a Centurion
+# CLIENT (decision 1007), and the boundary is that it is ONLY a client:
+#
+#   1. A planar_* target may link exactly one Centurion target,
+#      `centurion::client`. Any other `centurion_*` edge — store, runtime,
+#      protocol, crypto, anything — is refused by name.
+#   2. Only an execute carrier (the same carrier definition the
+#      no-SQLite-handle exception uses) may REACH centurion::client. Another
+#      binary pulling it in through an intermediate library is refused.
+#   3. centurion::client's own FULL link closure — walked across Centurion's
+#      targets, not only planar_* ones, with aliases resolved — must contain
+#      no Centurion execution component (store, workflow, model, activity,
+#      extension, host, runtime, lua, daemon_*), no Lua, no SQLite, and no
+#      terminal UI. Centurion asserts much of this on its own side
+#      (its cmake/architecture.cmake); Planar re-asserts it here because a
+#      Centurion bump that loosened its own rule would otherwise pass
+#      silently into planar-execute.
+#
+# All three are FATAL at configure with a "Centurion boundary" diagnostic.
+# Standing proofs: cmake/tests/architecture-guard-fixture/centurion-*.
+
 # @brief Classify a planar_module() name into its architecture layer.
 # @param name The module name as passed to planar_module() (e.g. "core",
 #        "engine_identity", "cmd_planar").
@@ -293,6 +317,172 @@ function(_planar_arch_reaches start needle out_var)
     endforeach()
   endwhile()
   set(${out_var} ${_result} PARENT_SCOPE)
+endfunction()
+
+# @brief Resolve a raw link entry to the real CMake target it names: strips
+#        CMake's own `$<LINK_ONLY:...>` wrapper and follows an ALIAS. Sets
+#        out_var to "" when the entry is not a target (a raw flag, a path, a
+#        remaining generator expression).
+# @param entry The link entry as read from (INTERFACE_)LINK_LIBRARIES.
+# @param out_var Variable name (in the caller's scope) to receive the name.
+function(_planar_arch_resolve_target entry out_var)
+  if(entry MATCHES "^\\$<LINK_ONLY:(.+)>$")
+    set(entry "${CMAKE_MATCH_1}")
+  endif()
+  if(entry MATCHES "\\$<" OR NOT TARGET "${entry}")
+    set(${out_var} "" PARENT_SCOPE)
+    return()
+  endif()
+  get_target_property(_aliased "${entry}" ALIASED_TARGET)
+  if(_aliased)
+    set(entry "${_aliased}")
+  endif()
+  set(${out_var} "${entry}" PARENT_SCOPE)
+endfunction()
+
+# @brief Every real target a target links, directly and through its
+#        interface, resolved by _planar_arch_resolve_target().
+# @param tgt A real (non-alias) target name.
+# @param out_var Variable name (in the caller's scope) to receive the list.
+function(_planar_arch_target_links tgt out_var)
+  set(_resolved "")
+  foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_links "${tgt}" ${_prop})
+    if(NOT _links)
+      continue()
+    endif()
+    foreach(_entry IN LISTS _links)
+      _planar_arch_resolve_target("${_entry}" _real)
+      if(_real)
+        list(APPEND _resolved "${_real}")
+      endif()
+    endforeach()
+  endforeach()
+  if(_resolved)
+    list(REMOVE_DUPLICATES _resolved)
+  endif()
+  set(${out_var} "${_resolved}" PARENT_SCOPE)
+endfunction()
+
+# Real target names centurion::client's closure may never contain (header
+# comment, "The Centurion boundary", rule 3).
+set(_PLANAR_CENTURION_FORBIDDEN_IN_CLIENT
+  "^(centurion_(store|workflow|model|activity|extension|host|runtime|runtime_policy|lua|daemon_.*)|lua_static|sqlite3|screen|dom|component|ftxui.*)$")
+
+# @brief Pass 4 of planar_check_architecture(): the Centurion boundary. See
+#        the header comment, "The Centurion boundary". A configure with no
+#        Centurion targets at all has nothing to check and returns cleanly.
+# @param all_names The registered (unprefixed) planar_* module names.
+function(_planar_check_centurion_boundary all_names)
+  set(_client_linkers "")
+  foreach(_name IN LISTS all_names)
+    set(_tgt "planar_${_name}")
+    set(_entries "")
+    foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+      get_target_property(_links "${_tgt}" ${_prop})
+      if(_links)
+        list(APPEND _entries ${_links})
+      endif()
+    endforeach()
+    foreach(_entry IN LISTS _entries)
+      _planar_arch_resolve_target("${_entry}" _real)
+      if(NOT _real MATCHES "^centurion")
+        continue()
+      endif()
+      if(NOT _real STREQUAL "centurion_client")
+        message(FATAL_ERROR
+          "Centurion boundary: ${_tgt} links '${_entry}' (Centurion target "
+          "${_real}). Planar may link centurion::client and nothing else of "
+          "Centurion — planar-execute is a client of the engine, never a "
+          "host of it (decision 1007, plan 1033 task 6708).")
+      endif()
+      list(APPEND _client_linkers "${_name}")
+    endforeach()
+  endforeach()
+  if(_client_linkers)
+    list(REMOVE_DUPLICATES _client_linkers)
+  endif()
+
+  # Rule 2: only an execute carrier may reach a client linker.
+  foreach(_name IN LISTS all_names)
+    if(NOT _client_linkers)
+      break()
+    endif()
+    _planar_module_layer("${_name}" _layer)
+    if(NOT _layer EQUAL 3)
+      continue()
+    endif()
+    set(_via "")
+    foreach(_linker IN LISTS _client_linkers)
+      set(_hit FALSE)
+      if(_linker STREQUAL _name)
+        set(_hit TRUE)
+      else()
+        _planar_arch_reaches("${_name}" "${_linker}" _hit)
+      endif()
+      if(_hit)
+        set(_via "${_linker}")
+        break()
+      endif()
+    endforeach()
+    if(NOT _via)
+      continue()
+    endif()
+    if(_name STREQUAL "cmd_planar_execute")
+      set(_carrier TRUE)
+    else()
+      _planar_arch_reaches("${_name}" "engine_execute" _carrier)
+    endif()
+    if(NOT _carrier)
+      message(FATAL_ERROR
+        "Centurion boundary: planar_${_name} reaches centurion::client "
+        "(through planar_${_via}). Only planar-execute may be a Centurion "
+        "client; every other binary reaches workflow state through "
+        "planar-execute or the Planar database, never the engine directly "
+        "(plan 1033 task 6708).")
+    endif()
+  endforeach()
+
+  # Rule 3: centurion::client's own closure, across every project's targets.
+  # Checked whenever the target EXISTS, not only once a planar_* target links
+  # it, so the pinned Centurion release is graded at the configure that adds
+  # it rather than at the later one that first links it.
+  if(NOT TARGET centurion_client)
+    return()
+  endif()
+  set(_visited "")
+  set(_queue "centurion_client")
+  while(_queue)
+    list(GET _queue 0 _cur)
+    list(REMOVE_AT _queue 0)
+    if(_cur IN_LIST _visited)
+      continue()
+    endif()
+    list(APPEND _visited "${_cur}")
+    if(_cur MATCHES "${_PLANAR_CENTURION_FORBIDDEN_IN_CLIENT}")
+      # Rebuild the chain back to the client for the diagnostic.
+      set(_chain "${_cur}")
+      set(_step "${_cur}")
+      while(DEFINED _parent_${_step})
+        set(_step "${_parent_${_step}}")
+        list(PREPEND _chain "${_step}")
+      endwhile()
+      string(REPLACE ";" " -> " _chain_str "${_chain}")
+      message(FATAL_ERROR
+        "Centurion boundary: centurion::client's link closure reaches "
+        "${_cur} (${_chain_str}). planar-execute links the client, so this "
+        "would put a Centurion execution component, Lua, SQLite or a "
+        "terminal UI inside a Planar binary (plan 1033 task 6708). Pin a "
+        "Centurion release whose client target stays client-only.")
+    endif()
+    _planar_arch_target_links("${_cur}" _next)
+    foreach(_n IN LISTS _next)
+      if(NOT _n IN_LIST _visited AND NOT DEFINED _parent_${_n})
+        set(_parent_${_n} "${_cur}")
+        list(APPEND _queue "${_n}")
+      endif()
+    endforeach()
+  endwhile()
 endfunction()
 
 # @brief Validate the configured target graph against D15 and fail configure,
@@ -544,4 +734,7 @@ function(planar_check_architecture)
       endif()
     endforeach()
   endforeach()
+
+  # Pass 4: the Centurion boundary (see header comment).
+  _planar_check_centurion_boundary("${_all_names}")
 endfunction()

@@ -223,10 +223,22 @@ _planar_add_architecture_guard_test(reentrant-cycle fail
 # diagnostic.
 _planar_add_architecture_guard_test(nontarget-dep-caught fail
   MESSAGES "D15 violation" "-lplanar_scop_ref")
+# The Centurion boundary (plan 1033 task 6708; cmake/architecture.cmake,
+# "The Centurion boundary"): one positive control and one proof per rule.
+_planar_add_architecture_guard_test(centurion-client-legal succeed)
+_planar_add_architecture_guard_test(centurion-other-target fail
+  MESSAGES "Centurion boundary" "planar_engine_execute links 'centurion::store'")
+_planar_add_architecture_guard_test(centurion-non-execute-binary fail
+  MESSAGES "planar_cmd_planar reaches centurion::client" "planar_centurion_bridge")
+# CMake wraps a long diagnostic across lines and the harness matches per
+# line, so the chain is asserted as the fragment that stays on one line.
+_planar_add_architecture_guard_test(centurion-client-closure fail
+  MESSAGES "closure reaches" "centurion_client -> centurion_protocol ->")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(dependencies)   # CPM + vendored packages (cmake/dependencies.cmake)
+include(centurion)      # centurion::client as a subdirectory (cmake/centurion.cmake)
 include(module)         # planar_module() (cmake/module.cmake)
 
 add_subdirectory(src)
