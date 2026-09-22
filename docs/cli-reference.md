@@ -249,7 +249,7 @@ table claimed for years — performs **no** scope comparison.
 | `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit.cpp` |
 | `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision.cpp` |
 | `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision.cpp` |
-| `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task.cpp` |
+| `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task/command.cpp` |
 | `closure compute` | resolved write scope | membership-aware | `src/cmd/planar/handlers/closure.cpp` |
 | `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
 | `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |

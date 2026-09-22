@@ -21,8 +21,8 @@
 /// then `scope`/`audit`/`config`/`local`/`links`/`run`/`feedback` (6635),
 /// and finally the thirty-three remaining singletons (6636). That last
 /// wave deleted `surface.cpp` and the `apply_surface` call with it, which
-/// is why `tree.cpp`'s call order is now the root's AUTHORITATIVE child
-/// order — see `root_app`'s header for what that changed.
+/// is why `main.cppm`'s call order is now the root's authoritative child
+/// order.
 ///
 /// ## One deliberate asymmetry the fold leaves standing (task 6667)
 ///
@@ -515,8 +515,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // ported by then) moved to `planar-ext`. `ext propagate` moved with
       // them conceptually but is not yet wired on EITHER binary — it
       // leaves THIS inventory not because it landed, but because `ext` no
-      // longer has a home on `planar` at all. See tree.cpp's note where
-      // `add_ext` used to be.
+      // longer has a home on `planar` at all.
       //
       // `ext propagate-one` left this inventory at task 6335, and it is the
       // SIXTH over-stated blocker of this milestone. It was carried under the

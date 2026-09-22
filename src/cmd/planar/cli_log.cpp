@@ -10,7 +10,7 @@ import planar.db;
 import planar.engine.config.effective;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 import planar.cliapp.walk;
 
 namespace planar::cmd {

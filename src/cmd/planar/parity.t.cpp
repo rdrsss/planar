@@ -57,7 +57,7 @@
 import std;
 import cli11;
 import planar.cliapp.schema;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 import planar.db;
 import planar.db.migrate;
 

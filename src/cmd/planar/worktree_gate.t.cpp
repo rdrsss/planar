@@ -22,7 +22,7 @@ import cli11;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.surface;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 import planar.cmd.planar.verb_classification;
 import planar.cmd.planar.worktree_gate;
 

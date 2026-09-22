@@ -49,7 +49,7 @@ import planar.db;
 import planar.engine.external;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 
 // AFTER the imports, not before — the header names `std::function` and
 // `std::thread` without including <functional> or <thread> itself.

@@ -1,0 +1,18 @@
+/// @file validate.cppm
+/// @brief CLI declaration for `handoff validate`.
+export module planar.cmd.planar.handlers.handoff.validate;
+
+import std;
+import cli11;
+import planar.cmd.planar.declare;
+
+namespace planar::cmd::handlers::handoff_cli {
+export auto attach_validate(CLI::App* handoff) -> CLI::App* {
+  CLI::App* validate = handoff->add_subcommand("validate", "Validate a pending handoff.");
+  add_string(*validate, "--vendor");
+  add_string(*validate, "--note");
+  add_json(*validate);
+  add_positional(*validate, "handoff-id");
+  return validate;
+}
+} // namespace planar::cmd::handlers::handoff_cli

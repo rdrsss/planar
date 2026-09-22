@@ -395,7 +395,7 @@ writes agent tables or external systems.
 
 ### Handler layout
 
-Per-verb handlers live under `src/cmd/planar/handlers/` as flat files (not grouped into per-domain subdirectories the way the Zig tree's `handlers/plan/`, `handlers/task/`, etc. were). Each handler is a small dispatch function that parses verb-specific args via the CLI wrapper, calls the engine module that owns the domain logic, and emits text or JSON. `ext`, `sync`, and their supporting handlers moved off `planar` entirely onto `planar-ext` at task 6419 (decisions 995–1001); `link`, `unlink`, and `audit` stayed on `planar`.
+The `planar` binary assembles its root `CLI::App` in `src/cmd/planar/main.cppm`. Each root command has a directory under `src/cmd/planar/handlers/` with a `command.cppm` module for its root declaration. Each child CLI node has a sibling module in the same directory (for example, `plan/step_add.cppm` declares `plan step add`). Deeper command paths are encoded in filenames rather than additional directories. Family-specific handlers stay in that family directory; helpers shared by several root commands live under `handlers/shared/`. `dispatch.cpp` remains the generic parser and path-to-handler router. Shared domain logic stays under `src/lib/engine/`. `ext`, `sync`, and their supporting handlers moved off `planar` entirely onto `planar-ext` at task 6419 (decisions 995–1001); `link`, `unlink`, and `audit` stayed on `planar`.
 
 ### Subcommand domains
 

@@ -1,0 +1,19 @@
+/// @file extract_questions.cppm
+/// @brief CLI declaration for `workbench extract-questions`.
+export module planar.cmd.planar.handlers.workbench.extract_questions;
+
+import std;
+import cli11;
+import planar.cmd.planar.declare;
+import planar.cliapp.args;
+import planar.cliapp.surface;
+
+namespace planar::cmd::handlers::workbench_cli {
+export auto attach_extract_questions(CLI::App& workbench) -> CLI::App* {
+  CLI::App* extract_questions =
+      workbench.add_subcommand("extract-questions", "Parse Open questions from top-level workbench specs (read-only).");
+  add_json(*extract_questions);
+  add_positional(*extract_questions, "plan");
+  return extract_questions;
+}
+} // namespace planar::cmd::handlers::workbench_cli

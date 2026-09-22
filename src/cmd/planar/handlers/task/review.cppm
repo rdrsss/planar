@@ -1,0 +1,18 @@
+/// @file review.cppm
+/// @brief CLI declaration for `task review`.
+export module planar.cmd.planar.handlers.task.review;
+
+import std;
+import cli11;
+import planar.cmd.planar.declare;
+
+namespace planar::cmd::handlers::task_cli {
+export auto attach_review(CLI::App& task) -> CLI::App* {
+  CLI::App* review = task.add_subcommand("review", "Reviewer entry point for task diff.");
+  add_bool(*review, "--approve");
+  add_bool(*review, "--request-changes");
+  add_json(*review);
+  add_positional(*review, "task-id");
+  return review;
+}
+} // namespace planar::cmd::handlers::task_cli

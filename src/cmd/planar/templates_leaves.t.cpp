@@ -54,7 +54,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 
 #include "json_envelope_test_support.hpp"
 
