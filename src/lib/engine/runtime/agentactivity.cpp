@@ -723,6 +723,8 @@ auto error_name(agent_error err) -> std::string_view {
     return "UnknownStatus";
   case agent_error::query_failed:
     return "QueryFailed";
+  case agent_error::busy:
+    return "Busy";
   case agent_error::supervisor_mismatch:
     return "SupervisorMismatch";
   case agent_error::attempt_mismatch:

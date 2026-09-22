@@ -47,6 +47,11 @@ auto exec_simple(sqlite3* handle, const char* sql) -> std::expected<void, db_err
 
 } // namespace
 
+auto is_busy(const db_error& err) noexcept -> bool {
+  constexpr int k_sqlite_busy = 5; // SQLITE_BUSY -- see db.cppm's doc comment.
+  return (err.code_ & 0xff) == k_sqlite_busy;
+}
+
 // --- statement --------------------------------------------------------------
 
 statement::statement(sqlite3_stmt* handle) noexcept : _handle(handle) {

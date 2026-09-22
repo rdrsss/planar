@@ -17,6 +17,18 @@ namespace {
 
 constexpr std::string_view k_now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
+/// @brief Classify a failed `begin_transaction(lock_mode::immediate)` call
+/// (task 6843): a competing writer that still holds the lock after this
+/// connection's own `busy_timeout` window elapsed is `agent_error::busy`,
+/// never `query_failed` -- a caller (an orchestrator, or an operator
+/// reading the CLI's `Busy` tag) should retry, not escalate.
+/// @param err The failure `begin_transaction` returned.
+/// @return `agent_error::busy` for a post-timeout SQLITE_BUSY, else
+/// `agent_error::query_failed`.
+auto classify_begin_failure(const db::db_error& err) -> aa::agent_error {
+  return db::is_busy(err) ? aa::agent_error::busy : aa::agent_error::query_failed;
+}
+
 /// @brief The shared eligibility selector behind BOTH `pull_next` and
 /// `peek_next`.
 ///
@@ -232,7 +244,7 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
     -> std::expected<terminal_result, aa::agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
 
   auto held = aa::get_claim_by_token(conn, targs.claim_token);
@@ -333,7 +345,7 @@ auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args,
     -> std::expected<claim, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
 
   auto acquired = aa::acquire_claim(conn, args);
@@ -406,7 +418,7 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     -> std::expected<pull_result, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
 
   auto const picked = pick_next_eligible(conn, args.plan_id);
@@ -553,7 +565,7 @@ auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t
     -> std::expected<terminal_result, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
 
   auto held = aa::get_claim_by_token(conn, claim_token);
@@ -651,7 +663,7 @@ auto associate_supervisor(db::connection& conn, std::string_view claim_token, bo
                           std::optional<std::string_view> attempt) -> std::expected<associate_result, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
   auto held = aa::get_claim_by_token(conn, claim_token);
   if (!held) {
@@ -710,7 +722,7 @@ auto supervised_heartbeat(db::connection& conn, std::string_view claim_token, st
     -> std::expected<claim, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
   auto const sup = aa::get_supervision(conn, claim_token);
   if (!sup) {

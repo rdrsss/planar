@@ -422,6 +422,11 @@ export enum class agent_error : std::uint8_t {
   illegal_transition, ///< The task status transition the verb needs is not legal.
   unknown_status,     ///< The task's current status is not a known member.
   query_failed,       ///< Backstop for an underlying SQL failure.
+  /// A post-timeout `SQLITE_BUSY`: the connection could not acquire a
+  /// competing lock even after its `busy_timeout` window elapsed (task
+  /// 6843; see `db::is_busy`). Distinct from `query_failed` because an
+  /// operator or orchestrator should retry, not escalate.
+  busy,
   /// The caller is not the claim's supervisor: a caller terminal verb or
   /// lease extension on an engine claim, or an engine verb on a caller
   /// claim, or a supervisor change back to `caller` (plan 1033 D3). New
