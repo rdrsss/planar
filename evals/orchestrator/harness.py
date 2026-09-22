@@ -19,8 +19,9 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import arena
 
@@ -101,6 +102,256 @@ class EvalBlocked(RuntimeError):
         self.artifacts = artifacts
 
 
+class SchemaValidationError(EvalFailure):
+    """A case document violates `evals/orchestrator/schema.json`, or the
+    schema itself uses a construct `validate_against_json_schema` does not
+    understand (task 6891). The two are both hard errors: a schema keyword
+    the checker cannot interpret must never be silently treated as
+    satisfied, so an editor who widens `schema.json` past this subset
+    finds out at the next `load_cases()` rather than losing enforcement
+    quietly.
+    """
+
+
+# `schema.json` was documentary only until task 6891: nothing loaded it, so
+# a `required` edit there was prose, not enforcement. This is the on-disk
+# schema `validate_case` now checks every case against.
+CASE_SCHEMA_PATH = ROOT / "evals" / "orchestrator" / "schema.json"
+
+# Schema keywords `validate_against_json_schema` understands. Split into
+# metadata (carries no constraint; safe to ignore) and constraint keywords
+# (interpreted below) so the "unsupported construct" check has a single
+# source of truth for what this minimal, stdlib-only subset actually
+# implements -- exactly the constructs `schema.json` uses today: type,
+# required, properties, enum, items, plus const/pattern/minLength/
+# minItems/uniqueItems/minimum/maximum/maxProperties/additionalProperties/
+# allOf/if-then/contains/not, which schema.json also uses.
+_SCHEMA_METADATA_KEYWORDS = {"$schema", "$id", "title", "description", "default"}
+_SCHEMA_CONSTRAINT_KEYWORDS = {
+    "type",
+    "required",
+    "properties",
+    "additionalProperties",
+    "enum",
+    "const",
+    "pattern",
+    "minLength",
+    "items",
+    "minItems",
+    "uniqueItems",
+    "minimum",
+    "maximum",
+    "maxProperties",
+    "allOf",
+    "if",
+    "then",
+    "contains",
+    "not",
+}
+_SCHEMA_KNOWN_KEYWORDS = _SCHEMA_METADATA_KEYWORDS | _SCHEMA_CONSTRAINT_KEYWORDS
+
+_SCHEMA_CACHE: dict[str, Any] | None = None
+
+
+def load_case_schema() -> dict[str, Any]:
+    """Read and cache `schema.json`. A module-level cache (rather than a
+    read on every case) keeps `load_cases()` from re-parsing the same file
+    once per case file on disk.
+    """
+    global _SCHEMA_CACHE
+    if _SCHEMA_CACHE is None:
+        _SCHEMA_CACHE = read_json(CASE_SCHEMA_PATH)
+    return _SCHEMA_CACHE
+
+
+def _json_type_name(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if value is None:
+        return "null"
+    return "unknown"  # pragma: no cover - every JSON value matches above
+
+
+def _matches_schema_type(value: Any, expected: str) -> bool:
+    actual = _json_type_name(value)
+    if expected == "number":
+        return actual in ("number", "integer")
+    return actual == expected
+
+
+def validate_against_json_schema(
+    schema: Any, instance: Any, *, path: str = "$"
+) -> None:
+    """Validate `instance` against `schema` using a minimal, stdlib-only
+    JSON-Schema subset (task 6891): `type`, `required`, `properties`,
+    `additionalProperties`, `enum`, `const`, `pattern`, `minLength`,
+    `items`, `minItems`, `uniqueItems`, `minimum`, `maximum`,
+    `maxProperties`, `allOf`, `if`/`then`, `contains`, and `not` -- exactly
+    the constructs `evals/orchestrator/schema.json` uses. A schema object
+    carrying any OTHER keyword raises `SchemaValidationError` naming it
+    rather than silently passing: this checker never treats an
+    unrecognized construct as satisfied.
+
+    Raises `SchemaValidationError` on the first violation found (a
+    structural mismatch, or an unsupported keyword), never returns a
+    boolean.
+    """
+    if not isinstance(schema, dict):
+        return
+    unsupported = sorted(set(schema) - _SCHEMA_KNOWN_KEYWORDS)
+    if unsupported:
+        raise SchemaValidationError(
+            f"{path}: schema uses unsupported construct(s): "
+            + ", ".join(unsupported)
+        )
+
+    if "type" in schema:
+        expected = schema["type"]
+        expected_types = expected if isinstance(expected, list) else [expected]
+        if not any(_matches_schema_type(instance, t) for t in expected_types):
+            raise SchemaValidationError(
+                f"{path}: expected type {expected!r}, got "
+                f"{_json_type_name(instance)}"
+            )
+
+    if "const" in schema and instance != schema["const"]:
+        raise SchemaValidationError(
+            f"{path}: expected const {schema['const']!r}, got {instance!r}"
+        )
+
+    if "enum" in schema and instance not in schema["enum"]:
+        raise SchemaValidationError(
+            f"{path}: value {instance!r} is not one of {schema['enum']!r}"
+        )
+
+    if "pattern" in schema and isinstance(instance, str):
+        if re.search(schema["pattern"], instance) is None:
+            raise SchemaValidationError(
+                f"{path}: {instance!r} does not match pattern "
+                f"{schema['pattern']!r}"
+            )
+
+    if "minLength" in schema and isinstance(instance, str):
+        if len(instance) < schema["minLength"]:
+            raise SchemaValidationError(
+                f"{path}: length {len(instance)} is below minLength "
+                f"{schema['minLength']}"
+            )
+
+    if (
+        isinstance(instance, (int, float))
+        and not isinstance(instance, bool)
+        and ("minimum" in schema or "maximum" in schema)
+    ):
+        if "minimum" in schema and instance < schema["minimum"]:
+            raise SchemaValidationError(
+                f"{path}: {instance} is below minimum {schema['minimum']}"
+            )
+        if "maximum" in schema and instance > schema["maximum"]:
+            raise SchemaValidationError(
+                f"{path}: {instance} exceeds maximum {schema['maximum']}"
+            )
+
+    if isinstance(instance, dict):
+        if "required" in schema:
+            missing = [key for key in schema["required"] if key not in instance]
+            if missing:
+                raise SchemaValidationError(
+                    f"{path}: missing required key(s): {', '.join(missing)}"
+                )
+        if "maxProperties" in schema and len(instance) > schema["maxProperties"]:
+            raise SchemaValidationError(
+                f"{path}: object has {len(instance)} properties, exceeds "
+                f"maxProperties {schema['maxProperties']}"
+            )
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            for key, subschema in properties.items():
+                if key in instance:
+                    validate_against_json_schema(
+                        subschema, instance[key], path=f"{path}.{key}"
+                    )
+        additional = schema.get("additionalProperties")
+        allowed = set(properties) if isinstance(properties, dict) else set()
+        if additional is False:
+            extra = sorted(set(instance) - allowed)
+            if extra:
+                raise SchemaValidationError(
+                    f"{path}: unexpected additional propert"
+                    f"{'y' if len(extra) == 1 else 'ies'}: {', '.join(extra)}"
+                )
+        elif isinstance(additional, dict):
+            for key in sorted(set(instance) - allowed):
+                validate_against_json_schema(
+                    additional, instance[key], path=f"{path}.{key}"
+                )
+
+    if isinstance(instance, list):
+        if "minItems" in schema and len(instance) < schema["minItems"]:
+            raise SchemaValidationError(
+                f"{path}: array has {len(instance)} items, below minItems "
+                f"{schema['minItems']}"
+            )
+        if "uniqueItems" in schema and schema["uniqueItems"]:
+            seen: list[Any] = []
+            for item in instance:
+                if item in seen:
+                    raise SchemaValidationError(f"{path}: array items are not unique")
+                seen.append(item)
+        items_schema = schema.get("items")
+        if isinstance(items_schema, dict):
+            for index, item in enumerate(instance):
+                validate_against_json_schema(
+                    items_schema, item, path=f"{path}[{index}]"
+                )
+        if "contains" in schema:
+            contains_schema = schema["contains"]
+            matched = False
+            for item in instance:
+                try:
+                    validate_against_json_schema(contains_schema, item, path=path)
+                except SchemaValidationError:
+                    continue
+                matched = True
+                break
+            if not matched:
+                raise SchemaValidationError(f"{path}: no item satisfies 'contains'")
+
+    if "not" in schema:
+        try:
+            validate_against_json_schema(schema["not"], instance, path=path)
+        except SchemaValidationError:
+            pass
+        else:
+            raise SchemaValidationError(
+                f"{path}: instance must not validate against 'not' schema"
+            )
+
+    if "if" in schema:
+        try:
+            validate_against_json_schema(schema["if"], instance, path=path)
+        except SchemaValidationError:
+            condition_met = False
+        else:
+            condition_met = True
+        if condition_met and "then" in schema:
+            validate_against_json_schema(schema["then"], instance, path=path)
+
+    if "allOf" in schema:
+        for subschema in schema["allOf"]:
+            validate_against_json_schema(subschema, instance, path=path)
+
+
 @dataclass
 class Options:
     mode: str
@@ -124,6 +375,66 @@ class LifecycleContext:
 
 def pass_line(message: str) -> None:
     print(f"PASS: {message}", flush=True)
+
+
+# One `(case_id, status, message)` tuple per non-passing unit, where
+# `status` is `"fail"` or `"blocked"`. A passing unit contributes nothing
+# (C6 / task 6840: the aggregate report only needs to name what went
+# wrong).
+CaseOutcome = tuple[str, str, str]
+
+
+def collect_case_failures(
+    entries: list[tuple[Path, dict[str, Any]]],
+    run_one: Callable[[Path, dict[str, Any]], None],
+) -> list[CaseOutcome]:
+    """Run `run_one` for every `(path, case)` entry without stopping at the
+    first failure (C6 / task 6840). Returns one outcome per case that
+    raised `EvalFailure` or `EvalBlocked`; a case that raises neither is
+    simply not represented in the result, so all N graders still execute
+    even when earlier ones fail.
+    """
+    outcomes: list[CaseOutcome] = []
+    for path, case in entries:
+        try:
+            run_one(path, case)
+        except EvalBlocked as exc:
+            outcomes.append((case["id"], "blocked", str(exc)))
+        except EvalFailure as exc:
+            outcomes.append((case["id"], "fail", str(exc)))
+    return outcomes
+
+
+def emit_aggregate_report(
+    outcomes: list[CaseOutcome], *, total: int, unit: str, pass_message: str
+) -> None:
+    """Print the C6 aggregate report for a batch of `total` attempted
+    units given only the non-passing `outcomes`. Every unit passing prints
+    `pass_message` via `pass_line` unchanged from the pre-aggregation
+    behaviour (single-case `--case` runs keep this path); any failing or
+    blocked unit instead prints one `FAIL SUMMARY: N of M <unit> failed`
+    header followed by one line per non-passing unit, so an operator sees
+    every failure from a single invocation rather than only the first.
+    """
+    if not outcomes:
+        pass_line(pass_message)
+        return
+    print(f"FAIL SUMMARY: {len(outcomes)} of {total} {unit} failed", file=sys.stderr)
+    for case_id, status, message in outcomes:
+        print(f"  {status}: {case_id}: {message}", file=sys.stderr)
+
+
+def batch_exit_code(outcomes: list[CaseOutcome]) -> int:
+    """Precedence for a batch of `CaseOutcome`s (C6 / task 6840): any hard
+    failure wins over any block, which wins over an all-pass batch. A
+    blocked-but-not-failed batch still exits 75 so the distinct blocked
+    exit code (see `cli_main`) survives aggregation.
+    """
+    if any(status == "fail" for _, status, _ in outcomes):
+        return 1
+    if any(status == "blocked" for _, status, _ in outcomes):
+        return 75
+    return 0
 
 
 def write_text(path: Path, value: str) -> None:
@@ -329,6 +640,10 @@ def validate_case(path: Path, case: Any) -> None:
 
     if not isinstance(case, dict):
         invalid("root must be an object")
+    try:
+        validate_against_json_schema(load_case_schema(), case)
+    except SchemaValidationError as exc:
+        invalid(f"schema.json violation: {exc}")
     if case.get("schema_version") != 1 or case.get("skill") != "orchestrator":
         invalid("unsupported schema_version or skill")
     case_id = case.get("id")
@@ -413,6 +728,28 @@ def validate_case(path: Path, case: Any) -> None:
             invalid("controlled lifecycle fixture setup is required")
         if not isinstance(tasks, list) or len(tasks) != 1:
             invalid("lifecycle cases require exactly one task")
+        forbidden_events = expected.get("forbidden_events", [])
+        unemittable = [
+            name for name in forbidden_events if name not in EMITTABLE_EVENTS
+        ]
+        if unemittable:
+            invalid(
+                "forbidden_events name an event no fixture path can emit: "
+                + ", ".join(sorted(unemittable))
+            )
+        post_state = expected.get("post_state")
+        if not isinstance(post_state, dict):
+            invalid("lifecycle cases require expected.post_state")
+        missing_keys = [
+            key
+            for key in ("task_status", "file_value")
+            if not post_state.get(key)
+        ]
+        if missing_keys:
+            invalid(
+                "lifecycle cases require expected.post_state to set: "
+                + ", ".join(missing_keys)
+            )
 
 
 def select_cases(
@@ -444,14 +781,14 @@ def regex_search(pattern: str, text: str, *, multiline: bool = False) -> bool:
         raise EvalFailure(f"invalid evaluation regex {pattern!r}: {exc}") from exc
 
 
-def grade_contract(case_path: Path, case: dict[str, Any]) -> None:
+def grade_contract(case_path: Path, case: dict[str, Any], root: Path = ROOT) -> None:
     case_id = case["id"]
     for assertion in case["contract_assertions"]:
         assertion_id = assertion["id"]
         matched = 0
         paths = assertion["paths"]
         for relative in paths:
-            path = ROOT / relative
+            path = root / relative
             if not path.is_file():
                 raise EvalFailure(
                     f"{case_id}/{assertion_id} references missing path: {relative}"
@@ -506,7 +843,10 @@ def grade_coherence(root: Path = ROOT) -> None:
         # literal feedback H2 sections on every user-invocable skill, which
         # costs ~100 words of structural envelope over the condensed form the
         # original budget was calibrated against.
-        "skills/src/pl-orchestrator.md": 2650,
+        # 2650->2800: task 6492 / PR #181 grew pl-orchestrator.md past 2650;
+        # plan 1065 M4 slug hh-drop-word-budgets removes these budgets
+        # entirely, so this is a bump to unblock, not a re-calibration.
+        "skills/src/pl-orchestrator.md": 2800,
         "agents/orchestrator.md": 5500,
         "agents/coder.md": 2200,
         "agents/reviewer.md": 2200,
@@ -696,6 +1036,260 @@ def grade_contract_negative_control() -> None:
     )
 
 
+class SelfTestConstructionError(EvalFailure):
+    """An assertion's seeded-violation self-test could not be built.
+
+    D4 (decision, artifact 619): an assertion without a self-test fails the
+    suite. An unconstructable mutation is therefore a suite failure, never a
+    silently skipped self-test -- so this is a subclass of `EvalFailure`,
+    not a distinct control-flow branch a caller could swallow.
+    """
+
+
+def named_selftest_failure(case_id: str, exc: SelfTestConstructionError) -> str:
+    """Prefix a `SelfTestConstructionError`'s message with `case_id` (task
+    6893). The error is raised where only the assertion id is in scope, so
+    its raw message already starts with `"<assertion-id>: ..."`; this
+    makes the combined message `"<case-id>/<assertion-id>: ..."` -- the
+    same `label` shape `run_assertion_selftests` already uses for the
+    `CaseOutcome` tuple -- without double-prefixing a message some other
+    caller already combined.
+    """
+    message = str(exc)
+    if message.startswith(f"{case_id}/"):
+        return message
+    return f"{case_id}/{message}"
+
+
+def _split_top_level(pattern: str, sep: str) -> list[str]:
+    """Split `pattern` on `sep` only where parenthesis depth is 0 and the
+    separator is not escaped. Used to isolate top-level alternation
+    (`a|b`) from alternation nested inside a group (`(a|b)`)."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < n:
+            current.append(pattern[i : i + 2])
+            i += 2
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == sep and depth == 0:
+            parts.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    parts.append("".join(current))
+    return parts
+
+
+def literal_from_pattern(pattern: str) -> str | None:
+    """Derive one literal string that satisfies `pattern`, for seeding a
+    must-not-match assertion's forbidden text (C3 / D4).
+
+    Handles the shapes this suite's `none`-mode assertions actually use:
+    plain text, an escaped literal metacharacter (`\\$`), a dropped
+    zero-width anchor (`\\b`, `^`, `$`), and the first arm of an
+    alternation (top-level `a|b`, or grouped `(a|b)`). Any other regex
+    construct (character classes, quantifiers, unescaped wildcards) has no
+    single deterministic literal, so this returns `None` rather than
+    guessing -- the caller treats `None` as a suite failure, not a skip.
+    """
+    pattern = python_pattern(pattern)
+    alternatives = _split_top_level(pattern, "|")
+    if len(alternatives) > 1:
+        return literal_from_pattern(alternatives[0])
+    out: list[str] = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            if i + 1 >= n:
+                return None
+            nxt = pattern[i + 1]
+            if nxt == "b":
+                i += 2
+                continue
+            if nxt in "sSdDwWnrt":
+                return None
+            out.append(nxt)
+            i += 2
+            continue
+        if ch == "(":
+            depth = 1
+            j = i + 1
+            while j < n and depth:
+                if pattern[j] == "\\":
+                    j += 2
+                    continue
+                if pattern[j] == "(":
+                    depth += 1
+                elif pattern[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if depth != 0:
+                return None
+            group = pattern[i + 1 : j]
+            if group.startswith("?:"):
+                group = group[2:]
+            if j + 1 < n and pattern[j + 1] in "*?+{":
+                return None
+            literal = literal_from_pattern(group)
+            if literal is None:
+                return None
+            out.append(literal)
+            i = j + 1
+            continue
+        if ch in "^$":
+            i += 1
+            continue
+        if ch in ".*+?[]{}|":
+            return None
+        out.append(ch)
+        i += 1
+    result = "".join(out)
+    return result or None
+
+
+def seed_selftest_mutation(temp_root: Path, assertion: dict[str, Any]) -> None:
+    """Mutate the copies of `assertion["paths"]` under `temp_root` so this
+    ONE assertion, evaluated in isolation, is guaranteed to fail: the
+    matched text is deleted for a must-match assertion (mode `all`/`any`),
+    or a literal satisfying the pattern is appended for a must-not-match
+    assertion (mode `none`). Raises `SelfTestConstructionError` when no
+    mutation can be built -- never returns having done nothing.
+    """
+    assertion_id = assertion["id"]
+    mode = assertion["mode"]
+    pattern = assertion["pattern"]
+    flags = re.MULTILINE | (re.DOTALL if assertion.get("multiline", False) else 0)
+    try:
+        compiled = re.compile(python_pattern(pattern), flags)
+    except re.error as exc:
+        raise SelfTestConstructionError(
+            f"{assertion_id}: invalid evaluation regex {pattern!r}: {exc}"
+        ) from exc
+    if mode in ("all", "any"):
+        mutated = False
+        for relative in assertion["paths"]:
+            target = temp_root / relative
+            text = target.read_text(encoding="utf-8")
+            if compiled.search(text) is None:
+                continue
+            # Remove EVERY occurrence, not just the first: a path where the
+            # pattern appears more than once still counts as matched after
+            # deleting a single occurrence, which would leave the self-test
+            # unable to falsify the assertion.
+            target.write_text(compiled.sub("", text), encoding="utf-8")
+            mutated = True
+        if not mutated:
+            raise SelfTestConstructionError(
+                f"{assertion_id}: must-match pattern has no literal occurrence "
+                "to delete in any declared path"
+            )
+        return
+    if mode == "none":
+        literal = literal_from_pattern(pattern)
+        if literal is None:
+            raise SelfTestConstructionError(
+                f"{assertion_id}: forbidden pattern has no constructible literal "
+                "to seed"
+            )
+        target = temp_root / assertion["paths"][0]
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(f"\n{literal}\n")
+        return
+    raise SelfTestConstructionError(f"{assertion_id}: unsupported assertion mode {mode!r}")
+
+
+def run_one_assertion_selftest(case_id: str, assertion: dict[str, Any]) -> None:
+    """Build a mutated copy of `assertion["paths"]`, seed the violation this
+    assertion is supposed to catch, and require `grade_contract` to reject
+    it. Raises `EvalFailure` (via `SelfTestConstructionError` or the
+    re-raised assertion below) rather than returning a boolean, so a caller
+    cannot silently ignore either "could not construct" or "did not fail".
+    """
+    temp_root = Path(tempfile.mkdtemp(prefix="planar-eval-selftest-"))
+    try:
+        for relative in assertion["paths"]:
+            source = ROOT / relative
+            if not source.is_file():
+                raise SelfTestConstructionError(
+                    f"{assertion['id']}: references missing path: {relative}"
+                )
+            target = temp_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        seed_selftest_mutation(temp_root, assertion)
+        single_case = {"id": case_id, "contract_assertions": [assertion]}
+        try:
+            grade_contract(Path("<selftest>"), single_case, root=temp_root)
+        except EvalFailure:
+            return
+        raise EvalFailure(
+            f"{case_id}/{assertion['id']}: self-test did not fail under its "
+            "seeded violation"
+        )
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def run_assertion_selftests(
+    cases: list[tuple[Path, dict[str, Any]]]
+) -> tuple[int, int, list[CaseOutcome]]:
+    """Run `run_one_assertion_selftest` for every contract assertion across
+    `cases` (C3 / D4), without stopping at the first one that fails to
+    falsify (C6 / task 6840). Returns `(self_tests_run, total_assertions,
+    failures)`: `self_tests_run` counts only the assertions whose self-test
+    passed, so a caller that still wants the old equality check can compare
+    it against `total_assertions` -- but `failures` is authoritative and is
+    empty exactly when the two counts match. An assertion added without a
+    working self-test -- which, given generation is automatic here, can
+    only mean this function's call site was bypassed -- shows up as a
+    `failures` entry rather than a silent pass.
+    """
+    total_assertions = 0
+    self_tests_run = 0
+    failures: list[CaseOutcome] = []
+    for _, case in cases:
+        if "contract" not in case["tiers"]:
+            continue
+        for assertion in case["contract_assertions"]:
+            total_assertions += 1
+            case_id = case["id"]
+            label = f"{case_id}/{assertion['id']}"
+            try:
+                run_one_assertion_selftest(case_id, assertion)
+            except SelfTestConstructionError as exc:
+                # Task 6893: `SelfTestConstructionError` is raised deep
+                # inside `seed_selftest_mutation` / `run_one_assertion_selftest`,
+                # which only ever see the assertion, so its own message
+                # names the assertion id but not the case id. The same
+                # assertion id can be reused across cases, so a message
+                # with only the assertion id cannot tell an operator WHICH
+                # case's self-test failed to construct. Wrap it here,
+                # where both ids are in scope, rather than threading
+                # case_id further down.
+                failures.append((label, "fail", named_selftest_failure(case_id, exc)))
+                continue
+            except EvalFailure as exc:
+                failures.append((label, "fail", str(exc)))
+                continue
+            self_tests_run += 1
+    return self_tests_run, total_assertions, failures
+
+
 def create_artifacts(
     case_id: str, label: str, results_dir: Path | None
 ) -> Path:
@@ -720,9 +1314,17 @@ def write_grade(
     case_id: str,
     options: Options,
     reason: str | None = None,
-) -> None:
+    *,
+    target: Path | None = None,
+) -> Path:
+    """Write the grade record. Writes `artifact_dir/grade.json` by default;
+    `target` (used by `regrade_artifacts`, C6 / task 6840) redirects the
+    write to a different path so a regrade of retained artifacts never
+    overwrites the original run's verdict.
+    """
+    path = target if target is not None else artifact_dir / "grade.json"
     write_json(
-        artifact_dir / "grade.json",
+        path,
         {
             "status": status,
             "case_id": case_id,
@@ -732,6 +1334,7 @@ def write_grade(
             "reason": reason,
         },
     )
+    return path
 
 
 def live_failure(
@@ -1528,6 +2131,27 @@ CLAIM_VERBS = {"pull", "claim"}
 # violation.
 CLAIM_GATE_TERMINAL_VERBS = TERMINAL_VERBS - {"release"}
 
+# The controlled-classic fixture's own `log_event` calls
+# (fixtures/controlled-classic/control.sh) -- events NOT derived from a
+# wrapped `planar-agent` verb. Kept as an explicit manifest, checked against
+# the script itself by `test_fixture_log_events_matches_control_script`
+# (task 6836), rather than re-parsing the shell script at import time.
+FIXTURE_LOG_EVENTS = {
+    "coder-finished",
+    "review-request-changes",
+    "review-approved",
+    "test-coder-no-expansion",
+    "task-completed-before-review",
+}
+
+# Every lifecycle event name a controlled fixture run can actually produce:
+# either a successful wrapped verb (OBSERVED_EVENT_NAMES) or a `log_event`
+# call in the specialist script (FIXTURE_LOG_EVENTS). `validate_case`
+# rejects a lifecycle case whose `forbidden_events` names anything outside
+# this set -- an event that can never fire makes the negative assertion
+# unfalsifiable (task 6836, D4).
+EMITTABLE_EVENTS = set(OBSERVED_EVENT_NAMES.values()) | FIXTURE_LOG_EVENTS
+
 
 def observed_event_name(record: dict[str, Any]) -> str | None:
     argv = record.get("argv") or []
@@ -2071,10 +2695,14 @@ def grade_lifecycle_artifacts(
                 options,
                 f"event {event} count was {actual}, expected {expected_count}",
             )
+    # `task_status` and `file_value` are REQUIRED on every lifecycle case's
+    # `expected.post_state` (validate_case, task 6837/D4): there is no
+    # longer a silent-skip branch here for either key being absent, because
+    # a lifecycle case can no longer reach this function without them.
     post_state = case.get("expected", {}).get("post_state", {})
     task = read_json(artifact_dir / "task.after.json")
-    expected_status = post_state.get("task_status")
-    if expected_status and task.get("status") != expected_status:
+    expected_status = post_state["task_status"]
+    if task.get("status") != expected_status:
         raise live_failure(
             artifact_dir,
             case_id,
@@ -2094,8 +2722,8 @@ def grade_lifecycle_artifacts(
     actual_value = (artifact_dir / "repo" / "src" / "value.txt").read_text(
         encoding="utf-8"
     ).strip()
-    expected_value = post_state.get("file_value")
-    if expected_value and actual_value != expected_value:
+    expected_value = post_state["file_value"]
+    if actual_value != expected_value:
         raise live_failure(
             artifact_dir,
             case_id,
@@ -2113,9 +2741,27 @@ def grade_lifecycle_artifacts(
 
 
 def run_lifecycle_fixture_replay(
-    case_path: Path, case: dict[str, Any], options: Options
+    case_path: Path,
+    case: dict[str, Any],
+    options: Options,
+    *,
+    seed_violation: str | None = None,
 ) -> None:
-    context = prepare_lifecycle_fixture(case_path, case, options, "fixture")
+    """Replay the controlled-classic fixture end-to-end and grade it.
+
+    `seed_violation`, when set, is forwarded as `EVAL_SEED_VIOLATION` to
+    every `.eval/control.sh` invocation (task 6892). The fixture's own
+    knob (see `control.sh`) then emits the named event, so this same code
+    path -- not a synthetic events.jsonl the grader has never actually
+    produced -- is what `run_lifecycle_fixture_negative_control` drives to
+    prove `grade_lifecycle_artifacts` can fail a real run, not just the
+    two isolated unit halves (emitting the event, and rejecting a
+    hand-built event list) that existed before.
+    """
+    label = "fixture-negative-control" if seed_violation else "fixture"
+    context = prepare_lifecycle_fixture(case_path, case, options, label)
+    if seed_violation:
+        context.env["EVAL_SEED_VIOLATION"] = seed_violation
     try:
         claim = run_json(
             [
@@ -2193,6 +2839,61 @@ def run_lifecycle_fixture_replay(
         if exc.artifacts is None:
             exc.artifacts = context.artifacts
         raise
+
+
+# The fixture's seeded-violation knob (control.sh) only ever emits this one
+# event; kept as a single named constant so the negative control and its
+# candidate search below cannot drift from the string `control.sh` reads.
+LIFECYCLE_SEEDED_VIOLATION = "task-completed-before-review"
+
+
+def run_lifecycle_fixture_negative_control(
+    cases: list[tuple[Path, dict[str, Any]]], options: Options
+) -> None:
+    """Task 6892: prove the fixture-replay lane can actually FAIL a run,
+    end-to-end, not just its two previously-isolated unit halves (a test
+    that the fixture emits the seeded event, and a separate test that
+    feeds a hand-built event list into `grade_lifecycle_artifacts`).
+
+    Runs a REAL `run_lifecycle_fixture_replay` -- claim, controlled
+    coder/reviewer, complete, collect, grade -- against the real
+    controlled-classic fixture in the arena, with
+    `EVAL_SEED_VIOLATION=task-completed-before-review` forcing the fixture
+    to emit the one event every repository lifecycle case's
+    `forbidden_events` already forbids. The replay is REQUIRED to raise
+    `EvalFailure` naming that forbidden event; anything else (no raise, or
+    a raise for an unrelated reason) is itself a suite failure, so this
+    is a fail-closed negative control, not a smoke test that only proves
+    the happy path runs.
+    """
+    seeded = LIFECYCLE_SEEDED_VIOLATION
+    candidates = [
+        (path, case)
+        for path, case in cases
+        if "lifecycle" in case.get("tiers", [])
+        and seeded in case.get("expected", {}).get("forbidden_events", [])
+    ]
+    if not candidates:
+        raise EvalFailure(
+            "lifecycle fixture negative control needs a repository case "
+            f"whose expected.forbidden_events declares {seeded!r}"
+        )
+    path, case = candidates[0]
+    try:
+        run_lifecycle_fixture_replay(path, case, options, seed_violation=seeded)
+    except EvalFailure as exc:
+        if f"forbidden event observed: {seeded}" not in str(exc):
+            raise EvalFailure(
+                "lifecycle fixture negative control failed for the wrong "
+                f"reason (expected a rejected forbidden event {seeded!r}): {exc}"
+            ) from exc
+        if exc.artifacts is not None and not options.keep and options.results_dir is None:
+            shutil.rmtree(exc.artifacts, ignore_errors=True)
+        return
+    raise EvalFailure(
+        f"lifecycle fixture negative control was not detected: {case['id']} "
+        f"did not fail under EVAL_SEED_VIOLATION={seeded}"
+    )
 
 
 def append_file(target: Path, source: Path) -> None:
@@ -2388,9 +3089,25 @@ def options_from_run(artifact_dir: Path) -> Options:
     )
 
 
+def regrade_artifact_path(artifact_dir: Path) -> Path:
+    """Return the dated sibling path a regrade writes to (C6 / task 6840),
+    e.g. `grade.20260922T161530123456Z.json` next to the original
+    `grade.json`. Microsecond precision keeps back-to-back regrades of the
+    same retained run from colliding on the same filename.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return artifact_dir / f"grade.{stamp}.json"
+
+
 def regrade_artifacts(
     artifact_dir: Path, cases: list[tuple[Path, dict[str, Any]]]
-) -> None:
+) -> Path:
+    """Regrade a retained run's artifacts. Writes the fresh verdict to a
+    new dated file alongside the original `grade.json` and leaves that
+    original untouched (C6 / task 6840) -- a regrade that disagrees with
+    the retained run must not silently overwrite the verdict the run
+    actually produced. Returns the path written.
+    """
     artifact_dir = artifact_dir.resolve()
     options = options_from_run(artifact_dir)
     metadata_path = (
@@ -2410,9 +3127,13 @@ def regrade_artifacts(
         grade_lifecycle_artifacts(case, artifact_dir, options)
     else:
         raise EvalFailure(f"artifact mode is not regradable: {options.mode}")
-    write_grade(artifact_dir, "pass", case_id, options)
+    regrade_path = write_grade(
+        artifact_dir, "pass", case_id, options, target=regrade_artifact_path(artifact_dir)
+    )
     pass_line(f"{case_id}: retained {options.mode} artifacts regraded")
+    print(f"regraded: {regrade_path}")
     print(f"artifacts: {artifact_dir}")
+    return regrade_path
 
 
 def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
@@ -2469,11 +3190,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         pass_line("coherence grader negative control")
         grade_contract_negative_control()
         pass_line("contract grader negative control")
-        for path, case in selected:
-            if "contract" in case["tiers"]:
-                grade_contract(path, case)
-        pass_line(f"{len(selected)} orchestrator case definitions and deterministic contracts")
-        return 0
+        contract_entries = [
+            (path, case) for path, case in selected if "contract" in case["tiers"]
+        ]
+        contract_outcomes = collect_case_failures(contract_entries, grade_contract)
+        emit_aggregate_report(
+            contract_outcomes,
+            total=len(contract_entries),
+            unit="orchestrator case definitions and deterministic contracts",
+            pass_message=(
+                f"{len(selected)} orchestrator case definitions and "
+                "deterministic contracts"
+            ),
+        )
+        self_tests_run, total_assertions, selftest_outcomes = run_assertion_selftests(
+            selected
+        )
+        emit_aggregate_report(
+            selftest_outcomes,
+            total=total_assertions,
+            unit="contract assertions with a falsifiable seeded-violation self-test",
+            pass_message=(
+                f"{self_tests_run} of {total_assertions} contract assertions have a "
+                "falsifiable seeded-violation self-test"
+            ),
+        )
+        return batch_exit_code(contract_outcomes + selftest_outcomes)
     if options.mode == "live":
         if options.vendor not in {"codex", "claude"}:
             raise EvalFailure("--vendor must be codex or claude")
@@ -2493,10 +3235,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         runnable = [entry for entry in selected if "lifecycle" in entry[1]["tiers"]]
         if not runnable:
             raise EvalFailure("no selected cases declare the lifecycle tier")
-        for path, case in runnable:
-            run_lifecycle_fixture_replay(path, case, options)
-        pass_line(f"{len(runnable)} controlled lifecycle fixture replays")
-        return 0
+        # Task 6892: proves the fixture-replay lane can actually FAIL a run
+        # before trusting the pass-only loop below, the same way the
+        # contract lane's negative controls run before its own pass loop.
+        # Uses `cases` (every loaded case), not `selected`, so a `--case`
+        # filter narrowing `runnable` never skips this control.
+        run_lifecycle_fixture_negative_control(cases, options)
+        pass_line("lifecycle fixture negative control")
+        fixture_outcomes = collect_case_failures(
+            runnable,
+            lambda path, case: run_lifecycle_fixture_replay(path, case, options),
+        )
+        emit_aggregate_report(
+            fixture_outcomes,
+            total=len(runnable),
+            unit="controlled lifecycle fixture replays",
+            pass_message=f"{len(runnable)} controlled lifecycle fixture replays",
+        )
+        return batch_exit_code(fixture_outcomes)
     if options.vendor not in {"codex", "claude"}:
         raise EvalFailure("--vendor must be codex or claude")
     if options.surface != "agent":
