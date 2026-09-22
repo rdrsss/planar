@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -1308,40 +1310,33 @@ class ObservedLogOrderingTest(unittest.TestCase):
         self.assertEqual([r["pid"] for r in ordered], [999, 100, 200])
 
     def test_merge_lifecycle_events_breaks_a_ts_tie_by_pid(self) -> None:
+        # `read_observed_records` already sorts its own stream by (ts, pid,
+        # seq) via the on-disk `<ts>-<pid>-<seq>.json` filename, independent
+        # of what `merge_lifecycle_events` does with its own sort key -- so
+        # two observed records alone cannot distinguish the merge's sort
+        # key from a ts-only one; the pre-sorted input already comes out
+        # right either way. Use the BOUNDARY-event stream instead (raw
+        # `event_objects()` in FILE order, unsorted), with two events
+        # sharing the same `ts` and only `pid` differing, written to disk
+        # in the WRONG (descending-pid) order. Only a real (ts, pid, seq)
+        # sort in `merge_lifecycle_events` puts the lower pid first; a
+        # mutant reverting the sort key to ts-only is a stable sort that
+        # preserves file order (pid 500 first) and this assertion catches
+        # it (task 6883).
         with tempfile.TemporaryDirectory() as raw_tmp:
             root = Path(raw_tmp)
             observed_dir = root / "observed"
-            # Same ts, two different wrapper pids -- the lower pid's
-            # terminal verb must sort first.
-            write_observed_record(
-                observed_dir,
-                observed_record(
-                    ts=3.0,
-                    seq=0,
-                    pid=500,
-                    argv=["complete", "--claim", "tok-2"],
-                    stdout=terminal_stdout(claim_token="tok-2"),
-                ),
-            )
-            write_observed_record(
-                observed_dir,
-                observed_record(
-                    ts=3.0,
-                    seq=0,
-                    pid=100,
-                    argv=["complete", "--claim", "tok-1"],
-                    stdout=terminal_stdout(claim_token="tok-1"),
-                ),
-            )
             events_path = root / "events.jsonl"
-            events_path.write_text("", encoding="utf-8")
+            events_path.write_text(
+                json.dumps({"event": "review-approved", "source": "controlled-reviewer", "ts": 3.0, "pid": 500})
+                + "\n"
+                + json.dumps({"event": "coder-finished", "source": "controlled-coder", "ts": 3.0, "pid": 100})
+                + "\n",
+                encoding="utf-8",
+            )
             events = harness.merge_lifecycle_events(observed_dir, events_path)
-            # Both name "task-completed"; distinguish by which claim token
-            # produced them via the underlying records, read back in the
-            # same (ts, pid, seq) order the merge used.
-            records = harness.read_observed_records(observed_dir)
-            self.assertEqual([r["pid"] for r in records], [100, 500])
-            self.assertEqual([e["event"] for e in events], ["task-completed", "task-completed"])
+            self.assertEqual([e["event"] for e in events], ["coder-finished", "review-approved"])
+            self.assertEqual([e["pid"] for e in events], [100, 500])
 
 
 class ObservedLogGraderTest(unittest.TestCase):
@@ -2221,6 +2216,57 @@ class LiveInvocationGrantTest(unittest.TestCase):
         self.assertNotIn(" ", arg)
 
 
+class CliMainExitMappingTest(unittest.TestCase):
+    """`cli_main` maps arena fail-closed errors like `EvalFailure` (task 6885).
+
+    Before this fix, `main()` raising `VendorAuthError`/`VendorStagingError`/
+    `ArenaIsolationError` was uncaught in the `__main__` block and surfaced
+    as a Python traceback instead of the harness's normal exit-coded
+    failure path. Assert exit code, stderr message, and NO traceback for
+    each of the three arena errors, plus the pre-existing `EvalFailure`
+    case as a control.
+    """
+
+    def _run_cli_main_with(self, exc: BaseException) -> tuple[int, str]:
+        buf = io.StringIO()
+        with mock.patch.object(harness, "main", side_effect=exc):
+            with contextlib.redirect_stderr(buf):
+                code = harness.cli_main([])
+        return code, buf.getvalue()
+
+    def test_eval_failure_maps_to_exit_1_no_traceback(self) -> None:
+        code, stderr = self._run_cli_main_with(harness.EvalFailure("boom"))
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL: boom", stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_arena_isolation_error_maps_to_exit_1_no_traceback(self) -> None:
+        code, stderr = self._run_cli_main_with(
+            arena.ArenaIsolationError("PLANAR_DB escaped the arena root")
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL: PLANAR_DB escaped the arena root", stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_vendor_staging_error_maps_to_exit_1_no_traceback(self) -> None:
+        code, stderr = self._run_cli_main_with(
+            arena.VendorStagingError("missing required commands/ directory")
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL: missing required commands/ directory", stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_vendor_auth_error_maps_to_exit_1_no_traceback_and_no_token(self) -> None:
+        code, stderr = self._run_cli_main_with(
+            arena.VendorAuthError("CLAUDE_CODE_OAUTH_TOKEN not set")
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL: CLAUDE_CODE_OAUTH_TOKEN not set", stderr)
+        self.assertNotIn("Traceback", stderr)
+        # The message names the missing variable, never a credential value.
+        self.assertNotIn("sk-", stderr)
+
+
 class DocsHonestyTest(unittest.TestCase):
     """The eval docs claim only gated targets (task 6834, spec § C6).
 
@@ -2280,11 +2326,16 @@ class DocsHonestyTest(unittest.TestCase):
         makefile_text = (cls.REPO_ROOT / "Makefile").read_text(encoding="utf-8")
         return set(re.findall(r"(?m)^([A-Za-z0-9_.-]+):", makefile_text))
 
-    @staticmethod
-    def _line_matches_term(line: str, term: str) -> bool:
-        if term == "CI":
-            return re.search(r"\bCI\b", line) is not None
-        return term in line
+    # Strips backtick-quoted code spans before term matching so a doc line
+    # merely NAMING a command or verb (`` `make smoke` ``, `` `planar-agent
+    # release` ``) does not trip a cadence-claim check aimed at prose
+    # (task 6882): a code span is a literal, not a cadence assertion.
+    _CODE_SPAN = re.compile(r"`[^`]*`")
+
+    @classmethod
+    def _line_matches_term(cls, line: str, term: str) -> bool:
+        prose = cls._CODE_SPAN.sub("", line)
+        return re.search(r"\b" + re.escape(term) + r"\b", prose) is not None
 
     @classmethod
     def _line_is_honest(cls, line: str, targets: set[str]) -> bool:
@@ -2386,6 +2437,34 @@ class DocsHonestyTest(unittest.TestCase):
         denial_example = "There is no CI in this repository.\n"
         self.assertEqual(
             self._find_violations(Path("denial.md"), denial_example, targets), []
+        )
+
+    def test_term_inside_backticks_is_not_a_cadence_claim(self) -> None:
+        """Naming a command/verb in code span is not a cadence claim (task 6882)."""
+        targets = self._makefile_targets()
+
+        code_span_examples = (
+            "Run `make smoke` to check the binary locally.\n",
+            "The `planar-agent release` verb transitions the claim.\n",
+        )
+        for example in code_span_examples:
+            self.assertEqual(
+                self._find_violations(Path("codespan.md"), example, targets),
+                [],
+                f"code-span occurrence wrongly flagged as a cadence claim: {example!r}",
+            )
+
+    def test_bare_prose_term_outside_backticks_still_fails(self) -> None:
+        """Word-boundary matching does not blunt genuine bare cadence claims."""
+        targets = self._makefile_targets()
+
+        violations = self._find_violations(
+            Path("prose.md"), "We release nightly to keep things fresh.\n", targets
+        )
+        self.assertTrue(
+            violations,
+            "an unanchored 'release'/'nightly' cadence claim outside "
+            "backticks must still be flagged",
         )
 
 

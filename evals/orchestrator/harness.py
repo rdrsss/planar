@@ -1857,6 +1857,7 @@ def merge_lifecycle_events(
                         "event": name,
                         "source": "planar-agent",
                         "ts": record.get("ts"),
+                        "pid": record.get("pid"),
                         "seq": record.get("seq"),
                     },
                 )
@@ -2511,16 +2512,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def cli_main(argv: Sequence[str] | None = None) -> int:
+    """Run `main()` and map every fail-closed exception to an exit code.
+
+    `EvalBlocked` / `EvalFailure` are the harness's own exit-coded failure
+    types. `arena.ArenaIsolationError`, `arena.VendorStagingError`, and
+    `arena.VendorAuthError` are the fail-closed arena checks
+    (`assert_isolated` / `stage_vendor_config` / `assert_vendor_auth`) that
+    raise before any vendor host starts; they are routed through the same
+    exit-coded failure path as `EvalFailure` rather than left to propagate
+    as a bare traceback (task 6885) -- a message to stderr and a nonzero
+    exit, never a token value.
+    """
     try:
-        raise SystemExit(main())
+        return main(argv)
     except EvalBlocked as exc:
         print(f"BLOCKED: {exc}", file=sys.stderr)
         if exc.artifacts:
             print(f"artifacts retained: {exc.artifacts}", file=sys.stderr)
-        raise SystemExit(75)
+        return 75
     except EvalFailure as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         if exc.artifacts:
             print(f"artifacts retained: {exc.artifacts}", file=sys.stderr)
-        raise SystemExit(1)
+        return 1
+    except (
+        arena.ArenaIsolationError,
+        arena.VendorStagingError,
+        arena.VendorAuthError,
+    ) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli_main())

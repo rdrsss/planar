@@ -32,9 +32,14 @@ out to the real install, are the intended exception.
 fail-closed check before a host spawns: staging a vendor's read surfaces
 is not the same as authenticating it, and Keychain-backed `claude` login
 does not follow into a scratch `CLAUDE_CONFIG_DIR` at all. Every
-live/lifecycle call site therefore runs the same four steps in order —
-`make_arena()` -> `assert_isolated()` -> `stage_vendor_config()` ->
-`assert_vendor_auth()` — before any vendor host process starts.
+live/lifecycle call site in `evals/orchestrator/harness.py` runs the same
+four steps in order — `make_arena()` -> `assert_isolated()` ->
+`stage_vendor_config()` -> `assert_vendor_auth()` — before any vendor host
+process starts. Not every caller runs all four: the planning harness
+(`evals/planning/harness.py`) only ever prompts its vendor host with prose
+(no slash commands, skills, or agents to resolve), so it calls
+`make_arena()` -> `assert_isolated()` -> `assert_vendor_auth()` and
+deliberately skips `stage_vendor_config()`.
 
 Callers own an arena's lifecycle. This module never deletes a root; a
 run's `--keep` / failure rules decide whether the artifact directory (and

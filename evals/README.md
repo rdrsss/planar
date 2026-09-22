@@ -116,9 +116,11 @@ use.
 Staging the config directory is not the same as authenticating it:
 Keychain-backed `claude` login is bound to the operator's default
 `CLAUDE_CONFIG_DIR` and does not follow into a scratch one, so a staged
-run still answers "Not logged in" without an explicit token. Provide
-auth via the arena's pass-through allowlist before running a live or
-lifecycle case — `CLAUDE_CODE_OAUTH_TOKEN` (mint one with
+run still answers "Not logged in" without an explicit token. The token
+itself is only ever passed through the subprocess's process environment
+(the arena's pass-through allowlist) — it is never written into the
+scratch arena tree as a file. Provide auth via the arena's pass-through
+allowlist before running a live or lifecycle case — `CLAUDE_CODE_OAUTH_TOKEN` (mint one with
 `claude setup-token`) or `ANTHROPIC_API_KEY` for `--vendor claude`; a
 staged `$CODEX_HOME/auth.json` (the default when the operator's real
 `~/.codex/auth.json` exists) or `OPENAI_API_KEY` for `--vendor codex`.
