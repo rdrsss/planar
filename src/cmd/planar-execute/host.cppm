@@ -26,6 +26,7 @@ enum class host_failure : std::uint8_t {
   state_dir, ///< The profile's state directory could not be created or written.
   lock,      ///< The exclusive startup lock could not be taken, and no host was serving.
   spawn,     ///< The daemon binary is missing or could not be started.
+  occupied,  ///< A live process claims the socket but is not accepting on it.
   readiness, ///< A daemon was started but did not accept within the budget.
 };
 
@@ -98,10 +99,31 @@ struct host_layout {
 /// @return The layout that was written, or the failure.
 [[nodiscard]] auto write_daemon_config(const profile& resolved) -> std::expected<host_layout, host_error>;
 
+/// @brief The daemon's published ownership claim over one profile's socket.
+///
+/// Centurion writes this record (`<runtime>/host-<digest>.json`) when it
+/// becomes ready, and it is the only evidence a client has about WHO owns a
+/// socket that is not answering. Its identity fields are also what the
+/// compatibility tuple compares (tech-spec D7).
+struct endpoint_record {
+  std::int64_t pid_{};            ///< The owning process.
+  std::string  instance_id_;      ///< Per-instance identity.
+  std::string  protocol_version_; ///< Wire contract the owner serves, e.g. `centurion.v1`.
+  std::string  socket_target_;    ///< The target the owner published.
+  std::string  start_token_;      ///< Process-start attestation; distinguishes a reused pid.
+};
+
+/// @brief Read the profile's published endpoint record, when one exists.
+/// @param layout The profile's layout.
+/// @return The record, or nullopt when absent or unreadable.
+[[nodiscard]] auto read_endpoint_record(const host_layout& layout) -> std::optional<endpoint_record>;
+
 /// @brief Injected effects, so the decision sequence is testable without a daemon.
 struct host_hooks {
   /// Whether a daemon is accepting on this socket right now.
   std::function<bool(const std::filesystem::path&)> probe_;
+  /// Whether a pid is still running; the ownership evidence for a silent socket.
+  std::function<bool(std::int64_t)> alive_{};
   /// Start the daemon detached; returns a diagnostic on failure.
   std::function<std::expected<void, std::string>(const host_layout&, const std::filesystem::path&)> spawn_;
   /// Wait between readiness polls.
@@ -122,9 +144,12 @@ struct host_hooks {
 ///     one waits for readiness rather than starting a second.
 ///  3. Re-probe while holding the lock. The winner of a race between step 1
 ///     and step 2 has already started one.
-///  4. Remove a stale socket, spawn, and wait for the probe to succeed within
-///     the budget. A socket file that no daemon accepts on is evidence of a
-///     crashed owner, and it is removed only while holding the lock.
+///  4. Decide what a silent socket means, from the owner's published record.
+///     A record whose pid is still alive is a daemon that owns the socket and
+///     is not answering: that is REFUSED (`occupied`), because deleting a live
+///     owner's socket would strand it. Only when no live process claims it is
+///     the socket removed — under the lock — and a daemon spawned and waited
+///     for within the budget.
 ///
 /// @param resolved The resolved profile.
 /// @param daemon The installed `centuriond`.

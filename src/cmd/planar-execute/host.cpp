@@ -2,6 +2,8 @@
 /// @brief Implementation of the profile's daemon lifecycle (plan 1033 M2, tasks 6502/6710).
 module;
 
+#include <glaze/glaze.hpp>
+
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -86,6 +88,55 @@ public:
 };
 
 } // namespace
+
+/// @brief Glaze-reflected shapes. A NAMED namespace: Glaze's reflection takes
+/// the address of a variable templated on the type, which a type with no
+/// linkage cannot provide (the same trap M0 hit in `engine.cpp`).
+namespace wire {
+
+/// @brief The subset of Centurion's endpoint record this client reads.
+struct endpoint_record_wire {
+  std::int64_t pid{};
+  std::string  instance_id;
+  std::string  protocol_version;
+  std::string  socket_target;
+  struct process_wire {
+    std::int64_t pid{};
+    std::string  start_token;
+  } process{};
+};
+
+} // namespace wire
+
+auto read_endpoint_record(const host_layout& layout) -> std::optional<endpoint_record> {
+  std::error_code failure;
+  if (!std::filesystem::is_directory(layout.runtime_, failure)) {
+    return std::nullopt;
+  }
+  // The file name carries a digest of the identity, so the record is found by
+  // shape rather than by recomputing Centurion's digest here.
+  for (const auto& entry : std::filesystem::directory_iterator(layout.runtime_, failure)) {
+    const auto name = entry.path().filename().string();
+    if (!name.starts_with("host-") || !name.ends_with(".json")) {
+      continue;
+    }
+    std::ifstream              in(entry.path(), std::ios::binary);
+    const std::string          text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    wire::endpoint_record_wire record_wire;
+    // Unknown keys are IGNORED on purpose: this record is Centurion's to
+    // extend, and a client that refused a record carrying a new field would
+    // turn every upstream addition into a startup failure here.
+    if (glz::read<glz::opts{.error_on_unknown_keys = false}>(record_wire, text)) {
+      continue;
+    }
+    return endpoint_record{.pid_              = record_wire.pid,
+                           .instance_id_      = record_wire.instance_id,
+                           .protocol_version_ = record_wire.protocol_version,
+                           .socket_target_    = record_wire.socket_target,
+                           .start_token_      = record_wire.process.start_token};
+  }
+  return std::nullopt;
+}
 
 auto layout_for(const profile& resolved) -> host_layout {
   const std::filesystem::path home{resolved.state_dir};
@@ -187,9 +238,21 @@ auto ensure_host(const profile& resolved, const std::filesystem::path& daemon, c
     return host_endpoint{.target_ = target, .socket_ = layout.socket_, .origin_ = host_origin::joined};
   }
 
-  // 4. A socket nothing accepts on is a crashed owner's leftover. Removing it
-  //    is safe ONLY under the lock, which is why it happens here and not in
-  //    the probe above.
+  // 4. A silent socket is either a crashed owner's leftover or a live daemon
+  //    that is not answering, and those need opposite handling. The owner's
+  //    published record is the only evidence available: if its process is
+  //    still alive, removing the socket would strand a running daemon, so
+  //    this refuses instead.
+  const auto alive =
+      hooks.alive_ ? hooks.alive_ : [](std::int64_t pid) { return pid > 0 && ::kill(static_cast<pid_t>(pid), 0) == 0; };
+  if (const auto record = read_endpoint_record(layout); record.has_value() && alive(record->pid_)) {
+    return fail(host_failure::occupied,
+                std::format("pid {} still claims {} but is not accepting; it may be starting, wedged or "
+                            "serving another protocol ({}). See {}",
+                            record->pid_, layout.socket_.string(),
+                            record->protocol_version_.empty() ? "unknown" : record->protocol_version_, layout.log_.string()));
+  }
+
   std::error_code ignored;
   std::filesystem::remove(layout.socket_, ignored);
 

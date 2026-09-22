@@ -28,6 +28,7 @@ using planar::cmd::execute::host_origin;
 using planar::cmd::execute::layout_for;
 using planar::cmd::execute::loopback_port;
 using planar::cmd::execute::profile;
+using planar::cmd::execute::read_endpoint_record;
 using planar::cmd::execute::write_daemon_config;
 
 /// @brief A temp state directory, removed with the case.
@@ -73,11 +74,13 @@ struct scripted_hooks {
   int                                   spawns                  = 0;     ///< How many times spawn was called.
   bool                                  socket_present_at_spawn = false; ///< Whether a socket file existed when spawn ran.
   std::string                           spawn_error;                     ///< Non-empty makes spawn fail.
+  bool                                  owner_alive = false;             ///< What the pid-liveness evidence answers.
   std::chrono::steady_clock::time_point clock{};                         ///< Fake now, advanced by sleep.
 
   [[nodiscard]] auto hooks() -> host_hooks {
     return host_hooks{
         .probe_ = [this](const std::filesystem::path&) { return serving; },
+        .alive_ = [this](std::int64_t) { return owner_alive; },
         .spawn_ = [this](const host_layout& layout, const std::filesystem::path&) -> std::expected<void, std::string> {
           ++spawns;
           socket_present_at_spawn = std::filesystem::exists(layout.socket_);
@@ -220,6 +223,79 @@ TEST_CASE("a socket nothing accepts on is removed before a daemon is started", "
   REQUIRE(ensured.has_value());
   CHECK(script.spawns == 1);
   // The evidence: by the time the daemon was started, the stale file was gone.
+  CHECK_FALSE(script.socket_present_at_spawn);
+}
+
+namespace {
+
+/// @brief Write an endpoint record of the shape Centurion publishes.
+auto publish_record(const host_layout& layout, std::int64_t pid) -> void {
+  std::filesystem::create_directories(layout.runtime_);
+  std::ofstream(layout.runtime_ / "host-deadbeef.json")
+      << std::format(R"({{"schema":1,"instance_id":"abc","protocol_version":"centurion.v1",)"
+                     R"("socket_target":"unix:{}","pid":{},"attested":true,)"
+                     R"("process":{{"pid":{},"start_token":"darwin.tbsd:1.2"}},"ready_at_ms":1}})",
+                     layout.socket_.string(), pid, pid);
+}
+
+} // namespace
+
+TEST_CASE("the owner's published record is read back", "[execute][host]") {
+  const scratch_state scratch("record");
+  const auto          layout = layout_for(scratch.make_profile());
+  publish_record(layout, 4242);
+
+  const auto record = read_endpoint_record(layout);
+  REQUIRE(record.has_value());
+  CHECK(record->pid_ == 4242);
+  CHECK(record->protocol_version_ == "centurion.v1");
+  CHECK(record->start_token_ == "darwin.tbsd:1.2");
+
+  SECTION("no record at all reads as absent rather than as a failure") {
+    const scratch_state bare("record-absent");
+    CHECK_FALSE(read_endpoint_record(layout_for(bare.make_profile())).has_value());
+  }
+}
+
+TEST_CASE("a live owner that is not accepting is refused, not evicted", "[execute][host]") {
+  // Deleting the socket of a daemon that is merely slow to answer would strand
+  // a running process. The published record's pid is the only evidence there
+  // is, so a live one means refuse.
+  const scratch_state scratch("occupied");
+  const auto          resolved = scratch.make_profile();
+  const auto          layout   = layout_for(resolved);
+  std::filesystem::create_directories(layout.runtime_);
+  std::ofstream(layout.socket_) << "";
+  publish_record(layout, 4242);
+
+  scripted_hooks script;
+  script.owner_alive = true;
+
+  auto ensured = ensure_host(resolved, "/nonexistent/centuriond", script.hooks(), std::chrono::milliseconds{200});
+  REQUIRE_FALSE(ensured.has_value());
+  CHECK(ensured.error().kind_ == host_failure::occupied);
+  CHECK(ensured.error().message_.contains("4242"));
+  CHECK(script.spawns == 0);
+  // The live owner's socket is still there.
+  CHECK(std::filesystem::exists(layout.socket_));
+}
+
+TEST_CASE("a crashed owner's socket is removed and replaced", "[execute][host]") {
+  const scratch_state scratch("crashed");
+  const auto          resolved = scratch.make_profile();
+  const auto          layout   = layout_for(resolved);
+  std::filesystem::create_directories(layout.runtime_);
+  std::ofstream(layout.socket_) << "";
+  publish_record(layout, 4242);
+
+  scripted_hooks script;
+  script.owner_alive    = false; // the pid is gone
+  script.serve_on_spawn = true;
+
+  auto ensured = ensure_host(resolved, "/nonexistent/centuriond", script.hooks());
+  REQUIRE(ensured.has_value());
+  CHECK(ensured->origin_ == host_origin::spawned);
+  CHECK(script.spawns == 1);
   CHECK_FALSE(script.socket_present_at_spawn);
 }
 
