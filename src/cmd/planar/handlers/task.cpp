@@ -102,6 +102,29 @@ auto map_task_error_for(pl::task_error err, std::string_view verb) -> domain_err
   return error_from_body(kind, std::format("{}: {}", verb, zig_error_name(err)));
 }
 
+/// @brief Resolve `--body`'s `@path` grammar, mapping a read failure onto
+/// the same refusal `artifact update --body`'s `body_from_flag`
+/// (handlers/artifact.cpp) already uses. A literal `@path` token must
+/// never reach the stored body silently (task 6848).
+///
+/// ORACLE-MATCHED SHAPE, not independently derived: `error: read --body:
+/// FileNotFound` at exit 2, and it does NOT name the path — that asymmetry
+/// with `--from-file`'s refusal is `artifact`'s own and is pinned there;
+/// this mirrors it rather than improving on it.
+/// @param raw The raw `--body` value, when the flag was passed at all.
+/// @return The resolved body, unset when the flag was not passed, or the
+/// refusal.
+auto task_body_from_flag(std::optional<std::string> raw) -> std::expected<std::optional<std::string>, domain_error> {
+  if (!raw.has_value()) {
+    return std::optional<std::string>{};
+  }
+  auto read = pl::read_body(*raw);
+  if (!read) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "read --body: FileNotFound"));
+  }
+  return std::optional<std::string>{std::move(*read)};
+}
+
 /// @brief The oracle's TWO-LINE active-claim refusal, verbatim.
 ///
 /// Four of the five status-flip verbs print this; `task cancel` does NOT —
@@ -303,6 +326,12 @@ auto task_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                         "task add: the $EDITOR body flow is not implemented in this build (no process-spawn seam); "
                         "pass `--body <text>` or `--editor=false`"));
   }
+
+  auto resolved_body = task_body_from_flag(std::move(body));
+  if (!resolved_body) {
+    return std::unexpected(resolved_body.error());
+  }
+  body = std::move(*resolved_body);
 
   // TASK 6340: `--plan` and `--parent` are resolved BEFORE the insert. Both
   // are foreign keys, so a nonexistent id used to reach SQLite and surface as
@@ -626,9 +655,14 @@ auto task_update(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(guarded.error());
   }
 
+  auto resolved_body = task_body_from_flag(cliapp::flag_string(args, "--body"));
+  if (!resolved_body) {
+    return std::unexpected(resolved_body.error());
+  }
+
   pl::task_update_args patch{};
   patch.title           = cliapp::flag_string(args, "--title");
-  patch.body            = cliapp::flag_string(args, "--body");
+  patch.body            = std::move(*resolved_body);
   patch.priority        = cliapp::flag_int(args, "--priority");
   patch.next_action     = cliapp::flag_string(args, "--next-action");
   patch.due_at          = cliapp::flag_string(args, "--due");
