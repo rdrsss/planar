@@ -393,6 +393,8 @@ auto is_open(task_status s) -> bool {
   return s == task_status::todo || s == task_status::doing || s == task_status::blocked;
 }
 
+} // namespace
+
 /// @brief Clear `blocked` on every dependent of `blocker_id` whose blocker
 /// set is now fully terminal.
 ///
@@ -411,6 +413,15 @@ auto is_open(task_status s) -> bool {
 /// Cross-entity auto-transition is not novel here: `recompute_plan` below
 /// already transitions a task's parent PLAN from seven call sites in this
 /// file.
+///
+/// EXPORTED (task 6875): the `planar-agent complete` terminal path
+/// (`planar.engine.runtime.agentatomic`) needs this same roll-up when a
+/// claim completes a task to `done` -- that path is layer 2 same as this
+/// module and cannot import it directly (D15/D18), so it is injected as a
+/// `task_policy` callable and layer 3
+/// (`planar.cmd.planar_agent.policy::task_policy()`) binds it to this
+/// function, exactly as it already does for `check_transition` and
+/// `recompute_plan`.
 /// @param conn An open, migrated database connection.
 /// @param blocker_id The task that just became terminal.
 /// @return Success, or the first query failure.
@@ -458,8 +469,6 @@ auto clear_unblocked_dependents(db::connection& conn, std::int64_t blocker_id) -
   }
   return {};
 }
-
-} // namespace
 
 auto task_status_from_text(std::string_view s) -> std::optional<task_status> {
   if (s == "todo") {

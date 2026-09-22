@@ -52,6 +52,16 @@ auto task_policy() -> engine::runtime::agentatomic::task_policy {
           return std::unexpected(aa::agent_error::query_failed);
         }
       },
+      .clear_unblocked_dependents = [](db::connection& conn, std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
+        auto const cleared = engine::planning::clear_unblocked_dependents(conn, blocker_id);
+        if (cleared) {
+          return {};
+        }
+        // The roll-up's only failure mode is a query/statement failure
+        // (see the module doc); it does not run the transition matrix, so
+        // there is no illegal_transition/unknown_status branch to map.
+        return std::unexpected(aa::agent_error::query_failed);
+      },
   };
 }
 

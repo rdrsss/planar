@@ -282,6 +282,19 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
     return std::unexpected(flipped.error());
   }
 
+  // Mirrors `planar.engine.planning.task`'s own terminal paths
+  // (`mark_done`, `mark_cancelled`, and `update_task` on a terminal
+  // patch): the roll-up runs immediately after the flip, in the same
+  // transaction, and only when the flip actually landed on a terminal
+  // status. `complete` is the only terminal verb this module has that
+  // does (`fail`/`release` return the task to `todo`; `block_work` never
+  // reaches this function) — task 6875.
+  if (targs.task_to == "done") {
+    if (auto const unblocked = policy.clear_unblocked_dependents(conn, held->entity_id); !unblocked) {
+      return std::unexpected(unblocked.error());
+    }
+  }
+
   auto const closed = aa::close_open_actions_for_claim(conn, held->id, targs.result, targs.summary);
   if (!closed) {
     return std::unexpected(closed.error());
