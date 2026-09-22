@@ -19,8 +19,9 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import arena
 
@@ -124,6 +125,66 @@ class LifecycleContext:
 
 def pass_line(message: str) -> None:
     print(f"PASS: {message}", flush=True)
+
+
+# One `(case_id, status, message)` tuple per non-passing unit, where
+# `status` is `"fail"` or `"blocked"`. A passing unit contributes nothing
+# (C6 / task 6840: the aggregate report only needs to name what went
+# wrong).
+CaseOutcome = tuple[str, str, str]
+
+
+def collect_case_failures(
+    entries: list[tuple[Path, dict[str, Any]]],
+    run_one: Callable[[Path, dict[str, Any]], None],
+) -> list[CaseOutcome]:
+    """Run `run_one` for every `(path, case)` entry without stopping at the
+    first failure (C6 / task 6840). Returns one outcome per case that
+    raised `EvalFailure` or `EvalBlocked`; a case that raises neither is
+    simply not represented in the result, so all N graders still execute
+    even when earlier ones fail.
+    """
+    outcomes: list[CaseOutcome] = []
+    for path, case in entries:
+        try:
+            run_one(path, case)
+        except EvalBlocked as exc:
+            outcomes.append((case["id"], "blocked", str(exc)))
+        except EvalFailure as exc:
+            outcomes.append((case["id"], "fail", str(exc)))
+    return outcomes
+
+
+def emit_aggregate_report(
+    outcomes: list[CaseOutcome], *, total: int, unit: str, pass_message: str
+) -> None:
+    """Print the C6 aggregate report for a batch of `total` attempted
+    units given only the non-passing `outcomes`. Every unit passing prints
+    `pass_message` via `pass_line` unchanged from the pre-aggregation
+    behaviour (single-case `--case` runs keep this path); any failing or
+    blocked unit instead prints one `FAIL SUMMARY: N of M <unit> failed`
+    header followed by one line per non-passing unit, so an operator sees
+    every failure from a single invocation rather than only the first.
+    """
+    if not outcomes:
+        pass_line(pass_message)
+        return
+    print(f"FAIL SUMMARY: {len(outcomes)} of {total} {unit} failed", file=sys.stderr)
+    for case_id, status, message in outcomes:
+        print(f"  {status}: {case_id}: {message}", file=sys.stderr)
+
+
+def batch_exit_code(outcomes: list[CaseOutcome]) -> int:
+    """Precedence for a batch of `CaseOutcome`s (C6 / task 6840): any hard
+    failure wins over any block, which wins over an all-pass batch. A
+    blocked-but-not-failed batch still exits 75 so the distinct blocked
+    exit code (see `cli_main`) survives aggregation.
+    """
+    if any(status == "fail" for _, status, _ in outcomes):
+        return 1
+    if any(status == "blocked" for _, status, _ in outcomes):
+        return 75
+    return 0
 
 
 def write_text(path: Path, value: str) -> None:
@@ -914,29 +975,34 @@ def run_one_assertion_selftest(case_id: str, assertion: dict[str, Any]) -> None:
 
 def run_assertion_selftests(
     cases: list[tuple[Path, dict[str, Any]]]
-) -> tuple[int, int]:
+) -> tuple[int, int, list[CaseOutcome]]:
     """Run `run_one_assertion_selftest` for every contract assertion across
-    `cases` (C3 / D4). Returns `(self_tests_run, total_assertions)`; the
-    caller asserts the two are equal so an assertion added without a
-    self-test -- which, given generation is automatic here, can only mean
-    this function's call site was bypassed -- fails the suite rather than
-    silently passing.
+    `cases` (C3 / D4), without stopping at the first one that fails to
+    falsify (C6 / task 6840). Returns `(self_tests_run, total_assertions,
+    failures)`: `self_tests_run` counts only the assertions whose self-test
+    passed, so a caller that still wants the old equality check can compare
+    it against `total_assertions` -- but `failures` is authoritative and is
+    empty exactly when the two counts match. An assertion added without a
+    working self-test -- which, given generation is automatic here, can
+    only mean this function's call site was bypassed -- shows up as a
+    `failures` entry rather than a silent pass.
     """
     total_assertions = 0
     self_tests_run = 0
+    failures: list[CaseOutcome] = []
     for _, case in cases:
         if "contract" not in case["tiers"]:
             continue
         for assertion in case["contract_assertions"]:
             total_assertions += 1
-            run_one_assertion_selftest(case["id"], assertion)
+            label = f"{case['id']}/{assertion['id']}"
+            try:
+                run_one_assertion_selftest(case["id"], assertion)
+            except EvalFailure as exc:
+                failures.append((label, "fail", str(exc)))
+                continue
             self_tests_run += 1
-    if self_tests_run != total_assertions:
-        raise EvalFailure(
-            "assertion self-tests: ran "
-            f"{self_tests_run} of {total_assertions} contract assertions"
-        )
-    return self_tests_run, total_assertions
+    return self_tests_run, total_assertions, failures
 
 
 def create_artifacts(
@@ -963,9 +1029,17 @@ def write_grade(
     case_id: str,
     options: Options,
     reason: str | None = None,
-) -> None:
+    *,
+    target: Path | None = None,
+) -> Path:
+    """Write the grade record. Writes `artifact_dir/grade.json` by default;
+    `target` (used by `regrade_artifacts`, C6 / task 6840) redirects the
+    write to a different path so a regrade of retained artifacts never
+    overwrites the original run's verdict.
+    """
+    path = target if target is not None else artifact_dir / "grade.json"
     write_json(
-        artifact_dir / "grade.json",
+        path,
         {
             "status": status,
             "case_id": case_id,
@@ -975,6 +1049,7 @@ def write_grade(
             "reason": reason,
         },
     )
+    return path
 
 
 def live_failure(
@@ -2656,9 +2731,25 @@ def options_from_run(artifact_dir: Path) -> Options:
     )
 
 
+def regrade_artifact_path(artifact_dir: Path) -> Path:
+    """Return the dated sibling path a regrade writes to (C6 / task 6840),
+    e.g. `grade.20260922T161530123456Z.json` next to the original
+    `grade.json`. Microsecond precision keeps back-to-back regrades of the
+    same retained run from colliding on the same filename.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return artifact_dir / f"grade.{stamp}.json"
+
+
 def regrade_artifacts(
     artifact_dir: Path, cases: list[tuple[Path, dict[str, Any]]]
-) -> None:
+) -> Path:
+    """Regrade a retained run's artifacts. Writes the fresh verdict to a
+    new dated file alongside the original `grade.json` and leaves that
+    original untouched (C6 / task 6840) -- a regrade that disagrees with
+    the retained run must not silently overwrite the verdict the run
+    actually produced. Returns the path written.
+    """
     artifact_dir = artifact_dir.resolve()
     options = options_from_run(artifact_dir)
     metadata_path = (
@@ -2678,9 +2769,13 @@ def regrade_artifacts(
         grade_lifecycle_artifacts(case, artifact_dir, options)
     else:
         raise EvalFailure(f"artifact mode is not regradable: {options.mode}")
-    write_grade(artifact_dir, "pass", case_id, options)
+    regrade_path = write_grade(
+        artifact_dir, "pass", case_id, options, target=regrade_artifact_path(artifact_dir)
+    )
     pass_line(f"{case_id}: retained {options.mode} artifacts regraded")
+    print(f"regraded: {regrade_path}")
     print(f"artifacts: {artifact_dir}")
+    return regrade_path
 
 
 def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
@@ -2737,16 +2832,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         pass_line("coherence grader negative control")
         grade_contract_negative_control()
         pass_line("contract grader negative control")
-        for path, case in selected:
-            if "contract" in case["tiers"]:
-                grade_contract(path, case)
-        pass_line(f"{len(selected)} orchestrator case definitions and deterministic contracts")
-        self_tests_run, total_assertions = run_assertion_selftests(selected)
-        pass_line(
-            f"{self_tests_run} of {total_assertions} contract assertions have a "
-            "falsifiable seeded-violation self-test"
+        contract_entries = [
+            (path, case) for path, case in selected if "contract" in case["tiers"]
+        ]
+        contract_outcomes = collect_case_failures(contract_entries, grade_contract)
+        emit_aggregate_report(
+            contract_outcomes,
+            total=len(contract_entries),
+            unit="orchestrator case definitions and deterministic contracts",
+            pass_message=(
+                f"{len(selected)} orchestrator case definitions and "
+                "deterministic contracts"
+            ),
         )
-        return 0
+        self_tests_run, total_assertions, selftest_outcomes = run_assertion_selftests(
+            selected
+        )
+        emit_aggregate_report(
+            selftest_outcomes,
+            total=total_assertions,
+            unit="contract assertions with a falsifiable seeded-violation self-test",
+            pass_message=(
+                f"{self_tests_run} of {total_assertions} contract assertions have a "
+                "falsifiable seeded-violation self-test"
+            ),
+        )
+        return batch_exit_code(contract_outcomes + selftest_outcomes)
     if options.mode == "live":
         if options.vendor not in {"codex", "claude"}:
             raise EvalFailure("--vendor must be codex or claude")
@@ -2766,10 +2877,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         runnable = [entry for entry in selected if "lifecycle" in entry[1]["tiers"]]
         if not runnable:
             raise EvalFailure("no selected cases declare the lifecycle tier")
-        for path, case in runnable:
-            run_lifecycle_fixture_replay(path, case, options)
-        pass_line(f"{len(runnable)} controlled lifecycle fixture replays")
-        return 0
+        fixture_outcomes = collect_case_failures(
+            runnable,
+            lambda path, case: run_lifecycle_fixture_replay(path, case, options),
+        )
+        emit_aggregate_report(
+            fixture_outcomes,
+            total=len(runnable),
+            unit="controlled lifecycle fixture replays",
+            pass_message=f"{len(runnable)} controlled lifecycle fixture replays",
+        )
+        return batch_exit_code(fixture_outcomes)
     if options.vendor not in {"codex", "claude"}:
         raise EvalFailure("--vendor must be codex or claude")
     if options.surface != "agent":

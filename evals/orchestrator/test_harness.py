@@ -1021,10 +1021,13 @@ class AssertionSelfTestTests(unittest.TestCase):
             for _, case in cases
             if "contract" in case["tiers"]
         )
-        self_tests_run, total_assertions = harness.run_assertion_selftests(cases)
+        self_tests_run, total_assertions, failures = harness.run_assertion_selftests(
+            cases
+        )
         self.assertGreater(total_assertions, 0)
         self.assertEqual(self_tests_run, total_assertions)
         self.assertEqual(total_assertions, total_declared)
+        self.assertEqual(failures, [])
 
     def test_main_contract_mode_invokes_run_assertion_selftests(self) -> None:
         # Drives the real CALLER (`main()` in contract mode, what `make
@@ -1033,7 +1036,7 @@ class AssertionSelfTestTests(unittest.TestCase):
         # would leave the count check unenforced by `make eval` even
         # though the function itself still works when called by hand.
         with mock.patch.object(
-            harness, "run_assertion_selftests", return_value=(0, 0)
+            harness, "run_assertion_selftests", return_value=(0, 0, [])
         ) as selftests_mock:
             code = harness.main(["--contract-only"])
         self.assertEqual(code, 0)
@@ -1129,6 +1132,211 @@ class AssertionSelfTestTests(unittest.TestCase):
                 harness.EvalFailure, "self-test did not fail"
             ):
                 harness.run_one_assertion_selftest("probe-case", assertion)
+
+
+class AggregateContractReportTests(unittest.TestCase):
+    """Task 6840 / C6: contract mode collects every failing case into one
+    aggregate report instead of stopping at the first `EvalFailure`. These
+    drive the real CALLER (`main(["--contract-only"])`, what `make
+    eval-orchestrator` runs), not `collect_case_failures` in isolation, so
+    a caller that reverts to raising on the first failure is caught here.
+    """
+
+    def test_two_seeded_failures_and_a_pass_all_run_and_summarize(self) -> None:
+        cases = harness.load_cases()
+        contract_entries = [
+            (path, case) for path, case in cases if "contract" in case["tiers"]
+        ]
+        self.assertGreaterEqual(len(contract_entries), 3)
+        fail_ids = {contract_entries[0][1]["id"], contract_entries[1][1]["id"]}
+        pass_id = contract_entries[2][1]["id"]
+        seen: list[str] = []
+        real_grade_contract = harness.grade_contract
+
+        def fake_grade_contract(path: Path, case: dict[str, object]) -> None:
+            # Only intercept OUR seeded cases; everything else (including
+            # `grade_contract_negative_control`'s own synthetic probes,
+            # which call this same module-global name) delegates to the
+            # real grader so this test cannot pass by accident.
+            if case["id"] in {contract_entries[i][1]["id"] for i in range(3)}:
+                seen.append(case["id"])
+            if case["id"] in fail_ids:
+                raise harness.EvalFailure(f"seeded failure: {case['id']}")
+            real_grade_contract(path, case)
+
+        with mock.patch.object(
+            harness, "grade_contract", side_effect=fake_grade_contract
+        ), mock.patch.object(
+            harness, "run_assertion_selftests", return_value=(0, 0, [])
+        ):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = harness.main(["--contract-only"])
+
+        # All three watched cases ran -- the two seeded failures did not
+        # stop the loop before the pass case was graded.
+        self.assertEqual(
+            set(seen), {contract_entries[i][1]["id"] for i in range(3)}
+        )
+        self.assertIn(pass_id, seen)
+        self.assertEqual(code, 1)
+        output = stderr.getvalue()
+        self.assertIn(f"FAIL SUMMARY: 2 of {len(contract_entries)}", output)
+        for fail_id in fail_ids:
+            self.assertIn(f"fail: {fail_id}", output)
+        self.assertNotIn(f"fail: {pass_id}", output)
+
+    def test_blocked_only_batch_exits_75_and_is_listed_as_blocked(self) -> None:
+        cases = harness.load_cases()
+        contract_entries = [
+            (path, case) for path, case in cases if "contract" in case["tiers"]
+        ]
+        blocked_id = contract_entries[0][1]["id"]
+        real_grade_contract = harness.grade_contract
+
+        def fake_grade_contract(path: Path, case: dict[str, object]) -> None:
+            if case["id"] == blocked_id:
+                raise harness.EvalBlocked("seeded block")
+            real_grade_contract(path, case)
+
+        with mock.patch.object(
+            harness, "grade_contract", side_effect=fake_grade_contract
+        ), mock.patch.object(
+            harness, "run_assertion_selftests", return_value=(0, 0, [])
+        ):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = harness.main(["--contract-only"])
+
+        self.assertEqual(code, 75)
+        self.assertIn(f"blocked: {blocked_id}", stderr.getvalue())
+
+    def test_a_hard_failure_outranks_a_block_in_the_same_batch(self) -> None:
+        cases = harness.load_cases()
+        contract_entries = [
+            (path, case) for path, case in cases if "contract" in case["tiers"]
+        ]
+        self.assertGreaterEqual(len(contract_entries), 2)
+        fail_id = contract_entries[0][1]["id"]
+        blocked_id = contract_entries[1][1]["id"]
+        real_grade_contract = harness.grade_contract
+
+        def fake_grade_contract(path: Path, case: dict[str, object]) -> None:
+            if case["id"] == fail_id:
+                raise harness.EvalFailure("seeded failure")
+            if case["id"] == blocked_id:
+                raise harness.EvalBlocked("seeded block")
+            real_grade_contract(path, case)
+
+        with mock.patch.object(
+            harness, "grade_contract", side_effect=fake_grade_contract
+        ), mock.patch.object(
+            harness, "run_assertion_selftests", return_value=(0, 0, [])
+        ):
+            code = harness.main(["--contract-only"])
+
+        self.assertEqual(code, 1)
+
+    def test_single_case_filter_summary_still_names_the_failure(self) -> None:
+        # `--case` selection keeps the same per-case failure content; the
+        # only change from pre-aggregation behaviour is the summary line
+        # wrapping it (task 6840's single-case parity requirement).
+        cases = harness.load_cases()
+        contract_entries = [
+            (path, case) for path, case in cases if "contract" in case["tiers"]
+        ]
+        target_id = contract_entries[0][1]["id"]
+        real_grade_contract = harness.grade_contract
+
+        def fake_grade_contract(path: Path, case: dict[str, object]) -> None:
+            if case["id"] == target_id:
+                raise harness.EvalFailure(f"seeded failure: {case['id']}")
+            real_grade_contract(path, case)
+
+        with mock.patch.object(
+            harness, "grade_contract", side_effect=fake_grade_contract
+        ), mock.patch.object(
+            harness, "run_assertion_selftests", return_value=(0, 0, [])
+        ):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = harness.main(["--contract-only", "--case", target_id])
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"FAIL SUMMARY: 1 of 1", stderr.getvalue())
+        self.assertIn(f"seeded failure: {target_id}", stderr.getvalue())
+
+
+class RegradeWritesDatedSiblingTests(unittest.TestCase):
+    """Task 6840 / C6: regrading retained artifacts must never overwrite
+    the original run's `grade.json` -- it writes a new dated file next to
+    it instead.
+    """
+
+    def test_regrade_writes_a_dated_sibling_and_leaves_grade_json_untouched(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp).resolve()
+            write_lifecycle_artifacts(artifact_dir)
+            original_grade = {
+                "status": "fail",
+                "case_id": lifecycle_case()["id"],
+                "vendor": "",
+                "surface": "agent",
+                "mode": "lifecycle-fixture",
+                "reason": "original run failed",
+            }
+            harness.write_json(artifact_dir / "grade.json", original_grade)
+            harness.write_json(
+                artifact_dir / "run.json",
+                {
+                    "mode": "lifecycle-fixture",
+                    "vendor": "",
+                    "surface": "agent",
+                    "case_id": lifecycle_case()["id"],
+                },
+            )
+            original_bytes = (artifact_dir / "grade.json").read_bytes()
+
+            regrade_path = harness.regrade_artifacts(
+                artifact_dir, [(Path("case.json"), lifecycle_case())]
+            )
+
+            self.assertNotEqual(regrade_path, artifact_dir / "grade.json")
+            self.assertTrue(regrade_path.is_file())
+            self.assertEqual(regrade_path.parent, artifact_dir)
+            self.assertRegex(regrade_path.name, r"^grade\.\d{8}T\d{6}\d*Z\.json$")
+            # The original verdict is byte-for-byte untouched.
+            self.assertEqual(
+                (artifact_dir / "grade.json").read_bytes(), original_bytes
+            )
+            regraded = json.loads(regrade_path.read_text(encoding="utf-8"))
+            self.assertEqual(regraded["status"], "pass")
+            self.assertEqual(regraded["case_id"], lifecycle_case()["id"])
+
+    def test_regrading_twice_produces_two_distinct_dated_files(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            harness.write_json(
+                artifact_dir / "run.json",
+                {
+                    "mode": "lifecycle-fixture",
+                    "vendor": "",
+                    "surface": "agent",
+                    "case_id": lifecycle_case()["id"],
+                },
+            )
+            first = harness.regrade_artifacts(
+                artifact_dir, [(Path("case.json"), lifecycle_case())]
+            )
+            second = harness.regrade_artifacts(
+                artifact_dir, [(Path("case.json"), lifecycle_case())]
+            )
+            self.assertNotEqual(first, second)
+            self.assertTrue(first.is_file())
+            self.assertTrue(second.is_file())
 
 
 FIXTURE_ROOT = (
