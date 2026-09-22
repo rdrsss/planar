@@ -112,6 +112,31 @@ of them through the supported Planar annotation workflow; only then retry the
 rollback. Keep the export with the source UUID from `annotation_source_identity`
 so it cannot be imported into an unrelated source by numeric ID alone.
 
+### Execution-supervision rollback recovery
+
+Migration 00038 (plan 1033) makes `workflow_runs.plan_id` nullable and widens
+`agent_actions.action_kind`. Its down refuses, with
+`CHECK constraint failed: m00038_down_refused_null_plan_run_or_supervision_action_kind_present`,
+while any run has a null `plan_id` or any action uses one of the five kinds it
+added: the older schema cannot represent either, and restoring a constraint by
+text edit (below) would not re-check existing rows. Export and dispose of those
+rows before retrying; the refusal changes nothing, so a retry is safe.
+
+### Relaxing a constraint on a foreign-key parent table
+
+The usual table rebuild is unsafe for a table other tables REFERENCE. The
+runtime applies each up migration in a transaction with foreign keys on, where
+`foreign_keys` cannot be switched off, so a rebuild either rewrites the
+children's REFERENCES clauses to a doomed `_old` table or fires their ON DELETE
+actions from DROP TABLE's implicit delete — measured on 00038, it cascade-deleted
+`context_records` and nulled claims' `run_id`. For a change that leaves stored
+rows valid (removing NOT NULL, widening a CHECK), edit the stored text instead,
+as 00038 does: any `ADD COLUMN` / `DROP COLUMN` on that table first, then
+`pragma writable_schema = on`, an exact-text `replace()` on `sqlite_schema.sql`,
+`pragma writable_schema = reset` (which makes the connection re-read the
+schema), and a guard that fails the migration by name if the replacement did
+not land.
+
 ## Tooling
 
 - **Linter** — `.sqlfluff` at the repo root pins dialect to `sqlite` and
