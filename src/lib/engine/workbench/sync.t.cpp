@@ -1322,10 +1322,10 @@ TEST_CASE("every multiple of 256 bytes is a boundary, not only the first", "[wor
 }
 
 TEST_CASE("a question body or answer of 256 bytes renders", "[workbench][sync][render][6880]") {
-  arena      a;
-  auto const s = seed(a.conn());
+  arena             a;
+  auto const        s = seed(a.conn());
   std::string const boundary(256, 'q');
-  auto const insert = [&](std::string_view title, std::string_view body, std::string_view answer) {
+  auto const        insert = [&](std::string_view title, std::string_view body, std::string_view answer) {
     auto stmt = a.conn().prepare(std::format("insert into questions (scope_kind, scope_id, title, body, answer_body, "
                                              "answered_at, status) values ('association', {}, ?, ?, ?, "
                                              "case when ? = '' then null else '2026-01-01T00:00:00.000Z' end, 'open')",
@@ -1343,7 +1343,7 @@ TEST_CASE("a question body or answer of 256 bytes renders", "[workbench][sync][r
     return id;
   };
 
-  auto const body_id = insert("Body On Boundary", boundary, "");
+  auto const body_id       = insert("Body On Boundary", boundary, "");
   auto       body_rendered = ws::render_entity(a.conn(), s.plan_id, "question", body_id);
   REQUIRE(body_rendered.has_value());
   CHECK(body_rendered->content.ends_with("\n" + boundary + "\n"));
@@ -1359,12 +1359,12 @@ TEST_CASE("a task body of 256 bytes followed by a next action renders", "[workbe
   // literal after either argument (`"\n{}"`, `"\n**Next action:** {}"`), and
   // the hazard needs a literal to land one past the full buffer. It pins the
   // task arm of the same class so the shape cannot drift into the hazard.
-  arena      a;
-  auto const s = seed(a.conn());
+  arena             a;
+  auto const        s = seed(a.conn());
   std::string const boundary(256, 't');
-  auto stmt = a.conn().prepare(std::format("update tasks set body = ?, next_action = 'do the thing', "
-                                           "due_at = '2026-01-02T00:00:00.000Z' where id = {}",
-                                           s.task_one));
+  auto              stmt = a.conn().prepare(std::format("update tasks set body = ?, next_action = 'do the thing', "
+                                                        "due_at = '2026-01-02T00:00:00.000Z' where id = {}",
+                                                        s.task_one));
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->bind_text(1, boundary).has_value());
   REQUIRE(stmt->step().has_value());

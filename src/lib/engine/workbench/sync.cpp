@@ -373,13 +373,13 @@ auto render_task(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t
   std::string body = std::format("# Task {}: {}\n\n**Status:** {}  \n**Priority:** {}  \n**Created:** {}  \n**Updated:** {}\n",
                                  id, title, status_txt, priority, created_at, updated_at);
   if (!due_at.empty()) {
-    std::format_to(std::back_inserter(body), "**Due:** {}\n", due_at);
+    body += std::format("**Due:** {}\n", due_at);
   }
   if (!body_text.empty()) {
-    std::format_to(std::back_inserter(body), "\n{}", body_text);
+    body += std::format("\n{}", body_text);
   }
   if (!next_action.empty()) {
-    std::format_to(std::back_inserter(body), "\n**Next action:** {}", next_action);
+    body += std::format("\n**Next action:** {}", next_action);
   }
   body += '\n';
 
@@ -477,12 +477,12 @@ auto render_question(db::connection& conn, std::int64_t anchor_plan_id, std::int
   std::string body = std::format("# Question {}: {}\n\n**Status:** {}  \n**Created:** {}  \n**Updated:** {}\n", id, title,
                                  status_txt, created_at, updated_at);
   if (!body_txt.empty()) {
-    std::format_to(std::back_inserter(body), "\n{}\n", body_txt);
+    body += std::format("\n{}\n", body_txt);
   }
   if (!answer_body.empty()) {
-    std::format_to(std::back_inserter(body), "\n**Answer:** {}\n", answer_body);
+    body += std::format("\n**Answer:** {}\n", answer_body);
     if (!answered_at.empty()) {
-      std::format_to(std::back_inserter(body), "\n**Answered at:** {}\n", answered_at);
+      body += std::format("\n**Answered at:** {}\n", answered_at);
     }
   }
   return rendered_entity{.rel_path = std::format("questions/{}-{}.md", id, feature::slugify(title)),
@@ -517,13 +517,13 @@ auto render_scenario(db::connection& conn, std::int64_t anchor_plan_id, std::int
   std::string body = std::format("# Scenario {}: {}\n\n**Status:** {}  \n**Created:** {}  \n**Updated:** {}\n", id, title,
                                  status_txt, created_at, updated_at);
   if (!last_run_at.empty()) {
-    std::format_to(std::back_inserter(body), "\n**Last run:** {}", last_run_at);
+    body += std::format("\n**Last run:** {}", last_run_at);
   }
   if (!last_outcome.empty()) {
-    std::format_to(std::back_inserter(body), "  \n**Last outcome:** {}", last_outcome);
+    body += std::format("  \n**Last outcome:** {}", last_outcome);
   }
   if (!body_txt.empty()) {
-    std::format_to(std::back_inserter(body), "\n\n{}\n", body_txt);
+    body += std::format("\n\n{}\n", body_txt);
   }
   return rendered_entity{.rel_path = std::format("scenarios/{}-{}.md", id, feature::slugify(title)),
                          .content  = render::render(fm, body)};

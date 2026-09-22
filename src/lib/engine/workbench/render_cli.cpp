@@ -29,11 +29,11 @@ auto field_string(std::string& out, std::string_view key, std::string_view value
 }
 
 auto field_number(std::string& out, std::string_view key, std::int64_t value) -> void {
-  std::format_to(std::back_inserter(out), "\"{}\":{}", key, value);
+  out += std::format("\"{}\":{}", key, value);
 }
 
 auto field_bool(std::string& out, std::string_view key, bool value) -> void {
-  std::format_to(std::back_inserter(out), "\"{}\":{}", key, value ? "true" : "false");
+  out += std::format("\"{}\":{}", key, value ? "true" : "false");
 }
 
 /// @brief Left-align `text` in a field of `width`, never truncating.
@@ -54,7 +54,7 @@ auto conflict_line(const sync::entry& item) -> std::string {
 
 auto append_conflict_summary(std::string& out, std::size_t conflicts) -> void {
   if (conflicts > 0) {
-    std::format_to(std::back_inserter(out), "  {} conflict(s) - run 'workbench resolve <event-id> --prefer fs|db'\n", conflicts);
+    out += std::format("  {} conflict(s) - run 'workbench resolve <event-id> --prefer fs|db'\n", conflicts);
   }
 }
 
@@ -106,26 +106,24 @@ auto render_sync_result_text(std::int64_t plan_id, std::string_view plan_slug, s
 
   std::string out;
   if (run_mode == sync::mode::push) {
-    std::format_to(std::back_inserter(out),
-                   "workbench {}: plan {} ({}) - {} applied, {} pending, {} filtered (mode={}), {} conflict(s)", verb, plan_id,
-                   plan_slug, value.applied, value.pending, value.filtered, value.filter_mode, value.conflicts);
+    out += std::format("workbench {}: plan {} ({}) - {} applied, {} pending, {} filtered (mode={}), {} conflict(s)", verb,
+                       plan_id, plan_slug, value.applied, value.pending, value.filtered, value.filter_mode, value.conflicts);
   } else {
-    std::format_to(std::back_inserter(out), "workbench {}: plan {} ({}) - {} applied, {} pending, {} conflict(s)", verb, plan_id,
-                   plan_slug, value.applied, value.pending, value.conflicts);
+    out += std::format("workbench {}: plan {} ({}) - {} applied, {} pending, {} conflict(s)", verb, plan_id, plan_slug,
+                       value.applied, value.pending, value.conflicts);
   }
   if (value.malformed > 0) {
-    std::format_to(std::back_inserter(out), ", {} MALFORMED", value.malformed);
+    out += std::format(", {} MALFORMED", value.malformed);
   }
   out += '\n';
 
   if (run_mode == sync::mode::push) {
     if (value.pre_existing_terminal > 0 && value.cleaned == 0) {
-      std::format_to(std::back_inserter(out),
-                     "  {} pre-existing terminal file(s) on disk \xe2\x80\x94 run 'planar workbench gc {}' to remove, "
-                     "or re-push with --apply-cleanup\n",
-                     value.pre_existing_terminal, plan_id);
+      out += std::format("  {} pre-existing terminal file(s) on disk \xe2\x80\x94 run 'planar workbench gc {}' to remove, "
+                         "or re-push with --apply-cleanup\n",
+                         value.pre_existing_terminal, plan_id);
     } else if (value.cleaned > 0) {
-      std::format_to(std::back_inserter(out), "  {} pre-existing terminal file(s) cleaned\n", value.cleaned);
+      out += std::format("  {} pre-existing terminal file(s) cleaned\n", value.cleaned);
     }
   }
 
@@ -259,8 +257,8 @@ auto render_list_text(std::span<const sync::active_feature> items) -> std::strin
   }
   std::string out;
   for (auto const& item : items) {
-    std::format_to(std::back_inserter(out), "{}  {}  {}  {}\n", pad_right(std::format("{}-{}", item.plan_key, item.slug), 40),
-                   pad_right(item.status, 10), pad_right(item.has_fs_tree ? "tree" : "no-tree", 10), item.assoc_slug);
+    out += std::format("{}  {}  {}  {}\n", pad_right(std::format("{}-{}", item.plan_key, item.slug), 40),
+                       pad_right(item.status, 10), pad_right(item.has_fs_tree ? "tree" : "no-tree", 10), item.assoc_slug);
   }
   return out;
 }
@@ -286,7 +284,7 @@ auto render_gc_drift_refusal(const gc::summary& value) -> std::string {
                                 "discard, or 'workbench pull' first\n",
                                 value.drifted_skipped);
   for (auto const& path : value.drifted_paths) {
-    std::format_to(std::back_inserter(out), "  drift: {}\n", path);
+    out += std::format("  drift: {}\n", path);
   }
   return out;
 }
@@ -314,14 +312,12 @@ auto render_lint_json(std::span<const lint::issue> issues) -> std::string {
 auto render_lint_text(const lint::result& value) -> std::string {
   std::string out;
   for (auto const& item : value.issues) {
-    std::format_to(std::back_inserter(out), "{}:{}:\n  {}[{}]: {}\n", item.path, item.line, lint::severity_name(item.level),
-                   item.code, item.message);
+    out += std::format("{}:{}:\n  {}[{}]: {}\n", item.path, item.line, lint::severity_name(item.level), item.code, item.message);
     if (!item.hint.empty()) {
-      std::format_to(std::back_inserter(out), "  hint: {}\n", item.hint);
+      out += std::format("  hint: {}\n", item.hint);
     }
   }
-  std::format_to(std::back_inserter(out), "{} files scanned, {} errors, {} warnings.\n", value.files_scanned, value.errors,
-                 value.warnings);
+  out += std::format("{} files scanned, {} errors, {} warnings.\n", value.files_scanned, value.errors, value.warnings);
   return out;
 }
 

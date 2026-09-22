@@ -35,7 +35,7 @@ TEST_CASE("a problem statement and citation on the boundary compile", "[engine][
   inputs.tasks       = {{.id = 7, .plan_id = 1, .title = "Do it", .status = "doing"}};
   inputs.claim_token = "tok";
   std::string const path(256, 'c');
-  inputs.spec_citations = {{.path = path}};
+  inputs.spec_citations   = {{.path = path}};
   inputs.locked_decisions = {{.id = "1", .text = std::string(512, 'd')}};
 
   auto const out = brief::compile_brief(inputs);

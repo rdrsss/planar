@@ -13,27 +13,27 @@ namespace {
 
 auto append_string_field(std::string& out, std::string_view key, std::string_view value) -> void {
   if (needs_yaml_quote(value)) {
-    std::format_to(std::back_inserter(out), "{}: '{}'\n", key, value);
+    out += std::format("{}: '{}'\n", key, value);
     return;
   }
-  std::format_to(std::back_inserter(out), "{}: {}\n", key, value);
+  out += std::format("{}: {}\n", key, value);
 }
 
 auto append_int_field(std::string& out, std::string_view key, std::int64_t value) -> void {
-  std::format_to(std::back_inserter(out), "{}: {}\n", key, value);
+  out += std::format("{}: {}\n", key, value);
 }
 
 auto append_string_list(std::string& out, std::string_view key, std::span<const std::string> items) -> void {
-  std::format_to(std::back_inserter(out), "{}:\n", key);
+  out += std::format("{}:\n", key);
   for (auto const& item : items) {
-    std::format_to(std::back_inserter(out), "- {}\n", item);
+    out += std::format("- {}\n", item);
   }
 }
 
 auto append_ref_list(std::string& out, std::string_view key, std::span<const parse::entity_ref> refs) -> void {
-  std::format_to(std::back_inserter(out), "{}:\n", key);
+  out += std::format("{}:\n", key);
   for (auto const& ref : refs) {
-    std::format_to(std::back_inserter(out), "- {}:{}\n", ref.kind, ref.id);
+    out += std::format("- {}:{}\n", ref.kind, ref.id);
   }
 }
 
