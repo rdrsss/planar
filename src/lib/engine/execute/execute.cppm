@@ -233,6 +233,31 @@ export auto find_config_value(std::string_view ndjson, std::string_view key) -> 
 export auto read_planar_config(std::string_view bin_dir, std::string_view key)
     -> std::expected<std::optional<config_value>, std::string>;
 
+/// @brief One line of `planar config show --json`.
+export struct config_entry {
+  std::string key;        ///< The dotted key.
+  std::string value;      ///< The resolved value.
+  std::string provenance; ///< `planar`'s provenance label.
+};
+
+/// @brief Every decodable line of `planar config show --json`, in order.
+/// Lines that do not decode are skipped, as in `find_config_value`.
+/// @param ndjson The captured stdout.
+/// @return The entries.
+export auto parse_config_lines(std::string_view ndjson) -> std::vector<config_entry>;
+
+/// @brief Every resolved config key, read by shelling the sibling
+/// `planar config show --json` (plan 1033 task 6494: execution profiles).
+/// @param bin_dir The trusted sibling-binary directory.
+/// @return The entries, or a one-line reason.
+export auto read_planar_config_all(std::string_view bin_dir) -> std::expected<std::vector<config_entry>, std::string>;
+
+/// @brief The config file `planar` reads, from the sibling `planar config
+/// path` — so a profile error can name the file to fix.
+/// @param bin_dir The trusted sibling-binary directory.
+/// @return The path, or a one-line reason.
+export auto read_planar_config_path(std::string_view bin_dir) -> std::expected<std::string, std::string>;
+
 // ---------------------------------------------------------------------------
 // state — planner state-read parsing (port target: state.zig)
 // ---------------------------------------------------------------------------

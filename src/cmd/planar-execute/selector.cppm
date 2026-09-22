@@ -31,6 +31,7 @@ export module planar.cmd.planar_execute.selector;
 
 import std;
 import planar.engine_execute;
+import planar.cmd.planar_execute.profile;
 
 namespace planar::cmd::execute {
 
@@ -73,10 +74,18 @@ export auto resolve_engine(std::optional<std::string_view> flag, std::optional<s
 /// @return The reader.
 export auto sibling_config_reader(std::string bin_dir) -> config_reader;
 
+/// @brief A `config_reader` over already-read `planar config show --json`
+/// entries, so `profile show` reads the config plane once for both the
+/// engine and the profile.
+/// @param entries The entries; must outlive the reader.
+/// @return The reader.
+export auto entries_config_reader(std::span<const engine::execute::config_entry> entries) -> config_reader;
+
 /// @brief Render `profile show`'s payload.
 /// @param choice The resolved engine.
-/// @param json JSON (`{"engine":…,"engine_source":…}`) rather than `key: value` lines.
+/// @param resolved The resolved execution profile (task 6494).
+/// @param json JSON (`{"engine":…,"engine_source":…,"profile":{…}}`) rather than `key: value` lines.
 /// @return The payload, trailing newline included.
-export auto render_profile(engine_choice const& choice, bool json) -> std::string;
+export auto render_profile(engine_choice const& choice, const profile& resolved, bool json) -> std::string;
 
 } // namespace planar::cmd::execute

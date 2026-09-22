@@ -19,7 +19,7 @@ auto usage_text() -> std::string_view {
          "  planar-execute run <workflow.lua> --phase <name> [--args <json>]\n"
          "                     [--worktree <dir>] [--sandbox-root <dir>]\n"
          "                     [--engine <embedded|centurion>]\n"
-         "  planar-execute profile show [--json]\n"
+         "  planar-execute profile show [--profile <name>] [--json]\n"
          "  planar-execute schema\n"
          "\n"
          "Loads the workflow in the sandbox, registers the deterministic host\n"
@@ -96,17 +96,24 @@ auto parse_run_args(std::span<const std::string> args) -> std::optional<run_args
                   .engine       = std::move(engine)};
 }
 
-auto parse_profile_args(std::span<const std::string> args) -> std::optional<bool> {
+auto parse_profile_args(std::span<const std::string> args) -> std::optional<profile_args> {
   if (args.empty() || args[0] != "show") {
     return std::nullopt;
   }
-  if (args.size() == 1) {
-    return false;
+  profile_args out;
+  bool         saw_json    = false;
+  bool         saw_profile = false;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    if (args[i] == "--json" && !saw_json) {
+      saw_json = out.json = true;
+    } else if (args[i] == "--profile" && !saw_profile && i + 1 < args.size()) {
+      saw_profile = true;
+      out.name    = args[++i];
+    } else {
+      return std::nullopt;
+    }
   }
-  if (args.size() == 2 && args[1] == "--json") {
-    return true;
-  }
-  return std::nullopt;
+  return out;
 }
 
 auto classify(std::span<const std::string> argv) -> verb {

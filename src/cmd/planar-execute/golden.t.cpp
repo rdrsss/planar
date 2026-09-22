@@ -724,13 +724,13 @@ TEST_CASE("planar-execute engine selector: flag over env over config, end to end
   };
 
   // Nothing set anywhere: the embedded default, labelled as such by planar.
-  CHECK(profile("p0") == R"({"engine":"embedded","engine_source":"embedded default"})"
-                         "\n");
+  // (`profile show` also carries the resolved profile since task 6494; its
+  // shape is pinned in selector.t.cpp / profile.t.cpp and end to end below.)
+  CHECK(profile("p0").starts_with(R"({"engine":"embedded","engine_source":"embedded default","profile":{"name":"default",)"));
 
   // A config file choosing centurion is read through the sibling planar.
   std::ofstream(root / "config.toml", std::ios::binary) << "[execute]\nengine = \"centurion\"\n";
-  CHECK(profile("p1") == R"({"engine":"centurion","engine_source":"config file"})"
-                         "\n");
+  CHECK(profile("p1").starts_with(R"({"engine":"centurion","engine_source":"config file","profile":{)"));
 
   // The env beats the config file. Black-box, this cannot tell WHICH binary
   // applied the env tier: `planar`'s resolver honours PLANAR_EXECUTE_ENGINE
@@ -740,8 +740,7 @@ TEST_CASE("planar-execute engine selector: flag over env over config, end to end
   // is never called when the env is set.
   {
     engine_env_guard const env{"embedded"};
-    CHECK(profile("p2") == R"({"engine":"embedded","engine_source":"env: PLANAR_EXECUTE_ENGINE"})"
-                           "\n");
+    CHECK(profile("p2").starts_with(R"({"engine":"embedded","engine_source":"env: PLANAR_EXECUTE_ENGINE","profile":{)"));
   }
 
   // With the config still choosing centurion, `run` is refused by name...
@@ -760,4 +759,45 @@ TEST_CASE("planar-execute engine selector: flag over env over config, end to end
   INFO("stderr: " << ran.err);
   REQUIRE(ran.code == 0);
   CHECK(ran.out == read_all(std::filesystem::path{PLANAR_GOLDEN_DIR} / "example.setup.json"));
+}
+
+TEST_CASE("planar-execute profile show: a path and a symlink to it are one identity, end to end",
+          "[cmd][execute][golden][6494]") {
+  // Test-spec scenario "profile resolves to a canonical state dir", through
+  // the REAL binaries: the profile keys reach planar-execute only through the
+  // sibling `planar config show --json`.
+  engine_env_guard const hermetic{""};
+  auto const             space = make_arena("profiles");
+  auto const             root  = space.cpp_root;
+  std::filesystem::create_directories(root / "fakehome" / "real");
+  std::filesystem::create_directory_symlink(root / "fakehome" / "real", root / "fakehome" / "link");
+  std::ofstream(root / "config.toml", std::ios::binary)
+      << std::format("[execute.profiles.a]\nstate_dir = \"{}\"\n\n[execute.profiles.b]\nstate_dir = \"~/link\"\n"
+                     "allowed_roots = [\"~/real\"]\n",
+                     (root / "fakehome" / "real").string());
+  auto const show = [&](std::string_view name) {
+    std::vector<std::string> const args{"profile", "show", "--profile", std::string{name}};
+    auto const                     cap = run_pinned(execute_bin(), args, root, std::format("show-{}", name));
+    INFO("stderr: " << cap.err);
+    REQUIRE(cap.code == 0);
+    return cap.out;
+  };
+  auto const real = std::filesystem::weakly_canonical(root / "fakehome" / "real").string();
+  CHECK(show("a").contains(std::format("\nstate_dir: {}\n", real)));
+  CHECK(show("b").contains(std::format("\nstate_dir: {}\n", real)));
+  CHECK(show("b").contains(std::format("\nallowed_root: {}\n", real)));
+
+  // The unconfigured default lives under PLANAR_HOME, which the harness pins.
+  std::vector<std::string> const plain{"profile", "show"};
+  auto const                     def = run_pinned(execute_bin(), plain, root, "show-default");
+  REQUIRE(def.code == 0);
+  CHECK(def.out.contains(
+      std::format("\nstate_dir: {}\n", std::filesystem::weakly_canonical(root / "home" / "execute" / "default").string())));
+
+  // A missing name is refused naming the file planar reads.
+  std::vector<std::string> const nope{"profile", "show", "--profile", "nope"};
+  auto const                     missing = run_pinned(execute_bin(), nope, root, "show-nope");
+  CHECK(missing.code == 1);
+  CHECK(missing.out.empty());
+  CHECK(missing.err == std::format("planar-execute: profile 'nope' is not configured in {}\n", (root / "config.toml").string()));
 }

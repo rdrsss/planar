@@ -9,6 +9,7 @@
 import std;
 import planar.engine_execute;
 import planar.cmd.planar_execute.selector;
+import planar.cmd.planar_execute.profile;
 
 namespace {
 
@@ -98,14 +99,21 @@ TEST_CASE("engine selector: a bad env or config value, or an unreadable config, 
   CHECK(unreadable.error() == "cannot read execute.engine from planar config: planar exited non-zero: boom");
 }
 
-TEST_CASE("engine selector: profile show renders text and JSON", "[cmd][execute][selector][6485]") {
+TEST_CASE("engine selector: profile show renders text and JSON", "[cmd][execute][selector][6485][6494]") {
+  planar::cmd::execute::profile const       prof{.name = "default", .state_dir = "/s", .planar_db = "/d"};
   planar::cmd::execute::engine_choice const choice{.engine = engine_kind::centurion, .source = "env: PLANAR_EXECUTE_ENGINE"};
-  CHECK(planar::cmd::execute::render_profile(choice, false) == "engine: centurion\nengine_source: env: PLANAR_EXECUTE_ENGINE\n");
-  CHECK(planar::cmd::execute::render_profile(choice, true) ==
-        R"({"engine":"centurion","engine_source":"env: PLANAR_EXECUTE_ENGINE"})"
+  CHECK(planar::cmd::execute::render_profile(choice, prof, false) ==
+        "engine: centurion\nengine_source: env: PLANAR_EXECUTE_ENGINE\n"
+        "profile: default\nconfigured: false\nstate_dir: /s\n"
+        "planar_db: /d\nallowed_roots: -\nidle_grace_seconds: 300\n"
+        "command_policy: -\nbundle: -\nproviders: -\n");
+  CHECK(planar::cmd::execute::render_profile(choice, prof, true) ==
+        R"({"engine":"centurion","engine_source":"env: PLANAR_EXECUTE_ENGINE","profile":{"name":"default","configured":false,)"
+        R"("state_dir":"/s","planar_db":"/d","allowed_roots":[],"idle_grace_seconds":300,"command_policy":null,"bundle":null,)"
+        R"("providers":{}}})"
         "\n");
   // A provenance label that needs escaping is escaped, not spliced.
   planar::cmd::execute::engine_choice const odd{.engine = engine_kind::embedded, .source = "a \"quoted\" source"};
-  CHECK(planar::cmd::execute::render_profile(odd, true) == R"({"engine":"embedded","engine_source":"a \"quoted\" source"})"
-                                                           "\n");
+  CHECK(planar::cmd::execute::render_profile(odd, prof, true)
+            .starts_with(R"({"engine":"embedded","engine_source":"a \"quoted\" source","profile":{)"));
 }

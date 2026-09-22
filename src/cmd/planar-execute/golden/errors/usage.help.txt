@@ -5,7 +5,7 @@ Usage:
   planar-execute run <workflow.lua> --phase <name> [--args <json>]
                      [--worktree <dir>] [--sandbox-root <dir>]
                      [--engine <embedded|centurion>]
-  planar-execute profile show [--json]
+  planar-execute profile show [--profile <name>] [--json]
   planar-execute schema
 
 Loads the workflow in the sandbox, registers the deterministic host

@@ -394,3 +394,34 @@ TEST_CASE("resolve: execute.engine defaults to embedded, and file then env overr
   CHECK(it->second.source_ == provenance::env);
   CHECK(it->second.env_var_name == "PLANAR_EXECUTE_ENGINE");
 }
+
+TEST_CASE("resolve: execute.profiles.* keys from the file are surfaced verbatim, arrays as JSON", "[effective][6494]") {
+  // `planar-execute` reads its execution profiles out of this view (plan
+  // 1033 task 6494). An array is JSON text, not the `, `-joined form, so a
+  // path holding a comma survives; an unknown key is surfaced for the
+  // consumer to refuse, not dropped here.
+  constexpr std::string_view file = "[execute.profiles.w]\n"
+                                    "state_dir = \"~/s\"\n"
+                                    "allowed_roots = [\"~/a\", \"/b,c\"]\n"
+                                    "idle_grace_seconds = 120\n"
+                                    "typo = true\n"
+                                    "[execute.profiles.w.providers.claude]\n"
+                                    "command = \"claude\"\n";
+  auto const                 res  = resolve(file, env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  auto const value = [&](std::string_view key) {
+    auto const it = res->effective.find(key);
+    REQUIRE(it != res->effective.end());
+    CHECK(it->second.source_ == provenance::config_file);
+    return it->second.value;
+  };
+  CHECK(value("execute.profiles.w.state_dir") == "~/s");
+  CHECK(value("execute.profiles.w.allowed_roots") == R"(["~/a","/b,c"])");
+  CHECK(value("execute.profiles.w.idle_grace_seconds") == "120");
+  CHECK(value("execute.profiles.w.typo") == "true");
+  CHECK(value("execute.profiles.w.providers.claude.command") == "claude");
+  // No file, no profile keys: the defaults are planar-execute's, not planar's.
+  auto const bare = resolve(std::nullopt, env_view::empty(), std::nullopt);
+  REQUIRE(bare.has_value());
+  CHECK(std::ranges::none_of(bare->effective, [](auto const& kv) { return kv.first.starts_with("execute.profiles."); }));
+}

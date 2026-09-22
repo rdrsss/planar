@@ -1863,4 +1863,34 @@ auto read_planar_config(std::string_view bin_dir, std::string_view key)
   return find_config_value(result->out, key);
 }
 
+auto read_planar_config_all(std::string_view bin_dir) -> std::expected<std::vector<config_entry>, std::string> {
+  if (bin_dir.empty()) {
+    return std::unexpected{std::string{"trusted binary directory is unavailable"}};
+  }
+  std::vector<std::string> const argv{(std::filesystem::path{bin_dir} / "planar").string(), "config", "show", "--json"};
+  auto const                     result = capture_process(argv);
+  if (!result.has_value()) {
+    return std::unexpected{std::string{"failed to spawn planar"}};
+  }
+  if (result->code != 0) {
+    return std::unexpected{std::format("planar exited non-zero: {}", trim(result->err))};
+  }
+  return parse_config_lines(result->out);
+}
+
+auto read_planar_config_path(std::string_view bin_dir) -> std::expected<std::string, std::string> {
+  if (bin_dir.empty()) {
+    return std::unexpected{std::string{"trusted binary directory is unavailable"}};
+  }
+  std::vector<std::string> const argv{(std::filesystem::path{bin_dir} / "planar").string(), "config", "path"};
+  auto const                     result = capture_process(argv);
+  if (!result.has_value()) {
+    return std::unexpected{std::string{"failed to spawn planar"}};
+  }
+  if (result->code != 0) {
+    return std::unexpected{std::format("planar exited non-zero: {}", trim(result->err))};
+  }
+  return std::string{trim(result->out)};
+}
+
 } // namespace planar::engine::execute

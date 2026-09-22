@@ -43,6 +43,7 @@ auto catalog_json() -> std::string {
   CLI::App* profile = root.add_subcommand("profile", "Inspect the resolved execution profile.");
   CLI::App* show    = profile->add_subcommand("show", "Print the resolved engine and the provenance that chose it "
                                                       "(flag, env, config file, or embedded default) on stdout.");
+  add_string(*show, "--profile", "Execution profile to resolve ([execute.profiles.<name>]); default: default.");
   show->add_flag("--json")->description("Emit {\"engine\":…,\"engine_source\":…} instead of key: value lines.");
 
   root.add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");

@@ -27,6 +27,8 @@ import planar.cmd.planar_execute.cli;
 import planar.cmd.planar_execute.catalog;
 import planar.cmd.planar_execute.engine;
 import planar.cmd.planar_execute.selector;
+import planar.cmd.planar_execute.profile;
+import planar.engine_execute;
 
 namespace {
 
@@ -100,19 +102,43 @@ auto main(int argc, char** argv) -> int {
 
   case planar::cmd::execute::verb::profile: {
     // Like `schema`, a machine channel: the payload is stdout.
-    auto const json = planar::cmd::execute::parse_profile_args(std::span{args}.subspan(2));
-    if (!json.has_value()) {
+    namespace ex     = planar::cmd::execute;
+    auto const asked = ex::parse_profile_args(std::span{args}.subspan(2));
+    if (!asked.has_value()) {
       print_usage();
       code = 2;
       break;
     }
-    auto const choice = resolve({});
+    // ONE read of the config plane serves both the engine and the profile.
+    auto const bin_dir = ex::executable_dir();
+    auto const entries = planar::engine::execute::read_planar_config_all(bin_dir);
+    if (!entries.has_value()) {
+      std::cerr << "planar-execute: cannot read the config plane: " << entries.error() << '\n';
+      code = 1;
+      break;
+    }
+    auto const choice = ex::resolve_engine(std::nullopt, engine_env(), ex::entries_config_reader(*entries));
     if (!choice.has_value()) {
       std::cerr << "planar-execute: " << choice.error() << '\n';
       code = 1;
       break;
     }
-    std::cout << planar::cmd::execute::render_profile(*choice, *json);
+    auto const resolved = ex::resolve_profile(
+        *entries, asked->name,
+        [](std::string_view name) -> std::optional<std::string> {
+          char const* raw = std::getenv(std::string{name}.c_str()); // NOLINT(concurrency-mt-unsafe) — single-threaded startup.
+          return raw == nullptr || *raw == '\0' ? std::nullopt : std::optional<std::string>{raw};
+        },
+        [&bin_dir] {
+          auto const path = planar::engine::execute::read_planar_config_path(bin_dir);
+          return path.has_value() ? *path : std::string{"the planar config file"};
+        });
+    if (!resolved.has_value()) {
+      std::cerr << "planar-execute: " << resolved.error() << '\n';
+      code = 1;
+      break;
+    }
+    std::cout << ex::render_profile(*choice, *resolved, asked->json);
     code = 0;
     break;
   }

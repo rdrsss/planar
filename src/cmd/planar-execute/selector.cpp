@@ -9,6 +9,7 @@ module planar.cmd.planar_execute.selector;
 
 import std;
 import planar.engine_execute;
+import planar.cmd.planar_execute.profile;
 
 namespace planar::cmd::execute {
 
@@ -17,7 +18,7 @@ namespace planar::cmd::execute {
 namespace wire {
 
 /// @brief `profile show --json`'s document. Member order is key order.
-struct profile_document {
+struct engine_document {
   std::string engine;        ///< `embedded` or `centurion`.
   std::string engine_source; ///< The provenance that chose it.
 };
@@ -88,18 +89,34 @@ auto sibling_config_reader(std::string bin_dir) -> config_reader {
   return [bin_dir = std::move(bin_dir)] { return engine::execute::read_planar_config(bin_dir, "execute.engine"); };
 }
 
-auto render_profile(engine_choice const& choice, bool json) -> std::string {
+auto entries_config_reader(std::span<const engine::execute::config_entry> entries) -> config_reader {
+  return [entries]() -> std::expected<std::optional<engine::execute::config_value>, std::string> {
+    for (auto const& entry : entries) {
+      if (entry.key == "execute.engine") {
+        return engine::execute::config_value{.value = entry.value, .provenance = entry.provenance};
+      }
+    }
+    return std::optional<engine::execute::config_value>{};
+  };
+}
+
+auto render_profile(engine_choice const& choice, const profile& resolved, bool json) -> std::string {
   if (!json) {
-    return std::format("engine: {}\nengine_source: {}\n", engine_name(choice.engine), choice.source);
+    return std::format("engine: {}\nengine_source: {}\n", engine_name(choice.engine), choice.source) + profile_text(resolved);
   }
-  wire::profile_document const doc{.engine = std::string{engine_name(choice.engine)}, .engine_source = choice.source};
-  std::string                  out;
-  if (glz::write_json(doc, out)) {
+  wire::engine_document const doc{.engine = std::string{engine_name(choice.engine)}, .engine_source = choice.source};
+  std::string                 out;
+  if (glz::write_json(doc, out) || !out.ends_with('}')) {
     // Two plain strings cannot fail to serialize; if Glaze ever says
     // otherwise, an empty object is still a parseable document.
-    out = "{}";
+    return "{}\n";
   }
-  out += '\n';
+  // `{"engine":…,"engine_source":…}` with the profile object spliced in as
+  // its last member.
+  out.pop_back();
+  out += ",\"profile\":";
+  out += profile_json(resolved);
+  out += "}\n";
   return out;
 }
 

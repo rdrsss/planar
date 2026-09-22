@@ -118,13 +118,20 @@ export struct run_args {
 /// every failure prints the same usage text and exits 2).
 export auto parse_run_args(std::span<const std::string> args) -> std::optional<run_args>;
 
+/// @brief What `profile show` was asked for.
+export struct profile_args {
+  bool        json = false;     ///< `--json`.
+  std::string name = "default"; ///< `--profile <name>`; `default` when absent (task 6494).
+};
+
 /// @brief Parse `profile`'s arguments (everything after `profile`).
 ///
-/// Exactly `show` or `show --json` (plan 1033, task 6485); anything else is a
-/// usage failure, exit 2, like `run`'s.
+/// `show`, then `--json` and `--profile <name>` in any order, each at most
+/// once (plan 1033, tasks 6485/6494); anything else is a usage failure,
+/// exit 2, like `run`'s.
 /// @param args The tokens after the `profile` verb.
-/// @return Whether `--json` was given, or unset on a usage failure.
-export auto parse_profile_args(std::span<const std::string> args) -> std::optional<bool>;
+/// @return The parsed arguments, or unset on a usage failure.
+export auto parse_profile_args(std::span<const std::string> args) -> std::optional<profile_args>;
 
 /// @brief Which top-level shape an argv resolves to.
 export enum class verb : std::uint8_t {

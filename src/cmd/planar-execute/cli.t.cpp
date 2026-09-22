@@ -266,14 +266,23 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
     auto const end   = catalog.find('"', start);
     advertised.emplace_back(catalog.substr(start, end - start));
   }
-  // Five on `run` plus `profile show --json` (task 6485 added `--engine` and
-  // the `profile` verb).
-  REQUIRE(advertised.size() == 6);
+  // Five on `run` plus `profile show --profile` and `--json` (task 6485
+  // added `--engine` and the `profile` verb; task 6494 `--profile`).
+  REQUIRE(advertised.size() == 7);
   for (auto const& flag : advertised) {
     INFO("advertised flag not accepted by its parser: " << flag);
+    if (flag == "--profile") {
+      std::vector<std::string> const profile{"show", "--profile", "work"};
+      auto const                     parsed = parse_profile_args(profile);
+      REQUIRE(parsed.has_value());
+      CHECK(parsed->name == "work");
+      continue;
+    }
     if (flag == "--json") {
       std::vector<std::string> const profile{"show", "--json"};
-      CHECK(parse_profile_args(profile) == std::optional<bool>{true});
+      auto const                     parsed = parse_profile_args(profile);
+      REQUIRE(parsed.has_value());
+      CHECK(parsed->json);
       continue;
     }
     std::vector<std::string> args{"wf.lua", "--phase", "p"};
@@ -289,7 +298,7 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   // Parser -> catalog. The parsers' accepted sets are closed and small; name
   // them here so a flag added to either parser without a catalog entry
   // fails this loop rather than shipping undescribed.
-  for (auto const flag : {"--phase", "--args", "--worktree", "--sandbox-root", "--engine", "--json"}) {
+  for (auto const flag : {"--phase", "--args", "--worktree", "--sandbox-root", "--engine", "--profile", "--json"}) {
     INFO("parser flag missing from the catalog: " << flag);
     CHECK(std::ranges::find(advertised, flag) != advertised.end());
   }
@@ -337,11 +346,21 @@ TEST_CASE("planar-execute run --engine accepts exactly the two engine names", "[
   CHECK(parse_run_args(plain)->engine.empty());
 }
 
-TEST_CASE("planar-execute profile accepts exactly `show` and `show --json`", "[cmd][execute][cli][6485]") {
-  using args = std::vector<std::string>;
-  CHECK(parse_profile_args(args{"show"}) == std::optional<bool>{false});
-  CHECK(parse_profile_args(args{"show", "--json"}) == std::optional<bool>{true});
-  for (auto const& bad : {args{}, args{"list"}, args{"--json"}, args{"show", "--yaml"}, args{"show", "--json", "x"}}) {
+TEST_CASE("planar-execute profile accepts `show` with --json and --profile in any order", "[cmd][execute][cli][6485][6494]") {
+  using args       = std::vector<std::string>;
+  auto const plain = parse_profile_args(args{"show"});
+  REQUIRE(plain.has_value());
+  CHECK_FALSE(plain->json);
+  CHECK(plain->name == "default"); // an absent --profile resolves `default`
+  for (auto const& ok : {args{"show", "--json", "--profile", "w"}, args{"show", "--profile", "w", "--json"}}) {
+    auto const parsed = parse_profile_args(ok);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->json);
+    CHECK(parsed->name == "w");
+  }
+  for (auto const& bad :
+       {args{}, args{"list"}, args{"--json"}, args{"show", "--yaml"}, args{"show", "--json", "x"},
+        args{"show", "--json", "--json"}, args{"show", "--profile"}, args{"show", "--profile", "a", "--profile", "b"}}) {
     INFO(bad.size());
     CHECK_FALSE(parse_profile_args(bad).has_value());
   }

@@ -26,6 +26,26 @@ struct config_line {
 
 } // namespace wire
 
+auto parse_config_lines(std::string_view ndjson) -> std::vector<config_entry> {
+  constexpr glz::opts       k_opts{.error_on_unknown_keys = false};
+  std::vector<config_entry> out;
+  while (!ndjson.empty()) {
+    auto const nl   = ndjson.find('\n');
+    auto const line = ndjson.substr(0, nl);
+    ndjson.remove_prefix(nl == std::string_view::npos ? ndjson.size() : nl + 1);
+    if (line.empty()) {
+      continue;
+    }
+    wire::config_line parsed{};
+    if (glz::read<k_opts>(parsed, line)) {
+      continue;
+    }
+    out.push_back(
+        config_entry{.key = std::move(parsed.key), .value = std::move(parsed.value), .provenance = std::move(parsed.provenance)});
+  }
+  return out;
+}
+
 auto find_config_value(std::string_view ndjson, std::string_view key) -> std::optional<config_value> {
   // One object per line. Unknown fields are ignored so a newer `planar` that
   // adds one does not make this binary's config read fail.

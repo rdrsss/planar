@@ -7090,15 +7090,46 @@ resolves but is refused at dispatch until the host lands in plan 1033 M2:
 Centurion host lands in plan 1033 M2`, exit `1`, nothing on stdout. The
 selection never changes `run`'s stdout.
 
-### `planar-execute profile show [--json]`
+### `planar-execute profile show [--profile <name>] [--json]`
 
-Print the resolved engine and the provenance that chose it, on stdout, exit
-`0`: `engine: <name>` and `engine_source: <label>` lines, or with `--json`
-`{"engine":"embedded","engine_source":"embedded default"}`. The label is
-`flag: --engine`, `env: PLANAR_EXECUTE_ENGINE`, or the config plane's own
-(`config file`, `embedded default`). Any other `profile` shape prints the
-usage and exits `2`. Plan 1033 task 6494 extends this verb with named
-execution profiles.
+Print the resolved engine (with the provenance that chose it) and the
+resolved **execution profile** on stdout, exit `0`. `--profile` defaults to
+`default`. Text is `key: value` lines (`engine`, `engine_source`, `profile`,
+`configured`, `state_dir`, `planar_db`, one `allowed_root:` per root or
+`allowed_roots: -`, `idle_grace_seconds`, `command_policy`, `bundle`, one
+`provider.<vendor>.<key>:` per setting or `providers: -`); `--json` is
+`{"engine":…,"engine_source":…,"profile":{"name":…,"configured":…,"state_dir":…,"planar_db":…,"allowed_roots":[…],"idle_grace_seconds":…,"command_policy":…|null,"bundle":…|null,"providers":{…}}}`.
+Any other `profile` shape prints the usage and exits `2`.
+
+A profile (plan 1033 task 6494, tech-spec D10) is the unit a Centurion host
+runs for — one host per profile, identified by its canonical state
+directory. It is configured as
+
+```toml
+[execute.profiles.<name>]
+state_dir          = "~/.planar/execute/<name>"   # default: $PLANAR_HOME/execute/<name>, else ~/.planar/execute/<name>
+planar_db          = "~/.planar/planar.db"        # default: $PLANAR_DB, else ~/.planar/planar.db
+allowed_roots      = ["~/code"]                   # default: none
+idle_grace_seconds = 300                          # default 300
+command_policy     = "…"                          # default: unset
+bundle             = "…"                          # default: unset
+
+[execute.profiles.<name>.providers.<vendor>]
+<key> = "…"                                       # passed to Centurion verbatim
+```
+
+`default` always exists; unconfigured, it is exactly the defaults. Every
+path is `~`-expanded, made absolute and canonicalised (`weakly_canonical`,
+since the state directory may not exist yet), so two profiles whose
+`state_dir` is a path and a symlink to it report the same identity. The
+profile is read like every other `planar-execute` setting, through the
+sibling `planar config show --json` (whose resolver surfaces every
+`execute.profiles.*` key the file sets). Every configured profile is
+validated, not only the one asked for; an unknown key (`unknown key
+'execute.profiles.x.state_dirr' in <config file>`), a profile name that is
+not configured, `allowed_roots` that is not an array, or an
+`idle_grace_seconds` that is not a positive integer is refused naming the
+config file, exit `1`.
 
 ### `planar-execute schema`
 
