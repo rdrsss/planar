@@ -1716,7 +1716,21 @@ auto run_workflow(run_config const& config, std::ostream& out, std::ostream& err
   hs.err    = &err;
 
   open_sandboxed_libs(L);
-  install_host_surface(L, hs);
+  // Installing the surface decodes `--args` into `ctx.args`, and that decode
+  // runs HERE, outside any `lua_pcall` and outside `guarded()`, so a
+  // `host_error` from it is not converted into a Lua error by anything. Until
+  // task 6483 it escaped as an uncaught C++ exception and aborted the process
+  // (exit 134) on `--args '{bad'`. The shared JSON reader's wording names the
+  // "host" because it was written for sibling-binary output; the caller wrote
+  // `--args`, so the refusal says so, as a stage error like load and init.
+  try {
+    install_host_surface(L, hs);
+  } catch (host_error const& e) {
+    std::string_view const what{e.what()};
+    err << "planar-execute: args error: "
+        << (what.contains("nested too deeply") ? "--args is nested too deeply" : "--args is not valid JSON") << '\n';
+    return run_status::load_failed;
+  }
 
   // The chunk name is "@workflow" so Lua's own diagnostics read
   // `workflow:1: …` — the oracle's exact prefix, which every load/init/phase

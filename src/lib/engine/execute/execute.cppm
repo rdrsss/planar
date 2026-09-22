@@ -552,7 +552,7 @@ export struct run_config {
 export enum class run_status : std::uint8_t {
   ok,            ///< The phase ran; the payload (or `{}`) is on stdout.
   init_failed,   ///< The Lua state could not be created.
-  load_failed,   ///< The chunk failed to compile, or its top level errored.
+  load_failed,   ///< The chunk failed to compile, its top level errored, or `--args` did not decode.
   phase_missing, ///< No global of that name, or it is not a function.
   phase_failed,  ///< The phase raised, or called `flow.fail`.
 };

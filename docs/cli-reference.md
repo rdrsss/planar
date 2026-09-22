@@ -6994,8 +6994,11 @@ only by shelling `planar` / `planar-agent` from inside a workflow. Unlike the
 other four binaries it parses its own arguments and writes its usage banner
 to **stderr** — on `--help` too, where stdout stays empty. The exit codes
 are its own, not the `planar` table above: a bare invocation and every usage
-failure exit `2`, an unreadable workflow or a failed phase exits `1`, and
-`--help` / `schema` exit `0`.
+failure exit `2`, an unreadable workflow, undecodable `--args`, or a failed
+phase exits `1`, and `--help` / `schema` exit `0`. Nothing else is produced:
+every refusal, with its exact stderr line, is pinned as a fixture under
+`src/cmd/planar-execute/golden/errors/` (plan 1033 M0), and that test also
+asserts the observed exit-code set is exactly `{0, 1, 2}`.
 
 ### `planar-execute run <workflow.lua> --phase <name>`
 
@@ -7005,7 +7008,7 @@ workflow's `flow.result(table)` payload as JSON on stdout.
 
 - `<workflow.lua>` — required positional; the workflow file path.
 - `--phase <name>` — required; the phase function to invoke.
-- `--args <json>` — JSON blob exposed to the phase as `ctx.args` (default `""`).
+- `--args <json>` — JSON blob exposed to the phase as `ctx.args` (default `""`, which is an empty table). Any JSON value is accepted, not only an object: an array or a string becomes `ctx.args` as-is. Text that is not JSON, or JSON with trailing bytes, is refused before the workflow loads with `planar-execute: args error: --args is not valid JSON` (nesting deeper than 200 levels: `--args is nested too deeply`) and exit `1`.
 - `--worktree <dir>` — directory the `git` / `fs` host functions are confined to (default `""`).
 - `--sandbox-root <dir>` — root bounding every `fs` path the workflow may touch (default `""`).
 

@@ -244,6 +244,24 @@ TEST_CASE("planar-execute parity: a workflow runs identically in both engines", 
        R"({"big":9007199254740993,"n":5,"t":"integer"})"
        "\n",
        ""},
+      // --args need not be an object: an array or a string becomes ctx.args
+      // as-is. Pinned as observed at plan 1033 M0 (task 6483), which freezes
+      // the contract rather than tightening it; see golden.t.cpp for the
+      // malformed-JSON refusal.
+      {"args_array",
+       "function p() flow.result({ t = type(ctx.args), n = #ctx.args }) end",
+       {"--args", "[1,2]"},
+       0,
+       R"({"n":2,"t":"table"})"
+       "\n",
+       ""},
+      {"args_string",
+       "function p() flow.result({ t = type(ctx.args), v = ctx.args }) end",
+       {"--args", R"("str")"},
+       0,
+       R"({"t":"string","v":"str"})"
+       "\n",
+       ""},
       // The sandbox, enumerated live. This is the case that would catch a
       // library opened here that the oracle leaves closed.
       {"sandbox",

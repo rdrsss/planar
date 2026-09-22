@@ -426,6 +426,8 @@ auto error_cases() -> std::vector<error_case> {
       {"host.result_mixed_table", "function p() flow.result({v = {1, x = 2}}) end", inline_run()},
       {"args.malformed", "function p() flow.result(ctx.args) end", inline_run({"--args", "{bad"})},
       {"args.trailing_bytes", "function p() flow.result(ctx.args) end", inline_run({"--args", R"({"a":1} trailing)"})},
+      {"args.nested_too_deeply", "function p() flow.result({}) end",
+       inline_run({"--args", std::string(250, '[') + std::string(250, ']')})},
       // --- shipped workflows' flow.fail wording ----------------------------
       {"wf.parallel-dispatch.missing_plan_id", "", pd("plan", "{}")},
       {"wf.parallel-dispatch.cycle_plan_task_in_other_plan", "", pd("cycle_plan", R"({"plan_id":1,"task_id":5})")},
