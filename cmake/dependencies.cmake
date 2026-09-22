@@ -61,7 +61,7 @@ endif()
 # expected to add them:
 #
 #   * Catch2   3.15.3 — tests (cmake/module.cmake's planar_module(); task 6023) [vendored]
-#   * SQLite   3.50.2 (amalgamation) — storage [vendored]
+#   * SQLite   3.53.3 (amalgamation) — storage [vendored]
 #   * Lua      5.5    — planar-execute sandbox
 #   * Glaze    8.1.0  — JSON / YAML front matter / TOML config (D8, D12) [vendored]
 #   * libcurl          — HTTP for Jira/GitHub adapters
@@ -120,14 +120,18 @@ endif()
 #
 # THAT CONSTRAINT IS NOW LIFTED: the M10 cutover (task 6045) deleted zig/,
 # so there is no second tree to stay format-compatible with and sqlite is
-# free to move independently. The version is held here only because nothing
-# yet needs a newer one — re-verify a fresh SHA256 against sqlite.org before
-# bumping.
+# free to move independently.
+#
+# Bumped to 3.53.3 at task 6496 (plan 1033 M1) to match Centurion's pin, so
+# that the one `sqlite3` target both trees link is the version both declare
+# (cmake/centurion.cmake § One pin per shared package). SHA256 re-verified
+# independently by downloading the archive from sqlite.org and running
+# `shasum -a 256`; it equals Centurion's. Re-verify again before any bump.
 CPMAddPackage(
   NAME sqlite
-  VERSION 3.50.2
-  URL https://www.sqlite.org/2025/sqlite-amalgamation-3500200.zip
-  URL_HASH SHA256=387991de2834b5da2894119ff4173a9ea0779ea55ebcf53d9a40b24d1dc2484e
+  VERSION 3.53.3
+  URL https://sqlite.org/2026/sqlite-amalgamation-3530300.zip
+  URL_HASH SHA256=646421e12aac110282ef8cc68f1a62d4bb15fc7b8f09da0b53e29ee690500431
   DOWNLOAD_ONLY YES
   EXCLUDE_FROM_ALL YES
   SYSTEM YES
@@ -223,8 +227,13 @@ CPMAddPackage(
 # The consumer target is `CURL::libcurl` (curl's own alias for whichever of
 # the static/shared libraries its build selected — here always the static
 # one, since BUILD_SHARED_LIBS is OFF).
+#
+# VERSION is stated explicitly (task 6496): CPM cannot parse one out of the
+# `curl-8_7_1` tag and recorded this package as version "1", which made
+# Centurion's own `curl 8.21.0` request compare against a meaningless number.
 CPMAddPackage(
   NAME curl
+  VERSION 8.7.1
   URL https://github.com/curl/curl/archive/refs/tags/curl-8_7_1.tar.gz
   URL_HASH SHA256=0e46c856f517602c347bb5fe5b73174f8ee798bc87f1a97235c95761f75fcc28
   SYSTEM YES

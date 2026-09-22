@@ -227,6 +227,7 @@ _planar_add_architecture_guard_test(nontarget-dep-caught fail
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(dependencies)   # CPM + vendored packages (cmake/dependencies.cmake)
+include(centurion)      # centurion::client as a subdirectory (cmake/centurion.cmake)
 include(module)         # planar_module() (cmake/module.cmake)
 
 add_subdirectory(src)

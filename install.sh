@@ -445,6 +445,7 @@ BUILD_DEPS=(
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
+  "python3|python|Centurion's configure generates its Botan amalgamation with configure.py"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
