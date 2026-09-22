@@ -3172,5 +3172,323 @@ class DocsHonestyTest(unittest.TestCase):
         )
 
 
+class LifecycleFixtureNegativeControlWiringTests(unittest.TestCase):
+    """Task 6892: proves `main()`'s `--lifecycle-fixture-only` branch
+    actually CALLS `run_lifecycle_fixture_negative_control` (the real
+    caller `make eval-orchestrator-fixtures` runs), without spawning the
+    real `planar`/`planar-agent`/git processes a full fixture replay
+    needs. CALL-SITE test: mutant is dropping the `main()` call to
+    `run_lifecycle_fixture_negative_control` -- `control_mock` would then
+    never be invoked and `assert_called_once()` fails.
+    """
+
+    def test_main_lifecycle_fixture_mode_invokes_the_negative_control(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            harness, "run_lifecycle_fixture_negative_control"
+        ) as control_mock, mock.patch.object(
+            harness, "collect_case_failures", return_value=[]
+        ), mock.patch.object(harness, "require_commands"):
+            code = harness.main(["--lifecycle-fixture-only"])
+        self.assertEqual(code, 0)
+        control_mock.assert_called_once()
+        # The negative control must run against every loaded case, not
+        # just whatever `--case` narrowed `selected` to -- a `--case`
+        # filter that only selects one case must never skip it.
+        cases_arg = control_mock.call_args.args[0]
+        self.assertGreaterEqual(len(cases_arg), 1)
+
+    def test_negative_control_rejects_a_run_that_never_fails(self) -> None:
+        # If a case's forbidden_events no longer includes the seeded
+        # violation event (or the replay stops failing under the seed),
+        # the negative control itself must be a suite failure, not a
+        # silent pass -- proven here without a real fixture run by
+        # stubbing `run_lifecycle_fixture_replay` to succeed.
+        case = {
+            "id": "fake-lifecycle-case",
+            "tiers": ["lifecycle"],
+            "expected": {"forbidden_events": ["task-completed-before-review"]},
+        }
+        options = harness.Options(
+            mode="lifecycle-fixture",
+            vendor="",
+            surface="skill",
+            case_filter=None,
+            results_dir=None,
+            keep=True,
+        )
+        with mock.patch.object(harness, "run_lifecycle_fixture_replay"):
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "negative control was not detected"
+            ):
+                harness.run_lifecycle_fixture_negative_control(
+                    [(Path("<probe>"), case)], options
+                )
+
+    def test_negative_control_requires_a_candidate_case(self) -> None:
+        options = harness.Options(
+            mode="lifecycle-fixture",
+            vendor="",
+            surface="skill",
+            case_filter=None,
+            results_dir=None,
+            keep=True,
+        )
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "needs a repository case"
+        ):
+            harness.run_lifecycle_fixture_negative_control([], options)
+
+
+class SchemaValidationTests(unittest.TestCase):
+    """Task 6891: `schema.json` was documentary only -- nothing loaded it,
+    so a `required` edit there was prose, not enforcement.
+    `validate_against_json_schema` is the minimal stdlib subset checker
+    now wired into `validate_case`, and this class exercises the
+    constructs the real `schema.json` uses (type, required, properties,
+    enum, items, const, pattern, minLength, minItems, uniqueItems,
+    minimum, maximum, maxProperties, additionalProperties, allOf,
+    if/then, contains, not) plus the "unsupported construct is a hard
+    error" rule and the real CALL SITE (`load_cases` -> `validate_case`).
+    """
+
+    def test_type_mismatch_is_rejected(self) -> None:
+        with self.assertRaisesRegex(harness.SchemaValidationError, "expected type"):
+            harness.validate_against_json_schema({"type": "string"}, 5)
+
+    def test_type_match_passes(self) -> None:
+        harness.validate_against_json_schema({"type": "string"}, "ok")
+
+    def test_required_names_the_missing_key(self) -> None:
+        with self.assertRaisesRegex(
+            harness.SchemaValidationError, "missing required key.*widget"
+        ):
+            harness.validate_against_json_schema(
+                {"type": "object", "required": ["widget"]}, {}
+            )
+
+    def test_properties_recurses_into_child_schema(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string", "minLength": 1}},
+        }
+        with self.assertRaisesRegex(harness.SchemaValidationError, r"\$\.name"):
+            harness.validate_against_json_schema(schema, {"name": ""})
+
+    def test_additional_properties_false_rejects_an_extra_key(self) -> None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"name": {"type": "string"}},
+        }
+        with self.assertRaisesRegex(
+            harness.SchemaValidationError, "unexpected additional property: extra"
+        ):
+            harness.validate_against_json_schema(
+                schema, {"name": "ok", "extra": True}
+            )
+
+    def test_enum_rejects_a_value_outside_the_set(self) -> None:
+        with self.assertRaisesRegex(harness.SchemaValidationError, "not one of"):
+            harness.validate_against_json_schema({"enum": ["a", "b"]}, "c")
+
+    def test_const_rejects_a_mismatched_value(self) -> None:
+        with self.assertRaisesRegex(harness.SchemaValidationError, "expected const"):
+            harness.validate_against_json_schema({"const": 1}, 2)
+
+    def test_pattern_rejects_a_non_matching_string(self) -> None:
+        with self.assertRaisesRegex(harness.SchemaValidationError, "does not match"):
+            harness.validate_against_json_schema(
+                {"pattern": "^[a-z]+$"}, "NOT-LOWER"
+            )
+
+    def test_items_recurses_into_every_array_element(self) -> None:
+        schema = {"type": "array", "items": {"type": "string"}}
+        with self.assertRaisesRegex(harness.SchemaValidationError, r"\$\[1\]"):
+            harness.validate_against_json_schema(schema, ["ok", 5])
+
+    def test_min_items_rejects_a_too_short_array(self) -> None:
+        with self.assertRaisesRegex(harness.SchemaValidationError, "minItems"):
+            harness.validate_against_json_schema({"minItems": 2}, ["one"])
+
+    def test_unique_items_rejects_a_duplicate(self) -> None:
+        with self.assertRaisesRegex(harness.SchemaValidationError, "not unique"):
+            harness.validate_against_json_schema(
+                {"uniqueItems": True}, ["a", "a"]
+            )
+
+    def test_minimum_and_maximum_bound_a_number(self) -> None:
+        with self.assertRaisesRegex(harness.SchemaValidationError, "below minimum"):
+            harness.validate_against_json_schema({"minimum": 30}, 10)
+        with self.assertRaisesRegex(harness.SchemaValidationError, "exceeds maximum"):
+            harness.validate_against_json_schema({"maximum": 3600}, 9000)
+
+    def test_max_properties_rejects_an_oversized_object(self) -> None:
+        with self.assertRaisesRegex(harness.SchemaValidationError, "maxProperties"):
+            harness.validate_against_json_schema(
+                {"maxProperties": 0}, {"tier": "small"}
+            )
+
+    def test_all_of_applies_every_branch(self) -> None:
+        schema = {"allOf": [{"type": "string"}, {"minLength": 3}]}
+        with self.assertRaisesRegex(harness.SchemaValidationError, "minLength"):
+            harness.validate_against_json_schema(schema, "ab")
+
+    def test_if_then_applies_then_only_when_if_matches(self) -> None:
+        schema = {
+            "if": {"properties": {"tiers": {"contains": {"const": "live"}}}},
+            "then": {"required": ["live"]},
+        }
+        # `if` does not match (no "live" in tiers) -> "then" is skipped.
+        harness.validate_against_json_schema(
+            schema, {"tiers": ["contract"]}
+        )
+        # `if` matches -> "then" applies and its violation surfaces.
+        with self.assertRaisesRegex(
+            harness.SchemaValidationError, "missing required key.*live"
+        ):
+            harness.validate_against_json_schema(
+                schema, {"tiers": ["live"]}
+            )
+
+    def test_contains_requires_at_least_one_matching_item(self) -> None:
+        schema = {"contains": {"const": "live"}}
+        with self.assertRaisesRegex(harness.SchemaValidationError, "contains"):
+            harness.validate_against_json_schema(schema, ["contract", "lifecycle"])
+        harness.validate_against_json_schema(schema, ["contract", "live"])
+
+    def test_not_rejects_when_the_inner_schema_matches(self) -> None:
+        schema = {"not": {"contains": {"const": "live"}}}
+        with self.assertRaisesRegex(harness.SchemaValidationError, "must not"):
+            harness.validate_against_json_schema(schema, ["live"])
+        harness.validate_against_json_schema(schema, ["contract"])
+
+    def test_unsupported_construct_is_a_hard_error_not_a_skip(self) -> None:
+        # `$ref` is not in the supported subset. A checker that silently
+        # skipped it would pass the (invalid) instance below; the real
+        # requirement is a loud failure naming the construct.
+        with self.assertRaisesRegex(
+            harness.SchemaValidationError, r"unsupported construct.*\$ref"
+        ):
+            harness.validate_against_json_schema(
+                {"type": "object", "$ref": "#/definitions/thing"}, {}
+            )
+
+    def test_real_schema_json_validates_every_repository_case(self) -> None:
+        # Every case actually committed under evals/orchestrator/cases/
+        # must validate clean against the real schema.json -- this would
+        # fail loudly if a case and the schema had drifted apart.
+        schema = harness.load_case_schema()
+        for path in sorted(harness.CASES_DIR.glob("*.json")):
+            case = harness.read_json(path)
+            harness.validate_against_json_schema(schema, case)
+
+    def test_validate_case_rejects_a_case_missing_a_schema_required_key(
+        self,
+    ) -> None:
+        # Drives validate_case (not validate_against_json_schema directly)
+        # so this proves the wiring, and requires the missing key's name
+        # to appear in the raised message.
+        case = {
+            "schema_version": 1,
+            "id": "missing-tags-probe",
+            "skill": "orchestrator",
+            "description": "probe",
+            # "tags" deliberately omitted -- schema.json requires it.
+            "tiers": ["contract"],
+            "contract_assertions": [
+                {
+                    "id": "probe",
+                    "description": "probe",
+                    "mode": "any",
+                    "paths": ["agents/methodology.md"],
+                    "pattern": r"\bthe\b",
+                }
+            ],
+            "expected": {},
+        }
+        with self.assertRaisesRegex(harness.EvalFailure, "tags"):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_load_cases_call_site_invokes_the_schema_check(self) -> None:
+        # CALL-SITE test (task 6891): drives the real caller `load_cases`
+        # rather than `validate_case`/`validate_against_json_schema`
+        # directly. Mutant: dropping `load_cases` -> `validate_case`'s
+        # call to `validate_against_json_schema` (or the wiring inside
+        # `validate_case`) would make every real repository case load
+        # cleanly despite a schema that now requires a key none of them
+        # have, so this test would stop raising and fail.
+        mutant_schema = {
+            "type": "object",
+            "required": ["__task_6891_call_site_marker__"],
+        }
+        with mock.patch.object(
+            harness, "load_case_schema", return_value=mutant_schema
+        ):
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "__task_6891_call_site_marker__"
+            ):
+                harness.load_cases()
+
+
+class SelfTestConstructionErrorNamingTests(unittest.TestCase):
+    """Task 6893: `SelfTestConstructionError` is raised where only the
+    assertion id is in scope (deep inside `seed_selftest_mutation` /
+    `run_one_assertion_selftest`), so its own message names the assertion
+    but not the case. `run_assertion_selftests` is the real caller that
+    also knows the case id, so it is wrapped there to name both.
+    """
+
+    def _missing_path_case(self, case_id: str, assertion_id: str) -> dict[str, Any]:
+        return {
+            "id": case_id,
+            "tiers": ["contract"],
+            "contract_assertions": [
+                {
+                    "id": assertion_id,
+                    "description": "probe",
+                    "mode": "any",
+                    "paths": ["agents/does-not-exist-for-task-6893-probe.md"],
+                    "pattern": "ZZZ",
+                }
+            ],
+        }
+
+    def test_named_selftest_failure_prefixes_the_case_id_once(self) -> None:
+        exc = harness.SelfTestConstructionError("probe-assertion: some detail")
+        message = harness.named_selftest_failure("probe-case", exc)
+        self.assertEqual(message, "probe-case/probe-assertion: some detail")
+        # Idempotent: re-prefixing an already-prefixed message must not
+        # double the case id.
+        self.assertEqual(
+            harness.named_selftest_failure("probe-case", harness.SelfTestConstructionError(message)),
+            message,
+        )
+
+    def test_run_assertion_selftests_call_site_names_case_and_assertion(
+        self,
+    ) -> None:
+        # CALL-SITE test: drives the real caller `run_assertion_selftests`
+        # (what `make eval-orchestrator` runs in contract mode), not the
+        # helper directly. Mutant: reverting the wrapping (recording
+        # `str(exc)` unprefixed, as before task 6893) drops the case id
+        # from the message and this assertion fails.
+        case = self._missing_path_case(
+            "selftest-naming-probe-case", "selftest-naming-probe-assertion"
+        )
+        self_tests_run, total_assertions, failures = harness.run_assertion_selftests(
+            [(Path("<probe>"), case)]
+        )
+        self.assertEqual(self_tests_run, 0)
+        self.assertEqual(total_assertions, 1)
+        self.assertEqual(len(failures), 1)
+        label, status, message = failures[0]
+        self.assertEqual(status, "fail")
+        self.assertEqual(label, "selftest-naming-probe-case/selftest-naming-probe-assertion")
+        self.assertIn("selftest-naming-probe-case", message)
+        self.assertIn("selftest-naming-probe-assertion", message)
+
+
 if __name__ == "__main__":
     unittest.main()

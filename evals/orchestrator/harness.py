@@ -102,6 +102,256 @@ class EvalBlocked(RuntimeError):
         self.artifacts = artifacts
 
 
+class SchemaValidationError(EvalFailure):
+    """A case document violates `evals/orchestrator/schema.json`, or the
+    schema itself uses a construct `validate_against_json_schema` does not
+    understand (task 6891). The two are both hard errors: a schema keyword
+    the checker cannot interpret must never be silently treated as
+    satisfied, so an editor who widens `schema.json` past this subset
+    finds out at the next `load_cases()` rather than losing enforcement
+    quietly.
+    """
+
+
+# `schema.json` was documentary only until task 6891: nothing loaded it, so
+# a `required` edit there was prose, not enforcement. This is the on-disk
+# schema `validate_case` now checks every case against.
+CASE_SCHEMA_PATH = ROOT / "evals" / "orchestrator" / "schema.json"
+
+# Schema keywords `validate_against_json_schema` understands. Split into
+# metadata (carries no constraint; safe to ignore) and constraint keywords
+# (interpreted below) so the "unsupported construct" check has a single
+# source of truth for what this minimal, stdlib-only subset actually
+# implements -- exactly the constructs `schema.json` uses today: type,
+# required, properties, enum, items, plus const/pattern/minLength/
+# minItems/uniqueItems/minimum/maximum/maxProperties/additionalProperties/
+# allOf/if-then/contains/not, which schema.json also uses.
+_SCHEMA_METADATA_KEYWORDS = {"$schema", "$id", "title", "description", "default"}
+_SCHEMA_CONSTRAINT_KEYWORDS = {
+    "type",
+    "required",
+    "properties",
+    "additionalProperties",
+    "enum",
+    "const",
+    "pattern",
+    "minLength",
+    "items",
+    "minItems",
+    "uniqueItems",
+    "minimum",
+    "maximum",
+    "maxProperties",
+    "allOf",
+    "if",
+    "then",
+    "contains",
+    "not",
+}
+_SCHEMA_KNOWN_KEYWORDS = _SCHEMA_METADATA_KEYWORDS | _SCHEMA_CONSTRAINT_KEYWORDS
+
+_SCHEMA_CACHE: dict[str, Any] | None = None
+
+
+def load_case_schema() -> dict[str, Any]:
+    """Read and cache `schema.json`. A module-level cache (rather than a
+    read on every case) keeps `load_cases()` from re-parsing the same file
+    once per case file on disk.
+    """
+    global _SCHEMA_CACHE
+    if _SCHEMA_CACHE is None:
+        _SCHEMA_CACHE = read_json(CASE_SCHEMA_PATH)
+    return _SCHEMA_CACHE
+
+
+def _json_type_name(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if value is None:
+        return "null"
+    return "unknown"  # pragma: no cover - every JSON value matches above
+
+
+def _matches_schema_type(value: Any, expected: str) -> bool:
+    actual = _json_type_name(value)
+    if expected == "number":
+        return actual in ("number", "integer")
+    return actual == expected
+
+
+def validate_against_json_schema(
+    schema: Any, instance: Any, *, path: str = "$"
+) -> None:
+    """Validate `instance` against `schema` using a minimal, stdlib-only
+    JSON-Schema subset (task 6891): `type`, `required`, `properties`,
+    `additionalProperties`, `enum`, `const`, `pattern`, `minLength`,
+    `items`, `minItems`, `uniqueItems`, `minimum`, `maximum`,
+    `maxProperties`, `allOf`, `if`/`then`, `contains`, and `not` -- exactly
+    the constructs `evals/orchestrator/schema.json` uses. A schema object
+    carrying any OTHER keyword raises `SchemaValidationError` naming it
+    rather than silently passing: this checker never treats an
+    unrecognized construct as satisfied.
+
+    Raises `SchemaValidationError` on the first violation found (a
+    structural mismatch, or an unsupported keyword), never returns a
+    boolean.
+    """
+    if not isinstance(schema, dict):
+        return
+    unsupported = sorted(set(schema) - _SCHEMA_KNOWN_KEYWORDS)
+    if unsupported:
+        raise SchemaValidationError(
+            f"{path}: schema uses unsupported construct(s): "
+            + ", ".join(unsupported)
+        )
+
+    if "type" in schema:
+        expected = schema["type"]
+        expected_types = expected if isinstance(expected, list) else [expected]
+        if not any(_matches_schema_type(instance, t) for t in expected_types):
+            raise SchemaValidationError(
+                f"{path}: expected type {expected!r}, got "
+                f"{_json_type_name(instance)}"
+            )
+
+    if "const" in schema and instance != schema["const"]:
+        raise SchemaValidationError(
+            f"{path}: expected const {schema['const']!r}, got {instance!r}"
+        )
+
+    if "enum" in schema and instance not in schema["enum"]:
+        raise SchemaValidationError(
+            f"{path}: value {instance!r} is not one of {schema['enum']!r}"
+        )
+
+    if "pattern" in schema and isinstance(instance, str):
+        if re.search(schema["pattern"], instance) is None:
+            raise SchemaValidationError(
+                f"{path}: {instance!r} does not match pattern "
+                f"{schema['pattern']!r}"
+            )
+
+    if "minLength" in schema and isinstance(instance, str):
+        if len(instance) < schema["minLength"]:
+            raise SchemaValidationError(
+                f"{path}: length {len(instance)} is below minLength "
+                f"{schema['minLength']}"
+            )
+
+    if (
+        isinstance(instance, (int, float))
+        and not isinstance(instance, bool)
+        and ("minimum" in schema or "maximum" in schema)
+    ):
+        if "minimum" in schema and instance < schema["minimum"]:
+            raise SchemaValidationError(
+                f"{path}: {instance} is below minimum {schema['minimum']}"
+            )
+        if "maximum" in schema and instance > schema["maximum"]:
+            raise SchemaValidationError(
+                f"{path}: {instance} exceeds maximum {schema['maximum']}"
+            )
+
+    if isinstance(instance, dict):
+        if "required" in schema:
+            missing = [key for key in schema["required"] if key not in instance]
+            if missing:
+                raise SchemaValidationError(
+                    f"{path}: missing required key(s): {', '.join(missing)}"
+                )
+        if "maxProperties" in schema and len(instance) > schema["maxProperties"]:
+            raise SchemaValidationError(
+                f"{path}: object has {len(instance)} properties, exceeds "
+                f"maxProperties {schema['maxProperties']}"
+            )
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            for key, subschema in properties.items():
+                if key in instance:
+                    validate_against_json_schema(
+                        subschema, instance[key], path=f"{path}.{key}"
+                    )
+        additional = schema.get("additionalProperties")
+        allowed = set(properties) if isinstance(properties, dict) else set()
+        if additional is False:
+            extra = sorted(set(instance) - allowed)
+            if extra:
+                raise SchemaValidationError(
+                    f"{path}: unexpected additional propert"
+                    f"{'y' if len(extra) == 1 else 'ies'}: {', '.join(extra)}"
+                )
+        elif isinstance(additional, dict):
+            for key in sorted(set(instance) - allowed):
+                validate_against_json_schema(
+                    additional, instance[key], path=f"{path}.{key}"
+                )
+
+    if isinstance(instance, list):
+        if "minItems" in schema and len(instance) < schema["minItems"]:
+            raise SchemaValidationError(
+                f"{path}: array has {len(instance)} items, below minItems "
+                f"{schema['minItems']}"
+            )
+        if "uniqueItems" in schema and schema["uniqueItems"]:
+            seen: list[Any] = []
+            for item in instance:
+                if item in seen:
+                    raise SchemaValidationError(f"{path}: array items are not unique")
+                seen.append(item)
+        items_schema = schema.get("items")
+        if isinstance(items_schema, dict):
+            for index, item in enumerate(instance):
+                validate_against_json_schema(
+                    items_schema, item, path=f"{path}[{index}]"
+                )
+        if "contains" in schema:
+            contains_schema = schema["contains"]
+            matched = False
+            for item in instance:
+                try:
+                    validate_against_json_schema(contains_schema, item, path=path)
+                except SchemaValidationError:
+                    continue
+                matched = True
+                break
+            if not matched:
+                raise SchemaValidationError(f"{path}: no item satisfies 'contains'")
+
+    if "not" in schema:
+        try:
+            validate_against_json_schema(schema["not"], instance, path=path)
+        except SchemaValidationError:
+            pass
+        else:
+            raise SchemaValidationError(
+                f"{path}: instance must not validate against 'not' schema"
+            )
+
+    if "if" in schema:
+        try:
+            validate_against_json_schema(schema["if"], instance, path=path)
+        except SchemaValidationError:
+            condition_met = False
+        else:
+            condition_met = True
+        if condition_met and "then" in schema:
+            validate_against_json_schema(schema["then"], instance, path=path)
+
+    if "allOf" in schema:
+        for subschema in schema["allOf"]:
+            validate_against_json_schema(subschema, instance, path=path)
+
+
 @dataclass
 class Options:
     mode: str
@@ -390,6 +640,10 @@ def validate_case(path: Path, case: Any) -> None:
 
     if not isinstance(case, dict):
         invalid("root must be an object")
+    try:
+        validate_against_json_schema(load_case_schema(), case)
+    except SchemaValidationError as exc:
+        invalid(f"schema.json violation: {exc}")
     if case.get("schema_version") != 1 or case.get("skill") != "orchestrator":
         invalid("unsupported schema_version or skill")
     case_id = case.get("id")
@@ -789,6 +1043,21 @@ class SelfTestConstructionError(EvalFailure):
     """
 
 
+def named_selftest_failure(case_id: str, exc: SelfTestConstructionError) -> str:
+    """Prefix a `SelfTestConstructionError`'s message with `case_id` (task
+    6893). The error is raised where only the assertion id is in scope, so
+    its raw message already starts with `"<assertion-id>: ..."`; this
+    makes the combined message `"<case-id>/<assertion-id>: ..."` -- the
+    same `label` shape `run_assertion_selftests` already uses for the
+    `CaseOutcome` tuple -- without double-prefixing a message some other
+    caller already combined.
+    """
+    message = str(exc)
+    if message.startswith(f"{case_id}/"):
+        return message
+    return f"{case_id}/{message}"
+
+
 def _split_top_level(pattern: str, sep: str) -> list[str]:
     """Split `pattern` on `sep` only where parenthesis depth is 0 and the
     separator is not escaped. Used to isolate top-level alternation
@@ -995,9 +1264,22 @@ def run_assertion_selftests(
             continue
         for assertion in case["contract_assertions"]:
             total_assertions += 1
-            label = f"{case['id']}/{assertion['id']}"
+            case_id = case["id"]
+            label = f"{case_id}/{assertion['id']}"
             try:
-                run_one_assertion_selftest(case["id"], assertion)
+                run_one_assertion_selftest(case_id, assertion)
+            except SelfTestConstructionError as exc:
+                # Task 6893: `SelfTestConstructionError` is raised deep
+                # inside `seed_selftest_mutation` / `run_one_assertion_selftest`,
+                # which only ever see the assertion, so its own message
+                # names the assertion id but not the case id. The same
+                # assertion id can be reused across cases, so a message
+                # with only the assertion id cannot tell an operator WHICH
+                # case's self-test failed to construct. Wrap it here,
+                # where both ids are in scope, rather than threading
+                # case_id further down.
+                failures.append((label, "fail", named_selftest_failure(case_id, exc)))
+                continue
             except EvalFailure as exc:
                 failures.append((label, "fail", str(exc)))
                 continue
@@ -2456,9 +2738,27 @@ def grade_lifecycle_artifacts(
 
 
 def run_lifecycle_fixture_replay(
-    case_path: Path, case: dict[str, Any], options: Options
+    case_path: Path,
+    case: dict[str, Any],
+    options: Options,
+    *,
+    seed_violation: str | None = None,
 ) -> None:
-    context = prepare_lifecycle_fixture(case_path, case, options, "fixture")
+    """Replay the controlled-classic fixture end-to-end and grade it.
+
+    `seed_violation`, when set, is forwarded as `EVAL_SEED_VIOLATION` to
+    every `.eval/control.sh` invocation (task 6892). The fixture's own
+    knob (see `control.sh`) then emits the named event, so this same code
+    path -- not a synthetic events.jsonl the grader has never actually
+    produced -- is what `run_lifecycle_fixture_negative_control` drives to
+    prove `grade_lifecycle_artifacts` can fail a real run, not just the
+    two isolated unit halves (emitting the event, and rejecting a
+    hand-built event list) that existed before.
+    """
+    label = "fixture-negative-control" if seed_violation else "fixture"
+    context = prepare_lifecycle_fixture(case_path, case, options, label)
+    if seed_violation:
+        context.env["EVAL_SEED_VIOLATION"] = seed_violation
     try:
         claim = run_json(
             [
@@ -2536,6 +2836,61 @@ def run_lifecycle_fixture_replay(
         if exc.artifacts is None:
             exc.artifacts = context.artifacts
         raise
+
+
+# The fixture's seeded-violation knob (control.sh) only ever emits this one
+# event; kept as a single named constant so the negative control and its
+# candidate search below cannot drift from the string `control.sh` reads.
+LIFECYCLE_SEEDED_VIOLATION = "task-completed-before-review"
+
+
+def run_lifecycle_fixture_negative_control(
+    cases: list[tuple[Path, dict[str, Any]]], options: Options
+) -> None:
+    """Task 6892: prove the fixture-replay lane can actually FAIL a run,
+    end-to-end, not just its two previously-isolated unit halves (a test
+    that the fixture emits the seeded event, and a separate test that
+    feeds a hand-built event list into `grade_lifecycle_artifacts`).
+
+    Runs a REAL `run_lifecycle_fixture_replay` -- claim, controlled
+    coder/reviewer, complete, collect, grade -- against the real
+    controlled-classic fixture in the arena, with
+    `EVAL_SEED_VIOLATION=task-completed-before-review` forcing the fixture
+    to emit the one event every repository lifecycle case's
+    `forbidden_events` already forbids. The replay is REQUIRED to raise
+    `EvalFailure` naming that forbidden event; anything else (no raise, or
+    a raise for an unrelated reason) is itself a suite failure, so this
+    is a fail-closed negative control, not a smoke test that only proves
+    the happy path runs.
+    """
+    seeded = LIFECYCLE_SEEDED_VIOLATION
+    candidates = [
+        (path, case)
+        for path, case in cases
+        if "lifecycle" in case.get("tiers", [])
+        and seeded in case.get("expected", {}).get("forbidden_events", [])
+    ]
+    if not candidates:
+        raise EvalFailure(
+            "lifecycle fixture negative control needs a repository case "
+            f"whose expected.forbidden_events declares {seeded!r}"
+        )
+    path, case = candidates[0]
+    try:
+        run_lifecycle_fixture_replay(path, case, options, seed_violation=seeded)
+    except EvalFailure as exc:
+        if f"forbidden event observed: {seeded}" not in str(exc):
+            raise EvalFailure(
+                "lifecycle fixture negative control failed for the wrong "
+                f"reason (expected a rejected forbidden event {seeded!r}): {exc}"
+            ) from exc
+        if exc.artifacts is not None and not options.keep and options.results_dir is None:
+            shutil.rmtree(exc.artifacts, ignore_errors=True)
+        return
+    raise EvalFailure(
+        f"lifecycle fixture negative control was not detected: {case['id']} "
+        f"did not fail under EVAL_SEED_VIOLATION={seeded}"
+    )
 
 
 def append_file(target: Path, source: Path) -> None:
@@ -2877,6 +3232,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         runnable = [entry for entry in selected if "lifecycle" in entry[1]["tiers"]]
         if not runnable:
             raise EvalFailure("no selected cases declare the lifecycle tier")
+        # Task 6892: proves the fixture-replay lane can actually FAIL a run
+        # before trusting the pass-only loop below, the same way the
+        # contract lane's negative controls run before its own pass loop.
+        # Uses `cases` (every loaded case), not `selected`, so a `--case`
+        # filter narrowing `runnable` never skips this control.
+        run_lifecycle_fixture_negative_control(cases, options)
+        pass_line("lifecycle fixture negative control")
         fixture_outcomes = collect_case_failures(
             runnable,
             lambda path, case: run_lifecycle_fixture_replay(path, case, options),
