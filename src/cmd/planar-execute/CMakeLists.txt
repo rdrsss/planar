@@ -100,6 +100,7 @@ planar_binary(planar_execute
     selector.cppm
     profile.cppm
     host.cppm
+    compat.cppm
   SOURCES
     cli.cpp
     catalog.cpp
@@ -107,10 +108,14 @@ planar_binary(planar_execute
     selector.cpp
     profile.cpp
     host.cpp
+    compat.cpp
     client_probe.cpp
   DEPENDS
     cliapp
-    engine_execute)
+    engine_execute
+    # sha256 (layer 1) digests the profile's bundle tree and command policy for
+    # the compatibility tuple (task 6503). It reaches nothing near planar_db.
+    sha256)
 
 # Glaze writes `profile show --json` (selector.cpp, plan 1033 task 6485).
 # Header-only JSON; it reaches nothing near `planar_db`, so the execute-
