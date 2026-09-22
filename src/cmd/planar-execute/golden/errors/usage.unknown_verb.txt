@@ -7,6 +7,7 @@ Usage:
                      [--worktree <dir>] [--sandbox-root <dir>]
                      [--engine <embedded|centurion>]
   planar-execute profile show [--profile <name>] [--json]
+  planar-execute submit <bundle> [--input <json>] [--profile <name>]
   planar-execute schema
 
 Loads the workflow in the sandbox, registers the deterministic host

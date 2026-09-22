@@ -60,6 +60,7 @@ namespace {
 using planar::cmd::execute::classify;
 using planar::cmd::execute::parse_profile_args;
 using planar::cmd::execute::parse_run_args;
+using planar::cmd::execute::parse_submit_args;
 using planar::cmd::execute::usage_text;
 using planar::cmd::execute::verb;
 
@@ -246,6 +247,56 @@ TEST_CASE("planar-execute resolves its trusted sibling directory", "[cmd][execut
   CHECK(std::filesystem::is_directory(dir));
 }
 
+TEST_CASE("the submit verb's arguments parse, and its malformed shapes are refused", "[cmd][execute][cli][6504]") {
+  SECTION("a bare bundle name takes the documented defaults") {
+    std::vector<std::string> const args{"planar.supervision"};
+    auto const                     parsed = parse_submit_args(args);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->bundle == "planar.supervision");
+    CHECK(parsed->input == "{}");
+    CHECK(parsed->profile == "default");
+  }
+
+  SECTION("flags may precede or follow the bundle") {
+    std::vector<std::string> const args{"--profile", "work", "planar.supervision", "--input", R"({"a":1})"};
+    auto const                     parsed = parse_submit_args(args);
+    REQUIRE(parsed.has_value());
+    CHECK(parsed->bundle == "planar.supervision");
+    CHECK(parsed->profile == "work");
+    CHECK(parsed->input == R"({"a":1})");
+  }
+
+  SECTION("no bundle at all is refused") {
+    std::vector<std::string> const args{"--profile", "work"};
+    CHECK_FALSE(parse_submit_args(args).has_value());
+  }
+
+  SECTION("a flag without its value is refused rather than swallowing the next token") {
+    std::vector<std::string> const args{"planar.supervision", "--input"};
+    CHECK_FALSE(parse_submit_args(args).has_value());
+  }
+
+  SECTION("an unknown flag is refused") {
+    std::vector<std::string> const args{"planar.supervision", "--phase", "p"};
+    CHECK_FALSE(parse_submit_args(args).has_value());
+  }
+
+  SECTION("a flag-looking token never becomes the bundle name") {
+    // The discriminating shape. With a bundle already seen, a stray token is
+    // refused as a second positional whatever it looks like — so only a
+    // FIRST token that looks like a flag can tell "unknown flag" apart from
+    // "extra positional", and without that check `--bogus` would silently be
+    // submitted as a bundle name.
+    std::vector<std::string> const args{"--bogus"};
+    CHECK_FALSE(parse_submit_args(args).has_value());
+  }
+
+  SECTION("a second positional is a typo, not a second bundle") {
+    std::vector<std::string> const args{"planar.supervision", "planar.other"};
+    CHECK_FALSE(parse_submit_args(args).has_value());
+  }
+}
+
 TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the same flags", "[cmd][execute][cli][6486]") {
   // The catalog (task 6486, D18) is a DESCRIPTION built separately from
   // `parse_run_args`; nothing stops the two drifting except this case. Both
@@ -256,6 +307,7 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   CHECK(catalog.contains(R"("root":"planar-execute")"));
   CHECK(catalog.contains(R"("command":"planar-execute run")"));
   CHECK(catalog.contains(R"("command":"planar-execute schema")"));
+  CHECK(catalog.contains(R"("command":"planar-execute submit")"));
   // Single line, no trailing newline: the write site appends exactly one.
   CHECK_FALSE(catalog.contains('\n'));
 
@@ -266,9 +318,11 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
     auto const end   = catalog.find('"', start);
     advertised.emplace_back(catalog.substr(start, end - start));
   }
-  // Five on `run` plus `profile show --profile` and `--json` (task 6485
-  // added `--engine` and the `profile` verb; task 6494 `--profile`).
-  REQUIRE(advertised.size() == 7);
+  // Five on `run`, `profile show`'s `--profile` and `--json`, and `submit`'s
+  // `--input` and `--profile` (task 6485 added `--engine` and the `profile`
+  // verb; task 6494 `--profile`; task 6504 `submit`). `--profile` appears
+  // twice because two verbs declare it, and both parsers are checked below.
+  REQUIRE(advertised.size() == 9);
   for (auto const& flag : advertised) {
     INFO("advertised flag not accepted by its parser: " << flag);
     if (flag == "--profile") {
@@ -276,6 +330,19 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
       auto const                     parsed = parse_profile_args(profile);
       REQUIRE(parsed.has_value());
       CHECK(parsed->name == "work");
+      // The same flag on `submit`, whose parser is a different function: the
+      // catalog advertises it on both verbs, so both must accept it.
+      std::vector<std::string> const submitted{"planar.supervision", "--profile", "work"};
+      auto const                     submit_parsed = parse_submit_args(submitted);
+      REQUIRE(submit_parsed.has_value());
+      CHECK(submit_parsed->profile == "work");
+      continue;
+    }
+    if (flag == "--input") {
+      std::vector<std::string> const submitted{"planar.supervision", "--input", R"({"task":"t"})"};
+      auto const                     parsed = parse_submit_args(submitted);
+      REQUIRE(parsed.has_value());
+      CHECK(parsed->input == R"({"task":"t"})");
       continue;
     }
     if (flag == "--json") {

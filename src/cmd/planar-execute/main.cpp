@@ -28,7 +28,13 @@ import planar.cmd.planar_execute.catalog;
 import planar.cmd.planar_execute.engine;
 import planar.cmd.planar_execute.selector;
 import planar.cmd.planar_execute.profile;
+import planar.cmd.planar_execute.host;
+import planar.cmd.planar_execute.compat;
+import planar.cmd.planar_execute.runflow;
 import planar.engine_execute;
+
+// After the imports: declares std:: types, includes no standard header.
+#include "client_bridge.hpp"
 
 namespace {
 
@@ -56,6 +62,130 @@ auto resolve(std::string_view flag) -> std::expected<planar::cmd::execute::engin
   namespace ex          = planar::cmd::execute;
   auto const flag_value = flag.empty() ? std::nullopt : std::optional<std::string_view>{flag};
   return ex::resolve_engine(flag_value, engine_env(), ex::sibling_config_reader(ex::executable_dir()));
+}
+
+/// @brief Environment lookup shared by the profile resolver.
+auto env_value(std::string_view name) -> std::optional<std::string> {
+  char const* raw = std::getenv(std::string{name}.c_str()); // NOLINT(concurrency-mt-unsafe) — single-threaded startup.
+  return raw == nullptr || *raw == '\0' ? std::nullopt : std::optional<std::string>{raw};
+}
+
+/// @brief Resolve one profile from the config plane, for the verbs that need one.
+/// @param name The profile name.
+/// @return The resolved profile, or the one-line reason.
+auto resolve_named_profile(std::string_view name) -> std::expected<planar::cmd::execute::profile, std::string> {
+  namespace ex       = planar::cmd::execute;
+  auto const bin_dir = ex::executable_dir();
+  auto const entries = planar::engine::execute::read_planar_config_all(bin_dir);
+  if (!entries.has_value()) {
+    return std::unexpected(std::format("cannot read the config plane: {}", entries.error()));
+  }
+  return ex::resolve_profile(*entries, name, env_value, [&bin_dir] {
+    auto const path = planar::engine::execute::read_planar_config_path(bin_dir);
+    return path.has_value() ? *path : std::string{"the planar config file"};
+  });
+}
+
+/// @brief Translate the bridge's classification into the flow's.
+///
+/// An explicit switch, NOT a cast between two enums that happen to be
+/// declared in the same order: the two live in different translation units
+/// (one a header, one a module, because gRPC headers cannot enter a module
+/// purview) and a reordering of either would silently turn one outcome into
+/// another — "refused" into "retryable" is a retry loop against a durable
+/// refusal, and the reverse abandons work that was never attempted.
+auto translate(planar::cmd::execute::call_outcome outcome) -> planar::cmd::execute::daemon_outcome {
+  namespace ex = planar::cmd::execute;
+  switch (outcome) {
+  case ex::call_outcome::ok:
+    return ex::daemon_outcome::ok;
+  case ex::call_outcome::retryable:
+    return ex::daemon_outcome::retryable;
+  case ex::call_outcome::refused:
+    return ex::daemon_outcome::refused;
+  case ex::call_outcome::uncertain:
+    return ex::daemon_outcome::uncertain;
+  }
+  return ex::daemon_outcome::uncertain;
+}
+
+/// @brief Project a bridge answer onto the flow's shape.
+auto translate(const planar::cmd::execute::call_result& answer) -> planar::cmd::execute::daemon_answer {
+  namespace ex = planar::cmd::execute;
+  return ex::daemon_answer{.outcome_ = translate(answer.outcome_),
+                           .run_     = ex::run_projection{.run_id_      = answer.run_.run_id_,
+                                                          .status_      = answer.run_.status_,
+                                                          .result_json_ = answer.run_.result_json_,
+                                                          .error_json_  = answer.run_.error_json_,
+                                                          .terminal_    = answer.run_.terminal_},
+                           .message_ = answer.message_};
+}
+
+/// @brief Run one `submit`: ensure the profile's daemon, check identity, start and follow.
+/// @param asked The parsed arguments.
+/// @return The process exit code.
+auto submit_run(const planar::cmd::execute::submit_args& asked) -> int {
+  namespace ex = planar::cmd::execute;
+
+  auto const resolved = resolve_named_profile(asked.profile);
+  if (!resolved.has_value()) {
+    std::cerr << "planar-execute: " << resolved.error() << '\n';
+    return 1;
+  }
+
+  // The daemon ships BESIDE this binary (task 6709 installs both under the
+  // same prefix), for the same reason `cli.planar(...)` resolves its sibling:
+  // what runs is what was installed with this client, not whatever a PATH
+  // happens to name first.
+  auto const bin_dir = ex::executable_dir();
+  auto const daemon  = std::filesystem::path{bin_dir} / "centuriond";
+
+  auto const layout   = ex::layout_for(*resolved);
+  auto const recorded = ex::recorded_tuple(layout);
+
+  auto ensured = ex::ensure_host(
+      *resolved, daemon, ex::real_hooks([](const std::filesystem::path& socket) { return ex::probe_socket(socket.c_str()); }));
+  if (!ensured.has_value()) {
+    std::cerr << "planar-execute: " << ensured.error().message_ << '\n';
+    return 1;
+  }
+
+  const auto current = ex::compute_tuple(
+      *resolved, ex::compatibility_inputs{.daemon_          = daemon,
+                                          .sibling_bin_dir_ = bin_dir,
+                                          .workbench_root_  = env_value("PLANAR_WORKBENCH_ROOT").value_or(std::string{})});
+  if (ensured->origin_ == ex::host_origin::joined) {
+    // Only a JOINED daemon can disagree with this client; one this process
+    // just started was configured by it.
+    if (const auto mismatches = ex::compare_tuples(recorded, current); !mismatches.empty()) {
+      std::cerr << "planar-execute: " << ex::mismatch_text(mismatches, resolved->name) << '\n';
+      return 1;
+    }
+  } else if (const auto written = ex::record_tuple(layout, current); !written.has_value()) {
+    std::cerr << "planar-execute: " << written.error() << '\n';
+    return 1;
+  }
+
+  const auto socket = ensured->socket_.string();
+  const auto client = ex::run_client{
+      .submit_ =
+          [&socket](std::string_view bundle, std::string_view input, std::string_view request_id) {
+            return translate(ex::submit_bundle_run(socket.c_str(), std::string{bundle}.c_str(), std::string{input}.c_str(),
+                                                   std::string{request_id}.c_str()));
+          },
+      .fetch_ =
+          [&socket](std::string_view run_id) { return translate(ex::fetch_run(socket.c_str(), std::string{run_id}.c_str())); },
+  };
+
+  const auto request_id = ex::make_request_id(std::chrono::system_clock::now(), std::random_device{}());
+  const auto outcome    = ex::submit_and_follow(client, asked.bundle, asked.input, request_id);
+  if (outcome.result_ == ex::flow_result::completed) {
+    // stdout stays the clean payload channel, as it is for `run`.
+    std::cout << ex::result_payload(outcome.run_) << '\n';
+  } else {
+    std::cerr << "planar-execute: " << outcome.message_ << '\n';
+  }
+  return ex::exit_code_for(outcome.result_);
 }
 
 } // namespace
@@ -140,6 +270,17 @@ auto main(int argc, char** argv) -> int {
     }
     std::cout << ex::render_profile(*choice, *resolved, asked->json);
     code = 0;
+    break;
+  }
+
+  case planar::cmd::execute::verb::submit: {
+    auto const asked = planar::cmd::execute::parse_submit_args(std::span{args}.subspan(2));
+    if (!asked.has_value()) {
+      print_usage();
+      code = 2;
+      break;
+    }
+    code = submit_run(*asked);
     break;
   }
 

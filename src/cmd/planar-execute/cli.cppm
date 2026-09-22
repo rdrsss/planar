@@ -134,12 +134,25 @@ export struct profile_args {
 export auto parse_profile_args(std::span<const std::string> args) -> std::optional<profile_args>;
 
 /// @brief Which top-level shape an argv resolves to.
+/// @brief What `parse_submit_args` produces — the `submit` verb's arguments.
+export struct submit_args {
+  std::string bundle;              ///< Bundle name to start; the host's published version is selected.
+  std::string input   = "{}";      ///< Canonical JSON input for the run.
+  std::string profile = "default"; ///< Execution profile whose daemon serves the run.
+};
+
+/// @brief Parse the `submit` verb's arguments (everything after `submit`).
+/// @param args The tokens after the `submit` verb.
+/// @return The parsed arguments, or unset when the shape is wrong.
+export auto parse_submit_args(std::span<const std::string> args) -> std::optional<submit_args>;
+
 export enum class verb : std::uint8_t {
   none,    ///< No arguments at all: usage, exit 2.
   help,    ///< `--help` / `-h` / `help`: usage, exit 0.
   run,     ///< The `run` verb.
   schema,  ///< The `schema` verb: the JSON catalog on stdout, exit 0 (task 6486).
   profile, ///< The `profile` verb: the resolved engine on stdout (task 6485).
+  submit,  ///< The `submit` verb: start a bundle run on the profile's daemon (task 6504).
   unknown, ///< Anything else: "unknown verb" + usage, exit 2.
 };
 

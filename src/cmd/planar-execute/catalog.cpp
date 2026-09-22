@@ -40,6 +40,12 @@ auto catalog_json() -> std::string {
              "Execution engine: embedded or centurion. Overrides $PLANAR_EXECUTE_ENGINE and the execute.engine "
              "config key; default embedded. centurion is refused at dispatch until the Centurion host lands.");
 
+  CLI::App* submit = root.add_subcommand("submit", "Start a bundle run on the profile's centuriond and follow it to a "
+                                                   "terminal state, printing its result JSON on stdout.");
+  submit->add_option("bundle")->required()->description("Bundle name to start; the host's published version is selected.");
+  add_string(*submit, "--input", "Canonical JSON input for the run; default: {}.");
+  add_string(*submit, "--profile", "Execution profile whose daemon serves the run; default: default.");
+
   CLI::App* profile = root.add_subcommand("profile", "Inspect the resolved execution profile.");
   CLI::App* show    = profile->add_subcommand("show", "Print the resolved engine and the provenance that chose it "
                                                       "(flag, env, config file, or embedded default) on stdout.");
