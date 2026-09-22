@@ -1258,3 +1258,118 @@ TEST_CASE("a workbench root with a TRAILING SLASH stores the same paths", "[work
   INFO("unclaimed entries: " << unclaimed);
   CHECK(unclaimed == 0);
 }
+
+// --- task 6880: a value whose byte length lands on the 256-byte boundary ----
+//
+// `planar workbench status/push/pull` aborted with SIGABRT (`__stack_chk_fail`)
+// rendering scenario 3025 of plan 1065. The row's body is 255 CHARACTERS but
+// 256 BYTES (it contains one `§`, two bytes in UTF-8), and every scratch
+// repro that counted characters missed the boundary. Reproduced standalone
+// against the pinned libc++ (23.1.1): `std::format_to(std::back_inserter(s),
+// "\n\n{}\n", arg)` with `arg.size() % 256 == 0` writes one byte past the
+// formatter's 256-byte stack buffer -- upstream llvm/llvm-project#154670.
+// The fixtures below seed the exact shapes that reach the boundary through
+// the public renderers; before the fix each one aborts the test process.
+
+namespace {
+
+auto insert_scenario_with_body(planar::db::connection& conn, const seeded& s, std::string_view body) -> std::int64_t {
+  auto stmt = conn.prepare(std::format("insert into test_scenarios (scope_kind, scope_id, title, body, status) "
+                                       "values ('association', {}, 'Boundary Scenario', ?, 'draft')",
+                                       s.assoc_id));
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, body).has_value());
+  REQUIRE(stmt->step().has_value());
+  auto const id = scalar_id(conn, "select max(id) from test_scenarios");
+  exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                         "values ('test_scenario', {}, 'plan', {}, 'derives-from')",
+                         id, s.plan_id));
+  return id;
+}
+
+} // namespace
+
+TEST_CASE("a scenario body of exactly 256 BYTES (255 chars) renders and pushes", "[workbench][sync][render][6880]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  // 254 ASCII bytes + one two-byte `§` = 255 characters, 256 bytes: the live
+  // row's shape, and the one a character count cannot see.
+  std::string const live_shape = std::string(254, 'x') + "\xc2\xa7";
+  REQUIRE(live_shape.size() == 256);
+  auto const id = insert_scenario_with_body(a.conn(), s, live_shape);
+
+  auto rendered = ws::render_entity(a.conn(), s.plan_id, "scenario", id);
+  REQUIRE(rendered.has_value());
+  CHECK(rendered->content.ends_with("\n\n" + live_shape + "\n"));
+
+  // The whole-tree walk, which is what the CLI verbs run.
+  auto pushed = ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false);
+  REQUIRE(pushed.has_value());
+  CHECK(has_entry(*pushed, std::format("scenarios/{}-boundary-scenario.md", id)));
+}
+
+TEST_CASE("every multiple of 256 bytes is a boundary, not only the first", "[workbench][sync][render][6880]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  for (auto const n : {std::size_t{256}, std::size_t{512}, std::size_t{1024}}) {
+    std::string const body(n, 'y');
+    auto const        id       = insert_scenario_with_body(a.conn(), s, body);
+    auto              rendered = ws::render_entity(a.conn(), s.plan_id, "scenario", id);
+    INFO("body bytes: " << n);
+    REQUIRE(rendered.has_value());
+    CHECK(rendered->content.ends_with("\n\n" + body + "\n"));
+  }
+}
+
+TEST_CASE("a question body or answer of 256 bytes renders", "[workbench][sync][render][6880]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  std::string const boundary(256, 'q');
+  auto const insert = [&](std::string_view title, std::string_view body, std::string_view answer) {
+    auto stmt = a.conn().prepare(std::format("insert into questions (scope_kind, scope_id, title, body, answer_body, "
+                                             "answered_at, status) values ('association', {}, ?, ?, ?, "
+                                             "case when ? = '' then null else '2026-01-01T00:00:00.000Z' end, 'open')",
+                                             s.assoc_id));
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_text(1, title).has_value());
+    REQUIRE(stmt->bind_text(2, body).has_value());
+    REQUIRE(stmt->bind_text(3, answer).has_value());
+    REQUIRE(stmt->bind_text(4, answer).has_value());
+    REQUIRE(stmt->step().has_value());
+    auto const id = scalar_id(a.conn(), "select max(id) from questions");
+    exec(a.conn(), std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                               "values ('question', {}, 'plan', {}, 'derives-from')",
+                               id, s.plan_id));
+    return id;
+  };
+
+  auto const body_id = insert("Body On Boundary", boundary, "");
+  auto       body_rendered = ws::render_entity(a.conn(), s.plan_id, "question", body_id);
+  REQUIRE(body_rendered.has_value());
+  CHECK(body_rendered->content.ends_with("\n" + boundary + "\n"));
+
+  auto const answer_id       = insert("Answer On Boundary", "short body", boundary);
+  auto       answer_rendered = ws::render_entity(a.conn(), s.plan_id, "question", answer_id);
+  REQUIRE(answer_rendered.has_value());
+  CHECK(answer_rendered->content.find("\n**Answer:** " + boundary + "\n") != std::string::npos);
+}
+
+TEST_CASE("a task body of 256 bytes followed by a next action renders", "[workbench][sync][render][6880]") {
+  // This one does NOT abort before the fix: the task renderer writes no
+  // literal after either argument (`"\n{}"`, `"\n**Next action:** {}"`), and
+  // the hazard needs a literal to land one past the full buffer. It pins the
+  // task arm of the same class so the shape cannot drift into the hazard.
+  arena      a;
+  auto const s = seed(a.conn());
+  std::string const boundary(256, 't');
+  auto stmt = a.conn().prepare(std::format("update tasks set body = ?, next_action = 'do the thing', "
+                                           "due_at = '2026-01-02T00:00:00.000Z' where id = {}",
+                                           s.task_one));
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, boundary).has_value());
+  REQUIRE(stmt->step().has_value());
+
+  auto rendered = ws::render_entity(a.conn(), s.plan_id, "task", s.task_one);
+  REQUIRE(rendered.has_value());
+  CHECK(rendered->content.find("\n" + boundary + "\n**Next action:** do the thing\n") != std::string::npos);
+}

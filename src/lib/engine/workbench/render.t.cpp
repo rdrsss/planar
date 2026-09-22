@@ -168,3 +168,26 @@ TEST_CASE("a title needing quotes survives the round trip unquoted", "[workbench
     CHECK(parsed->frontmatter.title == title);
   }
 }
+
+// --- task 6880: a front-matter value whose byte length is a multiple of 256
+//
+// The same libc++ `format_to(back_inserter)` hazard as the entity bodies
+// (llvm/llvm-project#154670). The prefix (`title: `) is irrelevant: the
+// formatter flushes before copying an argument that does not fit, so the
+// boundary is the argument itself filling the 256-byte stack buffer exactly,
+// with a literal (`\n`, or `'\n` for the quoted form) written after it.
+TEST_CASE("a 256-byte title renders unquoted, and a 256-byte one renders quoted", "[workbench][render][6880]") {
+  std::string const plain(256, 'p');
+  CHECK(wr::render(wp::front_matter{.entity_kind = "plan", .entity_id = 1, .title = plain}, "") ==
+        "---\nentity_kind: plan\nentity_id: 1\nanchor_plan_id: 0\ntitle: " + plain + "\n---\n");
+
+  std::string const quoted = "Quoted: " + std::string(248, 'q');
+  REQUIRE(quoted.size() == 256);
+  CHECK(wr::render(wp::front_matter{.entity_kind = "plan", .entity_id = 1, .title = quoted}, "") ==
+        "---\nentity_kind: plan\nentity_id: 1\nanchor_plan_id: 0\ntitle: '" + quoted + "'\n---\n");
+
+  // A touches slug on the boundary goes through the list renderer.
+  std::string const slug(512, 's');
+  CHECK(wr::render(wp::front_matter{.entity_kind = "task", .entity_id = 1, .touches = {slug}}, "")
+            .find("touches:\n- " + slug + "\n") != std::string::npos);
+}
