@@ -100,6 +100,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("ingest", handlers::ingest);
   table.emplace("run start", handlers::run_start);
   table.emplace("run end", handlers::run_end);
+  table.emplace("run heartbeat", handlers::run_heartbeat);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64; the inventory is generated alongside the surface
   // itself. `emplace` is a no-op on a key already present, so a stale

@@ -460,6 +460,90 @@ TEST_CASE("run start reports duplicate workflow identifiers with the oracle tag"
   CHECK(scalar_text(scratch, "select count(*) from workflow_runs where run_identifier = 'same'") == "1");
 }
 
+TEST_CASE("run start accepts a pid-less run with --ttl and sets expires_at", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const started = run_verb(
+      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-a", "--ttl", "8h", "--repo-root", "/tmp"});
+  REQUIRE(started.code == 0);
+  CHECK(scalar_text(scratch, "select pid is null from workflow_runs where run_identifier = 'lease-a'") == "1");
+  CHECK(scalar_text(scratch, "select expires_at is not null from workflow_runs where run_identifier = 'lease-a'") == "1");
+  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'lease-a'") == "running");
+
+  // Roughly 8h out from `started_at` — a bounds check, not exact-string.
+  CHECK(scalar_text(scratch, "select (julianday(expires_at) - julianday(started_at)) * 24 > 7.9 "
+                             "from workflow_runs where run_identifier = 'lease-a'") == "1");
+  CHECK(scalar_text(scratch, "select (julianday(expires_at) - julianday(started_at)) * 24 < 8.1 "
+                             "from workflow_runs where run_identifier = 'lease-a'") == "1");
+}
+
+TEST_CASE("run start refuses when neither --pid nor --ttl is given, writing no row", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const refused =
+      run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "neither", "--repo-root", "/tmp"});
+  CHECK(refused.code != 0);
+  CHECK(refused.err.contains("--pid"));
+  CHECK(refused.err.contains("--ttl"));
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
+}
+
+TEST_CASE("run heartbeat extends a pid-less run's lease forward", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-b", "--ttl", "600",
+                             "--repo-root", "/tmp"})
+              .code == 0);
+  auto const before = scalar_text(scratch, "select expires_at from workflow_runs where run_identifier = 'lease-b'");
+
+  auto const beat = run_verb(scratch, {"run", "heartbeat", "--run-id", "lease-b", "--ttl", "3600"});
+  CHECK(beat.code == 0);
+  auto const after = scalar_text(scratch, "select expires_at from workflow_runs where run_identifier = 'lease-b'");
+  CHECK(after > before);
+}
+
+TEST_CASE("run heartbeat refuses a pid-bound run and a non-running run, each with its own named error",
+          "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "pid-run", "--pid", "4242",
+                             "--repo-root", "/tmp"})
+              .code == 0);
+  auto const on_pid_bound = run_verb(scratch, {"run", "heartbeat", "--run-id", "pid-run", "--ttl", "600"});
+  CHECK(on_pid_bound.code != 0);
+  CHECK(on_pid_bound.err.contains("pid-supervised"));
+  CHECK(scalar_text(scratch, "select expires_at is null from workflow_runs where run_identifier = 'pid-run'") == "1");
+
+  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-c", "--ttl", "600",
+                             "--repo-root", "/tmp"})
+              .code == 0);
+  REQUIRE(run_verb(scratch, {"run", "end", "--run-id", "lease-c", "--status", "completed"}).code == 0);
+  auto const on_terminal = run_verb(scratch, {"run", "heartbeat", "--run-id", "lease-c", "--ttl", "600"});
+  CHECK(on_terminal.code != 0);
+  CHECK(on_terminal.err.contains("terminal status"));
+}
+
+TEST_CASE("reconcile abandons a pid-less run only after its lease has lapsed", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  {
+    // Seeded PAST expires_at, deterministic rather than sleeping.
+    auto conn = planar::db::connection::open(scratch.db_path().string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, expires_at, repo_root) "
+                          "values (1, 'wf', 'lapsed', '2000-01-01T00:00:00.000Z', '/tmp')")
+                .has_value());
+  }
+  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "still-leased", "--ttl", "8h",
+                             "--repo-root", "/tmp"})
+              .code == 0);
+
+  auto const swept = run_verb(scratch, {"reconcile"});
+  CHECK(swept.code == 0);
+  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'lapsed'") == "abandoned");
+  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'still-leased'") == "running");
+}
+
 TEST_CASE("reconcile --dry-run opens the database and writes nothing", "[cmd][agent][handlers]") {
   scratch_dir scratch;
   seed(scratch, 1);

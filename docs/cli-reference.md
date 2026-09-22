@@ -6536,8 +6536,16 @@ planar-agent abort      --claim <token> [--reason <text>] [--category usage_limi
 # supplies the harness pid (not getpid()) so crash reconciliation probes the
 # right process. `abandoned` status is reserved for `reconcile`; `run end`
 # never writes it.
-planar-agent run start  --plan <plan-id> --workflow <name> --run-id <identifier> --pid <harness-pid> --repo-root <path> [--json]
-planar-agent run end    --run-id <identifier> --status completed|failed|interrupted [--json]
+#
+# `--pid` and `--ttl` are mutually exclusive supervision modes (decision
+# D11, task 6847): exactly one is required. A pid-bound run (`--pid`) is
+# probed for liveness by `reconcile`. A pid-less run (`--ttl`) carries a
+# lease in `expires_at`, extended by `run heartbeat`, and `reconcile`
+# abandons it only once that lease has lapsed — it is never pid-probed.
+# Supplying neither refuses at InvalidInput and writes no row.
+planar-agent run start     --plan <plan-id> --workflow <name> --run-id <identifier> (--pid <harness-pid> | --ttl <duration>) --repo-root <path> [--json]
+planar-agent run end       --run-id <identifier> --status completed|failed|interrupted [--json]
+planar-agent run heartbeat --run-id <identifier> --ttl <duration> [--json]
 
 # Run-scoped working-memory (context_records) — plan 585 task 3901.
 # Workers holding a run-associated claim write records via `context add`;
@@ -6589,7 +6597,7 @@ Previously `--ttl` carried a hardcoded `600` default, so an omitted flag was ind
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
 | `block`    | INSERT `entity_links(from=task, to=blocker, relationship='depends-on')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
-| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. Direct-claim `claim_check` markers are closed as aborted; the existing ended-session sweep closes other orphaned actions. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
+| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. Direct-claim `claim_check` markers are closed as aborted; the existing ended-session sweep closes other orphaned actions. (2) Run sweep: SELECT running `workflow_runs` rows. A pid-bound row (`pid` set) is probed with `kill(pid,0)` → ESRCH ⇒ dead. A pid-less row (decision D11, task 6847) is NEVER pid-probed — it is dead only once `expires_at` has lapsed. Either way, dead ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason + optional operator-supplied `failure_category` → restore `doing` → `todo` only for a default direct task claim carrying its transactional `claim_check` marker → close that marker as aborted → INSERT audit `agent_actions` row naming the aborting session. Primitive `--no-transition` and pull claims retain their previous task-status behavior. |
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
@@ -6619,8 +6627,9 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `ingest`      | `{ok, sessions_created, claims_created, actions_created, events_processed}` |
 | `reconcile`   | `{ok, claims_marked_stale, actions_closed, runs_abandoned, candidates?, run_candidates?}` (`candidates` + `run_candidates` present only with `--dry-run`) |
 | `abort`       | `{ok, claim_token, claim, aborting_session}` |
-| `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid`, `repo_root`, `status:"running"` |
+| `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid` (number or `null` for a pid-less lease-supervised run), `expires_at` (string or `null`), `repo_root`, `status:"running"` |
 | `run end`     | `{ok, run_id, status}` where `status` is the terminal status written |
+| `run heartbeat` | `{ok, run_id, expires_at}` — the run's new lease deadline |
 
 `ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and workflow run correlation columns `run_id`, `stage`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
 
