@@ -625,7 +625,7 @@ auto pull_to_db(db::connection& conn, std::string_view kind, std::int64_t id, st
   if (!parsed) {
     return false;
   }
-  auto const body   = extract_body_text(parsed->body);
+  auto const body   = extract_entity_body(kind, parsed->body);
   auto const status = std::string_view{parsed->frontmatter.status};
 
   if (!conn.execute("savepoint workbench_pull_entity")) {
@@ -716,7 +716,7 @@ auto insert_task_from_frontmatter(db::connection& conn, const parse::front_matte
                                   std::optional<std::int64_t> assoc_id) -> std::optional<std::int64_t> {
   auto const title     = fm.title.empty() ? std::string_view{"Task from workbench"} : std::string_view{fm.title};
   auto const status    = fm.status.empty() ? std::string_view{"todo"} : std::string_view{fm.status};
-  auto const body_text = extract_body_text(body);
+  auto const body_text = extract_entity_body("task", body);
   auto const priority  = fm.priority == 0 ? std::int64_t{100} : fm.priority;
 
   auto stmt = assoc_id.has_value() ? conn.prepare("insert into tasks (scope_kind, scope_id, title, body, status, priority) "
@@ -984,6 +984,68 @@ auto extract_body_text(std::string_view body) -> std::string_view {
   }
   auto const last = rest.find_last_not_of(" \r\n\t");
   return rest.substr(first, last - first + 1);
+}
+
+namespace {
+
+auto trim_ws(std::string_view text) -> std::string_view {
+  auto const first = text.find_first_not_of(" \r\n\t");
+  if (first == std::string_view::npos) {
+    return {};
+  }
+  auto const last = text.find_last_not_of(" \r\n\t");
+  return text.substr(first, last - first + 1);
+}
+
+/// @brief `body` cut before the first line that starts with `prefix`, or
+/// `body` itself when no line does.
+auto cut_before_line(std::string_view body, std::string_view prefix) -> std::string_view {
+  std::size_t pos = 0;
+  while (pos <= body.size()) {
+    auto const nl   = body.find('\n', pos);
+    auto const line = body.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
+    if (trim_ws(line).starts_with(prefix)) {
+      return body.substr(0, pos);
+    }
+    if (nl == std::string_view::npos) {
+      break;
+    }
+    pos = nl + 1;
+  }
+  return body;
+}
+
+/// @brief `text` without a first line that is exactly `heading`, re-trimmed.
+auto drop_leading_heading(std::string_view text, std::string_view heading) -> std::string_view {
+  auto const nl = text.find('\n');
+  if (trim_ws(text.substr(0, nl)) != heading) {
+    return text;
+  }
+  return nl == std::string_view::npos ? std::string_view{} : trim_ws(text.substr(nl + 1));
+}
+
+} // namespace
+
+auto extract_entity_body(std::string_view kind, std::string_view body) -> std::string_view {
+  // The trailing pieces are cut on the RAW body, before the prefix strip:
+  // a question whose own body is empty renders `**Answer:**` directly under
+  // the labels, and the prefix strip would otherwise eat the label line and
+  // keep the rest of a multi-line answer as prose.
+  auto working = body;
+  if (kind == "decision") {
+    working = cut_before_line(working, "## Rationale");
+  } else if (kind == "question") {
+    working = cut_before_line(working, "**Answer:**");
+  } else if (kind == "task") {
+    working = cut_before_line(working, "**Next action:**");
+  }
+  auto text = extract_body_text(working);
+  if (kind == "artifact") {
+    text = drop_leading_heading(text, "## Content");
+  } else if (kind == "decision") {
+    text = drop_leading_heading(text, "## Body");
+  }
+  return text;
 }
 
 auto fetch_anchor(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<anchor, sync_error> {

@@ -274,9 +274,10 @@ export auto list_active(db::connection& conn, std::string_view root) -> std::exp
 /// own prose.
 ///
 /// Drops leading `# ` headings, leading `**Label:**` lines and leading blank
-/// lines, then trims the remainder. This is what makes a push/pull round
-/// trip idempotent: the header `push` generates is removed again on the way
-/// back in, instead of accumulating.
+/// lines, then trims the remainder. It removes the header every renderer
+/// shares; the per-kind pieces (`## Content`, `## Body` / `## Rationale`,
+/// trailing `**Answer:**` / `**Next action:**`) are `extract_entity_body`'s
+/// job, and `pull` goes through that.
 ///
 /// It does NOT strip a `---` line, which is why the double-wrap case
 /// (`artifact update --body @<canonical-workbench-file>`) is sticky: the
@@ -286,5 +287,26 @@ export auto list_active(db::connection& conn, std::string_view root) -> std::exp
 /// @param body The body as read from disk.
 /// @return The operator's prose.
 export auto extract_body_text(std::string_view body) -> std::string_view;
+
+/// @brief The operator's prose for one entity KIND: `extract_body_text`
+/// plus the per-kind pieces of the wrapper the matching renderer writes
+/// (task 6881).
+///
+/// `push` renders more than the heading-and-labels prefix: an artifact's
+/// `## Content` heading, a decision's `## Body` heading and trailing
+/// `## Rationale` section, an answered question's trailing `**Answer:**` /
+/// `**Answered at:**` lines, a task's trailing `**Next action:**` line. A
+/// prefix-only strip stored every one of those in the body, where the next
+/// push re-wrapped them. This is the inverse `pull` applies so a
+/// push/edit/pull/push round trip is byte-stable. The trailing sections are
+/// cut at the FIRST line that starts with their label -- prose that itself
+/// begins a line with `## Rationale`, `**Answer:**` or `**Next action:**` is
+/// cut there too. `plan` and `scenario` render nothing beyond the prefix and
+/// fall through to `extract_body_text`.
+/// @param kind The entity kind as `pull_to_db` receives it (`artifact`,
+///             `decision`, `question`, `task`, `scenario`, `plan`).
+/// @param body The body as read from disk.
+/// @return The operator's prose, trimmed.
+export auto extract_entity_body(std::string_view kind, std::string_view body) -> std::string_view;
 
 } // namespace planar::engine::workbench::sync

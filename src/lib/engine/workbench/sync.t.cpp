@@ -1433,8 +1433,7 @@ TEST_CASE("an artifact body round-trips through push/pull/push without its `## C
   CHECK(*wfs::read_file(file) == edited);
 }
 
-TEST_CASE("a decision body round-trips without its `## Body` / `## Rationale` scaffolding",
-          "[workbench][sync][pull][6881]") {
+TEST_CASE("a decision body round-trips without its `## Body` / `## Rationale` scaffolding", "[workbench][sync][pull][6881]") {
   arena      a;
   auto const s = seed(a.conn());
   exec(a.conn(), std::format("insert into decisions (scope_kind, scope_id, title, body, rationale, status) "
@@ -1500,4 +1499,32 @@ TEST_CASE("a task's body round-trips without its `**Next action:**` tail", "[wor
 
   REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
   CHECK(without_updated_stamp(*wfs::read_file(file)) == without_updated_stamp(edited));
+}
+
+TEST_CASE("extract_entity_body strips each kind's wrapper and nothing else", "[workbench][sync][body][6881]") {
+  // artifact: the `## Content` heading between the labels and the prose.
+  CHECK(ws::extract_entity_body("artifact", "# Artifact 1: T\n\n**Kind:** tech_spec  \n**Status:** draft\n\n## Content\n\n"
+                                            "# Real heading\n\nprose\n") == "# Real heading\n\nprose");
+  // A body that itself begins with `## Content` loses exactly ONE copy --
+  // the one push wrote -- so the round trip is still stable.
+  CHECK(ws::extract_entity_body("artifact", "# Artifact 1: T\n\n## Content\n\n## Content\nmine\n") == "## Content\nmine");
+  // decision: `## Body` heading, `## Rationale` section dropped (pull writes body only).
+  CHECK(ws::extract_entity_body("decision", "# Decision 1: T\n\n**Status:** proposed\n\n## Body\n\nWe use\nSQLite.\n\n"
+                                            "## Rationale\n\nSimple.\n") == "We use\nSQLite.");
+  // question: the trailing answer lines, even when the question's own body is
+  // EMPTY and the label sits directly under the header.
+  CHECK(ws::extract_entity_body("question", "# Question 1: T\n\n**Status:** answered\n\nWhy?\n\n**Answer:** Because.\n"
+                                            "More.\n\n**Answered at:** 2026-01-01T00:00:00.000Z\n") == "Why?");
+  CHECK(ws::extract_entity_body("question", "# Question 1: T\n\n**Status:** answered\n\n**Answer:** Because.\nMore.\n").empty());
+  // task: the trailing next action; the `**Due:**` label ahead of the prose
+  // is already the prefix strip's.
+  CHECK(ws::extract_entity_body("task", "# Task 1: T\n\n**Status:** todo  \n**Priority:** 100\n**Due:** d\n\nbody\n"
+                                        "**Next action:** go\n") == "body");
+  // scenario / plan: nothing beyond the shared prefix; identical to extract_body_text.
+  auto const scenario = "# Scenario 1: T\n\n**Status:** draft  \n**Last run:** x\n\n**Given** a user.\n";
+  CHECK(ws::extract_entity_body("scenario", scenario) == ws::extract_body_text(scenario));
+  CHECK(ws::extract_entity_body("plan", "# Plan 1: T\n\n**Status:** draft\n\nsummary\n") == "summary");
+  // The per-kind pieces are NOT stripped for another kind: a task whose prose
+  // has a `## Content` line keeps it.
+  CHECK(ws::extract_entity_body("task", "# Task 1: T\n\n## Content\n\nbody\n") == "## Content\n\nbody");
 }
