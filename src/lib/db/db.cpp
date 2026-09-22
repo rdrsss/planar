@@ -308,6 +308,19 @@ auto connection::open(std::string_view path) -> std::expected<connection, db_err
   if (auto pragma = conn.execute("pragma foreign_keys = on;"); !pragma) {
     return std::unexpected(pragma.error());
   }
+  // Task 6842 (decision D7): set ONCE here, for every read-write connection
+  // this process opens, rather than duplicated per-binary. `busy_timeout`
+  // makes a connection retry against a competing lock instead of failing
+  // SQLITE_BUSY immediately; `journal_mode=WAL` lets readers and writers
+  // proceed concurrently (planar/planar-agent/planar-ext share one SQLite
+  // file). Switching journal mode is itself a write, so `open_read_only`
+  // below does NOT set it -- see that function.
+  if (auto pragma = conn.execute("pragma busy_timeout = 5000;"); !pragma) {
+    return std::unexpected(pragma.error());
+  }
+  if (auto pragma = conn.execute("pragma journal_mode = WAL;"); !pragma) {
+    return std::unexpected(pragma.error());
+  }
   return conn;
 }
 
@@ -331,6 +344,13 @@ auto connection::open_read_only(std::string_view path) -> std::expected<connecti
 
   connection conn(handle, true);
   if (auto pragma = conn.execute("pragma foreign_keys = on;"); !pragma) {
+    return std::unexpected(pragma.error());
+  }
+  // Task 6842 (decision D7): a read-only handle gets the busy_timeout too
+  // (waiting out a writer's lock is not itself a write), but never
+  // `journal_mode` -- switching it IS a write, and SQLITE_OPEN_READONLY
+  // would refuse it outright.
+  if (auto pragma = conn.execute("pragma busy_timeout = 5000;"); !pragma) {
     return std::unexpected(pragma.error());
   }
   return conn;
