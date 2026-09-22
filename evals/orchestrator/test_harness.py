@@ -508,6 +508,237 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
             self.assertEqual(kwargs.get("surface"), "agent")
 
 
+class VendorAuthBeforeHostStartTests(unittest.TestCase):
+    """Missing vendor auth must fail closed before the host starts.
+
+    Mirrors `VendorStagingBeforeHostStartTests` for `assert_vendor_auth()`
+    (Planar artifact 626 / task 6872): staging a vendor's read surfaces is
+    not the same as authenticating it, and `test_arena.py` already proves
+    `arena.assert_vendor_auth()` itself rejects missing auth. That is
+    necessary but not sufficient — it does not prove any live call site
+    actually invokes it before spawning a host. A no-op in place of the
+    `assert_vendor_auth()` call at a call site would leave
+    `test_arena.py`'s own tests green while the live path silently ran
+    with no auth check at all.
+
+    Each "invokes" test below is the call-site mutant-kill evidence: it
+    patches `arena.assert_vendor_auth` with a sentinel-raising mock and
+    proves the call site actually reaches it (in call order, after
+    `stage_vendor_config`). Deleting or no-op-ing the real call site
+    invocation would make these tests fail, since the sentinel would
+    never fire.
+    """
+
+    def test_run_phase3_preview_invokes_assert_vendor_auth_after_staging(self) -> None:
+        case = {
+            "id": "auth-guard-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant prompt text",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+            },
+        }
+        with tempfile.TemporaryDirectory(prefix="planar-eval-auth-guard-") as results_root:
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+
+            class _Sentinel(Exception):
+                pass
+
+            call_order: list[str] = []
+            stage_mock = mock.Mock(
+                side_effect=lambda *a, **k: call_order.append("stage")
+            )
+
+            def _auth_side_effect(*a, **k) -> None:
+                call_order.append("auth")
+                raise _Sentinel
+
+            auth_mock = mock.Mock(side_effect=_auth_side_effect)
+            with mock.patch.object(
+                harness.arena, "stage_vendor_config", stage_mock
+            ), mock.patch.object(
+                harness.arena, "assert_vendor_auth", auth_mock
+            ), mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock, mock.patch.object(
+                harness, "run_command"
+            ) as run_command_mock:
+                with self.assertRaises(_Sentinel):
+                    harness.run_phase3_preview(
+                        Path("<auth-guard-probe>"), case, options
+                    )
+            self.assertEqual(auth_mock.call_count, 1)
+            self.assertEqual(call_order, ["stage", "auth"])
+            args, _ = auth_mock.call_args
+            self.assertEqual(args[1], "claude")
+            run_to_file_mock.assert_not_called()
+            run_command_mock.assert_not_called()
+
+    def test_prepare_lifecycle_fixture_invokes_assert_vendor_auth_after_staging(self) -> None:
+        case = {
+            "id": "auth-guard-lifecycle-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "setup": {
+                "fixture": "controlled-classic",
+                "specialist_scenario": "baseline",
+            },
+        }
+        with tempfile.TemporaryDirectory(prefix="planar-eval-auth-guard-") as results_root:
+            options = harness.Options(
+                mode="lifecycle",
+                vendor="codex",
+                surface="agent",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+
+            class _Sentinel(Exception):
+                pass
+
+            call_order: list[str] = []
+            stage_mock = mock.Mock(
+                side_effect=lambda *a, **k: call_order.append("stage")
+            )
+
+            def _auth_side_effect(*a, **k) -> None:
+                call_order.append("auth")
+                raise _Sentinel
+
+            auth_mock = mock.Mock(side_effect=_auth_side_effect)
+            with mock.patch.object(
+                harness.arena, "stage_vendor_config", stage_mock
+            ), mock.patch.object(
+                harness.arena, "assert_vendor_auth", auth_mock
+            ), mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock, mock.patch.object(
+                harness, "run_command"
+            ) as run_command_mock:
+                with self.assertRaises(_Sentinel):
+                    harness.prepare_lifecycle_fixture(
+                        Path("<auth-guard-lifecycle-probe>"),
+                        case,
+                        options,
+                        "fixture",
+                    )
+            self.assertEqual(auth_mock.call_count, 1)
+            self.assertEqual(call_order, ["stage", "auth"])
+            args, _ = auth_mock.call_args
+            self.assertEqual(args[1], "codex")
+            run_to_file_mock.assert_not_called()
+            run_command_mock.assert_not_called()
+
+    def test_run_phase3_preview_claude_fails_closed_with_no_token_in_env(self) -> None:
+        # End-to-end with the REAL assert_vendor_auth (not sentinel-mocked):
+        # a fully staged, isolated arena still refuses to spawn the host
+        # when no claude auth surface is present anywhere in the arena env.
+        case = {
+            "id": "auth-guard-real-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant prompt text",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+            },
+        }
+        with tempfile.TemporaryDirectory(
+            prefix="planar-eval-auth-guard-"
+        ) as results_root, tempfile.TemporaryDirectory(
+            prefix="planar-eval-auth-guard-fakehome-"
+        ) as fake_home:
+            fake_real_root = Path(fake_home) / "fake-claude"
+            (fake_real_root / "commands").mkdir(parents=True)
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+            # A base_env carrying none of the recognized auth vars, so
+            # make_arena's pass-through allowlist copies nothing that
+            # would satisfy assert_vendor_auth. Captured BEFORE patching:
+            # `arena.make_arena` is about to become a Mock, so calling it
+            # BY NAME from inside the side effect would recurse into
+            # itself instead of building a real arena.
+            scrubbed_base_env = {"PATH": os.environ.get("PATH", "")}
+            real_make_arena = arena.make_arena
+
+            def scrubbed_make_arena(root, base_env=None):
+                return real_make_arena(root, base_env=scrubbed_base_env)
+
+            with mock.patch.object(
+                arena, "real_vendor_root", return_value=fake_real_root
+            ), mock.patch.object(
+                harness.arena, "make_arena", side_effect=scrubbed_make_arena
+            ), mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock, mock.patch.object(
+                harness, "run_command"
+            ) as run_command_mock:
+                with self.assertRaises(arena.VendorAuthError) as ctx:
+                    harness.run_phase3_preview(
+                        Path("<auth-guard-real-probe>"), case, options
+                    )
+                message = str(ctx.exception)
+                self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", message)
+                self.assertIn("ANTHROPIC_API_KEY", message)
+            run_to_file_mock.assert_not_called()
+            run_command_mock.assert_not_called()
+
+    def test_prepare_lifecycle_fixture_replay_never_requires_auth(self) -> None:
+        # options.vendor == "" is fixture replay; it must not call
+        # assert_vendor_auth at all (it never spawns a real vendor host).
+        case = {
+            "id": "auth-guard-replay-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "setup": {
+                "fixture": "controlled-classic",
+                "specialist_scenario": "baseline",
+            },
+        }
+        with tempfile.TemporaryDirectory(prefix="planar-eval-auth-guard-replay-") as results_root:
+            options = harness.Options(
+                mode="lifecycle-fixture",
+                vendor="",
+                surface="agent",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+
+            class _Sentinel(Exception):
+                pass
+
+            with mock.patch.object(
+                harness.arena, "assert_vendor_auth"
+            ) as auth_mock, mock.patch.object(
+                harness, "run_command", side_effect=_Sentinel
+            ):
+                # A real (non-fake) case_path under ROOT, and run_command
+                # stubbed to stop the function right after the
+                # vendor-conditional staging/auth block (the first call
+                # inside the `try:` is `git init`) -- enough to prove
+                # assert_vendor_auth was never reached for replay, without
+                # needing to fake out the rest of the fixture pipeline.
+                with self.assertRaises(_Sentinel):
+                    harness.prepare_lifecycle_fixture(
+                        harness.CASES_DIR / "auth-guard-replay-probe.json",
+                        case,
+                        options,
+                        "fixture",
+                    )
+            auth_mock.assert_not_called()
+
+
 class SemanticGraderNegativeControlTests(unittest.TestCase):
     def assert_live_rejects(
         self,

@@ -772,11 +772,17 @@ def main() -> int:
             trial_root = Path(trial_dir)
             try:
                 trial_env = build_host_env(trial_root)
+                # This harness always spawns the claude CLI (host_argv);
+                # staged config is not the same as authenticated — Keychain
+                # login does not follow into a scratch CLAUDE_CONFIG_DIR
+                # (Planar artifact 626 / task 6872). Fail closed before the
+                # host spawns.
+                arena.assert_vendor_auth(trial_env, "claude")
                 draft = run_model(host_argv(args.model), draft_prompt, args.timeout, trial_env)
             except Blocked as exc:
                 print(f"blocked: {exc}", file=sys.stderr)
                 return EXIT_BLOCKED
-            except (GraderError, ConfigError, arena.ArenaIsolationError) as exc:
+            except (GraderError, ConfigError, arena.ArenaIsolationError, arena.VendorAuthError) as exc:
                 print(f"trial {i}: host failure: {exc}", file=sys.stderr)
                 return EXIT_FAIL
 

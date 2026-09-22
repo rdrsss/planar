@@ -1060,6 +1060,13 @@ def run_phase3_preview(
     # options.surface through so `agents` is promoted to required when
     # this run invokes the vendor as an agent (surface == "agent").
     arena.stage_vendor_config(env, options.vendor, surface=options.surface)
+    # Staging a vendor's read surfaces is not the same as authenticating
+    # it: Keychain-backed `claude` login does not follow into a scratch
+    # `CLAUDE_CONFIG_DIR` at all (Planar artifact 626 / task 6872). Fails
+    # closed (VendorAuthError) before any host process starts, naming
+    # exactly which env var or staged file is missing — never a token
+    # value.
+    arena.assert_vendor_auth(env, options.vendor)
     try:
         run_command(["git", "init", "-q"], cwd=repo, env=env)
         opposite = "claude" if options.vendor == "codex" else "codex"
@@ -1279,6 +1286,11 @@ def prepare_lifecycle_fixture(
     # reads.
     if options.vendor:
         arena.stage_vendor_config(env, options.vendor, surface=options.surface)
+        # Same fail-closed auth requirement as run_phase3_preview: staging
+        # is not authenticating (Planar artifact 626 / task 6872). Skipped
+        # alongside staging for fixture replay (options.vendor == ""),
+        # which never spawns a real vendor host.
+        arena.assert_vendor_auth(env, options.vendor)
     try:
         run_command(["git", "init", "-q"], cwd=repo, env=env)
         run_command(["git", "config", "user.name", "Planar Eval"], cwd=repo, env=env)

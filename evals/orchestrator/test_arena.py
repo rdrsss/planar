@@ -359,5 +359,87 @@ class StageVendorConfigTests(unittest.TestCase):
             arena.assert_isolated(env, root)  # must not raise
 
 
+class AssertVendorAuthTests(unittest.TestCase):
+    """Planar artifact 626 / task 6872: staging is not authenticating.
+
+    Keychain-backed `claude` login does not follow into a scratch
+    `CLAUDE_CONFIG_DIR`, so `assert_vendor_auth()` must fail closed unless
+    the arena env (or, for codex, the staged config dir) carries an
+    explicit auth surface.
+    """
+
+    def test_claude_passes_with_oauth_token(self) -> None:
+        arena.assert_vendor_auth(
+            {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test-token"}, "claude"
+        )  # must not raise
+
+    def test_claude_passes_with_api_key(self) -> None:
+        arena.assert_vendor_auth({"ANTHROPIC_API_KEY": "sk-ant-test-key"}, "claude")
+
+    def test_claude_fails_closed_with_neither_surface(self) -> None:
+        with self.assertRaises(arena.VendorAuthError) as ctx:
+            arena.assert_vendor_auth({}, "claude")
+        message = str(ctx.exception)
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", message)
+        self.assertIn("ANTHROPIC_API_KEY", message)
+        self.assertIn("claude setup-token", message)
+
+    def test_claude_fails_closed_on_empty_string_values(self) -> None:
+        # An empty-string value is "unset" for auth purposes, not present.
+        with self.assertRaises(arena.VendorAuthError):
+            arena.assert_vendor_auth(
+                {"CLAUDE_CODE_OAUTH_TOKEN": "", "ANTHROPIC_API_KEY": ""}, "claude"
+            )
+
+    def test_claude_error_never_contains_the_token_value(self) -> None:
+        # Seed a fake token that would be an obvious leak if echoed back.
+        fake_token = "sk-ant-oat-DO-NOT-LEAK-THIS-VALUE-0000000000"
+        with self.assertRaises(arena.VendorAuthError) as ctx:
+            # The token is absent from env entirely here (the failure
+            # case); this proves the message construction path never
+            # embeds a token value even incidentally.
+            arena.assert_vendor_auth({"SOME_OTHER_VAR": fake_token}, "claude")
+        self.assertNotIn(fake_token, str(ctx.exception))
+
+    def test_codex_passes_with_api_key(self) -> None:
+        arena.assert_vendor_auth({"OPENAI_API_KEY": "sk-oa-test-key"}, "codex")
+
+    def test_codex_passes_with_staged_auth_json(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "auth.json").write_text('{"token": "t"}', encoding="utf-8")
+            arena.assert_vendor_auth({"CODEX_HOME": str(codex_home)}, "codex")
+
+    def test_codex_fails_closed_with_neither_surface(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            codex_home.mkdir()  # no auth.json staged
+            with self.assertRaises(arena.VendorAuthError) as ctx:
+                arena.assert_vendor_auth({"CODEX_HOME": str(codex_home)}, "codex")
+            message = str(ctx.exception)
+            self.assertIn("auth.json", message)
+            self.assertIn("OPENAI_API_KEY", message)
+
+    def test_codex_fails_closed_with_no_codex_home_at_all(self) -> None:
+        with self.assertRaises(arena.VendorAuthError):
+            arena.assert_vendor_auth({}, "codex")
+
+    def test_codex_error_never_contains_the_api_key_value(self) -> None:
+        fake_key = "sk-oa-DO-NOT-LEAK-THIS-VALUE-1111111111"
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            codex_home = Path(tmp) / "codex-home"
+            codex_home.mkdir()
+            with self.assertRaises(arena.VendorAuthError) as ctx:
+                arena.assert_vendor_auth(
+                    {"CODEX_HOME": str(codex_home), "SOME_OTHER_VAR": fake_key}, "codex"
+                )
+            self.assertNotIn(fake_key, str(ctx.exception))
+
+    def test_unknown_vendor_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            arena.assert_vendor_auth({}, "bogus-vendor")
+
+
 if __name__ == "__main__":
     unittest.main()

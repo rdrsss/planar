@@ -28,6 +28,14 @@ and `assert_isolated()` continues to validate the arena env var VALUES
 (the scratch directories) — the symlinks living inside them, pointing back
 out to the real install, are the intended exception.
 
+`assert_vendor_auth()` (Planar artifact 626 / task 6872) is the last
+fail-closed check before a host spawns: staging a vendor's read surfaces
+is not the same as authenticating it, and Keychain-backed `claude` login
+does not follow into a scratch `CLAUDE_CONFIG_DIR` at all. Every
+live/lifecycle call site therefore runs the same four steps in order —
+`make_arena()` -> `assert_isolated()` -> `stage_vendor_config()` ->
+`assert_vendor_auth()` — before any vendor host process starts.
+
 Callers own an arena's lifecycle. This module never deletes a root; a
 run's `--keep` / failure rules decide whether the artifact directory (and
 every trial arena under it) is retained or removed as a unit.
@@ -46,6 +54,15 @@ PASSTHROUGH_EXACT_VARS: tuple[str, ...] = ("PATH", "TERM", "TMPDIR", "LANG")
 # Prefixes copied through unchanged: provider credentials and locale
 # variants vary by vendor CLI and by operator locale, so they are matched
 # by prefix rather than enumerated one by one.
+#
+# The explicit vendor auth surfaces `assert_vendor_auth()` checks all live
+# under these prefixes: claude auth is `CLAUDE_CODE_OAUTH_TOKEN` (minted by
+# `claude setup-token`, prefix `CLAUDE_CODE_`) or `ANTHROPIC_API_KEY`
+# (prefix `ANTHROPIC_`); codex auth is `OPENAI_API_KEY` (prefix
+# `OPENAI_`) or a staged `$CODEX_HOME/auth.json` (not an env var — see
+# `CODEX_STAGED_SURFACES`). Keychain-backed `claude` login does NOT count:
+# it is bound to the default `CLAUDE_CONFIG_DIR` and cannot be staged into
+# a scratch one (Planar artifact 626 / task 6872).
 PASSTHROUGH_PREFIXES: tuple[str, ...] = (
     "LC_",
     "ANTHROPIC_",
@@ -80,6 +97,19 @@ class VendorStagingError(RuntimeError):
     starts. An OPTIONAL surface that is missing (e.g. no `settings.json`)
     is skipped silently — see `CLAUDE_STAGED_SURFACES` /
     `CODEX_STAGED_SURFACES`.
+    """
+
+
+class VendorAuthError(RuntimeError):
+    """No usable auth surface for `vendor` is present in the arena env.
+
+    Raised by `assert_vendor_auth()` before any vendor host process
+    starts (Planar artifact 626 / task 6872: a live run staged
+    `agents/`/`commands/` correctly but Claude answered "Not logged in";
+    Keychain-backed `claude` login is bound to the default
+    `CLAUDE_CONFIG_DIR` and does not follow a scratch one). The message
+    names the missing variable or staged file and how to provide it; it
+    NEVER includes a credential VALUE, staged or otherwise.
     """
 
 
@@ -335,3 +365,57 @@ def stage_vendor_config(
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.symlink_to(source, target_is_directory=source.is_dir())
+
+
+def assert_vendor_auth(env: Mapping[str, str], vendor: str) -> None:
+    """Fail closed unless `vendor` has a usable auth surface in `env`.
+
+    Call AFTER `stage_vendor_config()` (so a staged `auth.json` is in
+    place to check for codex) and, per the fail-closed contract, before
+    any vendor host process starts — every live/lifecycle call site pairs
+    this with `assert_isolated()` and `stage_vendor_config()` immediately
+    before it: `make_arena()` -> `assert_isolated()` ->
+    `stage_vendor_config()` -> `assert_vendor_auth()`.
+
+    Keychain-backed `claude` login does not follow a scratch
+    `CLAUDE_CONFIG_DIR` (Planar artifact 626 / task 6872: a live run
+    staged `agents/`/`commands/` correctly and still answered "Not logged
+    in · Please run /login"). So arena Claude auth must be an explicit
+    env token:
+
+    - claude: `env["CLAUDE_CODE_OAUTH_TOKEN"]` (minted by
+      `claude setup-token`) or `env["ANTHROPIC_API_KEY"]` must be a
+      non-empty value.
+    - codex: `$CODEX_HOME/auth.json` (staged by `stage_vendor_config()`,
+      or provided by the caller) must exist, or `env["OPENAI_API_KEY"]`
+      must be a non-empty value.
+
+    Raises `VendorAuthError` naming exactly which variable or file is
+    missing and how to obtain it. Never includes a credential VALUE in
+    the message, even when one is present in `env` — only presence is
+    checked, never logged.
+    """
+    if vendor not in VENDOR_STAGED_SURFACES:
+        raise ValueError(f"unknown vendor: {vendor}")
+    if vendor == "claude":
+        if env.get("CLAUDE_CODE_OAUTH_TOKEN") or env.get("ANTHROPIC_API_KEY"):
+            return
+        raise VendorAuthError(
+            "claude: no usable auth in the arena environment. Set "
+            "CLAUDE_CODE_OAUTH_TOKEN (run `claude setup-token`) or "
+            "ANTHROPIC_API_KEY before running a live/lifecycle eval — "
+            "Keychain-backed `claude login` does not follow a scratch "
+            "CLAUDE_CONFIG_DIR."
+        )
+    # vendor == "codex"
+    if env.get("OPENAI_API_KEY"):
+        return
+    codex_home = env.get("CODEX_HOME")
+    if codex_home and (Path(codex_home) / "auth.json").exists():
+        return
+    raise VendorAuthError(
+        "codex: no usable auth in the arena environment. Stage "
+        "$CODEX_HOME/auth.json (via stage_vendor_config, from the real "
+        "install) or set OPENAI_API_KEY before running a live/lifecycle "
+        "eval."
+    )

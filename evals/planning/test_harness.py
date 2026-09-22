@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Appended, not inserted at 0: both directories have a `harness.py`, and
@@ -446,6 +447,85 @@ class HostArgvTests(unittest.TestCase):
 
     def test_absent_model_omits_the_flag(self) -> None:
         self.assertNotIn("--model", harness.host_argv(None))
+
+
+class LiveHostAuthBeforeSpawnTests(unittest.TestCase):
+    """Planar artifact 626 / task 6872: staging is not authenticating.
+
+    This harness always spawns `claude` (`host_argv`). Keychain-backed
+    `claude` login does not follow into a scratch `CLAUDE_CONFIG_DIR`, so
+    the live trial loop in `main()` must call `arena.assert_vendor_auth`
+    for "claude" before `run_model` ever spawns the host — and must NOT
+    do so on the `--dry-run` path, which never spawns a host at all.
+    """
+
+    def _run_main(self, argv: list[str]) -> tuple[int, str, str]:
+        import io
+        import contextlib
+
+        old_argv = sys.argv
+        sys.argv = ["harness.py", *argv]
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = harness.main()
+        finally:
+            sys.argv = old_argv
+        return code, out.getvalue(), err.getvalue()
+
+    def test_live_loop_invokes_assert_vendor_auth_before_run_model(self) -> None:
+        # Call-site mutant-kill evidence: a no-op or deleted
+        # assert_vendor_auth call at this call site would never raise
+        # here, run_model would be reached, and this test would fail on
+        # both the exit-code and the not-called assertions below.
+        call_order: list[str] = []
+
+        def _auth_side_effect(env, vendor):
+            call_order.append(f"auth:{vendor}")
+            raise arena.VendorAuthError("no usable auth (test sentinel)")
+
+        run_model_mock = mock.Mock(side_effect=lambda *a, **k: call_order.append("run_model"))
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "assert_vendor_auth", side_effect=_auth_side_effect), \
+                mock.patch.object(harness, "run_model", run_model_mock):
+            code, out, err = self._run_main(
+                ["--case", "spec-draft-quality", "--trials", "1"]
+            )
+        self.assertEqual(code, harness.EXIT_FAIL)
+        self.assertIn("no usable auth", out + err)
+        run_model_mock.assert_not_called()
+        self.assertEqual(call_order, ["auth:claude"])
+
+    def test_live_loop_fails_closed_with_a_real_missing_token_env(self) -> None:
+        # End-to-end with the REAL assert_vendor_auth: an arena env built
+        # from a base_env carrying no claude auth surface must refuse
+        # before run_model spawns anything.
+        real_make_arena = arena.make_arena
+        scrubbed_base_env = {"PATH": __import__("os").environ.get("PATH", "")}
+
+        def scrubbed_make_arena(root, base_env=None):
+            return real_make_arena(root, base_env=scrubbed_base_env)
+
+        run_model_mock = mock.Mock()
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "make_arena", side_effect=scrubbed_make_arena), \
+                mock.patch.object(harness, "run_model", run_model_mock):
+            code, out, err = self._run_main(
+                ["--case", "spec-draft-quality", "--trials", "1"]
+            )
+        self.assertEqual(code, harness.EXIT_FAIL)
+        combined = out + err
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", combined)
+        self.assertIn("ANTHROPIC_API_KEY", combined)
+        run_model_mock.assert_not_called()
+
+    def test_dry_run_never_calls_assert_vendor_auth(self) -> None:
+        with mock.patch.object(harness.arena, "assert_vendor_auth") as auth_mock:
+            code, _out, _err = self._run_main(
+                ["--case", "spec-draft-quality", "--dry-run"]
+            )
+        self.assertEqual(code, harness.EXIT_PASS)
+        auth_mock.assert_not_called()
 
 
 if __name__ == "__main__":

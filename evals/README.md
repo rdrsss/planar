@@ -113,6 +113,22 @@ normally while writes land in the scratch tree; `plugins/` is deliberately
 excluded from staging because both vendor CLIs write into it on ordinary
 use.
 
+Staging the config directory is not the same as authenticating it:
+Keychain-backed `claude` login is bound to the operator's default
+`CLAUDE_CONFIG_DIR` and does not follow into a scratch one, so a staged
+run still answers "Not logged in" without an explicit token. Provide
+auth via the arena's pass-through allowlist before running a live or
+lifecycle case — `CLAUDE_CODE_OAUTH_TOKEN` (mint one with
+`claude setup-token`) or `ANTHROPIC_API_KEY` for `--vendor claude`; a
+staged `$CODEX_HOME/auth.json` (the default when the operator's real
+`~/.codex/auth.json` exists) or `OPENAI_API_KEY` for `--vendor codex`.
+`assert_vendor_auth()` (`evals/orchestrator/arena.py`) fails closed with
+the missing variable or file named, never a credential value, before any
+host process starts; the planning harness (`evals/planning/harness.py`,
+always `claude`) applies the same check. Fixture-only replay
+(`--lifecycle-fixture-only`, `--dry-run`) never spawns a vendor host, so
+it needs no auth at all.
+
 The controlled classic fixture wraps `planar-agent` inside the temporary
 repository to record successful claim and terminal events while forwarding
 every call to the real binary. Each wrapped call is recorded as its own file
