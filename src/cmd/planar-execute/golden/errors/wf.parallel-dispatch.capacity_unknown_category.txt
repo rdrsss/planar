@@ -1,0 +1,2 @@
+exit: 1
+planar-execute: phase failed: parallel-dispatch.lua/capacity_reconcile: unknown or malformed category for task 1

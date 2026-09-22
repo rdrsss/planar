@@ -1,0 +1,12 @@
+exit: 2
+planar-execute: unknown verb: bogus
+planar-execute — deterministic, spawn-free Lua workflow engine.
+
+Usage:
+  planar-execute run <workflow.lua> --phase <name> [--args <json>]
+                     [--worktree <dir>] [--sandbox-root <dir>]
+  planar-execute schema
+
+Loads the workflow in the sandbox, registers the deterministic host
+surface (cli/git/fs/flow/ctx), calls the named phase, and prints the
+workflow's flow.result(table) payload as JSON on stdout.
