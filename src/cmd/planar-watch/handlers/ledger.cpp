@@ -210,13 +210,23 @@ auto claims(context& ctx, const cliapp::parsed_args& args) -> handler_result {
       ar::append_claim_view(out, row, ar::claim_view_extras{.entity_scope = std::move(scope)});
       continue;
     }
+    // An engine-supervised claim whose lease has passed is `lapsed (engine)`,
+    // not `active`: reconcile deliberately leaves it for the engine's own
+    // recovery (plan 1033 task 6489), so it would otherwise read as live.
+    std::string status{aa::to_text(row.status)};
+    if (row.status == aa::claim_status::active) {
+      auto const sup  = aa::get_supervision(**conn, row.claim_token);
+      auto const live = aa::is_claim_active_unexpired(**conn, row.claim_token);
+      if (sup && sup->engine && live && !*live) {
+        status = "lapsed (engine)";
+      }
+    }
     if (row.category.has_value()) {
       out.append(std::format("  {}:{}  scope:{}  status:{}  vendor:{}  category:{}  token:{}\n", aa::to_text(row.kind),
-                             row.entity_id, scope.label(), aa::to_text(row.status), row.vendor, aa::to_text(*row.category),
-                             row.claim_token));
+                             row.entity_id, scope.label(), status, row.vendor, aa::to_text(*row.category), row.claim_token));
     } else {
       out.append(std::format("  {}:{}  scope:{}  status:{}  vendor:{}  token:{}\n", aa::to_text(row.kind), row.entity_id,
-                             scope.label(), aa::to_text(row.status), row.vendor, row.claim_token));
+                             scope.label(), status, row.vendor, row.claim_token));
     }
   }
   if (json) {

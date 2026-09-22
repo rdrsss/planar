@@ -6527,8 +6527,8 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # Operator recovery — agent_* table writers, which is why they live on
 # planar-agent (not planar). The operator invokes them directly; vendor
 # hooks never do.
-planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
-planar-agent abort      --claim <token> [--reason <text>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
+planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--override-supervisor] [--json]
+planar-agent abort      --claim <token> [--reason <text>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--vendor <s>] [--vendor-session <vendor:id>] [--override-supervisor] [--json]
 
 # Workflow run lifecycle — used by an external workflow harness to manage
 # workflow_runs rows while staying DB-handle-free (decision 444). The caller
@@ -6664,6 +6664,18 @@ the attempt the claim is associated with:
 | `heartbeat` | only with `--status` and no `--ttl`: records the status, lease **unchanged** | extends the lease | `AttemptMismatch` |
 | `complete` / `fail` / `release` / `block` | `SupervisorMismatch`, unless `--override-supervisor` | lands once; a repeat after it landed is exit 0 with no change | `AttemptMismatch` |
 | `claim-associate --supervisor engine` | same attempt: no-op; new attempt: moves the claim to it | — | — |
+
+**Recovery leaves engine work to the engine** (task 6489). `reconcile`
+skips expired engine-supervised claims and dead-pid `engine = 'centurion'`
+runs — their recovery is the Centurion host's — and reports them: JSON gains
+`skipped_engine_claims` / `skipped_engine_runs`, text gains a `skipped
+(engine-supervised; ...)` block, both emitted only when something was
+skipped, so a caller-only sweep prints exactly what it always did. `abort`
+on an engine claim is `SupervisorMismatch`. `--override-supervisor` on
+either takes the work over and logs one `supervisor_override` action per
+engine claim. `planar-watch claims` renders an expired engine claim that
+reconcile left alone as `status:lapsed (engine)` (it appears under
+`--status stale` and `--status all`).
 
 `--as engine` on a caller claim is `SupervisorMismatch`. Every refusal is
 `error: <verb>: <Tag>` at exit 1 and leaves claim, task and lease untouched.

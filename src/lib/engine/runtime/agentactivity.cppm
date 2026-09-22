@@ -826,6 +826,11 @@ export struct reconcile_policy {
   std::optional<std::int64_t>     session_id;               ///< Scope to one session; unset sweeps globally.
   std::optional<std::int64_t>     plan_id;                  ///< Scope to one plan; unset sweeps globally.
   std::optional<failure_category> category;                 ///< Category to stamp on claims made stale.
+  /// Reconcile engine-supervised claims too (plan 1033 task 6489). Off by
+  /// default: an engine claim's lease and terminal verb are the engine's,
+  /// so the sweep reports it as skipped instead of taking it over. Each
+  /// claim swept under this flag gets one `supervisor_override` action.
+  bool override_supervisor = false;
 };
 
 /// @brief What a sweep did (or, in dry-run, would do).
@@ -837,6 +842,9 @@ export struct reconcile_result {
   std::int64_t       claims_marked_stale = 0;
   std::int64_t       actions_closed      = 0; ///< Number of action rows closed.
   std::vector<claim> candidates;              ///< The expired claims found (populated in every mode).
+  /// Expired ENGINE-supervised claims left untouched (plan 1033 task 6489);
+  /// always empty under `override_supervisor`.
+  std::vector<claim> skipped_engine;
 };
 
 /// @brief Mark expired claims stale, return their tasks to `todo` where
@@ -862,8 +870,9 @@ export struct run_candidate {
 
 /// @brief What the run sweep did.
 export struct reconcile_runs_result {
-  std::int64_t               abandoned = 0; ///< Rows moved to `abandoned`.
-  std::vector<run_candidate> candidates;    ///< The dead-pid rows found.
+  std::int64_t               abandoned = 0;  ///< Rows moved to `abandoned`.
+  std::vector<run_candidate> candidates;     ///< The dead-pid rows found.
+  std::vector<run_candidate> skipped_engine; ///< Dead-pid `engine='centurion'` rows left running (task 6489).
 };
 
 /// @brief Is a process id live?
@@ -879,10 +888,13 @@ export auto pid_alive(std::int64_t pid) -> bool;
 /// @brief Abandon `running` workflow runs whose recorded pid is gone.
 /// @param conn An open, migrated connection.
 /// @param dry_run When true, collect candidates and write nothing.
+/// A `centurion` run's liveness is the Centurion host's to judge, not a pid
+/// probe's, so it is reported as skipped unless `override_supervisor`.
 /// @param plan_id Scope to one plan; unset sweeps globally.
+/// @param override_supervisor Abandon dead-pid `centurion` runs too.
 /// @return The sweep result, or `query_failed`.
-export auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id)
-    -> std::expected<reconcile_runs_result, agent_error>;
+export auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id,
+                           bool override_supervisor = false) -> std::expected<reconcile_runs_result, agent_error>;
 
 // =========================================================================
 // Read paths — the display half (task 6120)

@@ -298,6 +298,9 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   reconcile->add_option("--category")
       ->description("Optional closed failure category applied to claims made stale")
       ->check(CLI::IsMember{failure_categories()});
+  cliapp::add_bool_flag(*reconcile, "--override-supervisor",
+                        "Also reconcile engine-supervised claims and centurion runs (skipped by default; logged as "
+                        "supervisor_override)");
   add_json(*reconcile);
 
   CLI::App* abort_cmd =
@@ -310,6 +313,8 @@ auto root_app() -> std::unique_ptr<CLI::App> {
       ->description("Optional closed failure category for the recovered claim")
       ->check(CLI::IsMember{failure_categories()});
   add_vendor(*abort_cmd, "Vendor tag for the aborting session", "Vendor session id for the aborting session");
+  cliapp::add_bool_flag(*abort_cmd, "--override-supervisor",
+                        "Abort an engine-supervised claim (refused otherwise; logged as supervisor_override)");
   add_json(*abort_cmd);
 
   app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");

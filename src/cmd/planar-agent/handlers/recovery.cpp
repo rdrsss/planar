@@ -66,6 +66,7 @@ auto reconcile(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   if (auto const category = cliapp::flag_string(args, "--category"); category.has_value()) {
     policy.category = aa::failure_category_from_text(*category);
   }
+  policy.override_supervisor = cliapp::flag_bool(args, "--override-supervisor");
 
   // ONE transaction around BOTH sweeps when applying; none when
   // dry-running, because a dry run performs no writes to protect.
@@ -82,7 +83,7 @@ auto reconcile(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   if (!claims) {
     return std::unexpected(verb_error("reconcile", claims.error()));
   }
-  auto const runs = aa::reconcile_runs(**conn, dry_run, policy.plan_id);
+  auto const runs = aa::reconcile_runs(**conn, dry_run, policy.plan_id, policy.override_supervisor);
   if (!runs) {
     return std::unexpected(verb_error("reconcile runs", runs.error()));
   }
@@ -122,8 +123,20 @@ auto abort(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (auto const raw = cliapp::flag_string(args, "--category"); raw.has_value()) {
     category = aa::failure_category_from_text(*raw);
   }
-  auto const reason  = cliapp::flag_string(args, "--reason");
-  auto const token   = cliapp::flag_string(args, "--claim").value_or(std::string{});
+  auto const reason = cliapp::flag_string(args, "--reason");
+  auto const token  = cliapp::flag_string(args, "--claim").value_or(std::string{});
+
+  // An engine-supervised claim is the engine's to end (plan 1033 D3); the
+  // operator takes it over only by saying so, and that is logged below.
+  auto const sup = aa::get_supervision(**conn, token);
+  if (!sup) {
+    return std::unexpected(verb_error("abort", sup.error()));
+  }
+  auto const overriding = sup->engine;
+  if (overriding && !cliapp::flag_bool(args, "--override-supervisor")) {
+    return std::unexpected(verb_error("abort", aa::agent_error::supervisor_mismatch));
+  }
+
   auto const aborted = aa::abort_claim(**conn, token, view(reason), category);
   if (!aborted) {
     return std::unexpected(verb_error("abort", aborted.error()));
@@ -152,6 +165,22 @@ auto abort(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const closed = aa::end_action(**conn, *audit_id, aa::outcome::aborted, std::string_view{summary});
   if (!closed) {
     return std::unexpected(verb_error("audit endAction", closed.error()));
+  }
+  if (overriding) {
+    auto const override_id = aa::start_action(**conn, aa::start_action_args{
+                                                          .session_id = *session,
+                                                          .claim_id   = aborted->id,
+                                                          .kind       = aa::action_kind::supervisor_override,
+                                                          .vendor     = "planar-agent",
+                                                      });
+    if (!override_id) {
+      return std::unexpected(verb_error("audit startAction", override_id.error()));
+    }
+    auto const note =
+        std::format("abort by operator overriding the engine supervisor (attempt {})", sup->attempt_id.value_or("none"));
+    if (auto const ended = aa::end_action(**conn, *override_id, aa::outcome::ok, std::string_view{note}); !ended) {
+      return std::unexpected(verb_error("audit endAction", ended.error()));
+    }
   }
 
   if (!tx->commit()) {

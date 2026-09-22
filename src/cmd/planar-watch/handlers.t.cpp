@@ -1083,3 +1083,24 @@ TEST_CASE("planar-watch sync-events --entity requires kind:id form", "[cmd][watc
   CHECK(got.code == 2);
   CHECK(got.err == "error: sync-events: InvalidInput\n");
 }
+
+TEST_CASE("planar-watch claims shows a lapsed engine-supervised claim as lapsed (engine)", "[cmd][watch][handlers][6489]") {
+  // Reconcile leaves an expired ENGINE claim for the engine's own recovery
+  // (plan 1033 task 6489), so it stays `status='active'` with a passed
+  // lease. Rendered as `active` it would read as live work.
+  auto const fx = make_fixture("lapsed_engine");
+  seed_database(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    // Both claims expire; only the first is engine-supervised.
+    exec(*conn, "update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z'");
+    exec(*conn, "update agent_work_claims set supervisor = 'engine', attempt_id = 'A1' where vendor = 'seedvendor'");
+  }
+  auto const got = dispatch(fx, {"claims", "--status", "stale"});
+  REQUIRE(got.code == 0);
+  CHECK(got.out.contains("status:lapsed (engine)  vendor:seedvendor"));
+  // The caller claim in the same state keeps its stored status verbatim.
+  CHECK(got.out.contains("status:active  vendor:othervendor"));
+  CHECK_FALSE(got.out.contains("status:lapsed (engine)  vendor:othervendor"));
+}
