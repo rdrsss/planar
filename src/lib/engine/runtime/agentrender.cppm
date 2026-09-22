@@ -220,6 +220,21 @@ export auto associate_json(std::int64_t updated) -> std::string;
 /// @return The COMPLETE payload, newline included.
 export auto associate_text(std::int64_t updated, std::string_view claim_token) -> std::string;
 
+/// @brief `claim-associate --supervisor`'s payload (plan 1033 task 6488):
+/// `{"ok":true,"claim_token":…,"supervisor":"engine"|"caller","attempt_id":…|null,"changed":…}`,
+/// plus `"updated":<n>` when `--run` was also given.
+/// @param result The association outcome.
+/// @param run_updated The `--run` stamp count, when `--run` was given.
+/// @return The COMPLETE payload, newline included.
+export auto supervisor_json(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string;
+
+/// @brief The text form of `supervisor_json`:
+/// `ok claim:<token> supervisor:<s> attempt:<a|-> changed:<bool>[ updated:<n>]`.
+/// @param result The association outcome.
+/// @param run_updated The `--run` stamp count, when `--run` was given.
+/// @return The COMPLETE payload, newline included.
+export auto supervisor_text(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string;
+
 // =========================================================================
 // action start / end
 // =========================================================================

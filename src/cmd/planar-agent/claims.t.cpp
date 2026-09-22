@@ -729,3 +729,205 @@ TEST_CASE("dispatch confirm names every frozen binding drift and writes nothing"
     CHECK(stmt->column_int64(1) == 0);
   }
 }
+
+// ===========================================================================
+// Engine supervision (plan 1033 M0, task 6488; tech-spec D3/D4)
+// ===========================================================================
+//
+// The test-spec scenarios, walked through the real tree and handler table.
+// Every assertion is on post-state — claim row, task row, lease, action rows
+// — not on the exit code alone.
+
+namespace {
+
+/// @brief Seed one plan with `task_count` todo tasks, pull task 1, and
+/// return its claim token.
+auto pulled(scratch_dir const& scratch, int task_count) -> std::string {
+  seed(scratch, task_count);
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
+  return scalar_text(scratch, "select claim_token from agent_work_claims where id = 1");
+}
+
+/// @brief Count the claim-1 action rows of `kind`.
+auto actions_of(scratch_dir const& scratch, std::string_view kind) -> std::string {
+  return scalar_text(scratch, std::format("select count(*) from agent_actions where claim_id = 1 and action_kind = '{}'", kind));
+}
+
+} // namespace
+
+TEST_CASE("a caller-supervised claim takes the ritual exactly as before", "[cmd][agent][supervision][6488]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 1);
+  CHECK(scalar_text(scratch, "select supervisor || ':' || ifnull(attempt_id, 'null') from agent_work_claims where id = 1") ==
+        "caller:null");
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token}).code == 0);
+  CHECK(run_verb(scratch, {"complete", "--claim", token, "--no-locality-probe"}).code == 0);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "completed");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "done");
+  // No supervision rows on a claim nobody supervised.
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind in ('claim_associate', 'claim_terminal', "
+                             "'supervisor_override')") == "0");
+}
+
+TEST_CASE("claim-associate hands a claim to the engine one way, idempotently by attempt", "[cmd][agent][supervision][6488]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 1);
+
+  auto const first =
+      run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1", "--json"});
+  REQUIRE(first.code == 0);
+  CHECK(first.out == std::format(R"({{"ok":true,"claim_token":"{}","supervisor":"engine","attempt_id":"A1","changed":true}})"
+                                 "\n",
+                                 token));
+  CHECK(scalar_text(scratch, "select supervisor || ':' || attempt_id from agent_work_claims where id = 1") == "engine:A1");
+  CHECK(actions_of(scratch, "claim_associate") == "1");
+
+  // Same attempt again: success, nothing written.
+  auto const repeat =
+      run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1", "--json"});
+  REQUIRE(repeat.code == 0);
+  CHECK(repeat.out.contains(R"("changed":false)"));
+  CHECK(actions_of(scratch, "claim_associate") == "1");
+
+  // A new attempt moves the claim and logs exactly one more row.
+  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A2"}).code == 0);
+  CHECK(scalar_text(scratch, "select attempt_id from agent_work_claims where id = 1") == "A2");
+  CHECK(actions_of(scratch, "claim_associate") == "2");
+
+  // One way: never back to the caller.
+  auto const back = run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "caller"});
+  CHECK(back.code == 1);
+  CHECK(back.err == "error: claim-associate: SupervisorMismatch\n");
+  CHECK(scalar_text(scratch, "select supervisor from agent_work_claims where id = 1") == "engine");
+
+  // The first attempt is now a stranger to this claim.
+  auto const stale =
+      run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
+  CHECK(stale.code == 1);
+  CHECK(stale.err == "error: complete: AttemptMismatch\n");
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
+}
+
+TEST_CASE("on an engine claim the caller may report status but not extend the lease or terminate",
+          "[cmd][agent][supervision][6488]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
+  auto const lease = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
+
+  for (auto const& verb : std::vector<std::vector<std::string>>{
+           {"complete", "--claim", token, "--no-locality-probe"},
+           {"fail", "--claim", token, "--reason", "r", "--no-locality-probe"},
+           {"release", "--claim", token, "--no-locality-probe"},
+           {"block", "--claim", token, "--blocker", "1", "--no-locality-probe"},
+           {"heartbeat", "--claim", token},
+           {"heartbeat", "--claim", token, "--status", "s", "--ttl", "1h"},
+       }) {
+    INFO(verb.front());
+    auto const refused = run_verb(scratch, verb);
+    CHECK(refused.code == 1);
+    CHECK(refused.err == std::format("error: {}: SupervisorMismatch\n", verb.front()));
+  }
+  // Nothing moved: claim live, task doing, lease untouched.
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
+  CHECK(scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1") == lease);
+
+  // A status report lands, and still leaves the lease alone.
+  REQUIRE(run_verb(scratch, {"heartbeat", "--claim", token, "--status", "editing foo"}).code == 0);
+  CHECK(scalar_text(scratch, "select summary from agent_actions where claim_id = 1 and action_kind = 'heartbeat'") ==
+        "editing foo");
+  CHECK(scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1") == lease);
+
+  // The engine, under its attempt, does extend it.
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A9"}).err ==
+        "error: heartbeat: AttemptMismatch\n");
+  REQUIRE(run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A1", "--ttl", "2h"}).code == 0);
+  CHECK(scalar_text(scratch, "select lease_expires_at > '" + lease + "' from agent_work_claims where id = 1") == "1");
+}
+
+TEST_CASE("the engine's terminal verb lands once and replays as a no-op under the same attempt",
+          "[cmd][agent][supervision][6488]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
+
+  auto const done = run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
+  REQUIRE(done.code == 0);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "completed");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "done");
+  CHECK(actions_of(scratch, "claim_terminal") == "1");
+  auto const rows = scalar_text(scratch, "select count(*) from agent_actions");
+
+  // Replay (post-crash reconciliation re-issuing the verb): exit 0, the same
+  // envelope, and not one row written.
+  auto const replay =
+      run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
+  CHECK(replay.code == 0);
+  CHECK(replay.out == done.out);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions") == rows);
+  CHECK(actions_of(scratch, "claim_terminal") == "1");
+
+  // Another attempt is refused, terminal claim or not.
+  auto const other =
+      run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A2", "--no-locality-probe"});
+  CHECK(other.code == 1);
+  CHECK(other.err == "error: complete: AttemptMismatch\n");
+}
+
+TEST_CASE("an engine verb on a caller claim is refused, and an operator override is logged", "[cmd][agent][supervision][6488]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 2);
+
+  // The engine cannot act on a claim it was never handed.
+  auto const foreign =
+      run_verb(scratch, {"release", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
+  CHECK(foreign.code == 1);
+  CHECK(foreign.err == "error: release: SupervisorMismatch\n");
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A1"}).err ==
+        "error: heartbeat: SupervisorMismatch\n");
+
+  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
+  REQUIRE(run_verb(scratch, {"release", "--claim", token, "--override-supervisor", "--no-locality-probe"}).code == 0);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "released");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
+  CHECK(actions_of(scratch, "supervisor_override") == "1");
+  CHECK(scalar_text(scratch, "select summary from agent_actions where action_kind = 'supervisor_override'") ==
+        "release by caller overriding the engine supervisor (attempt A1)");
+  CHECK(actions_of(scratch, "claim_terminal") == "0");
+}
+
+TEST_CASE("supervision flags are cross-checked before anything is written", "[cmd][agent][supervision][6488]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 1);
+  struct refusal {
+    std::vector<std::string> argv;
+    std::string              err;
+  };
+  for (auto const& r : std::vector<refusal>{
+           {{"complete", "--claim", token, "--as", "engine"}, "error: --as engine requires --attempt <id>\n"},
+           {{"complete", "--claim", token, "--attempt", "A1"}, "error: --attempt applies only with --as engine\n"},
+           {{"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--override-supervisor"},
+            "error: --override-supervisor is for the caller; it cannot be combined with --as engine\n"},
+           {{"claim-associate", "--claim", token},
+            "error: claim-associate needs --run <id>, --supervisor <caller|engine>, or both\n"},
+           {{"claim-associate", "--claim", token, "--supervisor", "engine"},
+            "error: --supervisor engine requires --attempt <id>\n"},
+           {{"claim-associate", "--claim", token, "--supervisor", "caller", "--attempt", "A1"},
+            "error: --attempt applies only with --supervisor engine\n"},
+           {{"action", "start", "--claim", token, "--kind", "claim_terminal"},
+            "error: action kind 'claim_terminal' is written only by the supervised claim verbs, not by action start\n"},
+       }) {
+    INFO(r.argv.front());
+    auto const got = run_verb(scratch, r.argv);
+    CHECK(got.code == 2);
+    CHECK(got.err == r.err);
+  }
+  CHECK(scalar_text(scratch, "select supervisor || ':' || status from agent_work_claims where id = 1") == "caller:active");
+  // `pull --role` never mints a supervision row either: an unrecognised or
+  // supervision role degrades to `coder`.
+  scratch_dir other;
+  seed(other, 1);
+  REQUIRE(run_verb(other, {"pull", "1", "--role", "claim_terminal", "--no-locality-probe"}).code == 0);
+  CHECK(scalar_text(other, "select action_kind from agent_actions where id = 1") == "coder");
+}

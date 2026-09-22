@@ -179,7 +179,25 @@ export enum class action_kind : std::uint8_t {
   user_message,
   assistant_message,
   other,
+  // Engine supervision (migration 00038, plan 1033 task 6487/6488). Written
+  // ONLY by the atomic supervision paths in `agentatomic`, never by
+  // `action start` — see `is_supervision_kind`.
+  claim_associate,     ///< A claim handed to (or re-attempted by) the engine supervisor.
+  claim_terminal,      ///< The engine's one terminal verb on a claim.
+  supervisor_override, ///< An operator terminating an engine claim with `--override-supervisor`.
+  run_submitted,       ///< A Centurion run's submission.
+  run_reconciled,      ///< A terminal verb re-issued by post-crash reconciliation.
 };
+
+/// @brief Whether `kind` is one of the five engine-supervision kinds.
+///
+/// Those rows are the audit trail of who terminated an engine-supervised
+/// claim, so they are written only inside the atomic supervision paths;
+/// `action start --kind` and `pull --role` refuse or ignore them, or any
+/// agent could forge a `claim_terminal` row.
+/// @param kind The kind.
+/// @return True for the supervision kinds.
+export auto is_supervision_kind(action_kind kind) -> bool;
 
 /// @brief Entity kinds an ACTION may reference. A strict superset of
 /// `entity_kind` — mirrors `agent_actions.entity_kind`'s wider CHECK set.
@@ -404,6 +422,14 @@ export enum class agent_error : std::uint8_t {
   illegal_transition, ///< The task status transition the verb needs is not legal.
   unknown_status,     ///< The task's current status is not a known member.
   query_failed,       ///< Backstop for an underlying SQL failure.
+  /// The caller is not the claim's supervisor: a caller terminal verb or
+  /// lease extension on an engine claim, or an engine verb on a caller
+  /// claim, or a supervisor change back to `caller` (plan 1033 D3). New
+  /// with the engine supervisor; the Zig oracle has no such tag.
+  supervisor_mismatch,
+  /// An engine verb named a different Centurion attempt than the one the
+  /// claim is associated with (plan 1033 D4).
+  attempt_mismatch,
 };
 
 /// @brief The Zig error TAG for `err`, as it appears on the operator's
@@ -654,6 +680,35 @@ export auto task_plan_id(db::connection& conn, std::int64_t task_id) -> std::opt
 /// @return The number of rows updated, or `query_failed`.
 export auto associate_claim_run(db::connection& conn, std::string_view claim_token, std::int64_t run_id,
                                 std::optional<std::string_view> stage) -> std::expected<std::int64_t, agent_error>;
+
+// =========================================================================
+// Engine supervision (migration 00038, plan 1033 D3/D4)
+// =========================================================================
+
+/// @brief Who supervises a claim's lease and terminal verb, and under which
+/// Centurion attempt. Read separately from `claim`, whose 27-column
+/// projection is shared by every claim renderer.
+export struct supervision {
+  bool                       engine = false; ///< `supervisor = 'engine'`; false means `caller`.
+  std::optional<std::string> attempt_id;     ///< The supervising attempt, when engine-supervised.
+};
+
+/// @brief Read a claim's supervision columns.
+/// @param conn An open, migrated connection.
+/// @param claim_token The claim.
+/// @return The supervision, or `claim_not_found` / `query_failed`.
+export auto get_supervision(db::connection& conn, std::string_view claim_token) -> std::expected<supervision, agent_error>;
+
+/// @brief Mark a claim engine-supervised under `attempt_id`.
+///
+/// One-way: nothing here sets a claim back to `caller`. MUST be called
+/// inside the caller's transaction, after the claim has been checked live.
+/// @param conn An open, migrated connection.
+/// @param claim_id The claim row.
+/// @param attempt_id The Centurion attempt.
+/// @return Success, or `query_failed`.
+export auto set_engine_supervision(db::connection& conn, std::int64_t claim_id, std::string_view attempt_id)
+    -> std::expected<void, agent_error>;
 
 // =========================================================================
 // Actions

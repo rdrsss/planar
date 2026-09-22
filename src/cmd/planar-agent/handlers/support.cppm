@@ -38,6 +38,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.session;
 import planar.cmd.planar_agent.exit;
 
@@ -103,6 +104,50 @@ export auto invalid_input_error(std::string body) -> domain_error {
 /// @return The domain error to return from the handler.
 export auto invalid_value_error(std::string body) -> domain_error {
   return error_from_body(domain_error_kind::generic_failure, std::move(body));
+}
+
+/// @brief The parsed engine-supervision flags (`--as`, `--attempt`,
+/// `--override-supervisor`; plan 1033 task 6488). Owns the attempt text the
+/// `supervisor_gate` built from it views.
+export struct gate_flags {
+  bool                       engine = false;              ///< `--as engine`.
+  std::optional<std::string> attempt;                     ///< `--attempt`.
+  bool                       override_supervisor = false; ///< `--override-supervisor`.
+
+  /// @brief The engine gate over these flags; valid while `*this` lives.
+  /// @return The gate.
+  [[nodiscard]] auto gate() const -> engine::runtime::agentatomic::supervisor_gate {
+    return engine::runtime::agentatomic::supervisor_gate{
+        .as                  = engine ? engine::runtime::agentatomic::actor::engine : engine::runtime::agentatomic::actor::caller,
+        .attempt             = attempt.has_value() ? std::optional<std::string_view>{*attempt} : std::nullopt,
+        .override_supervisor = override_supervisor,
+    };
+  }
+};
+
+/// @brief Parse and cross-check the supervision flags, before anything is
+/// written: `--as engine` needs `--attempt`, `--attempt` needs `--as
+/// engine`, and `--override-supervisor` is the caller's (the engine never
+/// overrides itself). Each refusal is invalid input, exit 2.
+/// @param args The parsed arguments.
+/// @return The flags, or the refusal.
+export auto parse_gate_flags(const cliapp::parsed_args& args) -> std::expected<gate_flags, domain_error> {
+  gate_flags out{
+      .engine              = cliapp::flag_string(args, "--as") == std::optional<std::string>{"engine"},
+      .attempt             = cliapp::flag_string(args, "--attempt"),
+      .override_supervisor = cliapp::flag_bool(args, "--override-supervisor"),
+  };
+  if (out.engine && (!out.attempt.has_value() || out.attempt->empty())) {
+    return std::unexpected(invalid_input_error("--as engine requires --attempt <id>"));
+  }
+  if (!out.engine && out.attempt.has_value()) {
+    return std::unexpected(invalid_input_error("--attempt applies only with --as engine"));
+  }
+  if (out.engine && out.override_supervisor) {
+    return std::unexpected(
+        invalid_input_error("--override-supervisor is for the caller; it cannot be combined with --as engine"));
+  }
+  return out;
 }
 
 /// @brief The literal `--ttl` refusal text, shared by every verb that

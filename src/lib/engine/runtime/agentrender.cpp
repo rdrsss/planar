@@ -317,6 +317,33 @@ auto associate_text(std::int64_t updated, std::string_view claim_token) -> std::
   return std::format("ok updated:{} claim:{}\n", updated, claim_token);
 }
 
+auto supervisor_json(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string {
+  std::string out = "{\"ok\":true,\"claim_token\":";
+  append_json_string(out, result.held.claim_token);
+  out += result.engine ? ",\"supervisor\":\"engine\",\"attempt_id\":" : ",\"supervisor\":\"caller\",\"attempt_id\":";
+  if (result.attempt_id.has_value()) {
+    append_json_string(out, *result.attempt_id);
+  } else {
+    out += "null";
+  }
+  out += std::format(",\"changed\":{}", result.changed ? "true" : "false");
+  if (run_updated.has_value()) {
+    out += std::format(",\"updated\":{}", *run_updated);
+  }
+  out += "}\n";
+  return out;
+}
+
+auto supervisor_text(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string {
+  auto out = std::format("ok claim:{} supervisor:{} attempt:{} changed:{}", result.held.claim_token,
+                         result.engine ? "engine" : "caller", result.attempt_id.value_or("-"), result.changed ? "true" : "false");
+  if (run_updated.has_value()) {
+    out += std::format(" updated:{}", *run_updated);
+  }
+  out += "\n";
+  return out;
+}
+
 // =========================================================================
 // action start / end
 // =========================================================================

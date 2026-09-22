@@ -482,8 +482,31 @@ auto to_text(action_kind value) -> std::string_view {
     return "assistant_message";
   case action_kind::other:
     return "other";
+  case action_kind::claim_associate:
+    return "claim_associate";
+  case action_kind::claim_terminal:
+    return "claim_terminal";
+  case action_kind::supervisor_override:
+    return "supervisor_override";
+  case action_kind::run_submitted:
+    return "run_submitted";
+  case action_kind::run_reconciled:
+    return "run_reconciled";
   }
   return "other";
+}
+
+auto is_supervision_kind(action_kind kind) -> bool {
+  switch (kind) {
+  case action_kind::claim_associate:
+  case action_kind::claim_terminal:
+  case action_kind::supervisor_override:
+  case action_kind::run_submitted:
+  case action_kind::run_reconciled:
+    return true;
+  default:
+    return false;
+  }
 }
 
 auto to_text(action_entity_kind value) -> std::string_view {
@@ -597,7 +620,7 @@ auto failure_category_from_text(std::string_view text) -> std::optional<failure_
 }
 
 auto action_kind_from_text(std::string_view text) -> std::optional<action_kind> {
-  static constexpr std::array<std::pair<std::string_view, action_kind>, 17> k_table{{
+  static constexpr std::array<std::pair<std::string_view, action_kind>, 22> k_table{{
       {"planner", action_kind::planner},
       {"ingestor", action_kind::ingestor},
       {"coder", action_kind::coder},
@@ -615,6 +638,11 @@ auto action_kind_from_text(std::string_view text) -> std::optional<action_kind> 
       {"user_message", action_kind::user_message},
       {"assistant_message", action_kind::assistant_message},
       {"other", action_kind::other},
+      {"claim_associate", action_kind::claim_associate},
+      {"claim_terminal", action_kind::claim_terminal},
+      {"supervisor_override", action_kind::supervisor_override},
+      {"run_submitted", action_kind::run_submitted},
+      {"run_reconciled", action_kind::run_reconciled},
   }};
   for (auto const& [name, value] : k_table) {
     if (name == text) {
@@ -695,6 +723,10 @@ auto error_name(agent_error err) -> std::string_view {
     return "UnknownStatus";
   case agent_error::query_failed:
     return "QueryFailed";
+  case agent_error::supervisor_mismatch:
+    return "SupervisorMismatch";
+  case agent_error::attempt_mismatch:
+    return "AttemptMismatch";
   }
   return "QueryFailed";
 }
@@ -1040,6 +1072,41 @@ auto associate_claim_run(db::connection& conn, std::string_view claim_token, std
     return std::unexpected(agent_error::query_failed);
   }
   return changes(conn);
+}
+
+// =========================================================================
+// Engine supervision
+// =========================================================================
+
+auto get_supervision(db::connection& conn, std::string_view claim_token) -> std::expected<supervision, agent_error> {
+  // NULL is folded in SQL (the statement API has no NULL probe): the third
+  // column says whether attempt_id is present.
+  auto stmt = conn.prepare("select supervisor = 'engine', ifnull(attempt_id, ''), attempt_id is not null "
+                           "from agent_work_claims where claim_token = ?");
+  if (!stmt || !stmt->bind_text(1, claim_token)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  auto const stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  if (*stepped == db::step_result::done) {
+    return std::unexpected(agent_error::claim_not_found);
+  }
+  supervision out{.engine = stmt->column_int64(0) != 0};
+  if (stmt->column_int64(2) != 0) {
+    out.attempt_id = stmt->column_text(1);
+  }
+  return out;
+}
+
+auto set_engine_supervision(db::connection& conn, std::int64_t claim_id, std::string_view attempt_id)
+    -> std::expected<void, agent_error> {
+  auto stmt = conn.prepare("update agent_work_claims set supervisor = 'engine', attempt_id = ? where id = ?");
+  if (!stmt || !stmt->bind_text(1, attempt_id) || !stmt->bind_int64(2, claim_id) || !stmt->step()) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  return {};
 }
 
 // =========================================================================

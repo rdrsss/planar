@@ -213,6 +213,84 @@ export struct peek_result {
 export auto peek_next(db::connection& conn, std::int64_t plan_id) -> std::expected<peek_result, agent_error>;
 
 // =========================================================================
+// Engine supervision (plan 1033 D3/D4, task 6488)
+// =========================================================================
+//
+// D3: the orchestrator creates a claim; once it is handed to the engine
+// (`associate_supervisor`), the engine ALONE extends its lease and issues its
+// one terminal verb. The caller may still report status. D4: every engine
+// verb names the Centurion attempt it acts for, and a terminal verb repeated
+// under the attempt that already terminated the claim is a no-op success,
+// so post-crash reconciliation can re-issue it safely.
+//
+// A caller-supervised claim — every claim that is never associated — takes
+// every path exactly as before; a default `supervisor_gate` changes nothing.
+
+/// @brief Who is issuing a supervised verb.
+export enum class actor : std::uint8_t {
+  caller, ///< The orchestrator or coder: the default, and the only actor before plan 1033.
+  engine, ///< The engine supervisor, acting for one Centurion attempt.
+};
+
+/// @brief The supervision half of a terminal verb's arguments.
+export struct supervisor_gate {
+  actor                           as = actor::caller; ///< Who is issuing the verb.
+  std::optional<std::string_view> attempt;            ///< The attempt, required when `as == engine`.
+  /// Operator recovery: a CALLER terminal verb on an engine claim, recorded
+  /// as a `supervisor_override` action. Meaningless for the engine.
+  bool override_supervisor = false;
+};
+
+/// @brief What `associate_supervisor` did.
+export struct associate_result {
+  claim                      held;       ///< The claim, unchanged by the association itself.
+  bool                       engine;     ///< The claim's supervisor is now the engine.
+  std::optional<std::string> attempt_id; ///< The attempt now associated.
+  bool                       changed;    ///< False for a repeat under the same attempt (a no-op).
+};
+
+/// @brief Hand a live claim to the engine supervisor under `attempt` (or
+/// confirm it is still the caller's).
+///
+///   - caller claim, `engine = true`: becomes engine-supervised under
+///     `attempt`; one `claim_associate` action is written.
+///   - engine claim, same attempt: no change, success (idempotent).
+///   - engine claim, different attempt: `attempt_id` moves to the new
+///     attempt (Centurion retried); one `claim_associate` action is written.
+///   - engine claim, `engine = false`: `supervisor_mismatch` — one-way.
+///   - caller claim, `engine = false`: no change, success.
+/// @param conn An open, migrated connection (this function owns the transaction).
+/// @param claim_token The claim.
+/// @param engine True to associate with the engine; false to assert `caller`.
+/// @param attempt The attempt; required when `engine` is true.
+/// @return The outcome, or `claim_not_found` / `claim_not_active` /
+/// `supervisor_mismatch` / `attempt_mismatch` (engine without an attempt) /
+/// `query_failed`.
+export auto associate_supervisor(db::connection& conn, std::string_view claim_token, bool engine,
+                                 std::optional<std::string_view> attempt) -> std::expected<associate_result, agent_error>;
+
+/// @brief Heartbeat a claim with supervision enforced.
+///
+///   - caller claim, caller actor: exactly the pre-plan-1033 heartbeat.
+///   - engine claim, engine actor with the associated attempt: extends the lease.
+///   - engine claim, caller actor, `status` given, no `ttl`: STATUS ONLY —
+///     the status action is written and the lease is left exactly as it was.
+///   - engine claim, caller actor, no `status` or a `ttl`: `supervisor_mismatch`.
+///   - caller claim, engine actor: `supervisor_mismatch`.
+///
+/// `status`, when given, is recorded as a closed `heartbeat` action whose
+/// summary is the status text, as the unsupervised heartbeat always did.
+/// @param conn An open, migrated connection (this function owns the transaction).
+/// @param claim_token The claim.
+/// @param ttl_secs As `heartbeat_claim`.
+/// @param status The status text, or unset.
+/// @param gate Who is heartbeating.
+/// @return The claim as it now stands, or the refusal.
+export auto supervised_heartbeat(db::connection& conn, std::string_view claim_token, std::optional<std::int64_t> ttl_secs,
+                                 std::optional<std::string_view> status, const supervisor_gate& gate)
+    -> std::expected<claim, agent_error>;
+
+// =========================================================================
 // Terminal verbs
 // =========================================================================
 
@@ -220,10 +298,22 @@ export auto peek_next(db::connection& conn, std::int64_t plan_id) -> std::expect
 export struct terminal_result {
   claim        released;    ///< The claim in its new terminal state.
   std::int64_t task_id = 0; ///< The task it held.
+  /// An engine verb repeated under the attempt that already terminated the
+  /// claim: nothing was written, and `released` is the claim as it stands.
+  bool replayed = false;
 };
 
 /// @brief End the work session successfully: task -> `done`, claim ->
 /// `completed`, open actions -> `ok`.
+///
+/// All four terminal verbs take a `supervisor_gate` (default: the caller)
+/// and check it inside the same transaction, BEFORE the liveness check so an
+/// engine replay under the terminating attempt can succeed as a no-op:
+/// engine actor on a caller claim, or caller actor on an engine claim
+/// without `override_supervisor`, is `supervisor_mismatch`; an engine actor
+/// naming another attempt is `attempt_mismatch`. A successful engine verb
+/// writes one `claim_terminal` action; an override writes one
+/// `supervisor_override` action.
 ///
 /// Note which guard bites first for the common mistake: a claim taken with
 /// `--no-transition` leaves its task in `todo`, and `todo -> done` is not
@@ -233,11 +323,13 @@ export struct terminal_result {
 /// @param claim_token The claim to end.
 /// @param summary The completion summary to record on the actions, or unset.
 /// @param policy The injected planning policy.
+/// @param gate Who is issuing the verb (default: the caller); see `supervisor_gate`.
 /// @return The outcome, or `claim_not_found` / `claim_not_active` /
 /// `claim_not_on_task` / `illegal_transition` / `task_not_found` /
 /// `query_failed`.
 export auto complete_work(db::connection& conn, std::string_view claim_token, std::optional<std::string_view> summary,
-                          const task_policy& policy) -> std::expected<terminal_result, agent_error>;
+                          const task_policy& policy, const supervisor_gate& gate = {})
+    -> std::expected<terminal_result, agent_error>;
 
 /// @brief Fail the work session: task -> `todo`, claim -> `aborted` with a
 /// failure category, open actions -> `error`.
@@ -246,9 +338,10 @@ export auto complete_work(db::connection& conn, std::string_view claim_token, st
 /// @param reason The failure reason, recorded on the claim.
 /// @param category The closed failure category.
 /// @param policy The injected planning policy.
+/// @param gate Who is issuing the verb (default: the caller); see `supervisor_gate`.
 /// @return The outcome, or the same errors as `complete_work`.
 export auto fail_work(db::connection& conn, std::string_view claim_token, std::string_view reason, failure_category category,
-                      const task_policy& policy) -> std::expected<terminal_result, agent_error>;
+                      const task_policy& policy, const supervisor_gate& gate = {}) -> std::expected<terminal_result, agent_error>;
 
 /// @brief Give up gracefully: task -> `todo`, claim -> `released`, open
 /// actions -> `aborted`.
@@ -261,9 +354,11 @@ export auto fail_work(db::connection& conn, std::string_view claim_token, std::s
 /// @param claim_token The claim to end.
 /// @param reason The reason, or unset.
 /// @param policy The injected planning policy.
+/// @param gate Who is issuing the verb (default: the caller); see `supervisor_gate`.
 /// @return The outcome, or the same errors as `complete_work`.
 export auto release_work(db::connection& conn, std::string_view claim_token, std::optional<std::string_view> reason,
-                         const task_policy& policy) -> std::expected<terminal_result, agent_error>;
+                         const task_policy& policy, const supervisor_gate& gate = {})
+    -> std::expected<terminal_result, agent_error>;
 
 /// @brief Park the task on a blocker: write a `depends-on` edge, task ->
 /// `blocked`, claim -> `released`, open actions -> `aborted`.
@@ -280,9 +375,10 @@ export auto release_work(db::connection& conn, std::string_view claim_token, std
 /// @param blocker_task_id The task id to depend on.
 /// @param reason The reason, recorded on the claim AND as the action summary.
 /// @param policy The injected planning policy.
+/// @param gate Who is issuing the verb (default: the caller); see `supervisor_gate`.
 /// @return The outcome, or the same errors as `complete_work`.
 export auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t blocker_task_id,
-                       std::optional<std::string_view> reason, const task_policy& policy)
+                       std::optional<std::string_view> reason, const task_policy& policy, const supervisor_gate& gate = {})
     -> std::expected<terminal_result, agent_error>;
 
 } // namespace planar::engine::runtime::agentatomic

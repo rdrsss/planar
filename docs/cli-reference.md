@@ -6491,20 +6491,22 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 # task status transition) in a single BEGIN IMMEDIATE transaction.
 planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--run <run-id>] [--stage <stage>] [--json]
 planar-agent peek       <plan-id> [--json]
-planar-agent complete   --claim <token> [--summary <text>] [--json]
-planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
-planar-agent release    --claim <token> [--reason <text>] [--json]
-planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [--json]
+planar-agent complete   --claim <token> [--summary <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
+planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
+planar-agent release    --claim <token> [--reason <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
+planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
 
 # Direct claims — for orchestrator dispatch when the caller already knows the
 # target entity by id. Task claims atomically transition todo → doing unless
 # --no-transition is supplied; plan and plan-step state is never changed.
 planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
-planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
+planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--as caller|engine] [--attempt <id>] [--json]
 
 # Associate an already-acquired active claim with a workflow run (and
-# optional stage) after the fact, for claims taken before the run existed.
-planar-agent claim-associate --claim <token> --run <run-id> [--stage <s>] [--json]
+# optional stage) after the fact, for claims taken before the run existed,
+# and/or hand it to the engine supervisor (plan 1033; see "Engine
+# supervision" below). At least one of --run or --supervisor.
+planar-agent claim-associate --claim <token> [--run <run-id> [--stage <s>]] [--supervisor caller|engine [--attempt <id>]] [--json]
 
 # `--model` records the model actually used, verbatim, as an OPAQUE STRING.
 # Planar does not decide, validate, or publish what is "supported": an
@@ -6644,6 +6646,37 @@ With `--dry-run`:
 ```
 
 ---
+
+### Engine supervision (plan 1033 D3/D4)
+
+A claim is **caller-supervised** until `claim-associate --supervisor engine
+--attempt <id>` hands it to the engine supervisor (decision 1007). A
+caller-supervised claim — every claim nobody associates — takes every verb
+exactly as before, and a claim never goes back: `--supervisor caller` on an
+engine claim is refused.
+
+On an **engine-supervised** claim the engine alone extends the lease and
+issues the one terminal verb, acting as `--as engine --attempt <id>` with
+the attempt the claim is associated with:
+
+| Verb | Caller (no `--as`) | `--as engine --attempt <associated>` | `--as engine`, other attempt |
+|---|---|---|---|
+| `heartbeat` | only with `--status` and no `--ttl`: records the status, lease **unchanged** | extends the lease | `AttemptMismatch` |
+| `complete` / `fail` / `release` / `block` | `SupervisorMismatch`, unless `--override-supervisor` | lands once; a repeat after it landed is exit 0 with no change | `AttemptMismatch` |
+| `claim-associate --supervisor engine` | same attempt: no-op; new attempt: moves the claim to it | — | — |
+
+`--as engine` on a caller claim is `SupervisorMismatch`. Every refusal is
+`error: <verb>: <Tag>` at exit 1 and leaves claim, task and lease untouched.
+Flag misuse is refused before anything is written, at exit 2: `--as engine`
+without `--attempt`, `--attempt` without `--as engine`, `--override-supervisor`
+with `--as engine`, and `claim-associate` with neither `--run` nor
+`--supervisor`.
+
+Each supervised write leaves one closed `agent_actions` row:
+`claim_associate` (association or a new attempt), `claim_terminal` (the
+engine's terminal verb), `supervisor_override` (an operator override). These
+kinds are written only by these verbs — `action start --kind` refuses them
+and `pull --role` treats them as unknown (falls back to `coder`).
 
 ### Locality flags
 
