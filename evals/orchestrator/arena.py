@@ -266,7 +266,11 @@ def real_vendor_root(vendor: str, base_env: Mapping[str, str] | None = None) -> 
 
 
 def stage_vendor_config(
-    env: Mapping[str, str], vendor: str, *, base_env: Mapping[str, str] | None = None
+    env: Mapping[str, str],
+    vendor: str,
+    *,
+    surface: str = "skill",
+    base_env: Mapping[str, str] | None = None,
 ) -> None:
     """Symlink `vendor`'s read surfaces from the real install into the arena.
 
@@ -275,6 +279,18 @@ def stage_vendor_config(
     `assert_isolated()` immediately before it). `env` is the SCRATCH
     environment `make_arena()` returned; `env[VENDOR_ARENA_ENV_VAR[vendor]]`
     (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`) is the staging target.
+
+    `surface` is the eval surface being run (`"skill"` or `"agent"`, the
+    same value `Options.surface` carries). It changes which surfaces are
+    REQUIRED, not which are staged: with `surface == "agent"`, `agents`
+    is promoted from optional to required for BOTH vendors, because the
+    live host is invoked as an agent (`claude --agent orchestrator`, codex
+    `agent_type=orchestrator`) and reads its agent definitions from that
+    directory — a missing `agents` dir under `surface == "agent"` must
+    fail closed here, before the host starts, rather than fail inside the
+    host with a vendor-specific error the eval cannot classify. With
+    `surface == "skill"` (the default), `agents` stays optional, matching
+    `CLAUDE_STAGED_SURFACES` / `CODEX_STAGED_SURFACES` unchanged.
 
     For each surface in `CLAUDE_STAGED_SURFACES` / `CODEX_STAGED_SURFACES`:
     a missing OPTIONAL surface is skipped silently; a missing REQUIRED one
@@ -300,9 +316,13 @@ def stage_vendor_config(
     """
     if vendor not in VENDOR_STAGED_SURFACES:
         raise ValueError(f"unknown vendor: {vendor}")
+    if surface not in ("skill", "agent"):
+        raise ValueError(f"unknown surface: {surface}")
     real_root = real_vendor_root(vendor, base_env)
     scratch_root = Path(env[VENDOR_ARENA_ENV_VAR[vendor]])
     for name, required in VENDOR_STAGED_SURFACES[vendor].items():
+        if surface == "agent" and name == "agents":
+            required = True
         source = real_root / name
         if not source.exists():
             if required:

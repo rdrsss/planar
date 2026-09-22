@@ -6,76 +6,45 @@ EVAL_DIR="$(cd "$WRAPPER_DIR/.." && pwd)"
 REAL_PLANAR_AGENT="$(<"$EVAL_DIR/real-planar-agent")"
 OBSERVED_DIR="$EVAL_DIR/observed"
 RECORD_SCRIPT="$EVAL_DIR/record_observed.py"
-LOCK_DIR="$EVAL_DIR/.observed-seq.lock"
-COUNTER_FILE="$EVAL_DIR/.observed-seq"
-STALE_LOCK_SECONDS=5
 mkdir -p "$OBSERVED_DIR"
 
 STDOUT_FILE="$(mktemp "${TMPDIR:-/tmp}/planar-eval-agent-stdout.XXXXXX")"
 STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/planar-eval-agent-stderr.XXXXXX")"
-LOCK_OWNED=0
 
-# shellcheck disable=SC2329 # invoked through the EXIT trap
 cleanup() {
   rm -f "$STDOUT_FILE" "$STDERR_FILE"
-  # C1: a lane killed WHILE it holds alloc_seq's lock (between mkdir and
-  # rmdir) must not leave every later wrapper invocation spinning forever.
-  # This trap catches everything a signal handler can catch (SIGTERM and
-  # friends); the stale-age reclaim inside alloc_seq's wait loop below is
-  # the backstop for SIGKILL, which no trap can observe.
-  if [ "$LOCK_OWNED" -eq 1 ]; then
-    rmdir "$LOCK_DIR" 2>/dev/null || true
-  fi
 }
 trap cleanup EXIT
 
-lock_age_seconds() {
-  local mtime now
-  mtime="$(stat -f '%m' "$LOCK_DIR" 2>/dev/null || stat -c '%Y' "$LOCK_DIR" 2>/dev/null || echo "")"
-  if [ -z "$mtime" ]; then
-    printf '0'
-    return
-  fi
-  now="$(date +%s)"
-  printf '%s' "$((now - mtime))"
-}
-
-# Allocate a monotonically increasing sequence number so the grader can
-# break ties between records that share a timestamp, and set it in $SEQ
-# directly (NOT via `$(...)`: a command substitution runs in a forked
-# subshell, and LOCK_OWNED set there would be invisible to this script's
-# own EXIT trap -- the one case C1 exists to cover). `mkdir` is atomic on
-# a POSIX filesystem, so this spinlock is safe across up to sixteen
-# concurrent wrapper lanes without depending on a separate locking
-# utility (flock is not universally available on the platforms this
-# harness targets).
-SEQ=""
-alloc_seq() {
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    if [ -d "$LOCK_DIR" ] && [ "$(lock_age_seconds)" -gt "$STALE_LOCK_SECONDS" ]; then
-      # Stale-lock reclaim: the owner is gone (killed between mkdir and
-      # rmdir, or SIGKILLed so its own EXIT trap never ran) and left the
-      # directory behind. Reclaim rather than spin forever.
-      rmdir "$LOCK_DIR" 2>/dev/null || true
-      continue
-    fi
-    sleep 0.01
-  done
-  LOCK_OWNED=1
-  local n
-  n="$(cat "$COUNTER_FILE" 2>/dev/null || printf '0')"
-  printf '%s' "$((n + 1))" >"$COUNTER_FILE"
-  rmdir "$LOCK_DIR"
-  LOCK_OWNED=0
-  SEQ="$n"
-}
-alloc_seq
+# task 6877: this wrapper used to allocate a monotonically increasing
+# cross-process $SEQ via a mkdir/symlink spinlock (`alloc_seq`), with a
+# stale-lock reclaim path for a lane killed mid-critical-section (C1/C8).
+# That lock was deleted outright rather than hardened further, on
+# reviewer finding: no bash-only construction the harness tried (mkdir +
+# pid file, `ln -s` + pid-liveness reclaim + re-check-before-remove +
+# post-acquire self-verify) closed the gap between DECIDING a lock is
+# abandoned and ACTING on that decision -- two reclaimers can both read
+# the same dead owner, one removes it, a third lane acquires and passes
+# every defensive re-check, and the second reclaimer's queued removal
+# still deletes that third lane's live lock. `kill -0` is also not a
+# reliable liveness oracle across a PID namespace or a different uid
+# (EPERM reads as "dead"). None of this machinery was ever load-bearing
+# for what the observed log actually needs: `record_observed.py` writes
+# one file per invocation named `<ts>-<pid>-<seq>.json` and moves it into
+# place with `os.replace` (atomic rename), so concurrent lanes already
+# cannot interleave or clobber each other's record without any lock at
+# all. `seq` is now always 0 -- each wrapper process records exactly
+# once -- and stays in the record/filename shape only for backward
+# compatibility with already-retained artifact sets; ordering ties are
+# broken by `pid` (see harness.py's `observed_sort_key`, always distinct
+# across concurrently running wrapper processes), not by `seq`.
+SEQ=0
 
 # Subsecond precision matters here: the grader merges this wrapper's
 # records with the specialist fixtures' own boundary-event timestamps
-# (also python3 time.time()) by (ts, seq), and BSD `date` has no portable
-# subsecond format, so whole-second `date +%s` can misorder a call against
-# a same-second boundary event.
+# (also python3 time.time()) by (ts, pid, seq), and BSD `date` has no
+# portable subsecond format, so whole-second `date +%s` can misorder a
+# call against a same-second boundary event.
 #
 # NOTE (C9): this is the one place recording is fail-CLOSED, not
 # fail-open. `set -euo pipefail` is still in effect and this command

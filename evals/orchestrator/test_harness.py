@@ -429,6 +429,84 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
             run_to_file_mock.assert_not_called()
             run_command_mock.assert_not_called()
 
+    def test_run_phase3_preview_threads_options_surface_to_staging(self) -> None:
+        # Proves the CALL SITE passes options.surface through, not just
+        # that arena.stage_vendor_config honors it in isolation (that is
+        # test_arena.py's job). A call site that dropped the `surface=`
+        # kwarg would leave stage_vendor_config to fall back to its
+        # default ("skill") and this test would fail on the assertion
+        # below, even though the missing-required-surface tests above
+        # would still pass.
+        case = {
+            "id": "surface-threading-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant prompt text",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+            },
+        }
+        with tempfile.TemporaryDirectory(prefix="planar-eval-surface-thread-") as results_root:
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="agent",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+
+            class _Sentinel(Exception):
+                pass
+
+            stage_mock = mock.Mock(side_effect=_Sentinel)
+            with mock.patch.object(
+                harness.arena, "stage_vendor_config", stage_mock
+            ):
+                with self.assertRaises(_Sentinel):
+                    harness.run_phase3_preview(
+                        Path("<surface-threading-probe>"), case, options
+                    )
+            self.assertEqual(stage_mock.call_count, 1)
+            _, kwargs = stage_mock.call_args
+            self.assertEqual(kwargs.get("surface"), "agent")
+
+    def test_prepare_lifecycle_fixture_threads_options_surface_to_staging(self) -> None:
+        case = {
+            "id": "surface-threading-lifecycle-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "setup": {
+                "fixture": "controlled-classic",
+                "specialist_scenario": "baseline",
+            },
+        }
+        with tempfile.TemporaryDirectory(prefix="planar-eval-surface-thread-") as results_root:
+            options = harness.Options(
+                mode="lifecycle",
+                vendor="codex",
+                surface="agent",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+
+            class _Sentinel(Exception):
+                pass
+
+            stage_mock = mock.Mock(side_effect=_Sentinel)
+            with mock.patch.object(
+                harness.arena, "stage_vendor_config", stage_mock
+            ):
+                with self.assertRaises(_Sentinel):
+                    harness.prepare_lifecycle_fixture(
+                        Path("<surface-threading-lifecycle-probe>"),
+                        case,
+                        options,
+                        "fixture",
+                    )
+            self.assertEqual(stage_mock.call_count, 1)
+            _, kwargs = stage_mock.call_args
+            self.assertEqual(kwargs.get("surface"), "agent")
+
 
 class SemanticGraderNegativeControlTests(unittest.TestCase):
     def assert_live_rejects(
@@ -709,11 +787,12 @@ def observed_record(
     exit_code: int = 0,
     stdout: object = "",
     stderr: str = "",
+    pid: int | None = None,
 ) -> dict[str, object]:
     return {
         "ts": ts,
         "seq": seq,
-        "pid": 1000 + seq,
+        "pid": pid if pid is not None else 1000 + seq,
         "argv": argv,
         "exit_code": exit_code,
         "stdout": stdout,
@@ -854,6 +933,14 @@ class WrapperObservedLogTest(unittest.TestCase):
         self.assertIn("already completed", second_complete["stderr"])
 
     def test_sixteen_concurrent_calls_leave_sixteen_intact_records(self) -> None:
+        # Task 6877: the wrapper no longer serializes concurrent lanes
+        # through a cross-process lock at all -- `record_observed.py`'s
+        # `<ts>-<pid>-<seq>.json` naming plus `os.replace` (atomic rename)
+        # already guarantees sixteen concurrent lanes cannot interleave or
+        # clobber each other's file without one. `seq` is always 0 now, so
+        # the deterministic assertion is DISTINCT FILENAMES (one per pid,
+        # since pid is what actually varies across the sixteen lanes) and
+        # sixteen intact records, not sixteen distinct seq values.
         big_summary = "x" * 70_000
         procs = [
             subprocess.Popen(
@@ -877,30 +964,19 @@ class WrapperObservedLogTest(unittest.TestCase):
         ]
         for proc in procs:
             self.assertEqual(proc.wait(timeout=30), 0)
+        observed_dir = self.eval_dir / "observed"
+        filenames = sorted(
+            p.name for p in observed_dir.glob("*.json") if not p.name.startswith(".tmp-")
+        )
+        self.assertEqual(len(filenames), 16, f"expected 16 distinct files: {filenames}")
+        self.assertEqual(len(set(filenames)), 16, "filenames were not all distinct")
         records = self.observed_records()
         self.assertEqual(len(records), 16)
-        seqs = sorted(record["seq"] for record in records)
-        self.assertEqual(seqs, list(range(16)))
+        self.assertTrue(all(record["seq"] == 0 for record in records))
+        pids = {record["pid"] for record in records}
+        self.assertEqual(len(pids), 16, "expected 16 distinct wrapper pids")
         for record in records:
             self.assertEqual(record["argv"].count(big_summary), 1)
-
-    def test_stale_lock_is_reclaimed_without_hanging(self) -> None:
-        # C1: a lane killed between mkdir and rmdir leaves
-        # .observed-seq.lock behind forever without a reclaim path. Plant
-        # a lock dir backdated well past the wrapper's 5s staleness
-        # threshold and confirm the NEXT call reclaims it quickly rather
-        # than spinning (or hanging past a generous bound).
-        lock_dir = self.eval_dir / ".observed-seq.lock"
-        lock_dir.mkdir()
-        stale_time = time.time() - 30
-        os.utime(lock_dir, (stale_time, stale_time))
-        started = time.monotonic()
-        result = self.run_wrapper(["heartbeat", "--claim", "tok-1", "--ttl", "8h", "--json"])
-        elapsed = time.monotonic() - started
-        self.assertEqual(result.returncode, 0)
-        self.assertLess(elapsed, 3.0, "stale lock was not reclaimed promptly")
-        self.assertFalse(lock_dir.is_dir(), "stale lock directory was not removed")
-        self.assertEqual(len(self.observed_records()), 1)
 
     def test_record_failure_writes_sentinel_and_still_forwards_exit_code(
         self,
@@ -961,6 +1037,80 @@ class WrapperObservedLogTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(harness.EvalFailure, "6831"):
             harness.assert_terminal_verb_lifecycle([records[0], followup])
+
+
+class ObservedLogOrderingTest(unittest.TestCase):
+    """Task 6877: `seq` no longer varies across records (the wrapper's
+    cross-process lock/counter was deleted outright, not hardened
+    further -- see the wrapper's own header comment). Ordering ties are
+    now broken by `pid`, which is always distinct across concurrently
+    running wrapper processes, so `read_observed_records` and every place
+    that derives lifecycle order from the observed log must sort by
+    (ts, pid, seq), not (ts, seq) alone.
+    """
+
+    def test_read_observed_records_breaks_a_ts_tie_by_pid(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            observed_dir = Path(raw_tmp) / "observed"
+            # Both records share the EXACT same ts (a real possibility now
+            # that seq no longer disambiguates arrival order at all); only
+            # pid differs. Write the higher-pid record FIRST on disk to
+            # prove the ordering comes from the sort, not file-glob order.
+            write_observed_record(
+                observed_dir,
+                observed_record(ts=5.0, seq=0, pid=9999, argv=["complete", "--claim", "tok-hi"]),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(ts=5.0, seq=0, pid=1111, argv=["pull"]),
+            )
+            records = harness.read_observed_records(observed_dir)
+            self.assertEqual([r["pid"] for r in records], [1111, 9999])
+
+    def test_observed_sort_key_orders_by_ts_then_pid_then_seq(self) -> None:
+        low_pid = observed_record(ts=5.0, seq=9, pid=100, argv=["pull"])
+        high_pid = observed_record(ts=5.0, seq=0, pid=200, argv=["pull"])
+        earlier_ts = observed_record(ts=4.0, seq=0, pid=999, argv=["pull"])
+        ordered = sorted(
+            [high_pid, low_pid, earlier_ts], key=harness.observed_sort_key
+        )
+        self.assertEqual([r["pid"] for r in ordered], [999, 100, 200])
+
+    def test_merge_lifecycle_events_breaks_a_ts_tie_by_pid(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            observed_dir = root / "observed"
+            # Same ts, two different wrapper pids -- the lower pid's
+            # terminal verb must sort first.
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=3.0,
+                    seq=0,
+                    pid=500,
+                    argv=["complete", "--claim", "tok-2"],
+                    stdout=terminal_stdout(claim_token="tok-2"),
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=3.0,
+                    seq=0,
+                    pid=100,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            )
+            events_path = root / "events.jsonl"
+            events_path.write_text("", encoding="utf-8")
+            events = harness.merge_lifecycle_events(observed_dir, events_path)
+            # Both name "task-completed"; distinguish by which claim token
+            # produced them via the underlying records, read back in the
+            # same (ts, pid, seq) order the merge used.
+            records = harness.read_observed_records(observed_dir)
+            self.assertEqual([r["pid"] for r in records], [100, 500])
+            self.assertEqual([e["event"] for e in events], ["task-completed", "task-completed"])
 
 
 class ObservedLogGraderTest(unittest.TestCase):
@@ -1654,6 +1804,118 @@ class RegradeCatchesRetainedObservedLogTest(unittest.TestCase):
             )
 
 
+class ArtifactFormatObservedLogGateTest(unittest.TestCase):
+    """Task 6876: a missing `repo/.eval/observed` must fail grading when
+    `run.json` declares `artifact_format >= ARTIFACT_FORMAT_OBSERVED_LOG`,
+    and stay a legacy no-op when it doesn't (or when run.json is absent).
+
+    Mutant: dropping the format check (always treating a missing
+    observed/ as a legacy skip) must fail
+    `test_missing_observed_log_fails_when_format_declares_it`.
+    """
+
+    def test_missing_observed_log_fails_when_format_declares_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            harness.write_json(
+                artifact_dir / "run.json",
+                {"artifact_format": harness.ARTIFACT_FORMAT_OBSERVED_LOG},
+            )
+            # No repo/.eval/observed tree written: format >= 2 promises one.
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "observed-log-missing"
+            ):
+                harness.grade_lifecycle_artifacts(
+                    lifecycle_case(), artifact_dir, lifecycle_options()
+                )
+
+    def test_missing_observed_log_is_a_legacy_skip_below_the_format_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            harness.write_json(
+                artifact_dir / "run.json",
+                {"artifact_format": harness.ARTIFACT_FORMAT_OBSERVED_LOG - 1},
+            )
+            # Must not raise: a legacy artifact set never promised the tree.
+            harness.grade_lifecycle_artifacts(
+                lifecycle_case(), artifact_dir, lifecycle_options()
+            )
+
+    def test_missing_observed_log_is_a_legacy_skip_with_no_run_json(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            # No run.json at all -- predates the artifact_format key entirely.
+            harness.grade_lifecycle_artifacts(
+                lifecycle_case(), artifact_dir, lifecycle_options()
+            )
+
+    def test_present_observed_log_still_grades_normally_under_the_new_format(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            harness.write_json(
+                artifact_dir / "run.json",
+                {"artifact_format": harness.ARTIFACT_FORMAT_OBSERVED_LOG},
+            )
+            observed_dir = artifact_dir / "repo" / ".eval" / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            )
+            harness.grade_lifecycle_artifacts(
+                lifecycle_case(), artifact_dir, lifecycle_options()
+            )
+
+    def test_prepare_lifecycle_fixture_writes_the_observed_log_format_marker(
+        self,
+    ) -> None:
+        # collection-time: run.json must carry artifact_format so grading
+        # can tell a post-C2 run apart from a legacy one.
+        case = {
+            "id": "artifact-format-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "setup": {
+                "fixture": "controlled-classic",
+                "specialist_scenario": "baseline",
+            },
+        }
+        with tempfile.TemporaryDirectory(prefix="planar-eval-format-marker-") as results_root:
+            options = harness.Options(
+                mode="lifecycle-fixture",
+                vendor="",
+                surface="agent",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+            context = harness.prepare_lifecycle_fixture(
+                harness.ROOT / "evals" / "orchestrator" / "cases" / "classic-lifecycle-success.json",
+                case,
+                options,
+                "fixture",
+            )
+            run_json = harness.read_json(context.artifacts / "run.json")
+            self.assertEqual(
+                run_json.get("artifact_format"), harness.ARTIFACT_FORMAT_OBSERVED_LOG
+            )
+
+
 class RateLimitDetectionTest(unittest.TestCase):
     """Guard the live lane against the `rate_limit_event` false positive.
 
@@ -1732,13 +1994,29 @@ class DocsHonestyTest(unittest.TestCase):
     """The eval docs claim only gated targets (task 6834, spec § C6).
 
     `evals/README.md` and `evals/orchestrator/evidence.md` must not claim an
-    unowned cadence (CI, nightly, "Full Stack"). Every such term may appear
-    only inside a line that names a `make <target>` this repo's Makefile
-    actually defines, or that references the results ledger
-    (`evals/RESULTS.md`). There is no CI configuration in this repository
-    (`.github/` does not exist) and `evals/RESULTS.md` does not exist yet
-    (planned for a later milestone), so a bare cadence claim with neither
-    anchor is a documentation-honesty violation.
+    unowned cadence (CI, nightly, release, smoke, "every change", "Full
+    Stack"). There is no CI configuration in this repository (`.github/`
+    does not exist) and `evals/RESULTS.md` does not exist yet (planned for
+    a later milestone), so a bare cadence claim is a documentation-honesty
+    violation unless the line does one of two things:
+
+    1. DENIES the cadence (e.g. "no CI", "not run in CI", "no automated",
+       "operator-invoked only") -- a line saying the term does NOT apply
+       is not a claim that it does.
+    2. States the term is GATED BY/VIA a specific `make <target>` this
+       repo's Makefile actually defines (e.g. "gated by `make
+       eval-orchestrator-fast`") -- naming the actual invocation, not
+       just mentioning some target elsewhere in the same sentence.
+
+    (task 6878): the prior rule accepted ANY line that merely contained
+    both the term and a backtick-quoted `make <target>` ANYWHERE in it,
+    with no requirement that the target actually be what gates the term.
+    That let a sentence like "`make eval-orchestrator-fast` runs nightly
+    in CI" through, because it happens to mention a real target -- while
+    still asserting the false, unowned "nightly in CI" cadence. Requiring
+    a denial phrase or the specific "gated by/via `make X`" construction
+    closes that: a naked cadence claim next to an unrelated target mention
+    no longer passes.
     """
 
     REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -1746,8 +2024,25 @@ class DocsHonestyTest(unittest.TestCase):
         REPO_ROOT / "evals" / "README.md",
         REPO_ROOT / "evals" / "orchestrator" / "evidence.md",
     )
-    TERMS = ("CI", "nightly", "Full Stack")
+    TERMS = ("CI", "nightly", "Full Stack", "release", "smoke", "every change")
     RESULTS_LEDGER = "evals/RESULTS.md"
+
+    # A line matching one of these DENIES the cadence rather than claiming
+    # it, so a TERM appearing inside one is not a violation.
+    DENIAL_PATTERNS = (
+        re.compile(r"\bno\s+CI\b", re.IGNORECASE),
+        re.compile(r"\bnot\s+run\s+in\s+CI\b", re.IGNORECASE),
+        re.compile(r"\bno\s+automated\b", re.IGNORECASE),
+        re.compile(r"\boperator-invoked\s+only\b", re.IGNORECASE),
+        re.compile(r"\bnever\s+runs?\s+automatically\b", re.IGNORECASE),
+    )
+
+    # A line matching this states the term is GATED BY/VIA a specific
+    # `make <target>` -- the target named is the thing that produces the
+    # cadence, not merely something else mentioned in the same sentence.
+    GATE_PATTERN = re.compile(
+        r"\bgated\s+(?:by|via)\s+`make\s+([A-Za-z0-9_.-]+)`", re.IGNORECASE
+    )
 
     @classmethod
     def _makefile_targets(cls) -> set[str]:
@@ -1760,38 +2055,107 @@ class DocsHonestyTest(unittest.TestCase):
             return re.search(r"\bCI\b", line) is not None
         return term in line
 
+    @classmethod
+    def _line_is_honest(cls, line: str, targets: set[str]) -> bool:
+        if cls.RESULTS_LEDGER in line:
+            return True
+        if any(pattern.search(line) for pattern in cls.DENIAL_PATTERNS):
+            return True
+        gate_match = cls.GATE_PATTERN.search(line)
+        if gate_match and gate_match.group(1) in targets:
+            return True
+        return False
+
+    @classmethod
+    def _find_violations(cls, path: Path, text: str, targets: set[str]) -> list[str]:
+        violations: list[str] = []
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for term in cls.TERMS:
+                if not cls._line_matches_term(line, term):
+                    continue
+                if cls._line_is_honest(line, targets):
+                    continue
+                violations.append(
+                    f"{path}:{lineno}: claims {term!r} without a denial "
+                    f"phrase or a 'gated by/via `make <target>`' anchor "
+                    f"naming a real Makefile target: {line.strip()!r}"
+                )
+        return violations
+
     def test_cadence_claims_name_a_gated_target_or_the_results_ledger(self) -> None:
         targets = self._makefile_targets()
-        target_pattern = re.compile(r"`make ([A-Za-z0-9_.-]+)")
         violations: list[str] = []
 
         for path in self.CHECKED_FILES:
             text = path.read_text(encoding="utf-8")
-            for lineno, line in enumerate(text.splitlines(), start=1):
-                for term in self.TERMS:
-                    if not self._line_matches_term(line, term):
-                        continue
-                    if self.RESULTS_LEDGER in line:
-                        continue
-                    named_targets = target_pattern.findall(line)
-                    if any(t in targets for t in named_targets):
-                        continue
-                    violations.append(
-                        f"{path.relative_to(self.REPO_ROOT)}:{lineno}: "
-                        f"claims {term!r} without naming a Makefile target "
-                        f"or {self.RESULTS_LEDGER}: {line.strip()!r}"
-                    )
+            violations.extend(
+                self._find_violations(path.relative_to(self.REPO_ROOT), text, targets)
+            )
 
         self.assertEqual(
             violations,
             [],
-            "cadence claim not anchored to a gated target or the results "
-            "ledger:\n" + "\n".join(violations),
+            "cadence claim not anchored to a denial phrase or a gated "
+            "target:\n" + "\n".join(violations),
         )
 
     def test_no_ci_configuration_exists(self) -> None:
         """Guards the premise: if CI ever lands, this test (and the docs) must change."""
         self.assertFalse((self.REPO_ROOT / ".github").exists())
+
+    def test_seeded_counter_example_is_rejected(self) -> None:
+        # Task 6878's motivating counter-example: a naked "runs nightly in
+        # CI" cadence claim sitting next to an unrelated, but real, `make`
+        # target mention used to pass under the old "any target anywhere
+        # in the line" rule. Seed it into a MUTATED COPY of the real
+        # `evals/README.md` (never the checked-in file itself) and assert
+        # the seeded copy is rejected.
+        targets = self._makefile_targets()
+        real_target = next(iter(targets))
+        real_readme = (self.REPO_ROOT / "evals" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        counter_example_line = (
+            f"`make {real_target}` runs nightly in CI to keep the suite green.\n"
+        )
+
+        with tempfile.TemporaryDirectory(prefix="planar-eval-docs-honesty-") as tmp:
+            seeded_path = Path(tmp) / "README.md"
+            seeded_path.write_text(real_readme + counter_example_line, encoding="utf-8")
+            violations = self._find_violations(
+                seeded_path, seeded_path.read_text(encoding="utf-8"), targets
+            )
+            self.assertTrue(
+                violations,
+                "seeded counter-example ('runs nightly in CI' beside a "
+                "real but unrelated make target) was NOT rejected -- the "
+                "honesty check has regressed to the old "
+                "any-target-anywhere rule",
+            )
+            self.assertTrue(
+                any("nightly" in v for v in violations),
+                f"violation list did not flag the seeded line: {violations}",
+            )
+
+            # The ORIGINAL, un-mutated README must stay clean under the
+            # same check -- proves the seeded line is what triggers it,
+            # not some unrelated pre-existing content.
+            self.assertEqual(
+                self._find_violations(seeded_path, real_readme, targets), []
+            )
+
+        # A legitimately gated cadence claim, using the same real target,
+        # must still pass -- proves the fixture isn't failing everything.
+        honest_example = f"Cleanup is gated by `make {real_target}`.\n"
+        self.assertEqual(
+            self._find_violations(Path("honest.md"), honest_example, targets), []
+        )
+
+        # A denial is honest even with no target at all.
+        denial_example = "There is no CI in this repository.\n"
+        self.assertEqual(
+            self._find_violations(Path("denial.md"), denial_example, targets), []
+        )
 
 
 if __name__ == "__main__":

@@ -1056,8 +1056,10 @@ def run_phase3_preview(
     # `/pl-orchestrator <plan-id>` / a codex `$orchestrator` invocation,
     # which resolves from the vendor's real config dir, not an empty
     # scratch one. Fails closed (VendorStagingError) before `git init` or
-    # any host process if a required surface is missing.
-    arena.stage_vendor_config(env, options.vendor)
+    # any host process if a required surface is missing. Threads
+    # options.surface through so `agents` is promoted to required when
+    # this run invokes the vendor as an agent (surface == "agent").
+    arena.stage_vendor_config(env, options.vendor, surface=options.surface)
     try:
         run_command(["git", "init", "-q"], cwd=repo, env=env)
         opposite = "claude" if options.vendor == "codex" else "codex"
@@ -1276,7 +1278,7 @@ def prepare_lifecycle_fixture(
     # made to fail closed over a surface (e.g. codex `auth.json`) it never
     # reads.
     if options.vendor:
-        arena.stage_vendor_config(env, options.vendor)
+        arena.stage_vendor_config(env, options.vendor, surface=options.surface)
     try:
         run_command(["git", "init", "-q"], cwd=repo, env=env)
         run_command(["git", "config", "user.name", "Planar Eval"], cwd=repo, env=env)
@@ -1452,6 +1454,13 @@ def prepare_lifecycle_fixture(
                 "plan_id": plan_id,
                 "task_id": task_id,
                 "repo": "repo",
+                # C6: marks this artifact set as one that MUST carry a
+                # `repo/.eval/observed` tree by the time grading runs. A
+                # run.json at or above ARTIFACT_FORMAT_OBSERVED_LOG (task
+                # 6876) makes a missing observed/ dir a hard grading
+                # failure rather than a silent legacy skip -- see
+                # grade_lifecycle_artifacts.
+                "artifact_format": ARTIFACT_FORMAT_OBSERVED_LOG,
             },
         )
         return LifecycleContext(
@@ -1474,6 +1483,14 @@ def event_objects(path: Path) -> list[dict[str, Any]]:
                 events.append(value)
     return events
 
+
+# `run.json["artifact_format"]` at or above this value promises a
+# `repo/.eval/observed` tree exists by grading time (task 6876). A retained
+# artifact set with no `artifact_format` key (or a value below this) predates
+# C2's observed log and is graded under the legacy no-observed-log path; one
+# at or above this value with `observed/` missing is a real defect (the
+# collection run failed to produce it) and grading must fail, not skip.
+ARTIFACT_FORMAT_OBSERVED_LOG = 2
 
 # The planar-agent wrapper's argv[0] -> legacy lifecycle-event-name mapping.
 # Only a forwarded SUCCESS produces a named lifecycle event: a failed
@@ -1525,10 +1542,19 @@ def observed_event_name(record: dict[str, Any]) -> str | None:
 
 def read_observed_records(observed_dir: Path) -> list[dict[str, Any]]:
     """Read every JSON document under a wrapper `observed/` directory,
-    ordered by (ts, seq) -- the file-per-call layout C2 requires so that
-    concurrent wrapper lanes cannot interleave a record. A leftover
+    ordered by (ts, pid, seq) -- the file-per-call layout C2 requires so
+    that concurrent wrapper lanes cannot interleave a record. A leftover
     `.tmp-observed-*` file from an interrupted write is ignored; the
-    wrapper only ever renames a fully-written file into place."""
+    wrapper only ever renames a fully-written file into place.
+
+    `seq` is always 0 now (task 6877 deleted the wrapper's cross-process
+    lock/counter): each wrapper process records exactly once, and
+    uniqueness of the on-disk filename comes from `record_observed.py`'s
+    `<ts>-<pid>-<seq>.json` naming plus `os.replace`, not from `seq`
+    itself. `pid` is the tie-breaker for two records sharing the exact
+    same `time.time()` value -- it is always distinct across concurrently
+    running wrapper processes, whereas `seq` no longer varies at all.
+    """
     if not observed_dir.is_dir():
         return []
     records: list[dict[str, Any]] = []
@@ -1538,10 +1564,18 @@ def read_observed_records(observed_dir: Path) -> list[dict[str, Any]]:
         value = read_json(path)
         if isinstance(value, dict):
             records.append(value)
-    records.sort(
-        key=lambda record: (float(record.get("ts", 0)), int(record.get("seq", 0)))
-    )
+    records.sort(key=observed_sort_key)
     return records
+
+
+def observed_sort_key(record: dict[str, Any]) -> tuple[float, int, int]:
+    """The (ts, pid, seq) ordering key shared by every place this module
+    derives lifecycle event order from the observed log (task 6877)."""
+    return (
+        float(record.get("ts", 0)),
+        int(record.get("pid", 0)),
+        int(record.get("seq", 0)),
+    )
 
 
 def claim_token_of(argv: list[str]) -> str | None:
@@ -1713,7 +1747,7 @@ def assert_terminal_verb_lifecycle(
     complete|fail|block on the same task (C5: `release` is excluded from
     this last gate -- it is a hand-back the ritual explicitly allows a
     re-claim to follow, including lapsed-claim recovery). Raises on the
-    first violation found in (ts, seq) order.
+    first violation found in (ts, pid, seq) order.
 
     Returns the C4 `terminal_attempt_failures` list: a FAILED terminal-verb
     attempt (e.g. a second `complete` the real binary rejected) does not
@@ -1731,10 +1765,7 @@ def assert_terminal_verb_lifecycle(
     terminal_calls_by_token: dict[str, list[dict[str, Any]]] = {}
     terminal_ts_by_task: dict[str, float] = {}
     terminal_attempt_failures: list[dict[str, Any]] = []
-    ordered = sorted(
-        observed_records,
-        key=lambda record: (float(record.get("ts", 0)), int(record.get("seq", 0))),
-    )
+    ordered = sorted(observed_records, key=observed_sort_key)
     for record in ordered:
         argv = record.get("argv") or []
         if not argv:
@@ -1797,17 +1828,19 @@ def merge_lifecycle_events(
     terminal verbs and the specialist fixtures' own boundary events
     (`coder-finished`, `review-approved`, ...) are two streams that
     interleave chronologically during a real run; each stream is already
-    internally ordered, so a stable sort by timestamp merges them
+    internally ordered, so a stable sort by (ts, pid, seq) merges them
     correctly, including a completion recorded before the reviewer
-    boundary event.
+    boundary event. Boundary events carry no `pid`/`seq` of their own
+    (0 stands in for both), so two records only ever tie-break against
+    each other when they share the exact same `ts`.
     """
-    merged: list[tuple[float, dict[str, Any]]] = []
+    merged: list[tuple[tuple[float, int, int], dict[str, Any]]] = []
     for record in read_observed_records(observed_dir):
         name = observed_event_name(record)
         if name is not None:
             merged.append(
                 (
-                    float(record.get("ts", 0)),
+                    observed_sort_key(record),
                     {
                         "event": name,
                         "source": "planar-agent",
@@ -1818,7 +1851,11 @@ def merge_lifecycle_events(
             )
     for index, event in enumerate(event_objects(boundary_events_path)):
         ts = event.get("ts")
-        sort_key = float(ts) if ts is not None else float(index)
+        sort_key = (
+            float(ts) if ts is not None else float(index),
+            int(event.get("pid", 0)),
+            int(event.get("seq", 0)),
+        )
         merged.append((sort_key, event))
     merged.sort(key=lambda item: item[0])
     return [event for _, event in merged]
@@ -1929,9 +1966,31 @@ def grade_lifecycle_artifacts(
     # could have been hand-edited or produced by a stale collector.
     # Artifact sets that predate C2 (or synthetic fixtures that never
     # populate a repo/.eval/observed tree) have no such directory; the
-    # recheck is a no-op for those rather than a new hard requirement.
+    # recheck is a no-op for those -- but ONLY when run.json's own
+    # artifact_format says the run never promised one. A run.json at or
+    # above ARTIFACT_FORMAT_OBSERVED_LOG with observed/ missing means a
+    # post-C2 collection run failed to produce the tree it is supposed to
+    # always write, and that is a grading failure, not a legacy gap (task
+    # 6876: this used to silently no-op regardless of format).
     observed_dir = artifact_dir / "repo" / ".eval" / "observed"
-    if observed_dir.is_dir():
+    run_json_for_format = artifact_dir / "run.json"
+    artifact_format = (
+        read_json(run_json_for_format).get("artifact_format", 0)
+        if run_json_for_format.is_file()
+        else 0
+    )
+    if not observed_dir.is_dir():
+        if artifact_format >= ARTIFACT_FORMAT_OBSERVED_LOG:
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                "observed-log-missing: run.json declares artifact_format "
+                f"{artifact_format} but repo/.eval/observed is absent",
+            )
+        # Legacy artifact set (format < ARTIFACT_FORMAT_OBSERVED_LOG, or no
+        # artifact_format at all): no observed log was ever promised, skip.
+    else:
         observed_records = read_observed_records(observed_dir)
         claims: list[dict[str, Any]] = []
         audit_path = artifact_dir / "task.audit.json"

@@ -273,6 +273,77 @@ class StageVendorConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 arena.stage_vendor_config(env, "bogus-vendor")
 
+    def test_surface_agent_promotes_agents_to_required_for_claude(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            root = Path(tmp)
+            # `commands` present (otherwise required is skip-defeated), but
+            # `agents` absent: with surface="agent" this must fail closed on
+            # `agents`, not pass the way surface="skill" does.
+            real_root = self._fake_real_root(root, "claude", {"commands": "DIR"})
+            env = arena.make_arena(root)
+            with self.assertRaises(arena.VendorStagingError) as ctx:
+                arena.stage_vendor_config(
+                    env,
+                    "claude",
+                    surface="agent",
+                    base_env={"CLAUDE_CONFIG_DIR": str(real_root)},
+                )
+            self.assertIn(str(real_root / "agents"), str(ctx.exception))
+
+    def test_surface_agent_promotes_agents_to_required_for_codex(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            root = Path(tmp)
+            real_root = self._fake_real_root(root, "codex", {"auth.json": '{"token": "t"}'})
+            env = arena.make_arena(root)
+            with self.assertRaises(arena.VendorStagingError) as ctx:
+                arena.stage_vendor_config(
+                    env,
+                    "codex",
+                    surface="agent",
+                    base_env={"CODEX_HOME": str(real_root)},
+                )
+            self.assertIn(str(real_root / "agents"), str(ctx.exception))
+
+    def test_surface_skill_still_treats_agents_as_optional(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            root = Path(tmp)
+            real_root = self._fake_real_root(root, "claude", {"commands": "DIR"})
+            env = arena.make_arena(root)
+            # Default surface ("skill"): must not raise despite no `agents`.
+            arena.stage_vendor_config(
+                env, "claude", base_env={"CLAUDE_CONFIG_DIR": str(real_root)}
+            )
+            self.assertFalse((Path(env["CLAUDE_CONFIG_DIR"]) / "agents").exists())
+
+    def test_surface_agent_stages_agents_when_present(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            root = Path(tmp)
+            real_root = self._fake_real_root(
+                root, "claude", {"commands": "DIR", "agents": "DIR"}
+            )
+            env = arena.make_arena(root)
+            arena.stage_vendor_config(
+                env,
+                "claude",
+                surface="agent",
+                base_env={"CLAUDE_CONFIG_DIR": str(real_root)},
+            )
+            staged = Path(env["CLAUDE_CONFIG_DIR"])
+            self.assertTrue((staged / "agents").is_symlink())
+
+    def test_unknown_surface_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            root = Path(tmp)
+            real_root = self._fake_real_root(root, "claude", {"commands": "DIR"})
+            env = arena.make_arena(root)
+            with self.assertRaises(ValueError):
+                arena.stage_vendor_config(
+                    env,
+                    "claude",
+                    surface="bogus",
+                    base_env={"CLAUDE_CONFIG_DIR": str(real_root)},
+                )
+
     def test_assert_isolated_ignores_symlink_targets_outside_the_root(self) -> None:
         # The staged symlinks point OUTSIDE the arena root by design.
         # assert_isolated must still pass: it validates the arena env var

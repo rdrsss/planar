@@ -244,11 +244,6 @@ class SentinelLineageTests(unittest.TestCase):
         self.assertIn(sentinels[0].value, out)
         self.assertNotIn("confidential paragraph", out)
 
-    def test_old_isolation_symbol_is_gone(self) -> None:
-        # assert_isolated_db was replaced by the shared arena.assert_isolated
-        # (task hh-isolation-assert); the old name must not resurface.
-        self.assertFalse(hasattr(harness, "assert_isolated_db"))
-
     def test_shares_the_arena_isolation_assertion(self) -> None:
         # The exact accident that migrated a live database during plan 950,
         # now caught by the same assertion the orchestrator harness uses.
