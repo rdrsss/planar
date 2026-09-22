@@ -192,8 +192,25 @@ TEST_CASE("parse_ttl_seconds reads a bare integer as SECONDS", "[cmd][agent][arg
   // The ergonomic default the flag's own help promises. A port that read
   // it as nanoseconds would give every claim a zero-second lease.
   CHECK(agent::parse_ttl_seconds("600") == 600);
-  CHECK(agent::parse_ttl_seconds("0") == 0);
   CHECK(agent::parse_ttl_seconds("1") == 1);
+}
+
+TEST_CASE("parse_ttl_seconds refuses a literal zero duration (task 6906)", "[cmd][agent][args]") {
+  // `--ttl 0` (in any unit) used to be ACCEPTED and yielded an
+  // already-lapsed lease — a claim minted expired on arrival. A negative
+  // duration was already unreachable (the parser never accepts a leading
+  // `-`, so it falls out through the malformed-input path below), but a
+  // literal zero magnitude was not. This is the same "invalid" answer as
+  // garbage input, not a value to accept and immediately expire.
+  //
+  // This is distinct from the SUB-SECOND rounding case (`500ms` -> 0,
+  // pinned separately below and still legal under D2): here the parsed
+  // MAGNITUDE itself is zero, not merely its truncation to whole seconds.
+  CHECK_FALSE(agent::parse_ttl_seconds("0").has_value());
+  CHECK_FALSE(agent::parse_ttl_seconds("0s").has_value());
+  CHECK_FALSE(agent::parse_ttl_seconds("0m").has_value());
+  CHECK_FALSE(agent::parse_ttl_seconds("0h").has_value());
+  CHECK_FALSE(agent::parse_ttl_seconds("0ns").has_value());
 }
 
 TEST_CASE("parse_ttl_seconds handles every declared unit", "[cmd][agent][args]") {
