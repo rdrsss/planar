@@ -704,3 +704,42 @@ TEST_CASE("a non-blocked dependent is left alone when its blocker completes", "[
   REQUIRE(after.has_value());
   CHECK(after->status == task_status::doing);
 }
+
+TEST_CASE("update_task reports busy_source, not query_failed, when a competing writer "
+          "holds the write lock past busy_timeout",
+          "[task][busy][6843]") {
+  // Mirrors db.t.cpp's "begin_transaction(lock_mode::immediate) takes the
+  // write lock synchronously" contention shape: a second connection takes
+  // an IMMEDIATE lock (the RESERVED write lock, synchronously, before any
+  // statement runs) and holds it, while the connection under test has its
+  // busy_timeout lowered so the case does not wait out the real 5000ms
+  // default (task 6842).
+  scratch_db_path scratch;
+  auto            conn_a = open_migrated(scratch);
+
+  auto conn_b = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn_b.has_value());
+  REQUIRE(conn_b->execute("pragma busy_timeout = 50;"));
+
+  auto created = create_task(conn_a, task_create_args{.title = "Contended"});
+  REQUIRE(created.has_value());
+
+  auto locker = conn_a.begin_transaction(planar::db::lock_mode::immediate);
+  REQUIRE(locker.has_value());
+
+  auto updated = update_task(*conn_b, created->id, task_update_args{.title = "New title"});
+  REQUIRE_FALSE(updated.has_value());
+  CHECK(updated.error() == task_error::busy_source);
+
+  REQUIRE(locker->commit().has_value());
+
+  // Confirms the write genuinely never landed while contended, and that a
+  // retry (no longer contended) succeeds cleanly.
+  auto after = show_task(*conn_b, created->id);
+  REQUIRE(after.has_value());
+  CHECK(after->title == "Contended");
+
+  auto retried = update_task(*conn_b, created->id, task_update_args{.title = "New title"});
+  REQUIRE(retried.has_value());
+  CHECK(retried->title == "New title");
+}

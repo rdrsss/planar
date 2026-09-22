@@ -192,6 +192,13 @@ export enum class task_error : std::uint8_t {
   /// for `--scope nosuchscope --due garbage`.
   invalid_due_at,
   query_failed,
+  /// A transaction begin or commit could not acquire the write lock even
+  /// after `busy_timeout` elapsed (see `db::is_busy`). Distinct from
+  /// `query_failed` because a busy-source caller should retry unchanged,
+  /// not treat the write as rejected. Mirrors `annotation_error::busy_source`
+  /// (task 6843; `planar` reports this as `domain_error_kind::busy_source`,
+  /// `planar-agent` as its own `Busy` tag).
+  busy_source,
   audit_write_failed, ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
 };
 
