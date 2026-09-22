@@ -21,6 +21,27 @@ import arena  # noqa: E402
 HARNESS_PATH = Path(__file__).resolve().parent / "harness.py"
 
 
+def run_harness_main(argv: list[str]) -> tuple[int, str, str]:
+    """Run `harness.main()` in-process, capturing stdout/stderr and the exit code.
+
+    Shared by every test class that needs to drive the CALLER (`main()`),
+    not just a function it calls — the only way to prove a check is wired
+    in at its call site rather than merely correct in isolation.
+    """
+    import io
+    import contextlib
+
+    old_argv = sys.argv
+    sys.argv = ["harness.py", *argv]
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = harness.main()
+    finally:
+        sys.argv = old_argv
+    return code, out.getvalue(), err.getvalue()
+
+
 class CaseLoadingTests(unittest.TestCase):
     def test_unknown_case_names_the_available_ones(self) -> None:
         # Silently doing nothing on a typo is how a green run comes to mean
@@ -459,19 +480,7 @@ class LiveHostAuthBeforeSpawnTests(unittest.TestCase):
     do so on the `--dry-run` path, which never spawns a host at all.
     """
 
-    def _run_main(self, argv: list[str]) -> tuple[int, str, str]:
-        import io
-        import contextlib
-
-        old_argv = sys.argv
-        sys.argv = ["harness.py", *argv]
-        out, err = io.StringIO(), io.StringIO()
-        try:
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = harness.main()
-        finally:
-            sys.argv = old_argv
-        return code, out.getvalue(), err.getvalue()
+    _run_main = staticmethod(run_harness_main)
 
     def test_live_loop_invokes_assert_vendor_auth_before_run_model(self) -> None:
         # Call-site mutant-kill evidence: a no-op or deleted
@@ -486,10 +495,11 @@ class LiveHostAuthBeforeSpawnTests(unittest.TestCase):
 
         run_model_mock = mock.Mock(side_effect=lambda *a, **k: call_order.append("run_model"))
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "stage_vendor_config"), \
                 mock.patch.object(harness.arena, "assert_vendor_auth", side_effect=_auth_side_effect), \
                 mock.patch.object(harness, "run_model", run_model_mock):
             code, out, err = self._run_main(
-                ["--case", "spec-draft-quality", "--trials", "1"]
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
         self.assertEqual(code, harness.EXIT_FAIL)
         self.assertIn("no usable auth", out + err)
@@ -509,9 +519,10 @@ class LiveHostAuthBeforeSpawnTests(unittest.TestCase):
         run_model_mock = mock.Mock()
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "make_arena", side_effect=scrubbed_make_arena), \
+                mock.patch.object(harness.arena, "stage_vendor_config"), \
                 mock.patch.object(harness, "run_model", run_model_mock):
             code, out, err = self._run_main(
-                ["--case", "spec-draft-quality", "--trials", "1"]
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
         self.assertEqual(code, harness.EXIT_FAIL)
         combined = out + err
@@ -526,6 +537,397 @@ class LiveHostAuthBeforeSpawnTests(unittest.TestCase):
             )
         self.assertEqual(code, harness.EXIT_PASS)
         auth_mock.assert_not_called()
+
+
+class LiveKindDispatchTests(unittest.TestCase):
+    """Test-spec 621, scenario 3014 / task hh-planning-kind-dispatch.
+
+    Four of the five shipped kinds have no live grading path. Before the
+    fix these fell through the trial loop, paid for a host call, then
+    raised `KeyError: 'structural'` — a key only `draft-quality` cases
+    declare. `assert_live_path` refuses these BEFORE any provider call;
+    `--dry-run` must keep working for all five.
+    """
+
+    NO_LIVE_PATH_CASES = (
+        "ingest-sentinel-lineage",
+        "pulled-task-readiness",
+        "coder-brief-completeness",
+        "spec-review-seeded-recall",
+    )
+
+    _run_main = staticmethod(run_harness_main)
+
+    def test_assert_live_path_accepts_draft_quality(self) -> None:
+        harness.assert_live_path(harness.load_case("spec-draft-quality"))  # must not raise
+
+    def test_assert_live_path_refuses_every_other_kind_and_names_it(self) -> None:
+        for case_id in self.NO_LIVE_PATH_CASES:
+            case = harness.load_case(case_id)
+            with self.subTest(case=case_id):
+                with self.assertRaises(harness.NoLiveGraderError) as ctx:
+                    harness.assert_live_path(case)
+                self.assertIsInstance(ctx.exception, harness.ConfigError)
+                self.assertIn(case["kind"], str(ctx.exception))
+                self.assertIn("draft-quality", str(ctx.exception))
+
+    def test_live_dispatch_refuses_before_any_provider_call_for_each_kind(self) -> None:
+        # Call-site mutant-kill evidence: deleting or no-opping the
+        # `assert_live_path(case)` call in `main()` would let these four
+        # cases fall into the trial loop and reach `run_model` /
+        # `arena.make_arena` — this test observes both directly and would
+        # fail on the exit code, the message, and the not-called
+        # assertions below.
+        for case_id in self.NO_LIVE_PATH_CASES:
+            with self.subTest(case=case_id):
+                case = harness.load_case(case_id)
+                run_model_mock = mock.Mock()
+                make_arena_mock = mock.Mock(side_effect=arena.make_arena)
+                with mock.patch.object(harness, "run_model", run_model_mock), \
+                        mock.patch.object(harness.arena, "make_arena", make_arena_mock):
+                    code, out, err = self._run_main(["--case", case_id])
+                combined = out + err
+                self.assertEqual(code, harness.EXIT_CONFIG, f"stdout:\n{out}\nstderr:\n{err}")
+                self.assertIn(case["kind"], combined)
+                self.assertIn("draft-quality", combined)
+                run_model_mock.assert_not_called()
+                make_arena_mock.assert_not_called()
+
+    def test_dry_run_still_works_for_every_kind_without_the_live_guard(self) -> None:
+        for case_id in ("spec-draft-quality", *self.NO_LIVE_PATH_CASES):
+            with self.subTest(case=case_id):
+                code, out, err = self._run_main(["--case", case_id, "--dry-run"])
+                self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
+
+
+class GraderModelValidationTests(unittest.TestCase):
+    """Test-spec 621, scenario 3015 / task hh-planning-grader-split.
+
+    `grader_model` is a required `draft-quality` case field, validated to
+    differ from the drafter (`--model`) — a case whose grader model equals
+    the drafter is refused at validation, not silently allowed to grade
+    itself.
+    """
+
+    def test_shipped_case_declares_a_grader_model(self) -> None:
+        case = harness.load_case("spec-draft-quality")
+        self.assertTrue(case["grader_model"])
+
+    def test_missing_grader_model_fails_case_load(self) -> None:
+        # Write a scratch copy of the shipped draft-quality case with
+        # `grader_model` removed, and prove `load_case` refuses it by the
+        # same required-key gate every other draft-quality key uses.
+        import json as _json
+
+        case_dir = Path(harness.EVAL_ROOT) / "cases"
+        original = _json.loads((case_dir / "spec-draft-quality.json").read_text(encoding="utf-8"))
+        mutated = dict(original)
+        del mutated["grader_model"]
+        scratch_id = "spec-draft-quality-missing-grader-model-scratch"
+        scratch_path = case_dir / f"{scratch_id}.json"
+        scratch_path.write_text(_json.dumps(mutated), encoding="utf-8")
+        try:
+            with self.assertRaises(harness.ConfigError) as ctx:
+                harness.load_case(scratch_id)
+            self.assertIn("grader_model", str(ctx.exception))
+        finally:
+            scratch_path.unlink()
+
+    def test_distinct_grader_model_is_accepted(self) -> None:
+        case = harness.load_case("spec-draft-quality")
+        harness.assert_grader_differs_from_drafter(case, "claude-sonnet-5")  # must not raise
+        self.assertNotEqual(case["grader_model"], "claude-sonnet-5")
+
+    def test_equal_grader_and_drafter_models_are_refused(self) -> None:
+        case = harness.load_case("spec-draft-quality")
+        with self.assertRaises(harness.ConfigError) as ctx:
+            harness.assert_grader_differs_from_drafter(case, case["grader_model"])
+        self.assertIn(case["grader_model"], str(ctx.exception))
+
+    def test_unspecified_drafter_model_does_not_raise_the_equality_check(self) -> None:
+        # `assert_grader_differs_from_drafter` alone tolerates an unspecified
+        # drafter — it has nothing concrete to compare `grader_model`
+        # against. This is exercised ONLY on the dry-run path in practice:
+        # `assert_live_drafter_model_required` (see `LiveDrafterModelRequiredTests`
+        # below) refuses an unspecified drafter on every LIVE draft-quality
+        # run before this function is ever reached, so the two functions
+        # together — not this one alone — are what make the split validated
+        # rather than assumed for a live run.
+        case = harness.load_case("spec-draft-quality")
+        harness.assert_grader_differs_from_drafter(case, None)
+
+    def test_non_draft_kinds_have_no_grader_model_requirement(self) -> None:
+        case = harness.load_case("coder-brief-completeness")
+        self.assertNotIn("grader_model", case)
+        harness.assert_grader_differs_from_drafter(case, "anything")  # no-op, must not raise
+
+    def test_main_refuses_when_model_flag_equals_grader_model(self) -> None:
+        # Call-site mutant-kill evidence: deleting the
+        # `assert_grader_differs_from_drafter(case, args.model)` call in
+        # `main()` would let this proceed past validation to `--dry-run`'s
+        # own PASS path instead of refusing here.
+        case = harness.load_case("spec-draft-quality")
+        run_model_mock = mock.Mock()
+        with mock.patch.object(harness, "run_model", run_model_mock):
+            code, out, err = run_harness_main(
+                ["--case", "spec-draft-quality", "--model", case["grader_model"], "--dry-run"]
+            )
+        self.assertEqual(code, harness.EXIT_CONFIG, f"stdout:\n{out}\nstderr:\n{err}")
+        self.assertIn(case["grader_model"], out + err)
+        run_model_mock.assert_not_called()
+
+    def test_main_accepts_a_distinct_model_flag(self) -> None:
+        code, out, err = run_harness_main(
+            ["--case", "spec-draft-quality", "--model", "claude-haiku-4-5", "--dry-run"]
+        )
+        self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
+
+
+class LiveDrafterModelRequiredTests(unittest.TestCase):
+    """Reviewer fix A: a live draft-quality run must REQUIRE an explicit
+    drafter --model, so the drafter/grader split is VALIDATED rather than
+    assumed. The host default is not guaranteed to differ from
+    grader_model, so omitting --model on a live run must refuse before any
+    provider call. --dry-run may still omit --model.
+    """
+
+    def test_assert_live_drafter_model_required_refuses_unspecified(self) -> None:
+        case = harness.load_case("spec-draft-quality")
+        with self.assertRaises(harness.ConfigError) as ctx:
+            harness.assert_live_drafter_model_required(case, None)
+        self.assertIn(case["id"], str(ctx.exception))
+
+    def test_assert_live_drafter_model_required_accepts_explicit_model(self) -> None:
+        case = harness.load_case("spec-draft-quality")
+        harness.assert_live_drafter_model_required(case, "claude-sonnet-5")  # must not raise
+
+    def test_non_draft_kinds_have_no_drafter_model_requirement(self) -> None:
+        case = harness.load_case("coder-brief-completeness")
+        harness.assert_live_drafter_model_required(case, None)  # no-op, must not raise
+
+    def test_main_live_without_model_flag_is_refused_before_any_provider_call(self) -> None:
+        # Call-site mutant-kill evidence: deleting or no-opping the
+        # `assert_live_drafter_model_required(case, args.model)` call in
+        # `main()` would let a live run with no --model fall through to
+        # `shutil.which` / the trial loop and reach `run_model`, which this
+        # test observes directly.
+        run_model_mock = mock.Mock()
+        make_arena_mock = mock.Mock(side_effect=arena.make_arena)
+        with mock.patch.object(harness, "run_model", run_model_mock), \
+                mock.patch.object(harness.arena, "make_arena", make_arena_mock):
+            code, out, err = run_harness_main(["--case", "spec-draft-quality"])
+        self.assertEqual(code, harness.EXIT_CONFIG, f"stdout:\n{out}\nstderr:\n{err}")
+        self.assertIn("--model", out + err)
+        run_model_mock.assert_not_called()
+        make_arena_mock.assert_not_called()
+
+    def test_main_dry_run_without_model_flag_still_passes(self) -> None:
+        # --dry-run never spawns a host, so it must still tolerate an
+        # unspecified drafter model.
+        code, out, err = run_harness_main(["--case", "spec-draft-quality", "--dry-run"])
+        self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
+
+    def test_main_live_with_explicit_model_reaches_past_the_guard(self) -> None:
+        # The positive half: an explicit --model must NOT be refused by this
+        # guard (it may still be refused later, e.g. by auth).
+        run_model_mock = mock.Mock()
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness, "run_model", run_model_mock):
+            code, out, err = run_harness_main(
+                ["--case", "spec-draft-quality", "--model", "claude-haiku-4-5", "--trials", "1"]
+            )
+        self.assertNotIn("requires an explicit --model", out + err)
+
+
+class BuildDraftPromptTests(unittest.TestCase):
+    """Reviewer fix C: an embedded `"` in the goal text must not corrupt the
+    `/pl-spec-draft "<goal>"` prompt's own quoted argument.
+    """
+
+    def test_plain_goal_is_wrapped_unescaped(self) -> None:
+        prompt = harness.build_draft_prompt("add real-time notifications")
+        self.assertEqual(prompt, '/pl-spec-draft "add real-time notifications"')
+
+    def test_embedded_quotes_are_backslash_escaped(self) -> None:
+        goal = 'support the "premium" tier'
+        prompt = harness.build_draft_prompt(goal)
+        self.assertEqual(prompt, '/pl-spec-draft "support the \\"premium\\" tier"')
+        self.assertIn('\\"premium\\"', prompt)
+
+    def test_embedded_backslash_before_quote_does_not_unescape_it(self) -> None:
+        # Escaping the backslash FIRST is what stops a source `\"` from
+        # colliding with an escape this function inserts.
+        goal = 'a literal backslash-quote: \\" here'
+        prompt = harness.build_draft_prompt(goal)
+        self.assertEqual(prompt, '/pl-spec-draft "a literal backslash-quote: \\\\\\" here"')
+
+    def test_multiline_goal_with_quotes_round_trips(self) -> None:
+        goal = 'Line one says "go".\nLine two has no quotes.\nLine three says "stop" too.'
+        prompt = harness.build_draft_prompt(goal)
+        self.assertTrue(prompt.startswith('/pl-spec-draft "'))
+        self.assertIn("Line two has no quotes.", prompt)
+        self.assertIn('Line one says \\"go\\".', prompt)
+        self.assertIn('Line three says \\"stop\\" too.', prompt)
+
+    def test_goal_without_quotes_is_unaffected_by_escaping(self) -> None:
+        goal = harness.read_asset(harness.load_case("spec-draft-quality"), "goal_fixture")
+        self.assertNotIn('"', goal)
+        prompt = harness.build_draft_prompt(goal)
+        self.assertIn(goal, prompt)
+
+
+class DrafterRoutingTests(unittest.TestCase):
+    """Task hh-planning-grader-split: the live drafter runs through the
+    installed `pl-spec-draft` surface, staged and authenticated before it
+    spawns, and the grader call uses `grader_model`, never the drafter's.
+    """
+
+    _COMPLETE_DRAFT = (
+        "product-spec tech-spec test-spec roadmap\n"
+        "Goal: x\nNon-goals: y\nAcceptance: z\nOpen questions: w\n"
+    )
+
+    def test_trial_loop_stages_vendor_config_before_auth_and_host_spawn(self) -> None:
+        # Call-site mutant-kill evidence: removing the
+        # `arena.stage_vendor_config(trial_env, "claude")` call from the
+        # trial loop would drop "stage:claude" from `call_order` entirely
+        # and leave `stage_mock` uncalled.
+        call_order: list[str] = []
+
+        def _stage_side_effect(env, vendor, **kw):
+            call_order.append(f"stage:{vendor}")
+
+        def _auth_side_effect(env, vendor):
+            call_order.append(f"auth:{vendor}")
+
+        run_model_calls = []
+
+        def _run_model_side_effect(argv, prompt, timeout, env):
+            call_order.append("run_model")
+            run_model_calls.append(1)
+            return self._COMPLETE_DRAFT if len(run_model_calls) == 1 else '{"scores": {"a": 1.0}}'
+
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "stage_vendor_config", side_effect=_stage_side_effect) as stage_mock, \
+                mock.patch.object(harness.arena, "assert_vendor_auth", side_effect=_auth_side_effect), \
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+            code, out, err = run_harness_main(
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+            )
+        self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
+        stage_mock.assert_called_once()
+        self.assertEqual(stage_mock.call_args.args[1], "claude")
+        self.assertEqual(call_order[:2], ["stage:claude", "auth:claude"])
+
+    def test_drafter_prompt_invokes_the_installed_pl_spec_draft_surface(self) -> None:
+        prompts: list[tuple[list[str], str]] = []
+
+        def _run_model_side_effect(argv, prompt, timeout, env):
+            prompts.append((list(argv), prompt))
+            if len(prompts) == 1:
+                return self._COMPLETE_DRAFT
+            return '{"scores": {"a": 1.0}}'
+
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "stage_vendor_config"), \
+                mock.patch.object(harness.arena, "assert_vendor_auth"), \
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+            code, out, err = run_harness_main(
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+            )
+        self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
+        self.assertEqual(len(prompts), 2)
+        drafter_argv, drafter_prompt = prompts[0]
+        self.assertTrue(
+            drafter_prompt.startswith('/pl-spec-draft "'),
+            f"drafter prompt did not invoke pl-spec-draft: {drafter_prompt[:80]!r}",
+        )
+        goal = harness.read_asset(harness.load_case("spec-draft-quality"), "goal_fixture")
+        # The FULL multi-line goal, not just its first line: the shipped
+        # fixture is several lines of prose, and a mutant that truncates
+        # `build_draft_prompt` at the first newline would still pass a
+        # first-line-only assertion while silently dropping the rest of the
+        # goal the drafter is supposed to receive.
+        self.assertGreater(goal.count("\n"), 1, "fixture must be multi-line for this assertion to mean anything")
+        self.assertIn(goal, drafter_prompt)
+        self.assertIn("--model", drafter_argv)
+        self.assertEqual(drafter_argv[drafter_argv.index("--model") + 1], "claude-haiku-4-5")
+
+    def test_grader_call_uses_the_case_grader_model_not_the_drafter_model(self) -> None:
+        # Call-site mutant-kill evidence: if the grader's `run_model` call
+        # used `args.model` (the drafter) instead of `case["grader_model"]`,
+        # the second captured argv below would carry "claude-haiku-4-5"
+        # instead of the case's grader_model, and the final assertion
+        # would fail.
+        case = harness.load_case("spec-draft-quality")
+        argvs: list[list[str]] = []
+
+        def _run_model_side_effect(argv, prompt, timeout, env):
+            argvs.append(list(argv))
+            return self._COMPLETE_DRAFT if len(argvs) == 1 else '{"scores": {"a": 1.0}}'
+
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "stage_vendor_config"), \
+                mock.patch.object(harness.arena, "assert_vendor_auth"), \
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+            code, out, err = run_harness_main(
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+            )
+        self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
+        drafter_argv, grader_argv = argvs
+        self.assertIn("--model", drafter_argv)
+        self.assertEqual(drafter_argv[drafter_argv.index("--model") + 1], "claude-haiku-4-5")
+        self.assertIn("--model", grader_argv)
+        self.assertEqual(grader_argv[grader_argv.index("--model") + 1], case["grader_model"])
+        self.assertNotEqual(case["grader_model"], "claude-haiku-4-5")
+
+    def test_result_records_both_models(self) -> None:
+        import json as _json
+
+        case = harness.load_case("spec-draft-quality")
+
+        def _run_model_side_effect(argv, prompt, timeout, env):
+            calls = _run_model_side_effect.calls
+            calls.append(1)
+            return self._COMPLETE_DRAFT if len(calls) == 1 else '{"scores": {"a": 1.0}}'
+
+        _run_model_side_effect.calls = []
+
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "stage_vendor_config"), \
+                mock.patch.object(harness.arena, "assert_vendor_auth"), \
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+            code, out, _err = run_harness_main(
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+            )
+        self.assertEqual(code, harness.EXIT_PASS, out)
+        recorded = None
+        for line in out.splitlines():
+            try:
+                obj = _json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and obj.get("case") == case["id"]:
+                recorded = obj
+                break
+        self.assertIsNotNone(recorded, f"no result JSON line found in:\n{out}")
+        self.assertEqual(recorded["drafter_model"], "claude-haiku-4-5")
+        self.assertEqual(recorded["grader_model"], case["grader_model"])
+
+    def test_vendor_staging_failure_fails_closed_before_host_spawn(self) -> None:
+        run_model_mock = mock.Mock()
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(
+                    harness.arena, "stage_vendor_config",
+                    side_effect=arena.VendorStagingError("claude: required read surface is missing: /x/commands"),
+                ), \
+                mock.patch.object(harness, "run_model", run_model_mock):
+            code, out, err = run_harness_main(
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+            )
+        self.assertEqual(code, harness.EXIT_FAIL)
+        self.assertIn("required read surface", out + err)
+        run_model_mock.assert_not_called()
 
 
 if __name__ == "__main__":

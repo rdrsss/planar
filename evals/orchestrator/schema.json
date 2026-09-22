@@ -276,7 +276,17 @@
         }
       },
       "then": {
-        "required": ["lifecycle", "tasks", "setup"]
+        "required": ["lifecycle", "tasks", "setup"],
+        "properties": {
+          "expected": {
+            "required": ["post_state"],
+            "properties": {
+              "post_state": {
+                "required": ["task_status", "file_value"]
+              }
+            }
+          }
+        }
       }
     },
     {

@@ -25,6 +25,14 @@ case "$ROLE" in
     fi
     printf '%s\n' "$next_value" > "$REPO_ROOT/src/value.txt"
     make -C "$REPO_ROOT" test >/dev/null
+    # Falsifiability knob (task 6836): a case that declares
+    # "task-completed-before-review" among its forbidden_events needs a real
+    # emitter, or the assertion can never fail. Set only by a fixture-replay
+    # self-test that wants to prove the grader rejects the violation; never
+    # set during a real controlled run.
+    if [ "${EVAL_SEED_VIOLATION:-}" = "task-completed-before-review" ]; then
+      log_event "task-completed-before-review"
+    fi
     log_event "coder-finished"
     cat <<EOF
 Files changed

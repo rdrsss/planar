@@ -54,6 +54,12 @@ import arena  # noqa: E402
 
 EXIT_PASS, EXIT_FAIL, EXIT_CONFIG, EXIT_BLOCKED = 0, 1, 2, 75
 
+# The only case kind with a live grading path (structural gate + an
+# independent semantic grader). `assert_live_path()` refuses every other
+# kind before any provider call; `--dry-run` stays available for all five
+# kinds regardless, since it never spawns a host.
+LIVE_KINDS: frozenset[str] = frozenset({"draft-quality"})
+
 BLOCKED = re.compile(
     r"rate limit|resource_exhausted|429|quota|overloaded|usage limit"
     r"|not authenticated|no api key|credential",
@@ -63,6 +69,20 @@ BLOCKED = re.compile(
 
 class ConfigError(Exception):
     """The case or its assets are unusable. Never reported as a test failure."""
+
+
+class NoLiveGraderError(ConfigError):
+    """The case kind has no live grading path; refused before any provider call.
+
+    Only `draft-quality` cases (structural gate + an independent semantic
+    grader) have a live path. The other four kinds — `seeded-recall`,
+    `sentinel-lineage`, `packet-readiness`, `brief-completeness` — are
+    deterministic checkers exercised only via `--dry-run`; falling through
+    to the live trial loop for one of them used to reach
+    `case["structural"]`, a key only `draft-quality` cases declare, as an
+    unhandled `KeyError` after already paying for a host call (Planar
+    harness review finding, task hh-planning-kind-dispatch).
+    """
 
 
 class GraderError(Exception):
@@ -113,7 +133,10 @@ def load_case(case_id: str) -> dict[str, Any]:
     # Each kind names its own required keys, so a case missing an asset fails
     # at load with the key named rather than at run time with a KeyError.
     required_by_kind = {
-        "draft-quality": ("id", "trials", "goal_fixture", "grader", "grader_version", "structural"),
+        "draft-quality": (
+            "id", "trials", "goal_fixture", "grader", "grader_version", "structural",
+            "grader_model",
+        ),
         "seeded-recall": (
             "id", "trials", "spec_fixture", "manifest_fixture", "grader",
             "grader_version", "severity_weights",
@@ -134,6 +157,83 @@ def load_case(case_id: str) -> dict[str, Any]:
         raise ConfigError(f"case '{case_id}' must declare at least one trial")
     case["kind"] = kind
     return case
+
+
+def assert_live_path(case: dict[str, Any]) -> None:
+    """Refuse a live run before any provider call when the kind has none.
+
+    Call this before touching `shutil.which`, building an arena, or reading
+    any host-bound asset. Dry-run mode never calls this — it stays usable
+    for all five kinds.
+    """
+    kind = case["kind"]
+    if kind in LIVE_KINDS:
+        return
+    raise NoLiveGraderError(
+        f"case '{case['id']}' has kind '{kind}', which has no live grading "
+        f"path. Live runs are supported only for: {', '.join(sorted(LIVE_KINDS))}. "
+        "Use --dry-run to validate this case offline."
+    )
+
+
+def assert_grader_differs_from_drafter(case: dict[str, Any], drafter_model: str | None) -> None:
+    """Refuse when the case's grader model matches the drafter's model.
+
+    The module docstring's "independent, versioned grader" property fails
+    silently if the grader is the same model that produced the draft: its
+    own blind spots would grade themselves charitably. Only `draft-quality`
+    cases declare `grader_model`; every other kind no-ops here. When the
+    drafter model is unspecified (host default, `--model` omitted) there is
+    nothing concrete to compare against, so this only refuses an EXPLICIT
+    match.
+    """
+    if case["kind"] != "draft-quality":
+        return
+    grader_model = case["grader_model"]
+    if drafter_model is not None and grader_model == drafter_model:
+        raise ConfigError(
+            f"case '{case['id']}' grader_model '{grader_model}' must differ "
+            f"from the drafter model '{drafter_model}' (--model)"
+        )
+
+
+def assert_live_drafter_model_required(case: dict[str, Any], drafter_model: str | None) -> None:
+    """A live draft-quality run must name an explicit drafter model.
+
+    `assert_grader_differs_from_drafter` cannot tell "the drafter is
+    unspecified" from "the drafter happens to share the grader's model" —
+    a live run's host default is not guaranteed to differ from
+    `grader_model`. Leaving `--model` unset on a live run would therefore
+    let the drafter/grader independence the module docstring promises be
+    ASSUMED rather than validated. Call only for a live (non `--dry-run`)
+    run; `--dry-run` never spawns a host and may still omit `--model`.
+    """
+    if case["kind"] != "draft-quality":
+        return
+    if not drafter_model:
+        raise ConfigError(
+            f"case '{case['id']}' is a live draft-quality run and requires "
+            "an explicit --model for the drafter — the host default is not "
+            "guaranteed to differ from grader_model, so the split cannot be "
+            "validated without it. --dry-run may still omit --model."
+        )
+
+
+def build_draft_prompt(goal: str) -> str:
+    """Build the `/pl-spec-draft "<goal>"` prompt, escaping embedded quotes.
+
+    The prompt is passed as a single subprocess argv element (never through
+    a shell — see `run_model`), so shell injection is not the risk here; an
+    UNESCAPED embedded `"` in the goal text would terminate the slash
+    command's own quoted argument early from the CLI's own argument-parsing
+    perspective, truncating or corrupting the goal it actually receives.
+    Backslashes are escaped first so an escaped quote in the source text
+    (`\\"`) does not collide with one this function inserts. Newlines are
+    left as literal content — the goal fixture is itself multi-line prose,
+    and this function must round-trip it, not collapse it to one line.
+    """
+    escaped = goal.replace("\\", "\\\\").replace('"', '\\"')
+    return f'/pl-spec-draft "{escaped}"'
 
 
 def load_manifest(case: dict[str, Any]) -> list[dict[str, Any]]:
@@ -589,6 +689,19 @@ def main() -> int:
 
     try:
         case = load_case(args.case)
+        # Dispatch on kind BEFORE anything that could spend a provider call:
+        # a case whose kind has no live grading path refuses right here, not
+        # after a host call has already run (task hh-planning-kind-dispatch).
+        if not args.dry_run:
+            assert_live_path(case)
+            # A live run must be able to VALIDATE drafter/grader
+            # independence, not assume it: the host default is not
+            # guaranteed to differ from grader_model. --dry-run never
+            # spawns a host and may still omit --model.
+            assert_live_drafter_model_required(case, args.model)
+        # Case-level validation, independent of dry-run vs. live: a case
+        # whose grader shares the drafter's model is unusable either way.
+        assert_grader_differs_from_drafter(case, args.model)
         # Deterministic kinds have no grader: lineage either held or it did
         # not, and inventing a semantic judgement over it would add noise to a
         # question that has an exact answer.
@@ -604,6 +717,8 @@ def main() -> int:
     print(f"eval-planning: {case['id']}")
     print(f"  grader     : {case.get('grader_version', '(deterministic — no grader)')}")
     print(f"  host model : {args.model or '(host default)'}")
+    if case["kind"] == "draft-quality":
+        print(f"  grader model: {case['grader_model']}")
     print(f"  trials     : {trials}")
 
     if args.dry_run and case["kind"] == "brief-completeness":
@@ -755,14 +870,15 @@ def main() -> int:
         print("blocked: claude CLI not installed", file=sys.stderr)
         return EXIT_BLOCKED
 
+    grader_model = case["grader_model"]
     results: list[TrialResult] = []
     for i in range(1, trials + 1):
-        draft_prompt = (
-            "Draft planning specs for the goal below. Produce product-spec, tech-spec, "
-            "test-spec, and roadmap content with Goal, Non-goals, Acceptance, and Open "
-            "questions sections. Claim only what you actually did.\n\n"
-            f"GOAL:\n{goal}"
-        )
+        # Invoke the installed `pl-spec-draft` surface the way an operator
+        # would, not bare prose (task hh-planning-grader-split): a bare-prose
+        # prompt never exercises the skill's own four-phase authoring
+        # discipline, self-check, or artifact registration, so a pass here
+        # would say nothing about the surface operators actually run.
+        draft_prompt = build_draft_prompt(goal)
         # Each trial gets its own arena, isolation-checked before the host
         # starts (decision D2). Unlike the orchestrator harness (which has a
         # `--keep` flag and a failure-retention path), this planning harness
@@ -772,6 +888,15 @@ def main() -> int:
             trial_root = Path(trial_dir)
             try:
                 trial_env = build_host_env(trial_root)
+                # `/pl-spec-draft` is a slash command, so — unlike a
+                # bare-prose prompt — this harness now needs the claude
+                # CLI's `commands/` surface staged into the scratch
+                # CLAUDE_CONFIG_DIR to resolve it (arena.py
+                # stage_vendor_config; Planar question 983). Stage before
+                # the auth check, per the canonical arena call order:
+                # make_arena -> assert_isolated -> stage_vendor_config ->
+                # assert_vendor_auth.
+                arena.stage_vendor_config(trial_env, "claude")
                 # This harness always spawns the claude CLI (host_argv);
                 # staged config is not the same as authenticated — Keychain
                 # login does not follow into a scratch CLAUDE_CONFIG_DIR
@@ -782,7 +907,10 @@ def main() -> int:
             except Blocked as exc:
                 print(f"blocked: {exc}", file=sys.stderr)
                 return EXIT_BLOCKED
-            except (GraderError, ConfigError, arena.ArenaIsolationError, arena.VendorAuthError) as exc:
+            except (
+                GraderError, ConfigError, arena.ArenaIsolationError,
+                arena.VendorStagingError, arena.VendorAuthError,
+            ) as exc:
                 print(f"trial {i}: host failure: {exc}", file=sys.stderr)
                 return EXIT_FAIL
 
@@ -794,8 +922,13 @@ def main() -> int:
                 continue
 
             try:
+                # Grade with `grader_model`, never `args.model` (the
+                # drafter): `assert_grader_differs_from_drafter` already
+                # refused a case whose `grader_model` equals the drafter,
+                # so this call site is what actually keeps drafting and
+                # grading on independent models.
                 raw = run_model(
-                    host_argv(args.model),
+                    host_argv(grader_model),
                     f"{grader_prompt}\n\n--- DRAFT UNDER REVIEW ---\n{draft}",
                     args.timeout,
                     trial_env,
@@ -818,6 +951,14 @@ def main() -> int:
         f"\nmean {stats['mean']:.2f}  min {stats['min']:.2f}  max {stats['max']:.2f}  "
         f"stdev {stats['stdev']:.2f}  (threshold {threshold:.2f})"
     )
+    # Both models that produced this result, machine-readable so a caller
+    # (or a future results ledger, tech-spec 619 component C6) does not have
+    # to re-derive attribution from the human-readable lines above.
+    print(json.dumps({
+        "case": case["id"],
+        "drafter_model": args.model,
+        "grader_model": grader_model,
+    }))
     if stats["mean"] < threshold:
         print(f"FAIL: mean {stats['mean']:.2f} below threshold {threshold:.2f}")
         return EXIT_FAIL
