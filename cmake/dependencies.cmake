@@ -562,3 +562,62 @@ CPMAddPackage(
     "KAHYPAR_PYTHON OFF"
     "KAHYPAR_BUILD_DEBIAN_PACKAGE OFF"
 )
+
+# --- First-party dependencies: external/, never committed -------------------
+#
+# The vendoring rule above (pinned archive, committed under vendor/) exists to
+# protect against THIRD-PARTY upstreams moving or vanishing. It does not apply
+# to repositories this project's owner controls (decision recorded on plan
+# 1033, amending tech-spec D8): they are still pinned by URL + URL_HASH
+# SHA-256, so a build is still exact, but their cache lives under the
+# gitignored `external/` directory and is NEVER committed. Only the hash is
+# the contract; the bytes are re-fetched once per checkout.
+#
+# Mechanism: CPM derives its cache directory from CPM_SOURCE_CACHE at call
+# time, so a NORMAL variable set around a first-party CPMAddPackage call
+# shadows the vendor/ cache entry for that call only. A populated
+# external/<name>/<CUSTOM_CACHE_KEY> is reused without any download, exactly
+# as vendor/ is; an empty one is fetched and hash-checked.
+set(PLANAR_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE PATH
+  "Where CPM caches first-party (owner-controlled) dependency sources; gitignored, never committed")
+
+# --- Centurion (plan 1033 M1, tasks 6495/6496; tech-spec D8, decision 1041) --
+#
+# Centurion becomes Planar's workflow engine (decision 1007); `planar-execute`
+# links `centurion::client` and NOTHING else of it (tech-spec D1, guarded by
+# cmake/architecture.cmake). Pinned to Centurion's first pre-release tag,
+# v0.1.0-alpha.1 (commit 174257e7), cut for this milestone.
+#
+# First-party, so external/, not vendor/: the archive is Centurion's WHOLE
+# source tree including its own committed vendor/ (gRPC 1.82.1, BoringSSL,
+# protobuf 35.1, abseil, ...), ~590 MB expanded (question 984). Centurion
+# vendors gRPC deliberately (its ADR-0032 rejects a system gRPC so generated
+# wire code and runtime share one pinned protobuf).
+#
+# The repository is PRIVATE, so the first configure of a checkout needs a
+# token (the pinned URL 404s anonymously), exactly as Centurion itself does
+# for `etc`:
+#   GITHUB_TOKEN=$(gh auth token) cmake --preset debug
+# Later configures read external/centurion/v0.1.0-alpha.1 and need none.
+# CUSTOM_CACHE_KEY pins that path independently of the auth header (CPM
+# otherwise hashes every download argument into the cache key).
+#
+# DOWNLOAD_ONLY: cmake/centurion.cmake adds the tree as a subdirectory and
+# owns its options, the dependency sharing, and the redirect that points
+# Centurion at its own vendor/ tree.
+if(DEFINED ENV{GITHUB_TOKEN})
+  set(_planar_centurion_auth HTTP_HEADER "Authorization: Bearer $ENV{GITHUB_TOKEN}")
+else()
+  set(_planar_centurion_auth "")
+endif()
+set(CPM_SOURCE_CACHE "${PLANAR_EXTERNAL_DIR}") # normal variable: this call only
+CPMAddPackage(
+  NAME centurion
+  VERSION 0.1.0-alpha.1
+  URL https://codeload.github.com/rdrsss/centurion/tar.gz/refs/tags/v0.1.0-alpha.1
+  URL_HASH SHA256=bd0a09f4309ef303b5385b394f4f0568b5ae0c3a33578e860dd9f28b93018f45
+  CUSTOM_CACHE_KEY v0.1.0-alpha.1
+  ${_planar_centurion_auth}
+  DOWNLOAD_ONLY YES)
+unset(CPM_SOURCE_CACHE) # the vendor/ cache entry is visible again
+unset(_planar_centurion_auth)
