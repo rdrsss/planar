@@ -6864,7 +6864,7 @@ Lists runs from one or both source tables, newest first. All filters combine wit
 | `--arm <a>` | Source table filter: `wf` (workflow_runs / context-plane runs written by `planar-agent run start`), `op` (runs table / op-arm runs written by `planar run start`), `all` (both). | `all` |
 | `--json` | Emit a single JSON object `{generated_at, runs:[RunRow]}`. | false (human text) |
 
-Each `RunRow` in the JSON output carries a `source` field (`"wf"` or `"op"`) indicating which table the row came from. For `wf`-source rows, `planar-watch run show <id>` provides context_records. For `op`-source rows, `planar run show <run_identifier>` provides journal events.
+Each `RunRow` in the JSON output carries a `source` field (`"wf"` or `"op"`) indicating which table the row came from, followed by `engine` (plan 1033 task 6493): `"embedded"` or `"centurion"` for a `wf` row (a pre-migration-00038 row reads `"embedded"`), `null` for an `op` row, whose table has no engine. `plan_id` is `null` for a workflow run bound to no plan (allowed since migration 00038) — never `0`. The text line gains `engine:<e>` after `source:` (`-` for an op row) and prints `plan:-` for a plan-less run. For `wf`-source rows, `planar-watch run show <id>` provides context_records. For `op`-source rows, `planar run show <run_identifier>` provides journal events.
 
 **`run show <id> [--json]`**
 
@@ -6874,9 +6874,11 @@ Shows the full `workflow_runs` row for `<id>` (wf-arm only) plus all `context_re
 |------|-------------|---------|
 | `--json` | Emit `{run: RunRow, context_records: [ContextRecord]}`. | false (human text) |
 
-Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
+Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, `engine:<e>`, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
 
-**Implementation:** `src/cmd/planar-watch/handlers/run.zig` (plan 585, task 3906; op-arm inclusion added task 4349).
+**Implementation:** `src/cmd/planar-watch/handlers/run.cpp` (plan 585, task 3906; op-arm inclusion added task 4349; engine and nullable plan task 6493).
+
+**Engine supervision in `claims` and `feed` (plan 1033 task 6493).** Every claim object `claims --json` and `feed --json` emit carries `"supervisor":"caller"|"engine"` and `"attempt_id"` immediately after `stage` — a claim never handed to the engine reads `"supervisor":"caller","attempt_id":null`, the keys are never omitted. `ps`, `log` and `planar-agent`'s payloads keep the lean claim object. In text, an engine claim's `claims` line gains `supervisor:engine  attempt:<id>` before `token:` (a caller claim's line is unchanged), an expired engine claim reads `status:lapsed (engine)`, and a `feed` line for one of the supervision action kinds (`claim_associate`, `claim_terminal`, `supervisor_override`, `run_submitted`, `run_reconciled`) appends the kind.
 
 ### `planar-watch sync-events` — per-row view over sync_events (plan 638)
 

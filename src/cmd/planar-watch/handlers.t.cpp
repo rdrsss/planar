@@ -1104,3 +1104,74 @@ TEST_CASE("planar-watch claims shows a lapsed engine-supervised claim as lapsed 
   CHECK(got.out.contains("status:active  vendor:othervendor"));
   CHECK_FALSE(got.out.contains("status:lapsed (engine)  vendor:othervendor"));
 }
+
+TEST_CASE("planar-watch claims surfaces supervisor and attempt_id, never omitting the keys", "[cmd][watch][handlers][6493]") {
+  auto const fx = make_fixture("supervision_claims");
+  seed_database(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "update agent_work_claims set supervisor = 'engine', attempt_id = 'A1' where vendor = 'seedvendor'");
+  }
+  auto const json = dispatch(fx, {"claims", "--json"});
+  REQUIRE(json.code == 0);
+  // After `stage`, on every claim: the engine claim names its attempt, and
+  // a caller claim says so explicitly rather than dropping the keys.
+  CHECK(json.out.contains(R"("stage":null,"supervisor":"engine","attempt_id":"A1"})"));
+  CHECK(json.out.contains(R"("stage":null,"supervisor":"caller","attempt_id":null})"));
+
+  auto const text = dispatch(fx, {"claims"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.contains("vendor:seedvendor  supervisor:engine  attempt:A1  token:"));
+  // A caller claim's line is exactly the pre-plan-1033 shape.
+  CHECK(text.out.contains("vendor:othervendor  token:"));
+  CHECK_FALSE(text.out.contains("vendor:othervendor  supervisor:"));
+}
+
+TEST_CASE("planar-watch run list/show surface engine, and a plan-less run reads null, not plan 0",
+          "[cmd][watch][handlers][6493]") {
+  auto const fx = make_fixture("run_engine");
+  seed_database(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    // Run 1 is shaped like a pre-00038 row (engine defaulted); run 2 is a
+    // plan-less Centurion run, which only migration 00038 allows.
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at) "
+                "values (1, 'wf', 'r1', 11, '/r', '2000-01-01T00:00:01.000Z')");
+    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, engine) "
+                "values (null, 'wf', 'r2', 12, '/r', '2000-01-01T00:00:02.000Z', 'centurion')");
+  }
+  auto const shown = dispatch(fx, {"run", "show", "1"});
+  REQUIRE(shown.code == 0);
+  CHECK(shown.out.contains("\n  engine:embedded\n"));
+
+  auto const json = dispatch(fx, {"run", "list", "--arm", "wf", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.contains(R"({"id":2,"plan_id":null,)"));
+  CHECK(json.out.contains(R"("source":"wf","engine":"centurion"})"));
+  CHECK(json.out.contains(R"({"id":1,"plan_id":1,)"));
+  CHECK(json.out.contains(R"("source":"wf","engine":"embedded"})"));
+
+  auto const text = dispatch(fx, {"run", "list", "--arm", "wf"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.contains("  run:2  plan:-  status:running  source:wf  engine:centurion  "));
+  CHECK(text.out.contains("  run:1  plan:1  status:running  source:wf  engine:embedded  "));
+}
+
+TEST_CASE("planar-watch feed names a supervision action kind on its text line", "[cmd][watch][handlers][6493]") {
+  auto const fx = make_fixture("feed_supervision");
+  seed_database(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into agent_actions (session_id, claim_id, action_kind, vendor, started_at, ended_at, outcome) "
+                "values (1, 1, 'run_submitted', 'seedvendor', '2999-01-01T00:00:00.000Z', null, null)");
+  }
+  auto const text = dispatch(fx, {"feed"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.contains("  2999-01-01T00:00:00.000Z  action_started  run_submitted\n"));
+  auto const json = dispatch(fx, {"feed", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.contains(R"("action_kind":"run_submitted")"));
+}

@@ -132,6 +132,10 @@ auto append_claim_view(std::string& out, const aa::claim& value, const claim_vie
   field_int(out, "run_id", value.run_id);
   out.push_back(',');
   field_text(out, "stage", value.stage);
+  if (extras.supervision.has_value()) {
+    out.append(extras.supervision->engine ? ",\"supervisor\":\"engine\"," : ",\"supervisor\":\"caller\",");
+    field_text(out, "attempt_id", extras.supervision->attempt_id);
+  }
   if (extras.include_latest_action) {
     out.append(",\"latest_action\":");
     if (extras.latest_action.has_value()) {
