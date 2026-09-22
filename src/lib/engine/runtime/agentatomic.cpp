@@ -23,6 +23,24 @@ constexpr std::string_view k_now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 /// One definition on purpose: `peek` documents itself as "the same query
 /// as pull, no writes", and that claim is only true if there is literally
 /// one query. `order by t.priority asc` — lower integers first.
+///
+/// **Dependency exclusion (task 6841 / decision D6, closes task 5535).** A
+/// candidate is also excluded when it carries an outbound `depends-on`
+/// edge (`entity_links`, `task -> task`) to a task whose blocker is not
+/// yet terminal. This is the DEPENDENCY EXCLUSION ONLY — D6, verbatim:
+/// "Rather than adding a `--respect-deps` flag, pull and peek exclude
+/// tasks with an open depends-on blocker. They do NOT adopt `plan next`'s
+/// packet-readiness gate." A `depends-on` edge can exist on a `todo` task
+/// without the task itself being `blocked` (`task block --on` is not the
+/// only writer of that edge — the generic `link` verb is another), so the
+/// exclusion cannot ride on `t.status` alone.
+///
+/// "Terminal" here is deliberately the SAME set `clear_unblocked_dependents`
+/// (`planar.engine.planning.task`) already uses to decide a dependent is
+/// unblocked: `done` OR `cancelled` (decision 1122). Picking a narrower
+/// "only `done` counts" reading would put `pull`/`peek` out of step with
+/// the roll-up that already treats a cancelled blocker as satisfied —
+/// pinned by `agentatomic.t.cpp`'s selector unit tests.
 /// @param conn The connection.
 /// @param plan_id The plan to select within.
 /// @return The next eligible task id, unset when none, or `query_failed`.
@@ -37,6 +55,13 @@ auto pick_next_eligible(db::connection& conn, std::int64_t plan_id)
                                        "      and c.entity_id = t.id\n"
                                        "      and c.status = 'active'\n"
                                        "      and c.lease_expires_at >= {}\n"
+                                       "  )\n"
+                                       "  and not exists (\n"
+                                       "    select 1 from entity_links el\n"
+                                       "    join tasks blocker on blocker.id = el.to_id\n"
+                                       "    where el.from_kind = 'task' and el.from_id = t.id\n"
+                                       "      and el.to_kind = 'task' and el.relationship = 'depends-on'\n"
+                                       "      and blocker.status not in ('done', 'cancelled')\n"
                                        "  )\n"
                                        "order by t.priority asc, t.id asc\n"
                                        "limit 1",
