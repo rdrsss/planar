@@ -416,6 +416,104 @@ TEST_CASE("peek runs pull's selector and writes nothing at all", "[agentatomic]"
 }
 
 // ===========================================================================
+// Dependency exclusion (task 6841 / decision D6, closes task 5535)
+// ===========================================================================
+
+TEST_CASE("peek_next excludes a task with an outbound depends-on edge to a non-terminal blocker",
+         "[agentatomic][deps]") {
+  // A `depends-on` edge can exist on a `todo` task WITHOUT the task itself
+  // being `blocked` — `task block --on` is not the only writer of that
+  // edge (the generic `link` verb is another). So a selector that only
+  // ever filtered on `t.status = 'todo'` could still hand out a task whose
+  // dependency is wide open. This is the direct regression test for task
+  // 5535.
+  //
+  // One shared fixture, five blocker statuses. `blocker` status decides
+  // whether `dependent` is eligible; when it is NOT, `blocker` itself
+  // (still `todo` in the `todo`/`doing`/`blocked` cases only where
+  // relevant) is the only remaining candidate, so the two branches below
+  // assert on WHICH task comes back, not just whether one does.
+  struct expectation {
+    std::string_view blocker_status;
+    bool             dependent_eligible;
+  };
+  for (auto const& exp : std::vector<expectation>{
+           {"todo", false},
+           {"doing", false},
+           {"blocked", false},
+           {"done", true},
+           {"cancelled", true},
+       }) {
+    INFO("blocker status: " << exp.blocker_status);
+    scratch_db_path scratch;
+    auto            conn = open_migrated(scratch);
+    auto const      fx   = seed(conn, 2);
+
+    auto const blocker   = task_id_at(conn, 0);
+    auto const dependent = task_id_at(conn, 1);
+    exec(conn, std::format("update tasks set status = '{}' where id = {}", exp.blocker_status, blocker));
+    exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                           "values ('task', {}, 'task', {}, 'depends-on')",
+                           dependent, blocker));
+
+    auto const peeked = atomic::peek_next(conn, fx.plan_id);
+    REQUIRE(peeked.has_value());
+
+    if (exp.dependent_eligible) {
+      // The blocker itself is `done`/`cancelled`, so it is no longer a
+      // `todo` candidate at all — the dependent is the only one left.
+      REQUIRE_FALSE(peeked->no_work);
+      CHECK(peeked->task_id == dependent);
+    } else if (exp.blocker_status == "todo") {
+      // The dependent is excluded, but the blocker is itself still an
+      // ordinary eligible `todo` task with no dependency of its own.
+      REQUIRE_FALSE(peeked->no_work);
+      CHECK(peeked->task_id == blocker);
+    } else {
+      // Blocker is `doing`/`blocked` (not `todo`, so not a candidate
+      // either) and the dependent is excluded: nothing is eligible.
+      CHECK(peeked->no_work);
+    }
+  }
+}
+
+TEST_CASE("peek_next and pull_next agree when a depends-on edge excludes the lower-priority candidate",
+         "[agentatomic][deps]") {
+  // Proves two things at once: (1) the exclusion is not merely an
+  // artifact of priority ordering — `dependent` is given the LOWEST
+  // priority, so a selector ignoring the dependency would wrongly pick it
+  // first — and (2) `peek` really is "the same query as pull, no writes"
+  // for this new clause too, not only for the pre-existing ones.
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 3);
+  recording_policy policy;
+
+  auto const blocker   = task_id_at(conn, 0);
+  auto const dependent = task_id_at(conn, 1);
+  auto const other     = task_id_at(conn, 2);
+  exec(conn, std::format("update tasks set priority = 10 where id = {}", dependent)); // lowest: would sort first
+  exec(conn, std::format("update tasks set priority = 20 where id = {}", blocker));
+  exec(conn, std::format("update tasks set priority = 30 where id = {}", other));
+  exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                         "values ('task', {}, 'task', {}, 'depends-on')",
+                         dependent, blocker));
+
+  auto const peeked = atomic::peek_next(conn, fx.plan_id);
+  REQUIRE(peeked.has_value());
+  REQUIRE_FALSE(peeked->no_work);
+  CHECK(peeked->task_id == blocker);
+
+  auto const pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+  REQUIRE_FALSE(pulled->no_work);
+  CHECK(pulled->task_id == blocker);
+  CHECK(pulled->task_id == peeked->task_id);
+  (void)other;
+}
+
+// ===========================================================================
 // Terminal verbs — the atomicity evidence
 // ===========================================================================
 
