@@ -1,0 +1,2 @@
+exit: 1
+planar-execute: PLANAR_EXECUTE_ENGINE must be embedded or centurion, got: zig

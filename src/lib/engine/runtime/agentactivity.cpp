@@ -482,8 +482,31 @@ auto to_text(action_kind value) -> std::string_view {
     return "assistant_message";
   case action_kind::other:
     return "other";
+  case action_kind::claim_associate:
+    return "claim_associate";
+  case action_kind::claim_terminal:
+    return "claim_terminal";
+  case action_kind::supervisor_override:
+    return "supervisor_override";
+  case action_kind::run_submitted:
+    return "run_submitted";
+  case action_kind::run_reconciled:
+    return "run_reconciled";
   }
   return "other";
+}
+
+auto is_supervision_kind(action_kind kind) -> bool {
+  switch (kind) {
+  case action_kind::claim_associate:
+  case action_kind::claim_terminal:
+  case action_kind::supervisor_override:
+  case action_kind::run_submitted:
+  case action_kind::run_reconciled:
+    return true;
+  default:
+    return false;
+  }
 }
 
 auto to_text(action_entity_kind value) -> std::string_view {
@@ -597,7 +620,7 @@ auto failure_category_from_text(std::string_view text) -> std::optional<failure_
 }
 
 auto action_kind_from_text(std::string_view text) -> std::optional<action_kind> {
-  static constexpr std::array<std::pair<std::string_view, action_kind>, 17> k_table{{
+  static constexpr std::array<std::pair<std::string_view, action_kind>, 22> k_table{{
       {"planner", action_kind::planner},
       {"ingestor", action_kind::ingestor},
       {"coder", action_kind::coder},
@@ -615,6 +638,11 @@ auto action_kind_from_text(std::string_view text) -> std::optional<action_kind> 
       {"user_message", action_kind::user_message},
       {"assistant_message", action_kind::assistant_message},
       {"other", action_kind::other},
+      {"claim_associate", action_kind::claim_associate},
+      {"claim_terminal", action_kind::claim_terminal},
+      {"supervisor_override", action_kind::supervisor_override},
+      {"run_submitted", action_kind::run_submitted},
+      {"run_reconciled", action_kind::run_reconciled},
   }};
   for (auto const& [name, value] : k_table) {
     if (name == text) {
@@ -695,6 +723,10 @@ auto error_name(agent_error err) -> std::string_view {
     return "UnknownStatus";
   case agent_error::query_failed:
     return "QueryFailed";
+  case agent_error::supervisor_mismatch:
+    return "SupervisorMismatch";
+  case agent_error::attempt_mismatch:
+    return "AttemptMismatch";
   }
   return "QueryFailed";
 }
@@ -1043,6 +1075,41 @@ auto associate_claim_run(db::connection& conn, std::string_view claim_token, std
 }
 
 // =========================================================================
+// Engine supervision
+// =========================================================================
+
+auto get_supervision(db::connection& conn, std::string_view claim_token) -> std::expected<supervision, agent_error> {
+  // NULL is folded in SQL (the statement API has no NULL probe): the third
+  // column says whether attempt_id is present.
+  auto stmt = conn.prepare("select supervisor = 'engine', ifnull(attempt_id, ''), attempt_id is not null "
+                           "from agent_work_claims where claim_token = ?");
+  if (!stmt || !stmt->bind_text(1, claim_token)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  auto const stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  if (*stepped == db::step_result::done) {
+    return std::unexpected(agent_error::claim_not_found);
+  }
+  supervision out{.engine = stmt->column_int64(0) != 0};
+  if (stmt->column_int64(2) != 0) {
+    out.attempt_id = stmt->column_text(1);
+  }
+  return out;
+}
+
+auto set_engine_supervision(db::connection& conn, std::int64_t claim_id, std::string_view attempt_id)
+    -> std::expected<void, agent_error> {
+  auto stmt = conn.prepare("update agent_work_claims set supervisor = 'engine', attempt_id = ? where id = ?");
+  if (!stmt || !stmt->bind_text(1, attempt_id) || !stmt->bind_int64(2, claim_id) || !stmt->step()) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  return {};
+}
+
+// =========================================================================
 // Actions
 // =========================================================================
 
@@ -1294,7 +1361,28 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     std::erase_if(candidates, [&](const claim& c) { return !claim_belongs_to_plan(conn, c, *policy.plan_id); });
   }
 
-  reconcile_result result;
+  // Engine-supervised claims are the engine's to reconcile (plan 1033 D3):
+  // set aside unless the operator overrides. Decided per candidate, so the
+  // UPDATEs below touch exactly the claims left in `candidates`.
+  reconcile_result                        result;
+  std::vector<std::optional<std::string>> override_attempts;
+  {
+    std::vector<claim> kept;
+    for (auto& candidate : candidates) {
+      auto const sup = get_supervision(conn, candidate.claim_token);
+      if (!sup) {
+        return std::unexpected(sup.error());
+      }
+      if (sup->engine && !policy.override_supervisor) {
+        result.skipped_engine.push_back(std::move(candidate));
+        continue;
+      }
+      override_attempts.push_back(sup->engine ? std::optional<std::string>{sup->attempt_id.value_or("")} : std::nullopt);
+      kept.push_back(std::move(candidate));
+    }
+    candidates = std::move(kept);
+  }
+
   if (policy.dry_run) {
     // Writes NOTHING — not the mark-stale, not the task reset, not the
     // orphan sweep. Both counters stay zero even with candidates present.
@@ -1307,9 +1395,10 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     category_text = to_text(*policy.category);
   }
 
-  if (policy.plan_id.has_value()) {
-    // Plan-scoped: one UPDATE per candidate, so claims on other plans are
-    // untouched even though they share the expiry predicate.
+  if (policy.plan_id.has_value() || !result.skipped_engine.empty()) {
+    // Per candidate — plan-scoped, or with engine claims set aside — so the
+    // claims left out (other plans, the engine's) are untouched even though
+    // they share the expiry predicate.
     for (auto const& candidate : candidates) {
       auto stmt = conn.prepare(std::format("update agent_work_claims\n"
                                            "set status = 'stale',\n"
@@ -1377,6 +1466,27 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     result.actions_closed += changes(conn);
   }
 
+  // --- the override's audit row, one per engine claim swept under it.
+  for (std::size_t i = 0; i < candidates.size(); ++i) {
+    if (!override_attempts[i].has_value()) {
+      continue;
+    }
+    auto const id = start_action(conn, start_action_args{
+                                           .session_id = candidates[i].session_id,
+                                           .claim_id   = candidates[i].id,
+                                           .kind       = action_kind::supervisor_override,
+                                           .vendor     = candidates[i].vendor,
+                                       });
+    if (!id) {
+      return std::unexpected(id.error());
+    }
+    auto const summary =
+        std::format("reconcile by operator overriding the engine supervisor (attempt {})", *override_attempts[i]);
+    if (auto const closed = end_action(conn, *id, outcome::ok, std::string_view{summary}); !closed) {
+      return std::unexpected(closed.error());
+    }
+  }
+
   // --- orphaned actions: still open, but their owning session has ended.
   // Closed with the SESSION's `ended_at`, not with now, so the timeline
   // does not claim work continued past the session that was doing it.
@@ -1435,9 +1545,10 @@ auto pid_alive(std::int64_t pid) -> bool {
   return errno != ESRCH;
 }
 
-auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id)
+auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id, bool override_supervisor)
     -> std::expected<reconcile_runs_result, agent_error> {
-  std::string select_sql = "select id, run_identifier, pid, plan_id from workflow_runs where status = 'running'";
+  std::string select_sql =
+      "select id, run_identifier, pid, plan_id, engine = 'centurion' from workflow_runs where status = 'running'";
   if (plan_id.has_value()) {
     select_sql += std::format(" and plan_id = {}", *plan_id);
   }
@@ -1460,7 +1571,12 @@ auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64
                         .run_identifier = stmt->column_text(1),
                         .pid            = stmt->column_int64(2),
                         .plan_id        = opt_int(*stmt, 3)};
-      if (!pid_alive(row.pid)) {
+      if (pid_alive(row.pid)) {
+        continue;
+      }
+      if (stmt->column_int64(4) != 0 && !override_supervisor) {
+        result.skipped_engine.push_back(std::move(row));
+      } else {
         result.candidates.push_back(std::move(row));
       }
     }

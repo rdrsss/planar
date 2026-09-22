@@ -63,6 +63,29 @@ auto add_ttl(CLI::App& app, std::string desc) -> void {
   app.add_option("--ttl")->description(std::move(desc))->default_str("600");
 }
 
+/// @brief The engine-supervision flags (plan 1033 D3/D4, task 6488).
+///
+/// `--as engine --attempt <id>` is how the engine supervisor identifies
+/// itself on a claim it has been handed with `claim-associate --supervisor
+/// engine`. Absent, the verb acts as the caller, exactly as before plan
+/// 1033. `--override-supervisor` (terminal verbs only) is operator recovery:
+/// a caller terminal verb on an engine claim, logged as a
+/// `supervisor_override` action.
+/// @param app The verb.
+/// @param terminal Whether to add `--override-supervisor`.
+auto add_supervision(CLI::App& app, bool terminal) -> void {
+  app.add_option("--as")
+      ->description("Who is acting: caller (default) or engine (the supervisor of an engine-associated claim; needs --attempt)")
+      ->check(CLI::IsMember{std::vector<std::string>{"caller", "engine"}});
+  app.add_option("--attempt")
+      ->description("The Centurion attempt the engine acts for; must match the claim's associated attempt");
+  if (terminal) {
+    cliapp::add_bool_flag(
+        app, "--override-supervisor",
+        "Operator recovery: let the caller terminate an engine-supervised claim (logged as supervisor_override)");
+  }
+}
+
 /// @brief The `heartbeat` verb's `--ttl`, declared WITHOUT a default.
 ///
 /// Deliberately not `add_ttl`. That helper's `default_str("600")` is
@@ -145,6 +168,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_claim(*complete, "Claim token returned by pull/claim");
   complete->add_option("--summary")->description("Free-text completion summary recorded on the action");
   add_no_locality_probe(*complete, "Skip the git locality probe and commit collection");
+  add_supervision(*complete, true);
   add_json(*complete);
 
   CLI::App* fail =
@@ -156,6 +180,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
       ->check(CLI::IsMember{failure_categories()})
       ->default_str("unknown");
   add_no_locality_probe(*fail, "Skip the git locality probe and commit collection");
+  add_supervision(*fail, true);
   add_json(*fail);
 
   CLI::App* release = app->add_subcommand(
@@ -163,6 +188,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_claim(*release, "Claim token returned by pull/claim");
   release->add_option("--reason")->description("Optional reason for releasing");
   add_no_locality_probe(*release, "Skip the git locality probe and commit collection");
+  add_supervision(*release, true);
   add_json(*release);
 
   CLI::App* block = app->add_subcommand("block", "Atomically park the task on an external blocker.");
@@ -173,6 +199,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
       ->check(cliapp::zig_int_validator());
   block->add_option("--reason")->description("Free-text reason recorded on the claim");
   add_no_locality_probe(*block, "Skip the git locality probe and commit collection");
+  add_supervision(*block, true);
   add_json(*block);
 
   // --- claim --------------------------------------------------------------
@@ -199,18 +226,21 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   add_claim(*heartbeat, "Claim token to refresh");
   add_heartbeat_ttl(*heartbeat);
   heartbeat->add_option("--status")->description("Free-text status string recorded on the heartbeat action row's summary column");
+  add_supervision(*heartbeat, false);
   add_json(*heartbeat);
 
   // --- claim-associate ----------------------------------------------------
   CLI::App* claim_associate =
-      app->add_subcommand("claim-associate", "Associate a pre-acquired active claim with a workflow run (and optional stage). "
-                                             "Used by an external workflow harness at dispatch time.");
+      app->add_subcommand("claim-associate", "Associate a pre-acquired active claim with a workflow run (and optional stage), "
+                                             "and/or hand it to the engine supervisor. At least one of --run or --supervisor.");
   add_claim(*claim_associate, "Claim token to associate");
-  claim_associate->add_option("--run")
-      ->description("workflow_runs.id to stamp on the claim")
-      ->required()
-      ->check(cliapp::zig_int_validator());
+  claim_associate->add_option("--run")->description("workflow_runs.id to stamp on the claim")->check(cliapp::zig_int_validator());
   claim_associate->add_option("--stage")->description("Stage name to record (e.g. code, review); omit for NULL");
+  claim_associate->add_option("--supervisor")
+      ->description("engine: hand the claim to the engine supervisor (one-way; needs --attempt). caller: assert it is still "
+                    "caller-supervised")
+      ->check(CLI::IsMember{std::vector<std::string>{"caller", "engine"}});
+  claim_associate->add_option("--attempt")->description("The Centurion attempt supervising the claim (with --supervisor engine)");
   add_json(*claim_associate);
 
   // --- action start / end -------------------------------------------------
@@ -268,6 +298,9 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   reconcile->add_option("--category")
       ->description("Optional closed failure category applied to claims made stale")
       ->check(CLI::IsMember{failure_categories()});
+  cliapp::add_bool_flag(*reconcile, "--override-supervisor",
+                        "Also reconcile engine-supervised claims and centurion runs (skipped by default; logged as "
+                        "supervisor_override)");
   add_json(*reconcile);
 
   CLI::App* abort_cmd =
@@ -280,6 +313,8 @@ auto root_app() -> std::unique_ptr<CLI::App> {
       ->description("Optional closed failure category for the recovered claim")
       ->check(CLI::IsMember{failure_categories()});
   add_vendor(*abort_cmd, "Vendor tag for the aborting session", "Vendor session id for the aborting session");
+  cliapp::add_bool_flag(*abort_cmd, "--override-supervisor",
+                        "Abort an engine-supervised claim (refused otherwise; logged as supervisor_override)");
   add_json(*abort_cmd);
 
   app->add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");

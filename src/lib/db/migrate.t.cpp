@@ -119,7 +119,7 @@ TEST_CASE("apply_all migrates a fresh database to head", "[db][migrate]") {
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1)); // count == max version: no gaps
-  REQUIRE(stmt->column_int64(1) == 37);
+  REQUIRE(stmt->column_int64(1) == 38);
 }
 
 TEST_CASE("the embedded migration chain's versions are strictly monotonic", "[db][migrations]") {
@@ -304,7 +304,7 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 37);
+  REQUIRE(stmt->column_int64(1) == 38);
 }
 
 TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-for-row", "[db][migrate][parity]") {
@@ -368,8 +368,9 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
       {35, "annotations: durable bulk receipt affected count"},
       {36, "cli_invocations: durable retryable busy category"},
       {37, "drop the four dormant slug columns added by 00011"},
+      {38, "execution supervision: claim supervisor/attempt, run engine, nullable run plan, supervision action kinds"},
   };
-  REQUIRE(k_expected.size() == 37);
+  REQUIRE(k_expected.size() == 38);
 
   scratch_db_path cpp_scratch;
   auto            cpp_conn = planar::db::connection::open(cpp_scratch.path_.string());
@@ -392,7 +393,7 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
     REQUIRE(cpp_stmt->column_text(1) == k_expected[rows].second);
     ++rows;
   }
-  REQUIRE(rows == 37);
+  REQUIRE(rows == 38);
 }
 
 TEST_CASE("migration 34 preserves legacy file annotations and guards entity annotation rollback",
@@ -402,7 +403,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 37);
+  REQUIRE(chain.size() == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 33)));
   REQUIRE(conn->execute(
       "insert into annotations (scope_kind, anchor_path, anchor_text, title, body, status, vendor, created_at, updated_at) "
@@ -432,6 +433,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(legacy_tag->step().value() == planar::db::step_result::done);
 
   // Peel from head so the chain stays contiguous for the re-apply below.
+  REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
   REQUIRE(conn->execute(chain[35].down_sql_));
   REQUIRE(conn->execute(chain[34].down_sql_));
@@ -467,6 +469,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
   REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
                         "values ('global', 'entity', null, 'plan', 1, 'durable note', 1);"));
+  REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
   REQUIRE(conn->execute(chain[35].down_sql_));
   REQUIRE(conn->execute(chain[34].down_sql_));
@@ -480,7 +483,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   auto version = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(version.has_value());
   REQUIRE(version->step().value() == planar::db::step_result::row);
-  // Migrations 37, 36 and 35 have rolled back, while migration 34 correctly refuses to
+  // Migrations 38, 37, 36 and 35 have rolled back, while migration 34 correctly refuses to
   // discard entity-anchored annotations. Its migration marker must remain.
   CHECK(version->column_int64(0) == 34);
   REQUIRE(version->step().value() == planar::db::step_result::done);
@@ -497,7 +500,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 37);
+  REQUIRE(chain.size() == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 35)));
   REQUIRE(
       conn->execute("insert into cli_invocations "
@@ -524,7 +527,130 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   auto marker = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(marker.has_value());
   REQUIRE(marker->step().value() == planar::db::step_result::row);
-  CHECK(marker->column_int64(0) == 37);
+  CHECK(marker->column_int64(0) == 38);
+}
+
+namespace {
+
+/// @brief Run a single-value query and return it as text. Callers fold any
+/// NULL into text in the SQL itself (`ifnull`), so the value is never NULL.
+/// @param conn The connection.
+/// @param sql A query yielding exactly one row and one column.
+/// @return The value.
+auto scalar(planar::db::connection& conn, std::string_view sql) -> std::string {
+  auto stmt = conn.prepare(sql);
+  INFO(sql);
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  auto value = stmt->column_text(0);
+  REQUIRE(stmt->step().value() == planar::db::step_result::done);
+  return value;
+}
+
+} // namespace
+
+TEST_CASE("migration 38 adds engine supervision without disturbing any row that references the rebuilt-in-place tables",
+          "[db][migrate][6487]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 38);
+  REQUIRE(chain[37].version_ == 38);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
+
+  // Rows in every table that REFERENCES workflow_runs or agent_actions. The
+  // obvious table-rebuild for this migration was measured to CASCADE-delete
+  // the context_records rows and NULL the claims' run_id (see the up file);
+  // these rows are what would have caught it.
+  for (auto const* sql : {
+           "insert into plans (scope_kind, title, slug, status) values ('global', 'p', 'p', 'active')",
+           "insert into sessions (vendor, started_at) values ('claude', '2000-01-01T00:00:00.000Z')",
+           "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) "
+           "values (1, 'w', 'r1', 1, '/r'), (1, 'w', 'r2', 2, '/r')",
+           "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, vendor, lease_expires_at, run_id) "
+           "values ('t1', 1, 'task', 1, 'claude', 'x', 1), ('t2', 1, 'task', 2, 'claude', 'x', 2)",
+           "insert into context_records (run_id, stage, session_id, claim_id, kind, body) "
+           "values (1, 's', 1, 1, 'finding', 'b'), (2, 's', 1, 2, 'finding', 'b')",
+           "insert into agent_actions (session_id, claim_id, action_kind, vendor) values (1, 1, 'coder', 'claude')",
+           "insert into agent_actions (session_id, parent_action_id, claim_id, action_kind, vendor) "
+           "values (1, 1, 2, 'reviewer', 'claude')",
+       }) {
+    INFO(sql);
+    REQUIRE(conn->execute(sql));
+  }
+
+  REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "38");
+
+  // Nothing referencing the two edited tables moved.
+  CHECK(scalar(*conn, "select count(*) from context_records") == "2");
+  CHECK(scalar(*conn, "select group_concat(run_id) from (select run_id from agent_work_claims order by id)") == "1,2");
+  CHECK(scalar(*conn, "select group_concat(ifnull(parent_action_id, '-')) from (select * from agent_actions order by id)") ==
+        "-,1");
+  CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
+  CHECK(scalar(*conn, "pragma integrity_check") == "ok");
+  // ...and every child still REFERENCES the live table by its own name.
+  CHECK(scalar(*conn, "select \"table\" from pragma_foreign_key_list('agent_work_claims') where \"from\" = 'run_id'") ==
+        "workflow_runs");
+  CHECK(scalar(*conn, "select \"table\" from pragma_foreign_key_list('context_records') where \"from\" = 'run_id'") ==
+        "workflow_runs");
+  CHECK(scalar(*conn, "select \"table\" from pragma_foreign_key_list('agent_actions') where \"from\" = 'parent_action_id'") ==
+        "agent_actions");
+
+  // Pre-existing rows read as caller-supervised, embedded, un-attempted.
+  CHECK(scalar(*conn, "select group_concat(supervisor || ':' || ifnull(attempt_id, 'null')) from agent_work_claims") ==
+        "caller:null,caller:null");
+  CHECK(scalar(*conn, "select group_concat(engine) from workflow_runs") == "embedded,embedded");
+
+  // The relaxed constraints hold on THIS connection, straight after the
+  // migration ran on it (the up file makes the connection re-read its schema).
+  REQUIRE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, engine) "
+                        "values (null, 'w', 'r-null', 3, '/r', 'centurion')"));
+  for (auto const* kind : {"claim_associate", "claim_terminal", "supervisor_override", "run_submitted", "run_reconciled"}) {
+    INFO(kind);
+    REQUIRE(
+        conn->execute(std::format("insert into agent_actions (session_id, action_kind, vendor) values (1, '{}', 'c')", kind)));
+  }
+  REQUIRE(conn->execute("update agent_work_claims set supervisor = 'engine', attempt_id = 'A1' where id = 1"));
+
+  // ...and the new CHECKs refuse what they should.
+  CHECK_FALSE(conn->execute("update agent_work_claims set supervisor = 'both' where id = 1").has_value());
+  CHECK_FALSE(conn->execute("update workflow_runs set engine = 'zig' where id = 1").has_value());
+  CHECK_FALSE(conn->execute("insert into agent_actions (session_id, action_kind, vendor) values (1, 'bogus', 'c')").has_value());
+
+  // Rollback refuses BY NAME while a plan-less run exists, and changes nothing.
+  auto refused = conn->execute(chain[37].down_sql_);
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error().message_.contains("m00038_down_refused_null_plan_run_or_supervision_action_kind_present"));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "38");
+  CHECK(scalar(*conn, "select count(*) from pragma_table_info('agent_work_claims') where name in ('supervisor', 'attempt_id')") ==
+        "2");
+
+  // Still refused while only a new-kind action remains.
+  REQUIRE(conn->execute("delete from workflow_runs where plan_id is null"));
+  REQUIRE_FALSE(conn->execute(chain[37].down_sql_).has_value());
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "38");
+
+  // Disposed of: rollback succeeds, the constraints are back ON THIS
+  // connection, and the referencing rows are still intact.
+  REQUIRE(conn->execute("delete from agent_actions where action_kind in ('claim_associate', 'claim_terminal', "
+                        "'supervisor_override', 'run_submitted', 'run_reconciled')"));
+  REQUIRE(conn->execute(chain[37].down_sql_));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "37");
+  CHECK_FALSE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) "
+                            "values (null, 'w', 'r-null2', 4, '/r')")
+                  .has_value());
+  CHECK_FALSE(
+      conn->execute("insert into agent_actions (session_id, action_kind, vendor) values (1, 'claim_terminal', 'c')").has_value());
+  CHECK(scalar(*conn, "select count(*) from context_records") == "2");
+  CHECK(scalar(*conn, "select group_concat(run_id) from (select run_id from agent_work_claims order by id)") == "1,2");
+  CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
+
+  // And forward again.
+  REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "38");
 }
 
 TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db][migrate][roundtrip]") {
@@ -533,7 +659,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 37);
+  REQUIRE(chain.size() == 38);
 
   // Walk the chain forward one migration at a time. At each version,
   // capture the schema, roll that single migration back, re-apply it, and
@@ -566,7 +692,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 37);
+  REQUIRE(stmt->column_int64(1) == 38);
 }
 
 TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their indexes", "[db][migrate][6808]") {
@@ -606,8 +732,10 @@ TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their
   CHECK(has_index("ux_annotations_slug"));
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.back().version_ == 37);
-  REQUIRE(conn->execute(chain.back().down_sql_));
+  // Peel 00038 first so 00037's down runs against the schema it was written for.
+  REQUIRE(chain[36].version_ == 37);
+  REQUIRE(conn->execute(chain[37].down_sql_));
+  REQUIRE(conn->execute(chain[36].down_sql_));
   for (auto table : {"artifacts", "questions", "test_scenarios", "decisions"}) {
     INFO(table);
     CHECK(has_column(table));
@@ -624,7 +752,7 @@ TEST_CASE("the down chain from head deletes schema_migrations rows in strict des
   REQUIRE(planar::db::apply_all(*conn));
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 37);
+  REQUIRE(chain.size() == 38);
 
   // Roll back one migration at a time, from the tip down to the
   // foundation, asserting the mirror-order contract at every step: before
@@ -742,7 +870,7 @@ TEST_CASE("apply_contiguous ACCEPTS the embedded chain, so the refusal above is 
 
 TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[db][migrate][guard]") {
   auto const head = planar::db::embedded_max();
-  REQUIRE(head == 37);
+  REQUIRE(head == 38);
 
   SECTION("a fresh, never-initialized database is BEHIND at version 0") {
     scratch_db_path scratch;

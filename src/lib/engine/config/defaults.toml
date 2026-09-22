@@ -27,6 +27,13 @@ dir = "~/.planar/templates"
 # Default template set selected when an association has no override.
 default_set = "default"
 
+[execute]
+# Which engine `planar-execute run` uses when neither --engine nor
+# $PLANAR_EXECUTE_ENGINE is set (plan 1033, decision 1017). Acceptable:
+# embedded, centurion. `embedded` until plan 1033's cutover flips it;
+# `centurion` is refused at dispatch until the Centurion host lands.
+engine = "embedded"
+
 [external.jira]
 # Base URL of the Jira instance. Required for ext-sync against Jira.
 # base_url = "https://your-org.atlassian.net"

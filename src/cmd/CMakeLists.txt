@@ -91,3 +91,16 @@ if(TARGET planar_cmd_planar_watch_tests)
     planar_cmd_planar
     planar_cmd_planar_agent)
 endif()
+
+# --- planar-execute's golden flow.result fixtures (plan 1033 M0, task 6484) --
+#
+# `planar-execute/golden.t.cpp` seeds its scratch database with the OPERATOR
+# binary, and every workflow it runs shells `planar` beside the built
+# `planar-execute` — so the operator binary must be built first. Same
+# placement reason and the same absence of a link edge as the two blocks
+# above.
+if(TARGET planar_cmd_planar_execute_tests)
+  target_compile_definitions(planar_cmd_planar_execute_tests PRIVATE
+    "PLANAR_OPERATOR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\"")
+  add_dependencies(planar_cmd_planar_execute_tests planar_cmd_planar)
+endif()

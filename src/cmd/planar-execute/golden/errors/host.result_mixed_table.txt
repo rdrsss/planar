@@ -1,0 +1,2 @@
+exit: 1
+planar-execute: phase error: workflow:1: mixed Lua tables cannot be serialized as JSON arrays

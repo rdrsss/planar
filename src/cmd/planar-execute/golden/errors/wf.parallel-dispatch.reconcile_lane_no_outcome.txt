@@ -1,0 +1,2 @@
+exit: 1
+planar-execute: phase failed: parallel-dispatch.lua/reconcile_plan: each lane requires task_id and outcome

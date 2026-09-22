@@ -1,0 +1,2 @@
+exit: 1
+planar-execute: phase error: workflow:1: git.reset_hard requires a hexadecimal object id

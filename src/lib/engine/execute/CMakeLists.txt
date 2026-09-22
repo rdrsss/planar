@@ -88,12 +88,16 @@ planar_module(engine_execute
     state.cpp
     schema.cpp
     brief.cpp
+    config.cpp
   DEPENDS
     json_text
     json_dom)
 
-target_link_libraries(planar_engine_execute PRIVATE lua::lua)
+# Glaze decodes `planar config show --json` in config.cpp (task 6485): the
+# execute engine reads the config plane through the sibling `planar`, never
+# through `engine_config`, which reaches `db`.
+target_link_libraries(planar_engine_execute PRIVATE lua::lua glaze::glaze)
 
 if(TARGET planar_engine_execute_tests)
-  target_link_libraries(planar_engine_execute_tests PRIVATE lua::lua)
+  target_link_libraries(planar_engine_execute_tests PRIVATE lua::lua glaze::glaze)
 endif()

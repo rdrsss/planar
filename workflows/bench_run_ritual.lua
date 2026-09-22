@@ -1,7 +1,7 @@
 --[[ @meta
 name: bench-run-ritual
 description: Deterministic clean-slate measurement run ritual — reset worktree, bench start, harvest, bench finish.
-phases: setup, harvest
+phases: setup, measure
 seam: planar run start/event/finish, planar bench start/harvest/finish, git reset/clean
 --]]
 

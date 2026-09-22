@@ -86,6 +86,8 @@ TEST_CASE("planar-execute parity: every ported argv shape matches byte for byte"
                                               "Usage:\n"
                                               "  planar-execute run <workflow.lua> --phase <name> [--args <json>]\n"
                                               "                     [--worktree <dir>] [--sandbox-root <dir>]\n"
+                                              "                     [--engine <embedded|centurion>]\n"
+                                              "  planar-execute profile show [--profile <name>] [--json]\n"
                                               "  planar-execute schema\n"
                                               "\n"
                                               "Loads the workflow in the sandbox, registers the deterministic host\n"
@@ -242,6 +244,24 @@ TEST_CASE("planar-execute parity: a workflow runs identically in both engines", 
        {"--args", R"({"n":5,"big":9007199254740993})"},
        0,
        R"({"big":9007199254740993,"n":5,"t":"integer"})"
+       "\n",
+       ""},
+      // --args need not be an object: an array or a string becomes ctx.args
+      // as-is. Pinned as observed at plan 1033 M0 (task 6483), which freezes
+      // the contract rather than tightening it; see golden.t.cpp for the
+      // malformed-JSON refusal.
+      {"args_array",
+       "function p() flow.result({ t = type(ctx.args), n = #ctx.args }) end",
+       {"--args", "[1,2]"},
+       0,
+       R"({"n":2,"t":"table"})"
+       "\n",
+       ""},
+      {"args_string",
+       "function p() flow.result({ t = type(ctx.args), v = ctx.args }) end",
+       {"--args", R"("str")"},
+       0,
+       R"({"t":"string","v":"str"})"
        "\n",
        ""},
       // The sandbox, enumerated live. This is the case that would catch a

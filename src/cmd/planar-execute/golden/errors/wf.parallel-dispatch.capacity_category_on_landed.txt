@@ -1,0 +1,2 @@
+exit: 1
+planar-execute: phase failed: parallel-dispatch.lua/capacity_reconcile: category is only valid for a failed or abandoned task 1

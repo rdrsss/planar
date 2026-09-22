@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "description": "Every (binary, verb path) a Planar workflow may run through Centurion's stock command.exec activity (plan 1033, tech-spec D2/D14). Closed: a verb path not listed here cannot run. effect is idempotent (a read) or reconcilable (a write whose outcome recovery can re-establish); cwd is any (the command addresses its target by id or token, so the working directory does not matter) or workspace (run inside the registered lane workspace). used_by names the workflows that call it; planned_workflows are not shipped yet, and their entries must become used once they are. Binaries are bare names here; install time records their absolute paths beside planar-execute. Checked by src/cmd/planar-execute/policy.t.cpp and by make cli-usage-check.",
+  "planned_workflows": ["claim_supervise.lua"],
+  "entries": [
+    {"binary": "planar", "path": ["schema"], "effect": "idempotent", "cwd": "any", "used_by": ["example.lua"]},
+    {"binary": "planar", "path": ["plan", "show"], "effect": "idempotent", "cwd": "any", "used_by": ["parallel-dispatch.lua"]},
+    {"binary": "planar", "path": ["plan", "recommend-strategy"], "effect": "idempotent", "cwd": "any", "used_by": ["parallel-dispatch.lua"]},
+    {"binary": "planar", "path": ["task", "show"], "effect": "idempotent", "cwd": "any", "used_by": ["parallel-dispatch.lua"]},
+    {"binary": "planar", "path": ["links", "list"], "effect": "idempotent", "cwd": "any", "used_by": ["parallel-dispatch.lua"]},
+    {"binary": "planar", "path": ["bench", "show"], "effect": "idempotent", "cwd": "any", "used_by": ["bench_run_ritual.lua"]},
+    {"binary": "planar", "path": ["bench", "start"], "effect": "reconcilable", "cwd": "any", "used_by": ["bench_run_ritual.lua"]},
+    {"binary": "planar", "path": ["bench", "harvest"], "effect": "reconcilable", "cwd": "any", "used_by": ["bench_run_ritual.lua"]},
+    {"binary": "planar", "path": ["bench", "finish"], "effect": "reconcilable", "cwd": "any", "used_by": ["bench_run_ritual.lua"]},
+    {"binary": "planar", "path": ["run", "start"], "effect": "reconcilable", "cwd": "any", "used_by": ["finalize_closeout.lua"]},
+    {"binary": "planar", "path": ["run", "event"], "effect": "reconcilable", "cwd": "any", "used_by": ["finalize_closeout.lua"]},
+    {"binary": "planar", "path": ["run", "finish"], "effect": "reconcilable", "cwd": "any", "used_by": ["finalize_closeout.lua"]},
+    {"binary": "planar", "path": ["plan", "closeout"], "effect": "reconcilable", "cwd": "any", "used_by": ["finalize_closeout.lua"]},
+    {"binary": "git", "path": ["reset", "--hard"], "effect": "reconcilable", "cwd": "workspace", "used_by": ["bench_run_ritual.lua"]},
+
+    {"binary": "planar-agent", "path": ["claim-associate"], "effect": "reconcilable", "cwd": "any", "used_by": ["claim_supervise.lua"]},
+    {"binary": "planar-agent", "path": ["heartbeat"], "effect": "reconcilable", "cwd": "any", "used_by": ["claim_supervise.lua"]},
+    {"binary": "planar-agent", "path": ["complete"], "effect": "reconcilable", "cwd": "any", "used_by": ["claim_supervise.lua"]},
+    {"binary": "planar-agent", "path": ["fail"], "effect": "reconcilable", "cwd": "any", "used_by": ["claim_supervise.lua"]},
+    {"binary": "planar-agent", "path": ["release"], "effect": "reconcilable", "cwd": "any", "used_by": ["claim_supervise.lua"]},
+    {"binary": "planar-agent", "path": ["block"], "effect": "reconcilable", "cwd": "any", "used_by": ["claim_supervise.lua"]},
+    {"binary": "planar-agent", "path": ["run", "start"], "effect": "reconcilable", "cwd": "any", "used_by": ["claim_supervise.lua"]},
+    {"binary": "planar-agent", "path": ["run", "end"], "effect": "reconcilable", "cwd": "any", "used_by": ["claim_supervise.lua"]},
+    {"binary": "git", "path": ["log"], "effect": "idempotent", "cwd": "workspace", "used_by": ["claim_supervise.lua"]},
+    {"binary": "git", "path": ["diff"], "effect": "idempotent", "cwd": "workspace", "used_by": ["claim_supervise.lua"]}
+  ]
+}

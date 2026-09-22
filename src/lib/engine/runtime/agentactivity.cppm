@@ -179,7 +179,25 @@ export enum class action_kind : std::uint8_t {
   user_message,
   assistant_message,
   other,
+  // Engine supervision (migration 00038, plan 1033 task 6487/6488). Written
+  // ONLY by the atomic supervision paths in `agentatomic`, never by
+  // `action start` — see `is_supervision_kind`.
+  claim_associate,     ///< A claim handed to (or re-attempted by) the engine supervisor.
+  claim_terminal,      ///< The engine's one terminal verb on a claim.
+  supervisor_override, ///< An operator terminating an engine claim with `--override-supervisor`.
+  run_submitted,       ///< A Centurion run's submission.
+  run_reconciled,      ///< A terminal verb re-issued by post-crash reconciliation.
 };
+
+/// @brief Whether `kind` is one of the five engine-supervision kinds.
+///
+/// Those rows are the audit trail of who terminated an engine-supervised
+/// claim, so they are written only inside the atomic supervision paths;
+/// `action start --kind` and `pull --role` refuse or ignore them, or any
+/// agent could forge a `claim_terminal` row.
+/// @param kind The kind.
+/// @return True for the supervision kinds.
+export auto is_supervision_kind(action_kind kind) -> bool;
 
 /// @brief Entity kinds an ACTION may reference. A strict superset of
 /// `entity_kind` — mirrors `agent_actions.entity_kind`'s wider CHECK set.
@@ -404,6 +422,14 @@ export enum class agent_error : std::uint8_t {
   illegal_transition, ///< The task status transition the verb needs is not legal.
   unknown_status,     ///< The task's current status is not a known member.
   query_failed,       ///< Backstop for an underlying SQL failure.
+  /// The caller is not the claim's supervisor: a caller terminal verb or
+  /// lease extension on an engine claim, or an engine verb on a caller
+  /// claim, or a supervisor change back to `caller` (plan 1033 D3). New
+  /// with the engine supervisor; the Zig oracle has no such tag.
+  supervisor_mismatch,
+  /// An engine verb named a different Centurion attempt than the one the
+  /// claim is associated with (plan 1033 D4).
+  attempt_mismatch,
 };
 
 /// @brief The Zig error TAG for `err`, as it appears on the operator's
@@ -656,6 +682,35 @@ export auto associate_claim_run(db::connection& conn, std::string_view claim_tok
                                 std::optional<std::string_view> stage) -> std::expected<std::int64_t, agent_error>;
 
 // =========================================================================
+// Engine supervision (migration 00038, plan 1033 D3/D4)
+// =========================================================================
+
+/// @brief Who supervises a claim's lease and terminal verb, and under which
+/// Centurion attempt. Read separately from `claim`, whose 27-column
+/// projection is shared by every claim renderer.
+export struct supervision {
+  bool                       engine = false; ///< `supervisor = 'engine'`; false means `caller`.
+  std::optional<std::string> attempt_id;     ///< The supervising attempt, when engine-supervised.
+};
+
+/// @brief Read a claim's supervision columns.
+/// @param conn An open, migrated connection.
+/// @param claim_token The claim.
+/// @return The supervision, or `claim_not_found` / `query_failed`.
+export auto get_supervision(db::connection& conn, std::string_view claim_token) -> std::expected<supervision, agent_error>;
+
+/// @brief Mark a claim engine-supervised under `attempt_id`.
+///
+/// One-way: nothing here sets a claim back to `caller`. MUST be called
+/// inside the caller's transaction, after the claim has been checked live.
+/// @param conn An open, migrated connection.
+/// @param claim_id The claim row.
+/// @param attempt_id The Centurion attempt.
+/// @return Success, or `query_failed`.
+export auto set_engine_supervision(db::connection& conn, std::int64_t claim_id, std::string_view attempt_id)
+    -> std::expected<void, agent_error>;
+
+// =========================================================================
 // Actions
 // =========================================================================
 
@@ -771,6 +826,11 @@ export struct reconcile_policy {
   std::optional<std::int64_t>     session_id;               ///< Scope to one session; unset sweeps globally.
   std::optional<std::int64_t>     plan_id;                  ///< Scope to one plan; unset sweeps globally.
   std::optional<failure_category> category;                 ///< Category to stamp on claims made stale.
+  /// Reconcile engine-supervised claims too (plan 1033 task 6489). Off by
+  /// default: an engine claim's lease and terminal verb are the engine's,
+  /// so the sweep reports it as skipped instead of taking it over. Each
+  /// claim swept under this flag gets one `supervisor_override` action.
+  bool override_supervisor = false;
 };
 
 /// @brief What a sweep did (or, in dry-run, would do).
@@ -782,6 +842,9 @@ export struct reconcile_result {
   std::int64_t       claims_marked_stale = 0;
   std::int64_t       actions_closed      = 0; ///< Number of action rows closed.
   std::vector<claim> candidates;              ///< The expired claims found (populated in every mode).
+  /// Expired ENGINE-supervised claims left untouched (plan 1033 task 6489);
+  /// always empty under `override_supervisor`.
+  std::vector<claim> skipped_engine;
 };
 
 /// @brief Mark expired claims stale, return their tasks to `todo` where
@@ -807,8 +870,9 @@ export struct run_candidate {
 
 /// @brief What the run sweep did.
 export struct reconcile_runs_result {
-  std::int64_t               abandoned = 0; ///< Rows moved to `abandoned`.
-  std::vector<run_candidate> candidates;    ///< The dead-pid rows found.
+  std::int64_t               abandoned = 0;  ///< Rows moved to `abandoned`.
+  std::vector<run_candidate> candidates;     ///< The dead-pid rows found.
+  std::vector<run_candidate> skipped_engine; ///< Dead-pid `engine='centurion'` rows left running (task 6489).
 };
 
 /// @brief Is a process id live?
@@ -824,10 +888,13 @@ export auto pid_alive(std::int64_t pid) -> bool;
 /// @brief Abandon `running` workflow runs whose recorded pid is gone.
 /// @param conn An open, migrated connection.
 /// @param dry_run When true, collect candidates and write nothing.
+/// A `centurion` run's liveness is the Centurion host's to judge, not a pid
+/// probe's, so it is reported as skipped unless `override_supervisor`.
 /// @param plan_id Scope to one plan; unset sweeps globally.
+/// @param override_supervisor Abandon dead-pid `centurion` runs too.
 /// @return The sweep result, or `query_failed`.
-export auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id)
-    -> std::expected<reconcile_runs_result, agent_error>;
+export auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id,
+                           bool override_supervisor = false) -> std::expected<reconcile_runs_result, agent_error>;
 
 // =========================================================================
 // Read paths — the display half (task 6120)

@@ -56,6 +56,13 @@ Under `pwd` isolation there is no worktree: the coder runs in the operator's pwd
 
 ## Status reporting
 
+**Engine-supervised claims (plan 1033; not live until its host lands).** If
+the brief says the claim is engine-supervised, the engine keeps the lease and
+issues the terminal verb. Heartbeat with `--status "<text>"` only — never
+`--ttl`, never a bare heartbeat — and never run `complete`, `fail`, `release`
+or `block`, not even under in-pwd barrel-bypass; all of those are refused on
+an engine claim. Return the commit/report as usual.
+
 The coder emits a status string at each meaningful phase boundary using `planar-agent heartbeat --claim <token> --status "<text>"`. The canonical transitions and their strings are:
 
 | Phase | Status string |

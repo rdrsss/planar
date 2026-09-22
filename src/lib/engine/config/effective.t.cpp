@@ -367,3 +367,61 @@ TEST_CASE("resolve: candidates is empty for every non-model-tier key", "[effecti
     CHECK(res->effective.at(key).candidates.empty());
   }
 }
+
+TEST_CASE("resolve: execute.engine defaults to embedded, and file then env override it", "[effective][6485]") {
+  // `planar-execute` reads this key out of `planar config show --json` (plan
+  // 1033 task 6485); the provenance is what its `profile show` reports.
+  auto const def = resolve(std::nullopt, env_view::empty(), std::nullopt);
+  REQUIRE(def.has_value());
+  auto it = def->effective.find("execute.engine");
+  REQUIRE(it != def->effective.end());
+  CHECK(it->second.value == "embedded");
+  CHECK(it->second.source_ == provenance::embedded_default);
+
+  constexpr std::string_view file      = "[execute]\nengine = \"centurion\"\n";
+  auto const                 from_file = resolve(file, env_view::empty(), std::nullopt);
+  REQUIRE(from_file.has_value());
+  it = from_file->effective.find("execute.engine");
+  REQUIRE(it != from_file->effective.end());
+  CHECK(it->second.value == "centurion");
+  CHECK(it->second.source_ == provenance::config_file);
+
+  auto const from_env = resolve(file, make_env({{"PLANAR_EXECUTE_ENGINE", "embedded"}}), std::nullopt);
+  REQUIRE(from_env.has_value());
+  it = from_env->effective.find("execute.engine");
+  REQUIRE(it != from_env->effective.end());
+  CHECK(it->second.value == "embedded");
+  CHECK(it->second.source_ == provenance::env);
+  CHECK(it->second.env_var_name == "PLANAR_EXECUTE_ENGINE");
+}
+
+TEST_CASE("resolve: execute.profiles.* keys from the file are surfaced verbatim, arrays as JSON", "[effective][6494]") {
+  // `planar-execute` reads its execution profiles out of this view (plan
+  // 1033 task 6494). An array is JSON text, not the `, `-joined form, so a
+  // path holding a comma survives; an unknown key is surfaced for the
+  // consumer to refuse, not dropped here.
+  constexpr std::string_view file = "[execute.profiles.w]\n"
+                                    "state_dir = \"~/s\"\n"
+                                    "allowed_roots = [\"~/a\", \"/b,c\"]\n"
+                                    "idle_grace_seconds = 120\n"
+                                    "typo = true\n"
+                                    "[execute.profiles.w.providers.claude]\n"
+                                    "command = \"claude\"\n";
+  auto const                 res  = resolve(file, env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  auto const value = [&](std::string_view key) {
+    auto const it = res->effective.find(key);
+    REQUIRE(it != res->effective.end());
+    CHECK(it->second.source_ == provenance::config_file);
+    return it->second.value;
+  };
+  CHECK(value("execute.profiles.w.state_dir") == "~/s");
+  CHECK(value("execute.profiles.w.allowed_roots") == R"(["~/a","/b,c"])");
+  CHECK(value("execute.profiles.w.idle_grace_seconds") == "120");
+  CHECK(value("execute.profiles.w.typo") == "true");
+  CHECK(value("execute.profiles.w.providers.claude.command") == "claude");
+  // No file, no profile keys: the defaults are planar-execute's, not planar's.
+  auto const bare = resolve(std::nullopt, env_view::empty(), std::nullopt);
+  REQUIRE(bare.has_value());
+  CHECK(std::ranges::none_of(bare->effective, [](auto const& kv) { return kv.first.starts_with("execute.profiles."); }));
+}

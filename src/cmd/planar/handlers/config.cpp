@@ -10,6 +10,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.engine.config.effective;
 import planar.engine.config.toml;
+import planar.json_text;
 import planar.cmd.planar.cli_log;
 import planar.cmd.planar.context;
 import planar.cmd.planar.editor;
@@ -415,18 +416,27 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     bool const show_candidates = entry.candidates.size() > 1;
 
     if (as_json) {
-      ctx.out() << "{\"key\":\"" << key << "\",\"value\":\"" << display << "\",\"provenance\":\"" << label << '"';
+      // Every string goes through the JSON escaper: a value holding `"` or
+      // `\` used to be streamed between literal quotes and broke the line
+      // (found by plan 1033 task 6494, whose array values are JSON text).
+      std::string line = "{\"key\":";
+      json_text::append_json_string(line, key);
+      line += ",\"value\":";
+      json_text::append_json_string(line, display);
+      line += ",\"provenance\":";
+      json_text::append_json_string(line, label);
       if (show_candidates) {
-        ctx.out() << ",\"candidates\":[";
+        line += ",\"candidates\":[";
         for (std::size_t i = 0; i < entry.candidates.size(); ++i) {
           if (i > 0) {
-            ctx.out() << ',';
+            line += ',';
           }
-          ctx.out() << '"' << entry.candidates[i] << '"';
+          json_text::append_json_string(line, entry.candidates[i]);
         }
-        ctx.out() << ']';
+        line += ']';
       }
-      ctx.out() << "}\n";
+      line += "}\n";
+      ctx.out() << line;
       continue;
     }
 
