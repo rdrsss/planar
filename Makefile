@@ -421,6 +421,23 @@ eval-orchestrator-unit: ## Harness unit tests
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 		-s evals/orchestrator -p 'test_*.py'
 
+CENTURIOND_PREFIX ?= build/centuriond-prefix
+
+.PHONY: centuriond-local
+centuriond-local: ## Build + install a stock centuriond into $(CENTURIOND_PREFIX) from the pinned archive
+	cmake --preset debug
+	scripts/install-centuriond.sh --no-release \
+		--pin $(CPP_BUILD_DIR)/centurion-pin.env \
+		--prefix $(CURDIR)/$(CENTURIOND_PREFIX) \
+		--build-dir $(CURDIR)/build/centuriond-debug \
+		--toolchain $(CURDIR)/cmake/llvm-toolchain.cmake
+
+.PHONY: centurion-client-proof
+centurion-client-proof: centuriond-local ## Link centurion::client under Planar's LLVM and reach readiness against an installed centuriond (task 6497)
+	cmake --build $(CPP_BUILD_DIR) --target centurion_client_proof
+	PLANAR_CENTURIOND=$(CURDIR)/$(CENTURIOND_PREFIX)/bin/centuriond \
+		$(CPP_BUILD_DIR)/bin/centurion_client_proof --reporter compact --success
+
 .PHONY: centuriond-dist-test
 centuriond-dist-test: ## Prove an installed centuriond runs with its source cache deleted (task 6709; slow: builds gRPC)
 	cmake --preset debug
