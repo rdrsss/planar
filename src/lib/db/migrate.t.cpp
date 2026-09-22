@@ -255,8 +255,8 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   // connections to the same file: connection A stands in for a
   // concurrent migrator that already won the race and is holding its
   // migration transaction open; connection B then calls the real
-  // `apply_all` and must fail right at `begin_transaction` (SQLITE_BUSY,
-  // default busy_timeout is 0) rather than partway through executing a
+  // `apply_all` and must fail right at `begin_transaction` (a genuine
+  // post-timeout SQLITE_BUSY) rather than partway through executing a
   // migration script.
   constexpr int k_sqlite_busy = 5; // SQLITE_BUSY
 
@@ -266,6 +266,10 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   REQUIRE(conn_a.has_value());
   auto conn_b = planar::db::connection::open(scratch.path_.string());
   REQUIRE(conn_b.has_value());
+  // Task 6842: connection::open now sets busy_timeout=5000 by default.
+  // Lower B's override so the guaranteed-busy assertion below (A never
+  // releases its lock during the scope) doesn't block for 5 real seconds.
+  REQUIRE(conn_b->execute("pragma busy_timeout = 50;"));
 
   {
     // Stand-in for a concurrent migrator that has already reached its
