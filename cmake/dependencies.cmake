@@ -614,6 +614,17 @@ set(PLANAR_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE PATH
 # DOWNLOAD_ONLY: cmake/centurion.cmake adds the tree as a subdirectory and
 # owns its options, the dependency sharing, and the redirect that points
 # Centurion at its own vendor/ tree.
+#
+# The pin is held in PLANAR_CENTURION_* variables (task 6709) because it has a
+# second reader: cmake/centurion.cmake writes it to centurion-pin.env in the
+# build tree, which install.sh hands to scripts/install-centuriond.sh so the
+# installed daemon is built from, and records, this exact pin.
+set(PLANAR_CENTURION_TAG "v0.1.0-alpha.1")
+set(PLANAR_CENTURION_VERSION "0.1.0-alpha.1")
+set(PLANAR_CENTURION_COMMIT "174257e73dad285716f393043977fecf5ad3f57a")
+set(PLANAR_CENTURION_URL
+  "https://codeload.github.com/rdrsss/centurion/tar.gz/refs/tags/${PLANAR_CENTURION_TAG}")
+set(PLANAR_CENTURION_SHA256 "bd0a09f4309ef303b5385b394f4f0568b5ae0c3a33578e860dd9f28b93018f45")
 if(DEFINED ENV{GITHUB_TOKEN})
   set(_planar_centurion_auth HTTP_HEADER "Authorization: Bearer $ENV{GITHUB_TOKEN}")
 else()
@@ -622,10 +633,10 @@ endif()
 set(CPM_SOURCE_CACHE "${PLANAR_EXTERNAL_DIR}") # normal variable: this call only
 CPMAddPackage(
   NAME centurion
-  VERSION 0.1.0-alpha.1
-  URL https://codeload.github.com/rdrsss/centurion/tar.gz/refs/tags/v0.1.0-alpha.1
-  URL_HASH SHA256=bd0a09f4309ef303b5385b394f4f0568b5ae0c3a33578e860dd9f28b93018f45
-  CUSTOM_CACHE_KEY v0.1.0-alpha.1
+  VERSION ${PLANAR_CENTURION_VERSION}
+  URL ${PLANAR_CENTURION_URL}
+  URL_HASH SHA256=${PLANAR_CENTURION_SHA256}
+  CUSTOM_CACHE_KEY ${PLANAR_CENTURION_TAG}
   ${_planar_centurion_auth}
   DOWNLOAD_ONLY YES)
 unset(CPM_SOURCE_CACHE) # the vendor/ cache entry is visible again

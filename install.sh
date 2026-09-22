@@ -446,6 +446,10 @@ BUILD_DEPS=(
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
   "python3|python|Centurion's configure generates its Botan amalgamation with configure.py"
+  "shasum||digest centuriond and verify a Centurion release asset"
+  "mktemp||stage centuriond release downloads"
+  "tar||unpack a Centurion release asset"
+  "uname||select the Centurion release asset for this platform"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
@@ -634,6 +638,22 @@ PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
   err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
 ok "built 5 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+
+# Stock centuriond from the same pinned Centurion archive planar-execute's
+# client links (plan 1033 M1, task 6709; tech-spec D8/D13). Built as a
+# SEPARATE CMake project — a Centurion release binary is preferred when the
+# pinned tag publishes one — and installed with its migrations and build
+# identity under $PLANAR_HOME. The Planar configure above wrote the pin to
+# $BUILD_DIR/centurion-pin.env; the daemon's build tree is kept under build/
+# so a re-install only recompiles what changed.
+"$REPO_ROOT/scripts/install-centuriond.sh" \
+  --pin "$BUILD_DIR/centurion-pin.env" \
+  --prefix "$PLANAR_HOME" \
+  --build-dir "$REPO_ROOT/build/centuriond-$BUILD_PRESET" \
+  --toolchain "$REPO_ROOT/cmake/llvm-toolchain.cmake" \
+  || err "could not install centuriond (see the output above)"
+[[ -x "$PLANAR_HOME/bin/centuriond" ]] || err "centuriond was not installed"
+ok "installed centuriond → $PLANAR_HOME/bin  ${C_DIM}($(grep -o '"source": "[^"]*"' "$PLANAR_HOME/share/centurion/build-identity.json"))${C_RESET}"
 
 # CMake install only writes the targets it builds — it never removes files a
 # PRIOR install left behind. Iterate the cleanup manifest and delete

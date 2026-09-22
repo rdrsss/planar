@@ -421,6 +421,15 @@ eval-orchestrator-unit: ## Harness unit tests
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 		-s evals/orchestrator -p 'test_*.py'
 
+.PHONY: centuriond-dist-test
+centuriond-dist-test: ## Prove an installed centuriond runs with its source cache deleted (task 6709; slow: builds gRPC)
+	cmake --preset debug
+	scripts/centuriond-dist-test.sh $(CPP_BUILD_DIR)
+
+# Deliberately NOT in test-all: it compiles Centurion's whole gRPC stack from
+# a throwaway source copy (~10 min cold), because building against the shared
+# cache is exactly what would let a source-dependent install pass.
+
 .PHONY: exit-code-contract
 exit-code-contract: ## Prove the DOCUMENTED exit codes are the ones the binaries return (tasks 6813/6814)
 	scripts/exit-code-contract.sh --bin-dir $(CPP_BUILD_DIR)/bin
