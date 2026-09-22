@@ -99,12 +99,14 @@ planar_binary(planar_execute
     engine.cppm
     selector.cppm
     profile.cppm
+    host.cppm
   SOURCES
     cli.cpp
     catalog.cpp
     engine.cpp
     selector.cpp
     profile.cpp
+    host.cpp
   DEPENDS
     cliapp
     engine_execute)
