@@ -126,6 +126,8 @@ auto read_file(const std::filesystem::path& p) -> std::string {
 
 } // namespace
 
+/// @brief Link the client under Planar's toolchain, start the installed
+///        centuriond, and complete readiness over its Unix socket.
 TEST_CASE("centurion::client reaches readiness against the installed centuriond", "[centurion][toolchain]") {
   char const* configured = std::getenv("PLANAR_CENTURIOND");
   INFO("PLANAR_CENTURIOND must name an installed centuriond (make centurion-client-proof sets it)");
