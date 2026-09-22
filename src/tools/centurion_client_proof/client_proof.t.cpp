@@ -71,8 +71,8 @@ struct daemon_process {
     // never creates a socket. The loopback TCP listener comes with it, so it
     // is pinned to an unusual port rather than the default, where it could
     // collide with a centuriond the operator is actually running.
-    std::vector<std::string> arg_storage{bin.string(), "--database", (home / "state" / "centurion.db").string(),
-                                         "--listen-port", "47993"};
+    std::vector<std::string> arg_storage{bin.string(), "--database", (home / "state" / "centurion.db").string(), "--listen-port",
+                                         "47993"};
     std::vector<char*>       argv;
     for (auto& a : arg_storage) {
       argv.push_back(a.data());
@@ -87,8 +87,8 @@ struct daemon_process {
     posix_spawn_file_actions_t actions;
     REQUIRE(::posix_spawn_file_actions_init(&actions) == 0);
     std::string const log_path = log.string();
-    REQUIRE(::posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
-                                               0600) == 0);
+    REQUIRE(::posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600) ==
+            0);
     REQUIRE(::posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO) == 0);
     int const rc = ::posix_spawn(&pid, argv[0], &actions, nullptr, argv.data(), envp.data());
     ::posix_spawn_file_actions_destroy(&actions);
