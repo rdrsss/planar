@@ -66,6 +66,7 @@ the `planar` binary.
 | `5` | **Cross-scope write refused** (see the cross-scope guard above). | `scope_mismatch` |
 | `6` | Precondition conflict: slug conflict, or the entity already exists. | `slug_conflict`, `already_exists` |
 | `7` | Database schema is **newer** than this binary supports. | `schema_version_ahead` |
+| `8` | **Worktree-gate refusal**: a planning verb was run from inside a git worktree. Outside the `domain_error_kind` bucket table entirely — `planar.cmd.planar.worktree_gate` returns it directly, before the parser even runs, so it fires even when the invocation's flags would also fail to parse. `--scope` does not bypass it. | `planar.cmd.planar.worktree_gate::check` |
 | `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
 
 **Usage errors exit `2`, not `64`.** An unknown flag, a missing required
