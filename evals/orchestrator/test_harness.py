@@ -1007,6 +1007,130 @@ class SemanticGraderNegativeControlTests(unittest.TestCase):
                 self.assert_lifecycle_rejects(mutator, reason)
 
 
+class AssertionSelfTestTests(unittest.TestCase):
+    """Task 6835 (C3 / D4): every contract assertion gets a per-assertion
+    seeded-violation self-test, and the self-test count must equal the
+    assertion count -- an assertion whose self-test cannot be constructed is
+    a suite failure, never a silent skip.
+    """
+
+    def test_every_real_assertion_has_a_falsifiable_self_test(self) -> None:
+        cases = harness.load_cases()
+        total_declared = sum(
+            len(case["contract_assertions"])
+            for _, case in cases
+            if "contract" in case["tiers"]
+        )
+        self_tests_run, total_assertions = harness.run_assertion_selftests(cases)
+        self.assertGreater(total_assertions, 0)
+        self.assertEqual(self_tests_run, total_assertions)
+        self.assertEqual(total_assertions, total_declared)
+
+    def test_main_contract_mode_invokes_run_assertion_selftests(self) -> None:
+        # Drives the real CALLER (`main()` in contract mode, what `make
+        # eval-orchestrator` runs) rather than calling
+        # `run_assertion_selftests` directly: a no-op at this call site
+        # would leave the count check unenforced by `make eval` even
+        # though the function itself still works when called by hand.
+        with mock.patch.object(
+            harness, "run_assertion_selftests", return_value=(0, 0)
+        ) as selftests_mock:
+            code = harness.main(["--contract-only"])
+        self.assertEqual(code, 0)
+        selftests_mock.assert_called_once()
+
+    def test_delete_matches_a_must_match_assertion_and_the_self_test_fails_it(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            temp_root = Path(raw_tmp)
+            target = temp_root / "probe.md"
+            target.write_text("alpha beta gamma\n", encoding="utf-8")
+            assertion = {
+                "id": "must-see-beta",
+                "description": "probe",
+                "mode": "all",
+                "paths": ["probe.md"],
+                "pattern": "beta",
+            }
+            harness.seed_selftest_mutation(temp_root, assertion)
+            self.assertNotIn("beta", target.read_text(encoding="utf-8"))
+
+    def test_seed_forbidden_text_for_a_must_not_match_assertion(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            temp_root = Path(raw_tmp)
+            target = temp_root / "probe.md"
+            target.write_text("nothing forbidden here\n", encoding="utf-8")
+            assertion = {
+                "id": "no-planar-task-done",
+                "description": "probe",
+                "mode": "none",
+                "paths": ["probe.md"],
+                "pattern": "planar task done",
+            }
+            harness.seed_selftest_mutation(temp_root, assertion)
+            self.assertIn("planar task done", target.read_text(encoding="utf-8"))
+
+    def test_unconstructable_none_pattern_is_a_suite_failure_not_a_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            temp_root = Path(raw_tmp)
+            (temp_root / "probe.md").write_text("x\n", encoding="utf-8")
+            assertion = {
+                "id": "unconstructable",
+                "description": "probe",
+                "mode": "none",
+                "paths": ["probe.md"],
+                # A character class has no single deterministic literal.
+                "pattern": "[abc]xyz",
+            }
+            with self.assertRaisesRegex(
+                harness.SelfTestConstructionError, "unconstructable"
+            ):
+                harness.seed_selftest_mutation(temp_root, assertion)
+
+    def test_must_match_pattern_absent_from_every_path_is_a_suite_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            temp_root = Path(raw_tmp)
+            (temp_root / "probe.md").write_text("nothing to see\n", encoding="utf-8")
+            assertion = {
+                "id": "never-present",
+                "description": "probe",
+                "mode": "all",
+                "paths": ["probe.md"],
+                "pattern": "ZZZ_NEVER_HERE",
+            }
+            with self.assertRaisesRegex(
+                harness.SelfTestConstructionError, "never-present"
+            ):
+                harness.seed_selftest_mutation(temp_root, assertion)
+
+    def test_run_one_assertion_selftest_fails_when_seeding_does_not_falsify(
+        self,
+    ) -> None:
+        # A "none" assertion whose forbidden text is seeded into a path
+        # OTHER than the one the assertion actually checks proves grading
+        # still passes -- run_one_assertion_selftest must surface that as
+        # "self-test did not fail", not silently accept it.
+        with mock.patch.object(harness, "seed_selftest_mutation", lambda *_: None):
+            assertion = {
+                "id": "no-op-seed",
+                "description": "probe",
+                "mode": "none",
+                "paths": ["agents/does-not-exist-for-this-probe.md"],
+                "pattern": "ZZZ",
+            }
+            # Missing path makes grade_contract raise for a different
+            # reason (missing path), which the self-test treats as a pass
+            # of "grader rejected" -- so use a real, harmless path instead.
+            assertion["paths"] = ["agents/methodology.md"]
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "self-test did not fail"
+            ):
+                harness.run_one_assertion_selftest("probe-case", assertion)
+
+
 FIXTURE_ROOT = (
     Path(__file__).resolve().parent / "fixtures" / "controlled-classic"
 )
@@ -1270,6 +1394,256 @@ class WrapperObservedLogTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(harness.EvalFailure, "6831"):
             harness.assert_terminal_verb_lifecycle([records[0], followup])
+
+
+class ForbiddenEventEmitterTests(unittest.TestCase):
+    """Task 6836 (C3 / D4): a `forbidden_events` entry that no fixture path
+    can ever emit makes the negative assertion unfalsifiable. `EMITTABLE_EVENTS`
+    is the manifest `validate_case` checks against; this class proves the
+    manifest matches the actual `control.sh` script (so it cannot silently
+    drift) and that the one event control.sh emits only under a seed knob
+    (`task-completed-before-review`) really is rejected by the grader when it
+    fires.
+    """
+
+    def test_fixture_log_events_matches_control_script(self) -> None:
+        # `FIXTURE_LOG_EVENTS` must contain exactly the string literals
+        # `control.sh` passes to `log_event`, no more and no less -- a
+        # manifest entry with no matching `log_event` call would itself be
+        # an unemittable event smuggled past `validate_case`.
+        text = (FIXTURE_ROOT / "control.sh").read_text(encoding="utf-8")
+        scripted = set(re.findall(r'log_event "([a-z0-9-]+)"', text))
+        self.assertEqual(scripted, harness.FIXTURE_LOG_EVENTS)
+
+    def test_validate_case_rejects_an_unemittable_forbidden_event(self) -> None:
+        case = dict(lifecycle_case())
+        case.update(
+            {
+                "schema_version": 1,
+                "id": "unemittable-forbidden-event",
+                "skill": "orchestrator",
+                "description": "probe",
+                "tags": ["lifecycle"],
+                "tiers": ["contract", "lifecycle"],
+                "tasks": [{"slug": "controlled-value", "title": "t"}],
+                "contract_assertions": [
+                    {
+                        "id": "probe",
+                        "description": "probe",
+                        "mode": "all",
+                        "paths": ["agents/methodology.md"],
+                        "pattern": r"\bthe\b",
+                    }
+                ],
+                "setup": {
+                    "fixture": "controlled-classic",
+                    "specialist_scenario": "success",
+                },
+                "lifecycle": {
+                    "scenario": "controlled-classic",
+                    "surface": "agent",
+                    "prompt": "probe",
+                },
+            }
+        )
+        case["expected"] = dict(case["expected"])
+        case["expected"]["forbidden_events"] = ["this-event-does-not-exist"]
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "this-event-does-not-exist"
+        ):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_load_cases_calls_validate_case_and_rejects_a_bad_case_on_disk(
+        self,
+    ) -> None:
+        # Drives the real CALLER (`load_cases`, which `main()` calls before
+        # anything else runs) rather than `validate_case` directly: proves
+        # the call site actually reaches the forbidden_events check, so a
+        # no-op in place of either `load_cases`'s call to `validate_case` or
+        # the check inside it would fail this test.
+        case = dict(lifecycle_case())
+        case.update(
+            {
+                "schema_version": 1,
+                "id": "on-disk-unemittable-forbidden-event",
+                "skill": "orchestrator",
+                "description": "probe",
+                "tags": ["lifecycle"],
+                "tiers": ["contract", "lifecycle"],
+                "tasks": [{"slug": "controlled-value", "title": "t"}],
+                "contract_assertions": [
+                    {
+                        "id": "probe",
+                        "description": "probe",
+                        "mode": "all",
+                        "paths": ["agents/methodology.md"],
+                        "pattern": r"\bthe\b",
+                    }
+                ],
+                "setup": {
+                    "fixture": "controlled-classic",
+                    "specialist_scenario": "success",
+                },
+                "lifecycle": {
+                    "scenario": "controlled-classic",
+                    "surface": "agent",
+                    "prompt": "probe",
+                },
+            }
+        )
+        case["expected"] = dict(case["expected"])
+        case["expected"]["forbidden_events"] = ["this-event-does-not-exist"]
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            cases_dir = Path(raw_tmp)
+            (cases_dir / "on-disk-unemittable-forbidden-event.json").write_text(
+                json.dumps(case), encoding="utf-8"
+            )
+            with mock.patch.object(harness, "CASES_DIR", cases_dir):
+                with self.assertRaisesRegex(
+                    harness.EvalFailure, "this-event-does-not-exist"
+                ):
+                    harness.load_cases()
+
+    def test_existing_cases_declare_only_emittable_forbidden_events(self) -> None:
+        # Guards the actual repository cases: `classic-lifecycle-success`
+        # and `classic-reviewer-bounce` must load cleanly under the new
+        # validation (i.e. `task-completed-before-review` really is
+        # emittable now that control.sh's seed knob exists).
+        for path, case in harness.load_cases():
+            if "lifecycle" not in case["tiers"]:
+                continue
+            forbidden = case.get("expected", {}).get("forbidden_events", [])
+            unemittable = [
+                name for name in forbidden if name not in harness.EMITTABLE_EVENTS
+            ]
+            self.assertEqual(unemittable, [], f"{path}: {unemittable}")
+
+    def test_control_script_emits_the_seeded_violation_only_when_asked(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            repo = Path(raw_tmp) / "repo"
+            shutil.copytree(FIXTURE_ROOT / "repo", repo)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            (repo / ".eval").mkdir(exist_ok=True)
+            (repo / ".eval" / "scenario").write_text("success", encoding="utf-8")
+            (repo / ".eval" / "events.jsonl").write_text("", encoding="utf-8")
+            env = dict(os.environ)
+            env["EVAL_SEED_VIOLATION"] = "task-completed-before-review"
+            result = subprocess.run(
+                [str(FIXTURE_ROOT / "control.sh"), "coder", "tok-1"],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            events = [
+                json.loads(line)
+                for line in (repo / ".eval" / "events.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
+            ]
+            names = [event["event"] for event in events]
+            self.assertIn("task-completed-before-review", names)
+            self.assertIn("coder-finished", names)
+            self.assertLess(
+                names.index("task-completed-before-review"),
+                names.index("coder-finished"),
+            )
+
+            # Without the knob the event never fires (the emitter is a
+            # deliberate self-test path, not part of a real controlled run).
+            (repo / ".eval" / "events.jsonl").write_text("", encoding="utf-8")
+            del env["EVAL_SEED_VIOLATION"]
+            subprocess.run(
+                [str(FIXTURE_ROOT / "control.sh"), "coder", "tok-1"],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            events = [
+                json.loads(line)
+                for line in (repo / ".eval" / "events.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
+            ]
+            self.assertNotIn(
+                "task-completed-before-review", [event["event"] for event in events]
+            )
+
+    def test_grader_rejects_a_run_where_the_seeded_event_fired(self) -> None:
+        # Feed the emitted event straight into the real grading path
+        # (merge_lifecycle_events -> grade_lifecycle_artifacts), exactly as
+        # the fixture-replay collector would, and require the lifecycle
+        # case's own forbidden_events assertion to reject it.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            observed_dir = root / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=5.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+            )
+            events_path = root / "events.jsonl"
+            events_path.write_text(
+                "\n".join(
+                    json.dumps(event)
+                    for event in [
+                        {
+                            "event": "task-completed-before-review",
+                            "source": "controlled-coder",
+                            "ts": 1.5,
+                        },
+                        {
+                            "event": "coder-finished",
+                            "source": "controlled-coder",
+                            "ts": 1.6,
+                        },
+                        {
+                            "event": "review-approved",
+                            "source": "controlled-reviewer",
+                            "ts": 3.0,
+                        },
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            events = harness.merge_lifecycle_events(observed_dir, events_path)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            harness.write_json(artifact_dir / "events.normalized.json", events)
+            harness.write_json(artifact_dir / "task.after.json", {"status": "done"})
+            harness.write_json(artifact_dir / "claims.after.json", {"active": []})
+            harness.write_text(artifact_dir / "fixture-test.txt", "PASS\n")
+            harness.write_json(artifact_dir / "fixture-test.json", {"returncode": 0})
+            harness.write_text(
+                artifact_dir / "repo" / "src" / "value.txt", "approved\n"
+            )
+            case = dict(lifecycle_case())
+            case["expected"] = dict(case["expected"])
+            case["expected"]["forbidden_events"] = list(
+                case["expected"]["forbidden_events"]
+            ) + ["task-completed-before-review"]
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "forbidden event observed"
+            ):
+                harness.grade_lifecycle_artifacts(
+                    case, artifact_dir, lifecycle_options()
+                )
 
 
 class ObservedLogOrderingTest(unittest.TestCase):
@@ -1960,6 +2334,128 @@ class CollectLifecycleArtifactsWiringTest(unittest.TestCase):
             self.assertEqual(
                 [e.get("event") for e in events], ["claim-acquired", "task-completed"]
             )
+
+
+LIFECYCLE_CASE_REQUIRED_FIELDS: dict[str, object] = {
+    "schema_version": 1,
+    "skill": "orchestrator",
+    "description": "probe",
+    "tags": ["lifecycle"],
+    "tiers": ["contract", "lifecycle"],
+    "tasks": [{"slug": "controlled-value", "title": "t"}],
+    "contract_assertions": [
+        {
+            "id": "probe",
+            "description": "probe",
+            "mode": "all",
+            "paths": ["agents/methodology.md"],
+            "pattern": r"\bthe\b",
+        }
+    ],
+    "setup": {"fixture": "controlled-classic", "specialist_scenario": "success"},
+    "lifecycle": {
+        "scenario": "controlled-classic",
+        "surface": "agent",
+        "prompt": "probe",
+    },
+}
+
+
+def minimal_valid_lifecycle_case(case_id: str) -> dict[str, object]:
+    case = dict(LIFECYCLE_CASE_REQUIRED_FIELDS)
+    case["id"] = case_id
+    case["expected"] = {
+        "post_state": {"task_status": "done", "file_value": "approved"}
+    }
+    return case
+
+
+class RequiredPostStateTests(unittest.TestCase):
+    """Task 6837 (D4): `expected.post_state.task_status` and `file_value` are
+    REQUIRED on every lifecycle-tier case; the grader no longer has a
+    silent-skip branch for either being absent.
+    """
+
+    def test_missing_task_status_fails_validation_naming_the_key(self) -> None:
+        case = minimal_valid_lifecycle_case("missing-task-status")
+        case["expected"] = {"post_state": {"file_value": "approved"}}
+        with self.assertRaisesRegex(harness.EvalFailure, "task_status"):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_missing_file_value_fails_validation_naming_the_key(self) -> None:
+        case = minimal_valid_lifecycle_case("missing-file-value")
+        case["expected"] = {"post_state": {"task_status": "done"}}
+        with self.assertRaisesRegex(harness.EvalFailure, "file_value"):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_missing_post_state_entirely_fails_validation(self) -> None:
+        case = minimal_valid_lifecycle_case("missing-post-state")
+        case["expected"] = {}
+        with self.assertRaisesRegex(harness.EvalFailure, "post_state"):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_a_non_lifecycle_case_is_unaffected(self) -> None:
+        case = {
+            "schema_version": 1,
+            "id": "contract-only-probe",
+            "skill": "orchestrator",
+            "description": "probe",
+            "tags": ["contract"],
+            "tiers": ["contract"],
+            "contract_assertions": [
+                {
+                    "id": "probe",
+                    "description": "probe",
+                    "mode": "all",
+                    "paths": ["agents/methodology.md"],
+                    "pattern": r"\bthe\b",
+                }
+            ],
+            "expected": {},
+        }
+        # Must not raise: a contract-only case declares no post_state at all.
+        harness.validate_case(Path("<probe>"), case)
+
+    def test_load_cases_rejects_an_on_disk_case_missing_post_state_keys(self) -> None:
+        # Drives the real caller (`load_cases`) rather than `validate_case`
+        # directly, so a no-op at either the `load_cases` -> `validate_case`
+        # call site or the check inside `validate_case` fails this test.
+        case = minimal_valid_lifecycle_case("on-disk-missing-post-state-key")
+        case["expected"] = {"post_state": {"task_status": "done"}}
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            cases_dir = Path(raw_tmp)
+            (cases_dir / "on-disk-missing-post-state-key.json").write_text(
+                json.dumps(case), encoding="utf-8"
+            )
+            with mock.patch.object(harness, "CASES_DIR", cases_dir):
+                with self.assertRaisesRegex(harness.EvalFailure, "file_value"):
+                    harness.load_cases()
+
+    def test_existing_lifecycle_cases_declare_both_keys(self) -> None:
+        for path, case in harness.load_cases():
+            if "lifecycle" not in case["tiers"]:
+                continue
+            post_state = case["expected"]["post_state"]
+            self.assertTrue(post_state.get("task_status"), path)
+            self.assertTrue(post_state.get("file_value"), path)
+
+    def test_grader_no_longer_skips_a_task_status_mismatch(self) -> None:
+        # Before task 6837 the grader's `if expected_status and ...` guard
+        # meant a case whose expected task_status was falsy silently
+        # accepted ANY actual status. That shape can no longer reach the
+        # grader (validate_case now refuses it), so this proves the
+        # grader's own comparison is unconditional given a real value: a
+        # real mismatch is still caught.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            harness.write_json(artifact_dir / "task.after.json", {"status": "blocked"})
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "task status was blocked, expected done"
+            ):
+                harness.grade_lifecycle_artifacts(
+                    lifecycle_case(), artifact_dir, lifecycle_options()
+                )
 
 
 class RegradeCatchesRetainedObservedLogTest(unittest.TestCase):

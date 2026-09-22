@@ -413,6 +413,28 @@ def validate_case(path: Path, case: Any) -> None:
             invalid("controlled lifecycle fixture setup is required")
         if not isinstance(tasks, list) or len(tasks) != 1:
             invalid("lifecycle cases require exactly one task")
+        forbidden_events = expected.get("forbidden_events", [])
+        unemittable = [
+            name for name in forbidden_events if name not in EMITTABLE_EVENTS
+        ]
+        if unemittable:
+            invalid(
+                "forbidden_events name an event no fixture path can emit: "
+                + ", ".join(sorted(unemittable))
+            )
+        post_state = expected.get("post_state")
+        if not isinstance(post_state, dict):
+            invalid("lifecycle cases require expected.post_state")
+        missing_keys = [
+            key
+            for key in ("task_status", "file_value")
+            if not post_state.get(key)
+        ]
+        if missing_keys:
+            invalid(
+                "lifecycle cases require expected.post_state to set: "
+                + ", ".join(missing_keys)
+            )
 
 
 def select_cases(
@@ -444,14 +466,14 @@ def regex_search(pattern: str, text: str, *, multiline: bool = False) -> bool:
         raise EvalFailure(f"invalid evaluation regex {pattern!r}: {exc}") from exc
 
 
-def grade_contract(case_path: Path, case: dict[str, Any]) -> None:
+def grade_contract(case_path: Path, case: dict[str, Any], root: Path = ROOT) -> None:
     case_id = case["id"]
     for assertion in case["contract_assertions"]:
         assertion_id = assertion["id"]
         matched = 0
         paths = assertion["paths"]
         for relative in paths:
-            path = ROOT / relative
+            path = root / relative
             if not path.is_file():
                 raise EvalFailure(
                     f"{case_id}/{assertion_id} references missing path: {relative}"
@@ -694,6 +716,227 @@ def grade_contract_negative_control() -> None:
         Path("<negative-control>"),
         case("any-accepts-a-real-match", r"\bthe\b", "any", [probe]),
     )
+
+
+class SelfTestConstructionError(EvalFailure):
+    """An assertion's seeded-violation self-test could not be built.
+
+    D4 (decision, artifact 619): an assertion without a self-test fails the
+    suite. An unconstructable mutation is therefore a suite failure, never a
+    silently skipped self-test -- so this is a subclass of `EvalFailure`,
+    not a distinct control-flow branch a caller could swallow.
+    """
+
+
+def _split_top_level(pattern: str, sep: str) -> list[str]:
+    """Split `pattern` on `sep` only where parenthesis depth is 0 and the
+    separator is not escaped. Used to isolate top-level alternation
+    (`a|b`) from alternation nested inside a group (`(a|b)`)."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < n:
+            current.append(pattern[i : i + 2])
+            i += 2
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == sep and depth == 0:
+            parts.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    parts.append("".join(current))
+    return parts
+
+
+def literal_from_pattern(pattern: str) -> str | None:
+    """Derive one literal string that satisfies `pattern`, for seeding a
+    must-not-match assertion's forbidden text (C3 / D4).
+
+    Handles the shapes this suite's `none`-mode assertions actually use:
+    plain text, an escaped literal metacharacter (`\\$`), a dropped
+    zero-width anchor (`\\b`, `^`, `$`), and the first arm of an
+    alternation (top-level `a|b`, or grouped `(a|b)`). Any other regex
+    construct (character classes, quantifiers, unescaped wildcards) has no
+    single deterministic literal, so this returns `None` rather than
+    guessing -- the caller treats `None` as a suite failure, not a skip.
+    """
+    pattern = python_pattern(pattern)
+    alternatives = _split_top_level(pattern, "|")
+    if len(alternatives) > 1:
+        return literal_from_pattern(alternatives[0])
+    out: list[str] = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            if i + 1 >= n:
+                return None
+            nxt = pattern[i + 1]
+            if nxt == "b":
+                i += 2
+                continue
+            if nxt in "sSdDwWnrt":
+                return None
+            out.append(nxt)
+            i += 2
+            continue
+        if ch == "(":
+            depth = 1
+            j = i + 1
+            while j < n and depth:
+                if pattern[j] == "\\":
+                    j += 2
+                    continue
+                if pattern[j] == "(":
+                    depth += 1
+                elif pattern[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if depth != 0:
+                return None
+            group = pattern[i + 1 : j]
+            if group.startswith("?:"):
+                group = group[2:]
+            if j + 1 < n and pattern[j + 1] in "*?+{":
+                return None
+            literal = literal_from_pattern(group)
+            if literal is None:
+                return None
+            out.append(literal)
+            i = j + 1
+            continue
+        if ch in "^$":
+            i += 1
+            continue
+        if ch in ".*+?[]{}|":
+            return None
+        out.append(ch)
+        i += 1
+    result = "".join(out)
+    return result or None
+
+
+def seed_selftest_mutation(temp_root: Path, assertion: dict[str, Any]) -> None:
+    """Mutate the copies of `assertion["paths"]` under `temp_root` so this
+    ONE assertion, evaluated in isolation, is guaranteed to fail: the
+    matched text is deleted for a must-match assertion (mode `all`/`any`),
+    or a literal satisfying the pattern is appended for a must-not-match
+    assertion (mode `none`). Raises `SelfTestConstructionError` when no
+    mutation can be built -- never returns having done nothing.
+    """
+    assertion_id = assertion["id"]
+    mode = assertion["mode"]
+    pattern = assertion["pattern"]
+    flags = re.MULTILINE | (re.DOTALL if assertion.get("multiline", False) else 0)
+    try:
+        compiled = re.compile(python_pattern(pattern), flags)
+    except re.error as exc:
+        raise SelfTestConstructionError(
+            f"{assertion_id}: invalid evaluation regex {pattern!r}: {exc}"
+        ) from exc
+    if mode in ("all", "any"):
+        mutated = False
+        for relative in assertion["paths"]:
+            target = temp_root / relative
+            text = target.read_text(encoding="utf-8")
+            if compiled.search(text) is None:
+                continue
+            # Remove EVERY occurrence, not just the first: a path where the
+            # pattern appears more than once still counts as matched after
+            # deleting a single occurrence, which would leave the self-test
+            # unable to falsify the assertion.
+            target.write_text(compiled.sub("", text), encoding="utf-8")
+            mutated = True
+        if not mutated:
+            raise SelfTestConstructionError(
+                f"{assertion_id}: must-match pattern has no literal occurrence "
+                "to delete in any declared path"
+            )
+        return
+    if mode == "none":
+        literal = literal_from_pattern(pattern)
+        if literal is None:
+            raise SelfTestConstructionError(
+                f"{assertion_id}: forbidden pattern has no constructible literal "
+                "to seed"
+            )
+        target = temp_root / assertion["paths"][0]
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(f"\n{literal}\n")
+        return
+    raise SelfTestConstructionError(f"{assertion_id}: unsupported assertion mode {mode!r}")
+
+
+def run_one_assertion_selftest(case_id: str, assertion: dict[str, Any]) -> None:
+    """Build a mutated copy of `assertion["paths"]`, seed the violation this
+    assertion is supposed to catch, and require `grade_contract` to reject
+    it. Raises `EvalFailure` (via `SelfTestConstructionError` or the
+    re-raised assertion below) rather than returning a boolean, so a caller
+    cannot silently ignore either "could not construct" or "did not fail".
+    """
+    temp_root = Path(tempfile.mkdtemp(prefix="planar-eval-selftest-"))
+    try:
+        for relative in assertion["paths"]:
+            source = ROOT / relative
+            if not source.is_file():
+                raise SelfTestConstructionError(
+                    f"{assertion['id']}: references missing path: {relative}"
+                )
+            target = temp_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        seed_selftest_mutation(temp_root, assertion)
+        single_case = {"id": case_id, "contract_assertions": [assertion]}
+        try:
+            grade_contract(Path("<selftest>"), single_case, root=temp_root)
+        except EvalFailure:
+            return
+        raise EvalFailure(
+            f"{case_id}/{assertion['id']}: self-test did not fail under its "
+            "seeded violation"
+        )
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def run_assertion_selftests(
+    cases: list[tuple[Path, dict[str, Any]]]
+) -> tuple[int, int]:
+    """Run `run_one_assertion_selftest` for every contract assertion across
+    `cases` (C3 / D4). Returns `(self_tests_run, total_assertions)`; the
+    caller asserts the two are equal so an assertion added without a
+    self-test -- which, given generation is automatic here, can only mean
+    this function's call site was bypassed -- fails the suite rather than
+    silently passing.
+    """
+    total_assertions = 0
+    self_tests_run = 0
+    for _, case in cases:
+        if "contract" not in case["tiers"]:
+            continue
+        for assertion in case["contract_assertions"]:
+            total_assertions += 1
+            run_one_assertion_selftest(case["id"], assertion)
+            self_tests_run += 1
+    if self_tests_run != total_assertions:
+        raise EvalFailure(
+            "assertion self-tests: ran "
+            f"{self_tests_run} of {total_assertions} contract assertions"
+        )
+    return self_tests_run, total_assertions
 
 
 def create_artifacts(
@@ -1528,6 +1771,27 @@ CLAIM_VERBS = {"pull", "claim"}
 # violation.
 CLAIM_GATE_TERMINAL_VERBS = TERMINAL_VERBS - {"release"}
 
+# The controlled-classic fixture's own `log_event` calls
+# (fixtures/controlled-classic/control.sh) -- events NOT derived from a
+# wrapped `planar-agent` verb. Kept as an explicit manifest, checked against
+# the script itself by `test_fixture_log_events_matches_control_script`
+# (task 6836), rather than re-parsing the shell script at import time.
+FIXTURE_LOG_EVENTS = {
+    "coder-finished",
+    "review-request-changes",
+    "review-approved",
+    "test-coder-no-expansion",
+    "task-completed-before-review",
+}
+
+# Every lifecycle event name a controlled fixture run can actually produce:
+# either a successful wrapped verb (OBSERVED_EVENT_NAMES) or a `log_event`
+# call in the specialist script (FIXTURE_LOG_EVENTS). `validate_case`
+# rejects a lifecycle case whose `forbidden_events` names anything outside
+# this set -- an event that can never fire makes the negative assertion
+# unfalsifiable (task 6836, D4).
+EMITTABLE_EVENTS = set(OBSERVED_EVENT_NAMES.values()) | FIXTURE_LOG_EVENTS
+
 
 def observed_event_name(record: dict[str, Any]) -> str | None:
     argv = record.get("argv") or []
@@ -2071,10 +2335,14 @@ def grade_lifecycle_artifacts(
                 options,
                 f"event {event} count was {actual}, expected {expected_count}",
             )
+    # `task_status` and `file_value` are REQUIRED on every lifecycle case's
+    # `expected.post_state` (validate_case, task 6837/D4): there is no
+    # longer a silent-skip branch here for either key being absent, because
+    # a lifecycle case can no longer reach this function without them.
     post_state = case.get("expected", {}).get("post_state", {})
     task = read_json(artifact_dir / "task.after.json")
-    expected_status = post_state.get("task_status")
-    if expected_status and task.get("status") != expected_status:
+    expected_status = post_state["task_status"]
+    if task.get("status") != expected_status:
         raise live_failure(
             artifact_dir,
             case_id,
@@ -2094,8 +2362,8 @@ def grade_lifecycle_artifacts(
     actual_value = (artifact_dir / "repo" / "src" / "value.txt").read_text(
         encoding="utf-8"
     ).strip()
-    expected_value = post_state.get("file_value")
-    if expected_value and actual_value != expected_value:
+    expected_value = post_state["file_value"]
+    if actual_value != expected_value:
         raise live_failure(
             artifact_dir,
             case_id,
@@ -2473,6 +2741,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if "contract" in case["tiers"]:
                 grade_contract(path, case)
         pass_line(f"{len(selected)} orchestrator case definitions and deterministic contracts")
+        self_tests_run, total_assertions = run_assertion_selftests(selected)
+        pass_line(
+            f"{self_tests_run} of {total_assertions} contract assertions have a "
+            "falsifiable seeded-violation self-test"
+        )
         return 0
     if options.mode == "live":
         if options.vendor not in {"codex", "claude"}:
