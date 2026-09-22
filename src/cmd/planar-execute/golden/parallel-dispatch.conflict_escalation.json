@@ -1,0 +1,1 @@
+{"action":"abort","auto_resolved":false,"branches":{"ours":"cycle/p1/alpha","theirs":"cycle/p1/bravo"},"conflict":true,"conflicting_paths":["src/a.cpp","src/z.cpp"],"plan_id":1}
