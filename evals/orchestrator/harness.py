@@ -1380,8 +1380,13 @@ def prepare_lifecycle_fixture(
         shutil.copy2(
             fixture_root / "planar-agent", repo / ".eval" / "bin" / "planar-agent"
         )
+        shutil.copy2(
+            fixture_root / "record_observed.py",
+            repo / ".eval" / "record_observed.py",
+        )
         os.chmod(repo / ".eval" / "control.sh", 0o755)
         os.chmod(repo / ".eval" / "bin" / "planar-agent", 0o755)
+        os.chmod(repo / ".eval" / "record_observed.py", 0o755)
         instructions = (
             "Lifecycle-eval boundary: execute this orchestrator contract directly.\n\n"
             "Do not read or invoke any installed skill. The project-scoped controlled "
@@ -1470,7 +1475,358 @@ def event_objects(path: Path) -> list[dict[str, Any]]:
     return events
 
 
-def collect_lifecycle_artifacts(context: LifecycleContext) -> None:
+# The planar-agent wrapper's argv[0] -> legacy lifecycle-event-name mapping.
+# Only a forwarded SUCCESS produces a named lifecycle event: a failed
+# terminal verb (e.g. a second `complete` on an already-completed claim) is
+# retained in the observed record for the terminal-verb assertions in
+# `assert_terminal_verb_lifecycle`, but does not itself advance the ordered
+# lifecycle the grader checks.
+OBSERVED_EVENT_NAMES = {
+    "pull": "claim-acquired",
+    "claim": "claim-acquired",
+    "complete": "task-completed",
+    "fail": "task-failed",
+    "release": "claim-released",
+    "block": "task-blocked",
+}
+TERMINAL_VERBS = {"complete", "fail", "release", "block"}
+CLAIM_VERBS = {"pull", "claim"}
+# C5: `release` is a hand-back the ritual explicitly allows to be followed
+# by a re-claim (see lapsed-claim recovery: re-claim with
+# --no-transition then complete). Only complete|fail|block gate "no
+# claim/pull observed after a terminal verb on the same task" -- a claim
+# observed after a `release` on the same task is the RECOVERY PATH, not a
+# violation.
+CLAIM_GATE_TERMINAL_VERBS = TERMINAL_VERBS - {"release"}
+
+
+def observed_event_name(record: dict[str, Any]) -> str | None:
+    argv = record.get("argv") or []
+    if not argv or record.get("exit_code") != 0:
+        return None
+    command = argv[0]
+    if command == "pull":
+        # docs/cli-reference.md § JSON shapes: `pull` -> {ok, no_work,
+        # claim_token?, claim?, task?, action_id?}. `pull` returns exit 0
+        # with {ok:true, no_work:true} when nothing is eligible
+        # (src/cmd/planar-agent/handlers/claims.cpp:194-196) -- that is NOT
+        # a claim, and naming it `claim-acquired` would hand a polling
+        # orchestrator a spurious event, possibly ordered after
+        # `task-completed` (exactly the synthesized-order problem D3
+        # deletes the audit fallback over).
+        stdout = record.get("stdout")
+        no_work = isinstance(stdout, dict) and bool(stdout.get("no_work"))
+        has_token = isinstance(stdout, dict) and bool(stdout.get("claim_token"))
+        if no_work and not has_token:
+            return None
+        return "claim-acquired"
+    return OBSERVED_EVENT_NAMES.get(command)
+
+
+def read_observed_records(observed_dir: Path) -> list[dict[str, Any]]:
+    """Read every JSON document under a wrapper `observed/` directory,
+    ordered by (ts, seq) -- the file-per-call layout C2 requires so that
+    concurrent wrapper lanes cannot interleave a record. A leftover
+    `.tmp-observed-*` file from an interrupted write is ignored; the
+    wrapper only ever renames a fully-written file into place."""
+    if not observed_dir.is_dir():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in sorted(observed_dir.glob("*.json")):
+        if path.name.startswith(".tmp-"):
+            continue
+        value = read_json(path)
+        if isinstance(value, dict):
+            records.append(value)
+    records.sort(
+        key=lambda record: (float(record.get("ts", 0)), int(record.get("seq", 0)))
+    )
+    return records
+
+
+def claim_token_of(argv: list[str]) -> str | None:
+    for index, arg in enumerate(argv):
+        if arg == "--claim" and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--claim="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def task_id_of(argv: list[str]) -> str | None:
+    for index, arg in enumerate(argv):
+        value = None
+        if arg == "--entity" and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif arg.startswith("--entity="):
+            value = arg.split("=", 1)[1]
+        if value and value.startswith("task:"):
+            return value[len("task:") :]
+    return None
+
+
+def observed_stdout_field(record: dict[str, Any], name: str) -> Any:
+    stdout = record.get("stdout")
+    if isinstance(stdout, dict):
+        return stdout.get(name)
+    return None
+
+
+def observed_task_id(record: dict[str, Any]) -> str | None:
+    """The task id a wrapper-observed record targets.
+
+    Per docs/cli-reference.md § JSON shapes, the real `planar-agent --json`
+    output never carries a flat `task_id`: it is nested at `task.id`
+    (`Task` matches `planar task show --json`), with `claim.entity_id` as
+    the fallback on a verb whose shape has no `task` key (`claim` /
+    `heartbeat` -> {ok, claim_token, claim}). Only `pull`'s argv can ever
+    carry `--entity task:<id>` in this fixture's flows (`claim`'s task id
+    comes from its own `--entity` argv the caller already used to build
+    the claim), so the argv fallback is checked last, after both stdout
+    shapes.
+    """
+    stdout = record.get("stdout")
+    if isinstance(stdout, dict):
+        task = stdout.get("task")
+        if isinstance(task, dict) and task.get("id") is not None:
+            return str(task["id"])
+        claim = stdout.get("claim")
+        if isinstance(claim, dict) and claim.get("entity_id") is not None:
+            return str(claim["entity_id"])
+    return task_id_of(record.get("argv") or [])
+
+
+def assert_no_recording_failures(
+    observed_dir: Path,
+    *,
+    artifacts: Path | None = None,
+    case_id: str | None = None,
+    options: Options | None = None,
+) -> None:
+    """C2: recording is fail-open at the wrapper (a `record_observed.py`
+    failure warns to stderr and still forwards the real `$RC`, so the
+    invocation itself succeeds from the caller's point of view). A dropped
+    record is indistinguishable from a partial bypass unless something
+    checks for it, so the wrapper writes a `.record-failed` sentinel on
+    every recording failure; this treats that sentinel's mere presence as
+    a failed run.
+    """
+    sentinel = observed_dir / ".record-failed"
+    if not sentinel.is_file():
+        return
+    detail = sentinel.read_text(encoding="utf-8", errors="replace").strip()
+    reason = f"wrapper-bypassed: observed log recording failed: {detail[:500]}"
+    if artifacts is not None and case_id is not None and options is not None:
+        raise live_failure(artifacts, case_id, options, reason)
+    raise EvalFailure(reason)
+
+
+def write_lifecycle_warnings(
+    artifacts: Path, terminal_attempt_failures: list[dict[str, Any]]
+) -> None:
+    """C4: a FAILED terminal-verb attempt (e.g. a second `complete` the
+    real binary rejected) does not fail the run and is excluded from the
+    "exactly one terminal verb" count, but it is the same shape a genuine
+    split-terminal defect would produce, so it is surfaced as a warning
+    for a human/reviewer to read rather than silently dropped.
+    """
+    write_json(
+        artifacts / "warnings.json",
+        {"terminal_attempt_failures": terminal_attempt_failures},
+    )
+
+
+def assert_wrapper_not_bypassed(
+    observed_records: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
+    *,
+    task_id: str | None = None,
+    artifacts: Path | None = None,
+    case_id: str | None = None,
+    options: Options | None = None,
+) -> None:
+    """Decision D3: the audit-table order reconstruction is deleted
+    outright rather than fixed. A run whose observed log is empty while
+    the Planar audit shows a claim means the wrapper was bypassed -- real
+    agent work happened without going through the PATH shim that produces
+    the observed log -- and that is a failed run, not a gap to paper over
+    with a synthesized `claim-acquired`/`task-completed` pair.
+
+    C3: a FULLY empty observed log is the easy case. A wrapper can also be
+    PARTIALLY bypassed -- some claims went through the wrapper, one did
+    not (a stray direct `planar-agent claim` call, or a lane that dropped
+    its wrapper env) -- and that leaves the observed log non-empty, so the
+    plain emptiness check above misses it. Compare the count of
+    successful, non-`no_work` claim-acquired records (see
+    `observed_event_name`'s pull/no_work handling) against the audit's own
+    claim count; any mismatch is a bypass, partial or otherwise.
+
+    C7: `claims` (from `planar audit trail --kind task <task_id>`) is
+    already task-scoped, but the observed log is the WHOLE run's log --
+    it also carries the orchestrator's own `claim --entity plan:<id>` (a
+    real call every orchestrator run makes) and any other task's pull/
+    claim. Counting every `claim-acquired` record regardless of which
+    task it targets over-counts against the task-scoped audit and reports
+    a false `wrapper-bypassed: partial` on a perfectly clean run. When
+    `task_id` is given, only records whose `observed_task_id(record)`
+    matches count; a record this fixture can't attribute to a task at all
+    (e.g. a plan-level claim) is excluded rather than guessed at.
+    """
+
+    def fail(reason: str) -> None:
+        if artifacts is not None and case_id is not None and options is not None:
+            raise live_failure(artifacts, case_id, options, reason)
+        raise EvalFailure(reason)
+
+    if not observed_records and claims:
+        fail(
+            "wrapper-bypassed: observed log is empty but the audit shows "
+            "agent activity"
+        )
+    if not claims:
+        return
+    observed_claim_count = sum(
+        1
+        for record in observed_records
+        if observed_event_name(record) == "claim-acquired"
+        and (task_id is None or observed_task_id(record) == task_id)
+    )
+    if observed_claim_count != len(claims):
+        fail(
+            "wrapper-bypassed: partial -- observed log shows "
+            f"{observed_claim_count} claim-acquired record(s) but the "
+            f"audit shows {len(claims)} claim(s)"
+        )
+
+
+def assert_terminal_verb_lifecycle(
+    observed_records: list[dict[str, Any]],
+    *,
+    artifacts: Path | None = None,
+    case_id: str | None = None,
+    options: Options | None = None,
+) -> list[dict[str, Any]]:
+    """Enforce the observed-log lifecycle invariants (task
+    hh-terminal-verb-assertions): exactly one SUCCESSFUL terminal verb
+    (complete|fail|release|block) per claim token, every `heartbeat`
+    carries `--ttl`, and no `claim`/`pull` is observed after a
+    complete|fail|block on the same task (C5: `release` is excluded from
+    this last gate -- it is a hand-back the ritual explicitly allows a
+    re-claim to follow, including lapsed-claim recovery). Raises on the
+    first violation found in (ts, seq) order.
+
+    Returns the C4 `terminal_attempt_failures` list: a FAILED terminal-verb
+    attempt (e.g. a second `complete` the real binary rejected) does not
+    itself violate "exactly one" and does not fail the run, but is
+    surfaced here so the caller can record it as a grade-output warning --
+    it is the same shape a genuine split-terminal defect would produce,
+    just distinguished by exit code.
+    """
+
+    def fail(reason: str) -> None:
+        if artifacts is not None and case_id is not None and options is not None:
+            raise live_failure(artifacts, case_id, options, reason)
+        raise EvalFailure(reason)
+
+    terminal_calls_by_token: dict[str, list[dict[str, Any]]] = {}
+    terminal_ts_by_task: dict[str, float] = {}
+    terminal_attempt_failures: list[dict[str, Any]] = []
+    ordered = sorted(
+        observed_records,
+        key=lambda record: (float(record.get("ts", 0)), int(record.get("seq", 0))),
+    )
+    for record in ordered:
+        argv = record.get("argv") or []
+        if not argv:
+            continue
+        command = argv[0]
+        ts = float(record.get("ts", 0))
+        exit_code = record.get("exit_code")
+        if command == "heartbeat":
+            has_ttl = "--ttl" in argv or any(a.startswith("--ttl=") for a in argv)
+            if not has_ttl:
+                fail(f"heartbeat observed without --ttl: argv={argv!r}")
+        if command in CLAIM_VERBS and exit_code == 0:
+            task_id = observed_task_id(record)
+            if (
+                task_id is not None
+                and task_id in terminal_ts_by_task
+                and ts >= terminal_ts_by_task[task_id]
+            ):
+                fail(
+                    "claim observed after a terminal verb on task "
+                    f"{task_id}: argv={argv!r}"
+                )
+        if command in TERMINAL_VERBS:
+            token = claim_token_of(argv) or observed_stdout_field(
+                record, "claim_token"
+            )
+            if exit_code == 0:
+                if token is not None:
+                    terminal_calls_by_token.setdefault(token, []).append(record)
+                if command in CLAIM_GATE_TERMINAL_VERBS:
+                    task_id = observed_task_id(record)
+                    if task_id is not None:
+                        terminal_ts_by_task[task_id] = ts
+            else:
+                terminal_attempt_failures.append(
+                    {
+                        "command": command,
+                        "claim_token": token,
+                        "task_id": observed_task_id(record),
+                        "argv": argv,
+                        "exit_code": exit_code,
+                        "stderr": record.get("stderr"),
+                    }
+                )
+    for token, calls in terminal_calls_by_token.items():
+        if len(calls) > 1:
+            commands = [call.get("argv", [None])[0] for call in calls]
+            fail(
+                f"claim token {token} recorded {len(calls)} terminal verbs "
+                f"({', '.join(str(c) for c in commands)}), expected exactly one"
+            )
+    return terminal_attempt_failures
+
+
+def merge_lifecycle_events(
+    observed_dir: Path, boundary_events_path: Path
+) -> list[dict[str, Any]]:
+    """Derive lifecycle event order from the observed log rather than
+    reconstructing it from the audit table (decision D3). Wrapper-observed
+    terminal verbs and the specialist fixtures' own boundary events
+    (`coder-finished`, `review-approved`, ...) are two streams that
+    interleave chronologically during a real run; each stream is already
+    internally ordered, so a stable sort by timestamp merges them
+    correctly, including a completion recorded before the reviewer
+    boundary event.
+    """
+    merged: list[tuple[float, dict[str, Any]]] = []
+    for record in read_observed_records(observed_dir):
+        name = observed_event_name(record)
+        if name is not None:
+            merged.append(
+                (
+                    float(record.get("ts", 0)),
+                    {
+                        "event": name,
+                        "source": "planar-agent",
+                        "ts": record.get("ts"),
+                        "seq": record.get("seq"),
+                    },
+                )
+            )
+    for index, event in enumerate(event_objects(boundary_events_path)):
+        ts = event.get("ts")
+        sort_key = float(ts) if ts is not None else float(index)
+        merged.append((sort_key, event))
+    merged.sort(key=lambda item: item[0])
+    return [event for _, event in merged]
+
+
+def collect_lifecycle_artifacts(
+    context: LifecycleContext, options: Options
+) -> None:
     case = context.case
     repo = context.repo
     artifacts = context.artifacts
@@ -1485,17 +1841,28 @@ def collect_lifecycle_artifacts(context: LifecycleContext) -> None:
     )
     write_json(artifacts / "task.after.json", task)
     write_json(artifacts / "task.audit.json", audit)
-    events = event_objects(repo / ".eval" / "events.jsonl")
-    names = [event.get("event") for event in events]
+    observed_dir = repo / ".eval" / "observed"
+    observed_records = read_observed_records(observed_dir)
     claims = audit.get("agent_activity", {}).get("claims", [])
-    if "claim-acquired" not in names and claims:
-        events.insert(0, {"event": "claim-acquired", "source": "planar-audit"})
-    if (
-        "task-completed" not in names
-        and any(claim.get("status") == "completed" for claim in claims)
-        and task.get("status") == "done"
-    ):
-        events.append({"event": "task-completed", "source": "planar-audit"})
+    assert_no_recording_failures(
+        observed_dir, artifacts=artifacts, case_id=case["id"], options=options
+    )
+    assert_wrapper_not_bypassed(
+        observed_records,
+        claims,
+        task_id=context.task_id,
+        artifacts=artifacts,
+        case_id=case["id"],
+        options=options,
+    )
+    terminal_attempt_failures = assert_terminal_verb_lifecycle(
+        observed_records,
+        artifacts=artifacts,
+        case_id=case["id"],
+        options=options,
+    )
+    write_lifecycle_warnings(artifacts, terminal_attempt_failures)
+    events = merge_lifecycle_events(observed_dir, repo / ".eval" / "events.jsonl")
     write_text(
         artifacts / "events.normalized.jsonl",
         "".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events),
@@ -1553,6 +1920,53 @@ def grade_lifecycle_artifacts(
             options,
             f"artifact set is incomplete: {', '.join(missing)}",
         )
+    # Re-run the observed-log lifecycle assertions against the RETAINED
+    # observed/ directory (it lives under artifact_dir/repo/.eval/observed
+    # because `repo` is itself a subtree of the run's artifact dir), so a
+    # `--grade-artifacts` regrade of a retained run re-derives the same
+    # wrapper-bypassed / terminal-verb guarantees collect-time already
+    # enforced rather than trusting a canned events.normalized.json that
+    # could have been hand-edited or produced by a stale collector.
+    # Artifact sets that predate C2 (or synthetic fixtures that never
+    # populate a repo/.eval/observed tree) have no such directory; the
+    # recheck is a no-op for those rather than a new hard requirement.
+    observed_dir = artifact_dir / "repo" / ".eval" / "observed"
+    if observed_dir.is_dir():
+        observed_records = read_observed_records(observed_dir)
+        claims: list[dict[str, Any]] = []
+        audit_path = artifact_dir / "task.audit.json"
+        if audit_path.is_file():
+            audit = read_json(audit_path)
+            claims = audit.get("agent_activity", {}).get("claims", [])
+        # C7: the audit's claims are task-scoped, so the count compared
+        # against them must be too (see assert_wrapper_not_bypassed's own
+        # docstring) -- `run.json` (also retained under artifact_dir)
+        # carries the task id `prepare_lifecycle_fixture` recorded at
+        # dispatch time.
+        run_json_path = artifact_dir / "run.json"
+        retained_task_id = (
+            read_json(run_json_path).get("task_id")
+            if run_json_path.is_file()
+            else None
+        )
+        assert_no_recording_failures(
+            observed_dir, artifacts=artifact_dir, case_id=case_id, options=options
+        )
+        assert_wrapper_not_bypassed(
+            observed_records,
+            claims,
+            task_id=retained_task_id,
+            artifacts=artifact_dir,
+            case_id=case_id,
+            options=options,
+        )
+        terminal_attempt_failures = assert_terminal_verb_lifecycle(
+            observed_records,
+            artifacts=artifact_dir,
+            case_id=case_id,
+            options=options,
+        )
+        write_lifecycle_warnings(artifact_dir, terminal_attempt_failures)
     events = read_json(artifact_dir / "events.normalized.json")
     names = [event.get("event") for event in events]
     cursor = -1
@@ -1698,7 +2112,7 @@ def run_lifecycle_fixture_replay(
             env=context.env,
         )
         write_text(context.artifacts / "complete.json", complete.stdout)
-        collect_lifecycle_artifacts(context)
+        collect_lifecycle_artifacts(context, options)
         grade_lifecycle_artifacts(case, context.artifacts, options)
         write_grade(context.artifacts, "pass", case["id"], options)
         pass_line(f"{case['id']}: controlled lifecycle fixture replay")
@@ -1875,7 +2289,7 @@ def run_lifecycle_host(
                 env=context.env,
             ).get("status")
         extract_host_transcript(raw, options.vendor, artifacts)
-        collect_lifecycle_artifacts(context)
+        collect_lifecycle_artifacts(context, options)
         grade_lifecycle_artifacts(case, artifacts, options)
         write_grade(artifacts, "pass", case["id"], options)
         pass_line(

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -691,6 +693,964 @@ class SemanticGraderNegativeControlTests(unittest.TestCase):
         for name, mutator, reason in controls:
             with self.subTest(control=name):
                 self.assert_lifecycle_rejects(mutator, reason)
+
+
+FIXTURE_ROOT = (
+    Path(__file__).resolve().parent / "fixtures" / "controlled-classic"
+)
+
+
+def observed_record(
+    *,
+    ts: float,
+    seq: int,
+    argv: list[str],
+    exit_code: int = 0,
+    stdout: object = "",
+    stderr: str = "",
+) -> dict[str, object]:
+    return {
+        "ts": ts,
+        "seq": seq,
+        "pid": 1000 + seq,
+        "argv": argv,
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+
+def write_observed_record(observed_dir: Path, record: dict[str, object]) -> None:
+    observed_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{record['ts']}-{record['pid']}-{record['seq']}.json"
+    (observed_dir / name).write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+
+# The documented `planar-agent --json` shapes (docs/cli-reference.md § JSON
+# shapes): `pull` -> {ok, no_work, claim_token?, claim?, task?, action_id?};
+# `complete|fail|release|block` -> {ok, claim_token, claim, task};
+# `claim|heartbeat` -> {ok, claim_token, claim}. The task id lives at
+# `task.id` (fallback `claim.entity_id`), never a flat `task_id` -- these
+# helpers build fixtures in that real nested shape rather than one the
+# product never produces, per F1.
+def pull_stdout(
+    *,
+    claim_token: str | None = None,
+    task_id: str | None = None,
+    no_work: bool = False,
+) -> dict[str, object]:
+    if no_work:
+        return {"ok": True, "no_work": True}
+    return {
+        "ok": True,
+        "no_work": False,
+        "claim_token": claim_token,
+        "claim": {"entity_id": task_id},
+        "task": {"id": task_id},
+    }
+
+
+def claim_stdout(*, claim_token: str, task_id: str | None = None) -> dict[str, object]:
+    return {"ok": True, "claim_token": claim_token, "claim": {"entity_id": task_id}}
+
+
+def terminal_stdout(
+    *, claim_token: str, task_id: str | None = None
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "claim_token": claim_token,
+        "claim": {"entity_id": task_id},
+        "task": {"id": task_id},
+    }
+
+
+class WrapperObservedLogTest(unittest.TestCase):
+    """C2 (task hh-observed-log): the `controlled-classic` planar-agent PATH
+    wrapper records every invocation -- including heartbeats and a failed
+    terminal verb -- as its own file under observed/, JSON-encoded rather
+    than string-interpolated.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.eval_dir = Path(self.tmp.name) / ".eval"
+        (self.eval_dir / "bin").mkdir(parents=True)
+        shutil.copy2(
+            FIXTURE_ROOT / "planar-agent", self.eval_dir / "bin" / "planar-agent"
+        )
+        shutil.copy2(
+            FIXTURE_ROOT / "record_observed.py",
+            self.eval_dir / "record_observed.py",
+        )
+        os.chmod(self.eval_dir / "bin" / "planar-agent", 0o755)
+        os.chmod(self.eval_dir / "record_observed.py", 0o755)
+        # A stub `real-planar-agent`: `complete` succeeds once (exit 0, JSON
+        # stdout in the documented nested shape -- docs/cli-reference.md §
+        # JSON shapes: `{ok, claim_token, claim, task}`) and fails on any
+        # later invocation (non-zero, stderr prose) so the wrapper's
+        # fail-forwarding path is exercised without touching a real
+        # planar-agent binary. Any other command (e.g. `heartbeat`) returns
+        # the `claim|heartbeat` shape `{ok, claim_token, claim}`.
+        stub = self.eval_dir / "fake-real-planar-agent"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'if [ "$1" = "complete" ] && [ ! -f "'
+            + str(self.eval_dir / ".completed")
+            + '" ]; then\n'
+            '  touch "' + str(self.eval_dir / ".completed") + '"\n'
+            "  echo '{\"ok\":true,\"claim_token\":\"tok-1\","
+            "\"claim\":{\"entity_id\":\"6831\"},\"task\":{\"id\":\"6831\"}}'\n"
+            "  exit 0\n"
+            'elif [ "$1" = "complete" ]; then\n'
+            '  echo "already completed" >&2\n'
+            "  exit 3\n"
+            "else\n"
+            "  echo '{\"ok\":true,\"claim_token\":\"tok-1\","
+            "\"claim\":{\"entity_id\":\"6831\"}}'\n"
+            "  exit 0\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        os.chmod(stub, 0o755)
+        (self.eval_dir / "real-planar-agent").write_text(
+            str(stub) + "\n", encoding="utf-8"
+        )
+        self.env = dict(os.environ)
+        self.env["PATH"] = str(self.eval_dir / "bin") + os.pathsep + self.env["PATH"]
+
+    def run_wrapper(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(self.eval_dir / "bin" / "planar-agent"), *args],
+            cwd=self.eval_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def observed_records(self) -> list[dict[str, object]]:
+        return harness.read_observed_records(self.eval_dir / "observed")
+
+    def test_heartbeat_and_failed_terminal_verb_both_appear(self) -> None:
+        self.run_wrapper(["heartbeat", "--claim", "tok-1", "--ttl", "8h", "--json"])
+        self.run_wrapper(["complete", "--claim", "tok-1", "--json"])
+        second = self.run_wrapper(["complete", "--claim", "tok-1", "--json"])
+        self.assertEqual(second.returncode, 3)
+        records = self.observed_records()
+        self.assertEqual(len(records), 3)
+        heartbeat, first_complete, second_complete = records
+        self.assertEqual(heartbeat["argv"][0], "heartbeat")
+        self.assertEqual(heartbeat["exit_code"], 0)
+        self.assertIn("ts", heartbeat)
+        self.assertIn("argv", heartbeat)
+        self.assertIn("exit_code", heartbeat)
+        self.assertEqual(first_complete["exit_code"], 0)
+        self.assertEqual(first_complete["stdout"]["claim_token"], "tok-1")
+        self.assertEqual(second_complete["exit_code"], 3)
+        self.assertIn("already completed", second_complete["stderr"])
+
+    def test_sixteen_concurrent_calls_leave_sixteen_intact_records(self) -> None:
+        big_summary = "x" * 70_000
+        procs = [
+            subprocess.Popen(
+                [
+                    str(self.eval_dir / "bin" / "planar-agent"),
+                    "heartbeat",
+                    "--claim",
+                    f"tok-{i}",
+                    "--ttl",
+                    "8h",
+                    "--summary",
+                    big_summary,
+                    "--json",
+                ],
+                cwd=self.eval_dir,
+                env=self.env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for i in range(16)
+        ]
+        for proc in procs:
+            self.assertEqual(proc.wait(timeout=30), 0)
+        records = self.observed_records()
+        self.assertEqual(len(records), 16)
+        seqs = sorted(record["seq"] for record in records)
+        self.assertEqual(seqs, list(range(16)))
+        for record in records:
+            self.assertEqual(record["argv"].count(big_summary), 1)
+
+    def test_stale_lock_is_reclaimed_without_hanging(self) -> None:
+        # C1: a lane killed between mkdir and rmdir leaves
+        # .observed-seq.lock behind forever without a reclaim path. Plant
+        # a lock dir backdated well past the wrapper's 5s staleness
+        # threshold and confirm the NEXT call reclaims it quickly rather
+        # than spinning (or hanging past a generous bound).
+        lock_dir = self.eval_dir / ".observed-seq.lock"
+        lock_dir.mkdir()
+        stale_time = time.time() - 30
+        os.utime(lock_dir, (stale_time, stale_time))
+        started = time.monotonic()
+        result = self.run_wrapper(["heartbeat", "--claim", "tok-1", "--ttl", "8h", "--json"])
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0)
+        self.assertLess(elapsed, 3.0, "stale lock was not reclaimed promptly")
+        self.assertFalse(lock_dir.is_dir(), "stale lock directory was not removed")
+        self.assertEqual(len(self.observed_records()), 1)
+
+    def test_record_failure_writes_sentinel_and_still_forwards_exit_code(
+        self,
+    ) -> None:
+        # C2: recording is fail-OPEN (the wrapper's contract is to forward
+        # the real exit code even if recording itself breaks), but a
+        # dropped record must not be silently invisible to the grader.
+        broken_record_script = self.eval_dir / "record_observed.py"
+        broken_record_script.write_text(
+            "#!/usr/bin/env python3\nimport sys\nsys.exit(9)\n", encoding="utf-8"
+        )
+        result = self.run_wrapper(
+            ["heartbeat", "--claim", "tok-1", "--ttl", "8h", "--json"]
+        )
+        self.assertEqual(result.returncode, 0, "wrapper must still forward $RC")
+        sentinel = self.eval_dir / "observed" / ".record-failed"
+        self.assertTrue(sentinel.is_file())
+        self.assertIn("record_rc=9", sentinel.read_text(encoding="utf-8"))
+
+    def test_quotes_newlines_and_braces_round_trip(self) -> None:
+        hostile = 'has "quotes", a\nnewline, and a } brace {'
+        self.run_wrapper(["complete", "--claim", "tok-1", "--summary", hostile, "--json"])
+        records = self.observed_records()
+        self.assertEqual(len(records), 1)
+        argv = records[0]["argv"]
+        # Must round-trip as its OWN argv element -- a list of the exact
+        # original tokens -- not merely appear as a substring somewhere in
+        # the record (a naive `" ".join(argv)` interpolation would still
+        # satisfy a plain containment check while destroying the token
+        # boundary the grader relies on to find --claim's value, etc.).
+        self.assertIsInstance(argv, list)
+        self.assertEqual(
+            argv, ["complete", "--claim", "tok-1", "--summary", hostile, "--json"]
+        )
+
+    def test_real_stub_nested_shape_feeds_task_id_extraction(self) -> None:
+        # F1 regression guard: the stub `real-planar-agent` in setUp emits
+        # the DOCUMENTED nested shape (`task.id` / `claim.entity_id`), not
+        # a flat `task_id`. Feed the REAL wrapper's REAL observed records
+        # (produced by the real record_observed.py, not a hand-built
+        # dict) into `observed_task_id` / `assert_terminal_verb_lifecycle`
+        # and confirm the task id is actually recovered -- a fixture that
+        # emitted a shape the product never produces (flat `task_id`)
+        # would pass this end-to-end path trivially while masking the
+        # exact defect F1 fixed (`terminal_ts_by_task` never populated on
+        # a real run).
+        self.run_wrapper(["complete", "--claim", "tok-1", "--json"])
+        records = self.observed_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(harness.observed_task_id(records[0]), "6831")
+        # And the claim-after-terminal gate actually fires against this
+        # REAL record when a later claim on the same task is observed.
+        followup = observed_record(
+            ts=records[0]["ts"] + 1.0,
+            seq=records[0]["seq"] + 1,
+            argv=["claim", "--entity", "task:6831"],
+            stdout=claim_stdout(claim_token="tok-2", task_id="6831"),
+        )
+        with self.assertRaisesRegex(harness.EvalFailure, "6831"):
+            harness.assert_terminal_verb_lifecycle([records[0], followup])
+
+
+class ObservedLogGraderTest(unittest.TestCase):
+    """C2/D3 (tasks hh-drop-order-fabrication, hh-terminal-verb-assertions):
+    the grader derives event order from the observed log rather than the
+    audit table, and enforces the terminal-verb lifecycle invariants.
+    """
+
+    def test_empty_log_with_audit_activity_fails_as_wrapper_bypassed(self) -> None:
+        with self.assertRaisesRegex(harness.EvalFailure, "wrapper-bypassed"):
+            harness.assert_wrapper_not_bypassed(
+                observed_records=[],
+                claims=[{"status": "completed"}],
+            )
+
+    def test_empty_log_with_no_audit_activity_does_not_fail(self) -> None:
+        harness.assert_wrapper_not_bypassed(observed_records=[], claims=[])
+
+    def test_nonempty_log_with_audit_activity_does_not_fail(self) -> None:
+        harness.assert_wrapper_not_bypassed(
+            observed_records=[observed_record(ts=1.0, seq=0, argv=["pull"])],
+            claims=[{"status": "completed"}],
+        )
+
+    def test_partial_bypass_count_mismatch_fails(self) -> None:
+        # C3: the observed log is non-empty (a direct bypass never
+        # happened for AT LEAST one claim), but only one of the audit's
+        # two claims went through the wrapper -- a stray direct
+        # `planar-agent claim` call for the second, or a lane that dropped
+        # its wrapper PATH override.
+        with self.assertRaisesRegex(harness.EvalFailure, "wrapper-bypassed"):
+            harness.assert_wrapper_not_bypassed(
+                observed_records=[
+                    observed_record(
+                        ts=1.0,
+                        seq=0,
+                        argv=["pull"],
+                        stdout=pull_stdout(claim_token="tok-1", task_id="6832"),
+                    )
+                ],
+                claims=[{"status": "completed"}, {"status": "completed"}],
+            )
+
+    def test_plan_level_claim_does_not_count_against_task_scoped_audit(self) -> None:
+        # C7: `claims` (from `planar audit trail --kind task <id>`) is
+        # already task-scoped, but the observed log is the WHOLE run's
+        # log -- it also carries the orchestrator's own
+        # `claim --entity plan:<id>` (a real call every orchestrator run
+        # makes) alongside the task-scoped claim. Without the `task_id`
+        # filter, this would report an over-count (2 observed vs. 1
+        # audited) as a spurious `wrapper-bypassed: partial` on a
+        # perfectly clean run.
+        plan_level_claim = observed_record(
+            ts=1.0,
+            seq=0,
+            argv=["claim", "--entity", "plan:1"],
+            stdout=claim_stdout(claim_token="tok-plan", task_id="1"),
+        )
+        task_level_claim = observed_record(
+            ts=2.0,
+            seq=1,
+            argv=["claim", "--entity", "task:6832"],
+            stdout=claim_stdout(claim_token="tok-task", task_id="6832"),
+        )
+        harness.assert_wrapper_not_bypassed(
+            observed_records=[plan_level_claim, task_level_claim],
+            claims=[{"status": "completed"}],
+            task_id="6832",
+        )
+
+    def test_matching_claim_counts_do_not_fail(self) -> None:
+        harness.assert_wrapper_not_bypassed(
+            observed_records=[
+                observed_record(
+                    ts=1.0,
+                    seq=0,
+                    argv=["pull"],
+                    stdout=pull_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+                observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["pull"],
+                    stdout=pull_stdout(claim_token="tok-2", task_id="6833"),
+                ),
+            ],
+            claims=[{"status": "completed"}, {"status": "completed"}],
+        )
+
+    def test_no_work_pull_is_not_claim_acquired(self) -> None:
+        # F2: `pull` returns exit 0 with {ok:true, no_work:true} when
+        # nothing is eligible (src/cmd/planar-agent/handlers/claims.cpp:
+        # 194-196). A no_work pull must not be named `claim-acquired` --
+        # that would hand a polling orchestrator a spurious event and, if
+        # it lands after `task-completed`, would be exactly the
+        # synthesized-order problem D3 deletes the audit fallback over.
+        record = observed_record(
+            ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(no_work=True)
+        )
+        self.assertIsNone(harness.observed_event_name(record))
+
+    def test_no_work_pull_does_not_count_toward_wrapper_bypass_check(self) -> None:
+        # A no_work pull observed alongside a real audit claim must not
+        # mask a genuine bypass: it does not count toward the C3 observed
+        # claim-acquired tally.
+        with self.assertRaisesRegex(harness.EvalFailure, "wrapper-bypassed"):
+            harness.assert_wrapper_not_bypassed(
+                observed_records=[
+                    observed_record(
+                        ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(no_work=True)
+                    )
+                ],
+                claims=[{"status": "completed"}],
+            )
+
+    def test_pull_with_claim_token_is_claim_acquired_even_if_no_work_missing(
+        self,
+    ) -> None:
+        # A `pull` stdout carrying a claim_token is a real claim regardless
+        # of how `no_work` is spelled -- `has_token` is the belt to
+        # `no_work`'s suspenders per F2's "no_work falsy OR claim_token
+        # present" condition.
+        record = observed_record(
+            ts=1.0,
+            seq=0,
+            argv=["pull"],
+            stdout=pull_stdout(claim_token="tok-1", task_id="6832"),
+        )
+        self.assertEqual(harness.observed_event_name(record), "claim-acquired")
+
+    def test_task_id_from_nested_task_field(self) -> None:
+        # F1: the real `complete --json` shape nests the task id at
+        # `task.id` (docs/cli-reference.md § JSON shapes), never a flat
+        # `task_id`.
+        record = observed_record(
+            ts=1.0,
+            seq=0,
+            argv=["complete", "--claim", "tok-1"],
+            stdout={"ok": True, "claim_token": "tok-1", "claim": {}, "task": {"id": 6832}},
+        )
+        self.assertEqual(harness.observed_task_id(record), "6832")
+
+    def test_task_id_falls_back_to_claim_entity_id(self) -> None:
+        # `claim`/`heartbeat` -> {ok, claim_token, claim} has no `task`
+        # key at all; the fallback is `claim.entity_id`.
+        record = observed_record(
+            ts=1.0,
+            seq=0,
+            argv=["claim", "--entity", "task:9999"],
+            stdout={"ok": True, "claim_token": "tok-1", "claim": {"entity_id": 6832}},
+        )
+        self.assertEqual(harness.observed_task_id(record), "6832")
+
+    def test_task_id_falls_back_to_argv_entity_when_stdout_has_neither(self) -> None:
+        record = observed_record(
+            ts=1.0,
+            seq=0,
+            argv=["claim", "--entity", "task:6832"],
+            stdout={"ok": True, "claim_token": "tok-1"},
+        )
+        self.assertEqual(harness.observed_task_id(record), "6832")
+
+    def test_completion_recorded_before_review_is_rejected_from_order(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            observed_dir = root / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+                ),
+            )
+            # `complete` is timestamped BEFORE the reviewer boundary event
+            # below -- the synthetic violation the audit-fallback logic
+            # could not see (task.after.json/claims.after.json said the
+            # task was done either way) but the observed order rejects.
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+            )
+            events_path = root / "events.jsonl"
+            events_path.write_text(
+                json.dumps(
+                    {"event": "coder-finished", "source": "controlled-coder", "ts": 1.5}
+                )
+                + "\n"
+                + json.dumps(
+                    {"event": "review-approved", "source": "controlled-reviewer", "ts": 3.0}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            events = harness.merge_lifecycle_events(observed_dir, events_path)
+            names = [event.get("event") for event in events]
+            self.assertEqual(
+                names,
+                ["claim-acquired", "coder-finished", "task-completed", "review-approved"],
+            )
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            harness.write_json(artifact_dir / "events.normalized.json", events)
+            harness.write_json(artifact_dir / "task.after.json", {"status": "done"})
+            harness.write_json(artifact_dir / "claims.after.json", {"active": []})
+            harness.write_text(artifact_dir / "fixture-test.txt", "PASS\n")
+            harness.write_json(artifact_dir / "fixture-test.json", {"returncode": 0})
+            harness.write_text(
+                artifact_dir / "repo" / "src" / "value.txt", "approved\n"
+            )
+            with self.assertRaisesRegex(harness.EvalFailure, "ordered event missing"):
+                harness.grade_lifecycle_artifacts(
+                    lifecycle_case(), artifact_dir, lifecycle_options()
+                )
+
+    def test_two_terminal_verbs_on_one_claim_token_fail(self) -> None:
+        records = [
+            observed_record(
+                ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+            ),
+            observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            observed_record(
+                    ts=3.0,
+                    seq=2,
+                    argv=["release", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+        ]
+        with self.assertRaisesRegex(harness.EvalFailure, "tok-1"):
+            harness.assert_terminal_verb_lifecycle(records)
+
+    def test_exactly_one_terminal_verb_is_accepted(self) -> None:
+        records = [
+            observed_record(
+                ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+            ),
+            observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+        ]
+        harness.assert_terminal_verb_lifecycle(records)
+
+    def test_heartbeat_without_ttl_is_rejected(self) -> None:
+        records = [
+            observed_record(ts=1.0, seq=0, argv=["heartbeat", "--claim", "tok-1"]),
+        ]
+        with self.assertRaisesRegex(harness.EvalFailure, "heartbeat"):
+            harness.assert_terminal_verb_lifecycle(records)
+
+    def test_heartbeat_with_ttl_is_accepted(self) -> None:
+        records = [
+            observed_record(
+                ts=1.0, seq=0, argv=["heartbeat", "--claim", "tok-1", "--ttl", "8h"]
+            ),
+        ]
+        harness.assert_terminal_verb_lifecycle(records)
+
+    def test_claim_after_terminal_verb_on_same_task_is_rejected(self) -> None:
+        records = [
+            observed_record(
+                    ts=1.0,
+                    seq=0,
+                    argv=["pull"],
+                    stdout=pull_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+            observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+            observed_record(
+                    ts=3.0,
+                    seq=2,
+                    argv=["claim", "--entity", "task:6832"],
+                    stdout=claim_stdout(claim_token="tok-2"),
+                ),
+        ]
+        with self.assertRaisesRegex(harness.EvalFailure, "6832"):
+            harness.assert_terminal_verb_lifecycle(records)
+
+    def test_failed_terminal_verb_does_not_count_toward_one_per_token(self) -> None:
+        # C4: a second `complete` that the real binary rejected (non-zero
+        # exit) is retained in the observed log for diagnosis, but it must
+        # not itself trip the "exactly one terminal verb" assertion --
+        # only a forwarded success counts as a terminal verb having
+        # happened. It IS surfaced in the returned terminal_attempt_failures
+        # list rather than silently dropped.
+        records = [
+            observed_record(
+                ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+            ),
+            observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            observed_record(
+                    ts=3.0,
+                    seq=2,
+                    argv=["complete", "--claim", "tok-1"],
+                    exit_code=1,
+                    stderr="already completed",
+                ),
+        ]
+        failures = harness.assert_terminal_verb_lifecycle(records)
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["command"], "complete")
+        self.assertEqual(failures[0]["claim_token"], "tok-1")
+        self.assertEqual(failures[0]["exit_code"], 1)
+        self.assertIn("already completed", failures[0]["stderr"])
+
+    def test_release_then_claim_on_same_task_is_not_rejected(self) -> None:
+        # C5: `release` is a hand-back the ritual explicitly allows to be
+        # followed by a re-claim (lapsed-claim recovery: re-claim with
+        # --no-transition then complete). Only complete|fail|block gate
+        # "no claim/pull after a terminal verb on the same task".
+        records = [
+            observed_record(
+                ts=1.0,
+                seq=0,
+                argv=["pull"],
+                stdout=pull_stdout(claim_token="tok-1", task_id="6832"),
+            ),
+            observed_record(
+                ts=2.0,
+                seq=1,
+                argv=["release", "--claim", "tok-1"],
+                stdout=terminal_stdout(claim_token="tok-1", task_id="6832"),
+            ),
+            observed_record(
+                ts=3.0,
+                seq=2,
+                argv=["claim", "--entity", "task:6832"],
+                stdout=claim_stdout(claim_token="tok-2", task_id="6832"),
+            ),
+        ]
+        # No exception -- the post-release claim is legitimate recovery.
+        harness.assert_terminal_verb_lifecycle(records)
+
+    def test_claim_after_complete_on_same_task_is_still_rejected(self) -> None:
+        # The C5 exemption is `release`-specific: complete|fail|block still
+        # gate a later claim/pull on the same task.
+        records = [
+            observed_record(
+                ts=1.0,
+                seq=0,
+                argv=["pull"],
+                stdout=pull_stdout(claim_token="tok-1", task_id="6832"),
+            ),
+            observed_record(
+                ts=2.0,
+                seq=1,
+                argv=["complete", "--claim", "tok-1"],
+                stdout=terminal_stdout(claim_token="tok-1", task_id="6832"),
+            ),
+            observed_record(
+                ts=3.0,
+                seq=2,
+                argv=["claim", "--entity", "task:6832"],
+                stdout=claim_stdout(claim_token="tok-2", task_id="6832"),
+            ),
+        ]
+        with self.assertRaisesRegex(harness.EvalFailure, "6832"):
+            harness.assert_terminal_verb_lifecycle(records)
+
+
+def make_collect_context(repo: Path, artifacts: Path) -> harness.LifecycleContext:
+    return harness.LifecycleContext(
+        case_path=Path("<synthetic-case>"),
+        case={"id": "synthetic-collect-probe"},
+        artifacts=artifacts,
+        repo=repo,
+        env=dict(os.environ),
+        plan_id="1",
+        task_id="6832",
+    )
+
+
+def collect_options() -> harness.Options:
+    return harness.Options(
+        mode="lifecycle-fixture",
+        vendor="",
+        surface="agent",
+        case_filter=None,
+        results_dir=None,
+        keep=True,
+    )
+
+
+class CollectLifecycleArtifactsWiringTest(unittest.TestCase):
+    """`collect_lifecycle_artifacts` must actually CALL
+    `assert_wrapper_not_bypassed` and `assert_terminal_verb_lifecycle`, not
+    merely have them defined and unit-tested in isolation. `run_json` (the
+    only thing collect uses to reach `planar`/`planar audit trail`) is
+    mocked so this drives the real function over a synthetic repo tree with
+    no `planar` binary involved -- the same wiring gap cycle 1 hit with
+    `stage_vendor_config`.
+    """
+
+    def run_collect(
+        self, repo: Path, artifacts: Path, audit_claims: list[dict[str, object]]
+    ) -> None:
+        def fake_run_json(args, *, cwd=None, env=None):
+            if args[:2] == ["planar", "task"]:
+                return {"status": "done"}
+            if args[:2] == ["planar", "audit"]:
+                return {"agent_activity": {"claims": audit_claims}}
+            raise AssertionError(f"unexpected run_json call: {args}")
+
+        context = make_collect_context(repo, artifacts)
+        with mock.patch.object(harness, "run_json", side_effect=fake_run_json):
+            harness.collect_lifecycle_artifacts(context, collect_options())
+
+    def test_empty_observed_dir_with_audit_claims_raises_wrapper_bypassed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            repo = root / "repo"
+            (repo / ".eval").mkdir(parents=True)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            with self.assertRaisesRegex(harness.EvalFailure, "wrapper-bypassed"):
+                self.run_collect(
+                    repo, artifacts, audit_claims=[{"status": "completed"}]
+                )
+
+    def test_record_failed_sentinel_fails_the_run(self) -> None:
+        # C2 wiring: collect_lifecycle_artifacts must actually call
+        # assert_no_recording_failures, not just have it defined.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            repo = root / "repo"
+            observed_dir = repo / ".eval" / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+                ),
+            )
+            observed_dir.mkdir(parents=True, exist_ok=True)
+            (observed_dir / ".record-failed").write_text(
+                "seq=1 ts=2.0 exit=0 record_rc=9 argv=heartbeat\n", encoding="utf-8"
+            )
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            with self.assertRaisesRegex(harness.EvalFailure, "recording failed"):
+                self.run_collect(repo, artifacts, audit_claims=[])
+
+    def test_terminal_attempt_failures_are_written_as_warnings(self) -> None:
+        # C4 wiring: a failed second `complete` must not fail the run and
+        # must be surfaced in the retained warnings.json, not silently
+        # dropped.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            repo = root / "repo"
+            observed_dir = repo / ".eval" / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0,
+                    seq=0,
+                    argv=["pull"],
+                    stdout=pull_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=3.0,
+                    seq=2,
+                    argv=["complete", "--claim", "tok-1"],
+                    exit_code=1,
+                    stderr="already completed",
+                ),
+            )
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (repo / "src").mkdir(parents=True)
+            (repo / "src" / "value.txt").write_text("approved\n", encoding="utf-8")
+
+            def fake_run_json(args, *, cwd=None, env=None):
+                if args[:2] == ["planar", "task"]:
+                    return {"status": "done"}
+                if args[:2] == ["planar", "audit"]:
+                    return {"agent_activity": {"claims": [{"status": "completed"}]}}
+                if args[:2] == ["planar-watch", "ps"]:
+                    return {"active": []}
+                raise AssertionError(f"unexpected run_json call: {args}")
+
+            def fake_run_command(args, *, cwd=None, env=None, check=True, timeout_seconds=None):
+                if args[:2] == ["make", "test"]:
+                    return subprocess.CompletedProcess(args, 0, "PASS\n", "")
+                if args[0] == "git":
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                raise AssertionError(f"unexpected run_command call: {args}")
+
+            context = make_collect_context(repo, artifacts)
+            with mock.patch.object(
+                harness, "run_json", side_effect=fake_run_json
+            ), mock.patch.object(
+                harness, "run_command", side_effect=fake_run_command
+            ):
+                harness.collect_lifecycle_artifacts(context, collect_options())
+            warnings = harness.read_json(artifacts / "warnings.json")
+            failures = warnings["terminal_attempt_failures"]
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["command"], "complete")
+            self.assertEqual(failures[0]["exit_code"], 1)
+
+    def test_two_terminal_verbs_in_observed_dir_fails_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            repo = root / "repo"
+            observed_dir = repo / ".eval" / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=3.0,
+                    seq=2,
+                    argv=["release", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            )
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            with self.assertRaisesRegex(harness.EvalFailure, "tok-1"):
+                self.run_collect(repo, artifacts, audit_claims=[])
+
+    def test_clean_observed_dir_does_not_raise(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp)
+            repo = root / "repo"
+            observed_dir = repo / ".eval" / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0,
+                    seq=0,
+                    argv=["pull"],
+                    stdout=pull_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1", task_id="6832"),
+                ),
+            )
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (repo / "src").mkdir(parents=True)
+            (repo / "src" / "value.txt").write_text("approved\n", encoding="utf-8")
+
+            def fake_run_json(args, *, cwd=None, env=None):
+                if args[:2] == ["planar", "task"]:
+                    return {"status": "done"}
+                if args[:2] == ["planar", "audit"]:
+                    return {"agent_activity": {"claims": [{"status": "completed"}]}}
+                if args[:2] == ["planar-watch", "ps"]:
+                    return {"active": []}
+                raise AssertionError(f"unexpected run_json call: {args}")
+
+            def fake_run_command(args, *, cwd=None, env=None, check=True, timeout_seconds=None):
+                if args[:2] == ["make", "test"]:
+                    return subprocess.CompletedProcess(args, 0, "PASS\n", "")
+                if args[:2] == ["git", "status"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if args[0] == "git":
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                raise AssertionError(f"unexpected run_command call: {args}")
+
+            context = make_collect_context(repo, artifacts)
+            with mock.patch.object(
+                harness, "run_json", side_effect=fake_run_json
+            ), mock.patch.object(
+                harness, "run_command", side_effect=fake_run_command
+            ):
+                harness.collect_lifecycle_artifacts(context, collect_options())
+            events = harness.read_json(artifacts / "events.normalized.json")
+            self.assertEqual(
+                [e.get("event") for e in events], ["claim-acquired", "task-completed"]
+            )
+
+
+class RegradeCatchesRetainedObservedLogTest(unittest.TestCase):
+    """`grade_lifecycle_artifacts` (and therefore `regrade_artifacts`, which
+    calls it on a retained artifact dir) must re-derive the lifecycle
+    invariants from the RETAINED `repo/.eval/observed` tree rather than
+    trusting whatever `events.normalized.json` says -- otherwise
+    `--grade-artifacts` on a retained run silently skips the checks
+    collect-time already enforced.
+    """
+
+    def test_regrade_of_a_two_terminal_verb_artifact_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            observed_dir = artifact_dir / "repo" / ".eval" / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=3.0,
+                    seq=2,
+                    argv=["release", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            )
+            with self.assertRaisesRegex(harness.EvalFailure, "tok-1"):
+                harness.grade_lifecycle_artifacts(
+                    lifecycle_case(), artifact_dir, lifecycle_options()
+                )
+
+    def test_regrade_of_a_clean_observed_log_still_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            observed_dir = artifact_dir / "repo" / ".eval" / "observed"
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=1.0, seq=0, argv=["pull"], stdout=pull_stdout(claim_token="tok-1")
+                ),
+            )
+            write_observed_record(
+                observed_dir,
+                observed_record(
+                    ts=2.0,
+                    seq=1,
+                    argv=["complete", "--claim", "tok-1"],
+                    stdout=terminal_stdout(claim_token="tok-1"),
+                ),
+            )
+            harness.grade_lifecycle_artifacts(
+                lifecycle_case(), artifact_dir, lifecycle_options()
+            )
 
 
 class RateLimitDetectionTest(unittest.TestCase):

@@ -9,7 +9,10 @@ EVENT_LOG="$REPO_ROOT/.eval/events.jsonl"
 
 log_event() {
   local event="$1"
-  printf '{"event":"%s","source":"controlled-%s"}\n' "$event" "$ROLE" >> "$EVENT_LOG"
+  local ts
+  ts="$(python3 -c 'import time; print(f"{time.time():.6f}")')"
+  printf '{"event":"%s","source":"controlled-%s","ts":%s}\n' \
+    "$event" "$ROLE" "$ts" >> "$EVENT_LOG"
 }
 
 case "$ROLE" in
