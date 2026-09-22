@@ -1847,4 +1847,20 @@ auto lua_version() -> std::string {
   return version;
 }
 
+auto read_planar_config(std::string_view bin_dir, std::string_view key)
+    -> std::expected<std::optional<config_value>, std::string> {
+  if (bin_dir.empty()) {
+    return std::unexpected{std::string{"trusted binary directory is unavailable"}};
+  }
+  std::vector<std::string> const argv{(std::filesystem::path{bin_dir} / "planar").string(), "config", "show", "--json"};
+  auto const                     result = capture_process(argv);
+  if (!result.has_value()) {
+    return std::unexpected{std::string{"failed to spawn planar"}};
+  }
+  if (result->code != 0) {
+    return std::unexpected{std::format("planar exited non-zero: {}", trim(result->err))};
+  }
+  return find_config_value(result->out, key);
+}
+
 } // namespace planar::engine::execute

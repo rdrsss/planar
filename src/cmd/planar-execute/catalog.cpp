@@ -36,17 +36,28 @@ auto catalog_json() -> std::string {
   add_string(*run, "--args", "JSON args blob exposed to the phase as ctx.args.");
   add_string(*run, "--worktree", "Worktree directory the git/fs host functions are confined to.");
   add_string(*run, "--sandbox-root", "Sandbox root that bounds every fs path the workflow may touch.");
+  add_string(*run, "--engine",
+             "Execution engine: embedded or centurion. Overrides $PLANAR_EXECUTE_ENGINE and the execute.engine "
+             "config key; default embedded. centurion is refused at dispatch until the Centurion host lands.");
+
+  CLI::App* profile = root.add_subcommand("profile", "Inspect the resolved execution profile.");
+  CLI::App* show    = profile->add_subcommand("show", "Print the resolved engine and the provenance that chose it "
+                                                      "(flag, env, config file, or embedded default) on stdout.");
+  show->add_flag("--json")->description("Emit {\"engine\":…,\"engine_source\":…} instead of key: value lines.");
 
   root.add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
 
-  static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> k_summaries{{
+  static constexpr std::array<std::pair<std::string_view, std::string_view>, 4> k_summaries{{
       {"planar-execute run", "Run one phase of a Lua workflow and print its flow.result JSON."},
+      {"planar-execute profile", "Inspect the resolved execution profile."},
+      {"planar-execute profile show", "Print the resolved engine and where it came from."},
       {"planar-execute schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals)."},
   }};
-  static constexpr std::array<std::pair<std::string_view, std::string_view>, 3> k_empty_defaults{{
+  static constexpr std::array<std::pair<std::string_view, std::string_view>, 4> k_empty_defaults{{
       {"planar-execute run", "--args"},
       {"planar-execute run", "--worktree"},
       {"planar-execute run", "--sandbox-root"},
+      {"planar-execute run", "--engine"},
   }};
   return cliapp::schema_json(root, k_summaries, k_empty_defaults);
 }

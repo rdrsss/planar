@@ -6994,8 +6994,9 @@ only by shelling `planar` / `planar-agent` from inside a workflow. Unlike the
 other four binaries it parses its own arguments and writes its usage banner
 to **stderr** — on `--help` too, where stdout stays empty. The exit codes
 are its own, not the `planar` table above: a bare invocation and every usage
-failure exit `2`, an unreadable workflow, undecodable `--args`, or a failed
-phase exits `1`, and `--help` / `schema` exit `0`. Nothing else is produced:
+failure exit `2`, an unreadable workflow, undecodable `--args`, an
+unusable engine selection, or a failed phase exits `1`, and `--help` /
+`schema` / `profile show` exit `0`. Nothing else is produced:
 every refusal, with its exact stderr line, is pinned as a fixture under
 `src/cmd/planar-execute/golden/errors/` (plan 1033 M0), and that test also
 asserts the observed exit-code set is exactly `{0, 1, 2}`.
@@ -7011,12 +7012,46 @@ workflow's `flow.result(table)` payload as JSON on stdout.
 - `--args <json>` — JSON blob exposed to the phase as `ctx.args` (default `""`, which is an empty table). Any JSON value is accepted, not only an object: an array or a string becomes `ctx.args` as-is. Text that is not JSON, or JSON with trailing bytes, is refused before the workflow loads with `planar-execute: args error: --args is not valid JSON` (nesting deeper than 200 levels: `--args is nested too deeply`) and exit `1`.
 - `--worktree <dir>` — directory the `git` / `fs` host functions are confined to (default `""`).
 - `--sandbox-root <dir>` — root bounding every `fs` path the workflow may touch (default `""`).
+- `--engine <embedded|centurion>` — execution engine (plan 1033, decision 1017). Any other value is a usage failure, exit `2`. See [Engine selection](#engine-selection) below.
 
 An unrecognised `--flag`, a second bare positional, a flag with no value, or
 a missing `--phase` all print the usage and exit `2`; `run --help` is one of
 those, not a help request. `planar workflow run <name>` (see the `workflow`
 domain below) resolves a workflow by name and execs this verb with the same
 flags.
+
+### Engine selection
+
+Decision 1007 moves workflow execution to a Centurion host; until plan 1033's
+cutover the embedded runner stays the default, and both are selectable by
+name. The first of these that is set wins:
+
+1. `--engine <embedded|centurion>` on `run`.
+2. `$PLANAR_EXECUTE_ENGINE` (an empty value counts as unset).
+3. The `execute.engine` config key (`[execute] engine = "…"` in
+   `~/.planar/config.toml`), read by running the sibling
+   `planar config show --json` — `planar-execute` has no config reader of
+   its own. `planar config show` lists the key with its provenance.
+4. `embedded`.
+
+Tier 3 costs one `planar` process and is skipped whenever tier 1 or 2 is
+set. An invalid env or config value is refused before the workflow loads
+(`planar-execute: PLANAR_EXECUTE_ENGINE must be embedded or centurion, got:
+…`, or `execute.engine must be … (config file)`), exit `1`. `centurion`
+resolves but is refused at dispatch until the host lands in plan 1033 M2:
+`planar-execute: engine 'centurion' is not available yet (<source>); the
+Centurion host lands in plan 1033 M2`, exit `1`, nothing on stdout. The
+selection never changes `run`'s stdout.
+
+### `planar-execute profile show [--json]`
+
+Print the resolved engine and the provenance that chose it, on stdout, exit
+`0`: `engine: <name>` and `engine_source: <label>` lines, or with `--json`
+`{"engine":"embedded","engine_source":"embedded default"}`. The label is
+`flag: --engine`, `env: PLANAR_EXECUTE_ENGINE`, or the config plane's own
+(`config file`, `embedded default`). Any other `profile` shape prints the
+usage and exits `2`. Plan 1033 task 6494 extends this verb with named
+execution profiles.
 
 ### `planar-execute schema`
 

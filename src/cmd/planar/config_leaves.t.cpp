@@ -461,11 +461,14 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   CHECK(r.code == 0);
   CHECK(r.err.empty());
   CHECK_FALSE(r.db_open);
-  // A file-free HOME still lists the embedded defaults — 22 keys, and the
+  // A file-free HOME still lists the embedded defaults — 23 keys, and the
   // count is asserted so a resolver that silently stopped emitting a family
-  // cannot pass on the two keys the case happens to name.
-  CHECK(lines_of(r.out).size() == 22);
+  // cannot pass on the two keys the case happens to name. (22 until plan 1033
+  // task 6485 added `execute.engine`, which `planar-execute` reads from this
+  // very listing.)
+  CHECK(lines_of(r.out).size() == 23);
   CHECK(line_for(r.out, "defaults.vendor") == "defaults.vendor = claude");
+  CHECK(line_for(r.out, "execute.engine") == "execute.engine = embedded");
   CHECK(line_for(r.out, "workbench.root") == "workbench.root = ~/.planar/workbench");
   cleanup(fx);
 }
@@ -644,10 +647,12 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
   REQUIRE_FALSE(r.out.empty());
-  // Oracle-measured byte count, and the content markers that prove it is
-  // the DEFAULTS file rather than the operator's (which is what `--raw`
-  // would have printed).
-  CHECK(r.out.size() == 3057);
+  // Oracle-measured byte count (3057) plus the 309-byte `[execute]` block
+  // plan 1033 task 6485 added, and the content markers that prove it is the
+  // DEFAULTS file rather than the operator's (which is what `--raw` would
+  // have printed).
+  CHECK(r.out.size() == 3366);
+  CHECK(r.out.contains("[execute]\n"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
   CHECK_FALSE(r.out.contains("claude-fable-5"));
   // `--defaults` returns before anything else is consulted.
@@ -663,7 +668,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 3057);
+  CHECK(r.out.size() == 3366);
   cleanup(fx);
 }
 

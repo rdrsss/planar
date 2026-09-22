@@ -10,13 +10,16 @@ namespace planar::cmd::execute {
 auto usage_text() -> std::string_view {
   // Transcribed from zig/src/cmd/planar-execute/main.zig's `usage`
   // multiline literal and then diffed against the oracle's actual stderr
-  // bytes. The em dash on the first line is the oracle's own UTF-8. The
-  // `schema` line is the one post-oracle addition (task 6486, D18).
+  // bytes. The em dash on the first line is the oracle's own UTF-8. Post-
+  // oracle additions: the `schema` line (task 6486, D18), and `--engine` and
+  // `profile show` (plan 1033 task 6485, D5).
   return "planar-execute — deterministic, spawn-free Lua workflow engine.\n"
          "\n"
          "Usage:\n"
          "  planar-execute run <workflow.lua> --phase <name> [--args <json>]\n"
          "                     [--worktree <dir>] [--sandbox-root <dir>]\n"
+         "                     [--engine <embedded|centurion>]\n"
+         "  planar-execute profile show [--json]\n"
          "  planar-execute schema\n"
          "\n"
          "Loads the workflow in the sandbox, registers the deterministic host\n"
@@ -30,6 +33,7 @@ auto parse_run_args(std::span<const std::string> args) -> std::optional<run_args
   std::string                args_json;
   std::string                worktree;
   std::string                sandbox_root;
+  std::string                engine;
 
   // Index-based rather than range-based precisely because a flag CONSUMES
   // the following token; `++i` inside the body is the mechanism, and a
@@ -63,6 +67,12 @@ auto parse_run_args(std::span<const std::string> args) -> std::optional<run_args
       if (!take_value(sandbox_root)) {
         return std::nullopt;
       }
+    } else if (token == "--engine") {
+      // Validated HERE, so a misspelt engine is a usage failure (exit 2)
+      // like every other malformed flag, never a dispatch-time surprise.
+      if (!take_value(engine) || (engine != "embedded" && engine != "centurion")) {
+        return std::nullopt;
+      }
     } else if (token.starts_with("--")) {
       // An unrecognised long flag is a REFUSAL, not something to ignore.
       return std::nullopt;
@@ -82,7 +92,21 @@ auto parse_run_args(std::span<const std::string> args) -> std::optional<run_args
                   .phase        = std::move(*phase),
                   .args_json    = std::move(args_json),
                   .worktree     = std::move(worktree),
-                  .sandbox_root = std::move(sandbox_root)};
+                  .sandbox_root = std::move(sandbox_root),
+                  .engine       = std::move(engine)};
+}
+
+auto parse_profile_args(std::span<const std::string> args) -> std::optional<bool> {
+  if (args.empty() || args[0] != "show") {
+    return std::nullopt;
+  }
+  if (args.size() == 1) {
+    return false;
+  }
+  if (args.size() == 2 && args[1] == "--json") {
+    return true;
+  }
+  return std::nullopt;
 }
 
 auto classify(std::span<const std::string> argv) -> verb {
@@ -100,6 +124,9 @@ auto classify(std::span<const std::string> argv) -> verb {
   }
   if (token == "schema") {
     return verb::schema;
+  }
+  if (token == "profile") {
+    return verb::profile;
   }
   return verb::unknown;
 }

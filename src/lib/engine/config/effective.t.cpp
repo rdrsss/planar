@@ -367,3 +367,30 @@ TEST_CASE("resolve: candidates is empty for every non-model-tier key", "[effecti
     CHECK(res->effective.at(key).candidates.empty());
   }
 }
+
+TEST_CASE("resolve: execute.engine defaults to embedded, and file then env override it", "[effective][6485]") {
+  // `planar-execute` reads this key out of `planar config show --json` (plan
+  // 1033 task 6485); the provenance is what its `profile show` reports.
+  auto const def = resolve(std::nullopt, env_view::empty(), std::nullopt);
+  REQUIRE(def.has_value());
+  auto it = def->effective.find("execute.engine");
+  REQUIRE(it != def->effective.end());
+  CHECK(it->second.value == "embedded");
+  CHECK(it->second.source_ == provenance::embedded_default);
+
+  constexpr std::string_view file      = "[execute]\nengine = \"centurion\"\n";
+  auto const                 from_file = resolve(file, env_view::empty(), std::nullopt);
+  REQUIRE(from_file.has_value());
+  it = from_file->effective.find("execute.engine");
+  REQUIRE(it != from_file->effective.end());
+  CHECK(it->second.value == "centurion");
+  CHECK(it->second.source_ == provenance::config_file);
+
+  auto const from_env = resolve(file, make_env({{"PLANAR_EXECUTE_ENGINE", "embedded"}}), std::nullopt);
+  REQUIRE(from_env.has_value());
+  it = from_env->effective.find("execute.engine");
+  REQUIRE(it != from_env->effective.end());
+  CHECK(it->second.value == "embedded");
+  CHECK(it->second.source_ == provenance::env);
+  CHECK(it->second.env_var_name == "PLANAR_EXECUTE_ENGINE");
+}

@@ -83,6 +83,41 @@ auto operator_bin() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_OPERATOR_CPP_BIN};
 }
 
+/// @brief Set `$PLANAR_EXECUTE_ENGINE` for one scope, restoring it after.
+///
+/// The pinned harness inherits the test process's environment, so this is
+/// how a case reaches the selector's env tier — and, set to empty, how every
+/// other case is kept hermetic against an operator's ambient value (an
+/// exported `PLANAR_EXECUTE_ENGINE=centurion` would otherwise fail them
+/// all). Safe because a Catch2 case runs single-threaded (ctest runs each
+/// case as its own process, and a direct run executes cases serially).
+class engine_env_guard {
+public:
+  explicit engine_env_guard(std::string_view value) {
+    if (char const* old = std::getenv(k_name)) {
+      _previous = old;
+    }
+    if (value.empty()) {
+      ::unsetenv(k_name);
+    } else {
+      ::setenv(k_name, std::string{value}.c_str(), 1);
+    }
+  }
+  engine_env_guard(engine_env_guard const&)                    = delete;
+  auto operator=(engine_env_guard const&) -> engine_env_guard& = delete;
+  ~engine_env_guard() {
+    if (_previous.has_value()) {
+      ::setenv(k_name, _previous->c_str(), 1);
+    } else {
+      ::unsetenv(k_name);
+    }
+  }
+
+private:
+  static constexpr char const* k_name = "PLANAR_EXECUTE_ENGINE";
+  std::optional<std::string>   _previous;
+};
+
 /// @brief One shipped `(workflow, phase)` run and the fixture it is diffed against.
 struct golden_case {
   std::string_view fixture;  ///< File name under `golden/`, without `.json`.
@@ -249,9 +284,10 @@ auto golden_cases(std::filesystem::path const& repo, std::string const& base_sha
 
 TEST_CASE("planar-execute golden: every shipped workflow phase matches its committed flow.result fixture",
           "[cmd][execute][golden][6484]") {
-  auto const space            = make_arena("golden");
-  auto const root             = space.cpp_root;
-  auto const [repo, base_sha] = seed_golden_v1(root);
+  engine_env_guard const hermetic{""};
+  auto const             space = make_arena("golden");
+  auto const             root  = space.cpp_root;
+  auto const [repo, base_sha]  = seed_golden_v1(root);
 
   std::filesystem::path const golden_dir{PLANAR_GOLDEN_DIR};
   std::filesystem::path const workflows_dir{PLANAR_WORKFLOWS_DIR};
@@ -375,10 +411,12 @@ namespace {
 
 /// @brief One error-contract invocation.
 struct error_case {
-  std::string_view         fixture; ///< File name under `golden/errors/`, without `.txt`.
-  std::string_view         source;  ///< Inline workflow source; empty means `argv` names a file.
-  std::vector<std::string> argv;    ///< Arguments; `@WF@` is the inline file, `@SHIPPED@` the workflows dir,
-                                    ///< `@REPO@` the seeded repository, `@PROJ@` the arena's `proj`.
+  std::string_view         fixture;          ///< File name under `golden/errors/`, without `.txt`.
+  std::string_view         source;           ///< Inline workflow source; empty means `argv` names a file.
+  std::vector<std::string> argv;             ///< Arguments; `@WF@` is the inline file, `@SHIPPED@` the workflows dir,
+                                             ///< `@REPO@` the seeded repository, `@PROJ@` the arena's `proj`.
+  std::string_view         config_toml = {}; ///< Written to the arena's config.toml for this case only; empty means none.
+  std::string_view         engine_env  = {}; ///< `$PLANAR_EXECUTE_ENGINE` for this case only; empty means unset.
 };
 
 /// @brief Every recorded refusal, in the order they run.
@@ -428,6 +466,15 @@ auto error_cases() -> std::vector<error_case> {
       {"args.trailing_bytes", "function p() flow.result(ctx.args) end", inline_run({"--args", R"({"a":1} trailing)"})},
       {"args.nested_too_deeply", "function p() flow.result({}) end",
        inline_run({"--args", std::string(250, '[') + std::string(250, ']')})},
+      // --- the engine selector (task 6485) -----------------------------------
+      {"engine.bad_flag", "function p() end", inline_run({"--engine", "zig"})},
+      {"engine.centurion_by_flag", "function p() end", inline_run({"--engine", "centurion"})},
+      {"engine.centurion_by_env", "function p() end", inline_run(), "", "centurion"},
+      {"engine.centurion_by_config", "function p() end", inline_run(), "[execute]\nengine = \"centurion\"\n"},
+      {"engine.bad_env", "function p() end", inline_run(), "", "zig"},
+      {"engine.bad_config", "function p() end", inline_run(), "[execute]\nengine = \"zig\"\n"},
+      {"profile.unknown_subcommand", "", {"profile", "list"}},
+      {"profile.no_subcommand", "", {"profile"}},
       // --- shipped workflows' flow.fail wording ----------------------------
       {"wf.parallel-dispatch.missing_plan_id", "", pd("plan", "{}")},
       {"wf.parallel-dispatch.cycle_plan_task_in_other_plan", "", pd("cycle_plan", R"({"plan_id":1,"task_id":5})")},
@@ -588,7 +635,13 @@ TEST_CASE("planar-execute golden: every refusal matches its committed error-cont
       replace_all(arg, "@PROJ@", (root / "proj").string());
       argv.push_back(std::move(arg));
     }
-    auto const cap = run_pinned(execute_bin(), argv, root, std::format("e{:02}", n++));
+    auto const config_path = root / "config.toml";
+    if (!c.config_toml.empty()) {
+      std::ofstream(config_path, std::ios::binary) << c.config_toml;
+    }
+    engine_env_guard const env_guard{c.engine_env};
+    auto const             cap = run_pinned(execute_bin(), argv, root, std::format("e{:02}", n++));
+    std::filesystem::remove(config_path);
     INFO("stderr: " << cap.err);
     // Every failure keeps the JSON result channel empty.
     CHECK(cap.out.empty());
@@ -650,4 +703,61 @@ TEST_CASE("planar-execute golden: the flow.fail wording of every shipped workflo
   }
   REQUIRE(std::filesystem::exists(path));
   CHECK(inventory == read_all(path));
+}
+
+TEST_CASE("planar-execute engine selector: flag over env over config, end to end through the sibling planar",
+          "[cmd][execute][golden][6485]") {
+  // Test-spec scenario "engine selector resolves flag over env over config",
+  // walked through the REAL binaries: the config tier is read by shelling the
+  // sibling `planar config show --json`, so this is the only place that proves
+  // the key actually reaches `planar-execute` from a config file on disk.
+  engine_env_guard const hermetic{""};
+  auto const             space   = make_arena("selector");
+  auto const             root    = space.cpp_root;
+  auto const             profile = [&](std::string_view tag) {
+    std::vector<std::string> const args{"profile", "show", "--json"};
+    auto const                     cap = run_pinned(execute_bin(), args, root, tag);
+    INFO("stderr: " << cap.err);
+    REQUIRE(cap.code == 0);
+    CHECK(cap.err.empty());
+    return cap.out;
+  };
+
+  // Nothing set anywhere: the embedded default, labelled as such by planar.
+  CHECK(profile("p0") == R"({"engine":"embedded","engine_source":"embedded default"})"
+                         "\n");
+
+  // A config file choosing centurion is read through the sibling planar.
+  std::ofstream(root / "config.toml", std::ios::binary) << "[execute]\nengine = \"centurion\"\n";
+  CHECK(profile("p1") == R"({"engine":"centurion","engine_source":"config file"})"
+                         "\n");
+
+  // The env beats the config file. Black-box, this cannot tell WHICH binary
+  // applied the env tier: `planar`'s resolver honours PLANAR_EXECUTE_ENGINE
+  // too, so a planar-execute that skipped its own check would still print
+  // this (break-probed: it does). The selector's own tier is what saves the
+  // spawn and names a bad value; selector.t.cpp pins that the config reader
+  // is never called when the env is set.
+  {
+    engine_env_guard const env{"embedded"};
+    CHECK(profile("p2") == R"({"engine":"embedded","engine_source":"env: PLANAR_EXECUTE_ENGINE"})"
+                           "\n");
+  }
+
+  // With the config still choosing centurion, `run` is refused by name...
+  std::filesystem::path const workflows_dir{PLANAR_WORKFLOWS_DIR};
+  auto const                  example = (workflows_dir / "example.lua").string();
+  std::vector<std::string>    run{"run", example, "--phase", "setup"};
+  auto const                  refused = run_pinned(execute_bin(), run, root, "r0");
+  CHECK(refused.code == 1);
+  CHECK(refused.out.empty());
+  CHECK(refused.err.contains("engine 'centurion' is not available yet (config file)"));
+
+  // ...and `--engine embedded` beats it, with stdout byte-equal to the
+  // golden fixture: the selector never adds an engine key to the result.
+  run.insert(run.end(), {"--engine", "embedded"});
+  auto const ran = run_pinned(execute_bin(), run, root, "r1");
+  INFO("stderr: " << ran.err);
+  REQUIRE(ran.code == 0);
+  CHECK(ran.out == read_all(std::filesystem::path{PLANAR_GOLDEN_DIR} / "example.setup.json"));
 }

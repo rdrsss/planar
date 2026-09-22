@@ -395,6 +395,14 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
   const auto codex_path   = pick_str("introspection.transcripts.codex_path", "", env, std::nullopt, file_map, *def_map, eff);
   const auto copilot_path = pick_str("introspection.transcripts.copilot_path", "", env, std::nullopt, file_map, *def_map, eff);
 
+  // `planar-execute`'s engine selector (plan 1033, task 6485, decision 1017).
+  // Recorded only in `eff`, not in the `config` struct: `planar` itself never
+  // acts on it. `planar-execute` holds no config reader (engine_config
+  // reaches `db`, which its execute-carrier guard forbids), so it reads this
+  // key from `planar config show --json` — which is why the key has to be
+  // picked here at all: an unpicked key never reaches that view.
+  static_cast<void>(pick_str("execute.engine", "PLANAR_EXECUTE_ENGINE", env, std::nullopt, file_map, *def_map, eff));
+
   return resolved{
       .cfg =
           config{

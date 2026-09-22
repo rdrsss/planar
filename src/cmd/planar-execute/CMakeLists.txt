@@ -97,15 +97,23 @@ planar_binary(planar_execute
     cli.cppm
     catalog.cppm
     engine.cppm
+    selector.cppm
   SOURCES
     cli.cpp
     catalog.cpp
     engine.cpp
+    selector.cpp
   DEPENDS
     cliapp
     engine_execute)
 
+# Glaze writes `profile show --json` (selector.cpp, plan 1033 task 6485).
+# Header-only JSON; it reaches nothing near `planar_db`, so the execute-
+# carrier guard above is untouched.
+target_link_libraries(planar_cmd_planar_execute PRIVATE glaze::glaze)
+
 if(TARGET planar_cmd_planar_execute_tests)
+  target_link_libraries(planar_cmd_planar_execute_tests PRIVATE glaze::glaze)
   target_compile_definitions(planar_cmd_planar_execute_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_execute>\""
     # golden.t.cpp (plan 1033 M0, task 6484): the committed fixtures and the

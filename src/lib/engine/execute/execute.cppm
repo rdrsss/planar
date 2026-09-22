@@ -196,6 +196,44 @@ export auto validate_confined_rel(std::string_view rel) -> bool;
 export auto format_double(double value) -> std::string;
 
 // ---------------------------------------------------------------------------
+// config — one resolved config key, read through the sibling `planar`
+// ---------------------------------------------------------------------------
+
+/// @brief One key from `planar config show --json`: its value and where it came from.
+export struct config_value {
+  std::string value;      ///< The resolved value, as `planar` prints it.
+  std::string provenance; ///< `planar`'s own provenance label, e.g. `embedded default`.
+};
+
+/// @brief Find `key` in the line-per-key JSON that `planar config show --json`
+/// prints (`{"key":K,"value":V,"provenance":P}` per line).
+///
+/// Pure, so the parse is testable without a live `planar`. Each line is
+/// decoded with Glaze; a line that does not decode is skipped, and unknown
+/// fields are ignored so a newer `planar` does not break an older reader.
+/// @param ndjson The captured stdout.
+/// @param key The dotted key, e.g. `execute.engine`.
+/// @return The entry, or unset when no line names `key`.
+export auto find_config_value(std::string_view ndjson, std::string_view key) -> std::optional<config_value>;
+
+/// @brief Resolve one config key by shelling the SIBLING `planar config show --json`.
+///
+/// How `planar-execute` reads the config plane without a config module of
+/// its own (plan 1033 task 6485, operator decision): the config reader lives
+/// in `engine_config`, which depends on `db`, and the execute-carrier guard
+/// forbids that edge. Shelling `planar` is how this binary reaches Planar
+/// state everywhere else, so the config read takes the same route. It is NOT
+/// a workflow host function and does not pass through `command_allowed()`:
+/// no Lua workflow can reach it, and `config show` stays outside the
+/// deterministic workflow capability set.
+/// @param bin_dir The trusted sibling-binary directory.
+/// @param key The dotted key.
+/// @return The entry; unset when `planar` does not know the key; or a
+/// one-line reason when `planar` could not be run or exited non-zero.
+export auto read_planar_config(std::string_view bin_dir, std::string_view key)
+    -> std::expected<std::optional<config_value>, std::string>;
+
+// ---------------------------------------------------------------------------
 // state — planner state-read parsing (port target: state.zig)
 // ---------------------------------------------------------------------------
 
