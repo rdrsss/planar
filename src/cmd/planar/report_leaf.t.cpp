@@ -121,7 +121,7 @@ TEST_CASE("report --json on a fresh scratch arena reports the deterministic empt
   auto const result = dispatch(fx, {"report", "--json"});
   CHECK(result.code == 0);
   CHECK(result.err.empty());
-  CHECK(result.out.starts_with(R"({"version":"planar","schema_version":38,"health":"ok","window":30,)"));
+  CHECK(result.out.starts_with(R"({"version":"planar","schema_version":39,"health":"ok","window":30,)"));
   CHECK(result.out.find(R"("invocations":[])") != std::string::npos);
   CHECK(result.out.find(R"("introspection_preview":{"signals":[],"coverage":[)") != std::string::npos);
   CHECK(result.out.find(R"({"vendor":"claude","state":"unavailable","scanned":0)") != std::string::npos);
