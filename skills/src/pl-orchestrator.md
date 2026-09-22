@@ -256,6 +256,17 @@ planar-agent pull "$PLAN_ID" --role coder \
 Heartbeat every held claim at least once per TTL/2 and around long subagent
 calls. Use concise statuses such as `awaiting:coder` and `awaiting:reviewer`.
 
+**Engine-supervised dispatch (plan 1033; not live until its host lands).**
+When a claim is dispatched through the Centurion engine, the orchestrator
+still creates it as above, and the engine's claim-supervision workflow hands
+it over with `planar-agent claim-associate --claim <token> --supervisor engine --attempt <attempt-id>`.
+From then on the engine alone extends the lease and issues the one terminal
+verb (`--as engine --attempt <attempt-id>`). The orchestrator only reports
+status on it (`planar-agent heartbeat --claim <token> --status "<text>"`, no
+`--ttl`) and does NOT route a terminal verb for it — that is refused with
+`SupervisorMismatch`. Operator takeover is `--override-supervisor`, logged. See
+`agents/methodology.md` § Engine-supervised claims.
+
 ### Coder brief
 
 Capture `HEAD` as `<coder-cycle-base>` before dispatch. The brief contains:
@@ -316,7 +327,8 @@ Route decisions:
 - open-question → `planar-agent block`;
 - abort → `planar-agent fail`.
 
-Outside the explicitly selected in-pwd `barrel-bypass` exception, the
+Outside the explicitly selected in-pwd `barrel-bypass` exception, and outside
+engine-supervised claims (whose terminal verb the engine issues), the
 orchestrator owns exactly one atomic terminal verb per claim. Under that
 exception, the coder may complete only after every required validation entry
 passes. Worktree bypass still completes in the orchestrator after fan-in.

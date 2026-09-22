@@ -142,6 +142,47 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 6. **Operator recovery.** Stuck claims and the human cleanup path live on `planar-agent`, not `planar`: `planar-agent reconcile [--dry-run] [--stale-after <secs>]` for batch stale-claim sweeps, and `planar-agent abort --claim <token> --reason <text>` to force-release a specific claim regardless of the owning session.
 7. **Live observability.** The read-only `planar-watch` binary carries `ps`, `feed --follow`, `log`, `claims`, `actions`, and `plans` for streaming human observation. For non-streaming reads through the `planar` binary, use `planar dashboard --agents`, `planar plan next`, `planar tree`, `planar audit trail`, and `planar health`.
 
+### Engine-supervised claims (plan 1033, decision 1007)
+
+**Not live yet.** The verbs below exist, but nothing dispatches through the
+Centurion engine until plan 1033's host lands (M2) and its claim-supervision
+workflow runs (M4). Until then every claim is **caller-supervised** and the
+ritual above holds unchanged. What follows is the variant that ritual gains.
+
+The orchestrator still **creates** the claim (`pull` / `claim --entity`) and
+hands it to the engine; from then on the engine alone keeps the lease and
+issues the one terminal verb (tech-spec D3):
+
+1. **Create.** The orchestrator pulls or claims exactly as above.
+2. **Hand over.** The engine's claim-supervision workflow runs
+   `planar-agent claim-associate --claim <token> --supervisor engine --attempt <attempt-id>`.
+   It is one-way (a claim is never handed back to the caller) and idempotent
+   by attempt: the same attempt again is a no-op, a new attempt (Centurion
+   retried) moves the claim to it.
+3. **Lease.** Only `planar-agent heartbeat --claim <token> --as engine --attempt <attempt-id>`
+   extends the lease. The coder, and the orchestrator, report activity with
+   `planar-agent heartbeat --claim <token> --status "<text>"` — no `--ttl`;
+   that records the status and leaves the lease exactly where the engine set
+   it. A bare caller heartbeat on an engine claim is refused
+   (`SupervisorMismatch`).
+4. **Terminate.** The engine issues exactly one of `complete` / `fail` /
+   `release` / `block` with `--as engine --attempt <attempt-id>`. A repeat
+   under the same attempt after it landed is exit 0 with no change, which is
+   what lets post-crash reconciliation re-issue it safely. **Neither the
+   orchestrator nor the coder runs a terminal verb on an engine claim** — it
+   is refused with `SupervisorMismatch` — and the in-pwd `barrel-bypass`
+   exception does not apply to one.
+5. **Recovery.** `planar-agent reconcile` skips engine claims and
+   `engine='centurion'` runs, and `abort` refuses an engine claim. Operator
+   takeover is `--override-supervisor` on `reconcile`, `abort`, or a terminal
+   verb; each use writes a `supervisor_override` action row. `planar-watch
+   claims` shows an expired engine claim as `lapsed (engine)`.
+
+Every supervised write leaves one audit row (`claim_associate`,
+`claim_terminal`, `supervisor_override`); `planar-agent action start` refuses
+those kinds, so agents cannot write them by hand. See
+[`docs/cli-reference.md` § Engine supervision](../docs/cli-reference.md#engine-supervision-plan-1033-d3d4).
+
 The default claim scope is exclusive for tasks and child milestones. Shared claims are reserved for read-only observation or plan-level coordination where multiple agents are intentionally watching the same entity. Overlapping exclusive live claims are a conflict, not a scheduling hint.
 
 Dispatch session entries include claim tokens so interrupted cycles can be reconstructed:
@@ -169,8 +210,8 @@ spawned subagent — the same isolation model as coder/reviewer dispatch.
 
 | Agent | Allowed | Not allowed |
 |-------|---------|-------------|
-| Coder | Heartbeats, repository changes, structured validation evidence, and a work-complete report. Only under an explicitly selected in-pwd `barrel-bypass` cycle may it run `planar-agent complete --claim <token>`. | `planar plan closeout`, `planar task done`, or any other terminal/status transition |
-| Orchestrator | Routes exactly one `planar-agent complete`, `fail`, `release`, or `block` terminal verb after the cycle disposition; dispatches janitor for plan closeout | `planar plan closeout` directly; finalizing silently |
+| Coder | Heartbeats, repository changes, structured validation evidence, and a work-complete report. Only under an explicitly selected in-pwd `barrel-bypass` cycle may it run `planar-agent complete --claim <token>` — never on an engine-supervised claim, where it heartbeats `--status` only. | `planar plan closeout`, `planar task done`, or any other terminal/status transition |
+| Orchestrator | Routes exactly one `planar-agent complete`, `fail`, `release`, or `block` terminal verb after the cycle disposition — except on an engine-supervised claim, whose terminal verb the engine issues; dispatches janitor for plan closeout | `planar plan closeout` directly; finalizing silently; a terminal verb on an engine claim without an operator `--override-supervisor` |
 | Janitor | `planar plan closeout <plan-id>` (after gate passes); merge, reconcile, cleanup | Bypass the `--dry-run` gate; force-close a `ready: false` plan |
 
 **Capability boundary is hard:** coders never gain plan-mutation power. The orchestrator dispatches the janitor; the janitor is the only agent role that runs `planar plan closeout`.

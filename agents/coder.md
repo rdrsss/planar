@@ -120,7 +120,7 @@ they are the coder's job to get right before handoff.
 1. Resolve the task and the cwd-derived scope; confirm `next_action`.
 2. Confirm the claim token covers the task(s) in the brief. If the claim is missing, stale, or for a different entity, stop and return to the orchestrator (the orchestrator decides whether to reissue `planar-agent pull` or `planar-agent claim`).
 3. Pull the resume packet for the task; refuse to proceed if `planar resume validate <task-id>` fails.
-4. Implement the change, heartbeating the claim via `planar-agent heartbeat --claim <token>` at least once per TTL/2 during long work. Keep edits inside the resolved scope; if the scope is wrong, file a `question` and stop.
+4. Implement the change, heartbeating the claim via `planar-agent heartbeat --claim <token>` at least once per TTL/2 during long work — on an engine-supervised claim (plan 1033), heartbeat with `--status "<text>"` only; see § Engine-supervised claims. Keep edits inside the resolved scope; if the scope is wrong, file a `question` and stop.
 5. Run every required command in the confirmed validation profile. A missing
    profile must either carry an explicit non-command acceptance check or be
    returned to the orchestrator for operator resolution.
@@ -143,6 +143,23 @@ does not apply to this cycle.
    "Common defects pre-flight" checklist was run (see methodology.md)
 5. **Residual risk** — any known gaps, assumptions, or deferred items
 6. **Reviewer focus** — specific areas where reviewer scrutiny is most needed
+
+## Engine-supervised claims
+
+**Not live until plan 1033's Centurion host lands.** A brief may say the claim
+is engine-supervised: the orchestrator created it and the engine's
+claim-supervision workflow handed it to the engine with `planar-agent
+claim-associate --supervisor engine`. Then:
+
+- the engine alone extends the lease; heartbeat with `planar-agent heartbeat
+  --claim <token> --status "<text>"` and no `--ttl` (a bare heartbeat is
+  refused, and a `--status` one leaves the lease untouched);
+- the engine alone issues the terminal verb; never run `complete`, `fail`,
+  `release` or `block` — they are refused with `SupervisorMismatch` — and the
+  in-pwd barrel-bypass exception does not apply;
+- return the commit/report exactly as on a caller-supervised claim.
+
+See [`methodology.md` § Engine-supervised claims](methodology.md#engine-supervised-claims-plan-1033-decision-1007).
 
 ## Barrel-bypass: validation evidence replaces reviewer dispatch
 
