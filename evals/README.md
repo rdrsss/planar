@@ -82,18 +82,30 @@ drifting apart:
   tool registry, and writes `run.json` -- all without invoking a vendor host.
 - **run** is the single-step live/lifecycle entrypoints
   (`run_phase3_preview`, `run_lifecycle_host`), which call the matching
-  `prepare_*` step and then invoke the host and grade the result.
+  `prepare_*` step and then invoke the host and grade the result. A
+  `--prepare`d arena can also be resumed as a separate, later invocation via
+  `--run-prepared <dir>` (`run_prepared_artifacts`), which invokes the vendor
+  host against the arena `--prepare` already built and grades the result --
+  the two-invocation counterpart to the single-step entrypoints above.
 - **grade** (`--grade-artifacts <dir>`) is `regrade_artifacts`, which always
   calls `grade_live_artifacts`/`grade_lifecycle_artifacts` -- the single
   grading entry point both the first-run path and a later regrade share.
 
 A case's or the whole suite's spend is bounded by `budget.max_usd` and
 `--max-usd` respectively (task 6852): exceeding either aborts the run,
-reconciles the scratch arena's own Planar claims to zero active, records
-`grade.json` status `over-budget`, and retains the artifacts. Cost is read
-from Claude's stream-json terminal `result` event; codex's `exec --json`
-protocol reports no cost figure today, so codex runs are graded and recorded
-but not cost-ceilinged. `--trials N` repeats a selected live/lifecycle case N
+releases and reconciles the scratch arena's own Planar claims to zero
+active (task 6916 -- releasing by token comes first, since
+`planar-agent reconcile` alone only stales an already-expired lease and
+does nothing for one this run just aborted while its lease was still live;
+a cleanup failure is recorded to `cleanup-error.txt` and printed, without
+masking the over-budget failure), records `grade.json` status
+`over-budget`, and
+retains the artifacts. Cost is read from Claude's stream-json terminal
+`result` event; codex's `exec --json` protocol reports no cost figure
+today, so a case declaring `budget.max_usd` is refused before any vendor
+host call when it would actually run under `--vendor codex` (task 6914) --
+codex runs never carry a `budget.max_usd`, rather than being graded and
+recorded but silently never cost-ceilinged. `--trials N` repeats a selected live/lifecycle case N
 times and reports a per-case pass rate.
 
 The runner validates every case before grading it:

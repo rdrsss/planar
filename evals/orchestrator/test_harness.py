@@ -4894,6 +4894,237 @@ class PrepareRunSplitTests(unittest.TestCase):
         run_to_file_mock.assert_not_called()
 
 
+class RunPreparedCliTests(unittest.TestCase):
+    """Task 6915: `--prepare` alone was a dead end -- nothing on the CLI
+    surface ever called `run_phase3_preview_from_prepared` /
+    `run_lifecycle_host_from_prepared`, so the prepare -> run -> grade
+    split was never exercised end to end. These drive `harness.main()`
+    TWICE, as two separate calls (mirroring two separate process
+    invocations), never calling the `_from_prepared` function directly --
+    that is the gap the caveat named.
+    """
+
+    def test_prepare_then_run_prepared_reuses_the_same_arena_across_two_invocations(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            results_dir = Path(raw_tmp)
+            with mock.patch.object(harness, "require_commands"), mock.patch.object(
+                harness, "require_current_installed_projection"
+            ), mock.patch.object(arena, "stage_vendor_config"), mock.patch.object(
+                arena, "assert_vendor_auth"
+            ) as auth_mock, mock.patch.object(
+                harness, "run_command"
+            ) as run_command_mock, mock.patch.object(
+                harness, "run_json"
+            ) as run_json_mock, mock.patch.object(
+                harness, "logical_sqlite_dump", return_value=""
+            ), mock.patch.object(
+                harness, "git_state", return_value=""
+            ), mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock:
+                run_json_mock.side_effect = [
+                    {"id": "301"},  # plan create
+                    {},  # plan next (before)
+                ]
+                rc1 = harness.main(
+                    [
+                        "--live",
+                        "--prepare",
+                        "--vendor",
+                        "claude",
+                        "--surface",
+                        "skill",
+                        "--case",
+                        "phase3-model-routing-host-boundary",
+                        "--results",
+                        str(results_dir),
+                    ]
+                )
+            self.assertEqual(rc1, 0)
+            run_to_file_mock.assert_not_called()
+
+            case_dirs = list(
+                (results_dir / "phase3-model-routing-host-boundary").iterdir()
+            )
+            self.assertEqual(
+                len(case_dirs), 1, "exactly one artifact dir from --prepare"
+            )
+            artifact_dir = case_dirs[0]
+            run_meta_before = harness.read_json(artifact_dir / "run.json")
+            self.assertEqual(run_meta_before["plan_id"], "301")
+            db_path = Path(artifact_dir / "arena" / "planar.db")
+            # `arena.make_arena` only mkdir()s; nothing writes the sqlite
+            # file itself in this mocked prepare, so assert the directory
+            # exists rather than the file.
+            self.assertTrue((artifact_dir / "arena").is_dir())
+
+            # SECOND, separate invocation: --run-prepared alone, no --live,
+            # no --vendor -- everything is re-derived from run.json, the
+            # same way --grade-artifacts already works.
+            with mock.patch.object(
+                arena, "assert_vendor_auth"
+            ) as auth_mock_2, mock.patch.object(
+                harness, "run_command"
+            ) as run_command_mock_2, mock.patch.object(
+                harness, "run_json"
+            ) as run_json_mock_2, mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock_2, mock.patch.object(
+                harness, "collect_live_after"
+            ) as collect_after_mock, mock.patch.object(
+                harness, "grade_live_artifacts"
+            ) as grade_mock:
+
+                def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
+                    harness.write_text(output, claude_result_line(0.01))
+                    return 0
+
+                run_to_file_mock_2.side_effect = fake_run_to_file
+                rc2 = harness.main(["--run-prepared", str(artifact_dir)])
+
+            self.assertEqual(rc2, 0)
+            run_to_file_mock_2.assert_called_once()
+            auth_mock_2.assert_called_once()
+            collect_after_mock.assert_called_once()
+            grade_mock.assert_called_once()
+            # Reuse, not rebuild: the second invocation never re-runs `git
+            # init` / `planar init` / `plan create` -- if it had rebuilt a
+            # fresh arena, it would have gone through `prepare_phase3_preview`
+            # again, which calls `run_command`/`run_json` for exactly those.
+            run_command_mock_2.assert_not_called()
+            run_json_mock_2.assert_not_called()
+            # And the run.json plan id the run step actually used is the one
+            # --prepare minted, not a freshly-created plan.
+            used_command = run_to_file_mock_2.call_args.args[0]
+            self.assertIn("301", " ".join(str(part) for part in used_command))
+            grade = harness.read_json(artifact_dir / "grade.json")
+            self.assertEqual(grade["status"], "pass")
+            case_dirs_after = list(
+                (results_dir / "phase3-model-routing-host-boundary").iterdir()
+            )
+            self.assertEqual(
+                case_dirs_after,
+                case_dirs,
+                "--run-prepared must not create a second artifact directory",
+            )
+
+    def test_run_prepared_without_run_json_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            empty_dir = Path(raw_tmp) / "no-run-json"
+            empty_dir.mkdir()
+            with self.assertRaises(harness.EvalFailure) as ctx:
+                harness.main(["--run-prepared", str(empty_dir)])
+            self.assertIn("run --prepare first", str(ctx.exception))
+
+
+class CodexBudgetRefusalTests(unittest.TestCase):
+    """Task 6914: `codex exec` reports no cost figure (see
+    `extract_usage`), so `enforce_spend_ceiling` can never fire for a
+    codex run. A case declaring `budget.max_usd` that actually runs under
+    `--vendor codex` must be refused before any vendor host call, not
+    silently accepted and then never enforced.
+    """
+
+    def _case(self, section: str) -> dict[str, object]:
+        return {
+            "id": "codex-budget-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            section: {
+                "budget": {"max_usd": 1.0},
+            },
+        }
+
+    def test_validate_case_budget_for_vendor_refuses_codex_with_budget(self) -> None:
+        options = harness.Options(
+            mode="live", vendor="codex", surface="skill", case_filter=None,
+            results_dir=None, keep=True,
+        )
+        with self.assertRaises(harness.EvalFailure) as ctx:
+            harness.validate_case_budget_for_vendor(self._case("live"), options, "live")
+        self.assertIn("codex-budget-probe", str(ctx.exception))
+        self.assertIn("budget.max_usd", str(ctx.exception))
+        self.assertIn("codex", str(ctx.exception))
+
+    def test_validate_case_budget_for_vendor_allows_codex_without_budget(self) -> None:
+        options = harness.Options(
+            mode="live", vendor="codex", surface="skill", case_filter=None,
+            results_dir=None, keep=True,
+        )
+        case = {"id": "codex-no-budget-probe", "live": {}}
+        harness.validate_case_budget_for_vendor(case, options, "live")  # must not raise
+
+    def test_validate_case_budget_for_vendor_allows_claude_with_budget(self) -> None:
+        options = harness.Options(
+            mode="live", vendor="claude", surface="skill", case_filter=None,
+            results_dir=None, keep=True,
+        )
+        harness.validate_case_budget_for_vendor(self._case("live"), options, "live")  # OK
+
+    def test_prepare_phase3_preview_call_site_refuses_before_any_command_runs(
+        self,
+    ) -> None:
+        """CALL-SITE test: a no-op in place of
+        `validate_case_budget_for_vendor` in `prepare_phase3_preview`
+        would let a codex case with `live.budget.max_usd` sail through to
+        `create_artifacts`/`run_command`."""
+        case = {
+            **self._case("live"),
+            "live": {
+                "prompt": "irrelevant {{PLAN_ID}}",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+                "budget": {"max_usd": 1.0},
+            },
+        }
+        options = harness.Options(
+            mode="live", vendor="codex", surface="skill", case_filter=None,
+            results_dir=None, keep=True,
+        )
+        with mock.patch.object(harness, "create_artifacts") as create_mock, \
+            mock.patch.object(harness, "run_command") as run_command_mock:
+            with self.assertRaises(harness.EvalFailure) as ctx:
+                harness.prepare_phase3_preview(Path("<probe>"), case, options)
+        create_mock.assert_not_called()
+        run_command_mock.assert_not_called()
+        self.assertIn("live.budget.max_usd", str(ctx.exception))
+
+    def test_prepare_lifecycle_fixture_call_site_refuses_before_any_command_runs(
+        self,
+    ) -> None:
+        case = {
+            "id": "codex-lifecycle-budget-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "lifecycle": {
+                "budget": {"max_usd": 1.0},
+            },
+        }
+        options = harness.Options(
+            mode="lifecycle", vendor="codex", surface="agent", case_filter=None,
+            results_dir=None, keep=True,
+        )
+        with mock.patch.object(harness, "create_artifacts") as create_mock, \
+            mock.patch.object(harness, "run_command") as run_command_mock:
+            with self.assertRaises(harness.EvalFailure) as ctx:
+                harness.prepare_lifecycle_fixture(
+                    Path("<probe>"), case, options, "codex-agent"
+                )
+        create_mock.assert_not_called()
+        run_command_mock.assert_not_called()
+        self.assertIn("lifecycle.budget.max_usd", str(ctx.exception))
+
+    def test_prepare_lifecycle_fixture_replay_never_refuses_on_budget(self) -> None:
+        """`options.vendor == ""` (fixture-replay) never spawns a real
+        vendor host, so a declared budget must not be refused there even
+        though the same case would be refused under `--vendor codex`."""
+        options = harness.Options(
+            mode="lifecycle-fixture", vendor="", surface="agent", case_filter=None,
+            results_dir=None, keep=True,
+        )
+        case = {"id": "fixture-replay-budget-probe", "lifecycle": {"budget": {"max_usd": 1.0}}}
+        harness.validate_case_budget_for_vendor(case, options, "lifecycle")  # must not raise
+
+
 class SpendCeilingTests(unittest.TestCase):
     """Task 6852: exceeding a case or suite spend ceiling aborts the run,
     reconciles the arena's own claims, and records `status: over-budget`.
@@ -4942,7 +5173,9 @@ class SpendCeilingTests(unittest.TestCase):
                 arena, "assert_vendor_auth"
             ), mock.patch.object(harness, "run_command") as run_command_mock, \
                 mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
-                mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                mock.patch.object(
+                    harness, "run_json", return_value={"active": []}
+                ), mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
 
                 def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
                     harness.write_text(output, claude_result_line(0.25))
@@ -4962,6 +5195,7 @@ class SpendCeilingTests(unittest.TestCase):
             grade = harness.read_json(artifact_dir / "grade.json")
             self.assertEqual(grade["status"], "over-budget")
             self.assertAlmostEqual(grade["usage"]["total_cost_usd"], 0.25)
+            self.assertFalse((artifact_dir / "cleanup-error.txt").exists())
 
     def test_suite_ceiling_accumulates_across_cases_on_one_options_instance(
         self,
@@ -4991,6 +5225,8 @@ class SpendCeilingTests(unittest.TestCase):
             ), mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
                 mock.patch.object(harness, "collect_live_after"), mock.patch.object(
                     harness, "grade_live_artifacts"
+                ), mock.patch.object(
+                    harness, "run_json", return_value={"active": []}
                 ), mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
 
                 def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
@@ -5010,6 +5246,173 @@ class SpendCeilingTests(unittest.TestCase):
             self.assertEqual(
                 harness.read_json(second_dir / "grade.json")["status"], "over-budget"
             )
+
+    def test_over_budget_releases_a_claim_with_a_live_unexpired_lease(self) -> None:
+        """Task 6916 falsifiability probe: `planar-agent reconcile` alone
+        only stales an EXPIRED lease, so a claim opened with a fresh
+        (unexpired) heartbeat survives a bare reconcile untouched. Seed
+        `planar-watch ps` to report one such claim; the over-budget path
+        must call `planar-agent release --claim <token>` for it and then
+        observe zero active claims on its follow-up `ps` read. Before the
+        6916 fix (a bare `reconcile` call inside `except Exception: pass`),
+        this claim would never be released and the arena would keep an
+        active claim after the abort.
+        """
+        case = {
+            "id": "live-lease-budget-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant {{PLAN_ID}}",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+                "budget": {"max_usd": 0.05},
+            },
+        }
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp_root = Path(raw_tmp)
+            artifact_dir = self._prepared_live_artifact_dir(tmp_root, case["id"])
+            ledger_path = tmp_root / "RESULTS.md"
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=None,
+                keep=True,
+            )
+            ps_responses = [
+                {"active": [{"id": "claim-1", "claim_token": "tok-live-lease"}]},
+                {"active": []},
+            ]
+            with mock.patch.object(
+                arena, "assert_vendor_auth"
+            ), mock.patch.object(harness, "run_command") as run_command_mock, \
+                mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
+                mock.patch.object(
+                    harness, "run_json", side_effect=lambda *a, **k: ps_responses.pop(0)
+                ), mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+
+                def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
+                    harness.write_text(output, claude_result_line(0.25))
+                    return 0
+
+                run_to_file_mock.side_effect = fake_run_to_file
+                with self.assertRaises(harness.EvalOverBudget):
+                    harness.run_phase3_preview_from_prepared(
+                        Path("<live-lease-budget-probe>"), case, options, artifact_dir
+                    )
+            release_calls = [
+                call
+                for call in run_command_mock.call_args_list
+                if call.args
+                and call.args[0][:2] == ["planar-agent", "release"]
+                and "tok-live-lease" in call.args[0]
+            ]
+            self.assertEqual(
+                len(release_calls),
+                1,
+                "the live-lease claim must be released by token, not left for reconcile",
+            )
+            self.assertEqual(ps_responses, [], "both ps reads (before/after cleanup) must run")
+            self.assertFalse((artifact_dir / "cleanup-error.txt").exists())
+
+    def test_cleanup_failure_is_visible_and_does_not_replace_over_budget(self) -> None:
+        """Task 6916 falsifiability probe: when the cleanup step itself
+        raises, the over-budget failure must still be the one that
+        propagates, and the cleanup failure must be recorded somewhere
+        visible rather than swallowed."""
+        case = {
+            "id": "cleanup-failure-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant {{PLAN_ID}}",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+                "budget": {"max_usd": 0.05},
+            },
+        }
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp_root = Path(raw_tmp)
+            artifact_dir = self._prepared_live_artifact_dir(tmp_root, case["id"])
+            ledger_path = tmp_root / "RESULTS.md"
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=None,
+                keep=True,
+            )
+            with mock.patch.object(
+                arena, "assert_vendor_auth"
+            ), mock.patch.object(harness, "run_command"), mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock, mock.patch.object(
+                harness,
+                "run_json",
+                side_effect=RuntimeError("planar-watch ps: simulated failure"),
+            ), mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+
+                def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
+                    harness.write_text(output, claude_result_line(0.25))
+                    return 0
+
+                run_to_file_mock.side_effect = fake_run_to_file
+                with self.assertRaises(harness.EvalOverBudget) as ctx:
+                    harness.run_phase3_preview_from_prepared(
+                        Path("<cleanup-failure-probe>"), case, options, artifact_dir
+                    )
+            self.assertIn("exceeds case budget.max_usd", str(ctx.exception))
+            self.assertNotIn("simulated failure", str(ctx.exception))
+            cleanup_error_path = artifact_dir / "cleanup-error.txt"
+            self.assertTrue(cleanup_error_path.is_file())
+            self.assertIn("simulated failure", cleanup_error_path.read_text())
+
+    def test_release_arena_claims_call_site_in_enforce_spend_ceiling(self) -> None:
+        """CALL-SITE test: a no-op in place of `release_arena_claims` in
+        `enforce_spend_ceiling` would silently drop the cleanup step this
+        task adds. Patches `release_arena_claims` itself and asserts it
+        was actually invoked with this run's plan id."""
+        case = {
+            "id": "call-site-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant {{PLAN_ID}}",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+                "budget": {"max_usd": 0.05},
+            },
+        }
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp_root = Path(raw_tmp)
+            artifact_dir = self._prepared_live_artifact_dir(tmp_root, case["id"])
+            ledger_path = tmp_root / "RESULTS.md"
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=None,
+                keep=True,
+            )
+            with mock.patch.object(
+                arena, "assert_vendor_auth"
+            ), mock.patch.object(harness, "run_command"), mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock, mock.patch.object(
+                harness, "release_arena_claims", return_value=None
+            ) as release_mock, mock.patch.object(
+                harness, "RESULTS_LEDGER_PATH", ledger_path
+            ):
+
+                def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
+                    harness.write_text(output, claude_result_line(0.25))
+                    return 0
+
+                run_to_file_mock.side_effect = fake_run_to_file
+                with self.assertRaises(harness.EvalOverBudget):
+                    harness.run_phase3_preview_from_prepared(
+                        Path("<call-site-probe>"), case, options, artifact_dir
+                    )
+            release_mock.assert_called_once()
+            self.assertEqual(release_mock.call_args.kwargs["plan_id"], "77")
 
 
 class TrialsTests(unittest.TestCase):

@@ -786,6 +786,54 @@ def merge_usage(accumulated: dict[str, Any], turn: dict[str, Any]) -> dict[str, 
     }
 
 
+def active_claims_for_plan(repo: Path, env: dict[str, str], plan_id: str) -> list[dict[str, Any]]:
+    """Return `planar-watch ps --plan <plan_id> --json`'s `active` rows."""
+    return run_json(
+        ["planar-watch", "ps", "--plan", plan_id, "--json"], cwd=repo, env=env
+    ).get("active", [])
+
+
+def release_arena_claims(
+    *, artifact_dir: Path, repo: Path, env: dict[str, str], plan_id: str
+) -> str | None:
+    """Release every claim the arena's own plan still holds, then run
+    `planar-agent reconcile` as a backstop for a token this function lost
+    track of, then assert the post-state (task 6916).
+
+    `planar-agent reconcile` only stales a claim whose LEASE HAS ALREADY
+    EXPIRED (measured on this plan building the lapsed-claim case, task
+    6855) -- it does nothing for a claim this run aborted mid-flight while
+    the lease was still live, so reconcile alone cannot make US-12's "zero
+    active claims" promise true. `planar-agent release --claim <token>` is
+    the terminal verb this function calls directly for every claim it
+    finds via `planar-watch ps`, since it is a claim the harness's own
+    arena opened.
+
+    Returns `None` when the post-cleanup active-claim count is verified
+    zero. Returns a human-readable message otherwise -- either a cleanup
+    step raised, or claims are still active after cleanup ran -- for the
+    caller to surface (recorded into the artifacts and/or printed) WITHOUT
+    ever raising itself: a cleanup failure must never replace the
+    over-budget failure that triggered the cleanup.
+    """
+    try:
+        for claim in active_claims_for_plan(repo, env, plan_id):
+            token = claim.get("claim_token")
+            if not token:
+                continue
+            run_command(["planar-agent", "release", "--claim", token], cwd=repo, env=env)
+        run_command(["planar-agent", "reconcile", "--plan", plan_id], cwd=repo, env=env)
+        remaining = active_claims_for_plan(repo, env, plan_id)
+    except Exception as exc:
+        return f"over-budget cleanup failed before it could verify zero active claims: {exc}"
+    if remaining:
+        tokens = ", ".join(str(claim.get("claim_token", "?")) for claim in remaining)
+        return (
+            f"{len(remaining)} claim(s) still active after over-budget cleanup: {tokens}"
+        )
+    return None
+
+
 def enforce_spend_ceiling(
     *,
     artifact_dir: Path,
@@ -803,12 +851,12 @@ def enforce_spend_ceiling(
     graded normally in that case.
 
     On over-budget: writes `grade.json` with `status: "over-budget"`,
-    reconciles the arena's own claims to zero active via
-    `planar-agent reconcile --plan <plan_id>` (never the operator's
-    database -- `env`/`repo` are always the scratch arena), and raises
-    `EvalOverBudget` with the artifacts retained (the caller's exception
-    handler attaches `artifact_dir` the same way every other fail path
-    does; this function never deletes anything itself).
+    releases and reconciles the arena's own claims to zero active via
+    `release_arena_claims` (never the operator's database -- `env`/`repo`
+    are always the scratch arena), and raises `EvalOverBudget` with the
+    artifacts retained (the caller's exception handler attaches
+    `artifact_dir` the same way every other fail path does; this function
+    never deletes anything itself).
     """
     cost = usage.get("total_cost_usd")
     if cost is None:
@@ -830,12 +878,20 @@ def enforce_spend_ceiling(
     # (task 6852 + 6860; reviewer, M3 cycle 1).
     if options.mode in {"live", "lifecycle"}:
         record_ledger_row({"id": case_id}, artifact_dir, options, "over-budget")
-    try:
-        run_command(["planar-agent", "reconcile", "--plan", plan_id], cwd=repo, env=env)
-    except Exception:
-        # Reconciliation is best-effort cleanup; the over-budget failure
-        # itself must still surface even if the reconcile call fails.
-        pass
+    # Task 6916: the previous `except Exception: pass` around a bare
+    # `reconcile` call swallowed both halves of the problem it was meant to
+    # solve -- reconcile doesn't stale a live lease, and any failure to
+    # even try was invisible. `release_arena_claims` never raises; a
+    # non-`None` return means cleanup did not reach zero active claims, and
+    # that has to be VISIBLE (written to disk, printed to stderr) without
+    # ever standing in for the over-budget failure this function still
+    # raises unconditionally below.
+    cleanup_error = release_arena_claims(
+        artifact_dir=artifact_dir, repo=repo, env=env, plan_id=plan_id
+    )
+    if cleanup_error is not None:
+        write_text(artifact_dir / "cleanup-error.txt", cleanup_error + "\n")
+        print(f"WARN: {case_id}: {cleanup_error}", file=sys.stderr)
     raise EvalOverBudget(f"{case_id}: {reason}", artifact_dir)
 
 
@@ -866,6 +922,39 @@ def load_cases() -> list[tuple[Path, dict[str, Any]]]:
     if not loaded:
         raise EvalFailure(f"no orchestrator cases found in {CASES_DIR}")
     return loaded
+
+
+def validate_case_budget_for_vendor(case: dict[str, Any], options: Options, section: str) -> None:
+    """Refuse a case whose declared `budget.max_usd` cannot be enforced
+    against the vendor this invocation actually targets (task 6914).
+
+    `budget.max_usd` is a CASE field, but which vendor runs it is an
+    `Options`/CLI (`--vendor`) concern decided per invocation, not at
+    case-load time -- the same case file runs against either vendor
+    across different invocations. `validate_case` (schema-level, called
+    from `load_cases` for every loaded case before any vendor is chosen)
+    is therefore too early to know this combination; the earliest point
+    it IS knowable is here, in each mode's prepare step, which already
+    has both `case` and `options.vendor` and has not yet started `git
+    init`, staged vendor config, or invoked any vendor host.
+
+    `codex exec` reports no cost figure (see `extract_usage`), so
+    `enforce_spend_ceiling` can never fire for a codex run -- a
+    `budget.max_usd` the README documents as a limitation is still a
+    silently-inert cap once it is actually declared on a codex case,
+    which is worse than no cap at all (reviewer M3 caveat, task 6914).
+    """
+    if options.vendor != "codex":
+        return
+    section_case = case.get(section)
+    budget = (section_case or {}).get("budget") if isinstance(section_case, dict) else None
+    if isinstance(budget, dict) and budget.get("max_usd") is not None:
+        raise EvalFailure(
+            f"{case['id']}: {section}.budget.max_usd cannot be enforced against "
+            "--vendor codex (codex exec reports no cost figure -- see "
+            "extract_usage in evals/orchestrator/harness.py); drop the budget "
+            "or run this case under --vendor claude"
+        )
 
 
 def validate_case(path: Path, case: Any) -> None:
@@ -1981,6 +2070,10 @@ def prepare_phase3_preview(
     ever invoked. Never starts `claude`/`codex`. Returns the artifact dir;
     the RUN step (`run_phase3_preview_from_prepared`) resumes from it.
     """
+    # Task 6914: refused before any artifact directory exists or any
+    # command runs -- the earliest point `case` and `options.vendor` are
+    # both known.
+    validate_case_budget_for_vendor(case, options, "live")
     case_id = case["id"]
     artifact_dir = create_artifacts(
         case_id, f"{options.vendor}-{options.surface}", options.results_dir
@@ -2287,6 +2380,11 @@ def verify_and_extract_vendored_fixture(
 def prepare_lifecycle_fixture(
     case_path: Path, case: dict[str, Any], options: Options, label: str
 ) -> LifecycleContext:
+    # Task 6914: refused before any artifact directory, arena, or fixture
+    # extraction happens. A no-op for fixture-replay (`options.vendor ==
+    # ""`), which never spawns a real vendor host and so never needs cost
+    # enforcement.
+    validate_case_budget_for_vendor(case, options, "lifecycle")
     case_id = case["id"]
     fixture_root = FIXTURES_DIR / case["setup"]["fixture"]
     manifest = load_fixture_manifest(fixture_root)
@@ -4577,6 +4675,102 @@ def run_lifecycle_host(
     run_lifecycle_host_from_prepared(context, case, options)
 
 
+def lifecycle_context_from_prepared(
+    artifact_dir: Path, case_path: Path, case: dict[str, Any], options: Options
+) -> LifecycleContext:
+    """Reconstruct the `LifecycleContext` `prepare_lifecycle_fixture` built
+    for a lifecycle host run, from `run.json` plus the artifact tree
+    already on disk (task 6915's `--run-prepared`, a second, separate
+    process invocation from the one that ran `--prepare`).
+
+    Rebuilds the arena env the same idempotent way
+    `run_phase3_preview_from_prepared` does: `arena.make_arena` on the
+    existing `arena/` dir only recreates directories that are already
+    there (`mkdir(..., exist_ok=True)`) and returns a fresh env dict; it
+    never wipes the Planar DB or anything else `prepare_lifecycle_fixture`
+    already wrote. `test_command` is re-derived from the case's own
+    fixture manifest (deterministic from `case["setup"]["fixture"]`),
+    matching how the live `_from_prepared` path recomputes its prompt
+    from `case` rather than threading it through as an argument. Vendor
+    auth is re-checked here rather than trusted from prepare time, for the
+    same reason `run_phase3_preview_from_prepared` re-checks it: auth is
+    only ever read from the live process environment, never persisted
+    into the scratch arena tree, so a `--prepare` and a later
+    `--run-prepared` in a different process must each verify it fresh.
+    """
+    run_meta = read_json(artifact_dir / "run.json")
+    repo = artifact_dir / "repo"
+    arena_root = artifact_dir / "arena"
+    env = arena.make_arena(arena_root)
+    arena.assert_isolated(env, arena_root)
+    if options.vendor:
+        arena.assert_vendor_auth(env, options.vendor)
+    # `prepare_lifecycle_fixture` prepends the fixture's `planar-agent`
+    # wrapper to PATH before it ever writes `run.json`; the reconstructed
+    # env must carry the same prefix or the resumed run would shell the
+    # real `planar-agent` instead of the recording wrapper.
+    env["PATH"] = str(repo / ".eval" / "bin") + os.pathsep + env["PATH"]
+    fixture_root = FIXTURES_DIR / case["setup"]["fixture"]
+    manifest = load_fixture_manifest(fixture_root)
+    task_id = run_meta["task_id"]
+    task_ids = run_meta.get("task_ids") or [task_id]
+    return LifecycleContext(
+        case_path,
+        case,
+        artifact_dir,
+        repo,
+        env,
+        run_meta["plan_id"],
+        task_id,
+        task_ids,
+        manifest["test_command"],
+    )
+
+
+def run_prepared_artifacts(
+    artifact_dir: Path, cases: list[tuple[Path, dict[str, Any]]]
+) -> Path:
+    """RUN + GRADE a `--prepare`d arena in a second, separate invocation
+    (task 6915). `prepare_phase3_preview`/`prepare_lifecycle_fixture` write
+    `run.json` and stop before any vendor host runs; before this, nothing
+    on the CLI surface ever called `run_phase3_preview_from_prepared` /
+    `run_lifecycle_host_from_prepared`, so the prepare -> run -> grade
+    split was never exercised end to end as two separate invocations.
+
+    Recomputes the case, prompt, and (for lifecycle) test command
+    deterministically from `run.json` plus the loaded case definitions,
+    the same "recompute from case + run.json" pattern `regrade_artifacts`
+    already established for resuming from a bare artifact dir -- but
+    unlike `--grade-artifacts`, this ACTUALLY invokes the vendor host (a
+    `--prepare`d arena has no transcript yet); it must not be pointed at
+    an already-graded dir.
+    """
+    artifact_dir = artifact_dir.resolve()
+    run_path = artifact_dir / "run.json"
+    if not run_path.is_file():
+        raise EvalFailure(
+            f"--run-prepared {artifact_dir} has no run.json -- run --prepare first"
+        )
+    run_meta = read_json(run_path)
+    case_id = run_meta.get("case_id")
+    matches = [case for _, case in cases if case["id"] == case_id]
+    if len(matches) != 1:
+        raise EvalFailure(f"cannot resolve case for prepared artifacts: {case_id}")
+    case = matches[0]
+    case_path = ROOT / run_meta["case_path"]
+    options = options_from_run(artifact_dir)
+    mode = run_meta.get("mode")
+    if mode == "live":
+        run_phase3_preview_from_prepared(case_path, case, options, artifact_dir)
+    elif mode == "lifecycle":
+        context = lifecycle_context_from_prepared(artifact_dir, case_path, case, options)
+        run_lifecycle_host_from_prepared(context, case, options)
+    else:
+        raise EvalFailure(f"--run-prepared does not support mode: {mode}")
+    print(f"artifacts: {artifact_dir}")
+    return artifact_dir
+
+
 def options_from_run(artifact_dir: Path) -> Options:
     run_path = artifact_dir / "run.json"
     grade_path = artifact_dir / "grade.json"
@@ -4827,7 +5021,7 @@ def regrade_artifacts(
 
 def parse_args(
     argv: Sequence[str],
-) -> tuple[Options, bool, Path | None, bool, bool]:
+) -> tuple[Options, bool, Path | None, bool, bool, Path | None]:
     parser = argparse.ArgumentParser(
         description="Run Planar orchestrator contract, live, and lifecycle evals."
     )
@@ -4849,6 +5043,10 @@ def parse_args(
     # Task 6849: stop after building the arena/plan/tasks and writing
     # run.json, before any vendor host is invoked.
     parser.add_argument("--prepare", action="store_true")
+    # Task 6915: resume a `--prepare`d artifact dir in a second, separate
+    # invocation -- runs the vendor host and grades, mirroring how
+    # `--grade-artifacts` resumes grading alone from a bare artifact dir.
+    parser.add_argument("--run-prepared", type=Path)
     # Task 6852: suite-level cost ceiling, checked cumulatively across every
     # case run in this invocation (see Options.suite_spend_usd).
     parser.add_argument("--max-usd", type=float, dest="max_usd")
@@ -4876,7 +5074,14 @@ def parse_args(
         max_usd=args.max_usd,
         trials=args.trials,
     )
-    return options, args.list, args.grade_artifacts, args.prepare, args.ledger_check
+    return (
+        options,
+        args.list,
+        args.grade_artifacts,
+        args.prepare,
+        args.ledger_check,
+        args.run_prepared,
+    )
 
 
 def run_case_trials(
@@ -4942,9 +5147,14 @@ def run_case_trials(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    options, list_only, regrade_path, prepare_only, ledger_check_only = parse_args(
-        argv or sys.argv[1:]
-    )
+    (
+        options,
+        list_only,
+        regrade_path,
+        prepare_only,
+        ledger_check_only,
+        run_prepared_path,
+    ) = parse_args(argv or sys.argv[1:])
     cases = load_cases()
     if ledger_check_only:
         violations = check_ledger_freshness(cases)
@@ -4958,6 +5168,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if regrade_path is not None:
         regrade_artifacts(regrade_path, cases)
+        return 0
+    if run_prepared_path is not None:
+        run_prepared_artifacts(run_prepared_path, cases)
         return 0
     selected = select_cases(cases, options.case_filter)
     if list_only:
