@@ -1204,7 +1204,8 @@ TEST_CASE("a seeded workbench feature tree is pinned", "[cmd][parity][cli-surfac
        "\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/"
        "2-second-task.md\",\"entity_kind\":\"task\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
        "\"file_path\":\"project_demo/p1-demo-feature/plans/"
-       "child-ms.md\",\"entity_kind\":\"plan\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"}]}\n",
+       "child-ms.md\",\"entity_kind\":\"plan\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"}],\"field_edit_refused\":0,"
+       "\"field_edit_refusals\":[]}\n",
        ""},
       {"wbstat1", {"workbench", "status", "1", "--verbose"}, 0, "workbench status: plan 1 (demo-feature)\n", ""},
       {"wblist1",
