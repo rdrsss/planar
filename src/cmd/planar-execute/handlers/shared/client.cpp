@@ -21,6 +21,8 @@ import planar.engine_execute;
 
 namespace planar::cmd::execute::handlers::client {
 /// @brief Environment lookup shared by the profile resolver.
+/// @param name Environment variable name.
+/// @return Its nonempty value, when set.
 auto env_value(std::string_view name) -> std::optional<std::string> {
   char const* raw = std::getenv(std::string{name}.c_str()); // NOLINT(concurrency-mt-unsafe) — single-threaded startup.
   return raw == nullptr || *raw == '\0' ? std::nullopt : std::optional<std::string>{raw};
@@ -50,6 +52,8 @@ auto resolve_named_profile(std::string_view name) -> std::expected<planar::cmd::
 /// purview) and a reordering of either would silently turn one outcome into
 /// another — "refused" into "retryable" is a retry loop against a durable
 /// refusal, and the reverse abandons work that was never attempted.
+/// @param outcome Bridge call outcome.
+/// @return The corresponding flow outcome.
 auto translate(planar::cmd::execute::call_outcome outcome) -> planar::cmd::execute::daemon_outcome {
   namespace ex = planar::cmd::execute;
   switch (outcome) {
@@ -66,6 +70,8 @@ auto translate(planar::cmd::execute::call_outcome outcome) -> planar::cmd::execu
 }
 
 /// @brief Project a bridge answer onto the flow's shape.
+/// @param answer Bridge call result.
+/// @return The corresponding flow answer.
 auto translate(const planar::cmd::execute::call_result& answer) -> planar::cmd::execute::daemon_answer {
   namespace ex = planar::cmd::execute;
   return ex::daemon_answer{.outcome_ = translate(answer.outcome_),
@@ -78,6 +84,9 @@ auto translate(const planar::cmd::execute::call_result& answer) -> planar::cmd::
 }
 
 /// @brief Render one run as the operator or a script reads it.
+/// @param run Run projection to render.
+/// @param json Whether to use JSON output.
+/// @return Rendered run text.
 auto render_run(const planar::cmd::execute::run_view& run, bool json) -> std::string {
   if (json) {
     return std::format(R"({{"run_id":"{}","status":"{}","terminal":{},"sequence":{},"result":{},"error":{}}})"
@@ -100,11 +109,14 @@ auto render_run(const planar::cmd::execute::run_view& run, bool json) -> std::st
 /// `status`, `cancel` and `host status` are inspection verbs: a daemon that is
 /// not running is an answer, not a reason to start one. Only `submit` spawns.
 struct reached_host {
-  planar::cmd::execute::profile     profile_;
-  planar::cmd::execute::host_layout layout_;
-  bool                              serving_{};
+  planar::cmd::execute::profile     profile_;   ///< Resolved profile.
+  planar::cmd::execute::host_layout layout_;    ///< Host filesystem layout.
+  bool                              serving_{}; ///< Whether the host is serving.
 };
 
+/// @brief Find the daemon serving a profile without starting it.
+/// @param profile_name Profile to inspect.
+/// @return Host state, or a diagnostic.
 auto reach_host(std::string_view profile_name) -> std::expected<reached_host, std::string> {
   namespace ex        = planar::cmd::execute;
   auto const resolved = resolve_named_profile(profile_name);
@@ -115,7 +127,6 @@ auto reach_host(std::string_view profile_name) -> std::expected<reached_host, st
   return reached_host{.profile_ = *resolved, .layout_ = layout, .serving_ = ex::probe_socket(layout.socket_.c_str())};
 }
 
-/// @brief Run one `status`: a named run, or the profile's daemon.
 auto status_run(const planar::cmd::execute::run_id_args& asked) -> int {
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
@@ -150,7 +161,6 @@ auto status_run(const planar::cmd::execute::run_id_args& asked) -> int {
   return 0;
 }
 
-/// @brief Run one `cancel`: stop a run this profile's principal admitted.
 auto cancel_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
@@ -181,7 +191,6 @@ auto cancel_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
   return 0;
 }
 
-/// @brief Run one `host status`: who is serving this profile.
 auto host_status(const planar::cmd::execute::run_id_args& asked) -> int {
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
@@ -212,7 +221,6 @@ auto host_status(const planar::cmd::execute::run_id_args& asked) -> int {
   return 0;
 }
 
-/// @brief Run one `follow`: stream a run's events, remembering the cursor.
 auto follow_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
@@ -252,7 +260,6 @@ auto follow_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
   return 0;
 }
 
-/// @brief Run one `host drain` or `host stop`.
 auto host_lifecycle(std::string_view action, const planar::cmd::execute::run_id_args& asked) -> int {
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
@@ -299,9 +306,6 @@ auto host_lifecycle(std::string_view action, const planar::cmd::execute::run_id_
   return 1;
 }
 
-/// @brief Run one `submit`: ensure the profile's daemon, check identity, start and follow.
-/// @param asked The parsed arguments.
-/// @return The process exit code.
 auto submit_run(const planar::cmd::execute::submit_args& asked) -> int {
   namespace ex = planar::cmd::execute;
 
