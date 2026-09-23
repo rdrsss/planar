@@ -71,6 +71,7 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 That's it. The script:
 
 - Builds all five binaries from source by running `cmake --preset release -DPLANAR_VERSION_META=ON`, `cmake --build build/release`, and `cmake --install build/release --prefix "$HOME/.planar"` from the repo root, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`.
+- Installs a stock `centuriond` (plan 1033) through `scripts/install-centuriond.sh`: built from the same pinned Centurion archive as a separate CMake project into `build/centuriond-release/` (or a checksum-verified Centurion release binary when the pinned tag publishes one), written to `~/.planar/bin/centuriond` with its migrations and `build-identity.json` under `~/.planar/share/centurion/`. The first build compiles Centurion's gRPC stack and takes several minutes; later installs are incremental. The first configure of a checkout also needs `GITHUB_TOKEN` for the private Centurion archive — the installer borrows `gh auth token` when none is exported.
 - Copies `agents/`, `commands/`, `skills/`, `migrations/`, `scripts/`, and (if present) `copilot/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen).
 - Symlinks 31 surfaces per vendor into the vendor harness dirs.
 - Atomically writes `~/.planar/install-manifest.json` after the selected vendor

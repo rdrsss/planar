@@ -88,11 +88,20 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export PLANAR_DB="$tmp/db.sqlite" HOME="$tmp/home" PLANAR_WORKBENCH_ROOT="$tmp/wb"
 mkdir -p "$HOME"
-
 # The WORKING DIRECTORY is isolated too (task 6845 / bug 6896), separately
-# from PLANAR_DB/HOME/WORKBENCH above: a plain, non-git scratch directory so
-# the worktree gate never fires on a case that isn't testing it, regardless
-# of where this script itself is invoked from.
+# from PLANAR_DB/HOME/WORKBENCH above: a plain, non-git scratch directory.
+# The cases invoke PLANNING verbs, which refuse outright (exit 8) when the
+# cwd is inside a git worktree -- before the argument validation whose exit
+# code is under test. Run from a worktree, `planar task add` returned 8
+# where this gate wants 2, and the gate failed on WHERE it ran rather than
+# on what the binary does.
+#
+# Master's plan-1033 M1 fixed the same bug by `cd "$tmp"` once; this keeps
+# the per-case `(cd "$workdir" && ...)` form instead, because the
+# worktree-gate case below must run from an EXPLICIT git worktree while
+# every other case must not — one ambient cd cannot express both. The
+# absolute-path resolution master paired with its fix is already done
+# above, at the `bin_dir`/`doc` lines.
 workdir="$tmp/work"
 mkdir -p "$workdir"
 
