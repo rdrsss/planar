@@ -31,6 +31,9 @@ import planar.cmd.planar_execute.profile;
 import planar.cmd.planar_execute.host;
 import planar.cmd.planar_execute.compat;
 import planar.cmd.planar_execute.runflow;
+import planar.cmd.planar_execute.handlers.run.command;
+import planar.cmd.planar_execute.handlers.profile.command;
+import planar.cmd.planar_execute.handlers.schema.command;
 import planar.engine_execute;
 
 // After the imports: declares std:: types, includes no standard header.
@@ -42,26 +45,6 @@ namespace {
 /// payload — trailing newline included — so nothing is appended).
 auto print_usage() -> void {
   std::cerr << planar::cmd::execute::usage_text();
-}
-
-/// @brief `$PLANAR_EXECUTE_ENGINE`, or unset.
-/// @return The raw value.
-auto engine_env() -> std::optional<std::string_view> {
-  char const* raw = std::getenv("PLANAR_EXECUTE_ENGINE"); // NOLINT(concurrency-mt-unsafe) — single-threaded startup.
-  if (raw == nullptr) {
-    return std::nullopt;
-  }
-  return std::string_view{raw};
-}
-
-/// @brief Resolve the engine for this process, reading the config plane
-/// through the sibling `planar` only when flag and env are both absent.
-/// @param flag The `--engine` value, empty when not given.
-/// @return The choice, or the one-line reason it could not be made.
-auto resolve(std::string_view flag) -> std::expected<planar::cmd::execute::engine_choice, std::string> {
-  namespace ex          = planar::cmd::execute;
-  auto const flag_value = flag.empty() ? std::nullopt : std::optional<std::string_view>{flag};
-  return ex::resolve_engine(flag_value, engine_env(), ex::sibling_config_reader(ex::executable_dir()));
 }
 
 /// @brief Environment lookup shared by the profile resolver.
@@ -451,55 +434,12 @@ auto main(int argc, char** argv) -> int {
     break;
 
   case planar::cmd::execute::verb::schema:
-    // The one verb whose payload is stdout: the catalog is a machine
-    // channel read by `cli_usage_lint`, exactly like the other binaries'
-    // `schema`. Nothing goes to stderr.
-    std::cout << planar::cmd::execute::catalog_json() << '\n';
-    code = 0;
+    code = planar::cmd::execute::handlers::schema::execute(std::cout);
     break;
 
-  case planar::cmd::execute::verb::profile: {
-    // Like `schema`, a machine channel: the payload is stdout.
-    namespace ex     = planar::cmd::execute;
-    auto const asked = ex::parse_profile_args(std::span{args}.subspan(2));
-    if (!asked.has_value()) {
-      print_usage();
-      code = 2;
-      break;
-    }
-    // ONE read of the config plane serves both the engine and the profile.
-    auto const bin_dir = ex::executable_dir();
-    auto const entries = planar::engine::execute::read_planar_config_all(bin_dir);
-    if (!entries.has_value()) {
-      std::cerr << "planar-execute: cannot read the config plane: " << entries.error() << '\n';
-      code = 1;
-      break;
-    }
-    auto const choice = ex::resolve_engine(std::nullopt, engine_env(), ex::entries_config_reader(*entries));
-    if (!choice.has_value()) {
-      std::cerr << "planar-execute: " << choice.error() << '\n';
-      code = 1;
-      break;
-    }
-    auto const resolved = ex::resolve_profile(
-        *entries, asked->name,
-        [](std::string_view name) -> std::optional<std::string> {
-          char const* raw = std::getenv(std::string{name}.c_str()); // NOLINT(concurrency-mt-unsafe) — single-threaded startup.
-          return raw == nullptr || *raw == '\0' ? std::nullopt : std::optional<std::string>{raw};
-        },
-        [&bin_dir] {
-          auto const path = planar::engine::execute::read_planar_config_path(bin_dir);
-          return path.has_value() ? *path : std::string{"the planar config file"};
-        });
-    if (!resolved.has_value()) {
-      std::cerr << "planar-execute: " << resolved.error() << '\n';
-      code = 1;
-      break;
-    }
-    std::cout << ex::render_profile(*choice, *resolved, asked->json);
-    code = 0;
+  case planar::cmd::execute::verb::profile:
+    code = planar::cmd::execute::handlers::profile::execute(std::span{args}.subspan(2), std::cout, std::cerr);
     break;
-  }
 
   case planar::cmd::execute::verb::submit: {
     auto const asked = planar::cmd::execute::parse_submit_args(std::span{args}.subspan(2));
@@ -564,43 +504,9 @@ auto main(int argc, char** argv) -> int {
     break;
   }
 
-  case planar::cmd::execute::verb::run: {
-    auto const parsed = planar::cmd::execute::parse_run_args(std::span{args}.subspan(2));
-    if (!parsed.has_value()) {
-      print_usage();
-      code = 2;
-      break;
-    }
-    auto const choice = resolve(parsed->engine);
-    if (!choice.has_value()) {
-      std::cerr << "planar-execute: " << choice.error() << '\n';
-      code = 1;
-      break;
-    }
-    if (choice->engine == planar::cmd::execute::engine_kind::centurion) {
-      // Parses, resolves, and is refused by NAME before anything runs
-      // (tech-spec D5; test-spec "centurion engine refused at dispatch").
-      // Retired by the end-to-end example scenario when the host lands in
-      // plan 1033 M2, not carried as a permanent refusal.
-      std::cerr << "planar-execute: engine 'centurion' is not available yet (" << choice->source
-                << "); the Centurion host lands in plan 1033 M2\n";
-      code = 1;
-      break;
-    }
-    // Every engine failure is exit 1. The oracle maps every `EngineError`
-    // except `BadUsage` to 1, and `BadUsage` cannot come out of this path —
-    // it is produced by `parse_run_args` above, which has already succeeded.
-    switch (planar::cmd::execute::run_workflow(*parsed, std::cout, std::cerr)) {
-    case planar::cmd::execute::run_outcome::ok:
-      code = 0;
-      break;
-    case planar::cmd::execute::run_outcome::load_failed:
-    case planar::cmd::execute::run_outcome::engine_failed:
-      code = 1;
-      break;
-    }
+  case planar::cmd::execute::verb::run:
+    code = planar::cmd::execute::handlers::run::execute(std::span{args}.subspan(2), std::cout, std::cerr);
     break;
-  }
   }
 
   std::cout.flush();

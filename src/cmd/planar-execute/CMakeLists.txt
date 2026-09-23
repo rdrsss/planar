@@ -94,20 +94,24 @@ planar_binary(planar_execute
   MAIN
     main.cpp
   INTERFACE
-    cli.cppm
-    catalog.cppm
-    engine.cppm
-    selector.cppm
-    profile.cppm
+    handlers/shared/cli.cppm
+    handlers/schema/catalog.cppm
+    handlers/run/engine.cppm
+    handlers/shared/selector.cppm
+    handlers/profile/profile.cppm
+    handlers/shared/engine_env.cppm
+    handlers/run/command.cppm
+    handlers/profile/command.cppm
+    handlers/schema/command.cppm
     host.cppm
     compat.cppm
     runflow.cppm
   SOURCES
-    cli.cpp
-    catalog.cpp
-    engine.cpp
-    selector.cpp
-    profile.cpp
+    handlers/shared/cli.cpp
+    handlers/schema/catalog.cpp
+    handlers/run/engine.cpp
+    handlers/shared/selector.cpp
+    handlers/profile/profile.cpp
     host.cpp
     compat.cpp
     runflow.cpp

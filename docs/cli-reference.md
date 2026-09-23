@@ -244,16 +244,16 @@ table claimed for years — performs **no** scope comparison.
 
 | Verb | Guards against | Comparison | Call site |
 |------|---------------|-----------|-----------|
-| `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec_ingest.cpp` |
-| `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback.cpp` |
-| `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit.cpp` |
-| `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision.cpp` |
-| `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision.cpp` |
+| `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec/command.cpp` |
+| `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback/command.cpp` |
+| `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit/command.cpp` |
+| `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
+| `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task/command.cpp` |
-| `closure compute` | resolved write scope | membership-aware | `src/cmd/planar/handlers/closure.cpp` |
-| `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
-| `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
-| `planar-ext sync resolve <event-id>` | the event's target entity | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
+| `closure compute` | resolved write scope | membership-aware | `src/cmd/planar/handlers/closure/command.cpp` |
+| `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
+| `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
+| `planar-ext sync resolve <event-id>` | the event's target entity | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
 
 `--all` forms of `sync push` / `sync pull` are unguarded; the bulk fan-out is
 an explicit opt-in.
@@ -6960,7 +6960,7 @@ Shows the full `workflow_runs` row for `<id>` (wf-arm only) plus all `context_re
 
 Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, `engine:<e>`, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
 
-**Implementation:** `src/cmd/planar-watch/handlers/run.cpp` (plan 585, task 3906; op-arm inclusion added task 4349; engine and nullable plan task 6493).
+**Implementation:** `src/cmd/planar-watch/handlers/run/run.cpp` (plan 585, task 3906; op-arm inclusion added task 4349; engine and nullable plan task 6493).
 
 **Engine supervision in `claims` and `feed` (plan 1033 task 6493).** Every claim object `claims --json` and `feed --json` emit carries `"supervisor":"caller"|"engine"` and `"attempt_id"` immediately after `stage` — a claim never handed to the engine reads `"supervisor":"caller","attempt_id":null`, the keys are never omitted. `ps`, `log` and `planar-agent`'s payloads keep the lean claim object. In text, an engine claim's `claims` line gains `supervisor:engine  attempt:<id>` before `token:` (a caller claim's line is unchanged), an expired engine claim reads `status:lapsed (engine)`, and a `feed` line for one of the supervision action kinds (`claim_associate`, `claim_terminal`, `supervisor_override`, `run_submitted`, `run_reconciled`) appends the kind.
 
@@ -7259,7 +7259,7 @@ registered lane workspace), and `used_by`, the workflows that call it.
 `planned_workflows` names workflows not shipped yet (the M4
 claim-supervision workflow); their entries must become used once they are.
 
-Two gates keep it honest. `src/cmd/planar-execute/policy.t.cpp` extracts
+Two gates keep it honest. `src/cmd/planar-execute/handlers/shared/policy.t.cpp` extracts
 every host call from the shipped workflows (`cli.*`, the `ctx.*` reads, and
 `git.*`) and fails if one resolves to no entry, if an entry is unused, or if
 an entry's `used_by` is not exactly the workflows that use it; it also

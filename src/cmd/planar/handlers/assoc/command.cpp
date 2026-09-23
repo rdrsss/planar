@@ -85,7 +85,7 @@ auto assoc_create(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   // FIRST, before validating `--kind`. zig opens with `const d = try
   // runtime.ensureDb();`, so a refused `--kind nope` still creates and
   // migrates the database. Same ordering, same reason, as `plan create`'s.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -129,7 +129,7 @@ auto assoc_create(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto assoc_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -206,7 +206,7 @@ auto assoc_add(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 }
 
 auto assoc_members(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -245,7 +245,7 @@ auto assoc_list(context& ctx, const cliapp::parsed_args& args) -> handler_result
   // Before the `--kind` check, same ordering (and same reason) as
   // `assoc_create`'s: zig opens with `try runtime.ensureDb()`, so a
   // refused `--kind nope` still creates and migrates the database.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -277,7 +277,7 @@ auto assoc_list(context& ctx, const cliapp::parsed_args& args) -> handler_result
 }
 
 auto assoc_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -339,7 +339,7 @@ auto assoc_remove(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 auto assoc_detect(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // FIRST, before any probing -- zig opens with `try runtime.ensureDb()`,
   // so even a pure preview creates and migrates the database.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

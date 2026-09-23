@@ -99,35 +99,51 @@ planar_binary(planar_watch
   INTERFACE
     exit.cppm
     context.cppm
+    database.cppm
     handler.cppm
-    tree.cppm
+    main.cppm
+    handlers/shared/cli.cppm
+    handlers/feed/command.cppm
+    handlers/ps/command.cppm
+    handlers/claims/command.cppm
+    handlers/actions/command.cppm
+    handlers/plans/command.cppm
+    handlers/log/command.cppm
+    handlers/tree/command.cppm
+    handlers/run/command.cppm
+    handlers/sync_events/command.cppm
+    handlers/version/command.cppm
+    handlers/completion/command.cppm
+    handlers/schema/command.cppm
+
     surface.cppm
-    handlers/format.cppm
-    handlers/version.cppm
-    handlers/schema.cppm
-    handlers/completion.cppm
-    handlers/feed.cppm
-    handlers/follow.cppm
-    handlers/ledger.cppm
-    handlers/live.cppm
-    handlers/run.cppm
-    handlers/syncevents.cppm
+    handlers/shared/format.cppm
+    handlers/version/version.cppm
+    handlers/schema/schema.cppm
+    handlers/completion/completion.cppm
+    handlers/feed/feed.cppm
+    handlers/shared/follow.cppm
+    handlers/shared/ledger.cppm
+    handlers/shared/live.cppm
+    handlers/run/run.cppm
+    handlers/sync_events/syncevents.cppm
     dispatch.cppm
   SOURCES
     context.cpp
-    tree.cpp
-    handlers/format.cpp
-    handlers/version.cpp
-    handlers/schema.cpp
-    handlers/completion.cpp
-    handlers/feed.cpp
-    handlers/follow.cpp
-    handlers/ledger.cpp
-    handlers/live.cpp
-    handlers/run.cpp
-    handlers/syncevents.cpp
+    database.cpp
+    handlers/shared/format.cpp
+    handlers/version/version.cpp
+    handlers/schema/schema.cpp
+    handlers/completion/completion.cpp
+    handlers/feed/feed.cpp
+    handlers/shared/follow.cpp
+    handlers/shared/ledger.cpp
+    handlers/shared/live.cpp
+    handlers/run/run.cpp
+    handlers/sync_events/syncevents.cpp
     dispatch.cpp
   DEPENDS
+    cmd_internal
     cliapp
     db
     json_text

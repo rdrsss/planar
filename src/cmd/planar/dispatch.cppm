@@ -113,7 +113,7 @@ export using handler_table = std::map<std::string, handler_fn, std::less<>>;
 /// `completion` entries, which describe the tree rather than the database,
 /// so it must outlive the returned table.
 /// @return The populated table.
-export auto handlers(const CLI::App& root) -> handler_table;
+export auto make_handler_table(const CLI::App& root) -> handler_table;
 
 /// @brief Every leaf in `root` that `table` has no handler for.
 /// @param root The command tree.

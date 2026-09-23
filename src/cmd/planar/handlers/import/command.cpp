@@ -460,7 +460,7 @@ auto import_repo(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   if (flag_bool(args, "--apply")) {
     if (flag_bool(args, "--interpret") && result->mode_ == im::outcome::mode::pending)
       return std::unexpected(error_from_body(domain_error_kind::generic_failure, "import failed: NotFound"));
-    auto db = ctx.ensure_db();
+    auto db = ctx.db().ensure_db();
     if (!db)
       return std::unexpected(db.error());
     // A validated interpretation is authoritative for the imported anchor;

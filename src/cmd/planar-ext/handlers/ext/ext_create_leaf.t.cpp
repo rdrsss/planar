@@ -1,0 +1,544 @@
+// @file ext_create_leaf.t.cpp
+// @brief In-process tests for the `planar ext create` leaf (plan 996,
+// task 6295).
+//
+// ## THE FIRST CASE ASSERTS THE FIXTURE
+//
+// The cases below turn on a live fixture HTTP server and a registered
+// system whose `base_url` points at it. If the URL rewrite failed, every
+// create would fail at the transport and refuse identically — a uniform
+// failure that a count-the-links check cannot tell from a uniform refusal
+// for any other reason. The first case pins the server, both registered
+// systems, and the local entities before any comparison runs.
+//
+// ## THE CORRECTION THIS LEAF EXISTS TO RECORD
+//
+// Task 6294 established that the `sync` trio renders adapter-build failures
+// as a RAW ZIG TAG at exit 1, and that finding was written down as a rule.
+// The rule does NOT transfer. `ext/create.zig:40-45` maps every factory
+// error to `error.InvalidInput` with an interpolated message, so `ext
+// create` renders like `ext test` — PROSE at exit 2. Captured:
+//
+//   $Z ext create jira-demo --from task:1   (with DEMO_TOKEN unset)
+//       -> exit 2, `error: token env var 'DEMO_TOKEN' is not set`
+//
+// `factory_error_message` is the right reference here; `factory_error_name`
+// in `handlers/sync/sync.cpp` is the wrong one. One family's behaviour was
+// generalised into a rule and the rule was wrong two leaves later.
+//
+// ## ORACLE PROVENANCE
+//
+// Captured from `zig/zig-out/bin/planar` built at this cycle's base, in a
+// pinned scratch arena, against a local fixture server on 127.0.0.1. Exit
+// codes were read from the command itself via command substitution with
+// `2>file`, never through a pipe. Replayed as a 16-case differential against
+// the built C++ binary in a second identically-seeded arena; all 16 agreed
+// on stdout, stderr and exit code — AND on the server's own request log, so
+// the URL, the three headers and the rendered body are pinned by the
+// comparison too, not just the verb's output.
+//
+// The captures that decided a shape:
+//
+//   POST /rest/api/3/issue  Authorization: Bearer tok-abc
+//       -> `{"key":"DEMO-77"}` becomes external_id `DEMO-77` and
+//          external_url `<base>/browse/DEMO-77`.
+//
+//   POST /repos/acme/widgets/issues  Accept: application/vnd.github+json
+//       -> `{"number":42,"html_url":...}` becomes external_id
+//          `acme/widgets#42` — the PROJECT and the number, not the number
+//          alone — and external_url the `html_url` verbatim.
+//
+//   $Z ext create jira-demo --from foo:1
+//       -> `ext create: read local foo:1: InvalidInput` at exit 2. The
+//          `--from` ref is parsed LOOSELY; `handlers/sync/sync.cppm`'s
+//          `parse_kind_id_ref` would have refused earlier with a different
+//          message, which is why it is deliberately not reused here.
+//
+//   $Z ext create jira-demo --from task:999
+//       -> `ext create: read local task:999: NotFound` at exit ONE. Same
+//          message template as the case above, different exit code.
+//
+// ## THE ORDERING IS PINNED FROM THE SERVER'S SIDE
+//
+// The last case in this file asserts the REQUEST COUNT, not the verb's
+// output, because the property it guards is invisible from stdout, stderr
+// and the exit code alike: NO REMOTE WRITE HAPPENS UNTIL EVERY LOCAL
+// PRECONDITION THAT COULD REFUSE HAS BEEN CHECKED.
+//
+// It used to pin the OPPOSITE. Under D2 this verb reproduced two oracle
+// defects — `--role bogus` POSTed the ticket and only then refused (6312),
+// and a repeat POSTed a SECOND ticket before discovering the existing link
+// (6313) — and the pin recorded those request counts so that fixing them
+// would be deliberate rather than silent. Decision 1067 retired D2's
+// bug-for-bug rule once the oracle was deleted and put both rows in its FIX
+// half, on the grounds that this is the only divergence on that board whose
+// consequence leaves the command: it writes a ticket into somebody's live
+// Jira or GitHub that Planar has no record of and cannot clean up. The
+// expectations below are therefore JUDGMENT, not measurement — the reference
+// that produced the old numbers is gone. See decision 1067 on that cost.
+//
+// Note what THIS file's `respond` can and cannot show about 6313. It answers
+// every Jira create with the same `DEMO-77`, so the old second POST collided
+// on `external_links`' `unique (entity_kind, entity_id, system_id,
+// external_id)` and the verb refused at exit 6. A REAL remote mints a fresh
+// id per POST, so that second insert would have SUCCEEDED: two tickets and
+// two links, no refusal at all. The exit 6 was measuring the FIXTURE. That
+// is why the gate ignores `external_id` — the post-insert constraint is not
+// a substitute for it — and why the ordering case at the bottom installs its
+// own INCREMENTING responder instead of `respond`, so that its assertions
+// are about the gate rather than about a canned id.
+//
+// ## THE GATE KEY IS FOUR FIELDS, AND EACH ONE IS PINNED
+//
+// `(entity_kind, entity_id, system_id, link_role)`. The ordering case walks
+// one sub-case per field in which THAT field is the only thing distinguishing
+// the new create from an existing link, and asserts the create SUCCEEDS.
+// Drop any single field from the handler's filter and exactly those
+// assertions turn into an exit-6 refusal. `link_role` is in the key on
+// purpose and is not a wider `(entity, system)` cardinality: `planar link`
+// writes a `reference` row on an entity+system pair with no gate at all, and
+// `load_existing_mirror`'s own contract says a non-mirror row for the same
+// entity does not suppress propagation. This verb must not be the one place
+// that rule is different.
+
+#include <catch2/catch_test_macros.hpp>
+
+import std;
+import planar.db;
+import planar.db.migrate;
+import planar.cmd.planar_ext.context;
+import planar.cmd.planar_ext.dispatch;
+import planar.cmd.planar_ext.main;
+
+// AFTER the imports, not before: the header names `std::function` and
+// `std::thread` without including <functional> or <thread> itself, so it
+// only compiles once `import std;` has been seen. `sync_leaves.t.cpp` orders
+// it the same way for the same reason.
+#include "../lib/http/fixture_server.hpp"
+
+namespace {
+
+using planar::cmd::ext::context;
+
+/// @brief One handler invocation's observable result.
+struct invocation {
+  int         code = 0; ///< The exit code.
+  std::string out;      ///< Everything written to stdout.
+  std::string err;      ///< Everything written to stderr.
+};
+
+/// @brief A scratch root plus the environment every case dispatches against.
+struct fixture {
+  std::filesystem::path                           root;    ///< The scratch root.
+  std::map<std::string, std::string, std::less<>> vars;    ///< The environment map.
+  std::filesystem::path                           db_path; ///< Inside `root`; never the operator's.
+};
+
+/// @brief Build a fixture under a unique scratch directory.
+/// @param tag A short discriminator so a failure names its own case.
+/// @return The fixture.
+auto make_fixture(std::string_view tag) -> fixture {
+  auto const      root = std::filesystem::temp_directory_path() /
+                         std::format("planar_extcreate_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
+  std::error_code ec;
+  std::filesystem::create_directories(root / "proj", ec);
+  return fixture{
+      .root    = root,
+      .vars    = {{"PLANAR_DB", (root / "planar.db").string()},
+                  {"PLANAR_HOME", (root / "home").string()},
+                  {"PLANAR_LOCAL_HOME", (root / "localhome").string()},
+                  {"HOME", (root / "fakehome").string()},
+                  {"PWD", (root / "proj").string()},
+                  {"DEMO_TOKEN", "tok-abc"}},
+      .db_path = root / "planar.db",
+  };
+}
+
+/// @brief Migrate the fixture database directly — `planar-ext` has no
+/// `init` verb. See `ext_leaves.t.cpp`'s `migrate_fixture` for the full
+/// account.
+/// @param fx The fixture whose `db_path` gets migrated.
+void migrate_fixture(const fixture& fx) {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn));
+}
+
+/// @brief Dispatch `args` against the real tree and table.
+/// @param fx The fixture.
+/// @param args The argv tail.
+/// @param drop A variable to REMOVE from the environment for this call only.
+/// @return The captured invocation.
+auto dispatch(const fixture& fx, std::vector<std::string> args, std::string_view drop = {}) -> invocation {
+  std::vector<std::string> argv{"planar"};
+  argv.insert(argv.end(), args.begin(), args.end());
+
+  auto vars = fx.vars;
+  if (!drop.empty()) {
+    vars.erase(std::string{drop});
+  }
+
+  std::ostringstream out;
+  std::ostringstream err;
+  context            ctx{std::move(argv), planar::cmd::ext::map_env(vars), fx.root / "proj", std::make_shared<planar::cmd::ext::database>(fx.db_path, err), out, err};
+  auto const         tree  = planar::cmd::ext::root_app();
+  auto const         table = planar::cmd::ext::handlers(*tree);
+  int const          code  = planar::cmd::ext::run(ctx, *tree, table);
+  return invocation{.code = code, .out = out.str(), .err = err.str()};
+}
+
+/// @brief Read one integer out of the fixture database.
+/// @param fx The fixture.
+/// @param sql A statement whose first column is the value.
+/// @return The value.
+auto scalar(const fixture& fx, std::string_view sql) -> std::int64_t {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare(sql);
+  REQUIRE(stmt.has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  REQUIRE(*step == planar::db::step_result::row);
+  return stmt->column_int64(0);
+}
+
+/// @brief Read one text column out of the fixture database.
+/// @param fx The fixture.
+/// @param sql A statement whose first column is the value.
+/// @return The value, or `<none>` when no row matched.
+auto text(const fixture& fx, std::string_view sql) -> std::string {
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare(sql);
+  REQUIRE(stmt.has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  if (*step != planar::db::step_result::row) {
+    return "<none>";
+  }
+  return std::string{stmt->column_text(0)};
+}
+
+/// @brief The canned create responses, one per provider.
+///
+/// Jira answers `{"key":...}` on its own endpoint; GitHub answers
+/// `{"number":..,"html_url":..}` on its own. Serving BOTH from one handler
+/// keeps a single fixture server for cases that exercise either provider,
+/// and the endpoint discrimination is itself part of what is pinned: a port
+/// that built the wrong URL would land on the other provider's branch and
+/// return an id of the wrong SHAPE rather than failing outright.
+/// @param req The captured request.
+/// @return The canned response.
+auto respond(const planar::http::fixture::captured_request& req) -> planar::http::fixture::canned_response {
+  if (req.target.contains("rest/api/3/issue")) {
+    return {.status = 201, .body = R"({"key":"DEMO-77"})", .content_type = "application/json"};
+  }
+  return {
+      .status = 201, .body = R"({"number":42,"html_url":"https://example.invalid/i/42"})", .content_type = "application/json"};
+}
+
+/// @brief Register both providers against `base` and seed local entities.
+/// @param fx The fixture.
+/// @param base The fixture server's base URL.
+void seed(const fixture& fx, std::string_view base) {
+  migrate_fixture(fx);
+  REQUIRE(dispatch(fx, {"ext", "register", "jira", "jira-demo", "--base-url", std::string{base}, "--project", "DEMO",
+                        "--auth-env", "DEMO_TOKEN"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"ext", "register", "github", "gh-demo", "--auth-env", "DEMO_TOKEN", "--project", "acme/widgets"}).code ==
+          0);
+
+  // `ext register github` takes no `--base-url`, so the row it writes points
+  // at the real api.github.com. Redirecting it here is what keeps this suite
+  // OFF the network; without it the GitHub case would attempt a real call.
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute(std::format("update external_systems set base_url = '{}' where slug = 'gh-demo'", base)).has_value());
+    // `plan create` / `task add` / `decision add` all live on `planar`, not
+    // this binary — seeded directly, same as the systems above.
+    REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug) values (1, 'global', 'Anchor plan', 'anchor-plan')")
+                .has_value());
+    REQUIRE(conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (1, 'global', 1, 'Demo task')").has_value());
+    // A SECOND task of the same kind on the same plan. Nothing but the
+    // ordering case uses it, and that case needs it: it is the only way to
+    // ask whether the duplicate gate keys on `entity_id` at all, since
+    // `plan:1` differs from `task:1` in `entity_kind` too.
+    REQUIRE(
+        conn->execute("insert into tasks (id, scope_kind, plan_id, title) values (2, 'global', 1, 'Second task')").has_value());
+    REQUIRE(conn->execute("insert into decisions (id, scope_kind, title, body) values (1, 'global', 'Demo decision', 'because')")
+                .has_value());
+  }
+}
+
+} // namespace
+
+TEST_CASE("the ext create fixture points BOTH systems at the local server", "[cmd][ext][create][fixture]") {
+  // Every case below depends on the `gh-demo` URL rewrite in particular: it
+  // is the difference between an offline suite and one that tries to reach
+  // api.github.com. A silent failure there would surface as a transport
+  // refusal that looks like any other refusal.
+  planar::http::fixture::server remote(respond);
+  auto const                    fx = make_fixture("fixture");
+  seed(fx, remote.base_url());
+
+  CHECK(scalar(fx, "select count(*) from external_systems") == 2);
+  CHECK(text(fx, "select base_url from external_systems where slug = 'jira-demo'") == remote.base_url());
+  CHECK(text(fx, "select base_url from external_systems where slug = 'gh-demo'") == remote.base_url());
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+  // The decision row exists, which is what makes the "four kinds, not seven"
+  // refusal below a real refusal rather than a missing row.
+  CHECK(scalar(fx, "select count(*) from decisions") == 1);
+}
+
+TEST_CASE("a Jira create records the key and the derived browse URL", "[cmd][ext][create][jira]") {
+  planar::http::fixture::server remote(respond);
+  auto const                    fx = make_fixture("jira");
+  seed(fx, remote.base_url());
+
+  auto const ran = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1"});
+  CHECK(ran.code == 0);
+  CHECK(ran.err.empty());
+  CHECK(ran.out == "created DEMO-77 on jira-demo for task:1\n"
+                   "link id: 1  (two-way mirror)\n");
+
+  // The URL is DERIVED from the base plus the key — Jira's response carries
+  // no URL of its own.
+  CHECK(text(fx, "select external_id from external_links where id = 1") == "DEMO-77");
+  CHECK(text(fx, "select external_url from external_links where id = 1") == std::format("{}/browse/DEMO-77", remote.base_url()));
+  // `ok`, not `never`: this verb just created the counterpart. `link`, which
+  // records a ticket created elsewhere, writes `never`.
+  CHECK(scalar(fx, "select count(*) from external_links where id = 1 and last_sync_status = 'ok'") == 1);
+  // The defaults here are `mirror` / `two-way` — the OPPOSITE of `link`'s
+  // `reference` / `read-only`. Two verbs on one table, two default pairs.
+  CHECK(scalar(fx, "select count(*) from external_links where id = 1 and link_role = 'mirror'"
+                   " and sync_direction = 'two-way'") == 1);
+}
+
+TEST_CASE("a GitHub create spells the id as project#number and keeps the html_url", "[cmd][ext][create][github]") {
+  planar::http::fixture::server remote(respond);
+  auto const                    fx = make_fixture("github");
+  seed(fx, remote.base_url());
+
+  auto const ran = dispatch(fx, {"ext", "create", "gh-demo", "--from", "plan:1", "--json"});
+  CHECK(ran.code == 0);
+  CHECK(ran.out == R"({"ok":true,"link_id":1,"external_id":"acme/widgets#42",)"
+                   R"("external_url":"https://example.invalid/i/42","sync_direction":"two-way"})"
+                   "\n");
+
+  // The PROJECT is part of the id, not just the number. An id of `42` or
+  // `#42` would still be a plausible-looking string and would not round-trip
+  // through the adapter's `validate`.
+  CHECK(text(fx, "select external_id from external_links where id = 1") == "acme/widgets#42");
+  // GitHub's URL is taken VERBATIM from the response, where Jira's is
+  // derived. The two providers are not symmetric here.
+  CHECK(text(fx, "select external_url from external_links where id = 1") == "https://example.invalid/i/42");
+}
+
+TEST_CASE("the request carries the bearer token and the provider's own Accept header", "[cmd][ext][create][http][headers]") {
+  // Read from the SERVER's side. None of this is visible in the verb's
+  // stdout, so a port that sent no Authorization header at all would pass
+  // every other case in this file against a fixture that ignores it.
+  std::vector<planar::http::fixture::captured_request> seen;
+  planar::http::fixture::server                        remote([&](const planar::http::fixture::captured_request& req) {
+    seen.push_back(req);
+    return respond(req);
+  });
+  auto const                                           fx = make_fixture("headers");
+  seed(fx, remote.base_url());
+
+  REQUIRE(dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1"}).code == 0);
+  REQUIRE(seen.size() == 1);
+  CHECK(seen[0].verb == "POST");
+  CHECK(seen[0].target == "/rest/api/3/issue");
+  CHECK(seen[0].header_value("authorization") == "Bearer tok-abc");
+  CHECK(seen[0].header_value("content-type") == "application/json");
+  CHECK(seen[0].header_value("accept") == "application/json");
+  // The rendered entity actually reached the wire.
+  CHECK(seen[0].body.contains(R"("summary":"Demo task")"));
+
+  seen.clear();
+  REQUIRE(dispatch(fx, {"ext", "create", "gh-demo", "--from", "plan:1"}).code == 0);
+  REQUIRE(seen.size() == 1);
+  CHECK(seen[0].target == "/repos/acme/widgets/issues");
+  // The provider-specific Accept, which is the header most easily copied
+  // wrongly from the sibling.
+  CHECK(seen[0].header_value("accept") == "application/vnd.github+json");
+  CHECK(seen[0].body.contains(R"("title":"Anchor plan")"));
+}
+
+TEST_CASE("an adapter-build failure is PROSE at exit 2, not a raw tag at exit 1", "[cmd][ext][create][factory]") {
+  // THE CORRECTION. The `sync` trio renders this same failure as
+  // `error: sync pull: TokenEnvVarMissing` at exit 1; `ext create` does not.
+  planar::http::fixture::server remote(respond);
+  auto const                    fx = make_fixture("factory");
+  seed(fx, remote.base_url());
+
+  auto const ran = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1"}, "DEMO_TOKEN");
+  CHECK(ran.code == 2);
+  CHECK(ran.err == "error: token env var 'DEMO_TOKEN' is not set\n");
+  // Explicitly NOT the sync trio's rendering, asserted rather than implied.
+  CHECK_FALSE(ran.err.contains("TokenEnvVarMissing"));
+  // And it refused BEFORE the remote was touched, so nothing was created.
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+TEST_CASE("the --from ref is parsed loosely and refused late, in two exit-code buckets", "[cmd][ext][create][refusal][from]") {
+  planar::http::fixture::server remote(respond);
+  auto const                    fx = make_fixture("fromrefusal");
+  seed(fx, remote.base_url());
+
+  // No colon at all: refused by the PARSE, with the parse's own message.
+  auto const malformed = dispatch(fx, {"ext", "create", "jira-demo", "--from", "nonsense"});
+  CHECK(malformed.code == 2);
+  CHECK(malformed.err == "error: invalid --from value 'nonsense'; expected kind:integer-id\n");
+
+  // A kind that is not a table: parses fine, refused by the local READ.
+  // `handlers/sync/sync.cppm`'s parser would have produced the message above
+  // instead, which is why it is not reused here.
+  auto const unknown_kind = dispatch(fx, {"ext", "create", "jira-demo", "--from", "foo:1"});
+  CHECK(unknown_kind.code == 2);
+  CHECK(unknown_kind.err == "error: ext create: read local foo:1: InvalidInput\n");
+
+  // A VALID `external_entity_kind` that this verb still cannot read: the
+  // link table accepts seven kinds, the local read serves four.
+  auto const decision = dispatch(fx, {"ext", "create", "jira-demo", "--from", "decision:1"});
+  CHECK(decision.code == 2);
+  CHECK(decision.err == "error: ext create: read local decision:1: InvalidInput\n");
+
+  // Same message template, exit ONE — the row is absent rather than the kind
+  // being unreadable. Collapsing the two into one exit code would be an easy
+  // and invisible mistake.
+  auto const missing = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:999"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err == "error: ext create: read local task:999: NotFound\n");
+
+  // An unknown SYSTEM is exit 1 as well, and is checked before any of these.
+  auto const no_system = dispatch(fx, {"ext", "create", "no-such", "--from", "task:1"});
+  CHECK(no_system.code == 1);
+  CHECK(no_system.err == "error: external system 'no-such' not found\n");
+
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+}
+
+TEST_CASE("no remote write happens until every local precondition has been checked", "[cmd][ext][create][ordering]") {
+  // Pinned from the SERVER's side: none of what follows is visible in the
+  // verb's own output. See this file's header on why these numbers are the
+  // inverse of what they were.
+  //
+  // This case does NOT use the file's shared `respond`. It mints a FRESH
+  // external id per POST, the way a real Jira or GitHub does, so that every
+  // "this is not a duplicate, it must go through" assertion below is decided
+  // by the handler's gate and not by `external_links`' UNIQUE. Under the
+  // shared fixed-id responder those same creates would collide on
+  // `external_id` and refuse at exit 6 — which is precisely the measurement
+  // artefact task 6313 was originally written from.
+  std::vector<planar::http::fixture::captured_request> seen;
+  int                                                  minted = 0;
+  planar::http::fixture::server                        remote([&](const planar::http::fixture::captured_request& req) {
+    seen.push_back(req);
+    minted += 1;
+    if (req.target.contains("rest/api/3/issue")) {
+      return planar::http::fixture::canned_response{
+          .status = 201, .body = std::format(R"({{"key":"DEMO-{}"}})", minted), .content_type = "application/json"};
+    }
+    return planar::http::fixture::canned_response{
+        .status       = 201,
+        .body         = std::format(R"({{"number":{},"html_url":"https://example.invalid/i/{}"}})", minted, minted),
+        .content_type = "application/json"};
+  });
+  auto const                                           fx = make_fixture("ordering");
+  seed(fx, remote.base_url());
+
+  // A bad `--role` refuses with the SAME message and the SAME exit code it
+  // always did. Only the request log moved.
+  auto const bad_role = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1", "--role", "bogus"});
+  CHECK(bad_role.code == 2);
+  CHECK(bad_role.err == "error: invalid --role 'bogus'\n");
+  CHECK(seen.empty());                                           // no ticket was created
+  CHECK(scalar(fx, "select count(*) from external_links") == 0); // and no link either
+
+  // `--sync` is validated on the same side of the POST as `--role`. It was
+  // never separately pinned; both flags were parsed in the same block after
+  // the request went out, so a fix that moved only one would have looked
+  // green here.
+  seen.clear();
+  auto const bad_sync = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1", "--sync", "sideways"});
+  CHECK(bad_sync.code == 2);
+  CHECK(bad_sync.err == "error: invalid --sync 'sideways'\n");
+  CHECK(seen.empty());
+  CHECK(scalar(fx, "select count(*) from external_links") == 0);
+
+  // The success path still POSTs exactly once — the paired presence that
+  // keeps every `seen.empty()` above from being satisfied by a verb that
+  // reaches the server on no path at all.
+  seen.clear();
+  REQUIRE(dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1"}).code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 1);
+
+  // The repeat is where the operator-visible damage was: it used to mint a
+  // SECOND ticket and only then refuse. Same exit code, zero requests, and a
+  // message that now NAMES THE ROLE, because under a role-scoped key the
+  // same entity and system with a different `--role` is a legitimate next
+  // command rather than the same refusal.
+  seen.clear();
+  auto const again = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1"});
+  CHECK(again.code == 6);
+  CHECK(again.err == "error: mirror external link for task:1 on jira-demo already exists\n");
+  CHECK(seen.empty());
+  CHECK(scalar(fx, "select count(*) from external_links") == 1);
+
+  // PINS `link_role`. A `reference` alongside the `mirror` on the same
+  // entity and system is NOT a duplicate: `planar link` creates exactly that
+  // pair with no gate at all, and `load_existing_mirror` documents that a
+  // non-mirror row does not suppress propagation. A gate that dropped
+  // `link_role` would refuse this at exit 6 and leave no way back short of a
+  // manual DB write.
+  seen.clear();
+  auto const other_role = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1", "--role", "reference"});
+  CHECK(other_role.code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 2);
+  CHECK(scalar(fx, "select count(*) from external_links where link_role = 'reference'") == 1);
+
+  // ...and the repeat of THAT is refused in turn, naming the other role. The
+  // narrowing closes 6313 for every role, not just the default one.
+  seen.clear();
+  auto const other_role_again = dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:1", "--role", "reference"});
+  CHECK(other_role_again.code == 6);
+  CHECK(other_role_again.err == "error: reference external link for task:1 on jira-demo already exists\n");
+  CHECK(seen.empty());
+  CHECK(scalar(fx, "select count(*) from external_links") == 2);
+
+  // PINS `system_id`. The same entity on a DIFFERENT system is not a
+  // duplicate. A gate that dropped it would silently break the two-provider
+  // mirror the schema exists to allow.
+  seen.clear();
+  REQUIRE(dispatch(fx, {"ext", "create", "gh-demo", "--from", "task:1"}).code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 3);
+
+  // PINS `entity_kind`. `plan:1` and `task:1` are different entities that
+  // share an id, so a gate that dropped `entity_kind` would refuse this
+  // because of the `task:1` mirror above — and every other assertion in this
+  // file would still be green. That survivor is the reason this sub-case
+  // exists.
+  seen.clear();
+  REQUIRE(dispatch(fx, {"ext", "create", "jira-demo", "--from", "plan:1"}).code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 4);
+
+  // PINS `entity_id`. `task:2` shares its kind AND its system with `task:1`,
+  // so only the id distinguishes them; `plan:1` above cannot pin this field
+  // because it differs in `entity_kind` as well.
+  seen.clear();
+  REQUIRE(dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:2"}).code == 0);
+  CHECK(seen.size() == 1);
+  CHECK(scalar(fx, "select count(*) from external_links") == 5);
+
+  // A refusal that always fired before the POST still does.
+  seen.clear();
+  CHECK(dispatch(fx, {"ext", "create", "jira-demo", "--from", "task:999"}).code == 1);
+  CHECK(seen.empty());
+}

@@ -21,7 +21,7 @@ namespace tss_ns = engine::planning::test_spec_status;
 auto test_spec_status(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const plan_arg = cliapp::positional_string(args, "plan").value_or(std::string{});
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

@@ -218,7 +218,7 @@ auto artifact_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   // FIRST, before any argument validation — zig's handler opens with
   // `try runtime.ensureDb()`, so even a refused invocation leaves a
   // created-and-migrated database behind.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -357,7 +357,7 @@ auto artifact_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto artifact_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -374,7 +374,7 @@ auto artifact_show(context& ctx, const cliapp::parsed_args& args) -> handler_res
 }
 
 auto artifact_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -430,7 +430,7 @@ auto artifact_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
 }
 
 auto artifact_update(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

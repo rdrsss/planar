@@ -46,30 +46,36 @@ planar_binary(planar_ext
   INTERFACE
     exit.cppm
     context.cppm
+    database.cppm
     handler.cppm
     scope.cppm
-    tree.cppm
-    handlers/version.cppm
-    handlers/schema.cppm
-    handlers/ext_adapter_factory.cppm
-    handlers/ext_strategy.cppm
-    handlers/ext.cppm
-    handlers/propagate.cppm
-    handlers/sync.cppm
+    main.cppm
+    handlers/version/command.cppm
+    handlers/schema/command.cppm
+    handlers/ext/command.cppm
+    handlers/sync/command.cppm
+    handlers/version/version.cppm
+    handlers/schema/schema.cppm
+    handlers/shared/ext_adapter_factory.cppm
+    handlers/ext/ext_strategy.cppm
+    handlers/ext/ext.cppm
+    handlers/ext/propagate.cppm
+    handlers/sync/sync.cppm
     dispatch.cppm
   SOURCES
     context.cpp
+    database.cpp
     scope.cpp
-    tree.cpp
-    handlers/version.cpp
-    handlers/schema.cpp
-    handlers/ext_adapter_factory.cpp
-    handlers/ext_strategy.cpp
-    handlers/ext.cpp
-    handlers/propagate.cpp
-    handlers/sync.cpp
+    handlers/version/version.cpp
+    handlers/schema/schema.cpp
+    handlers/shared/ext_adapter_factory.cpp
+    handlers/ext/ext_strategy.cpp
+    handlers/ext/ext.cpp
+    handlers/ext/propagate.cpp
+    handlers/sync/sync.cpp
     dispatch.cpp
   DEPENDS
+    cmd_internal
     core
     cliapp
     db
@@ -89,7 +95,7 @@ planar_binary(planar_ext
 # target is linked per binary rather than laundered through a shared
 # layer-1 wrapper (plan 996, task 6123's finding, reproduced here).
 target_link_libraries(planar_cmd_planar_ext PRIVATE CLI11::CLI11_Module)
-# `handlers/ext_adapter_factory.cpp` parses `gh auth token`'s JSON output via
+# `handlers/shared/ext_adapter_factory.cpp` parses `gh auth token`'s JSON output via
 # glaze — the same reason `planar_cmd_planar` links it (see that
 # CMakeLists.txt). Header-only; not laundered through a layer-1 wrapper for
 # the same reason CLI11 is linked per binary above.

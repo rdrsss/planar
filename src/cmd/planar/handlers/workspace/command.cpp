@@ -138,7 +138,7 @@ auto project_slug_after(db::connection& conn, std::string_view path) -> std::exp
 } // namespace
 
 auto workspace_doctor(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -187,7 +187,7 @@ auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
   if (children.empty())
     return std::unexpected(no_children_error(cwd, meta));
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
   const auto slug    = cliapp::flag_string(args, "--slug").value_or(cfg::derive_slug(cwd.filename().string()));
@@ -369,7 +369,7 @@ auto workspace_init(context& ctx, const cliapp::parsed_args& args) -> handler_re
 }
 
 auto workspace_routing_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -437,7 +437,7 @@ auto workspace_routing_show(context& ctx, const cliapp::parsed_args& args) -> ha
 }
 
 auto workspace_routing_build(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -529,7 +529,7 @@ auto workspace_routing_build(context& ctx, const cliapp::parsed_args& args) -> h
 }
 
 auto workspace_regenerate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

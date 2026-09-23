@@ -59,7 +59,7 @@ auto view_verb(context& ctx, const cliapp::parsed_args& args, entity_kind kind) 
   if (!id) {
     return std::unexpected(id.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -79,7 +79,7 @@ auto edit_verb(context& ctx, const cliapp::parsed_args& args, entity_kind kind) 
   if (!id) {
     return std::unexpected(id.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -96,7 +96,7 @@ auto diff_verb(context& ctx, const cliapp::parsed_args& args, entity_kind kind) 
   if (!id) {
     return std::unexpected(id.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -130,7 +130,7 @@ auto review_verb(context& ctx, const cliapp::parsed_args& args, entity_kind kind
     verdict = review_verdict::request_changes;
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

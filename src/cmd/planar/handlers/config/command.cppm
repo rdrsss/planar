@@ -15,7 +15,7 @@
 ///
 /// ## None of the five opens SQLite
 ///
-/// `ctx.db_opened()` is pinned false after every one of them. That is a
+/// `ctx.db().opened()` is pinned false after every one of them. That is a
 /// real contract rather than an accident: `config init` and `config path`
 /// are what an operator runs BEFORE `planar init`, on a machine with no
 /// database at all, and `config validate` is the thing you reach for when

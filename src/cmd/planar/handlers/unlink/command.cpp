@@ -84,7 +84,7 @@ auto unlink(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // observable: `planar unlink abc` exits 2 having already CREATED and
   // migrated `$PLANAR_DB` (oracle-captured against a scratch root). Moving
   // the cheap validation first would be tidier and would diverge.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

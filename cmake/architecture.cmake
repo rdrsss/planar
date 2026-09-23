@@ -13,7 +13,8 @@
 # allow-list that would need editing on every future planar_module() call:
 #
 #   layer 3: `cmd_*`     — src/cmd/<binary>/ handler libraries
-#   layer 2: `engine_*`  — src/lib/engine/<bucket>/ (identity, planning, ...)
+#   layer 2: `engine_*` and the explicit `cmd_internal` command-support
+#            target — shared invocation and database injection below binaries
 #   layer 1: everything else — src/lib/<name>/ base libraries (db, cli,
 #            core, ...) that engine.* and cmd/* depend on
 #   layer 0: vendored/third-party targets (CPM packages) — not planar_*
@@ -230,7 +231,11 @@
 #        "engine_identity", "cmd_planar").
 # @param out_var Variable name (in the caller's scope) to receive the layer.
 function(_planar_module_layer name out_var)
-  if(name MATCHES "^cmd_")
+  if(name STREQUAL "cmd_internal")
+    # Application infrastructure shared by command binaries, below their
+    # handler layer and above the reusable db/cli libraries.
+    set(${out_var} 2 PARENT_SCOPE)
+  elseif(name MATCHES "^cmd_")
     set(${out_var} 3 PARENT_SCOPE)
   elseif(name MATCHES "^engine_")
     set(${out_var} 2 PARENT_SCOPE)

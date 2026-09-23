@@ -410,7 +410,7 @@ auto resolve_text(const mroles::resolution& resolution, std::string_view readine
 } // namespace
 
 auto models_registry_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -426,7 +426,7 @@ auto models_registry_list(context& ctx, const cliapp::parsed_args& args) -> hand
 }
 
 auto models_registry_export(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -444,7 +444,7 @@ auto models_registry_export(context& ctx, const cliapp::parsed_args& args) -> ha
 }
 
 auto models_registry_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -466,7 +466,7 @@ auto models_registry_add(context& ctx, const cliapp::parsed_args& args) -> handl
 }
 
 auto models_registry_update(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -479,7 +479,7 @@ auto models_registry_update(context& ctx, const cliapp::parsed_args& args) -> ha
 }
 
 auto models_registry_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -495,7 +495,7 @@ auto models_registry_bind(context& ctx, const cliapp::parsed_args& args) -> hand
   if (!tier_) {
     return std::unexpected(tier_.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -515,7 +515,7 @@ auto models_registry_unbind(context& ctx, const cliapp::parsed_args& args) -> ha
   if (!tier_) {
     return std::unexpected(tier_.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -539,7 +539,7 @@ auto models_registry_observe(context& ctx, const cliapp::parsed_args& args) -> h
   if (!spawn) {
     return std::unexpected(error_from_body(kind_t::invalid_input, std::format("invalid spawn verification: {}", spawn_raw)));
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -568,7 +568,7 @@ auto models_registry_eligibility(context& ctx, const cliapp::parsed_args& args) 
   if (!tier_) {
     return std::unexpected(tier_.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -602,7 +602,7 @@ auto models_registry_eligibility(context& ctx, const cliapp::parsed_args& args) 
 }
 
 auto models_registry_verify_identity(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -634,7 +634,7 @@ auto models_evals(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     if (!built) {
       return std::unexpected(built.error());
     }
-    auto conn = ctx.ensure_db();
+    auto conn = ctx.db().ensure_db();
     if (!conn) {
       return std::unexpected(conn.error());
     }
@@ -646,7 +646,7 @@ auto models_evals(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return {};
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -659,7 +659,7 @@ auto models_evals(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto models_experiments(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -686,7 +686,7 @@ auto models_outcomes(context& ctx, const cliapp::parsed_args& args) -> handler_r
     }
     limit = *parsed;
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -702,7 +702,7 @@ auto models_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_re
   // The database opens BEFORE role parsing, matching the oracle's
   // `ensureDb()` then role-buffer decode — observable only when both would
   // fail, but observable.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

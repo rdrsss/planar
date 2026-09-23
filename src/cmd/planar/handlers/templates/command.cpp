@@ -282,7 +282,7 @@ auto templates_render(context& ctx, const cliapp::parsed_args& args) -> handler_
                                            std::format("unsupported entity kind '{}' (use task, plan, scenario)", kind)));
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn.has_value()) {
     return std::unexpected(conn.error());
   }

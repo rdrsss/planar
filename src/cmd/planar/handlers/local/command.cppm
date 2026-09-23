@@ -25,7 +25,7 @@
 /// ## None of the five opens SQLite
 ///
 /// The whole family is filesystem state: two JSON manifests under
-/// `<home>/.planar/` and the vendor symlink trees beside them. `ctx.db_opened()`
+/// `<home>/.planar/` and the vendor symlink trees beside them. `ctx.db().opened()`
 /// is still false after any of them runs, and that is pinned.
 ///
 /// ## Where the orchestration is load-bearing rather than mechanical

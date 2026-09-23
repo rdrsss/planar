@@ -308,7 +308,7 @@ auto task_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // runtime.ensureDb();`, so even a refused invocation leaves a
   // created-and-migrated database behind. Same ordering, same reason, as
   // `plan create`'s and `assoc create`'s.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -444,7 +444,7 @@ void emit_task(context& ctx, const cliapp::parsed_args& args, const pl::task& t)
 } // namespace
 
 auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -470,7 +470,7 @@ auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   // The database is opened BEFORE the id is parsed, matching the oracle's
   // handler: `ensureDb()` then `parseInt`. The order is only observable when
   // both would fail, but it is observable.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -497,7 +497,7 @@ auto task_facts_stage(context& ctx, const cliapp::parsed_args& args) -> handler_
   namespace mz = engine::ingest::materialize;
   namespace pk = engine::ingest::packet;
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -565,7 +565,7 @@ auto resolve_repo_slug(db::connection& conn, std::string_view slug) -> std::expe
 } // namespace
 
 auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -655,7 +655,7 @@ auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 }
 
 auto task_update(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -737,7 +737,7 @@ auto task_update(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 }
 
 auto task_done(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -763,7 +763,7 @@ auto task_done(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 }
 
 auto task_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -790,7 +790,7 @@ auto task_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 }
 
 auto task_block(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -827,7 +827,7 @@ auto task_block(context& ctx, const cliapp::parsed_args& args) -> handler_result
 }
 
 auto task_reopen(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -1021,7 +1021,7 @@ auto touches_endpoints(context& ctx, db::connection& conn, const cliapp::parsed_
 } // namespace
 
 auto task_touches_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -1096,7 +1096,7 @@ auto task_touches_add(context& ctx, const cliapp::parsed_args& args) -> handler_
 }
 
 auto task_touches_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -1193,7 +1193,7 @@ auto task_touches_list(context& ctx, const cliapp::parsed_args& args) -> handler
 }
 
 auto task_touches_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -1404,7 +1404,7 @@ auto infer_json(const engine::planning::touchinfer::inference& inf, const infer_
 auto task_touches_infer(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   namespace ti = engine::planning::touchinfer;
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

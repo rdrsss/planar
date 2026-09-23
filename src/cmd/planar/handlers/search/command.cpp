@@ -136,7 +136,7 @@ auto map_search_error(se::search_error err) -> domain_error {
 } // namespace
 
 auto search(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

@@ -52,7 +52,7 @@ auto scratch_dir(std::string_view tag) -> std::filesystem::path {
 /// @return The constructed context.
 auto make_context(std::map<std::string, std::string, std::less<>> vars, std::filesystem::path cwd, std::filesystem::path db_path,
                   std::ostream& out, std::ostream& err) -> context {
-  return context{{"planar"}, planar::cmd::map_env(std::move(vars)), std::move(cwd), std::move(db_path), out, err};
+  return context{{"planar"}, planar::cmd::map_env(std::move(vars)), std::move(cwd), std::make_shared<planar::cmd::database>(std::move(db_path), err), out, err};
 }
 
 } // namespace
@@ -168,12 +168,12 @@ TEST_CASE("the database is not opened until ensure_db is called", "[cmd][context
   std::ostringstream err;
   auto               ctx = make_context({}, root, db_path, out, err);
 
-  CHECK_FALSE(ctx.db_opened());
+  CHECK_FALSE(ctx.db().opened());
   CHECK_FALSE(std::filesystem::exists(db_path));
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
-  CHECK(ctx.db_opened());
+  CHECK(ctx.db().opened());
   CHECK(std::filesystem::exists(db_path));
 }
 
@@ -184,7 +184,7 @@ TEST_CASE("ensure_db creates the parent directory, migrates, and caches the hand
   std::ostringstream err;
   auto               ctx = make_context({}, root, db_path, out, err);
 
-  auto first = ctx.ensure_db();
+  auto first = ctx.db().ensure_db();
   REQUIRE(first.has_value());
 
   auto const version = planar::db::current_version(**first);
@@ -195,7 +195,7 @@ TEST_CASE("ensure_db creates the parent directory, migrates, and caches the hand
   }
   CHECK(*version == embedded_max);
 
-  auto second = ctx.ensure_db();
+  auto second = ctx.db().ensure_db();
   REQUIRE(second.has_value());
   CHECK(*first == *second);
 }
@@ -211,7 +211,7 @@ TEST_CASE("ensure_db refuses a database migrated past this binary's chain", "[cm
     std::ostringstream out;
     std::ostringstream err;
     auto               ctx  = make_context({}, root, db_path, out, err);
-    auto               conn = ctx.ensure_db();
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     std::uint32_t embedded_max = 0;
     for (auto const& record : planar::db::migrations()) {
@@ -225,10 +225,10 @@ TEST_CASE("ensure_db refuses a database migrated past this binary's chain", "[cm
   std::ostringstream out;
   std::ostringstream err;
   auto               ctx  = make_context({}, root, db_path, out, err);
-  auto               conn = ctx.ensure_db();
+  auto               conn = ctx.db().ensure_db();
   REQUIRE_FALSE(conn.has_value());
   CHECK(conn.error().kind == planar::cmd::domain_error_kind::schema_version_ahead);
   CHECK(planar::cmd::exit_code_for(conn.error().kind) == 7);
   // The handle is dropped rather than handed back half-usable.
-  CHECK_FALSE(ctx.db_opened());
+  CHECK_FALSE(ctx.db().opened());
 }

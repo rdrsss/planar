@@ -9,7 +9,7 @@
 # commits` and `bench harvest` are waiting on), and a layer-2 -> layer-3
 # edge FATALs at configure time. Both of this module's bodies came DOWN from
 # layer 3 — `editor.cpp`'s `spawn_inherit`/`resolve_program` and
-# `handlers/ext_adapter_factory.cpp`'s `spawn_capture` — where they were
+# `handlers/shared/ext_adapter_factory.cpp`'s `spawn_capture` — where they were
 # reachable only from `cmd_planar`.
 #
 # WHAT THIS MODULE DID NOT DO, deliberately:

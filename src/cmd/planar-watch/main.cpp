@@ -27,7 +27,7 @@ import std;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.dispatch;
 import planar.cmd.planar_watch.exit;
-import planar.cmd.planar_watch.tree;
+import planar.cmd.planar_watch.main;
 
 /// @brief Process entry point.
 /// @param argc Argument count.
@@ -48,7 +48,8 @@ auto main(int argc, char** argv) -> int {
     return planar::cmd::watch::exit_code(db_path.error());
   }
 
-  planar::cmd::watch::context ctx{std::move(args), env, planar::cmd::watch::operator_cwd(env), *db_path, std::cout, std::cerr};
+  auto                        database = std::make_shared<planar::cmd::watch::database>(*db_path, std::cerr);
+  planar::cmd::watch::context ctx{std::move(args), env, planar::cmd::watch::operator_cwd(env), database, std::cout, std::cerr};
   auto const                  root  = planar::cmd::watch::root_app();
   auto const                  table = planar::cmd::watch::handlers(*root);
   int const                   code  = planar::cmd::watch::run(ctx, *root, table);

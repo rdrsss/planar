@@ -69,7 +69,7 @@ auto parse_to_ref(std::string_view text) -> std::optional<to_ref> {
 } // namespace
 
 auto link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

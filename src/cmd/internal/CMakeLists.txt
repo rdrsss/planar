@@ -1,0 +1,11 @@
+planar_module(cmd_internal
+  INTERFACE
+    environment.cppm
+    config_path.cppm
+    context.cppm
+    database.cppm
+  SOURCES
+    environment.cpp
+    config_path.cpp
+  DEPENDS
+    db)

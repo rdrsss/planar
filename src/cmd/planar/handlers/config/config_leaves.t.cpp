@@ -19,7 +19,7 @@
 //
 // ## NONE OF THE FIVE MAY OPEN SQLITE
 //
-// `ctx.db_opened()` is asserted FALSE after every case. That is a real
+// `ctx.db().opened()` is asserted FALSE after every case. That is a real
 // contract, not a property of the current implementation: `config init`
 // and `config path` are what an operator runs BEFORE `planar init`, and
 // the runtime applies pending migrations on first use — so a `config path`
@@ -116,11 +116,11 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
 /// @brief Write `fx`'s config file.

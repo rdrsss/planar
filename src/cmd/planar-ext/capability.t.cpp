@@ -64,7 +64,7 @@ import planar.db.migrate;
 import planar.cliapp.walk;
 import planar.cmd.planar_ext.context;
 import planar.cmd.planar_ext.dispatch;
-import planar.cmd.planar_ext.tree;
+import planar.cmd.planar_ext.main;
 
 namespace {
 
@@ -101,7 +101,8 @@ struct fixture {
   planar::cmd::ext::context ctx;
 
   fixture()
-      : ctx({}, planar::cmd::ext::map_env({{"PLANAR_DB", scratch.path_.string()}}), std::filesystem::path{}, scratch.path_,
+      : ctx({}, planar::cmd::ext::map_env({{"PLANAR_DB", scratch.path_.string()}}), std::filesystem::path{},
+            std::make_shared<planar::cmd::ext::database>(scratch.path_, std::cerr),
             std::cout, std::cerr) {
     // Apply the full migration chain directly (not through `planar init`,
     // which does not exist in this test binary's link closure) so
@@ -133,14 +134,14 @@ TEST_CASE("planar-ext's declared verb set is exactly {version, schema, ext..., s
   // Every node NAME in the tree, group nodes and bare leaves alike — NOT
   // full paths, so "list"/"push"/"status"/"pull" here are `ext list` /
   // `sync push` / `sync status` / `sync pull`. `propagate` joined at task
-  // 6421 (the github-parent-issue arm only — see `handlers/propagate.cppm`).
+  // 6421 (the github-parent-issue arm only — see `handlers/ext/propagate.cppm`).
   CHECK(names == std::set<std::string, std::less<>>{"version", "schema", "ext", "register", "jira", "github", "list", "test",
                                                     "create", "propagate-one", "propagate", "sync", "pull", "push", "status",
                                                     "resolve"});
 
   // The forbidden set: every write verb the OTHER agent-callable binary
   // carries, and every planning-entity verb the operator binary carries —
-  // reproduced from `src/cmd/planar-watch/tree.cpp::forbidden_verbs()`
+  // reproduced from `src/cmd/planar-watch/main.cppm::forbidden_verbs()`
   // rather than re-derived, so the two lists cannot drift apart silently.
   // `pull` is deliberately ABSENT from this list as of task 6419: the
   // claim-ritual `planar-agent pull` never landed here, but `sync pull`
@@ -176,7 +177,7 @@ TEST_CASE("ensure_db() enforces the decision-995 write allowlist: INSERT/UPDATE/
           "[cmd][ext][capability][write-boundary]") {
   fixture fx;
 
-  auto const opened = fx.ctx.ensure_db();
+  auto const opened = fx.ctx.db().ensure_db();
   REQUIRE(opened.has_value());
   auto& conn = **opened;
 
@@ -211,7 +212,7 @@ TEST_CASE("ensure_db()'s write allowlist survives a table name composed by RUNTI
           "[cmd][ext][capability][write-boundary]") {
   fixture fx;
 
-  auto const opened = fx.ctx.ensure_db();
+  auto const opened = fx.ctx.db().ensure_db();
   REQUIRE(opened.has_value());
   auto& conn = **opened;
 
@@ -234,7 +235,7 @@ TEST_CASE("ensure_db()'s write allowlist permits INSERT/UPDATE/DELETE against ex
           "[cmd][ext][capability][write-boundary]") {
   fixture fx;
 
-  auto const opened = fx.ctx.ensure_db();
+  auto const opened = fx.ctx.db().ensure_db();
   REQUIRE(opened.has_value());
   auto& conn = **opened;
 
@@ -262,5 +263,5 @@ TEST_CASE("planar-ext version opens no database — same invariant the other thr
   fixture    fx;
   auto const outcome = table.at("version")(fx.ctx, {});
   CHECK(outcome.has_value());
-  CHECK_FALSE(fx.ctx.db_opened());
+  CHECK_FALSE(fx.ctx.db().opened());
 }

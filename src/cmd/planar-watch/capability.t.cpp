@@ -38,7 +38,7 @@ import planar.cliapp.args;
 import planar.cliapp.walk;
 import planar.cmd.planar_watch.dispatch;
 import planar.cmd.planar_watch.surface;
-import planar.cmd.planar_watch.tree;
+import planar.cmd.planar_watch.main;
 
 namespace {
 

@@ -208,7 +208,7 @@ auto scope_show(context& ctx, const cliapp::parsed_args& args) -> handler_result
   auto const override_view =
       override.has_value() ? std::optional<std::string_view>{*override} : std::optional<std::string_view>{};
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -325,7 +325,7 @@ auto scope_show(context& ctx, const cliapp::parsed_args& args) -> handler_result
 }
 
 auto scope_suggest(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

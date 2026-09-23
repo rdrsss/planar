@@ -253,7 +253,7 @@ auto plan_create(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   // behind. Oracle-confirmed against an empty scratch root: exit 1, and a
   // 1179648-byte `planar.db` on disk afterwards. Validating first would be
   // tidier and would silently change when the schema gets applied.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -325,7 +325,7 @@ auto plan_create(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 }
 
 auto plan_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -353,7 +353,7 @@ auto plan_show(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 }
 
 auto plan_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -429,7 +429,7 @@ auto plan_list(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 }
 
 auto plan_update(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -488,7 +488,7 @@ auto plan_update(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 }
 
 auto plan_recompute_status(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -667,7 +667,7 @@ auto map_step_error(pl::plan_step_error err, std::string_view verb) -> domain_er
 } // namespace
 
 auto plan_step_add(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -698,7 +698,7 @@ auto plan_step_add(context& ctx, const cliapp::parsed_args& args) -> handler_res
 }
 
 auto plan_step_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -727,7 +727,7 @@ namespace {
 /// @param to_done Whether this is `done` (else `skip`).
 /// @return The handler result.
 auto step_transition_leaf(context& ctx, const cliapp::parsed_args& args, bool to_done) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -768,7 +768,7 @@ auto plan_step_skip(context& ctx, const cliapp::parsed_args& args) -> handler_re
 }
 
 auto plan_step_link(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -803,7 +803,7 @@ auto plan_link(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 auto plan_descendants(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   namespace de = engine::planning::descendants;
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -890,7 +890,7 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   namespace aa = engine::runtime::agentactivity;
   namespace ar = engine::runtime::agentrender;
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -1120,7 +1120,7 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
                         std::format("--closure-source must be 'declared' or 'derived', got '{}'", source_text)));
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -1174,7 +1174,7 @@ auto plan_divergence(context& ctx, const cliapp::parsed_args& args) -> handler_r
     return std::unexpected(id.error());
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -1200,7 +1200,7 @@ auto plan_closeout(context& ctx, const cliapp::parsed_args& args) -> handler_res
     return std::unexpected(id.error());
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

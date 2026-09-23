@@ -103,7 +103,7 @@ void emit(context& ctx, const cliapp::parsed_args& args, const pl::feedback_tria
 auto feedback_triage_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // The oracle opens the DB before validating anything, so even a refused
   // invocation leaves a migrated database behind.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -140,7 +140,7 @@ auto feedback_triage_list(context& ctx, const cliapp::parsed_args& args) -> hand
 }
 
 auto feedback_triage_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -166,7 +166,7 @@ auto feedback_triage_show(context& ctx, const cliapp::parsed_args& args) -> hand
 }
 
 auto feedback_triage_set(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

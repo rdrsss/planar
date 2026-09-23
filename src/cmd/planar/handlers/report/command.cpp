@@ -72,7 +72,7 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
         error_from_body(domain_error_kind::invalid_input, std::format("--tail must be a positive integer (got {})", tail)));
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

@@ -78,9 +78,9 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
@@ -188,8 +188,8 @@ TEST_CASE("report's cli_log adapter turns a genuine query failure into cli_adapt
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar", "report", "--json"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto               conn = ctx.ensure_db();
+  context            ctx{{"planar", "report", "--json"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+  auto               conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
   // 4 MiB (k_default_max_bytes) plus slack, so the single row alone
   // overflows `cli_preview_jsonl`'s budget on its own.
@@ -199,7 +199,7 @@ TEST_CASE("report's cli_log adapter turns a genuine query failure into cli_adapt
   REQUIRE(inserted.has_value());
 
   auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers(*tree);
+  auto const table = planar::cmd::make_handler_table(*tree);
   int const  code  = planar::cmd::run(ctx, *tree, table);
   CHECK(code == 0);
   CHECK(out.str().find(R"({"vendor":"cli_log","kind":"cli_adapter_failed","count":1})") != std::string::npos);

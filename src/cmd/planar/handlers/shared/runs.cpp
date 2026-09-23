@@ -125,7 +125,7 @@ auto finish_common(context& ctx, const cliapp::parsed_args& args, std::string_vi
   if (!rend::is_valid_terminal_status(status)) {
     return std::unexpected(error_from_body(kind_t::invalid_input, rend::render_invalid_status(leaf, status)));
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -191,7 +191,7 @@ auto bench_start(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     task_filter = std::move(ids);
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -221,7 +221,7 @@ auto bench_event(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   if (!payload) {
     return std::unexpected(payload.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -249,7 +249,7 @@ auto bench_touch(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   if (!kind) {
     return std::unexpected(error_from_body(kind_t::invalid_input, rend::render_invalid_touch_kind(raw_kind)));
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -282,7 +282,7 @@ auto bench_harvest(context& ctx, const cliapp::parsed_args& args) -> handler_res
     return std::unexpected(error_from_body(kind_t::invalid_input, rend::render_base_head_mismatch()));
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -320,7 +320,7 @@ auto bench_finish(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto bench_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -345,7 +345,7 @@ auto bench_show(context& ctx, const cliapp::parsed_args& args) -> handler_result
 }
 
 auto run_start(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -385,7 +385,7 @@ auto run_event(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   if (!payload) {
     return std::unexpected(payload.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -415,7 +415,7 @@ auto run_finish(context& ctx, const cliapp::parsed_args& args) -> handler_result
 }
 
 auto run_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

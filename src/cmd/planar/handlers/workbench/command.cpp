@@ -144,7 +144,7 @@ auto finish_sync_run(context& ctx, const cliapp::parsed_args& args, const wb::sy
 /// @brief `pull` / `push` / `sync` share everything but their engine call.
 auto run_sync_verb(context& ctx, const cliapp::parsed_args& args, wb::sync::mode run_mode, std::string_view verb,
                    const auto& invoke) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -199,7 +199,7 @@ auto workbench_push(context& ctx, const cliapp::parsed_args& args) -> handler_re
 }
 
 auto workbench_status(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -269,7 +269,7 @@ auto workbench_status(context& ctx, const cliapp::parsed_args& args) -> handler_
 }
 
 auto workbench_resolve(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -310,7 +310,7 @@ auto workbench_resolve(context& ctx, const cliapp::parsed_args& args) -> handler
 }
 
 auto workbench_archive(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -340,7 +340,7 @@ auto workbench_archive(context& ctx, const cliapp::parsed_args& args) -> handler
 }
 
 auto workbench_restore(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -367,7 +367,7 @@ auto workbench_restore(context& ctx, const cliapp::parsed_args& args) -> handler
 }
 
 auto workbench_gc(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -439,7 +439,7 @@ auto workbench_gc(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto workbench_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -457,7 +457,7 @@ auto workbench_list(context& ctx, const cliapp::parsed_args& args) -> handler_re
 }
 
 auto workbench_lint(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -518,7 +518,7 @@ auto workbench_lint(context& ctx, const cliapp::parsed_args& args) -> handler_re
 }
 
 auto workbench_extract_questions(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -585,7 +585,7 @@ auto workbench_extract_questions(context& ctx, const cliapp::parsed_args& args) 
 }
 
 auto workbench_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -702,7 +702,7 @@ auto build_bundle(db::connection& conn, std::string_view root, std::int64_t plan
 } // namespace
 
 auto workbench_publish(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

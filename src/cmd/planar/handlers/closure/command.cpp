@@ -27,7 +27,7 @@ auto closure_compute(context& ctx, const cliapp::parsed_args& args) -> handler_r
   if (!id)
     return std::unexpected(
         error_from_body(domain_error_kind::invalid_input, std::format("task id must be an integer, got '{}'", raw)));
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
   auto task = engine::planning::show_task(**conn, *id);
@@ -88,7 +88,7 @@ auto closure_show(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, store::render_invalid_task_id(raw)));
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

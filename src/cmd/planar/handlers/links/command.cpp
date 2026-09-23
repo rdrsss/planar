@@ -181,7 +181,7 @@ auto links_add(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   // FIRST, before any argument validation — zig's handler opens with `try
   // runtime.ensureDb()`, so even a refused invocation leaves a
   // created-and-migrated database behind.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -233,7 +233,7 @@ auto links_add(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 }
 
 auto links_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -280,7 +280,7 @@ auto links_list(context& ctx, const cliapp::parsed_args& args) -> handler_result
 }
 
 auto links_remove(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -308,7 +308,7 @@ auto links_remove(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto links_trail(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -341,7 +341,7 @@ auto links_trail(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 auto entity_link_verb(context& ctx, const cliapp::parsed_args& args, engine::entitylink::entity_kind subject_kind,
                       std::string_view id_positional, std::string_view id_label, std::string_view json_key, std::string_view verb,
                       bool unicode_arrow) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

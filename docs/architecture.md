@@ -332,11 +332,12 @@ flowchart LR
 
 | Path | Role |
 |------|------|
-| `src/cmd/planar/` | Operator binary entry and per-verb handlers under `handlers/` (86 handler files at time of writing, flat — not grouped into per-domain subdirectories). `planar` also registers an `explore` leaf for the interactive cockpit, but that leaf's handler only prints the leaf's help (exit 0) — the cockpit is not implemented (decision 980; see [Interactive cockpit](#interactive-cockpit--specified-not-implemented) above). |
+| `src/cmd/internal/` | Shared command invocation context, environment and config-path resolution, and an injected lazy database holder. The binary supplies the database open policy; the context only holds values and the database object. `planar-execute` does not link this target. |
+| `src/cmd/planar/` | Operator binary entry and command families under `handlers/<family>/`. `planar` also registers an `explore` leaf for the interactive cockpit, but that leaf's handler only prints the leaf's help (exit 0) — the cockpit is not implemented (decision 980; see [Interactive cockpit](#interactive-cockpit--specified-not-implemented) above). |
 | `src/cmd/planar-agent/` | Agent-callable coordination binary — its claim, action, run, context, recovery, and terminal-operation handlers. |
-| `src/cmd/planar-watch/` | Read-only viewer binary — per-verb handlers under `handlers/` (including the `--follow` wake loop). |
+| `src/cmd/planar-watch/` | Read-only viewer binary — root command families under `handlers/<family>/` (including the `--follow` wake loop). |
 | `src/cmd/planar-execute/` | Spawn-free deterministic workflow engine — Lua workflow loading, schema/allowlist enforcement, state, and `run` handling. Links the vendored Lua runtime (`vendor/lua/`) but no `src/lib/db/` or SQLite. |
-| `src/cmd/planar-ext/` | Operational-plane binary (decisions 995–1001, extracted this session from `planar`) — `ext`/`sync` handlers, the strategy selector (`handlers/ext_strategy.cpp`), and the adapter factory (`handlers/ext_adapter_factory.cppm`). Opens SQLite directly; read-only on planning tables, read-write on exactly `external_links`/`external_systems`/`sync_events`. |
+| `src/cmd/planar-ext/` | Operational-plane binary (decisions 995–1001) — `ext`/`sync` command families, the strategy selector (`handlers/ext/ext_strategy.cpp`), and the adapter factory (`handlers/shared/ext_adapter_factory.cppm`). Opens SQLite directly; read-only on planning tables, read-write on exactly `external_links`/`external_systems`/`sync_events`. |
 
 Each `src/cmd/<binary>/` target is registered through `src/cmd/CMakeLists.txt`'s guarded helper (never a bare `add_executable()`), which is what lets `planar-ext`'s write-capability allowlist be enforced at the same registration point as every other binary's capability boundary.
 
@@ -396,6 +397,10 @@ writes agent tables or external systems.
 ### Handler layout
 
 The `planar` binary assembles its root `CLI::App` in `src/cmd/planar/main.cppm`. Each root command has a directory under `src/cmd/planar/handlers/` with a `command.cppm` module for its root declaration. Each child CLI node has a sibling module in the same directory (for example, `plan/step_add.cppm` declares `plan step add`). Deeper command paths are encoded in filenames rather than additional directories. Family-specific handlers stay in that family directory; helpers shared by several root commands live under `handlers/shared/`. `dispatch.cpp` remains the generic parser and path-to-handler router. Shared domain logic stays under `src/lib/engine/`. `ext`, `sync`, and their supporting handlers moved off `planar` entirely onto `planar-ext` at task 6419 (decisions 995–1001); `link`, `unlink`, and `audit` stayed on `planar`.
+
+`planar-agent`, `planar-watch`, and `planar-ext` assemble their roots in their own `main.cppm` modules. Each root command family has a directory under that binary's `handlers/`, with its CLI declaration in `command.cppm` and related implementation and tests beside it. Shared handler helpers live under `handlers/shared/`. `planar-execute` keeps its manual argument parser; its `main.cpp` dispatches to `handlers/run/`, `handlers/profile/`, and `handlers/schema/`.
+
+The database-using binaries construct their database objects in `main.cpp` and inject them into a context. `src/cmd/internal/` holds the shared context holder, lazy database holder, environment lookup, and configuration path resolution. Each binary supplies its own database access policy, including migration behavior and SQLite write restrictions. `planar-execute` has no database object or dependency on `cmd_internal`.
 
 ### Subcommand domains
 
@@ -589,7 +594,7 @@ Per-vendor logic stays behind the interface boundary; the sync engine and `plana
 
 ### Strategy selection
 
-For GitHub Issues, the propagation strategy is selected once at first propagation per feature (`src/cmd/planar-ext/handlers/ext_strategy.cpp`'s `select_strategy`) and cached on `external_links.config_json` of the anchor plan. Today the whole-tree `ext propagate` verb executes a single GitHub strategy — `github-parent-issue` — used when the feature's descendant tasks touch exactly one repo (task 6421 scoped the C++ port to this arm only; see the caveat on [`planar-ext ext propagate`](cli-reference.md#planar-ext-ext-propagate-plan)). The multi-repo `github-projects-v2` strategy (a GitHub Projects board mirroring the feature tree) is permanently cut — decision 1001 — and will not be built; `select_strategy` still reports that bucket by name so `ext propagate` can refuse it with a message naming the real reason (a multi-repo feature) rather than a generic "not implemented."
+For GitHub Issues, the propagation strategy is selected once at first propagation per feature (`src/cmd/planar-ext/handlers/ext/ext_strategy.cpp`'s `select_strategy`) and cached on `external_links.config_json` of the anchor plan. Today the whole-tree `ext propagate` verb executes a single GitHub strategy — `github-parent-issue` — used when the feature's descendant tasks touch exactly one repo (task 6421 scoped the C++ port to this arm only; see the caveat on [`planar-ext ext propagate`](cli-reference.md#planar-ext-ext-propagate-plan)). The multi-repo `github-projects-v2` strategy (a GitHub Projects board mirroring the feature tree) is permanently cut — decision 1001 — and will not be built; `select_strategy` still reports that bucket by name so `ext propagate` can refuse it with a message naming the real reason (a multi-repo feature) rather than a generic "not implemented."
 
 The strategy is sticky: subsequent re-propagations use the cached value. `--restrategize` forces fresh detection.
 

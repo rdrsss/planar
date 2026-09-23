@@ -116,9 +116,9 @@ auto dispatch(std::vector<std::string> args, std::map<std::string, std::string, 
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(std::move(vars)), root, root / "planar.db", out, err};
+  context            ctx{std::move(argv), planar::cmd::map_env(std::move(vars)), root, std::make_shared<planar::cmd::database>(root / "planar.db", err), out, err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
@@ -140,7 +140,7 @@ TEST_CASE("every leaf in the tree has a handler", "[cmd][dispatch][registration]
   // it is invisible until someone runs the verb and gets exit 64. This
   // turns it into a failing test at the moment the tree changes.
   auto const tree    = planar::cmd::root_app();
-  auto const table   = planar::cmd::handlers(*tree);
+  auto const table   = planar::cmd::make_handler_table(*tree);
   auto const missing = planar::cmd::unregistered_leaves(*tree, table);
   INFO("unwired leaves: " << std::format("{}", missing));
   CHECK(missing.empty());
@@ -150,7 +150,7 @@ TEST_CASE("every handler is reachable from the tree", "[cmd][dispatch][registrat
   // The other direction: a handler registered under a misspelled or removed
   // path is dead code that reads as coverage.
   auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers(*tree);
+  auto const table = planar::cmd::make_handler_table(*tree);
   auto const dead  = planar::cmd::unreachable_handlers(*tree, table);
   INFO("unreachable handlers: " << std::format("{}", dead));
   CHECK(dead.empty());
@@ -161,7 +161,7 @@ TEST_CASE("unregistered_leaves actually reports an unwired leaf", "[cmd][dispatc
   // happily if `unregistered_leaves` always returned an empty vector. This
   // case proves it discriminates by handing it a table with a hole.
   auto const tree  = planar::cmd::root_app();
-  auto       table = planar::cmd::handlers(*tree);
+  auto       table = planar::cmd::make_handler_table(*tree);
   table.erase("workflow show");
   auto const missing = planar::cmd::unregistered_leaves(*tree, table);
   REQUIRE(missing.size() == 1);
@@ -170,7 +170,7 @@ TEST_CASE("unregistered_leaves actually reports an unwired leaf", "[cmd][dispatc
 
 TEST_CASE("unreachable_handlers actually reports a dead entry", "[cmd][dispatch][registration]") {
   auto const tree  = planar::cmd::root_app();
-  auto       table = planar::cmd::handlers(*tree);
+  auto       table = planar::cmd::make_handler_table(*tree);
   table.emplace("workflow shwo", [](context&, const planar::cliapp::parsed_args&) -> planar::cmd::handler_result { return {}; });
   auto const dead = planar::cmd::unreachable_handlers(*tree, table);
   REQUIRE(dead.size() == 1);
@@ -238,7 +238,7 @@ TEST_CASE("an unwired leaf falls through to exit 64, not a crash", "[cmd][dispat
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar", "version"}, planar::cmd::map_env({}), root, root / "planar.db", out, err};
+  context            ctx{{"planar", "version"}, planar::cmd::map_env({}), root, std::make_shared<planar::cmd::database>(root / "planar.db", err), out, err};
   auto const         tree = planar::cmd::root_app();
   int const          code = planar::cmd::run(ctx, *tree, planar::cmd::handler_table{});
   CHECK(code == 64);
@@ -391,14 +391,14 @@ TEST_CASE("the health DUAL node's parent and child are BOTH wired, and both matt
   // the table entry, not some other mechanism, is what selects the
   // handler.
   auto const tree  = planar::cmd::root_app();
-  auto       table = planar::cmd::handlers(*tree);
+  auto       table = planar::cmd::make_handler_table(*tree);
   REQUIRE(table.erase("health") == 1);
   std::ostringstream out;
   std::ostringstream err;
   auto const         root = std::filesystem::temp_directory_path() / "planar_dispatch_health_probe";
   std::error_code    ec;
   std::filesystem::create_directories(root, ec);
-  context   ctx{{"planar", "health"}, planar::cmd::map_env({}), root, root / "planar.db", out, err};
+  context   ctx{{"planar", "health"}, planar::cmd::map_env({}), root, std::make_shared<planar::cmd::database>(root / "planar.db", err), out, err};
   int const code = planar::cmd::run(ctx, *tree, table);
   CHECK(code == 0);
   CHECK(out.str().contains("hygiene"));
@@ -413,7 +413,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // wins, but the stale entry would then be invisible), and a leaf in
   // neither population (caught by `unregistered_leaves`, above).
   auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers(*tree);
+  auto const table = planar::cmd::make_handler_table(*tree);
 
   std::set<std::string, std::less<>> unported;
   for (auto const& verb : planar::cmd::unported_paths()) {
@@ -1297,7 +1297,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - `templates path` ignores `--system`, `--set` AND `--json`;
   //     `templates init` ignores `--force`. Both reproduced, both captured.
   //   - Only `templates render` opens SQLite. The other five are pinned to
-  //     leave `ctx.db_opened()` false.
+  //     leave `ctx.db().opened()` false.
   for (auto const& leaf :
        {"templates list", "templates show", "templates render", "templates validate", "templates init", "templates path"}) {
     INFO("templates leaf: " << leaf);
@@ -1553,7 +1553,7 @@ TEST_CASE("report composes a message body but writes a rendered payload verbatim
 
 TEST_CASE("a dual group-and-leaf node dispatches to its own handler", "[cmd][dispatch][registration]") {
   auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers(*tree);
+  auto const table = planar::cmd::make_handler_table(*tree);
 
   // Both parents are registered even though `cliapp::leaf_keys` — which
   // only counts CHILDLESS nodes — does not list them.
@@ -1575,7 +1575,7 @@ TEST_CASE("a PURE group with no handler still renders help", "[cmd][dispatch]") 
   // The other side of the narrowed rule. `capture` has six children and no
   // handler of its own, so it must keep the help-page behaviour.
   auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers(*tree);
+  auto const table = planar::cmd::make_handler_table(*tree);
   REQUIRE_FALSE(table.contains("capture"));
 
   auto const got = dispatch({"capture"});
@@ -1591,7 +1591,7 @@ TEST_CASE("unreachable_handlers still reports a key naming no node at all", "[cm
   // widening could have been "return {} always" and every gate above would
   // pass.
   auto const tree  = planar::cmd::root_app();
-  auto       table = planar::cmd::handlers(*tree);
+  auto       table = planar::cmd::make_handler_table(*tree);
   table.emplace("handoff nosuchchild",
                 [](context&, const planar::cliapp::parsed_args&) -> planar::cmd::handler_result { return {}; });
   auto const dead = planar::cmd::unreachable_handlers(*tree, table);

@@ -60,7 +60,7 @@
 // Every fixture builds an explicit environment map with `PLANAR_LOCAL_HOME`
 // and `HOME` under its own scratch root; nothing here reads the process
 // environment. And because none of these five leaves opens SQLite,
-// `ctx.db_opened()` is asserted false after each — which is both a real
+// `ctx.db().opened()` is asserted false after each — which is both a real
 // contract and a second, structural guarantee that the operator's
 // `~/.planar/planar.db` is unreachable from this file.
 
@@ -128,11 +128,11 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
 /// @brief Write a file, creating its parent directories.

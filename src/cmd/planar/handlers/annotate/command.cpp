@@ -308,7 +308,7 @@ auto shared_filter(const cliapp::parsed_args& args) -> std::unique_ptr<filter_st
 /// @return Success, or the mapped engine failure.
 auto run_bulk(context& ctx, const cliapp::parsed_args& args, ann::bulk_action action, std::string_view leaf,
               std::string_view participle) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -371,7 +371,7 @@ auto run_lifecycle(context& ctx, const cliapp::parsed_args& args,
   if (!id) {
     return std::unexpected(id.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -401,7 +401,7 @@ auto annotate_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return std::unexpected(resolved.error());
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -451,7 +451,7 @@ auto annotate_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto annotate_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -513,7 +513,7 @@ auto annotate_capabilities(context& ctx, const cliapp::parsed_args& args) -> han
   // It must never take the operator context's migration path: a readable old
   // source is still useful to Explorer in default viewing mode, and probing
   // it must not turn that probe into a schema upgrade.  The command writers
-  // below intentionally retain ctx.ensure_db(), because their transaction
+  // below intentionally retain ctx.db().ensure_db(), because their transaction
   // needs the current schema and is the explicit writer boundary.
   auto conn = db::connection::open_read_only(ctx.db_path().string());
   if (!conn) {
@@ -565,7 +565,7 @@ auto annotate_show(context& ctx, const cliapp::parsed_args& args) -> handler_res
   if (!id) {
     return std::unexpected(id.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -591,7 +591,7 @@ auto annotate_update(context& ctx, const cliapp::parsed_args& args) -> handler_r
     return std::unexpected(status_.error());
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -630,7 +630,7 @@ auto annotate_remove(context& ctx, const cliapp::parsed_args& args) -> handler_r
   if (!id) {
     return std::unexpected(id.error());
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -671,7 +671,7 @@ auto annotate_tag(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "tag is required"));
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -717,7 +717,7 @@ auto annotate_bulk_archive(context& ctx, const cliapp::parsed_args& args) -> han
 }
 
 auto annotate_verify(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -767,7 +767,7 @@ auto annotate_verify(context& ctx, const cliapp::parsed_args& args) -> handler_r
 }
 
 auto annotate_sweep(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -892,7 +892,7 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
       tags.push_back(tag.string);
     }
   }
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
   auto const bulk_anchor = string_field("anchor_path");
@@ -958,7 +958,7 @@ auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_
   auto const operation_id = flag_string(args, "--operation-id");
   if (!source || !operation_id)
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--source-uuid and --operation-id are required"));
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
   auto receipt = ann::show_receipt(**conn, *source, *operation_id);

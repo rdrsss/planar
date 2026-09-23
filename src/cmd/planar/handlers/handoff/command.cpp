@@ -172,7 +172,7 @@ auto render_composite_json(std::int64_t snapshot_id, std::int64_t handoff_id, ho
 } // namespace
 
 auto handoff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -296,7 +296,7 @@ auto handoff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 }
 
 auto handoff_create(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -336,7 +336,7 @@ auto handoff_create(context& ctx, const cliapp::parsed_args& args) -> handler_re
 }
 
 auto handoff_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -352,7 +352,7 @@ auto handoff_validate(context& ctx, const cliapp::parsed_args& args) -> handler_
 }
 
 auto handoff_consume(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -368,7 +368,7 @@ auto handoff_consume(context& ctx, const cliapp::parsed_args& args) -> handler_r
 }
 
 auto handoff_abandon(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -387,7 +387,7 @@ auto handoff_abandon(context& ctx, const cliapp::parsed_args& args) -> handler_r
 }
 
 auto handoff_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -428,7 +428,7 @@ auto handoff_list(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto handoff_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

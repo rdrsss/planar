@@ -58,7 +58,7 @@ auto matches_read_scope(std::string_view kind, std::optional<std::int64_t> id,
 } // namespace
 
 auto resume_packet(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -144,7 +144,7 @@ auto resume_packet(context& ctx, const cliapp::parsed_args& args) -> handler_res
 }
 
 auto resume_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

@@ -485,7 +485,7 @@ auto append_agent_activity_text(std::string& out, std::span<const aa::action> ac
 } // namespace
 
 auto audit_session(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -557,7 +557,7 @@ auto audit_commits(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // `ensureDb` FIRST, before the flag-combination check — zig opens with
   // `try runtime.ensureDb()`, so a refused `--json --shas` still creates
   // and migrates the database.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -853,7 +853,7 @@ auto run_link_form(context& ctx, db::connection& conn, std::int64_t link_id, boo
 } // namespace
 
 auto audit_trail(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -900,7 +900,7 @@ struct readiness_row {
 } // namespace
 
 auto audit_handoff_readiness(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -1183,7 +1183,7 @@ auto publish_target(context& ctx, db::connection& conn, std::string_view kind_te
 } // namespace
 
 auto audit_publish_decision(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

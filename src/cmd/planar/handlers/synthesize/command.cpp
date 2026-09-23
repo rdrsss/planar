@@ -460,7 +460,7 @@ auto literal(context& ctx, const cliapp::parsed_args& args, const std::filesyste
                : failure("invalid synthesize --literal arguments", domain_error_kind::invalid_input);
   std::optional<apply_report> report;
   if (flag_bool(args, "--apply")) {
-    auto db = ctx.ensure_db();
+    auto db = ctx.db().ensure_db();
     if (!db)
       return std::unexpected(db.error());
     auto txn = (**db).begin_transaction(db::lock_mode::immediate);
@@ -544,7 +544,7 @@ auto synthesize(context& ctx, const cliapp::parsed_args& args) -> handler_result
   if (apply) {
     if (staged->mode_ == sy::mode::pending)
       return failure(std::format("repo-root not found or not a directory: {}", root));
-    auto db = ctx.ensure_db();
+    auto db = ctx.db().ensure_db();
     if (!db)
       return std::unexpected(db.error());
     auto workbench = engine::workbench::root::resolve_root(ctx.env());

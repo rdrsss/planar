@@ -117,40 +117,62 @@ planar_binary(planar_agent
   INTERFACE
     exit.cppm
     context.cppm
+    database.cppm
     handler.cppm
     args.cppm
     locality.cppm
     policy.cppm
-    tree.cppm
+    main.cppm
+    handlers/shared/cli.cppm
+    handlers/version/command.cppm
+    handlers/pull/command.cppm
+    handlers/peek/command.cppm
+    handlers/complete/command.cppm
+    handlers/fail/command.cppm
+    handlers/release/command.cppm
+    handlers/block/command.cppm
+    handlers/claim/command.cppm
+    handlers/heartbeat/command.cppm
+    handlers/claim_associate/command.cppm
+    handlers/action/command.cppm
+    handlers/ingest/command.cppm
+    handlers/reconcile/command.cppm
+    handlers/abort/command.cppm
+    handlers/schema/command.cppm
+    handlers/run/command.cppm
+    handlers/dispatch/command.cppm
+    handlers/context/command.cppm
+
     surface.cppm
-    handlers/support.cppm
-    handlers/version.cppm
-    handlers/schema.cppm
-    handlers/claims.cppm
-    handlers/terminal.cppm
-    handlers/recovery.cppm
-    handlers/action.cppm
-    handlers/dispatch.cppm
-    handlers/context.cppm
-    handlers/runs.cppm
+    handlers/shared/support.cppm
+    handlers/version/version.cppm
+    handlers/schema/schema.cppm
+    handlers/shared/claims.cppm
+    handlers/shared/terminal.cppm
+    handlers/shared/recovery.cppm
+    handlers/action/action.cppm
+    handlers/dispatch/dispatch.cppm
+    handlers/context/context.cppm
+    handlers/run/runs.cppm
     dispatch.cppm
   SOURCES
     context.cpp
+    database.cpp
     locality.cpp
     policy.cpp
-    tree.cpp
-    handlers/version.cpp
-    handlers/schema.cpp
-    handlers/claims.cpp
-    handlers/terminal.cpp
-    handlers/recovery.cpp
-    handlers/action.cpp
-    handlers/dispatch.cpp
-    handlers/context.cpp
-    handlers/ingest.cpp
-    handlers/runs.cpp
+    handlers/version/version.cpp
+    handlers/schema/schema.cpp
+    handlers/shared/claims.cpp
+    handlers/shared/terminal.cpp
+    handlers/shared/recovery.cpp
+    handlers/action/action.cpp
+    handlers/dispatch/dispatch.cpp
+    handlers/context/context.cpp
+    handlers/ingest/ingest.cpp
+    handlers/run/runs.cpp
     dispatch.cpp
   DEPENDS
+    cmd_internal
     cliapp
     db
     git

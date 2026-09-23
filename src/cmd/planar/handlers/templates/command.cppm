@@ -27,8 +27,8 @@
 ///
 /// ## Only ONE of the six opens SQLite
 ///
-/// `templates render` calls `ctx.ensure_db()`; the other five never do, and
-/// `ctx.db_opened()` is still false after each of them runs. That is not
+/// `templates render` calls `ctx.db().ensure_db()`; the other five never do, and
+/// `ctx.db().opened()` is still false after each of them runs. That is not
 /// incidental — `templates list` on a machine with no database must still
 /// work, because listing what the binary ships cannot depend on the
 /// operator having run `planar init`. Pinned.

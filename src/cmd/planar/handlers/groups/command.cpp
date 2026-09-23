@@ -55,7 +55,7 @@ auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_
     requested_solver = *parsed;
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

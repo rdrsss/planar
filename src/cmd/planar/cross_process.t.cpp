@@ -86,7 +86,7 @@
 //
 //   (1) `handlers/version.cpp`: `ctx.out()` -> `ctx.err()`.
 //       -> case 1 fails at `(one.on_stderr ? ran.out : ran.err).empty()`.
-//   (2) `dispatch.cpp`: the `schema` lambda calls `ctx.ensure_db()` first
+//   (2) `dispatch.cpp`: the `schema` lambda calls `ctx.db().ensure_db()` first
 //       -- exactly the telemetry-through-the-migrating-open defect the Zig
 //       original was written for.
 //       -> case 2 fails at `REQUIRE_FALSE(exists(db))`.

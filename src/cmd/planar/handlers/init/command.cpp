@@ -57,7 +57,7 @@ auto init(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // Step 1: open + create the parent directory + migrate + schema-version
   // guard. All four live in `ensure_db`, which is where the Zig runtime's
   // `ensureDb` puts them too.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

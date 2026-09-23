@@ -202,7 +202,7 @@ auto question_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   // `try runtime.ensureDb()`, so even a refused invocation leaves a
   // created-and-migrated database behind. Same ordering rule every leaf in
   // this binary follows.
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -273,7 +273,7 @@ auto question_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto question_show(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -291,7 +291,7 @@ auto question_show(context& ctx, const cliapp::parsed_args& args) -> handler_res
 }
 
 auto question_list(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -370,7 +370,7 @@ auto question_list(context& ctx, const cliapp::parsed_args& args) -> handler_res
 }
 
 auto question_answer(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -402,7 +402,7 @@ auto question_answer(context& ctx, const cliapp::parsed_args& args) -> handler_r
 }
 
 auto question_wontfix(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

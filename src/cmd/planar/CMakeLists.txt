@@ -444,6 +444,7 @@ planar_binary(planar
   INTERFACE
     exit.cppm
     context.cppm
+    database.cppm
     handler.cppm
     scope.cppm
     main.cppm
@@ -716,6 +717,7 @@ planar_binary(planar
     dispatch.cppm
   SOURCES
     context.cpp
+    database.cpp
     cli_log.cpp
     scope.cpp
     verb_classification.cpp
@@ -768,6 +770,7 @@ planar_binary(planar
     handlers/synthesize/command.cpp
     dispatch.cpp
   DEPENDS
+    cmd_internal
     adapter
     cliapp
     db
@@ -878,6 +881,10 @@ if(TARGET planar_cmd_planar_tests)
   # own header gives: D18 forbids a `cmd_* -> cmd_*` edge and a shared
   # layer-1 library for test scaffolding would be worse. It parses JSON with
   # Glaze, hence the link.
-  target_include_directories(planar_cmd_planar_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  # Family tests moved under handlers/<family>/ still share the root's
+  # test-only JSON envelope helper.
+  target_include_directories(planar_cmd_planar_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/..")
   target_link_libraries(planar_cmd_planar_tests PRIVATE glaze::glaze)
 endif()

@@ -94,7 +94,7 @@ export auto workflow_show(context& ctx, const cliapp::parsed_args& args) -> hand
 ///    `domain_error::passthrough_code` rather than a `domain_error_kind`
 ///    bucket — a workflow's `flow.fail` can end in a code no bucket names.
 /// 3. **SQLite is never opened.** Resolution is filesystem-only, so
-///    `ctx.db_opened()` stays false, exactly as it does for `list` and
+///    `ctx.db().opened()` stays false, exactly as it does for `list` and
 ///    `show`.
 ///
 /// ## Binary resolution order, which is also the test seam

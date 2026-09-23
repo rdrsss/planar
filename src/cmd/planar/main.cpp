@@ -53,9 +53,10 @@ auto main(int argc, char** argv) -> int {
 
   auto const started = std::chrono::steady_clock::now();
 
-  planar::cmd::context ctx{std::move(args), env, planar::cmd::operator_cwd(env), *db_path, std::cout, std::cerr};
+  auto                 database = std::make_shared<planar::cmd::database>(*db_path, std::cerr);
+  planar::cmd::context ctx{std::move(args), env, planar::cmd::operator_cwd(env), database, std::cout, std::cerr};
   auto const           root    = planar::cmd::root_app();
-  auto const           table   = planar::cmd::handlers(*root);
+  auto const           table   = planar::cmd::make_handler_table(*root);
   auto const           outcome = planar::cmd::run_detailed(ctx, *root, table);
 
   // Invocation capture, after the verb so the exit code is final and before

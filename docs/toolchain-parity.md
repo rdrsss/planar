@@ -339,9 +339,9 @@ meaningless:
 
 ```
 scripts/break-probe.sh \
-  --file src/cmd/planar-watch/tree.cpp \
+  --file src/cmd/planar-watch/handlers/ps/command.cppm \
   --label "drop --json from the 'ps' node" \
-  --mutate "sed -i '' 's|^  add_json(\*ps);$||' src/cmd/planar-watch/tree.cpp" \
+  --mutate "sed -i '' 's|^  shared::add_json(\*ps);$||' src/cmd/planar-watch/handlers/ps/command.cppm" \
   --test 'planar-watch parity: every command declares what the oracle declares'
 ```
 

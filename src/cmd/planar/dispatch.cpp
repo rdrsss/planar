@@ -202,7 +202,7 @@ auto explore_fallback(const CLI::App* node) -> handler_fn {
   };
 }
 
-auto handlers(const CLI::App& root) -> handler_table {
+auto make_handler_table(const CLI::App& root) -> handler_table {
   handler_table table;
   table.emplace("init", handlers::init);
   table.emplace("plan create", handlers::plan_create);
@@ -653,7 +653,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   //
   // Only `templates render` opens SQLite, and only to read: the other five
   // work on a machine that has never run `planar init`, which is why
-  // `ctx.db_opened()` is pinned false for them.
+  // `ctx.db().opened()` is pinned false for them.
   table.emplace("templates list", handlers::templates_list);
   table.emplace("templates show", handlers::templates_show);
   table.emplace("templates render", handlers::templates_render);
@@ -665,7 +665,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // wiring over it plus the config-file PATH, which is a process concern
   // the engine deliberately does not own.
   //
-  // NONE of the five opens SQLite, and `ctx.db_opened()` is pinned false
+  // NONE of the five opens SQLite, and `ctx.db().opened()` is pinned false
   // after each. `config init` and `config path` are what an operator runs
   // BEFORE `planar init`; a version that opened the database would also
   // MIGRATE it.

@@ -103,7 +103,7 @@ auto promote(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // before the handler runs; the fallback keeps the read total.
   auto const to_scope = cliapp::flag_string(args, "--to").value_or(std::string{});
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -169,7 +169,7 @@ auto demote(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // unconditionally, so a bogus `--from` is not a refusal.
   static_cast<void>(cliapp::flag_string(args, "--from"));
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

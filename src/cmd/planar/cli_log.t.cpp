@@ -347,7 +347,7 @@ TEST_CASE("record never creates a database, and never records with logging off",
   {
     std::ostringstream out;
     std::ostringstream err;
-    pc::context        ctx{{"planar", "health"}, env, arena.dir(), arena.path(), out, err};
+    pc::context        ctx{{"planar", "health"}, env, arena.dir(), std::make_shared<planar::cmd::database>(arena.path(), err), out, err};
     pc::record(ctx, 0, std::nullopt, std::chrono::milliseconds{3});
     CHECK_FALSE(std::filesystem::exists(arena.path()));
     CHECK(out.str().empty()); // fail-open: never speaks
@@ -362,7 +362,7 @@ TEST_CASE("record never creates a database, and never records with logging off",
   {
     std::ostringstream out;
     std::ostringstream err;
-    pc::context ctx{{"planar", "task", "show", "SENTINEL_MUST_NOT_LEAK", "--json"}, env, arena.dir(), arena.path(), out, err};
+    pc::context ctx{{"planar", "task", "show", "SENTINEL_MUST_NOT_LEAK", "--json"}, env, arena.dir(), std::make_shared<planar::cmd::database>(arena.path(), err), out, err};
     pc::record(ctx, 1, planar::cmd::domain_error_kind::not_found, std::chrono::milliseconds{7});
   }
   {
@@ -384,7 +384,7 @@ TEST_CASE("record never creates a database, and never records with logging off",
     auto const         off_env = pc::map_env({{"HOME", arena.dir().string()}, {"PLANAR_CONFIG_PATH", cfg_off.string()}});
     std::ostringstream out;
     std::ostringstream err;
-    pc::context        ctx{{"planar", "health"}, off_env, arena.dir(), arena.path(), out, err};
+    pc::context        ctx{{"planar", "health"}, off_env, arena.dir(), std::make_shared<planar::cmd::database>(arena.path(), err), out, err};
     pc::record(ctx, 0, std::nullopt, std::chrono::milliseconds{1});
   }
   {

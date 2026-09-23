@@ -56,7 +56,7 @@ import planar.db.migrate;
 import planar.engine.runtime.agentactivity;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.dispatch;
-import planar.cmd.planar_watch.tree;
+import planar.cmd.planar_watch.main;
 
 namespace {
 
@@ -105,11 +105,11 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context            ctx{std::move(argv), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::watch::database>(fx.db_path, err), out, err};
   auto const         tree  = planar::cmd::watch::root_app();
   auto const         table = planar::cmd::watch::handlers(*tree);
   int const          code  = planar::cmd::watch::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
 /// @brief Count the newline-terminated lines in a payload.
@@ -407,7 +407,7 @@ TEST_CASE("planar-watch: the read-only handle is exercised END TO END by a real 
   std::vector<std::string> argv{"planar-watch", "claims", "--json"};
   std::ostringstream       out;
   std::ostringstream       err;
-  context                  ctx{std::move(argv), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context                  ctx{std::move(argv), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::watch::database>(fx.db_path, err), out, err};
   auto const               tree  = planar::cmd::watch::root_app();
   auto const               table = planar::cmd::watch::handlers(*tree);
   int const                code  = planar::cmd::watch::run(ctx, *tree, table);
@@ -415,13 +415,13 @@ TEST_CASE("planar-watch: the read-only handle is exercised END TO END by a real 
   // --- 1. a LIVE READ ------------------------------------------------------
   REQUIRE(code == 0);
   REQUIRE(err.str().empty());
-  REQUIRE(ctx.db_opened());
+  REQUIRE(ctx.db().opened());
   auto const rendered = out.str();
   REQUIRE(rendered.contains("\"claim_token\":\"" + seeded_claim_token(fx) + "\""));
   REQUIRE(rendered.contains("\"vendor\":\"seedvendor\""));
 
   // --- 2. the SAME handle refuses to write ---------------------------------
-  auto handle = ctx.ensure_db();
+  auto handle = ctx.db().ensure_db();
   REQUIRE(handle.has_value());
   auto const insert_result = (*handle)->execute("insert into sessions (vendor) values ('smuggled')");
   CHECK_FALSE(insert_result.has_value());
@@ -466,15 +466,15 @@ TEST_CASE("planar-watch: every read verb answers from the same cached read-only 
     full.insert(full.end(), argv.begin(), argv.end());
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{std::move(full), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+    context            ctx{std::move(full), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::watch::database>(fx.db_path, err), out, err};
     auto const         tree  = planar::cmd::watch::root_app();
     auto const         table = planar::cmd::watch::handlers(*tree);
 
     INFO("verb: " << argv.front());
     CHECK(planar::cmd::watch::run(ctx, *tree, table) == 0);
     CHECK(err.str().empty());
-    REQUIRE(ctx.db_opened());
-    auto handle = ctx.ensure_db();
+    REQUIRE(ctx.db().opened());
+    auto handle = ctx.db().ensure_db();
     REQUIRE(handle.has_value());
     CHECK((*handle)->is_read_only());
     CHECK_FALSE((*handle)->execute("insert into sessions (vendor) values ('x')").has_value());

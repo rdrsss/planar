@@ -57,8 +57,8 @@
 ///   * The whole `ext` group (`register` and its `jira`/`github` leaves,
 ///     `list`, `test`, `create`, `propagate-one`) and the whole `sync`
 ///     group (`pull`, `push`, `status`, `resolve`) MOVED to `planar-ext`
-///     at task 6419 — see `src/cmd/planar-ext/tree.cpp`'s `add_ext` /
-///     `add_sync`. They are not missing; they are on the other binary.
+///     at task 6419 — see `src/cmd/planar-ext/handlers/ext/command.cppm` and
+///     `handlers/sync/command.cppm`. They are not missing; they are on the other binary.
 ///   * `ext propagate`, the family's one remaining UNPORTED leaf, moved
 ///     with them conceptually but is declared on NEITHER binary yet. It
 ///     stays blocked on the surfaces `unported_paths`'s own comment always
@@ -72,7 +72,7 @@
 ///     this binary — `audit publish-decision` and `workbench publish` are
 ///     its other two callers and neither moved, and D18 forbids a
 ///     `cmd_planar -> cmd_planar_ext` edge — so
-///     `src/cmd/planar-ext/handlers/ext_adapter_factory.cppm` is a
+///     `src/cmd/planar-ext/handlers/shared/ext_adapter_factory.cppm` is a
 ///     deliberate duplicate, not a shared import. Same shape for the
 ///     cross-scope guard, which `feedback triage set` still needs:
 ///     `src/cmd/planar-ext/scope.cppm` duplicates it.

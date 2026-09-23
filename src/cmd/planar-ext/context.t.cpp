@@ -55,7 +55,7 @@ struct scratch_db_path {
 /// @return The context.
 auto make_context(const std::filesystem::path& path, std::ostream& out, std::ostream& err) -> planar::cmd::ext::context {
   return planar::cmd::ext::context{
-      {}, planar::cmd::ext::map_env({{"PLANAR_DB", path.string()}}), std::filesystem::path{}, path, out, err};
+      {}, planar::cmd::ext::map_env({{"PLANAR_DB", path.string()}}), std::filesystem::path{}, std::make_shared<planar::cmd::ext::database>(path, err), out, err};
 }
 
 /// @brief Apply the full embedded migration chain at `path`, the way
@@ -96,7 +96,7 @@ TEST_CASE("planar-ext refuses a database migrated past its embedded chain", "[cm
   std::ostringstream out;
   std::ostringstream err;
   auto               ctx    = make_context(scratch.path_, out, err);
-  auto const         opened = ctx.ensure_db();
+  auto const         opened = ctx.db().ensure_db();
   REQUIRE_FALSE(opened.has_value());
   CHECK(opened.error().kind == planar::cmd::ext::domain_error_kind::schema_version_ahead);
   CHECK(planar::cmd::ext::exit_code(opened.error()) == 7);
@@ -110,7 +110,7 @@ TEST_CASE("planar-ext refuses a database it would have to migrate", "[cmd][ext][
   std::ostringstream out;
   std::ostringstream err;
   auto               ctx    = make_context(scratch.path_, out, err);
-  auto const         opened = ctx.ensure_db();
+  auto const         opened = ctx.db().ensure_db();
   REQUIRE_FALSE(opened.has_value());
   CHECK(opened.error().kind == planar::cmd::ext::domain_error_kind::schema_version_behind);
   CHECK(planar::cmd::ext::exit_code(opened.error()) == 7);
@@ -126,6 +126,6 @@ TEST_CASE("planar-ext accepts a database at exactly its embedded version", "[cmd
   std::ostringstream out;
   std::ostringstream err;
   auto               ctx    = make_context(scratch.path_, out, err);
-  auto const         opened = ctx.ensure_db();
+  auto const         opened = ctx.db().ensure_db();
   REQUIRE(opened.has_value());
 }

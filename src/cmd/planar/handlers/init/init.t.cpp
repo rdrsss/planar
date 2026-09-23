@@ -6,7 +6,7 @@
 //
 // `handlers.t.cpp` cannot import `planar.cmd.planar.handlers.init`. That
 // module opens `namespace planar::cmd::handlers`, and `handlers.t.cpp`'s
-// dispatch helper calls the FUNCTION `planar::cmd::handlers(*tree)` — with
+// dispatch helper calls the FUNCTION `planar::cmd::make_handler_table(*tree)` — with
 // both in scope the qualified name is ambiguous and the TU does not compile.
 // Nothing about the split is cosmetic: it is the one arrangement in which
 // both the end-to-end handler cases and these direct ones can exist.

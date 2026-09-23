@@ -22,7 +22,7 @@
 // ## FIVE OF THE SIX MUST NOT OPEN SQLITE
 //
 // Only `templates render` needs a database. The other five are asserted to
-// leave `ctx.db_opened()` FALSE, which is both a real contract — listing
+// leave `ctx.db().opened()` FALSE, which is both a real contract — listing
 // what the binary ships cannot require the operator to have run
 // `planar init` — and a structural guarantee that this file cannot reach
 // the operator's `planar.db`.
@@ -121,11 +121,11 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
 /// @brief Write a file, creating its parent directories.

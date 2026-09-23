@@ -123,7 +123,7 @@ auto guard_with_membership(db::connection& conn, std::optional<std::string_view>
 
 auto resolve_write_scope(context& ctx, std::optional<std::string_view> scope_flag, std::string_view verb)
     -> std::expected<engine::identity::write_scope_resolution, domain_error> {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -136,7 +136,7 @@ auto resolve_write_scope(context& ctx, std::optional<std::string_view> scope_fla
 }
 
 auto resolve_read_scope_slugs(context& ctx) -> std::expected<std::vector<std::string>, domain_error> {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

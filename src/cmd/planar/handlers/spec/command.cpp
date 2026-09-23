@@ -1574,7 +1574,7 @@ auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     scope_view = *scope_flag;
   }
 
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

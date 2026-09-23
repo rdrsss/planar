@@ -104,9 +104,9 @@ auto dispatch_from(const std::filesystem::path& cwd, std::vector<std::string> ar
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(std::move(vars)), cwd, cwd / "planar.db", out, err};
+  context            ctx{std::move(argv), planar::cmd::map_env(std::move(vars)), cwd, std::make_shared<planar::cmd::database>(cwd / "planar.db", err), out, err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .err = err.str()};
 }

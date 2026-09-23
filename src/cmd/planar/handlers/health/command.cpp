@@ -158,7 +158,7 @@ auto map_hygiene_error(he::hygiene_error err) -> domain_error {
 } // namespace
 
 auto health(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -199,7 +199,7 @@ auto health(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 }
 
 auto health_hygiene(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }

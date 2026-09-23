@@ -129,7 +129,7 @@ auto resolve_vendor_tuple(const env_lookup& env) -> vendor_tuple {
 }
 
 auto capture_session(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -192,7 +192,7 @@ auto capture_session(context& ctx, const cliapp::parsed_args& args) -> handler_r
 }
 
 auto capture_end(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -244,7 +244,7 @@ auto capture_end(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 }
 
 auto capture_note(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -257,7 +257,7 @@ auto capture_note(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto capture_command(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -272,7 +272,7 @@ auto capture_command(context& ctx, const cliapp::parsed_args& args) -> handler_r
 }
 
 auto capture_file(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -287,7 +287,7 @@ auto capture_file(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 }
 
 auto capture_snapshot(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -345,7 +345,7 @@ auto capture_snapshot(context& ctx, const cliapp::parsed_args& args) -> handler_
 }
 
 auto capture_commits(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.ensure_db();
+  auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
