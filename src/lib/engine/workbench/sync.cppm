@@ -111,18 +111,39 @@ export struct malformed_file {
   std::string parse_error; ///< The Zig error tag.
 };
 
+/// @brief One file `pull`/`sync` refused because a NON-BODY field it
+/// cannot round-trip was edited on disk (task 6910).
+///
+/// `pull_to_db` writes only `body` (plus `status` for `task`/`plan`); a
+/// decision's `## Rationale` section and a question's `**Answer:**` line
+/// are rendered TO disk but never read back FROM it. Before task 6910 an
+/// operator edit there was silently discarded on every pull. This is the
+/// per-entity refusal that replaces the silence: the whole entity's pull
+/// is skipped (not just the field), the entity is left untouched, and the
+/// refusal is surfaced here rather than merely counted as `pending` —
+/// `pending` alone does not tell the operator WHY, or that the fix is
+/// `decision edit` / `question answer`, not another pull.
+export struct field_edit_refusal {
+  std::string  path;          ///< ROOT-relative stored path.
+  std::string  entity_kind;   ///< `decision` or `question`.
+  std::int64_t entity_id = 0; ///< The entity id.
+  std::string  field;         ///< `rationale` or `answer`.
+};
+
 /// @brief The outcome of one run. Field order matches the `--json` payload.
 export struct result {
-  std::size_t                 applied   = 0;                      ///< Changes written.
-  std::size_t                 pending   = 0;                      ///< Changes this mode declined to write.
-  std::size_t                 conflicts = 0;                      ///< Conflicting files.
-  std::size_t                 malformed = 0;                      ///< Unparseable files.
-  std::vector<malformed_file> malformed_files;                    ///< One per unparseable file, in `entries` order.
-  std::size_t                 filtered              = 0;          ///< Terminal entities excluded (push only).
-  std::size_t                 pre_existing_terminal = 0;          ///< Filtered entities that still had a file.
-  std::size_t                 cleaned               = 0;          ///< Of those, how many `apply_cleanup` removed.
-  std::string                 filter_mode           = "failures"; ///< The active mode's label.
-  std::vector<entry>          entries;                            ///< Every classified file, in enumeration order.
+  std::size_t                     applied   = 0;                      ///< Changes written.
+  std::size_t                     pending   = 0;                      ///< Changes this mode declined to write.
+  std::size_t                     conflicts = 0;                      ///< Conflicting files.
+  std::size_t                     malformed = 0;                      ///< Unparseable files.
+  std::vector<malformed_file>     malformed_files;                    ///< One per unparseable file, in `entries` order.
+  std::size_t                     filtered              = 0;          ///< Terminal entities excluded (push only).
+  std::size_t                     pre_existing_terminal = 0;          ///< Filtered entities that still had a file.
+  std::size_t                     cleaned               = 0;          ///< Of those, how many `apply_cleanup` removed.
+  std::string                     filter_mode           = "failures"; ///< The active mode's label.
+  std::vector<entry>              entries;                            ///< Every classified file, in enumeration order.
+  std::size_t                     field_edit_refused = 0;             ///< Count of `field_edit_refusals` (task 6910).
+  std::vector<field_edit_refusal> field_edit_refusals;                ///< One per refused entity.
 };
 
 /// @brief One anchor plan with a workbench tree, as `workbench list` shows it.
@@ -274,9 +295,10 @@ export auto list_active(db::connection& conn, std::string_view root) -> std::exp
 /// own prose.
 ///
 /// Drops leading `# ` headings, leading `**Label:**` lines and leading blank
-/// lines, then trims the remainder. This is what makes a push/pull round
-/// trip idempotent: the header `push` generates is removed again on the way
-/// back in, instead of accumulating.
+/// lines, then trims the remainder. It removes the header every renderer
+/// shares; the per-kind pieces (`## Content`, `## Body` / `## Rationale`,
+/// trailing `**Answer:**` / `**Next action:**`) are `extract_entity_body`'s
+/// job, and `pull` goes through that.
 ///
 /// It does NOT strip a `---` line, which is why the double-wrap case
 /// (`artifact update --body @<canonical-workbench-file>`) is sticky: the
@@ -286,5 +308,26 @@ export auto list_active(db::connection& conn, std::string_view root) -> std::exp
 /// @param body The body as read from disk.
 /// @return The operator's prose.
 export auto extract_body_text(std::string_view body) -> std::string_view;
+
+/// @brief The operator's prose for one entity KIND: `extract_body_text`
+/// plus the per-kind pieces of the wrapper the matching renderer writes
+/// (task 6881).
+///
+/// `push` renders more than the heading-and-labels prefix: an artifact's
+/// `## Content` heading, a decision's `## Body` heading and trailing
+/// `## Rationale` section, an answered question's trailing `**Answer:**` /
+/// `**Answered at:**` lines, a task's trailing `**Next action:**` line. A
+/// prefix-only strip stored every one of those in the body, where the next
+/// push re-wrapped them. This is the inverse `pull` applies so a
+/// push/edit/pull/push round trip is byte-stable. The trailing sections are
+/// cut at the FIRST line that starts with their label -- prose that itself
+/// begins a line with `## Rationale`, `**Answer:**` or `**Next action:**` is
+/// cut there too. `plan` and `scenario` render nothing beyond the prefix and
+/// fall through to `extract_body_text`.
+/// @param kind The entity kind as `pull_to_db` receives it (`artifact`,
+///             `decision`, `question`, `task`, `scenario`, `plan`).
+/// @param body The body as read from disk.
+/// @return The operator's prose, trimmed.
+export auto extract_entity_body(std::string_view kind, std::string_view body) -> std::string_view;
 
 } // namespace planar::engine::workbench::sync

@@ -83,6 +83,39 @@ auto is_unique_violation(const db::db_error& err) -> bool {
   return err.code_ == k_sqlite_constraint_unique;
 }
 
+/// @brief Maps a transaction-boundary `db_error` to `task_error`, distinguishing
+/// a post-`busy_timeout` SQLITE_BUSY (retry unchanged) from any other failure.
+///
+/// Scoped to the two places a real contended write actually surfaces this —
+/// `begin_transaction` and `transaction::commit` — mirroring
+/// `annotation.cpp`'s `command_db_error` (task 6843).
+///
+/// Task 6909: of this file's `conn.begin_transaction()` call sites (`update_task`,
+/// `mark_done`, `mark_cancelled`, `mark_blocked`, `reopen`), every ONE of
+/// them opens with the default `lock_mode::deferred`, which `transaction`'s
+/// constructor sends to SQLite as a plain `begin;` (`db.cppm:378` /
+/// `db.cpp:186`) — no lock is taken at `BEGIN` itself under deferred mode,
+/// so `tx.error()` immediately after it can be `SQLITE_BUSY` in principle,
+/// but not from lock contention (there is nothing yet to contend over): a
+/// `begin;` fails only for reasons unrelated to a competing writer.
+/// Practically, this means every `command_db_error(tx.error())` call right
+/// after `begin_transaction()` in this file is DEAD for the busy case it
+/// exists to classify. The busy seams that actually fire are the ones
+/// AFTER a write is attempted: a statement's own `step()` (see
+/// `set_status`, whose failure IS reachable and IS pinned, `[cmd][task][busy][6907]`)
+/// and the eventual `transaction::commit()`, where SQLite finally requests
+/// the write lock a deferred transaction never asked for at `BEGIN`. The
+/// dead `begin_transaction`-site wiring is kept, not deleted: a future
+/// move to `lock_mode::immediate` (matching `planar.db.migrate`'s
+/// `apply_all`) would make it live again without a code change, and
+/// deleting it now would silently drop that seam's coverage the day the
+/// lock mode changes.
+/// @param err The transaction-boundary error.
+/// @return `task_error::busy_source` or `task_error::query_failed`.
+auto command_db_error(const db::db_error& err) -> task_error {
+  return db::is_busy(err) ? task_error::busy_source : task_error::query_failed;
+}
+
 /// @brief Whether every character of `s` is an ASCII decimal digit.
 ///
 /// Ports zig's `allDigits`. `std::isdigit` is deliberately not used: it is
@@ -381,7 +414,7 @@ auto set_status(db::connection& conn, std::int64_t id, task_status status) -> st
   }
   auto step = stmt->step();
   if (!step) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(step.error()));
   }
   return {};
 }
@@ -393,27 +426,14 @@ auto is_open(task_status s) -> bool {
   return s == task_status::todo || s == task_status::doing || s == task_status::blocked;
 }
 
-/// @brief Clear `blocked` on every dependent of `blocker_id` whose blocker
-/// set is now fully terminal.
-///
-/// Called after a task reaches a terminal status. A dependent moves
-/// `blocked` -> `todo` ONLY when no incomplete blocker remains -- partial
-/// clearance (one of three blockers done) is deliberately a no-op, per
-/// decision 1122.
-///
-/// `blocked` is DERIVED state here, not operator intent: it is set by
-/// `task block <task> --on <blocker>`, which requires naming a blocker, so
-/// the status is defined by the `depends-on` edge. There is no verb that
-/// parks a task as `blocked` for reasons unrelated to a dependency, so
-/// there is no operator intent for this to override -- leaving the row at
-/// `blocked` after its last blocker completes is simply stale.
-///
-/// Cross-entity auto-transition is not novel here: `recompute_plan` below
-/// already transitions a task's parent PLAN from seven call sites in this
-/// file.
-/// @param conn An open, migrated database connection.
-/// @param blocker_id The task that just became terminal.
-/// @return Success, or the first query failure.
+} // namespace
+
+// Contract documented on the `export` declaration in task.cppm (decision
+// 1122; exported at task 6875 so `planar.cmd.planar_agent.policy` can bind
+// it into `planar.engine.runtime.agentatomic::task_policy`). Not repeated
+// here as a `///` block: Doxygen merges the declaration's and the
+// definition's documentation comments onto the same entity, and a second
+// `@param conn` here reads as a duplicate rather than a repetition.
 auto clear_unblocked_dependents(db::connection& conn, std::int64_t blocker_id) -> std::expected<void, task_error> {
   // Dependents still at `blocked` that have NO remaining non-terminal
   // blocker. The `not exists` clause is the all-clear rule: a single
@@ -458,8 +478,6 @@ auto clear_unblocked_dependents(db::connection& conn, std::int64_t blocker_id) -
   }
   return {};
 }
-
-} // namespace
 
 auto task_status_from_text(std::string_view s) -> std::optional<task_status> {
   if (s == "todo") {
@@ -726,7 +744,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
 
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
 
   auto current = show_task(conn, id);
@@ -871,6 +889,13 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
     if (is_unique_violation(step.error())) {
       return std::unexpected(task_error::slug_conflict);
     }
+    if (db::is_busy(step.error())) {
+      // Not routed through `exec_failed`: a post-timeout SQLITE_BUSY is not
+      // the oracle's `StepFailed` diagnostic seam (task 6843) — it is a
+      // retryable contention outcome, distinct from a genuine write
+      // failure, and gets its own tag end to end.
+      return std::unexpected(task_error::busy_source);
+    }
     return std::unexpected(exec_failed("task.update", "StepFailed"));
   }
 
@@ -925,7 +950,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
   }
 
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
@@ -933,7 +958,7 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
 auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expected<task, task_error> {
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
   auto current = show_task(conn, id);
   if (!current) {
@@ -969,7 +994,7 @@ auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expect
     }
   }
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
@@ -977,7 +1002,7 @@ auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expect
 auto mark_cancelled(db::connection& conn, std::int64_t id) -> std::expected<task, task_error> {
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
   auto current = show_task(conn, id);
   if (!current) {
@@ -1015,7 +1040,7 @@ auto mark_cancelled(db::connection& conn, std::int64_t id) -> std::expected<task
     }
   }
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
@@ -1030,7 +1055,7 @@ auto mark_blocked(db::connection& conn, std::int64_t id, std::int64_t blocked_on
 
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
   auto current = show_task(conn, id);
   if (!current) {
@@ -1085,7 +1110,7 @@ auto mark_blocked(db::connection& conn, std::int64_t id, std::int64_t blocked_on
     }
   }
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }
@@ -1094,7 +1119,7 @@ auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::
     -> std::expected<task, task_error> {
   auto tx = conn.begin_transaction();
   if (!tx) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(tx.error()));
   }
   auto current = show_task(conn, id);
   if (!current) {
@@ -1140,7 +1165,7 @@ auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::
     }
   }
   if (auto committed = tx->commit(); !committed) {
-    return std::unexpected(task_error::query_failed);
+    return std::unexpected(command_db_error(committed.error()));
   }
   return updated;
 }

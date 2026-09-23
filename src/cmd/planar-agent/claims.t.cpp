@@ -192,6 +192,11 @@ TEST_CASE("parse_ttl_seconds reads a bare integer as SECONDS", "[cmd][agent][arg
   // The ergonomic default the flag's own help promises. A port that read
   // it as nanoseconds would give every claim a zero-second lease.
   CHECK(agent::parse_ttl_seconds("600") == 600);
+  // The parser itself stays neutral on a literal zero (task 6906): it is
+  // shared with `--stale-after`, whose own "0" default is legitimate
+  // ("no additional grace"). The refusal lives at the `--ttl`
+  // lease-minting call sites instead -- see the `claim`/`run start`
+  // end-to-end cases below.
   CHECK(agent::parse_ttl_seconds("0") == 0);
   CHECK(agent::parse_ttl_seconds("1") == 1);
 }
@@ -333,6 +338,12 @@ TEST_CASE("the handler-level refusals carry the oracle's exact messages and code
       {{"claim", "--entity", "task:1", "--ttl", "zzz"},
        1,
        "error: invalid --ttl 'zzz': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n"},
+      // Task 6906: a zero-second result mints an already-lapsed lease, so
+      // it takes the SAME error shape as a malformed value -- unlike
+      // `--stale-after 0` just below, which is legitimate.
+      {{"claim", "--entity", "task:1", "--ttl", "0"},
+       1,
+       "error: invalid --ttl '0': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n"},
       {{"reconcile", "--stale-after", "zzz"},
        1,
        "error: invalid --stale-after 'zzz': expected bare seconds (e.g. 0) or suffixed duration (e.g. 10m, 1h, 500ms)\n"},
@@ -359,6 +370,32 @@ TEST_CASE("the handler-level refusals carry the oracle's exact messages and code
     CHECK(result.err == err);
     CHECK(result.out.empty());
   }
+}
+
+TEST_CASE("json flag adds a one-line error envelope on stdout; without it there is none", "[cmd][agent][handlers][6844]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+
+  // Task 6844 (decision 1145, supersedes D5): additive on STDOUT -- the
+  // same stream a successful `--json` result would use -- so the pinned
+  // stderr text stays byte-identical. The envelope's `tag` is the SAME
+  // CamelCase Zig-style tag the pinned line already carries
+  // (`derive_tag`'s primary path), not this binary's own
+  // `domain_error_kind` (which would collapse `ClaimNotFound` into the
+  // useless `generic_failure` bucket).
+  auto const with_json = run_verb(scratch, {"complete", "--claim", "deadbeef", "--json"});
+  CHECK(with_json.code == 1);
+  CHECK(with_json.err == "error: complete: ClaimNotFound\n");
+  CHECK(with_json.out == R"({"error":{"verb":"complete","tag":"ClaimNotFound"}})"
+                         "\n");
+
+  // Negative control: the exact same failure, no --json, no envelope --
+  // the pinned line is untouched (this row is already covered in the
+  // table-driven case above; repeated here so the pair sits together).
+  auto const without_json = run_verb(scratch, {"complete", "--claim", "deadbeef"});
+  CHECK(without_json.code == 1);
+  CHECK(without_json.out.empty());
+  CHECK(without_json.err == "error: complete: ClaimNotFound\n");
 }
 
 // NOTE ON THE NAME: it deliberately does not begin with `--`.
@@ -432,6 +469,119 @@ TEST_CASE("run start reports duplicate workflow identifiers with the oracle tag"
   CHECK(duplicate.code == 1);
   CHECK(duplicate.err == "error: insert workflow_runs: StepFailed\n");
   CHECK(scalar_text(scratch, "select count(*) from workflow_runs where run_identifier = 'same'") == "1");
+}
+
+TEST_CASE("run start accepts a pid-less run with --ttl and sets expires_at", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const started = run_verb(
+      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-a", "--ttl", "8h", "--repo-root", "/tmp"});
+  REQUIRE(started.code == 0);
+  CHECK(scalar_text(scratch, "select pid is null from workflow_runs where run_identifier = 'lease-a'") == "1");
+  CHECK(scalar_text(scratch, "select expires_at is not null from workflow_runs where run_identifier = 'lease-a'") == "1");
+  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'lease-a'") == "running");
+
+  // Roughly 8h out from `started_at` — a bounds check, not exact-string.
+  CHECK(scalar_text(scratch, "select (julianday(expires_at) - julianday(started_at)) * 24 > 7.9 "
+                             "from workflow_runs where run_identifier = 'lease-a'") == "1");
+  CHECK(scalar_text(scratch, "select (julianday(expires_at) - julianday(started_at)) * 24 < 8.1 "
+                             "from workflow_runs where run_identifier = 'lease-a'") == "1");
+}
+
+TEST_CASE("run start refuses when neither --pid nor --ttl is given, writing no row", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const refused =
+      run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "neither", "--repo-root", "/tmp"});
+  CHECK(refused.code != 0);
+  CHECK(refused.err.contains("--pid"));
+  CHECK(refused.err.contains("--ttl"));
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
+}
+
+TEST_CASE("run start refuses --pid and --ttl together, writing no row", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  // Both given is a contradiction. Before task 6847's reviewer caught it,
+  // --pid silently won and --ttl was discarded, so a caller asking for a
+  // lease got a pid-supervised run whose every later `run heartbeat`
+  // refused with `pid-supervised`.
+  auto const refused = run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "both", "--pid", "4242",
+                                          "--ttl", "600", "--repo-root", "/tmp"});
+  CHECK(refused.code != 0);
+  CHECK(refused.err.contains("--pid"));
+  CHECK(refused.err.contains("--ttl"));
+  CHECK(refused.err.contains("not both"));
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
+}
+
+TEST_CASE("run start refuses --ttl 0, writing no row (task 6906)", "[cmd][agent][runs][6906]") {
+  // A zero-second lease would set `expires_at` in the past the instant the
+  // run is minted -- the same bug the `claim --ttl 0` case above closes,
+  // applied to the second verb the decision names.
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const refused = run_verb(
+      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "ttl-zero", "--ttl", "0", "--repo-root", "/tmp"});
+  CHECK(refused.code != 0);
+  CHECK(refused.err == "error: invalid --ttl '0': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n");
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
+}
+
+TEST_CASE("run heartbeat extends a pid-less run's lease forward", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-b", "--ttl", "600",
+                             "--repo-root", "/tmp"})
+              .code == 0);
+  auto const before = scalar_text(scratch, "select expires_at from workflow_runs where run_identifier = 'lease-b'");
+
+  auto const beat = run_verb(scratch, {"run", "heartbeat", "--run-id", "lease-b", "--ttl", "3600"});
+  CHECK(beat.code == 0);
+  auto const after = scalar_text(scratch, "select expires_at from workflow_runs where run_identifier = 'lease-b'");
+  CHECK(after > before);
+}
+
+TEST_CASE("run heartbeat refuses a pid-bound run and a non-running run, each with its own named error",
+          "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "pid-run", "--pid", "4242",
+                             "--repo-root", "/tmp"})
+              .code == 0);
+  auto const on_pid_bound = run_verb(scratch, {"run", "heartbeat", "--run-id", "pid-run", "--ttl", "600"});
+  CHECK(on_pid_bound.code != 0);
+  CHECK(on_pid_bound.err.contains("pid-supervised"));
+  CHECK(scalar_text(scratch, "select expires_at is null from workflow_runs where run_identifier = 'pid-run'") == "1");
+
+  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-c", "--ttl", "600",
+                             "--repo-root", "/tmp"})
+              .code == 0);
+  REQUIRE(run_verb(scratch, {"run", "end", "--run-id", "lease-c", "--status", "completed"}).code == 0);
+  auto const on_terminal = run_verb(scratch, {"run", "heartbeat", "--run-id", "lease-c", "--ttl", "600"});
+  CHECK(on_terminal.code != 0);
+  CHECK(on_terminal.err.contains("terminal status"));
+}
+
+TEST_CASE("reconcile abandons a pid-less run only after its lease has lapsed", "[cmd][agent][runs][6847]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  {
+    // Seeded PAST expires_at, deterministic rather than sleeping.
+    auto conn = planar::db::connection::open(scratch.db_path().string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, expires_at, repo_root) "
+                          "values (1, 'wf', 'lapsed', '2000-01-01T00:00:00.000Z', '/tmp')")
+                .has_value());
+  }
+  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "still-leased", "--ttl", "8h",
+                             "--repo-root", "/tmp"})
+              .code == 0);
+
+  auto const swept = run_verb(scratch, {"reconcile"});
+  CHECK(swept.code == 0);
+  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'lapsed'") == "abandoned");
+  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'still-leased'") == "running");
 }
 
 TEST_CASE("reconcile --dry-run opens the database and writes nothing", "[cmd][agent][handlers]") {

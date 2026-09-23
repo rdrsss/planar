@@ -140,8 +140,8 @@ auto feature_rel_path(std::string_view file_path) -> std::string_view {
 auto render_sync_file(std::span<const sync_state> rows) -> std::string {
   std::string out;
   for (auto const& row : rows) {
-    std::format_to(std::back_inserter(out), "{}\t{}:{}\t{}\t{}\n", feature_rel_path(row.file_path), row.entity_kind,
-                   row.entity_id, row.content_hash, row.last_synced_at);
+    out += std::format("{}\t{}:{}\t{}\t{}\n", feature_rel_path(row.file_path), row.entity_kind, row.entity_id, row.content_hash,
+                       row.last_synced_at);
   }
   return out;
 }

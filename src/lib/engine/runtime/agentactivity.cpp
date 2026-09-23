@@ -723,6 +723,8 @@ auto error_name(agent_error err) -> std::string_view {
     return "UnknownStatus";
   case agent_error::query_failed:
     return "QueryFailed";
+  case agent_error::busy:
+    return "Busy";
   case agent_error::supervisor_mismatch:
     return "SupervisorMismatch";
   case agent_error::attempt_mismatch:
@@ -1547,8 +1549,13 @@ auto pid_alive(std::int64_t pid) -> bool {
 
 auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id, bool override_supervisor)
     -> std::expected<reconcile_runs_result, agent_error> {
-  std::string select_sql =
-      "select id, run_identifier, pid, plan_id, engine = 'centurion' from workflow_runs where status = 'running'";
+  // `lapsed` is computed IN SQL, against the same clock expression (`k_now`)
+  // every other write in this module uses, rather than fetched and compared
+  // in C++ — one fewer place a clock/format mismatch could hide.
+  std::string select_sql = std::format("select id, run_identifier, pid, plan_id, engine = 'centurion', "
+                                       "pid is null and expires_at is not null and expires_at < {} "
+                                       "from workflow_runs where status = 'running'",
+                                       k_now);
   if (plan_id.has_value()) {
     select_sql += std::format(" and plan_id = {}", *plan_id);
   }
@@ -1567,11 +1574,16 @@ auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64
       if (*stepped != db::step_result::row) {
         break;
       }
+      auto const    pid_opt = opt_int(*stmt, 2);
       run_candidate row{.id             = stmt->column_int64(0),
                         .run_identifier = stmt->column_text(1),
-                        .pid            = stmt->column_int64(2),
+                        .pid            = pid_opt.value_or(0),
                         .plan_id        = opt_int(*stmt, 3)};
-      if (pid_alive(row.pid)) {
+      // A pid-bound run is probed for liveness exactly as before. A
+      // pid-less run is NEVER pid-probed (there is no pid to probe) — its
+      // liveness is entirely the `lapsed` predicate computed above.
+      bool const dead = pid_opt.has_value() ? !pid_alive(*pid_opt) : stmt->column_int64(5) != 0;
+      if (!dead) {
         continue;
       }
       if (stmt->column_int64(4) != 0 && !override_supervisor) {
@@ -2190,7 +2202,14 @@ auto next_work(db::connection& conn, std::int64_t plan_id) -> std::expected<std:
                                ")\n"
                                "select t.id, t.title, t.status, t.priority,\n"
                                "       {} as active_claim_id,\n"
-                               "       {} as stale_claim_id\n"
+                               "       {} as stale_claim_id,\n"
+                               "       exists (\n"
+                               "         select 1 from entity_links el\n"
+                               "         join tasks blocker on blocker.id = el.to_id\n"
+                               "         where el.from_kind = 'task' and el.from_id = t.id\n"
+                               "           and el.to_kind = 'task' and el.relationship = 'depends-on'\n"
+                               "           and blocker.status not in ('done', 'cancelled')\n"
+                               "       ) as has_open_dependency\n"
                                "from tasks t\n"
                                "join plan_tree pt on pt.id = t.plan_id\n"
                                "order by t.priority asc, t.id asc",
@@ -2214,9 +2233,10 @@ auto next_work(db::connection& conn, std::int64_t plan_id) -> std::expected<std:
       break;
     }
 
-    auto const status    = std::string{stmt->column_text(2)};
-    auto const active_id = opt_int(*stmt, 4);
-    auto const stale_id  = opt_int(*stmt, 5);
+    auto const status              = std::string{stmt->column_text(2)};
+    auto const active_id           = opt_int(*stmt, 4);
+    auto const stale_id            = opt_int(*stmt, 5);
+    auto const has_open_dependency = stmt->column_int64(6) != 0;
 
     // The ladder. `blocked` first and unconditionally — see the header.
     next_work_bucket     bucket{};
@@ -2237,6 +2257,16 @@ auto next_work(db::connection& conn, std::int64_t plan_id) -> std::expected<std:
         return std::unexpected(held.error());
       }
       covering = std::move(*held);
+    } else if ((status == "todo" || status == "doing") && has_open_dependency) {
+      // Task 6898 / decision D6's dependency-exclusion clause, applied to
+      // `plan next`'s own bucketer so it agrees with `pull_next` /
+      // `peek_next` (`agentatomic.cpp::pick_next_eligible`) on the same
+      // row. A `todo`/`doing` task carrying an outbound `depends-on` edge
+      // to a non-terminal blocker is not dispatchable yet; folded into
+      // `blocked` rather than a new bucket, since that is already the
+      // bucket the packet-readiness gate above uses for "not dispatchable
+      // yet".
+      bucket = next_work_bucket::blocked;
     } else if (status == "todo" || status == "doing") {
       // `doing` with no live claim: a reconciled-away claim's leftover.
       // Surfaced as available so a fresh pull picks it up.

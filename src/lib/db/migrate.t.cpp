@@ -119,7 +119,7 @@ TEST_CASE("apply_all migrates a fresh database to head", "[db][migrate]") {
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1)); // count == max version: no gaps
-  REQUIRE(stmt->column_int64(1) == 38);
+  REQUIRE(stmt->column_int64(1) == 39);
 }
 
 TEST_CASE("the embedded migration chain's versions are strictly monotonic", "[db][migrations]") {
@@ -255,8 +255,8 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   // connections to the same file: connection A stands in for a
   // concurrent migrator that already won the race and is holding its
   // migration transaction open; connection B then calls the real
-  // `apply_all` and must fail right at `begin_transaction` (SQLITE_BUSY,
-  // default busy_timeout is 0) rather than partway through executing a
+  // `apply_all` and must fail right at `begin_transaction` (a genuine
+  // post-timeout SQLITE_BUSY) rather than partway through executing a
   // migration script.
   constexpr int k_sqlite_busy = 5; // SQLITE_BUSY
 
@@ -266,6 +266,10 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   REQUIRE(conn_a.has_value());
   auto conn_b = planar::db::connection::open(scratch.path_.string());
   REQUIRE(conn_b.has_value());
+  // Task 6842: connection::open now sets busy_timeout=5000 by default.
+  // Lower B's override so the guaranteed-busy assertion below (A never
+  // releases its lock during the scope) doesn't block for 5 real seconds.
+  REQUIRE(conn_b->execute("pragma busy_timeout = 50;"));
 
   {
     // Stand-in for a concurrent migrator that has already reached its
@@ -304,7 +308,7 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 38);
+  REQUIRE(stmt->column_int64(1) == 39);
 }
 
 TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-for-row", "[db][migrate][parity]") {
@@ -369,8 +373,9 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
       {36, "cli_invocations: durable retryable busy category"},
       {37, "drop the four dormant slug columns added by 00011"},
       {38, "execution supervision: claim supervisor/attempt, run engine, nullable run plan, supervision action kinds"},
+      {39, "workflow_runs: nullable pid, lease expires_at, CHECK one of pid/expires_at is set (decision D11)"},
   };
-  REQUIRE(k_expected.size() == 38);
+  REQUIRE(k_expected.size() == 39);
 
   scratch_db_path cpp_scratch;
   auto            cpp_conn = planar::db::connection::open(cpp_scratch.path_.string());
@@ -393,7 +398,7 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
     REQUIRE(cpp_stmt->column_text(1) == k_expected[rows].second);
     ++rows;
   }
-  REQUIRE(rows == 38);
+  REQUIRE(rows == 39);
 }
 
 TEST_CASE("migration 34 preserves legacy file annotations and guards entity annotation rollback",
@@ -403,7 +408,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 38);
+  REQUIRE(chain.size() == 39);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 33)));
   REQUIRE(conn->execute(
       "insert into annotations (scope_kind, anchor_path, anchor_text, title, body, status, vendor, created_at, updated_at) "
@@ -433,6 +438,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(legacy_tag->step().value() == planar::db::step_result::done);
 
   // Peel from head so the chain stays contiguous for the re-apply below.
+  REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
   REQUIRE(conn->execute(chain[35].down_sql_));
@@ -469,6 +475,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
   REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
                         "values ('global', 'entity', null, 'plan', 1, 'durable note', 1);"));
+  REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
   REQUIRE(conn->execute(chain[35].down_sql_));
@@ -483,7 +490,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   auto version = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(version.has_value());
   REQUIRE(version->step().value() == planar::db::step_result::row);
-  // Migrations 38, 37, 36 and 35 have rolled back, while migration 34 correctly refuses to
+  // Migrations 39, 38, 37, 36 and 35 have rolled back, while migration 34 correctly refuses to
   // discard entity-anchored annotations. Its migration marker must remain.
   CHECK(version->column_int64(0) == 34);
   REQUIRE(version->step().value() == planar::db::step_result::done);
@@ -500,7 +507,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 38);
+  REQUIRE(chain.size() == 39);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 35)));
   REQUIRE(
       conn->execute("insert into cli_invocations "
@@ -527,7 +534,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   auto marker = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(marker.has_value());
   REQUIRE(marker->step().value() == planar::db::step_result::row);
-  CHECK(marker->column_int64(0) == 38);
+  CHECK(marker->column_int64(0) == 39);
 }
 
 namespace {
@@ -556,7 +563,7 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 38);
+  REQUIRE(chain.size() == 39);
   REQUIRE(chain[37].version_ == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
 
@@ -581,7 +588,7 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
     REQUIRE(conn->execute(sql));
   }
 
-  REQUIRE(planar::db::apply_all(*conn));
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
   CHECK(scalar(*conn, "select max(version) from schema_migrations") == "38");
 
   // Nothing referencing the two edited tables moved.
@@ -648,8 +655,142 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   CHECK(scalar(*conn, "select group_concat(run_id) from (select run_id from agent_work_claims order by id)") == "1,2");
   CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
 
+  // And forward again — through migration 39 too, confirming the tail of
+  // the chain still applies cleanly on top of 38's re-applied shape.
+  REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
+}
+
+TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, without a table rebuild", "[db][migrate][6846]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 39);
+  REQUIRE(chain[38].version_ == 39);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
+
+  REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'p', 'p', 'active')"));
+  // A pid-bound run, seeded BEFORE migration 39 runs.
+  REQUIRE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) "
+                        "values (1, 'w', 'r1', 4242, '/r')"));
+
+  REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
+
+  // The pre-existing row survives untouched: still pid 4242, still `running`,
+  // no expires_at, and the CHECK (which reads it as pid-supervised) admits it.
+  CHECK(scalar(*conn, "select pid from workflow_runs where id = 1") == "4242");
+  CHECK(scalar(*conn, "select status from workflow_runs where id = 1") == "running");
+  CHECK(scalar(*conn, "select ifnull(expires_at, 'null') from workflow_runs where id = 1") == "null");
+
+  // A pid-less, lease-supervised run is now representable.
+  REQUIRE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, expires_at, repo_root) "
+                        "values (1, 'w', 'r2', '2099-01-01T00:00:00.000Z', '/r')"));
+  CHECK(scalar(*conn, "select count(*) from workflow_runs") == "2");
+
+  // ...but a row with NEITHER pid NOR expires_at violates the new CHECK.
+  CHECK_FALSE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, repo_root) "
+                            "values (1, 'w', 'r3', '/r')")
+                  .has_value());
+  CHECK(scalar(*conn, "select count(*) from workflow_runs") == "2");
+
+  // The new partial index exists and is scoped to running rows.
+  CHECK(scalar(*conn, "select count(*) from sqlite_master where type = 'index' and name = 'ix_workflow_runs_expires'") == "1");
+
+  // Nothing referencing workflow_runs moved (no table rebuild happened).
+  CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
+  CHECK(scalar(*conn, "pragma integrity_check") == "ok");
+
+  // Down: the NULL-pid row is deleted, then pid's NOT NULL is restored.
+  REQUIRE(conn->execute(chain[38].down_sql_));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "38");
+  CHECK(scalar(*conn, "select count(*) from workflow_runs") == "1");
+  CHECK(scalar(*conn, "select pid from workflow_runs where id = 1") == "4242");
+  CHECK(scalar(*conn, "select count(*) from pragma_table_info('workflow_runs') where name = 'expires_at'") == "0");
+  CHECK_FALSE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, repo_root) "
+                            "values (1, 'w', 'r4', '/r')")
+                  .has_value());
+
   // And forward again.
   REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
+}
+
+TEST_CASE("migration 38's up guard FIRES when the stored workflow_runs CREATE TABLE text does not match "
+          "the expected literal, refusing by name and leaving schema_migrations at 37",
+          "[db][migrate][6905]") {
+  // Neither 00038's nor 00039's TEMP-table guard had a test proving it
+  // actually FIRES on a mismatch -- only that it stays silent on the
+  // ordinary path (the "adds engine supervision..." case above). This
+  // pins the negative: perturb the stored DDL text migration 38's
+  // `replace()` targets so it cannot match, and require the migration to
+  // fail by its own named constraint rather than silently no-op the
+  // relaxation and still record version 38.
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 39);
+  REQUIRE(chain[37].version_ == 38);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
+
+  // Perturb the stored `workflow_runs` CREATE TABLE text so migration 38's
+  // first `replace()` (targeting the literal
+  // `plan_id       integer not null references plans(id)`) cannot match --
+  // as if an earlier, unrelated edit had reformatted the column
+  // declaration's whitespace. `replace()` on a non-match is a silent
+  // no-op in SQLite, so absent the guard this would record version 38 over
+  // an UNRELAXED `plan_id` constraint.
+  REQUIRE(conn->execute("pragma writable_schema = on;"));
+  REQUIRE(conn->execute("update sqlite_schema set sql = replace(sql, "
+                        "'plan_id       integer not null references plans(id)', "
+                        "'plan_id integer not null references plans(id)') "
+                        "where type = 'table' and name = 'workflow_runs';"));
+  REQUIRE(conn->execute("pragma writable_schema = reset;"));
+  CHECK(scalar(*conn, "select sql like '%plan_id       integer not null references plans(id)%' "
+                      "from sqlite_schema where type = 'table' and name = 'workflow_runs'") == "0");
+
+  auto const applied38 = planar::db::apply_all(*conn, chain.subspan(0, 38));
+  REQUIRE_FALSE(applied38.has_value());
+  CHECK(
+      applied38.error().message_.contains("m00038_up_refused_unexpected_stored_schema_text_plan_id_or_action_kind_not_relaxed"));
+
+  // Refused BY NAME, and the version row was never written -- the failing
+  // migration's own transaction rolled back.
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "37");
+}
+
+TEST_CASE("migration 39's up guard FIRES when the stored workflow_runs CREATE TABLE text does not match "
+          "the expected literal, refusing by name and leaving schema_migrations at 38",
+          "[db][migrate][6905]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 39);
+  REQUIRE(chain[38].version_ == 39);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
+
+  // Perturb the stored `workflow_runs` CREATE TABLE text so migration 39's
+  // first `replace()` (targeting the literal `pid           integer not
+  // null,`) cannot match.
+  REQUIRE(conn->execute("pragma writable_schema = on;"));
+  REQUIRE(conn->execute("update sqlite_schema set sql = replace(sql, "
+                        "'pid           integer not null,', "
+                        "'pid integer not null,') "
+                        "where type = 'table' and name = 'workflow_runs';"));
+  REQUIRE(conn->execute("pragma writable_schema = reset;"));
+  CHECK(scalar(*conn, "select sql like '%pid           integer not null,%' "
+                      "from sqlite_schema where type = 'table' and name = 'workflow_runs'") == "0");
+
+  auto const applied39 = planar::db::apply_all(*conn, chain.subspan(0, 39));
+  REQUIRE_FALSE(applied39.has_value());
+  CHECK(applied39.error().message_.contains("m00039_up_refused_pid_not_relaxed_or_lease_check_missing"));
+
   CHECK(scalar(*conn, "select max(version) from schema_migrations") == "38");
 }
 
@@ -659,7 +800,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 38);
+  REQUIRE(chain.size() == 39);
 
   // Walk the chain forward one migration at a time. At each version,
   // capture the schema, roll that single migration back, re-apply it, and
@@ -692,7 +833,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 38);
+  REQUIRE(stmt->column_int64(1) == 39);
 }
 
 TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their indexes", "[db][migrate][6808]") {
@@ -732,8 +873,9 @@ TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their
   CHECK(has_index("ux_annotations_slug"));
 
   const auto chain = planar::db::migrations();
-  // Peel 00038 first so 00037's down runs against the schema it was written for.
+  // Peel 00039 and 00038 first so 00037's down runs against the schema it was written for.
   REQUIRE(chain[36].version_ == 37);
+  REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
   for (auto table : {"artifacts", "questions", "test_scenarios", "decisions"}) {
@@ -752,7 +894,7 @@ TEST_CASE("the down chain from head deletes schema_migrations rows in strict des
   REQUIRE(planar::db::apply_all(*conn));
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 38);
+  REQUIRE(chain.size() == 39);
 
   // Roll back one migration at a time, from the tip down to the
   // foundation, asserting the mirror-order contract at every step: before
@@ -870,7 +1012,7 @@ TEST_CASE("apply_contiguous ACCEPTS the embedded chain, so the refusal above is 
 
 TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[db][migrate][guard]") {
   auto const head = planar::db::embedded_max();
-  REQUIRE(head == 38);
+  REQUIRE(head == 39);
 
   SECTION("a fresh, never-initialized database is BEHIND at version 0") {
     scratch_db_path scratch;

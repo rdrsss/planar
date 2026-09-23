@@ -97,6 +97,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -1171,7 +1173,7 @@ TEST_CASE("workspace routing show refuses when no org is registered", "[cmd][han
   auto const fx  = make_fixture("wrsnoorg");
   auto const got = dispatch(fx, {"workspace", "routing", "show", "--json"});
   CHECK(got.code == 1);
-  CHECK(got.out.empty());
+  CHECK(got.out == planar::cmd::testsupport::json_error_envelope_line("workspace routing show", "not_found"));
   CHECK(got.err == "error: no org associations registered; create one with `planar workspace init`\n");
 }
 
@@ -1362,7 +1364,7 @@ TEST_CASE("workspace regenerate refuses its missing-org, ambiguous-org, and miss
   auto const empty = make_fixture("wrgnone");
   auto const none  = dispatch(empty, {"workspace", "regenerate", "--json"});
   CHECK(none.code == 1);
-  CHECK(none.out.empty());
+  CHECK(none.out == planar::cmd::testsupport::json_error_envelope_line("workspace regenerate", "not_found"));
   CHECK(none.err == k_no_org);
 
   // The leaf gets past resolve_org before checking for the table; this is a
@@ -2336,7 +2338,7 @@ TEST_CASE("capture end: the three id paths and their refusals", "[cmd][handlers]
 
   auto const bad = dispatch(fx, {"capture", "end", "abc", "--json"});
   CHECK(bad.code == 2);
-  CHECK(bad.out.empty());
+  CHECK(bad.out == planar::cmd::testsupport::json_error_envelope_line("capture end", "invalid_input"));
   CHECK(bad.err == "error: session id must be an integer, got 'abc'\n");
 
   auto const absent = dispatch(fx, {"capture", "end", "999", "--json"});
@@ -2524,10 +2526,11 @@ TEST_CASE("resume validate: absent task writes NOTHING to stdout", "[cmd][handle
   auto const fx  = make_fixture("rvabsent");
   auto const got = dispatch(fx, {"resume", "validate", "999", "--json"});
   CHECK(got.code == 1);
-  // The distinguishing property: "absent" emits no payload at all, where
-  // "present but not resumable" emits a full one. A caller can tell them
-  // apart without parsing stderr.
-  CHECK(got.out.empty());
+  // The distinguishing property: "absent" emits no RESUME PAYLOAD, where
+  // "present but not resumable" emits a full one -- a caller can tell them
+  // apart without parsing stderr. Both now carry the additive --json error
+  // envelope (decision 1145, task 6844) as the only thing on stdout here.
+  CHECK(got.out == planar::cmd::testsupport::json_error_envelope_line("resume validate", "not_found"));
   CHECK(got.err == "error: task 999 not found\n");
 }
 
@@ -2535,7 +2538,7 @@ TEST_CASE("resume validate: a bad id is exit 2 from the HANDLER", "[cmd][handler
   auto const fx  = make_fixture("rvbad");
   auto const got = dispatch(fx, {"resume", "validate", "abc", "--json"});
   CHECK(got.code == 2);
-  CHECK(got.out.empty());
+  CHECK(got.out == planar::cmd::testsupport::json_error_envelope_line("resume validate", "invalid_input"));
   // The positional is declared as a STRING in the tree precisely so this
   // wording survives; an int validator would answer CLI11's instead.
   CHECK(got.err == "error: task id must be an integer, got 'abc'\n");
@@ -2550,7 +2553,10 @@ TEST_CASE("resume validate: a NON-resumable task still writes its payload, then 
   CHECK(got.err == std::format("error: task {} is not resumable\n", task));
   // THE POINT: stdout carries the diagnosis even though the exit is
   // non-zero. A caller reading stdout only on exit 0 loses exactly the
-  // failure list it needs.
+  // failure list it needs. Task 6903: the additive --json error envelope
+  // (decision 1145, task 6844) is SUPPRESSED here -- the handler already
+  // wrote its own payload, so appending a second JSON document would
+  // break a `json.loads` consumer. The payload is the whole document.
   CHECK(got.out == std::format("{{\"task_id\":{},\"resumable\":false,\"failures\":["
                                "{{\"check\":\"next_action\",\"message\":\"next_action is null\","
                                "\"remediation\":\"planar task update {} --next-action \\\"<text>\\\"\"}},"
@@ -3297,7 +3303,7 @@ TEST_CASE("init creates the database, applies every migration, and registers cwd
   // --- the DATABASE, which is the contract stdout only summarises ---
   REQUIRE(std::filesystem::exists(fx.db_path));
   auto const version = read_schema_version(fx);
-  CHECK(version == 38);
+  CHECK(version == 39);
   // Not just "some migrations ran": the real schema carries ~90 tables, so a
   // partially-applied chain cannot pass this by having written a
   // `schema_migrations` row.
@@ -3387,7 +3393,7 @@ TEST_CASE("init --skip-project migrates the database and registers nothing", "[c
 
   // Migrated — but no row. Both halves matter: a handler that skipped the
   // whole verb would also leave `projects` empty.
-  CHECK(read_schema_version(fx) == 38);
+  CHECK(read_schema_version(fx) == 39);
   CHECK(read_table_count(fx) > 80);
   CHECK_FALSE(read_project(fx).has_value());
 }

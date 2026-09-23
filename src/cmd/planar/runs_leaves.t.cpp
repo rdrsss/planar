@@ -93,6 +93,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -525,10 +527,17 @@ TEST_CASE("bench show renders both wire formats and reports a missing uid", "[cm
   for (auto const& args :
        {std::vector<std::string>{"bench", "show", "nosuch"}, std::vector<std::string>{"bench", "show", "nosuch", "--json"}}) {
     auto const missing = dispatch(fx, args);
-    // Identical in BOTH wire formats: the not-found path never reaches a
-    // renderer, so `--json` changes nothing.
+    // The stderr line is identical in BOTH wire formats: the not-found path
+    // never reaches a renderer, so `--json` changes nothing there. On
+    // stdout, `--json` adds the additive error envelope (decision 1145,
+    // task 6844); the text arm still writes nothing.
     CHECK(missing.code == 1);
-    CHECK(missing.out.empty());
+    bool const wants_json = std::ranges::find(args, "--json") != args.end();
+    if (wants_json) {
+      CHECK(missing.out == planar::cmd::testsupport::json_error_envelope_line("bench show", "not_found"));
+    } else {
+      CHECK(missing.out.empty());
+    }
     CHECK(missing.err == "error: bench show: run 'nosuch' not found\n");
   }
 }

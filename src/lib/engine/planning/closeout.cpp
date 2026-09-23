@@ -602,13 +602,15 @@ auto evaluate(db::connection& conn, std::int64_t plan_id, bool apply, bool check
     return std::unexpected(status.error());
   }
 
-  // Already terminal: short-circuit BEFORE collecting anything. Note the
-  // EMPTY `git` vector this produces — a live evaluation with no locality
-  // data emits a one-entry synthetic instead. See the module header.
-  if (*status == "done" || *status == "abandoned") {
-    return closeout_result{.plan_id = plan_id, .ready = true, .applied = false};
-  }
-
+  // Task 6889: the hard-evidence counts are collected UNCONDITIONALLY, even
+  // on the already-terminal path below — a plan already `done` still has
+  // real task/descendant/claim rows, and `hard_evidence` reporting all
+  // zeros next to `ready:true` misrepresents what closeout actually found
+  // (task 6889 measured exactly this: 20 real `done` tasks read back as
+  // `tasks: open 0 done 0 cancelled 0`). This is UNLIKE `git`/`epic_merge`
+  // below, which the module header explicitly documents as empty/unset on
+  // the already-terminal path — advisory locality data genuinely was never
+  // collected there, and that omission IS deliberate.
   auto const tasks = collect_task_counts(conn, plan_id);
   if (!tasks) {
     return std::unexpected(tasks.error());
@@ -624,6 +626,19 @@ auto evaluate(db::connection& conn, std::int64_t plan_id, bool apply, bool check
   auto const finalization = collect_finalization_task_count(conn, plan_id);
   if (!finalization) {
     return std::unexpected(finalization.error());
+  }
+
+  // Already terminal: short-circuit BEFORE the gate rules and BEFORE any
+  // git-evidence/epic-merge collection. Note the EMPTY `git` vector this
+  // still produces — a live evaluation with no locality data emits a
+  // one-entry synthetic instead. See the module header.
+  if (*status == "done" || *status == "abandoned") {
+    return closeout_result{
+        .plan_id = plan_id,
+        .ready   = true,
+        .applied = false,
+        .hard    = {.tasks = *tasks, .descendants = *descendants, .claims = *claims, .finalization_tasks = *finalization},
+    };
   }
 
   // Reason order is rule order: tasks, then descendants, then claims.

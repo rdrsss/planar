@@ -74,6 +74,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -788,7 +790,7 @@ TEST_CASE("assoc members: an unknown association REFUSES, an empty one prints a 
   // ...and `--json` does NOT switch it to an empty array.
   auto const unknown_json = dispatch(fx, {"assoc", "members", "nope", "--json"});
   CHECK(unknown_json.code == 1);
-  CHECK(unknown_json.out.empty());
+  CHECK(unknown_json.out == planar::cmd::testsupport::json_error_envelope_line("assoc members", "generic_failure"));
   CHECK(unknown_json.err == "error: no association named 'nope'\n");
 
   auto const empty = dispatch(fx, {"assoc", "members", "org"});

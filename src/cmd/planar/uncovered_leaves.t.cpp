@@ -646,24 +646,25 @@ TEST_CASE("task 6546: workbench sync applies both directions in one pass, and re
   auto const settled =
       run_pinned(cpp_bin(), std::array<std::string, 4>{"workbench", "sync", "1", "--json"}, space.cpp_root, "wbsettled");
   CHECK(settled.code == 0);
-  CHECK(settled.out == "{\"applied\":0,\"pending\":0,\"conflicts\":0,\"malformed\":0,\"malformed_files\":[],"
-                       "\"filtered\":0,\"pre_existing_terminal\":0,\"cleaned\":0,\"filter_mode\":\"failures\","
-                       "\"entries\":[{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/README.md\","
-                       "\"entity_kind\":\"plan\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":"
-                       "\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/1-tech-spec-auth.md\",\"entity_kind\":"
-                       "\"artifact\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
-                       "\"file_path\":\"project_demo/p1-demo-feature/decisions/1-use-sqlite.md\",\"entity_kind\":"
-                       "\"decision\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
-                       "\"file_path\":\"project_demo/p1-demo-feature/questions/1-which-format.md\",\"entity_kind\":"
-                       "\"question\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
-                       "\"file_path\":\"project_demo/p1-demo-feature/scenarios/1-round-trip.md\",\"entity_kind\":"
-                       "\"scenario\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
-                       "\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/1-first-task.md\",\"entity_kind\":"
-                       "\"task\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
-                       "\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/2-second-task.md\",\"entity_kind\":"
-                       "\"task\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
-                       "\"file_path\":\"project_demo/p1-demo-feature/plans/child-ms.md\",\"entity_kind\":\"plan\","
-                       "\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"}]}\n");
+  CHECK(settled.out ==
+        "{\"applied\":0,\"pending\":0,\"conflicts\":0,\"malformed\":0,\"malformed_files\":[],"
+        "\"filtered\":0,\"pre_existing_terminal\":0,\"cleaned\":0,\"filter_mode\":\"failures\","
+        "\"entries\":[{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/README.md\","
+        "\"entity_kind\":\"plan\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":"
+        "\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/1-tech-spec-auth.md\",\"entity_kind\":"
+        "\"artifact\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
+        "\"file_path\":\"project_demo/p1-demo-feature/decisions/1-use-sqlite.md\",\"entity_kind\":"
+        "\"decision\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
+        "\"file_path\":\"project_demo/p1-demo-feature/questions/1-which-format.md\",\"entity_kind\":"
+        "\"question\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
+        "\"file_path\":\"project_demo/p1-demo-feature/scenarios/1-round-trip.md\",\"entity_kind\":"
+        "\"scenario\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
+        "\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/1-first-task.md\",\"entity_kind\":"
+        "\"task\",\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
+        "\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/2-second-task.md\",\"entity_kind\":"
+        "\"task\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
+        "\"file_path\":\"project_demo/p1-demo-feature/plans/child-ms.md\",\"entity_kind\":\"plan\","
+        "\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"}],\"field_edit_refused\":0,\"field_edit_refusals\":[]}\n");
 
   // Refusal: `sync` shares `run_sync_verb` with `push`/`pull`, so it shares
   // their plan-resolution refusals byte-for-byte -- not found, invalid

@@ -57,6 +57,73 @@ TEST_CASE("workflow run lifecycle writes only running to terminal transitions", 
   CHECK(again.error() == planar::engine::runtime::workflowruns::error::not_running);
   CHECK(scalar(c, "select count(*) from workflow_runs where run_identifier='run-a' and status='completed'") == 1);
 }
+TEST_CASE("workflow run start accepts a pid-less run with a lease and lets heartbeat extend it",
+          "[runtime][workflowruns][6847]") {
+  scratch s;
+  auto    c    = open_db(s);
+  auto    plan = seed_plan(c);
+
+  auto started = planar::engine::runtime::workflowruns::start(c, {.plan_id        = plan,
+                                                                  .pid            = std::nullopt,
+                                                                  .ttl_secs       = 8 * 3600,
+                                                                  .workflow_name  = "wf",
+                                                                  .run_identifier = "lease-a",
+                                                                  .repo_root      = "/repo"});
+  REQUIRE(started);
+  CHECK(started->status == "running");
+  CHECK_FALSE(started->pid.has_value());
+  REQUIRE(started->expires_at.has_value());
+
+  // Shape check rather than exact-string, since the lease deadline is
+  // computed server-side from `now`.
+  CHECK(started->expires_at->size() >= 20); // ISO-8601 timestamp shape
+
+  auto const before = *started->expires_at;
+  auto       beat   = planar::engine::runtime::workflowruns::heartbeat(c, "lease-a", 9 * 3600);
+  REQUIRE(beat);
+  CHECK_FALSE(beat->pid.has_value());
+  REQUIRE(beat->expires_at.has_value());
+  CHECK(*beat->expires_at > before); // extended, not merely re-set to the same instant
+
+  // A row with NEITHER pid nor expires_at is refused at the database's own
+  // CHECK — proving the CHECK really is load-bearing for this store, not
+  // just for a raw sqlite3 insert.
+  CHECK_FALSE(c.execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, repo_root) "
+                        "values (" +
+                        std::to_string(plan) + ", 'wf', 'neither', '/repo')")
+                  .has_value());
+}
+
+TEST_CASE("heartbeat refuses a pid-bound run and a non-running run, each by name", "[runtime][workflowruns][6847]") {
+  scratch s;
+  auto    c    = open_db(s);
+  auto    plan = seed_plan(c);
+
+  REQUIRE(planar::engine::runtime::workflowruns::start(
+      c, {.plan_id = plan, .pid = 4242, .workflow_name = "wf", .run_identifier = "pid-run", .repo_root = "/repo"}));
+  auto on_pid_bound = planar::engine::runtime::workflowruns::heartbeat(c, "pid-run", 600);
+  CHECK_FALSE(on_pid_bound);
+  CHECK(on_pid_bound.error() == planar::engine::runtime::workflowruns::error::pid_bound);
+  // Unchanged: still pid-bound, no expires_at was written.
+  CHECK(scalar(c, "select pid from workflow_runs where run_identifier = 'pid-run'") == 4242);
+  CHECK(scalar(c, "select expires_at is null from workflow_runs where run_identifier = 'pid-run'") == 1);
+
+  REQUIRE(planar::engine::runtime::workflowruns::start(c, {.plan_id        = plan,
+                                                           .pid            = std::nullopt,
+                                                           .ttl_secs       = 600,
+                                                           .workflow_name  = "wf",
+                                                           .run_identifier = "lease-run",
+                                                           .repo_root      = "/repo"}));
+  REQUIRE(planar::engine::runtime::workflowruns::end(c, "lease-run", "completed"));
+  auto on_terminal = planar::engine::runtime::workflowruns::heartbeat(c, "lease-run", 600);
+  CHECK_FALSE(on_terminal);
+  CHECK(on_terminal.error() == planar::engine::runtime::workflowruns::error::not_running);
+
+  auto on_missing = planar::engine::runtime::workflowruns::heartbeat(c, "does-not-exist", 600);
+  CHECK_FALSE(on_missing);
+  CHECK(on_missing.error() == planar::engine::runtime::workflowruns::error::run_not_found);
+}
+
 TEST_CASE("workflow run start links only existing plans and preserves duplicate refusal", "[runtime][workflowruns]") {
   scratch s;
   auto    c       = open_db(s);
@@ -73,4 +140,20 @@ TEST_CASE("workflow run start links only existing plans and preserves duplicate 
   CHECK_FALSE(duplicate);
   CHECK(duplicate.error() == planar::engine::runtime::workflowruns::error::query_failed);
   CHECK(scalar(c, "select count(*) from workflow_runs where run_identifier='duplicate'") == 1);
+}
+
+TEST_CASE("start refuses a run with neither pid nor lease instead of fabricating a dead one", "[runtime][workflowruns]") {
+  scratch s;
+  auto    c    = open_db(s);
+  auto    plan = seed_plan(c);
+
+  // The CLI handler validates this, but the engine boundary is its own
+  // contract: binding `ttl_secs.value_or(0)` used to insert a lease
+  // expiring `now + 0 seconds`, which the migration-00039 CHECK admits and
+  // the next reconcile sweep abandons — a silently dead run (task 6847).
+  auto const refused = planar::engine::runtime::workflowruns::start(
+      c, {.plan_id = plan, .workflow_name = "wf", .run_identifier = "unsupervised", .repo_root = "/repo"});
+  CHECK_FALSE(refused);
+  CHECK(refused.error() == planar::engine::runtime::workflowruns::error::unsupervised);
+  CHECK(scalar(c, "select count(*) from workflow_runs where run_identifier='unsupervised'") == 0);
 }

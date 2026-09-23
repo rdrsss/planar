@@ -56,6 +56,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -393,13 +395,19 @@ TEST_CASE("templates validate reports issues on STDOUT and the count on STDERR a
   cleanup(fx);
 }
 
-TEST_CASE("templates validate --json emits its envelope on STDOUT and still exits 2", "[cmd][templates][validate]") {
+TEST_CASE("templates validate --json emits its own body only, with no envelope appended", "[cmd][templates][validate][6903]") {
   auto const fx = make_fixture("validatejson");
   write_file(templates_root(fx) / "probe" / "px" / "broken.json", R"({"a":"{{.Nope}}"})");
   auto const r = dispatch(fx, {"templates", "validate", "probe", "px", "broken", "--json"});
   CHECK(r.code == 2);
   CHECK(r.out.starts_with(R"({"ok":false,"set":"probe","system":"px","kind":"broken","issues":[)"));
+  // Task 6903: the additive --json error envelope (decision 1145, task
+  // 6844) is SUPPRESSED here -- the handler already wrote its own
+  // `{"ok":false,...}` body to stdout, so appending a second JSON document
+  // would break a `json.loads` consumer. The body is the ENTIRE document,
+  // one line.
   CHECK(r.out.ends_with("]}\n"));
+  CHECK(std::ranges::count(r.out, '\n') == 1);
   CHECK(r.err == "error: 2 issue(s) in probe/px/broken\n");
   cleanup(fx);
 }

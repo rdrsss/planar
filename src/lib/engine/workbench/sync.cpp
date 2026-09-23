@@ -373,13 +373,13 @@ auto render_task(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t
   std::string body = std::format("# Task {}: {}\n\n**Status:** {}  \n**Priority:** {}  \n**Created:** {}  \n**Updated:** {}\n",
                                  id, title, status_txt, priority, created_at, updated_at);
   if (!due_at.empty()) {
-    std::format_to(std::back_inserter(body), "**Due:** {}\n", due_at);
+    body += std::format("**Due:** {}\n", due_at);
   }
   if (!body_text.empty()) {
-    std::format_to(std::back_inserter(body), "\n{}", body_text);
+    body += std::format("\n{}", body_text);
   }
   if (!next_action.empty()) {
-    std::format_to(std::back_inserter(body), "\n**Next action:** {}", next_action);
+    body += std::format("\n**Next action:** {}", next_action);
   }
   body += '\n';
 
@@ -477,12 +477,12 @@ auto render_question(db::connection& conn, std::int64_t anchor_plan_id, std::int
   std::string body = std::format("# Question {}: {}\n\n**Status:** {}  \n**Created:** {}  \n**Updated:** {}\n", id, title,
                                  status_txt, created_at, updated_at);
   if (!body_txt.empty()) {
-    std::format_to(std::back_inserter(body), "\n{}\n", body_txt);
+    body += std::format("\n{}\n", body_txt);
   }
   if (!answer_body.empty()) {
-    std::format_to(std::back_inserter(body), "\n**Answer:** {}\n", answer_body);
+    body += std::format("\n**Answer:** {}\n", answer_body);
     if (!answered_at.empty()) {
-      std::format_to(std::back_inserter(body), "\n**Answered at:** {}\n", answered_at);
+      body += std::format("\n**Answered at:** {}\n", answered_at);
     }
   }
   return rendered_entity{.rel_path = std::format("questions/{}-{}.md", id, feature::slugify(title)),
@@ -517,13 +517,13 @@ auto render_scenario(db::connection& conn, std::int64_t anchor_plan_id, std::int
   std::string body = std::format("# Scenario {}: {}\n\n**Status:** {}  \n**Created:** {}  \n**Updated:** {}\n", id, title,
                                  status_txt, created_at, updated_at);
   if (!last_run_at.empty()) {
-    std::format_to(std::back_inserter(body), "\n**Last run:** {}", last_run_at);
+    body += std::format("\n**Last run:** {}", last_run_at);
   }
   if (!last_outcome.empty()) {
-    std::format_to(std::back_inserter(body), "  \n**Last outcome:** {}", last_outcome);
+    body += std::format("  \n**Last outcome:** {}", last_outcome);
   }
   if (!body_txt.empty()) {
-    std::format_to(std::back_inserter(body), "\n\n{}\n", body_txt);
+    body += std::format("\n\n{}\n", body_txt);
   }
   return rendered_entity{.rel_path = std::format("scenarios/{}-{}.md", id, feature::slugify(title)),
                          .content  = render::render(fm, body)};
@@ -625,7 +625,7 @@ auto pull_to_db(db::connection& conn, std::string_view kind, std::int64_t id, st
   if (!parsed) {
     return false;
   }
-  auto const body   = extract_body_text(parsed->body);
+  auto const body   = extract_entity_body(kind, parsed->body);
   auto const status = std::string_view{parsed->frontmatter.status};
 
   if (!conn.execute("savepoint workbench_pull_entity")) {
@@ -716,7 +716,7 @@ auto insert_task_from_frontmatter(db::connection& conn, const parse::front_matte
                                   std::optional<std::int64_t> assoc_id) -> std::optional<std::int64_t> {
   auto const title     = fm.title.empty() ? std::string_view{"Task from workbench"} : std::string_view{fm.title};
   auto const status    = fm.status.empty() ? std::string_view{"todo"} : std::string_view{fm.status};
-  auto const body_text = extract_body_text(body);
+  auto const body_text = extract_entity_body("task", body);
   auto const priority  = fm.priority == 0 ? std::int64_t{100} : fm.priority;
 
   auto stmt = assoc_id.has_value() ? conn.prepare("insert into tasks (scope_kind, scope_id, title, body, status, priority) "
@@ -986,6 +986,184 @@ auto extract_body_text(std::string_view body) -> std::string_view {
   return rest.substr(first, last - first + 1);
 }
 
+namespace {
+
+auto trim_ws(std::string_view text) -> std::string_view {
+  auto const first = text.find_first_not_of(" \r\n\t");
+  if (first == std::string_view::npos) {
+    return {};
+  }
+  auto const last = text.find_last_not_of(" \r\n\t");
+  return text.substr(first, last - first + 1);
+}
+
+/// @brief `body` cut before the first line that starts with `prefix`, or
+/// `body` itself when no line does.
+auto cut_before_line(std::string_view body, std::string_view prefix) -> std::string_view {
+  std::size_t pos = 0;
+  while (pos <= body.size()) {
+    auto const nl   = body.find('\n', pos);
+    auto const line = body.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
+    if (trim_ws(line).starts_with(prefix)) {
+      return body.substr(0, pos);
+    }
+    if (nl == std::string_view::npos) {
+      break;
+    }
+    pos = nl + 1;
+  }
+  return body;
+}
+
+/// @brief `text` without a first line that is exactly `heading`, re-trimmed.
+auto drop_leading_heading(std::string_view text, std::string_view heading) -> std::string_view {
+  auto const nl = text.find('\n');
+  if (trim_ws(text.substr(0, nl)) != heading) {
+    return text;
+  }
+  return nl == std::string_view::npos ? std::string_view{} : trim_ws(text.substr(nl + 1));
+}
+
+/// @brief The `## Rationale` section's own text, as it appears on disk
+/// (task 6910). The inverse of `render_decision`'s `## Rationale\n\n{}\n`
+/// tail: everything after the heading LINE to the end of the raw body,
+/// trimmed. `## Rationale` is always the last section a rendered decision
+/// carries, so "to the end" is exact, not an approximation.
+/// @param raw_body The full parsed markdown body (`parsed->body`, before
+/// `extract_entity_body` cuts anything).
+/// @return The rationale text, or empty when the file carries no
+/// `## Rationale` heading at all.
+auto extract_rationale_text(std::string_view raw_body) -> std::string {
+  std::size_t pos = 0;
+  while (pos <= raw_body.size()) {
+    auto const nl   = raw_body.find('\n', pos);
+    auto const line = raw_body.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
+    if (trim_ws(line) == "## Rationale") {
+      auto const after = nl == std::string_view::npos ? std::string_view{} : raw_body.substr(nl + 1);
+      return std::string{trim_ws(after)};
+    }
+    if (nl == std::string_view::npos) {
+      break;
+    }
+    pos = nl + 1;
+  }
+  return {};
+}
+
+/// @brief The `**Answer:**` label's own text, as it appears on disk (task
+/// 6910). The inverse of `render_question`'s `\n**Answer:** {}\n` /
+/// `\n**Answered at:** {}\n` tail: the same-line text after the label,
+/// plus any further lines up to (not including) a `**Answered at:**` line
+/// or the end of the body, trimmed and rejoined with a single `\n` --
+/// which is exactly how a multi-line `answer_body` round-trips through
+/// `render_question`.
+/// @param raw_body The full parsed markdown body.
+/// @return The answer text, or empty when the file carries no `**Answer:**`
+/// label at all.
+auto extract_answer_text(std::string_view raw_body) -> std::string {
+  constexpr std::string_view marker = "**Answer:**";
+  std::size_t                pos    = 0;
+  while (pos <= raw_body.size()) {
+    auto const nl   = raw_body.find('\n', pos);
+    auto const line = raw_body.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
+    if (auto const trimmed = trim_ws(line); trimmed.starts_with(marker)) {
+      // The value is everything after the label, VERBATIM, to the
+      // `**Answered at:**` line or the end — end-trimmed only. Rejoining a
+      // first line and a trimmed remainder with a single `\n` (the shape
+      // this carried when it landed) collapsed every interior blank line,
+      // so a stored multi-paragraph answer no longer matched the file it
+      // had just been rendered into: `pull` then refused an UNEDITED
+      // entity forever and swallowed the body edit beside it — the exact
+      // silent drop task 6910 exists to end (reviewer, cycle 7).
+      auto const value_start = static_cast<std::size_t>(trimmed.data() - raw_body.data()) + marker.size();
+      auto const tail        = cut_before_line(raw_body.substr(value_start), "**Answered at:**");
+      return std::string{trim_ws(tail)};
+    }
+    if (nl == std::string_view::npos) {
+      break;
+    }
+    pos = nl + 1;
+  }
+  return {};
+}
+
+} // namespace
+
+auto extract_entity_body(std::string_view kind, std::string_view body) -> std::string_view {
+  // The trailing pieces are cut on the RAW body, before the prefix strip:
+  // a question whose own body is empty renders `**Answer:**` directly under
+  // the labels, and the prefix strip would otherwise eat the label line and
+  // keep the rest of a multi-line answer as prose.
+  auto working = body;
+  if (kind == "decision") {
+    working = cut_before_line(working, "## Rationale");
+  } else if (kind == "question") {
+    working = cut_before_line(working, "**Answer:**");
+  } else if (kind == "task") {
+    working = cut_before_line(working, "**Next action:**");
+  }
+  auto text = extract_body_text(working);
+  if (kind == "artifact") {
+    text = drop_leading_heading(text, "## Content");
+  } else if (kind == "decision") {
+    text = drop_leading_heading(text, "## Body");
+  }
+  return text;
+}
+
+/// @brief Whether `raw_body` edits a non-body field `pull_to_db` cannot
+/// round-trip -- a decision's `## Rationale` or a question's
+/// `**Answer:**` (task 6910).
+///
+/// `pull_to_db` writes only `body` (plus `status` for `task`/`plan`);
+/// every OTHER field a renderer prints stays purely display -- an edit
+/// there was silently discarded before this task. This compares the
+/// file's own rendering of that field against what the database
+/// currently holds; a difference means the operator edited it on disk,
+/// which `pull` cannot honour and must not silently drop.
+/// @param conn The database connection.
+/// @param kind The entity kind (`decision` or `question`; every other
+/// kind returns `nullopt` unconditionally).
+/// @param id The entity id.
+/// @param raw_body The full parsed markdown body (`parsed->body`).
+/// @return The field's name (`"rationale"` / `"answer"`) when it was
+/// edited, else `nullopt` -- including when the DB lookup itself fails,
+/// which leaves the existing (pre-6910) behavior as the fallback rather
+/// than blocking an otherwise-healthy pull on an unrelated query error.
+auto non_body_field_edit(db::connection& conn, std::string_view kind, std::int64_t id, std::string_view raw_body)
+    -> std::optional<std::string_view> {
+  if (kind == "decision") {
+    auto stmt = conn.prepare("select coalesce(rationale, '') from decisions where id = ?");
+    if (!stmt || !stmt->bind_int64(1, id)) {
+      return std::nullopt;
+    }
+    auto const stepped = stmt->step();
+    if (!stepped || *stepped != db::step_result::row) {
+      return std::nullopt;
+    }
+    auto const db_rationale   = std::string{stmt->column_text(0)};
+    auto const file_rationale = extract_rationale_text(raw_body);
+    if (trim_ws(file_rationale) != trim_ws(db_rationale)) {
+      return "rationale";
+    }
+  } else if (kind == "question") {
+    auto stmt = conn.prepare("select coalesce(answer_body, '') from questions where id = ?");
+    if (!stmt || !stmt->bind_int64(1, id)) {
+      return std::nullopt;
+    }
+    auto const stepped = stmt->step();
+    if (!stepped || *stepped != db::step_result::row) {
+      return std::nullopt;
+    }
+    auto const db_answer   = std::string{stmt->column_text(0)};
+    auto const file_answer = extract_answer_text(raw_body);
+    if (trim_ws(file_answer) != trim_ws(db_answer)) {
+      return "answer";
+    }
+  }
+  return std::nullopt;
+}
+
 auto fetch_anchor(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<anchor, sync_error> {
   auto stmt = conn.prepare("select p.id, coalesce(p.slug,''), coalesce(a.slug,''), p.scope_kind, p.scope_id "
                            "from plans p left join associations a on (p.scope_kind = 'association' and a.id = p.scope_id) "
@@ -1206,8 +1384,27 @@ auto run(db::connection& conn, std::int64_t anchor_plan_id, std::string_view roo
         ++out.pending;
       }
       break;
-    case classification::fs_to_db:
-      if ((run_mode == mode::pull || run_mode == mode::sync) && fs_content && pull_to_db(conn, e.kind, e.id, *fs_content)) {
+    case classification::fs_to_db: {
+      bool const wants_apply = (run_mode == mode::pull || run_mode == mode::sync) && fs_content.has_value();
+      // Task 6910: BEFORE writing anything, check whether the file edits a
+      // non-body field `pull_to_db` cannot round-trip (a decision's
+      // `## Rationale`, a question's `**Answer:**`). A difference there
+      // refuses the WHOLE entity's pull -- not just that field -- so the
+      // edit is never silently dropped; the entity is left untouched, and
+      // the refusal is named in the result rather than folded into an
+      // undifferentiated `pending` count.
+      std::optional<std::string_view> refused_field;
+      if (wants_apply && (e.kind == "decision" || e.kind == "question")) {
+        if (auto const parsed = parse::parse(*fs_content); parsed) {
+          refused_field = non_body_field_edit(conn, e.kind, e.id, parsed->body);
+        }
+      }
+      if (refused_field) {
+        ++out.field_edit_refused;
+        out.field_edit_refusals.push_back(
+            field_edit_refusal{.path = stored, .entity_kind = e.kind, .entity_id = e.id, .field = std::string{*refused_field}});
+        ++out.pending;
+      } else if (wants_apply && pull_to_db(conn, e.kind, e.id, *fs_content)) {
         auto const new_updated = fetch_updated_at(conn, e.kind, e.id);
         if (!new_updated) {
           return std::unexpected(new_updated.error());
@@ -1225,6 +1422,7 @@ auto run(db::connection& conn, std::int64_t anchor_plan_id, std::string_view roo
         ++out.pending;
       }
       break;
+    }
     case classification::conflict: {
       ++out.conflicts;
       ++out.pending;

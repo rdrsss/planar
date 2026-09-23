@@ -96,6 +96,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -488,7 +490,7 @@ TEST_CASE("plan descendants renders a childless anchor and refuses bad input", "
 
   auto const missing = dispatch(fx, {"plan", "descendants", "999", "--json"});
   CHECK(missing.code == 1);
-  CHECK(missing.out.empty());
+  CHECK(missing.out == planar::cmd::testsupport::json_error_envelope_line("plan descendants", "not_found"));
   CHECK(missing.err == "error: no plan with id 999\n");
 
   // `plan id`, with a SPACE. `plan-id` is the positional's declared name,

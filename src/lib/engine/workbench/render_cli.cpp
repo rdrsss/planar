@@ -29,11 +29,11 @@ auto field_string(std::string& out, std::string_view key, std::string_view value
 }
 
 auto field_number(std::string& out, std::string_view key, std::int64_t value) -> void {
-  std::format_to(std::back_inserter(out), "\"{}\":{}", key, value);
+  out += std::format("\"{}\":{}", key, value);
 }
 
 auto field_bool(std::string& out, std::string_view key, bool value) -> void {
-  std::format_to(std::back_inserter(out), "\"{}\":{}", key, value ? "true" : "false");
+  out += std::format("\"{}\":{}", key, value ? "true" : "false");
 }
 
 /// @brief Left-align `text` in a field of `width`, never truncating.
@@ -54,7 +54,25 @@ auto conflict_line(const sync::entry& item) -> std::string {
 
 auto append_conflict_summary(std::string& out, std::size_t conflicts) -> void {
   if (conflicts > 0) {
-    std::format_to(std::back_inserter(out), "  {} conflict(s) - run 'workbench resolve <event-id> --prefer fs|db'\n", conflicts);
+    out += std::format("  {} conflict(s) - run 'workbench resolve <event-id> --prefer fs|db'\n", conflicts);
+  }
+}
+
+/// @brief One `REFUSED` line per field-edit refusal (task 6910).
+auto refusal_line(const sync::field_edit_refusal& item) -> std::string {
+  return std::format("  REFUSED [{}]: {} ({} {}) - edit via 'decision edit' / 'question answer', not the file\n", item.field,
+                     item.path, item.entity_kind, item.entity_id);
+}
+
+/// @brief The refusal lines plus a one-line summary, appended whenever
+/// `refusals` is non-empty (task 6910). Silent when empty, matching
+/// `append_conflict_summary`'s shape for the sibling per-entity refusal.
+auto append_field_edit_refusals(std::string& out, std::span<const sync::field_edit_refusal> refusals) -> void {
+  for (auto const& item : refusals) {
+    out += refusal_line(item);
+  }
+  if (!refusals.empty()) {
+    out += std::format("  {} field-edit refusal(s) - the entity was left untouched\n", refusals.size());
   }
 }
 
@@ -93,6 +111,7 @@ auto render_sync_result_verbose(std::int64_t plan_id, std::string_view plan_slug
     }
   }
   append_conflict_summary(out, value.conflicts);
+  append_field_edit_refusals(out, value.field_edit_refusals);
   return out;
 }
 
@@ -106,26 +125,24 @@ auto render_sync_result_text(std::int64_t plan_id, std::string_view plan_slug, s
 
   std::string out;
   if (run_mode == sync::mode::push) {
-    std::format_to(std::back_inserter(out),
-                   "workbench {}: plan {} ({}) - {} applied, {} pending, {} filtered (mode={}), {} conflict(s)", verb, plan_id,
-                   plan_slug, value.applied, value.pending, value.filtered, value.filter_mode, value.conflicts);
+    out += std::format("workbench {}: plan {} ({}) - {} applied, {} pending, {} filtered (mode={}), {} conflict(s)", verb,
+                       plan_id, plan_slug, value.applied, value.pending, value.filtered, value.filter_mode, value.conflicts);
   } else {
-    std::format_to(std::back_inserter(out), "workbench {}: plan {} ({}) - {} applied, {} pending, {} conflict(s)", verb, plan_id,
-                   plan_slug, value.applied, value.pending, value.conflicts);
+    out += std::format("workbench {}: plan {} ({}) - {} applied, {} pending, {} conflict(s)", verb, plan_id, plan_slug,
+                       value.applied, value.pending, value.conflicts);
   }
   if (value.malformed > 0) {
-    std::format_to(std::back_inserter(out), ", {} MALFORMED", value.malformed);
+    out += std::format(", {} MALFORMED", value.malformed);
   }
   out += '\n';
 
   if (run_mode == sync::mode::push) {
     if (value.pre_existing_terminal > 0 && value.cleaned == 0) {
-      std::format_to(std::back_inserter(out),
-                     "  {} pre-existing terminal file(s) on disk \xe2\x80\x94 run 'planar workbench gc {}' to remove, "
-                     "or re-push with --apply-cleanup\n",
-                     value.pre_existing_terminal, plan_id);
+      out += std::format("  {} pre-existing terminal file(s) on disk \xe2\x80\x94 run 'planar workbench gc {}' to remove, "
+                         "or re-push with --apply-cleanup\n",
+                         value.pre_existing_terminal, plan_id);
     } else if (value.cleaned > 0) {
-      std::format_to(std::back_inserter(out), "  {} pre-existing terminal file(s) cleaned\n", value.cleaned);
+      out += std::format("  {} pre-existing terminal file(s) cleaned\n", value.cleaned);
     }
   }
 
@@ -135,6 +152,7 @@ auto render_sync_result_text(std::int64_t plan_id, std::string_view plan_slug, s
     }
   }
   append_conflict_summary(out, value.conflicts);
+  append_field_edit_refusals(out, value.field_edit_refusals);
   return out;
 }
 
@@ -187,6 +205,28 @@ auto render_sync_result_json(const sync::result& value) -> std::string {
     field_number(out, "conflict_id", item.conflict_id);
     out += ',';
     field_string(out, "parse_error", item.parse_error);
+    out += '}';
+  }
+  out += "],";
+  // Task 6910: appended AFTER `entries`, a deliberate C++-only extension
+  // -- the oracle has no equivalent field, since the silent-drop bug this
+  // reports never had a surfaced diagnosis to serialize.
+  field_number(out, "field_edit_refused", static_cast<std::int64_t>(value.field_edit_refused));
+  out += ",\"field_edit_refusals\":[";
+  first = true;
+  for (auto const& item : value.field_edit_refusals) {
+    if (!first) {
+      out += ',';
+    }
+    first = false;
+    out += '{';
+    field_string(out, "path", item.path);
+    out += ',';
+    field_string(out, "entity_kind", item.entity_kind);
+    out += ',';
+    field_number(out, "entity_id", item.entity_id);
+    out += ',';
+    field_string(out, "field", item.field);
     out += '}';
   }
   out += "]}\n";
@@ -259,8 +299,8 @@ auto render_list_text(std::span<const sync::active_feature> items) -> std::strin
   }
   std::string out;
   for (auto const& item : items) {
-    std::format_to(std::back_inserter(out), "{}  {}  {}  {}\n", pad_right(std::format("{}-{}", item.plan_key, item.slug), 40),
-                   pad_right(item.status, 10), pad_right(item.has_fs_tree ? "tree" : "no-tree", 10), item.assoc_slug);
+    out += std::format("{}  {}  {}  {}\n", pad_right(std::format("{}-{}", item.plan_key, item.slug), 40),
+                       pad_right(item.status, 10), pad_right(item.has_fs_tree ? "tree" : "no-tree", 10), item.assoc_slug);
   }
   return out;
 }
@@ -286,7 +326,7 @@ auto render_gc_drift_refusal(const gc::summary& value) -> std::string {
                                 "discard, or 'workbench pull' first\n",
                                 value.drifted_skipped);
   for (auto const& path : value.drifted_paths) {
-    std::format_to(std::back_inserter(out), "  drift: {}\n", path);
+    out += std::format("  drift: {}\n", path);
   }
   return out;
 }
@@ -314,14 +354,12 @@ auto render_lint_json(std::span<const lint::issue> issues) -> std::string {
 auto render_lint_text(const lint::result& value) -> std::string {
   std::string out;
   for (auto const& item : value.issues) {
-    std::format_to(std::back_inserter(out), "{}:{}:\n  {}[{}]: {}\n", item.path, item.line, lint::severity_name(item.level),
-                   item.code, item.message);
+    out += std::format("{}:{}:\n  {}[{}]: {}\n", item.path, item.line, lint::severity_name(item.level), item.code, item.message);
     if (!item.hint.empty()) {
-      std::format_to(std::back_inserter(out), "  hint: {}\n", item.hint);
+      out += std::format("  hint: {}\n", item.hint);
     }
   }
-  std::format_to(std::back_inserter(out), "{} files scanned, {} errors, {} warnings.\n", value.files_scanned, value.errors,
-                 value.warnings);
+  out += std::format("{} files scanned, {} errors, {} warnings.\n", value.files_scanned, value.errors, value.warnings);
   return out;
 }
 

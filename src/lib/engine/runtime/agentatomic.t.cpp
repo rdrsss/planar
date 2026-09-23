@@ -175,6 +175,10 @@ struct recording_policy {
   /// Observed inside `recompute_plan`, which runs INSIDE the transaction:
   /// the task status the roll-up would see.
   std::string status_seen_by_recompute;
+  /// Every blocker id `clear_unblocked_dependents` was called with (task
+  /// 6875) — a test asserts on this to prove the roll-up ran, and on its
+  /// absence to prove it did NOT run for `fail`/`release`.
+  std::vector<std::int64_t> unblock_calls;
 
   auto bind() -> atomic::task_policy {
     return atomic::task_policy{
@@ -194,6 +198,11 @@ struct recording_policy {
           if (fail_recompute) {
             return std::unexpected(aa::agent_error::query_failed);
           }
+          return {};
+        },
+        .clear_unblocked_dependents = [this](planar::db::connection&,
+                                             std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
+          unblock_calls.push_back(blocker_id);
           return {};
         },
     };
@@ -416,6 +425,102 @@ TEST_CASE("peek runs pull's selector and writes nothing at all", "[agentatomic]"
 }
 
 // ===========================================================================
+// Dependency exclusion (task 6841 / decision D6, closes task 5535)
+// ===========================================================================
+
+TEST_CASE("peek_next excludes a task with an outbound depends-on edge to a non-terminal blocker", "[agentatomic][deps]") {
+  // A `depends-on` edge can exist on a `todo` task WITHOUT the task itself
+  // being `blocked` — `task block --on` is not the only writer of that
+  // edge (the generic `link` verb is another). So a selector that only
+  // ever filtered on `t.status = 'todo'` could still hand out a task whose
+  // dependency is wide open. This is the direct regression test for task
+  // 5535.
+  //
+  // One shared fixture, five blocker statuses. `blocker` status decides
+  // whether `dependent` is eligible; when it is NOT, `blocker` itself
+  // (still `todo` in the `todo`/`doing`/`blocked` cases only where
+  // relevant) is the only remaining candidate, so the two branches below
+  // assert on WHICH task comes back, not just whether one does.
+  struct expectation {
+    std::string_view blocker_status;
+    bool             dependent_eligible;
+  };
+  for (auto const& exp : std::vector<expectation>{
+           {"todo", false},
+           {"doing", false},
+           {"blocked", false},
+           {"done", true},
+           {"cancelled", true},
+       }) {
+    INFO("blocker status: " << exp.blocker_status);
+    scratch_db_path scratch;
+    auto            conn = open_migrated(scratch);
+    auto const      fx   = seed(conn, 2);
+
+    auto const blocker   = task_id_at(conn, 0);
+    auto const dependent = task_id_at(conn, 1);
+    exec(conn, std::format("update tasks set status = '{}' where id = {}", exp.blocker_status, blocker));
+    exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                           "values ('task', {}, 'task', {}, 'depends-on')",
+                           dependent, blocker));
+
+    auto const peeked = atomic::peek_next(conn, fx.plan_id);
+    REQUIRE(peeked.has_value());
+
+    if (exp.dependent_eligible) {
+      // The blocker itself is `done`/`cancelled`, so it is no longer a
+      // `todo` candidate at all — the dependent is the only one left.
+      REQUIRE_FALSE(peeked->no_work);
+      CHECK(peeked->task_id == dependent);
+    } else if (exp.blocker_status == "todo") {
+      // The dependent is excluded, but the blocker is itself still an
+      // ordinary eligible `todo` task with no dependency of its own.
+      REQUIRE_FALSE(peeked->no_work);
+      CHECK(peeked->task_id == blocker);
+    } else {
+      // Blocker is `doing`/`blocked` (not `todo`, so not a candidate
+      // either) and the dependent is excluded: nothing is eligible.
+      CHECK(peeked->no_work);
+    }
+  }
+}
+
+TEST_CASE("peek_next and pull_next agree when a depends-on edge excludes the lower-priority candidate", "[agentatomic][deps]") {
+  // Proves two things at once: (1) the exclusion is not merely an
+  // artifact of priority ordering — `dependent` is given the LOWEST
+  // priority, so a selector ignoring the dependency would wrongly pick it
+  // first — and (2) `peek` really is "the same query as pull, no writes"
+  // for this new clause too, not only for the pre-existing ones.
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 3);
+  recording_policy policy;
+
+  auto const blocker   = task_id_at(conn, 0);
+  auto const dependent = task_id_at(conn, 1);
+  auto const other     = task_id_at(conn, 2);
+  exec(conn, std::format("update tasks set priority = 10 where id = {}", dependent)); // lowest: would sort first
+  exec(conn, std::format("update tasks set priority = 20 where id = {}", blocker));
+  exec(conn, std::format("update tasks set priority = 30 where id = {}", other));
+  exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                         "values ('task', {}, 'task', {}, 'depends-on')",
+                         dependent, blocker));
+
+  auto const peeked = atomic::peek_next(conn, fx.plan_id);
+  REQUIRE(peeked.has_value());
+  REQUIRE_FALSE(peeked->no_work);
+  CHECK(peeked->task_id == blocker);
+
+  auto const pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+  REQUIRE_FALSE(pulled->no_work);
+  CHECK(pulled->task_id == blocker);
+  CHECK(pulled->task_id == peeked->task_id);
+  (void)other;
+}
+
+// ===========================================================================
 // Terminal verbs — the atomicity evidence
 // ===========================================================================
 
@@ -446,6 +551,112 @@ TEST_CASE("complete flips task and claim together and recomputes the plan inside
 
   // The guard was fed the ACTUAL current status.
   REQUIRE(policy.transitions.back() == std::pair<std::string, std::string>{"doing", "done"});
+}
+
+// ===========================================================================
+// Dependency auto-unblock on completion (task 6875)
+// ===========================================================================
+
+TEST_CASE("complete_work runs the dependency roll-up in the SAME transaction as the flip to done", "[agentatomic][deps]") {
+  // `planar task done` already runs `clear_unblocked_dependents` right
+  // after its own flip to `done` (planning/task.cpp's `mark_done`).
+  // `planar-agent complete` is a second entry point onto the identical
+  // "a task just went terminal" event and used to skip the roll-up
+  // entirely, observed 2026-09-22: a dependent stayed `blocked` after its
+  // blocker completed via `planar-agent complete`. This asserts the
+  // callable is invoked, with the completed task's id, exactly once.
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy policy;
+
+  auto const pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+
+  auto const done = atomic::complete_work(conn, pulled->acquired->claim_token, "finished", policy.bind());
+  REQUIRE(done.has_value());
+
+  REQUIRE(policy.unblock_calls.size() == 1);
+  CHECK(policy.unblock_calls[0] == pulled->task_id);
+}
+
+TEST_CASE("fail_work and release_work do NOT run the dependency roll-up", "[agentatomic][deps]") {
+  // Neither verb reaches a terminal status (both return the task to
+  // `todo`), so calling the roll-up would be pure overhead at best and a
+  // misleading audit row ("unblocked: task N is terminal" on a task that
+  // is very much not terminal) at worst.
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 2);
+  recording_policy policy;
+
+  auto const first = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(first.has_value());
+  REQUIRE(atomic::fail_work(conn, first->acquired->claim_token, "broke", aa::failure_category::tool_failure, policy.bind())
+              .has_value());
+
+  auto const second = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(second.has_value());
+  REQUIRE(atomic::release_work(conn, second->acquired->claim_token, "gave up", policy.bind()).has_value());
+
+  CHECK(policy.unblock_calls.empty());
+}
+
+TEST_CASE("complete_work's roll-up ACTUALLY clears a blocked dependent, end to end", "[agentatomic][deps]") {
+  // Uses the REAL `set_status` path a production policy would run
+  // (recording_policy's lambda is a spy elsewhere, but here it must
+  // actually perform the SQL clearance for this test to mean anything) —
+  // so this fixture wires a policy whose `clear_unblocked_dependents`
+  // performs the same `blocked -> todo` update `planning::task`'s does,
+  // to prove the CALL SITE (inside the terminal transaction, after the
+  // flip) is where it matters, independent of which concrete function is
+  // bound at layer 3.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 2);
+
+  auto const blocker   = task_id_at(conn, 0);
+  auto const dependent = task_id_at(conn, 1);
+  exec(conn, std::format("update tasks set status = 'blocked' where id = {}", dependent));
+  exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                         "values ('task', {}, 'task', {}, 'depends-on')",
+                         dependent, blocker));
+
+  recording_policy policy;
+  auto const       pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+  REQUIRE(pulled->task_id == blocker); // `dependent` is excluded (task 6841) AND not `todo` anyway.
+
+  auto real_policy                       = policy.bind();
+  real_policy.clear_unblocked_dependents = [&conn](planar::db::connection&,
+                                                   std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
+    auto stmt = conn.prepare("update tasks set status = 'todo' where status = 'blocked' and id in ("
+                             "  select d.id from tasks d "
+                             "  join entity_links el on el.from_kind='task' and el.from_id=d.id "
+                             "                      and el.to_kind='task' and el.relationship='depends-on' "
+                             "  where el.to_id = ?1)");
+    if (!stmt || !stmt->bind_int64(1, blocker_id) || !stmt->step()) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    return {};
+  };
+
+  auto const done = atomic::complete_work(conn, pulled->acquired->claim_token, "finished", real_policy);
+  REQUIRE(done.has_value());
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", dependent)) == "todo");
+
+  // And now that `dependent` is `todo` with a `done` blocker, `pull`
+  // (which already excludes `blocked` and open-dependency tasks) takes it
+  // next.
+  auto const next = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(next.has_value());
+  REQUIRE_FALSE(next->no_work);
+  CHECK(next->task_id == dependent);
 }
 
 TEST_CASE("a refused terminal verb leaves NOTHING behind", "[agentatomic]") {
@@ -612,6 +823,67 @@ TEST_CASE("a terminal verb refuses a claim held on a plan", "[agentatomic]") {
   REQUIRE_FALSE(refused.has_value());
   REQUIRE(refused.error() == aa::agent_error::claim_not_on_task);
   REQUIRE(scalar_text(conn, std::format("select status from agent_work_claims where id = {}", held->id)) == "active");
+}
+
+TEST_CASE("release succeeds on a plan claim, unlike complete (task 6890)", "[agentatomic][6890]") {
+  // Decision, task 6890: the orchestrator ritual takes a plan-level claim
+  // (`planar-agent claim --entity plan:<id> --role orchestrator`), but
+  // every terminal verb refused it with `ClaimNotOnTask`, so a plan claim
+  // could only end by lease expiry. `release` is now the exception --
+  // it is the graceful give-up verb and has no entity transition to
+  // perform for a non-task entity. `complete`/`fail`/`block` still
+  // refuse; only `release`'s guard changed.
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy policy;
+
+  auto const plan_status_before = scalar_text(conn, std::format("select status from plans where id = {}", fx.plan_id));
+
+  auto args       = basic_args(fx, fx.plan_id);
+  args.kind       = aa::entity_kind::plan;
+  auto const held = atomic::claim_entity(conn, args, true, policy.bind());
+  REQUIRE(held.has_value());
+
+  auto const released = atomic::release_work(conn, held->claim_token, "handing off", policy.bind());
+  REQUIRE(released.has_value());
+  REQUIRE(released->released.status == aa::claim_status::released);
+  REQUIRE_FALSE(released->replayed);
+  REQUIRE(scalar_text(conn, std::format("select status from agent_work_claims where id = {}", held->id)) == "released");
+  // The plan's own status is untouched -- there is no task-status
+  // transition to perform for a plan claim, and this verb must not
+  // invent one.
+  REQUIRE(scalar_text(conn, std::format("select status from plans where id = {}", fx.plan_id)) == plan_status_before);
+
+  // `complete` on the SAME kind of claim still refuses -- this is the
+  // OTHER half of the decision: only `release`'s guard relaxed.
+  auto second_args       = basic_args(fx, fx.plan_id);
+  second_args.kind       = aa::entity_kind::plan;
+  auto const second_held = atomic::claim_entity(conn, second_args, true, policy.bind());
+  REQUIRE(second_held.has_value());
+  auto const refused_complete = atomic::complete_work(conn, second_held->claim_token, std::nullopt, policy.bind());
+  REQUIRE_FALSE(refused_complete.has_value());
+  REQUIRE(refused_complete.error() == aa::agent_error::claim_not_on_task);
+}
+
+TEST_CASE("release also succeeds on a plan_step claim (task 6890)", "[agentatomic][6890]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy policy;
+
+  exec(conn,
+       std::format("insert into plan_steps (plan_id, ordinal, body, status) values ({}, 1, 'Step one', 'pending')", fx.plan_id));
+  auto const step_id = scalar_int(conn, "select id from plan_steps where plan_id = " + std::to_string(fx.plan_id));
+
+  auto args       = basic_args(fx, step_id);
+  args.kind       = aa::entity_kind::plan_step;
+  auto const held = atomic::claim_entity(conn, args, true, policy.bind());
+  REQUIRE(held.has_value());
+
+  auto const released = atomic::release_work(conn, held->claim_token, std::nullopt, policy.bind());
+  REQUIRE(released.has_value());
+  REQUIRE(scalar_text(conn, std::format("select status from agent_work_claims where id = {}", held->id)) == "released");
 }
 
 TEST_CASE("a terminal verb refuses an EXPIRED lease", "[agentatomic]") {
@@ -821,6 +1093,71 @@ TEST_CASE("racing threads pulling one plan never double-claim a task", "[agentat
   REQUIRE(scalar_int(control, "select count(*) from tasks where status = 'doing'") == k_tasks);
 }
 
+TEST_CASE("16 threads claiming 16 DISTINCT tasks via claim_entity produce 16 distinct tokens, "
+          "and never see Busy or QueryFailed",
+          "[agentatomic][concurrency][6842][6843]") {
+  // The direct engine equivalent of "16 concurrent `planar-agent claim
+  // --entity task:<id>` on 16 distinct tasks" from the same host process --
+  // this is what tasks 6842 (shared WAL + busy_timeout) and 6843 (Busy vs
+  // QueryFailed classification) are FOR. Unlike the single-entity race
+  // above, no two threads compete for the same row here: each of the 16
+  // gets its own task id, so a correct implementation should see 16 clean
+  // winners and NOTHING else -- no contention errors of any kind, busy or
+  // otherwise. `busy_timeout=5000` (now set by `connection::open` itself,
+  // task 6842) is what turns a transient `BEGIN IMMEDIATE` collision on
+  // SQLite's own file-level locks (unrelated rows, same file) into a short
+  // wait instead of an immediate failure.
+  constexpr int k_threads = 16;
+
+  scratch_db_path scratch;
+  auto            control = open_migrated(scratch);
+  auto const      fx      = seed(control, k_threads);
+
+  std::latch                gate{k_threads};
+  std::atomic<int>          winners{0};
+  std::atomic<int>          busy{0};
+  std::atomic<int>          query_failed{0};
+  std::atomic<int>          other{0};
+  std::vector<std::jthread> workers;
+  workers.reserve(k_threads);
+
+  for (int i = 0; i < k_threads; ++i) {
+    workers.emplace_back([&, i] {
+      auto conn = planar::db::connection::open(scratch.path_.string());
+      if (!conn) {
+        other.fetch_add(1);
+        return;
+      }
+      recording_policy policy;
+      auto const       task = task_id_at(*conn, i);
+      gate.arrive_and_wait();
+      auto const held = atomic::claim_entity(*conn, basic_args(fx, task), true, policy.bind());
+      if (held) {
+        winners.fetch_add(1);
+        return;
+      }
+      if (held.error() == aa::agent_error::busy) {
+        busy.fetch_add(1);
+      } else if (held.error() == aa::agent_error::query_failed) {
+        query_failed.fetch_add(1);
+      } else {
+        other.fetch_add(1);
+      }
+    });
+  }
+  workers.clear();
+
+  INFO("winners=" << winners.load() << " busy=" << busy.load() << " query_failed=" << query_failed.load()
+                  << " other=" << other.load());
+  REQUIRE(winners.load() == k_threads);
+  REQUIRE(busy.load() == 0);
+  REQUIRE(query_failed.load() == 0);
+  REQUIRE(other.load() == 0);
+  REQUIRE(scalar_int(control, "select count(*) from agent_work_claims where status = 'active'") == k_threads);
+  REQUIRE(scalar_int(control, "select count(distinct entity_id) from agent_work_claims where status = 'active'") == k_threads);
+  REQUIRE(scalar_int(control, "select count(*) from tasks where status = 'doing'") == k_threads);
+}
+
 TEST_CASE("racing threads terminalising one claim produce exactly one winner", "[agentatomic][concurrency]") {
   // A terminal verb interleaved with other terminal verbs, raced for real.
   // Eight threads all try to end the same claim with DIFFERENT verbs, so a
@@ -913,19 +1250,28 @@ TEST_CASE("two connections pulling the same plan take DIFFERENT tasks", "[agenta
   REQUIRE(scalar_int(first, "select count(*) from agent_work_claims") == 2);
 }
 
-TEST_CASE("an open immediate transaction locks out a concurrent terminal verb", "[agentatomic][concurrency]") {
+TEST_CASE("an open immediate transaction locks out a concurrent terminal verb", "[agentatomic][concurrency][6843]") {
   // A terminal verb interleaved with another writer. The first connection
   // holds an UNCOMMITTED immediate transaction; the second's terminal verb
   // cannot begin, so it is refused outright rather than reading through to
   // a half-applied state or committing on top of one.
   //
-  // The refusal maps to `query_failed`, which is what the CLI reports as
-  // `error: complete: QueryFailed` — an operator seeing that under
-  // contention is seeing the lock work, not a corruption.
-  scratch_db_path  scratch;
-  auto             first  = open_migrated(scratch);
-  auto             second = open_second(scratch);
-  auto const       fx     = seed(first, 1);
+  // The refusal is a genuine post-timeout SQLITE_BUSY -- `first` never
+  // releases the lock for the whole scope below, so `second`'s BEGIN
+  // IMMEDIATE retries for the full busy_timeout window and then reports
+  // SQLITE_BUSY, not some other failure. Task 6843: that maps to
+  // `agent_error::busy` ("Busy" on the CLI, `error: complete: Busy`), never
+  // to `query_failed` -- an operator seeing contention needs a different
+  // signal (retry) than one seeing corruption (escalate).
+  scratch_db_path scratch;
+  auto            first  = open_migrated(scratch);
+  auto            second = open_second(scratch);
+  // Task 6842 made connection::open set busy_timeout=5000 by default.
+  // Lower `second`'s override so this test's guaranteed-busy assertion
+  // below doesn't block for 5 real seconds; the property under test is the
+  // ERROR MAPPING once the timeout is exhausted, not the timeout's length.
+  REQUIRE(second.execute("pragma busy_timeout = 50;"));
+  auto const       fx = seed(first, 1);
   recording_policy policy;
 
   auto const pulled = atomic::pull_next(
@@ -936,12 +1282,12 @@ TEST_CASE("an open immediate transaction locks out a concurrent terminal verb", 
   {
     auto blocker = first.begin_transaction(planar::db::lock_mode::immediate);
     REQUIRE(blocker.has_value());
-    // The lock is held for the whole scope. `busy_timeout` is not set on
-    // these test connections, so the second writer fails immediately
-    // rather than after a wait — which is what makes this deterministic.
+    // The lock is held for the whole scope, past `second`'s 50ms
+    // busy_timeout, so this is a genuine post-timeout SQLITE_BUSY, not a
+    // race against how fast the test runs.
     auto const refused = atomic::complete_work(second, token, std::nullopt, policy.bind());
     REQUIRE_FALSE(refused.has_value());
-    REQUIRE(refused.error() == aa::agent_error::query_failed);
+    REQUIRE(refused.error() == aa::agent_error::busy);
   }
 
   // Nothing moved, and once the lock is released the verb succeeds — the

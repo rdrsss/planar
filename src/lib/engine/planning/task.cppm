@@ -192,6 +192,13 @@ export enum class task_error : std::uint8_t {
   /// for `--scope nosuchscope --due garbage`.
   invalid_due_at,
   query_failed,
+  /// A transaction begin or commit could not acquire the write lock even
+  /// after `busy_timeout` elapsed (see `db::is_busy`). Distinct from
+  /// `query_failed` because a busy-source caller should retry unchanged,
+  /// not treat the write as rejected. Mirrors `annotation_error::busy_source`
+  /// (task 6843; `planar` reports this as `domain_error_kind::busy_source`,
+  /// `planar-agent` as its own `Busy` tag).
+  busy_source,
   audit_write_failed, ///< The `audit_log` row could not be written. Zig spelling: `WriteFailed`.
 };
 
@@ -315,6 +322,25 @@ export auto mark_blocked(db::connection& conn, std::int64_t id, std::int64_t blo
 /// @return The updated row, or `task_error::not_found` / `task_error::query_failed`.
 export auto reopen(db::connection& conn, std::int64_t id, task_status new_status, std::string_view reason)
     -> std::expected<task, task_error>;
+
+/// @brief Clear `blocked` on every dependent of `blocker_id` whose blocker
+/// set is now fully terminal (decision 1122). A dependent moves
+/// `blocked` -> `todo` only when no remaining blocker is open (not in
+/// `done`/`cancelled`); partial clearance is deliberately a no-op.
+///
+/// `mark_done`, `mark_cancelled`, and a `task update --status
+/// done|cancelled` patch all call this after flipping the blocker's own
+/// status. It is exported (task 6875) so `planar.cmd.planar_agent.policy`
+/// can bind it into `planar.engine.runtime.agentatomic::task_policy` as
+/// well, so `planar-agent complete` runs the identical roll-up in the
+/// identical transaction instead of leaving a dependent stale at
+/// `blocked` after its blocker completes through the agent plane.
+/// @param conn An open, migrated database connection, inside the caller's
+/// transaction.
+/// @param blocker_id The task that just became terminal (`done` or
+/// `cancelled`).
+/// @return Success, or the first query failure.
+export auto clear_unblocked_dependents(db::connection& conn, std::int64_t blocker_id) -> std::expected<void, task_error>;
 
 /// @brief Render one task as the operator-facing key/value block.
 ///

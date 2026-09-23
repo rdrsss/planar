@@ -17,12 +17,42 @@ namespace {
 
 constexpr std::string_view k_now = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
+/// @brief Classify a failed `begin_transaction(lock_mode::immediate)` call
+/// (task 6843): a competing writer that still holds the lock after this
+/// connection's own `busy_timeout` window elapsed is `agent_error::busy`,
+/// never `query_failed` -- a caller (an orchestrator, or an operator
+/// reading the CLI's `Busy` tag) should retry, not escalate.
+/// @param err The failure `begin_transaction` returned.
+/// @return `agent_error::busy` for a post-timeout SQLITE_BUSY, else
+/// `agent_error::query_failed`.
+auto classify_begin_failure(const db::db_error& err) -> aa::agent_error {
+  return db::is_busy(err) ? aa::agent_error::busy : aa::agent_error::query_failed;
+}
+
 /// @brief The shared eligibility selector behind BOTH `pull_next` and
 /// `peek_next`.
 ///
 /// One definition on purpose: `peek` documents itself as "the same query
 /// as pull, no writes", and that claim is only true if there is literally
 /// one query. `order by t.priority asc` — lower integers first.
+///
+/// **Dependency exclusion (task 6841 / decision D6, closes task 5535).** A
+/// candidate is also excluded when it carries an outbound `depends-on`
+/// edge (`entity_links`, `task -> task`) to a task whose blocker is not
+/// yet terminal. This is the DEPENDENCY EXCLUSION ONLY — D6, verbatim:
+/// "Rather than adding a `--respect-deps` flag, pull and peek exclude
+/// tasks with an open depends-on blocker. They do NOT adopt `plan next`'s
+/// packet-readiness gate." A `depends-on` edge can exist on a `todo` task
+/// without the task itself being `blocked` (`task block --on` is not the
+/// only writer of that edge — the generic `link` verb is another), so the
+/// exclusion cannot ride on `t.status` alone.
+///
+/// "Terminal" here is deliberately the SAME set `clear_unblocked_dependents`
+/// (`planar.engine.planning.task`) already uses to decide a dependent is
+/// unblocked: `done` OR `cancelled` (decision 1122). Picking a narrower
+/// "only `done` counts" reading would put `pull`/`peek` out of step with
+/// the roll-up that already treats a cancelled blocker as satisfied —
+/// pinned by `agentatomic.t.cpp`'s selector unit tests.
 /// @param conn The connection.
 /// @param plan_id The plan to select within.
 /// @return The next eligible task id, unset when none, or `query_failed`.
@@ -37,6 +67,13 @@ auto pick_next_eligible(db::connection& conn, std::int64_t plan_id)
                                        "      and c.entity_id = t.id\n"
                                        "      and c.status = 'active'\n"
                                        "      and c.lease_expires_at >= {}\n"
+                                       "  )\n"
+                                       "  and not exists (\n"
+                                       "    select 1 from entity_links el\n"
+                                       "    join tasks blocker on blocker.id = el.to_id\n"
+                                       "    where el.from_kind = 'task' and el.from_id = t.id\n"
+                                       "      and el.to_kind = 'task' and el.relationship = 'depends-on'\n"
+                                       "      and blocker.status not in ('done', 'cancelled')\n"
                                        "  )\n"
                                        "order by t.priority asc, t.id asc\n"
                                        "limit 1",
@@ -207,7 +244,7 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
     -> std::expected<terminal_result, aa::agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
 
   auto held = aa::get_claim_by_token(conn, targs.claim_token);
@@ -235,26 +272,55 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
   if (held->status != aa::claim_status::active || !*live) {
     return std::unexpected(aa::agent_error::claim_not_active);
   }
+
+  // Task 6890 / decision D-6890: `release` is the one terminal verb with
+  // NO entity transition to perform on a plan/plan_step claim -- it is the
+  // graceful give-up verb, and giving up a plan-level claim needs nothing
+  // more than flipping the CLAIM to released. `complete`/`fail` still
+  // refuse `ClaimNotOnTask` unconditionally: they exist specifically to
+  // move a TASK's status, which a plan/plan_step claim has none of.
+  // `block_work` never reaches this function at all (see its own
+  // `ClaimNotOnTask` guard below). This is why a plan-level orchestrator
+  // claim used to be endable ONLY by lease expiry -- there was no verb
+  // that could terminate it deliberately.
+  std::optional<std::int64_t> plan_id;
   if (held->kind != aa::entity_kind::task) {
-    return std::unexpected(aa::agent_error::claim_not_on_task);
-  }
+    if (targs.verb != "release") {
+      return std::unexpected(aa::agent_error::claim_not_on_task);
+    }
+    // No task/plan status write, no transition-matrix check, no
+    // recompute -- there is no task row this claim covers.
+  } else {
+    auto const current = aa::current_task_status(conn, held->entity_id);
+    if (!current) {
+      return std::unexpected(current.error());
+    }
+    auto const allowed = policy.check_transition(*current, targs.task_to);
+    if (!allowed) {
+      return std::unexpected(allowed.error());
+    }
 
-  auto const current = aa::current_task_status(conn, held->entity_id);
-  if (!current) {
-    return std::unexpected(current.error());
-  }
-  auto const allowed = policy.check_transition(*current, targs.task_to);
-  if (!allowed) {
-    return std::unexpected(allowed.error());
-  }
+    // Captured BEFORE the flip, because the recompute below needs it and
+    // the claim row is about to be replaced by its released form.
+    plan_id = aa::task_plan_id(conn, held->entity_id);
 
-  // Captured BEFORE the flip, because the recompute below needs it and the
-  // claim row is about to be replaced by its released form.
-  auto const plan_id = aa::task_plan_id(conn, held->entity_id);
+    auto const flipped = set_task_status(conn, held->entity_id, targs.task_to);
+    if (!flipped) {
+      return std::unexpected(flipped.error());
+    }
 
-  auto const flipped = set_task_status(conn, held->entity_id, targs.task_to);
-  if (!flipped) {
-    return std::unexpected(flipped.error());
+    // Mirrors `planar.engine.planning.task`'s own terminal paths
+    // (`mark_done`, `mark_cancelled`, and `update_task` on a terminal
+    // patch): the roll-up runs immediately after the flip, in the same
+    // transaction, and only when the flip actually landed on a terminal
+    // status. `complete` is the only terminal verb this module has that
+    // does (`fail`/`release` return the task to `todo`; `block_work`
+    // never reaches this function) — task 6875.
+    if (targs.task_to == "done") {
+      if (auto const unblocked = policy.clear_unblocked_dependents(conn, held->entity_id); !unblocked) {
+        return std::unexpected(unblocked.error());
+      }
+    }
   }
 
   auto const closed = aa::close_open_actions_for_claim(conn, held->id, targs.result, targs.summary);
@@ -295,7 +361,7 @@ auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args,
     -> std::expected<claim, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
 
   auto acquired = aa::acquire_claim(conn, args);
@@ -368,7 +434,7 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     -> std::expected<pull_result, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
 
   auto const picked = pick_next_eligible(conn, args.plan_id);
@@ -515,7 +581,7 @@ auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t
     -> std::expected<terminal_result, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
 
   auto held = aa::get_claim_by_token(conn, claim_token);
@@ -613,7 +679,7 @@ auto associate_supervisor(db::connection& conn, std::string_view claim_token, bo
                           std::optional<std::string_view> attempt) -> std::expected<associate_result, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
   auto held = aa::get_claim_by_token(conn, claim_token);
   if (!held) {
@@ -672,7 +738,7 @@ auto supervised_heartbeat(db::connection& conn, std::string_view claim_token, st
     -> std::expected<claim, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
-    return std::unexpected(aa::agent_error::query_failed);
+    return std::unexpected(classify_begin_failure(tx.error()));
   }
   auto const sup = aa::get_supervision(conn, claim_token);
   if (!sup) {

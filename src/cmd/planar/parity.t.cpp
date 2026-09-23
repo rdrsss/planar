@@ -243,7 +243,14 @@ TEST_CASE("the no-database leaves are pinned", "[cmd][parity][cli-surface]") {
       {"wlj", {"workflow", "list", "--json"}, 0, "", ""},
       {"wll", {"workflow", "list", "--local"}, 0, "no sandbox workflows found\n", ""},
       {"wsmiss", {"workflow", "show", "nope"}, 1, "", "error: workflow 'nope' not found\n"},
-      {"wsmissj", {"workflow", "show", "nope", "--json"}, 1, "", "error: workflow 'nope' not found\n"},
+      // The additive --json error envelope (decision 1145, task 6844) is
+      // the only thing on stdout here; stderr is unchanged.
+      {"wsmissj",
+       {"workflow", "show", "nope", "--json"},
+       1,
+       R"({"error":{"verb":"workflow show","tag":"generic_failure"}})"
+       "\n",
+       "error: workflow 'nope' not found\n"},
       // A HANDLER-level refusal, not a parser one: still a true oracle
       // match after task 6123, and deliberately kept here as the control
       // showing the re-baselining is confined to parser- and help-produced
@@ -377,7 +384,14 @@ TEST_CASE("the task-6106 no-fixture leaves are pinned", "[cmd][parity][cli-surfa
       // The id parser, end to end. `1_0` and `007` reach the not-found path
       // naming the PARSED value; `_10` and the overflow are refusals.
       {"ulmiss", {"unlink", "999"}, 1, "", "error: link 999 not found\n"},
-      {"ulmissj", {"unlink", "999", "--json"}, 1, "", "error: link 999 not found\n"},
+      // The additive --json error envelope (decision 1145, task 6844) is
+      // the only thing on stdout here; stderr is unchanged.
+      {"ulmissj",
+       {"unlink", "999", "--json"},
+       1,
+       R"({"error":{"verb":"unlink","tag":"generic_failure"}})"
+       "\n",
+       "error: link 999 not found\n"},
       {"ulsep", {"unlink", "1_0"}, 1, "", "error: link 10 not found\n"},
       {"ulpad", {"unlink", "007"}, 1, "", "error: link 7 not found\n"},
       {"ulplus", {"unlink", "+12"}, 1, "", "error: link 12 not found\n"},
@@ -1190,7 +1204,8 @@ TEST_CASE("a seeded workbench feature tree is pinned", "[cmd][parity][cli-surfac
        "\"file_path\":\"project_demo/p1-demo-feature/tasks/cross/"
        "2-second-task.md\",\"entity_kind\":\"task\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"},{\"class\":\"no_op\","
        "\"file_path\":\"project_demo/p1-demo-feature/plans/"
-       "child-ms.md\",\"entity_kind\":\"plan\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"}]}\n",
+       "child-ms.md\",\"entity_kind\":\"plan\",\"entity_id\":2,\"conflict_id\":0,\"parse_error\":\"\"}],\"field_edit_refused\":0,"
+       "\"field_edit_refusals\":[]}\n",
        ""},
       {"wbstat1", {"workbench", "status", "1", "--verbose"}, 0, "workbench status: plan 1 (demo-feature)\n", ""},
       {"wblist1",
@@ -1495,7 +1510,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        0,
        "planar initialized\n"
        "  db:      $ROOT/planar.db\n"
-       "  schema:  38\n"
+       "  schema:  39\n"
        "  project: proj (id: 1)\n"
        "  next:    `planar assoc create project:proj --kind project`\n"
        "           `planar assoc add project:proj $ROOT/proj`\n"},
@@ -1504,14 +1519,14 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        false,
        0,
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":38,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":39,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
-      {"initskip", {"init", "--skip-project"}, false, 0, "planar initialized\n  db:      $ROOT/planar.db\n  schema:  38\n"},
+      {"initskip", {"init", "--skip-project"}, false, 0, "planar initialized\n  db:      $ROOT/planar.db\n  schema:  39\n"},
       {"initskipj",
        {"init", "--skip-project", "--json"},
        false,
        0,
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":38}\n"},
+       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":39}\n"},
       // Declared, and never read by either binary. Probed rather than
       // assumed: `init` in a non-git directory succeeds WITHOUT it.
       {"initanr",
@@ -1520,7 +1535,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        0,
        "planar initialized\n"
        "  db:      $ROOT/planar.db\n"
-       "  schema:  38\n"
+       "  schema:  39\n"
        "  project: proj (id: 1)\n"
        "  next:    `planar assoc create project:proj --kind project`\n"
        "           `planar assoc add project:proj $ROOT/proj`\n"},
@@ -1528,7 +1543,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        {"init", "--name", "My Proj", "--slug", "custom-slug", "--json"},
        false,
        0,
-       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":38,\"project_id\":1,\"project_slug\":\"custom-slug\","
+       "{\"ok\":true,\"db\":\"$ROOT/planar.db\",\"schema_version\":39,\"project_id\":1,\"project_slug\":\"custom-slug\","
        "\"project_name\":\"My Proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       // THE `git_remote` CASES. Without these the whole column is invisible
       // to this file.
@@ -1537,7 +1552,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        true,
        0,
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":38,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":39,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\",\"git_remote\":\"git@github.com:example/repo.git\"}\n"},
       {"initremotetext",
        {"init"},
@@ -1545,7 +1560,7 @@ TEST_CASE("init, including the git remote it captures, is pinned", "[cmd][parity
        0,
        "planar initialized\n"
        "  db:      $ROOT/planar.db\n"
-       "  schema:  38\n"
+       "  schema:  39\n"
        "  project: proj (id: 1)\n"
        "  next:    `planar assoc create project:proj --kind project`\n"
        "           `planar assoc add project:proj $ROOT/proj`\n"},
@@ -1611,26 +1626,26 @@ TEST_CASE("repeated init and --force are pinned", "[cmd][parity][cli-surface][in
       {"i1",
        {"init", "--json"},
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":38,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":39,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       // Idempotent: `--name` is NOT applied on the second run, because the
       // insert is OR IGNORE.
       {"i2",
        {"init", "--name", "Ignored", "--json"},
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":38,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":39,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"proj\",\"root_path\":\"$ROOT/proj\"}\n"},
       // `--force` repoints the SAME row id rather than inserting a second.
       {"i3",
        {"init", "--force", "--name", "Renamed", "--json"},
        "{\"ok\":true,\"db\":\"$ROOT/"
-       "planar.db\",\"schema_version\":38,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
+       "planar.db\",\"schema_version\":39,\"project_id\":1,\"project_slug\":\"proj\",\"project_name\":"
        "\"Renamed\",\"root_path\":\"$ROOT/proj\"}\n"},
       {"i4",
        {"init"},
        "planar initialized\n"
        "  db:      $ROOT/planar.db\n"
-       "  schema:  38\n"
+       "  schema:  39\n"
        "  project: proj (id: 1)\n"
        "  next:    `planar assoc create project:proj --kind project`\n"
        "           `planar assoc add project:proj $ROOT/proj`\n"},

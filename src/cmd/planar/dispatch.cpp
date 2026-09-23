@@ -84,6 +84,81 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
   }
 }
 
+/// @brief A `std::streambuf` that forwards every write through unchanged
+/// while counting whether anything was written at all (task 6903).
+///
+/// Detects "the handler already wrote to stdout" AT THE DISPATCH SITE,
+/// rather than special-casing individual verbs (`audit handoff-readiness
+/// --json`, `templates validate --json`, and any future one): a handler
+/// that fails after already emitting its own JSON payload must not also
+/// get the additive `--json` error envelope appended, or a `json.loads`
+/// consumer reading stdout sees two documents on one stream and breaks.
+/// A handler that writes NOTHING before failing is unaffected -- it still
+/// gets the envelope, which is the only document on the stream either way.
+class counting_streambuf final : public std::streambuf {
+public:
+  explicit counting_streambuf(std::streambuf* sink) : _sink(sink) {
+  }
+
+  /// @return Whether any character passed through this buffer.
+  [[nodiscard]] auto wrote_anything() const -> bool {
+    return _wrote;
+  }
+
+protected:
+  auto overflow(int_type ch) -> int_type override {
+    if (ch == traits_type::eof()) {
+      return traits_type::not_eof(ch);
+    }
+    _wrote = true;
+    return _sink->sputc(static_cast<char>(ch));
+  }
+
+  auto xsputn(const char* s, std::streamsize count) -> std::streamsize override {
+    if (count > 0) {
+      _wrote = true;
+    }
+    return _sink->sputn(s, count);
+  }
+
+  auto sync() -> int override {
+    return _sink->pubsync();
+  }
+
+private:
+  std::streambuf* _sink;
+  bool            _wrote = false;
+};
+
+/// @brief Run `fn`, reporting whether it wrote anything to `stream`.
+/// @param stream The stream to intercept (`ctx.out()`).
+/// @param fn The callable to run with `stream`'s rdbuf temporarily
+/// replaced by a counting proxy.
+/// @return Whatever `fn` returns.
+template <class Fn> auto run_tracking_stdout_writes(std::ostream& stream, Fn&& fn) -> std::pair<std::invoke_result_t<Fn>, bool> {
+  // The restore is a scope guard, not a statement after the call: a
+  // handler that throws would otherwise leave `stream` pointing at a
+  // destroyed `counting_streambuf`, so any later write — including one
+  // during static destruction — would be a use-after-free. Handlers
+  // surface failure through `std::expected` rather than exceptions, so
+  // this costs nothing on the path we actually take; it removes a trap
+  // for the one that we do not (reviewer, cycle 7).
+  struct restore_rdbuf {
+    std::ostream*   stream;
+    std::streambuf* orig;
+    ~restore_rdbuf() {
+      stream->rdbuf(orig);
+    }
+  };
+
+  auto* const        orig = stream.rdbuf();
+  counting_streambuf counter{orig};
+  stream.rdbuf(&counter);
+  restore_rdbuf const guard{&stream, orig};
+  auto                result = std::forward<Fn>(fn)();
+  return {std::move(result), counter.wrote_anything()};
+}
+
 } // namespace
 
 /// @brief A handler that always refuses with `not_implemented` (exit 64),
@@ -707,15 +782,33 @@ auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> r
   auto       args  = cliapp::harvest(root);
   auto const key   = cliapp::path_key(args.path);
   auto const found = table.find(key);
+  // Task 6844 (decision 1145, supersedes D5): the --json error envelope is
+  // additive on stdout -- the same stream a successful handler's JSON
+  // output already uses -- gated on the SAME flag. report()'s pinned
+  // `error: <verb>: <Tag>` text stays on stderr, unchanged. Checked once
+  // here rather than per report() call site.
+  auto const want_json_envelope = cliapp::flag_bool(args, "--json");
   if (found == table.end()) {
     auto const err = error_from_body(domain_error_kind::not_implemented, "not implemented yet");
     report(err, ctx.err());
+    if (want_json_envelope) {
+      report_json_envelope(key, err, ctx.out());
+    }
     return run_outcome{.code = exit_code(err), .kind = err.kind};
   }
 
-  auto const outcome = found->second(ctx, args);
+  // Task 6903: detect "the handler already wrote a JSON payload to
+  // stdout" HERE, once, rather than special-casing `audit
+  // handoff-readiness --json` and `templates validate --json`
+  // individually. One JSON document per stream is the contract a
+  // `json.loads` consumer relies on; a handler that already emitted its
+  // own body must not ALSO get the additive error envelope appended.
+  auto [outcome, wrote_stdout] = run_tracking_stdout_writes(ctx.out(), [&] { return found->second(ctx, args); });
   if (!outcome) {
     report(outcome.error(), ctx.err());
+    if (want_json_envelope && !wrote_stdout) {
+      report_json_envelope(key, outcome.error(), ctx.out());
+    }
     return run_outcome{.code = exit_code(outcome.error()), .kind = outcome.error().kind};
   }
   return run_outcome{.code = exit_success};

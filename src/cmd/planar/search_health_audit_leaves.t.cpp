@@ -97,6 +97,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -660,12 +662,12 @@ TEST_CASE("audit session gives a non-integer id exit 2 and a missing id exit 1",
   CHECK(missing.code == 1);
   CHECK(missing.err == "error: session 99 not found\n");
 
-  // `--json` does NOT wrap the refusal in an envelope; the bytes are the
-  // same on both streams.
+  // `--json` adds the additive error envelope on stdout (decision 1145,
+  // task 6844); stderr stays the same bytes either way.
   auto const missing_json = dispatch(fx, {"audit", "session", "99", "--json"});
   CHECK(missing_json.code == 1);
   CHECK(missing_json.err == "error: session 99 not found\n");
-  CHECK(missing_json.out.empty());
+  CHECK(missing_json.out == planar::cmd::testsupport::json_error_envelope_line("audit session", "not_found"));
 }
 
 // This file used to carry "the two unported audit leaves still refuse at

@@ -342,6 +342,13 @@ TEST_CASE("begin_transaction(lock_mode::immediate) takes the write lock synchron
   auto conn_b = planar::db::connection::open(scratch.path_.string());
   REQUIRE(conn_b.has_value());
 
+  // Task 6842: connection::open now sets busy_timeout=5000 by default, so
+  // conn_b's blocked write below would otherwise retry for up to 5 real
+  // seconds before finally reporting SQLITE_BUSY. Override it down for this
+  // test -- the property under test is which lock mode blocks a concurrent
+  // writer, not how long the retry window is.
+  REQUIRE(conn_b->execute("pragma busy_timeout = 50;"));
+
   {
     auto txn_a = conn_a->begin_transaction(planar::db::lock_mode::immediate);
     REQUIRE(txn_a.has_value());
@@ -350,8 +357,8 @@ TEST_CASE("begin_transaction(lock_mode::immediate) takes the write lock synchron
     // mode this would still be lock-free. Because it requested
     // `immediate`, the RESERVED (write) lock was already taken
     // synchronously inside `begin_transaction` above, so a second
-    // connection's plain write fails right now with SQLITE_BUSY (default
-    // busy_timeout is 0 — no retry window) rather than succeeding or
+    // connection's plain write fails right now with SQLITE_BUSY (conn_b's
+    // busy_timeout was lowered to 50ms above) rather than succeeding or
     // blocking indefinitely.
     auto blocked_write = conn_b->execute("insert into t (n) values (1);");
     REQUIRE_FALSE(blocked_write.has_value());
@@ -670,4 +677,53 @@ TEST_CASE("a statement outliving its connection does not leak the connection han
   // incidental allocator noise cannot flip it either way.
   INFO("sqlite3_memory_used delta across the orphaned-statement scope: " << (after - before));
   CHECK(after - before < 1024);
+}
+
+// --- shared WAL / busy_timeout (task 6842) ----------------------------------
+
+namespace {
+
+/// @brief Reads a single-row, single-column PRAGMA result as text (e.g.
+/// `PRAGMA journal_mode` returns `"wal"`/`"delete"`, `PRAGMA busy_timeout`
+/// returns an integer that stringifies the same way through `column_text`).
+auto pragma_text(planar::db::connection& conn, std::string_view pragma) -> std::string {
+  auto stmt = conn.prepare(std::string{pragma});
+  REQUIRE(stmt.has_value());
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+  REQUIRE(*stepped == planar::db::step_result::row);
+  return stmt->column_text(0);
+}
+
+} // namespace
+
+TEST_CASE("connection::open sets busy_timeout=5000 and journal_mode=WAL by default", "[db][connection][6842]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  CHECK(pragma_text(*conn, "PRAGMA busy_timeout") == "5000");
+  CHECK(pragma_text(*conn, "PRAGMA journal_mode") == "wal");
+}
+
+TEST_CASE("connection::open_read_only sets busy_timeout=5000 without attempting to switch journal_mode "
+          "(a write a read-only handle cannot make)",
+          "[db][connection][6842]") {
+  scratch_db_path scratch;
+  {
+    // open_read_only requires the path to already exist.
+    auto seed = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(seed.has_value());
+  }
+
+  // If open_read_only tried to execute `PRAGMA journal_mode = WAL` (a
+  // write) on its own SQLITE_OPEN_READONLY handle, SQLite would refuse it
+  // with SQLITE_READONLY and -- since connection::open's own busy_timeout
+  // pragma is NOT best-effort -- the open itself would fail. Succeeding at
+  // all is therefore part of the contract this pins, not just the value
+  // below.
+  auto conn = planar::db::connection::open_read_only(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  CHECK(pragma_text(*conn, "PRAGMA busy_timeout") == "5000");
 }

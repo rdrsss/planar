@@ -34,6 +34,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -119,7 +121,7 @@ TEST_CASE("report --json on a fresh scratch arena reports the deterministic empt
   auto const result = dispatch(fx, {"report", "--json"});
   CHECK(result.code == 0);
   CHECK(result.err.empty());
-  CHECK(result.out.starts_with(R"({"version":"planar","schema_version":38,"health":"ok","window":30,)"));
+  CHECK(result.out.starts_with(R"({"version":"planar","schema_version":39,"health":"ok","window":30,)"));
   CHECK(result.out.find(R"("invocations":[])") != std::string::npos);
   CHECK(result.out.find(R"("introspection_preview":{"signals":[],"coverage":[)") != std::string::npos);
   CHECK(result.out.find(R"({"vendor":"claude","state":"unavailable","scanned":0)") != std::string::npos);
@@ -157,7 +159,7 @@ TEST_CASE("report refuses at exit 1 when config.toml exists but fails to parse",
   auto const result = dispatch(fx, {"report", "--json"});
   CHECK(result.code == 1);
   CHECK(result.err == "error: resolving report config\n");
-  CHECK(result.out.empty());
+  CHECK(result.out == planar::cmd::testsupport::json_error_envelope_line("report", "generic_failure"));
 }
 
 TEST_CASE("report's cli_log adapter turns a genuine query failure into cli_adapter_failed, not silence",

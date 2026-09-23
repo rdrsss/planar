@@ -20,6 +20,17 @@
 #     section referenced `5`.
 #   - `pl-health` mapped exit 2 to `critical`, so `planar health --typo`
 #     reported a CRITICAL system (task 6814).
+#   - It omitted `8` (worktree-gate refusal) entirely, AND every case here
+#     ran from the CALLER's cwd rather than an isolated scratch one (task
+#     6845 / bug 6896): `PLANAR_DB`/`HOME`/`PLANAR_WORKBENCH_ROOT` were
+#     isolated but the working directory was not, so running this script
+#     from inside a git worktree (as a coder cycle's own checkout often is)
+#     made the worktree gate fire on the ordinary "missing required
+#     argument" `task add` case BEFORE the parser ever ran, silently
+#     reporting exit 8 in place of the expected 2. Every case below now
+#     runs from a dedicated non-git scratch directory, and a NEW case
+#     creates its own throwaway git repo + worktree to exercise the gate
+#     for real.
 #
 # Every existing gate stayed green throughout: `cli_usage_lint` checks that
 # authored surfaces never name an unexposed FLAG, `surface_lint` checks
@@ -64,6 +75,12 @@ for b in planar planar-agent planar-watch planar-ext; do
 done
 [ -f "$doc" ] || { printf 'exit-code-contract: no doc at %s\n' "$doc" >&2; exit 2; }
 
+# Resolve to ABSOLUTE paths before any case cd's into an isolated scratch
+# working directory below (task 6845) -- a relative $bin_dir/$doc would
+# stop resolving the moment the cwd changes.
+bin_dir="$(cd "$bin_dir" && pwd)"
+doc="$(cd "$(dirname "$doc")" && pwd)/$(basename "$doc")"
+
 # Scratch DB *and* scratch HOME. `PLANAR_HOME` alone does NOT redirect the
 # database: without PLANAR_DB the runtime falls back to ~/.planar/planar.db
 # and auto-applies pending migrations, moving the operator's live schema.
@@ -71,28 +88,54 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export PLANAR_DB="$tmp/db.sqlite" HOME="$tmp/home" PLANAR_WORKBENCH_ROOT="$tmp/wb"
 mkdir -p "$HOME"
-# Run from a scratch directory outside any repository. The cases invoke
-# PLANNING verbs, which refuse outright (exit 8) when the cwd is inside a
-# git worktree -- before the argument validation whose exit code is under
-# test. Run from a worktree, `planar task add` returned 8 where this gate
-# wants 2, and the gate failed on WHERE it ran rather than on what the
-# binary does.
-# Both paths are resolved to absolute FIRST: everything below runs from $tmp.
-bin_dir="$(cd "$bin_dir" && pwd)" || exit 1
-doc="$(cd "$(dirname "$doc")" && pwd)/$(basename "$doc")"
-cd "$tmp" || exit 1
-"$bin_dir/planar" init --name contract >/dev/null 2>&1 || true
+# The WORKING DIRECTORY is isolated too (task 6845 / bug 6896), separately
+# from PLANAR_DB/HOME/WORKBENCH above: a plain, non-git scratch directory.
+# The cases invoke PLANNING verbs, which refuse outright (exit 8) when the
+# cwd is inside a git worktree -- before the argument validation whose exit
+# code is under test. Run from a worktree, `planar task add` returned 8
+# where this gate wants 2, and the gate failed on WHERE it ran rather than
+# on what the binary does.
+#
+# Master's plan-1033 M1 fixed the same bug by `cd "$tmp"` once; this keeps
+# the per-case `(cd "$workdir" && ...)` form instead, because the
+# worktree-gate case below must run from an EXPLICIT git worktree while
+# every other case must not — one ambient cd cannot express both. The
+# absolute-path resolution master paired with its fix is already done
+# above, at the `bin_dir`/`doc` lines.
+workdir="$tmp/work"
+mkdir -p "$workdir"
+
+(cd "$workdir" && "$bin_dir/planar" init --name contract >/dev/null 2>&1) || true
 
 failures=0
 checked=0
 declare -a expected_codes=()
 
-# case: <expected> <label> -- <binary> <argv...>
+# case: <expected> <label> <binary> <argv...> — runs from the isolated,
+# non-git `$workdir`.
 check() {
   local want="$1"; shift
   local label="$1"; shift
   local bin="$1"; shift
-  "$bin_dir/$bin" "$@" >/dev/null 2>&1
+  (cd "$workdir" && "$bin_dir/$bin" "$@" >/dev/null 2>&1)
+  local got=$?
+  checked=$((checked + 1))
+  expected_codes+=("$want")
+  if [ "$got" -ne "$want" ]; then
+    printf 'MISMATCH  %-46s want %-3s got %s   (%s %s)\n' "$label" "$want" "$got" "$bin" "$*"
+    failures=$((failures + 1))
+  fi
+}
+
+# case: <expected> <label> <cwd> <binary> <argv...> — runs from an
+# EXPLICIT cwd rather than `$workdir`. Only the worktree-gate case below
+# needs this; every other case wants the plain isolated directory.
+check_in() {
+  local want="$1"; shift
+  local label="$1"; shift
+  local dir="$1"; shift
+  local bin="$1"; shift
+  (cd "$dir" && "$bin_dir/$bin" "$@" >/dev/null 2>&1)
   local got=$?
   checked=$((checked + 1))
   expected_codes+=("$want")
@@ -116,6 +159,21 @@ check 1 "planar-ext: unknown flag"          planar-ext --no-such-flag
 
 # --- the removed-verb stubs -------------------------------------------------
 check 2 "planar: removed verb (scope use)"  planar scope use anything
+
+# --- the worktree gate (task 6845): a planning verb run from inside a git
+# worktree exits 8, BEFORE the parser even runs -- so this fires even
+# though `task add` with no flags would otherwise be the exit-2 "missing
+# required argument" case above. A throwaway git repo + worktree, entirely
+# under $tmp, never the real checkout.
+git_repo="$tmp/gitrepo"
+mkdir -p "$git_repo"
+git -C "$git_repo" init -q -b main >/dev/null 2>&1
+git -C "$git_repo" -c user.email=contract@example.com -c user.name=contract \
+  commit -q --allow-empty -m init >/dev/null 2>&1
+worktree_path="$tmp/gitrepo-wt"
+git -C "$git_repo" worktree add -q -b exit-code-contract-wt "$worktree_path" main >/dev/null 2>&1
+
+check_in 8 "planar: worktree-gate refusal" "$worktree_path" planar task add
 
 printf 'exit-code-contract: %d behaviour cases checked\n' "$checked"
 

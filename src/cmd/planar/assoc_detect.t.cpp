@@ -53,6 +53,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -314,7 +316,9 @@ TEST_CASE("assoc detect --apply refuses in an unregistered directory", "[cmd][as
 
   auto const applied = dispatch(fx, {"assoc", "detect", "--apply", "--json"});
   CHECK(applied.code == 1);
-  CHECK(applied.out.empty()); // it dies before printing any proposal
+  // Additive --json error envelope (decision 1145, task 6844); it dies
+  // before printing any proposal.
+  CHECK(applied.out == planar::cmd::testsupport::json_error_envelope_line("assoc detect", "generic_failure"));
   // The message names the cwd AND the remedy. Pinned as a whole sentence:
   // a refusal that merely said "not found" would satisfy the exit code.
   CHECK(applied.err == std::format("error: no project registered at cwd ({}); run `planar init` first\n", fx.repo.string()));

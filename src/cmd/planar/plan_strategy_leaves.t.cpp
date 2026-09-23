@@ -86,6 +86,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -545,7 +547,9 @@ TEST_CASE("both leaves refuse a missing plan at exit 1 and a non-integer id at e
     auto const missing = dispatch(fx, {"plan", verb, "99999", "--json"});
     CHECK(missing.code == 1); // not_found maps to exit 1, not 2
     CHECK(missing.err == "error: plan 99999 not found\n");
-    CHECK(missing.out.empty()); // the refusal is NOT a JSON document
+    // The refusal is NOT a JSON document -- only the additive envelope
+    // (decision 1145, task 6844) is on stdout.
+    CHECK(missing.out == planar::cmd::testsupport::json_error_envelope_line(std::format("plan {}", verb), "not_found"));
 
     auto const missing_text = dispatch(fx, {"plan", verb, "99999"});
     CHECK(missing_text.code == 1);

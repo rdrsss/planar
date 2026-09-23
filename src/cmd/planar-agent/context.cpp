@@ -82,17 +82,9 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   }
   _db.emplace(std::move(*opened));
 
-  // Both PRAGMAs are best-effort and degrade to a warning, exactly as the
-  // Zig original does — a failure here slows things down, it does not make
-  // the answer wrong, so it must not abort the verb.
-  if (auto const wal = _db->execute("PRAGMA journal_mode = WAL"); !wal) {
-    err() << std::format("warning: failed to set journal_mode=WAL ({}); follow / dashboard latency may degrade\n",
-                         wal.error().message_);
-  }
-  if (auto const busy = _db->execute("PRAGMA busy_timeout = 5000"); !busy) {
-    err() << std::format("warning: failed to set busy_timeout ({}); concurrent writers may see SQLITE_BUSY\n",
-                         busy.error().message_);
-  }
+  // journal_mode=WAL and busy_timeout=5000 are set once, centrally, by
+  // `db::connection::open` itself (task 6842, decision D7) -- this binary
+  // no longer duplicates them here.
 
   // NO apply_all. `planar init` owns migration; this binary consumes the
   // schema. See this module's header.

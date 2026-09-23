@@ -38,6 +38,20 @@ export struct db_error {
   std::string message_;  ///< The driver's own error message (`sqlite3_errmsg`).
 };
 
+/// @brief True when `err` is a post-timeout `SQLITE_BUSY` (task 6843): the
+/// connection could not acquire a competing lock even after its
+/// `busy_timeout` window (see `connection::open`) elapsed.
+///
+/// SQLite reports several EXTENDED busy codes (e.g.
+/// `SQLITE_BUSY_SNAPSHOT`), whose low byte is always plain `SQLITE_BUSY`
+/// (5) -- the same convention `planar.engine.planning.annotation`'s
+/// `command_db_error` already uses. Callers that want to distinguish
+/// "retry me" (busy) from "something is actually wrong" (every other
+/// failure) should check this instead of comparing `code_` directly.
+/// @param err The failure to classify.
+/// @return `true` when `err` is a busy-source failure.
+export auto is_busy(const db_error& err) noexcept -> bool;
+
 /// @brief Outcome of a single `statement::step()` call.
 export enum class step_result {
   row, ///< A row is available; read columns before stepping again.

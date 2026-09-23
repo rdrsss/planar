@@ -16,6 +16,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -186,7 +188,7 @@ TEST_CASE("interpreted import rolls every prior write back when reconciliation f
   static_cast<void>(stage_cache(fx, true));
   auto const rejected = dispatch(fx, {"import", (fx.root / "repo").string(), "--interpret", "--apply", "--json"});
   CHECK(rejected.code == 1);
-  CHECK(rejected.out.empty());
+  CHECK(rejected.out == planar::cmd::testsupport::json_error_envelope_line("import", "generic_failure"));
   CHECK(rejected.err == "error: invalid import arguments\n");
   CHECK(inventory(fx) == "plans=0 tasks=0 artifacts=0 decisions=0 links=0");
 }

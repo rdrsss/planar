@@ -62,6 +62,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -182,6 +184,10 @@ TEST_CASE("handoff-readiness reports the pass rate over in-flight tasks", "[cmd]
   // Two of three pass, so the DEFAULT threshold of 90 is not met and the
   // verb refuses — the payload is still written in full.
   CHECK(res.code == 1);
+  // The additive --json error envelope (decision 1145, task 6844) is
+  // SUPPRESSED here (task 6903): the handler already wrote its own JSON
+  // payload to stdout, and appending a second document would break a
+  // `json.loads` consumer. One document per stream -- the payload alone.
   CHECK(res.out == R"({"total":3,"passing":2,"failing":1,"percentage":66.67,"threshold":90,"ok":false})"
                    "\n");
   CHECK(res.err == "error: handoff readiness below threshold\n");
@@ -200,6 +206,8 @@ TEST_CASE("the threshold gate TRUNCATES while the display ROUNDS", "[cmd][audit]
 
   auto const at67 = dispatch(fx, {"audit", "handoff-readiness", "--threshold", "67", "--json"});
   CHECK(at67.code == 1);
+  // Task 6903: no envelope appended; the handler's own payload is the
+  // whole document.
   CHECK(at67.out == R"({"total":3,"passing":2,"failing":1,"percentage":66.67,"threshold":67,"ok":false})"
                     "\n");
 
@@ -211,6 +219,42 @@ TEST_CASE("the threshold gate TRUNCATES while the display ROUNDS", "[cmd][audit]
   CHECK(text67.out == "handoff-readiness: 2/3 tasks pass (67%, threshold 67%)\n"
                       "  FAIL task:3 \"T three\" [todo]\n"
                       "FAIL: threshold not met (67% < 67%)\n");
+}
+
+TEST_CASE("a failing --json run with a payload emits exactly ONE JSON document on stdout",
+          "[cmd][audit][handoff-readiness][6903]") {
+  // Task 6903: dispatched via `dispatch.cpp`'s `run_tracking_stdout_writes`
+  // -- the handler already wrote `{"total":...}` to stdout before
+  // returning failure, so the additive --json error envelope is
+  // SUPPRESSED. A caller doing `json.loads(proc.stdout)` must see exactly
+  // one document, never two concatenated ones.
+  auto const fx = make_fixture("onedoc");
+  seed(fx);
+
+  auto const res = dispatch(fx, {"audit", "handoff-readiness", "--json"});
+  CHECK(res.code == 1);
+  // Exactly one newline -- one line, one JSON document. A regression that
+  // re-appends the envelope would push this to 2.
+  CHECK(std::ranges::count(res.out, '\n') == 1);
+  CHECK(res.out.starts_with(R"({"total":3,)"));
+  CHECK_FALSE(res.out.contains(R"("error":{"verb")"));
+}
+
+TEST_CASE("a failing --json HANDLER that writes NOTHING still gets the envelope, unaffected by task 6903",
+          "[cmd][audit][handoff-readiness][6903]") {
+  // Contrast case: `resume validate <missing task> --json` runs a real
+  // handler that fails WITHOUT writing anything to stdout first (see
+  // `resume validate: absent task writes NOTHING to stdout` in
+  // handlers.t.cpp). The dispatch-site detection added by task 6903 must
+  // not suppress the envelope here -- it is the ONLY document on stdout,
+  // and dropping it would silently regress every verb that writes nothing
+  // before failing.
+  auto const fx = make_fixture("nodoc");
+  REQUIRE(dispatch(fx, {"init", "--name", "nodoc", "--json"}).code == 0);
+
+  auto const res = dispatch(fx, {"resume", "validate", "999", "--json"});
+  CHECK(res.code == 1);
+  CHECK(res.out == planar::cmd::testsupport::json_error_envelope_line("resume validate", "not_found"));
 }
 
 TEST_CASE("the FAIL list is not gated on the verdict", "[cmd][audit][handoff-readiness]") {

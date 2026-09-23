@@ -83,6 +83,8 @@ auto name_of(pl::task_error err) -> std::string_view {
     return "InvalidDueAt";
   case pl::task_error::query_failed:
     return "QueryFailed";
+  case pl::task_error::busy_source:
+    return "Busy";
   case pl::task_error::audit_write_failed:
     return "WriteFailed";
   }

@@ -72,6 +72,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -372,7 +374,7 @@ TEST_CASE("the scope flag takes the ASSOCIATION slug and refuses the repo slug",
   // trips over, so both arms are pinned.
   auto const bad = dispatch(fx, {"dashboard", "--scope", "proj", "--json"});
   CHECK(bad.code == 1);
-  CHECK(bad.out.empty());
+  CHECK(bad.out == planar::cmd::testsupport::json_error_envelope_line("dashboard", "generic_failure"));
   CHECK(bad.err == "error: plan list: SlugNotFound\n");
 
   // And `--scope` is NOT comma-split, unlike `plan list --scope`: the

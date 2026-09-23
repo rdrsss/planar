@@ -91,6 +91,8 @@ import planar.cmd.planar.dispatch;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.tree;
 
+#include "json_envelope_test_support.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -1103,7 +1105,7 @@ TEST_CASE("annotate verify carries its own SlugNotFound wording", "[cmd][annotat
   auto const fx  = make_fixture("verifyslug");
   auto const got = dispatch(fx, {"annotate", "verify", "--scope", "nosuch", "--json"});
   CHECK(got.code == 1);
-  CHECK(got.out.empty());
+  CHECK(got.out == planar::cmd::testsupport::json_error_envelope_line("annotate verify", "generic_failure"));
   CHECK(got.err == "error: annotate verify: list failed: SlugNotFound\n");
 }
 
@@ -1180,7 +1182,7 @@ TEST_CASE("annotate sweep --scope restricts the blast radius to the named scope"
   // `<leaf>: SlugNotFound` body `annotate list` uses.
   auto const unknown = dispatch(fx, {"annotate", "sweep", "--scope", "nosuch", "--json"});
   CHECK(unknown.code == 1);
-  CHECK(unknown.out.empty());
+  CHECK(unknown.out == planar::cmd::testsupport::json_error_envelope_line("annotate sweep", "generic_failure"));
   CHECK(unknown.err == "error: annotate sweep: SlugNotFound\n");
   CHECK(status_map(conn) == "1=resolved,2=resolved");
 
@@ -1550,6 +1552,7 @@ TEST_CASE("annotation command reports a competing write lock as retryable busy w
   auto const source = ann::source_uuid(conn);
   REQUIRE(source.has_value());
 
+  REQUIRE(conn.execute("pragma busy_timeout = 50;"));
   auto lock = conn.begin_transaction(planar::db::lock_mode::immediate);
   REQUIRE(lock.has_value());
   auto const request = std::format(

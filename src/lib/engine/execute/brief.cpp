@@ -22,25 +22,24 @@ namespace {
 /// @param values The evidence rows.
 auto render_packet_evidence(std::string& out, std::string_view heading, std::vector<state::packet_evidence> const& values)
     -> void {
-  std::format_to(std::back_inserter(out), "### {}\n\n", heading);
+  out += std::format("### {}\n\n", heading);
   if (values.empty()) {
     out += "_(none)_\n\n";
     return;
   }
   for (auto const& value : values) {
-    std::format_to(std::back_inserter(out), "- `{}:{}` locator=`{}` status=`{}` freshness=`{}` required={} covered={}\n",
-                   value.kind, value.id, value.locator, value.status, value.freshness, value.required, value.covered);
-    std::format_to(std::back_inserter(out), "  - provenance: `{}`\n", value.provenance);
-    std::format_to(std::back_inserter(out), "  - source digest: `{}`\n", value.source_digest);
-    std::format_to(std::back_inserter(out), "  - current digest: `{}`\n", value.current_digest);
-    std::format_to(std::back_inserter(out), "  - materializer: `{}` / current `{}`\n", value.materializer_version,
-                   value.current_materializer_version);
+    out += std::format("- `{}:{}` locator=`{}` status=`{}` freshness=`{}` required={} covered={}\n", value.kind, value.id,
+                       value.locator, value.status, value.freshness, value.required, value.covered);
+    out += std::format("  - provenance: `{}`\n", value.provenance);
+    out += std::format("  - source digest: `{}`\n", value.source_digest);
+    out += std::format("  - current digest: `{}`\n", value.current_digest);
+    out += std::format("  - materializer: `{}` / current `{}`\n", value.materializer_version, value.current_materializer_version);
     if (!value.display_label.empty()) {
-      std::format_to(std::back_inserter(out), "  - display label: {}\n", value.display_label);
+      out += std::format("  - display label: {}\n", value.display_label);
     }
     out += "  - exact text:\n";
     for (auto const line : std::views::split(value.text, '\n')) {
-      std::format_to(std::back_inserter(out), "    > {}\n", std::string_view{line.begin(), line.end()});
+      out += std::format("    > {}\n", std::string_view{line.begin(), line.end()});
     }
   }
   out += '\n';
@@ -52,7 +51,7 @@ auto render_packet_evidence(std::string& out, std::string_view heading, std::vec
 /// @param text The excerpt.
 auto render_blockquote(std::string& out, std::string_view text) -> void {
   for (auto const line : std::views::split(text, '\n')) {
-    std::format_to(std::back_inserter(out), "  > {}\n", std::string_view{line.begin(), line.end()});
+    out += std::format("  > {}\n", std::string_view{line.begin(), line.end()});
   }
 }
 
@@ -93,44 +92,43 @@ auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, bri
 
   if (authoritative_plan.has_value()) {
     auto const& label = authoritative_plan->display_label.empty() ? authoritative_plan->text : authoritative_plan->display_label;
-    std::format_to(std::back_inserter(out), "**Plan:** {} (id {})\n", label, authoritative_plan->id);
+    out += std::format("**Plan:** {} (id {})\n", label, authoritative_plan->id);
   } else {
-    std::format_to(std::back_inserter(out), "**Plan:** {} (id {})\n", inputs.plan.title, inputs.plan.id);
+    out += std::format("**Plan:** {} (id {})\n", inputs.plan.title, inputs.plan.id);
   }
   if (inputs.plan.slug.has_value()) {
-    std::format_to(std::back_inserter(out), "**Plan slug:** {}\n", *inputs.plan.slug);
+    out += std::format("**Plan slug:** {}\n", *inputs.plan.slug);
   }
-  std::format_to(std::back_inserter(out), "**Plan status:** {}\n\n",
-                 authoritative_plan.has_value() ? authoritative_plan->status : inputs.plan.status);
+  out += std::format("**Plan status:** {}\n\n", authoritative_plan.has_value() ? authoritative_plan->status : inputs.plan.status);
 
   out += "**Task(s) dispatched:**\n";
   if (inputs.authoritative_packet.has_value()) {
     auto const& authoritative = *inputs.authoritative_packet;
     auto const& slug          = inputs.tasks[0].slug;
     if (slug.has_value()) {
-      std::format_to(std::back_inserter(out), "- task:{} — {} [slug: {}; status: {}]\n", authoritative.input.task_id,
-                     authoritative.input.title, *slug, authoritative.input.status);
+      out += std::format("- task:{} — {} [slug: {}; status: {}]\n", authoritative.input.task_id, authoritative.input.title, *slug,
+                         authoritative.input.status);
     } else {
-      std::format_to(std::back_inserter(out), "- task:{} — {} [status: {}]\n", authoritative.input.task_id,
-                     authoritative.input.title, authoritative.input.status);
+      out += std::format("- task:{} — {} [status: {}]\n", authoritative.input.task_id, authoritative.input.title,
+                         authoritative.input.status);
     }
   } else {
     for (auto const& task : inputs.tasks) {
       if (task.slug.has_value()) {
-        std::format_to(std::back_inserter(out), "- task:{} — {} [slug: {}]\n", task.id, task.title, *task.slug);
+        out += std::format("- task:{} — {} [slug: {}]\n", task.id, task.title, *task.slug);
       } else {
-        std::format_to(std::back_inserter(out), "- task:{} — {}\n", task.id, task.title);
+        out += std::format("- task:{} — {}\n", task.id, task.title);
       }
     }
   }
   out += '\n';
 
-  std::format_to(std::back_inserter(out), "**Claim token:** `{}`\n\n",
-                 authoritative_claim.has_value() ? authoritative_claim->text : inputs.claim_token);
+  out +=
+      std::format("**Claim token:** `{}`\n\n", authoritative_claim.has_value() ? authoritative_claim->text : inputs.claim_token);
   if (inputs.authoritative_packet.has_value()) {
     auto const& authoritative = *inputs.authoritative_packet;
-    std::format_to(std::back_inserter(out), "**Authoritative packet digest:** `{}`\n\n", authoritative.digest);
-    std::format_to(std::back_inserter(out), "**Authoritative task title:** {}\n\n", authoritative.input.title);
+    out += std::format("**Authoritative packet digest:** `{}`\n\n", authoritative.digest);
+    out += std::format("**Authoritative task title:** {}\n\n", authoritative.input.title);
   }
 
   // ---------------------------------------------------------------------
@@ -147,14 +145,14 @@ auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, bri
   out += "## Read firsthand (do not paraphrase)\n\n";
   if (inputs.authoritative_packet.has_value()) {
     for (auto const& citation : inputs.authoritative_packet->input.citations) {
-      std::format_to(std::back_inserter(out), "- `{}`\n", citation.locator);
+      out += std::format("- `{}`\n", citation.locator);
     }
     out += '\n';
   } else if (inputs.spec_citations.empty()) {
     out += "_(no spec citations for this cycle)_\n\n";
   } else {
     for (auto const& citation : inputs.spec_citations) {
-      std::format_to(std::back_inserter(out), "- `{}`\n", citation.path);
+      out += std::format("- `{}`\n", citation.path);
       if (citation.verbatim_slice.has_value()) {
         out += "  > (verbatim excerpt):\n";
         render_blockquote(out, *citation.verbatim_slice);
@@ -169,14 +167,14 @@ auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, bri
   out += "## Locked decisions\n\n";
   if (inputs.authoritative_packet.has_value()) {
     for (auto const& decision : inputs.authoritative_packet->input.decisions) {
-      std::format_to(std::back_inserter(out), "- **{}**: {}\n", decision.id, decision.text);
+      out += std::format("- **{}**: {}\n", decision.id, decision.text);
     }
     out += '\n';
   } else if (inputs.locked_decisions.empty()) {
     out += "_(no locked decisions for this cycle)_\n\n";
   } else {
     for (auto const& decision : inputs.locked_decisions) {
-      std::format_to(std::back_inserter(out), "- **{}**: {}\n", decision.id, decision.text);
+      out += std::format("- **{}**: {}\n", decision.id, decision.text);
     }
     out += '\n';
   }
@@ -184,8 +182,8 @@ auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, bri
   if (inputs.authoritative_packet.has_value()) {
     auto const& authoritative = *inputs.authoritative_packet;
     out += "## Authoritative packet context\n\n";
-    std::format_to(std::back_inserter(out), "**Task body:**\n\n{}\n\n", authoritative.input.body);
-    std::format_to(std::back_inserter(out), "**Exact next action:**\n\n{}\n\n", authoritative.input.next_action);
+    out += std::format("**Task body:**\n\n{}\n\n", authoritative.input.body);
+    out += std::format("**Exact next action:**\n\n{}\n\n", authoritative.input.next_action);
     render_packet_evidence(out, "Owning plans", authoritative.input.owning_plans);
     render_packet_evidence(out, "Anchor plans", authoritative.input.anchor_plans);
     render_packet_evidence(out, "Spec citations and source digests", authoritative.input.citations);
@@ -215,7 +213,7 @@ auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, bri
     if (has_records) {
       out += "### Context records\n\n";
       for (auto const& record : inputs.context_records) {
-        std::format_to(std::back_inserter(out), "- **{}**: {}\n", record.kind, record.body);
+        out += std::format("- **{}**: {}\n", record.kind, record.body);
       }
       out += '\n';
     }
@@ -232,7 +230,7 @@ auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, bri
       continue;
     }
     has_cmds = true;
-    std::format_to(std::back_inserter(out), "- `{}`", cmd.command);
+    out += std::format("- `{}`", cmd.command);
     if (!cmd.flags.empty()) {
       bool first = true;
       for (auto const& flag : cmd.flags) {
@@ -240,12 +238,12 @@ auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, bri
           out += " — flags:";
           first = false;
         }
-        std::format_to(std::back_inserter(out), " `{}`", flag.long_name);
+        out += std::format(" `{}`", flag.long_name);
         if (flag.required) {
           out += '*';
         }
         for (auto const& alias : flag.aliases) {
-          std::format_to(std::back_inserter(out), " / `{}`", alias);
+          out += std::format(" / `{}`", alias);
         }
       }
     }
@@ -262,14 +260,14 @@ auto compile_brief(brief_inputs const& inputs) -> std::expected<std::string, bri
   out += "## Gates (run all; paste counts verbatim in report)\n\n";
   if (inputs.authoritative_packet.has_value()) {
     for (auto const& gate : inputs.authoritative_packet->input.validation_gates) {
-      std::format_to(std::back_inserter(out), "- `{}`\n", gate.text);
+      out += std::format("- `{}`\n", gate.text);
     }
     out += '\n';
   } else if (inputs.gates.empty()) {
     out += "_(no gates specified — check the orchestrator brief)_\n\n";
   } else {
     for (auto const& gate : inputs.gates) {
-      std::format_to(std::back_inserter(out), "- `{}`\n", gate);
+      out += std::format("- `{}`\n", gate);
     }
     out += '\n';
   }

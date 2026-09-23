@@ -66,6 +66,7 @@ the `planar` binary.
 | `5` | **Cross-scope write refused** (see the cross-scope guard above). | `scope_mismatch` |
 | `6` | Precondition conflict: slug conflict, or the entity already exists. | `slug_conflict`, `already_exists` |
 | `7` | Database schema is **newer** than this binary supports. | `schema_version_ahead` |
+| `8` | **Worktree-gate refusal**: a planning verb was run from inside a git worktree. Outside the `domain_error_kind` bucket table entirely — `planar.cmd.planar.worktree_gate` returns it directly, before the parser even runs, so it fires even when the invocation's flags would also fail to parse. `--scope` does not bypass it. | `planar.cmd.planar.worktree_gate::check` |
 | `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
 
 **Usage errors exit `2`, not `64`.** An unknown flag, a missing required
@@ -88,6 +89,55 @@ policy). Measured, and confirmed live:
 
 So a script that branches on an exit code must know which binary produced it.
 Do not port a `planar` expectation onto `planar-agent` unchanged.
+
+### Error envelope tags — one vocabulary per binary (task 6902)
+
+Every failing `--json` invocation on `planar` or `planar-agent` writes an
+ADDITIVE one-line JSON error envelope to **stdout**, alongside the existing
+pinned `error: <verb>: <Tag>` text on stderr (task 6844, decision 1145):
+
+```
+{"error":{"verb":"<verb>","tag":"<tag>"}}
+```
+
+**One JSON document per stream (task 6903).** A handful of `planar`
+handlers write their own JSON payload to stdout and THEN fail (`audit
+handoff-readiness --json` at exit 1 once the pass rate is below
+threshold; `templates validate --json` at exit 2 once an issue is found).
+For those, the envelope above is NOT appended — the handler's own payload
+is the entire document. Appending a second JSON document on the same
+stream would break a `json.loads(proc.stdout)` consumer, which expects
+exactly one value. This is detected once, at the dispatch site, by
+tracking whether the handler wrote anything to stdout before failing —
+not by special-casing individual verbs — so it applies uniformly to any
+handler with this shape, present or future. A handler that writes
+NOTHING before failing (the common case — `resume validate <missing
+task>`, `audit session <missing id>`, and most others) is unaffected: the
+envelope is still the only document on stdout.
+
+**The two binaries spell `<tag>` in two DIFFERENT, DELIBERATE vocabularies.
+A script that branches on `tag` must know which binary produced the
+envelope, exactly as it already must for the exit code above.**
+
+| Binary | `<tag>` vocabulary | Source | Example |
+|--------|---------------------|--------|---------|
+| `planar` | snake_case `domain_error_kind` enumerator names — one distinct name per kind (`kind_name`, `src/cmd/planar/exit.cppm`). | `kind_name(err.kind)`, always. | `not_found`, `busy_source`, `invalid_input`, `parse_error`, `scope_mismatch` |
+| `planar-agent` | CamelCase Zig-style engine tags — the same spelling the pinned `error: <verb>: <Tag>` stderr line already ends in (`derive_tag`, `src/cmd/planar-agent/exit.cppm`). Falls back to `kind_name(err.kind)` only when the handler's own text does not already end in a bare CamelCase tag. | `derive_tag(err)`. | `ClaimNotFound`, `Busy`, `IllegalTransition`, `QueryFailed` |
+
+The split is intentional, not an oversight: `planar-agent`'s tag is reused
+directly from the handler's own Zig-style failure text because that text is
+already strictly more specific than `planar`'s `domain_error_kind`, which
+collapses many distinct engine failures into `generic_failure` (task 6843's
+`Busy`/`QueryFailed` split exists precisely so that distinction is not lost
+again behind a shared envelope shape). `planar` never emits a CamelCase tag,
+and `planar-agent` never emits a bare `domain_error_kind` name except as its
+documented fallback. **Do not assume the same condition produces the same
+tag spelling on both binaries** — the busy-source case is the sharpest
+example: a lock held past the timeout emits `Busy` from `planar-agent
+heartbeat --json` and `busy_source` from `planar task update --json` for
+the same underlying SQLite busy condition (see
+`src/cmd/planar/task_busy_leaf.t.cpp` and the `Busy`/`QueryFailed`
+scenario in this feature's test spec).
 
 ### Capture Behavior
 
@@ -854,6 +904,15 @@ For each distinct `(repo_root, branch, head_sha_at_claim)` tuple from `agent_wor
 
 Git-evidence failures never block apply.
 
+**A plan already `done` or `abandoned` (task 6889).** `closeout` on an already-terminal plan
+short-circuits to `ready:true, applied:false` before evaluating the gate rules — there is
+nothing left to close. `hard_evidence.tasks` / `.descendants` / `.claims` are still the REAL
+counts for that plan (collected the same as a live evaluation), so `--dry-run`/`--json` on an
+already-closed plan still tells the operator what closeout found, not an all-zero
+placeholder. Only `git_evidence` (empty) and `epic_merge` (unset, even with `--check-merge`)
+are skipped on this path — advisory locality data that was genuinely never collected, unlike
+the hard-evidence counts.
+
 **Options:**
 
 | Flag | Description | Default |
@@ -931,9 +990,9 @@ planar plan next <plan-id> [--include-claimed] [--include-stale] [--json]
 | `available` | Task status `todo` (or `doing` without an active claim) and ready to be pulled. |
 | `claimed` | Task has an active unexpired entry in `agent_work_claims`. |
 | `stale` | Task has a `stale` claim, or an `active` claim whose lease has expired without a reconcile pass. |
-| `blocked` | Task status `blocked`. |
+| `blocked` | Task status `blocked`, OR a `todo`/`doing` task carrying an outbound `depends-on` edge (`entity_links`) to a task whose status is not `done`/`cancelled`. |
 
-Same underlying selector as `planar-agent peek`, but returns the FULL bucket breakdown instead of just picking one row. This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
+Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (task 6841 / decision D6): a task with an open `depends-on` blocker never lands in `available`. This is a distinct query from `pull`/`peek`'s selector — not literally shared code — but the two agree on which rows are dispatchable, so an operator reading `plan next` sees the same eligibility an agent's `pull`/`peek` would (task 6898). `plan next` additionally folds a routing-packet-readiness gate into `blocked` that `pull`/`peek` do NOT apply (they exclude on the dependency clause only, per D6). This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
 
 **Options:**
 
@@ -2709,6 +2768,22 @@ when nonzero, and make the command exit 1. JSON always includes `malformed` and
 
 Conflicts (both FS and DB changed since last sync) are surfaced; they are not resolved
 automatically. Use `workbench resolve` to settle them.
+
+**Non-body field edits are refused, not silently dropped (task 6910).** `pull` writes only
+`body` (plus `status` for `task`/`plan`) — a decision's `## Rationale` section and a
+question's `**Answer:**` line are rendered TO disk on `push` but never read back FROM it on
+`pull`. Before task 6910 an operator edit there was silently discarded on every pull. Now,
+before applying a file whose entity kind is `decision` or `question`, the extracted
+`## Rationale` / `**Answer:**` text on disk is compared against what the database currently
+holds; a difference refuses that ONE entity's pull entirely (not just the field — the whole
+row, including `body`, is left untouched) and is reported as a named `field_edit_refusal`
+(`path`, `entity_kind`, `entity_id`, `field` — `"rationale"` or `"answer"`) rather than an
+undifferentiated `pending` count. This is a PER-ENTITY refusal, like `conflict` — it does not
+abort the rest of the run. The fix is to make the edit through the CLI instead of the file:
+`planar decision edit <id>` (the editor-first flow — the rationale is part of what it opens)
+or `planar question answer <id> ...`, then pull
+again. `--json` always includes `field_edit_refused` (a count) and `field_edit_refusals` (the
+list); the default text summary prints nothing extra when the count is zero.
 
 **Arguments:**
 
@@ -6535,8 +6610,16 @@ planar-agent abort      --claim <token> [--reason <text>] [--category usage_limi
 # supplies the harness pid (not getpid()) so crash reconciliation probes the
 # right process. `abandoned` status is reserved for `reconcile`; `run end`
 # never writes it.
-planar-agent run start  --plan <plan-id> --workflow <name> --run-id <identifier> --pid <harness-pid> --repo-root <path> [--json]
-planar-agent run end    --run-id <identifier> --status completed|failed|interrupted [--json]
+#
+# `--pid` and `--ttl` are mutually exclusive supervision modes (decision
+# D11, task 6847): exactly one is required. A pid-bound run (`--pid`) is
+# probed for liveness by `reconcile`. A pid-less run (`--ttl`) carries a
+# lease in `expires_at`, extended by `run heartbeat`, and `reconcile`
+# abandons it only once that lease has lapsed — it is never pid-probed.
+# Supplying neither refuses at InvalidInput and writes no row.
+planar-agent run start     --plan <plan-id> --workflow <name> --run-id <identifier> (--pid <harness-pid> | --ttl <duration>) --repo-root <path> [--json]
+planar-agent run end       --run-id <identifier> --status completed|failed|interrupted [--json]
+planar-agent run heartbeat --run-id <identifier> --ttl <duration> [--json]
 
 # Run-scoped working-memory (context_records) — plan 585 task 3901.
 # Workers holding a run-associated claim write records via `context add`;
@@ -6588,7 +6671,7 @@ Previously `--ttl` carried a hardcoded `600` default, so an omitted flag was ind
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
 | `block`    | INSERT `entity_links(from=task, to=blocker, relationship='depends-on')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
-| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. Direct-claim `claim_check` markers are closed as aborted; the existing ended-session sweep closes other orphaned actions. (2) Run sweep: SELECT running `workflow_runs` rows → `kill(pid,0)` each → ESRCH ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
+| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. Direct-claim `claim_check` markers are closed as aborted; the existing ended-session sweep closes other orphaned actions. (2) Run sweep: SELECT running `workflow_runs` rows. A pid-bound row (`pid` set) is probed with `kill(pid,0)` → ESRCH ⇒ dead. A pid-less row (decision D11, task 6847) is NEVER pid-probed — it is dead only once `expires_at` has lapsed. Either way, dead ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason + optional operator-supplied `failure_category` → restore `doing` → `todo` only for a default direct task claim carrying its transactional `claim_check` marker → close that marker as aborted → INSERT audit `agent_actions` row naming the aborting session. Primitive `--no-transition` and pull claims retain their previous task-status behavior. |
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
@@ -6618,8 +6701,9 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `ingest`      | `{ok, sessions_created, claims_created, actions_created, events_processed}` |
 | `reconcile`   | `{ok, claims_marked_stale, actions_closed, runs_abandoned, candidates?, run_candidates?}` (`candidates` + `run_candidates` present only with `--dry-run`) |
 | `abort`       | `{ok, claim_token, claim, aborting_session}` |
-| `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid`, `repo_root`, `status:"running"` |
+| `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid` (number or `null` for a pid-less lease-supervised run), `expires_at` (string or `null`), `repo_root`, `status:"running"` |
 | `run end`     | `{ok, run_id, status}` where `status` is the terminal status written |
+| `run heartbeat` | `{ok, run_id, expires_at}` — the run's new lease deadline |
 
 `ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and workflow run correlation columns `run_id`, `stage`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
 
