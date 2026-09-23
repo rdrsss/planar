@@ -3029,13 +3029,23 @@ class ReplayDriverRegistryTests(unittest.TestCase):
         )
         with mock.patch.object(
             harness, "prepare_lifecycle_fixture", return_value=fake_context
-        ):
+        ), mock.patch.object(harness, "write_grade") as write_grade_mock:
             with self.assertRaisesRegex(
                 harness.EvalFailure, "unknown lifecycle replay driver"
             ):
                 harness.run_lifecycle_fixture_replay(
                     Path("<case-path>"), case, lifecycle_options()
                 )
+        # `live_failure` writes a grade.json to `context.artifacts` on this
+        # failure path. `context.artifacts` here is the placeholder
+        # `Path("<artifacts>")`, not a real tmpdir -- left unmocked, this
+        # test used to create a real directory literally named `<artifacts>`
+        # under the repo root's cwd every run (task 6917). `write_grade` is
+        # mocked above instead of giving the fixture a real tmp path, since
+        # this test's whole point is that dispatch never reaches replay
+        # work, not that grade-writing behaves a particular way.
+        write_grade_mock.assert_called_once()
+        self.assertEqual(write_grade_mock.call_args.args[0], Path("<artifacts>"))
 
 
 class ConcurrentCodersGuardTests(unittest.TestCase):
@@ -4495,6 +4505,7 @@ class SpendCeilingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw_tmp:
             tmp_root = Path(raw_tmp)
             artifact_dir = self._prepared_live_artifact_dir(tmp_root, case["id"])
+            ledger_path = tmp_root / "RESULTS.md"
             options = harness.Options(
                 mode="live",
                 vendor="claude",
@@ -4506,7 +4517,8 @@ class SpendCeilingTests(unittest.TestCase):
             with mock.patch.object(
                 arena, "assert_vendor_auth"
             ), mock.patch.object(harness, "run_command") as run_command_mock, \
-                mock.patch.object(harness, "run_to_file") as run_to_file_mock:
+                mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
+                mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
 
                 def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
                     harness.write_text(output, claude_result_line(0.25))
@@ -4540,6 +4552,7 @@ class SpendCeilingTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as raw_tmp:
             tmp_root = Path(raw_tmp)
+            ledger_path = tmp_root / "RESULTS.md"
             options = harness.Options(
                 mode="live",
                 vendor="claude",
@@ -4554,7 +4567,7 @@ class SpendCeilingTests(unittest.TestCase):
             ), mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
                 mock.patch.object(harness, "collect_live_after"), mock.patch.object(
                     harness, "grade_live_artifacts"
-                ):
+                ), mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
 
                 def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
                     harness.write_text(output, claude_result_line(0.2))
@@ -4861,6 +4874,84 @@ class ResultsLedgerTests(unittest.TestCase):
             with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
                 rc = harness.cli_main(["--ledger-check"])
         self.assertEqual(rc, 1)
+
+
+class RealLedgerAndCwdIsolationTests(unittest.TestCase):
+    """Task 6917: the unit suite must never write to the real, COMMITTED
+    `evals/RESULTS.md`, and must never leave a stray directory behind under
+    the repo root. Both leaks were real: `SpendCeilingTests` exercises
+    `enforce_spend_ceiling`, which calls `record_ledger_row` on an
+    over-budget abort without patching `RESULTS_LEDGER_PATH`, and
+    `ReplayDriverRegistryTests.test_unregistered_driver_fails_before_any_replay_work`
+    drove `live_failure` -> `write_grade` against a placeholder
+    `Path("<artifacts>")` that was never a real tmpdir, materializing a
+    directory literally named `<artifacts>` in the caller's cwd. Each
+    suite run left four duplicate `over-budget` rows in the ledger that had
+    to be `git checkout`-reverted before every commit.
+
+    This runs those two classes as a SEPARATE process (`python3 -m
+    unittest` from `evals/orchestrator/`, exactly how `make
+    eval-orchestrator-unit` runs the whole file) rather than importing and
+    calling them in-process, so a fix that only isolates the ledger path
+    for tests running inside THIS process would still be caught here.
+    """
+
+    def test_suspect_classes_do_not_touch_the_real_ledger_or_leave_stray_dirs(
+        self,
+    ) -> None:
+        ledger_path = harness.RESULTS_LEDGER_PATH
+        stray_dir = harness.ROOT / "<artifacts>"
+        self.assertTrue(
+            ledger_path.is_file(),
+            f"precondition failed: real ledger missing at {ledger_path}",
+        )
+        before_bytes = ledger_path.read_bytes()
+        before_mtime_ns = ledger_path.stat().st_mtime_ns
+        self.assertFalse(
+            stray_dir.exists(),
+            "precondition failed: a stray '<artifacts>' directory already "
+            "exists under the repo root -- clean it up before re-running "
+            "this test so it measures THIS run, not a leftover one",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "-v",
+                "test_harness.SpendCeilingTests",
+                "test_harness.ReplayDriverRegistryTests",
+            ],
+            cwd=str(Path(__file__).resolve().parent),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"suspect classes did not pass cleanly:\nstdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}",
+        )
+        after_bytes = ledger_path.read_bytes()
+        after_mtime_ns = ledger_path.stat().st_mtime_ns
+        self.assertEqual(
+            before_bytes,
+            after_bytes,
+            "SpendCeilingTests / ReplayDriverRegistryTests modified the "
+            f"real, committed results ledger at {ledger_path}",
+        )
+        self.assertEqual(
+            before_mtime_ns,
+            after_mtime_ns,
+            f"the real results ledger at {ledger_path} was rewritten "
+            "(byte-identical content, but the mtime changed)",
+        )
+        self.assertFalse(
+            stray_dir.exists(),
+            f"SpendCeilingTests / ReplayDriverRegistryTests left a stray "
+            f"directory at {stray_dir}",
+        )
 
 
 if __name__ == "__main__":
