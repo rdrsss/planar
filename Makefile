@@ -46,7 +46,7 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the planar + planar-agent + planar-watch + planar-execute + planar-ext binaries into ./bin/ (at repo root)
+build: ## Build the five Planar binaries plus the pinned centuriond into ./bin/ (at repo root)
 	@mkdir -p $(BIN_DIR)
 	cmake --preset release -DPLANAR_VERSION_META=OFF
 	cmake --build build/release $(ARGS)
@@ -55,6 +55,14 @@ build: ## Build the planar + planar-agent + planar-watch + planar-execute + plan
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
+	@# centuriond ships BESIDE planar-execute (task 6711): the client resolves
+	@# the daemon as its own sibling, so a ./bin/ that has the client without
+	@# the daemon produces a "not an executable daemon" refusal at first submit
+	@# rather than at build time. Built from the pinned archive as a separate
+	@# CMake project, so this is a copy of what scripts/install-centuriond.sh
+	@# produced rather than a second build of it.
+	@$(MAKE) --no-print-directory centuriond-local CENTURIOND_PREFIX=build/centuriond-release
+	@cp -f build/centuriond-release/bin/centuriond $(BIN_DIR)/centuriond
 
 .PHONY: install
 install: ## Build and install the five Planar executables into PREFIX/bin (default: ~/.local/bin)

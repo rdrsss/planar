@@ -40,6 +40,44 @@ auto catalog_json() -> std::string {
              "Execution engine: embedded or centurion. Overrides $PLANAR_EXECUTE_ENGINE and the execute.engine "
              "config key; default embedded. centurion is refused at dispatch until the Centurion host lands.");
 
+  CLI::App* submit = root.add_subcommand("submit", "Start a bundle run on the profile's centuriond and follow it to a "
+                                                   "terminal state, printing its result JSON on stdout.");
+  submit->add_option("bundle")->required()->description("Bundle name to start; the host's published version is selected.");
+  add_string(*submit, "--input", "Canonical JSON input for the run; default: {}.");
+  add_string(*submit, "--profile", "Execution profile whose daemon serves the run; default: default.");
+
+  CLI::App* status = root.add_subcommand("status", "Show one run's durable projection, or the profile's daemon when no "
+                                                   "run is named.");
+  status->add_option("run-id")->description("Run to show; omitted reports the profile's daemon instead.");
+  add_string(*status, "--profile", "Execution profile whose daemon owns the run; default: default.");
+  status->add_flag("--json", "Render the projection as JSON.");
+
+  CLI::App* cancel = root.add_subcommand("cancel", "Cancel a run this profile admitted, without a console session.");
+  cancel->add_option("run-id")->required()->description("Run to cancel.");
+  add_string(*cancel, "--profile", "Execution profile whose daemon owns the run; default: default.");
+  cancel->add_flag("--json", "Render the outcome as JSON.");
+
+  CLI::App* host        = root.add_subcommand("host", "Inspect the daemon serving a profile.");
+  CLI::App* host_status = host->add_subcommand("status", "Report who is serving this profile: the published endpoint "
+                                                         "record, the installed daemon's build identity, and the "
+                                                         "compatibility tuple it was started with.");
+  add_string(*host_status, "--profile", "Execution profile to inspect; default: default.");
+  host_status->add_flag("--json", "Render the report as JSON.");
+
+  CLI::App* host_drain = host->add_subcommand("drain", "Refuse new submissions for this profile; running work is "
+                                                       "untouched.");
+  add_string(*host_drain, "--profile", "Execution profile to drain; default: default.");
+
+  CLI::App* host_stop = host->add_subcommand("stop", "Ask this profile's daemon to stop; it drains its owned work "
+                                                     "under Centurion's bounded shutdown.");
+  add_string(*host_stop, "--profile", "Execution profile whose daemon to stop; default: default.");
+
+  CLI::App* follow = root.add_subcommand("follow", "Stream a run's committed events, resuming from the cursor this "
+                                                   "client last accepted.");
+  follow->add_option("run-id")->required()->description("Run to follow.");
+  add_string(*follow, "--from", "Exclusive cursor to resume after; default: the remembered one, else the beginning.");
+  add_string(*follow, "--profile", "Execution profile whose daemon owns the run; default: default.");
+
   CLI::App* profile = root.add_subcommand("profile", "Inspect the resolved execution profile.");
   CLI::App* show    = profile->add_subcommand("show", "Print the resolved engine and the provenance that chose it "
                                                       "(flag, env, config file, or embedded default) on stdout.");

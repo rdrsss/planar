@@ -133,6 +133,32 @@ export struct profile_args {
 /// @return The parsed arguments, or unset on a usage failure.
 export auto parse_profile_args(std::span<const std::string> args) -> std::optional<profile_args>;
 
+/// @brief What `parse_submit_args` produces — the `submit` verb's arguments.
+export struct submit_args {
+  std::string bundle;              ///< Bundle name to start; the host's published version is selected.
+  std::string input   = "{}";      ///< Canonical JSON input for the run.
+  std::string profile = "default"; ///< Execution profile whose daemon serves the run.
+};
+
+/// @brief Parse the `submit` verb's arguments (everything after `submit`).
+/// @param args The tokens after the `submit` verb.
+/// @return The parsed arguments, or unset when the shape is wrong.
+export auto parse_submit_args(std::span<const std::string> args) -> std::optional<submit_args>;
+
+/// @brief What `parse_run_id_args` produces — the shape `status`/`cancel` share.
+export struct run_id_args {
+  std::string                  run_id;              ///< The run; empty is legal for `status`, refused for `cancel`.
+  std::string                  profile = "default"; ///< Execution profile whose daemon owns the run.
+  bool                         json    = false;     ///< Render machine-readable output.
+  std::optional<std::uint64_t> from;                ///< `follow --from`: an explicit cursor overriding the remembered one.
+};
+
+/// @brief Parse the arguments `status` and `cancel` share.
+/// @param args The tokens after the verb.
+/// @param run_id_required Whether an absent run id is a usage failure.
+/// @return The parsed arguments, or unset when the shape is wrong.
+export auto parse_run_id_args(std::span<const std::string> args, bool run_id_required) -> std::optional<run_id_args>;
+
 /// @brief Which top-level shape an argv resolves to.
 export enum class verb : std::uint8_t {
   none,    ///< No arguments at all: usage, exit 2.
@@ -140,6 +166,11 @@ export enum class verb : std::uint8_t {
   run,     ///< The `run` verb.
   schema,  ///< The `schema` verb: the JSON catalog on stdout, exit 0 (task 6486).
   profile, ///< The `profile` verb: the resolved engine on stdout (task 6485).
+  submit,  ///< The `submit` verb: start a bundle run on the profile's daemon (task 6504).
+  status,  ///< The `status` verb: one run, or the profile's daemon when no run is named (task 6506).
+  cancel,  ///< The `cancel` verb: stop a run this client's profile admitted (task 6506).
+  host,    ///< The `host` verb: `host status`, who is serving this profile (task 6506).
+  follow,  ///< The `follow` verb: stream a run's events from a durable cursor (task 6505).
   unknown, ///< Anything else: "unknown verb" + usage, exit 2.
 };
 
