@@ -3873,16 +3873,25 @@ class LifecycleFixtureNegativeControlWiringTests(unittest.TestCase):
         with mock.patch.object(
             harness, "run_lifecycle_fixture_negative_control"
         ) as control_mock, mock.patch.object(
+            harness, "run_concurrent_coders_negative_controls"
+        ) as concurrent_control_mock, mock.patch.object(
             harness, "collect_case_failures", return_value=[]
         ), mock.patch.object(harness, "require_commands"):
             code = harness.main(["--lifecycle-fixture-only"])
         self.assertEqual(code, 0)
         control_mock.assert_called_once()
+        # Task 6853 (reviewer re-dispatch): the concurrent-coders negative
+        # control is a SEPARATE call from the classic one above -- a
+        # mutant that drops only this call while leaving the classic one
+        # intact must still fail this test.
+        concurrent_control_mock.assert_called_once()
         # The negative control must run against every loaded case, not
         # just whatever `--case` narrowed `selected` to -- a `--case`
         # filter that only selects one case must never skip it.
         cases_arg = control_mock.call_args.args[0]
         self.assertGreaterEqual(len(cases_arg), 1)
+        concurrent_cases_arg = concurrent_control_mock.call_args.args[0]
+        self.assertGreaterEqual(len(concurrent_cases_arg), 1)
 
     def test_negative_control_rejects_a_run_that_never_fails(self) -> None:
         # If a case's forbidden_events no longer includes the seeded
@@ -3924,6 +3933,78 @@ class LifecycleFixtureNegativeControlWiringTests(unittest.TestCase):
             harness.EvalFailure, "needs a repository case"
         ):
             harness.run_lifecycle_fixture_negative_control([], options)
+
+
+class ConcurrentCodersNegativeControlWiringTests(unittest.TestCase):
+    """Task 6853 (reviewer re-dispatch): the same wiring proofs as
+    `LifecycleFixtureNegativeControlWiringTests`, for
+    `run_concurrent_coders_negative_controls` -- stubbed
+    `run_lifecycle_fixture_replay` so these stay fast unit tests; the
+    REAL end-to-end proof (that the driver's call sites actually fire
+    under each seed) lives in `make eval-orchestrator-fixtures`, which
+    runs `run_concurrent_coders_negative_controls` for real.
+    """
+
+    def concurrent_case(self) -> dict[str, object]:
+        return {
+            "id": "concurrent-coders-fanin",
+            "tiers": ["lifecycle"],
+            "setup": {"replay": "concurrent-coders"},
+        }
+
+    def test_negative_control_requires_a_candidate_case(self) -> None:
+        with self.assertRaisesRegex(harness.EvalFailure, "needs a repository case"):
+            harness.run_concurrent_coders_negative_controls([], lifecycle_options())
+
+    def test_negative_control_rejects_a_run_that_never_fails(self) -> None:
+        # If the driver stops raising under a seed (e.g. a no-op'd guard
+        # call site), this must be a suite failure, not a silent pass.
+        with mock.patch.object(harness, "run_lifecycle_fixture_replay"):
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "negative control was not detected"
+            ):
+                harness.run_concurrent_coders_negative_controls(
+                    [(Path("<probe>"), self.concurrent_case())], lifecycle_options()
+                )
+
+    def test_negative_control_rejects_a_failure_for_the_wrong_reason(self) -> None:
+        # A raise that names an unrelated problem must not be accepted as
+        # proof the seeded guard fired.
+        with mock.patch.object(
+            harness,
+            "run_lifecycle_fixture_replay",
+            side_effect=harness.EvalFailure("unrelated: fixture tests failed"),
+        ):
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "failed for the wrong reason"
+            ):
+                harness.run_concurrent_coders_negative_controls(
+                    [(Path("<probe>"), self.concurrent_case())], lifecycle_options()
+                )
+
+    def test_negative_control_runs_every_seed(self) -> None:
+        # CALL-SITE test: a mutant that only seeds one violation (e.g.
+        # returns after the first iteration) must fail this test.
+        seen_seeds: list[str] = []
+
+        def fake_replay(path, case, options, *, seed_violation=None):
+            seen_seeds.append(seed_violation)
+            raise harness.EvalFailure(
+                {
+                    "concurrent-pull-failure": "x: concurrent pull failed for 1 lane(s): boom",
+                    "duplicate-task-claim": "x: concurrent pull produced duplicate claimed tasks: ['1', '1']",
+                    "partial-fanin": "x: epic branch does not contain lane commit(s) for: lane-3",
+                    "complete-before-fanin": "x: complete observed before the fan-in merge for claim token(s): tok",
+                }[seed_violation]
+            )
+
+        with mock.patch.object(
+            harness, "run_lifecycle_fixture_replay", side_effect=fake_replay
+        ):
+            harness.run_concurrent_coders_negative_controls(
+                [(Path("<probe>"), self.concurrent_case())], lifecycle_options()
+            )
+        self.assertEqual(sorted(seen_seeds), sorted(harness.CONCURRENT_CODERS_SEEDS))
 
 
 class SchemaValidationTests(unittest.TestCase):

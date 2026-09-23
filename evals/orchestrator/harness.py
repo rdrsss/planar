@@ -3705,6 +3705,26 @@ def assert_epic_contains_lane_commits(
         )
 
 
+# Task 6853 (reviewer re-dispatch): four deliberately-injected faults, one
+# per guard `replay_driver_concurrent_coders` calls, forwarded to the
+# driver the SAME way `EVAL_SEED_VIOLATION` already reaches the classic
+# fixture's own `control.sh` (see `LIFECYCLE_SEEDED_VIOLATION` /
+# `run_lifecycle_fixture_negative_control`): a value on
+# `context.env["EVAL_SEED_VIOLATION"]`, forwarded unconditionally by
+# `run_lifecycle_fixture_replay`'s `seed_violation` parameter, and never
+# set during a real run. Each corrupts state at the exact point its
+# named guard checks it, so a REAL run of this driver -- real worktrees,
+# real concurrent `planar-agent` calls, real git merges -- exercises the
+# call site itself, not just the guard function in isolation.
+# `run_concurrent_coders_negative_controls` drives all four end-to-end.
+CONCURRENT_CODERS_SEEDS = (
+    "concurrent-pull-failure",
+    "duplicate-task-claim",
+    "partial-fanin",
+    "complete-before-fanin",
+)
+
+
 def replay_driver_concurrent_coders(
     context: LifecycleContext, case: dict[str, Any], options: Options
 ) -> None:
@@ -3724,8 +3744,15 @@ def replay_driver_concurrent_coders(
       with `git merge-base --is-ancestor` rather than trusted from `git
       merge`'s exit code, which fails OPEN on a missing branch
       (`assert_epic_contains_lane_commits`).
+
+    `context.env["EVAL_SEED_VIOLATION"]`, when one of
+    `CONCURRENT_CODERS_SEEDS`, deliberately corrupts state right before
+    the one guard named above that is supposed to catch it -- see
+    `run_concurrent_coders_negative_controls`, which drives this end to
+    end under each seed and requires the matching `EvalFailure`.
     """
     case_id = case["id"]
+    seed = context.env.get("EVAL_SEED_VIOLATION")
     task_ids = context.task_ids
     if len(task_ids) < 2:
         raise live_failure(
@@ -3788,6 +3815,20 @@ def replay_driver_concurrent_coders(
             for lane, result in pull_results
         ],
     )
+    if seed == "concurrent-pull-failure" and pull_results:
+        # Deliberately corrupt one lane's REAL successful pull result into
+        # a busy/QueryFailed exit right before the guard that is supposed
+        # to catch it -- proving the call site, not just the function.
+        lane, real_result = pull_results[0]
+        pull_results[0] = (
+            lane,
+            subprocess.CompletedProcess(
+                real_result.args,
+                1,
+                real_result.stdout,
+                "seeded: QueryFailed: database is locked",
+            ),
+        )
     assert_no_concurrent_pull_failures(
         pull_results, artifacts=context.artifacts, case_id=case_id, options=options
     )
@@ -3823,6 +3864,12 @@ def replay_driver_concurrent_coders(
                 "task_id": str(pulled_task_id),
             }
         )
+    if seed == "duplicate-task-claim" and len(lane_claims) > 1:
+        # Deliberately alias two lanes' claimed task ids -- the real
+        # locking already prevents this from happening organically, so
+        # the seed corrupts the recorded claim right before the guard
+        # that is supposed to catch it.
+        lane_claims[1]["task_id"] = lane_claims[0]["task_id"]
     assert_distinct_lane_claims(
         lane_claims, artifacts=context.artifacts, case_id=case_id, options=options
     )
@@ -3878,65 +3925,88 @@ def replay_driver_concurrent_coders(
         lane_shas[f"lane-{lane}"] = sha
     write_json(context.artifacts / "lane-shas.json", lane_shas)
 
-    # Fan-in: merge every lane branch into a fresh epic branch, ONLY
-    # THEN complete any claim. `--no-ff` so `epic-fanin` always advances
-    # with a real merge commit even when the first merge would otherwise
-    # fast-forward.
-    run_command(["git", "checkout", "-b", "epic-fanin"], cwd=context.repo, env=context.env)
-    for index in lane_indices:
-        run_command(
-            [
-                "git",
-                "merge",
-                "--no-ff",
-                f"lane-{index}",
-                "-m",
-                f"eval: fan in lane-{index}",
-            ],
-            cwd=context.repo,
-            env=context.env,
-        )
-    epic_sha = run_command(
-        ["git", "rev-parse", "HEAD"], cwd=context.repo, env=context.env
-    ).stdout.strip()
-    assert_epic_contains_lane_commits(
-        context.repo,
-        context.env,
-        epic_sha,
-        lane_shas,
-        artifacts=context.artifacts,
-        case_id=case_id,
-        options=options,
-    )
-    # Wall-clock read of the fan-in's own completion, compared below
-    # against the observed log's own `complete` timestamps -- two
-    # independently-recorded clocks, not the driver's call order. The
-    # sleep gives clear separation from git's whole-second commit
-    # timestamp resolution before any `complete` call is dispatched.
-    merge_ts = time.time()
-    time.sleep(1.5)
-    write_json(
-        context.artifacts / "fanin.json",
-        {"epic_sha": epic_sha, "lane_shas": lane_shas, "merge_ts": merge_ts},
+    # Fan-in: merge every lane branch into a fresh epic branch, ONLY THEN
+    # complete any claim -- `do_fanin_merge` and `do_completes` are
+    # ordinarily called merge-then-completes below, but the
+    # "complete-before-fanin" seed swaps that order for real (not a
+    # timestamp trick) to prove `assert_merge_precedes_completes` catches
+    # exactly the reordering the falsifiability probe describes. `--no-ff`
+    # so `epic-fanin` always advances with a real merge commit even when
+    # the first merge would otherwise fast-forward. The "partial-fanin"
+    # seed drops the LAST lane from the merge set entirely, so the epic
+    # branch genuinely -- not synthetically -- lacks that lane's commit.
+    merge_lane_indices = (
+        lane_indices[:-1] if seed == "partial-fanin" else lane_indices
     )
 
-    for entry in lane_claims:
-        complete = run_command(
-            [
-                "planar-agent",
-                "complete",
-                "--claim",
-                entry["claim_token"],
-                "--summary",
-                "controlled concurrent-coders fixture fan-in complete",
-                "--json",
-            ],
-            cwd=context.repo,
-            env=context.env,
+    def do_fanin_merge() -> tuple[str, float]:
+        run_command(
+            ["git", "checkout", "-b", "epic-fanin"], cwd=context.repo, env=context.env
         )
-        write_text(
-            context.artifacts / f"complete-lane-{entry['lane']}.json", complete.stdout
+        for index in merge_lane_indices:
+            run_command(
+                [
+                    "git",
+                    "merge",
+                    "--no-ff",
+                    f"lane-{index}",
+                    "-m",
+                    f"eval: fan in lane-{index}",
+                ],
+                cwd=context.repo,
+                env=context.env,
+            )
+        epic_sha = run_command(
+            ["git", "rev-parse", "HEAD"], cwd=context.repo, env=context.env
+        ).stdout.strip()
+        assert_epic_contains_lane_commits(
+            context.repo,
+            context.env,
+            epic_sha,
+            lane_shas,
+            artifacts=context.artifacts,
+            case_id=case_id,
+            options=options,
         )
+        # Wall-clock read of the fan-in's own completion, compared below
+        # against the observed log's own `complete` timestamps -- two
+        # independently-recorded clocks, not the driver's call order. The
+        # sleep gives clear separation from git's whole-second commit
+        # timestamp resolution before any `complete` call is dispatched.
+        ts = time.time()
+        time.sleep(1.5)
+        write_json(
+            context.artifacts / "fanin.json",
+            {"epic_sha": epic_sha, "lane_shas": lane_shas, "merge_ts": ts},
+        )
+        return epic_sha, ts
+
+    def do_completes() -> None:
+        for entry in lane_claims:
+            complete = run_command(
+                [
+                    "planar-agent",
+                    "complete",
+                    "--claim",
+                    entry["claim_token"],
+                    "--summary",
+                    "controlled concurrent-coders fixture fan-in complete",
+                    "--json",
+                ],
+                cwd=context.repo,
+                env=context.env,
+            )
+            write_text(
+                context.artifacts / f"complete-lane-{entry['lane']}.json",
+                complete.stdout,
+            )
+
+    if seed == "complete-before-fanin":
+        do_completes()
+        _epic_sha, merge_ts = do_fanin_merge()
+    else:
+        _epic_sha, merge_ts = do_fanin_merge()
+        do_completes()
 
     observed_records = read_observed_records(context.repo / ".eval" / "observed")
     assert_merge_precedes_completes(
@@ -4066,6 +4136,72 @@ def run_lifecycle_fixture_negative_control(
         f"lifecycle fixture negative control was not detected: {case['id']} "
         f"did not fail under EVAL_SEED_VIOLATION={seeded}"
     )
+
+
+def run_concurrent_coders_negative_controls(
+    cases: list[tuple[Path, dict[str, Any]]], options: Options
+) -> None:
+    """Task 6853 (reviewer re-dispatch, "call sites are untested"): drive a
+    REAL `replay_driver_concurrent_coders` run under each of
+    `CONCURRENT_CODERS_SEEDS` and require the matching `EvalFailure`.
+
+    `ConcurrentCodersGuardTests` (test_harness.py) already proves each
+    guard function CAN reject the violation it names, given adversarial
+    input built by hand. That leaves the call sites unproven: nothing
+    observed whether the driver actually invokes a guard on the path an
+    operator run takes. This function closes that gap the same way
+    `run_lifecycle_fixture_negative_control` closes it for the classic
+    fixture -- a REAL end-to-end replay (real worktrees, real concurrent
+    `planar-agent` calls, real git merges), seeded via the same
+    `EVAL_SEED_VIOLATION` channel, required to fail for the SPECIFIC
+    reason named, not merely to fail. No-op'ing a guard's call site
+    (without touching the guard function itself) makes the corresponding
+    seed's run stop raising, which this control turns into a suite
+    failure.
+    """
+    candidates = [
+        (path, case)
+        for path, case in cases
+        if case.get("setup", {}).get("replay") == "concurrent-coders"
+    ]
+    if not candidates:
+        raise EvalFailure(
+            "concurrent-coders negative control needs a repository case "
+            "whose setup.replay is 'concurrent-coders'"
+        )
+    path, case = candidates[0]
+    # One substring per seed, matched against the exact guard message the
+    # call site is supposed to produce -- keeps this control from passing
+    # on an unrelated failure the way a bare `except EvalFailure: pass`
+    # would.
+    expected_substrings = {
+        "concurrent-pull-failure": "concurrent pull failed for",
+        "duplicate-task-claim": "duplicate claimed tasks",
+        "partial-fanin": "epic branch does not contain lane commit",
+        "complete-before-fanin": "complete observed before the fan-in merge",
+    }
+    for seed in CONCURRENT_CODERS_SEEDS:
+        expected_substring = expected_substrings[seed]
+        try:
+            run_lifecycle_fixture_replay(path, case, options, seed_violation=seed)
+        except EvalFailure as exc:
+            if expected_substring not in str(exc):
+                raise EvalFailure(
+                    "concurrent-coders negative control failed for the "
+                    f"wrong reason under seed {seed!r} (expected "
+                    f"{expected_substring!r}): {exc}"
+                ) from exc
+            if (
+                exc.artifacts is not None
+                and not options.keep
+                and options.results_dir is None
+            ):
+                shutil.rmtree(exc.artifacts, ignore_errors=True)
+            continue
+        raise EvalFailure(
+            f"concurrent-coders negative control was not detected: "
+            f"{case['id']} did not fail under EVAL_SEED_VIOLATION={seed}"
+        )
 
 
 def append_file(target: Path, source: Path) -> None:
@@ -4695,6 +4831,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # filter narrowing `runnable` never skips this control.
         run_lifecycle_fixture_negative_control(cases, options)
         pass_line("lifecycle fixture negative control")
+        # Task 6853 (reviewer re-dispatch): same shape, one control per
+        # concurrent-coders guard call site. Also uses `cases`, not
+        # `selected`, for the same reason as the control above.
+        run_concurrent_coders_negative_controls(cases, options)
+        pass_line("concurrent-coders fan-in negative controls")
         fixture_outcomes = collect_case_failures(
             runnable,
             lambda path, case: run_lifecycle_fixture_replay(path, case, options),
