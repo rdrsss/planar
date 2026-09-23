@@ -1483,6 +1483,106 @@ TEST_CASE("an answered question's body round-trips without its `**Answer:**` tai
   CHECK(without_updated_stamp(*wfs::read_file(file)) == without_updated_stamp(edited));
 }
 
+TEST_CASE("editing a decision's ## Rationale on disk refuses the pull and leaves the row untouched",
+          "[workbench][sync][pull][6910]") {
+  // Task 6910: `pull_to_db` writes only `body`; a `## Rationale` edit on
+  // disk used to be silently discarded on every pull. Now the WHOLE
+  // entity's pull is refused (not just the rationale field) and the
+  // refusal is named in the result.
+  arena      a;
+  auto const s = seed(a.conn());
+  exec(a.conn(), std::format("insert into decisions (scope_kind, scope_id, title, body, rationale, status) "
+                             "values ('association', {}, 'Use SQLite', 'We use SQLite.', 'Simple.', 'proposed')",
+                             s.assoc_id));
+  auto const id = scalar_id(a.conn(), "select id from decisions where title = 'Use SQLite'");
+  exec(a.conn(), std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                             "values ('decision', {}, 'plan', {}, 'derives-from')",
+                             id, s.plan_id));
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file = feature_dir_of(a, s.plan_id) / "decisions" / std::format("{}-use-sqlite.md", id);
+  // Edit the RATIONALE, not the body -- the body edit is the SEPARATE,
+  // successful case below.
+  edit_file(file, "Simple.", "Simple, edited.");
+  auto const before_updated_at = scalar_text(a.conn(), std::format("select updated_at from decisions where id = {}", id));
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 0);
+  CHECK(pulled->pending == 1);
+  REQUIRE(pulled->field_edit_refused == 1);
+  REQUIRE(pulled->field_edit_refusals.size() == 1);
+  CHECK(pulled->field_edit_refusals.front().entity_kind == "decision");
+  CHECK(pulled->field_edit_refusals.front().entity_id == id);
+  CHECK(pulled->field_edit_refusals.front().field == "rationale");
+
+  // The row is UNTOUCHED, including `body` -- this is a whole-entity
+  // refusal, not a partial one that would apply body while dropping
+  // rationale.
+  CHECK(scalar_text(a.conn(), std::format("select body from decisions where id = {}", id)) == "We use SQLite.");
+  CHECK(scalar_text(a.conn(), std::format("select rationale from decisions where id = {}", id)) == "Simple.");
+  CHECK(scalar_text(a.conn(), std::format("select updated_at from decisions where id = {}", id)) == before_updated_at);
+}
+
+TEST_CASE("editing a question's **Answer:** on disk refuses the pull and leaves the row untouched",
+          "[workbench][sync][pull][6910]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  exec(a.conn(), std::format("insert into questions (scope_kind, scope_id, title, body, answer_body, answered_at, status) "
+                             "values ('association', {}, 'Which format', 'JSON or TOML?', 'JSON.\nTwo lines.', "
+                             "'2026-01-01T00:00:00.000Z', 'answered')",
+                             s.assoc_id));
+  auto const id = scalar_id(a.conn(), "select id from questions where title = 'Which format'");
+  exec(a.conn(), std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                             "values ('question', {}, 'plan', {}, 'derives-from')",
+                             id, s.plan_id));
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file = feature_dir_of(a, s.plan_id) / "questions" / std::format("{}-which-format.md", id);
+  // Edit the ANSWER, not the body.
+  edit_file(file, "JSON.\nTwo lines.", "JSON.\nTwo lines, edited.");
+  auto const before_updated_at = scalar_text(a.conn(), std::format("select updated_at from questions where id = {}", id));
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 0);
+  CHECK(pulled->pending == 1);
+  REQUIRE(pulled->field_edit_refused == 1);
+  REQUIRE(pulled->field_edit_refusals.size() == 1);
+  CHECK(pulled->field_edit_refusals.front().entity_kind == "question");
+  CHECK(pulled->field_edit_refusals.front().entity_id == id);
+  CHECK(pulled->field_edit_refusals.front().field == "answer");
+
+  CHECK(scalar_text(a.conn(), std::format("select body from questions where id = {}", id)) == "JSON or TOML?");
+  CHECK(scalar_text(a.conn(), std::format("select answer_body from questions where id = {}", id)) == "JSON.\nTwo lines.");
+  CHECK(scalar_text(a.conn(), std::format("select updated_at from questions where id = {}", id)) == before_updated_at);
+}
+
+TEST_CASE("editing ONLY a decision's body still succeeds, and reports zero field-edit refusals",
+          "[workbench][sync][pull][6910]") {
+  // The contrast case for the two above: a body-only edit is NOT a
+  // non-body-field edit, so it applies exactly as it did before task 6910
+  // -- this pins that the new check does not regress the ordinary path.
+  arena      a;
+  auto const s = seed(a.conn());
+  exec(a.conn(), std::format("insert into decisions (scope_kind, scope_id, title, body, rationale, status) "
+                             "values ('association', {}, 'Use SQLite', 'We use SQLite.', 'Simple.', 'proposed')",
+                             s.assoc_id));
+  auto const id = scalar_id(a.conn(), "select id from decisions where title = 'Use SQLite'");
+  exec(a.conn(), std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                             "values ('decision', {}, 'plan', {}, 'derives-from')",
+                             id, s.plan_id));
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file = feature_dir_of(a, s.plan_id) / "decisions" / std::format("{}-use-sqlite.md", id);
+  edit_file(file, "We use SQLite.", "We use SQLite, edited.");
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->applied == 1);
+  CHECK(pulled->field_edit_refused == 0);
+  CHECK(pulled->field_edit_refusals.empty());
+  CHECK(scalar_text(a.conn(), std::format("select body from decisions where id = {}", id)) == "We use SQLite, edited.");
+  CHECK(scalar_text(a.conn(), std::format("select rationale from decisions where id = {}", id)) == "Simple.");
+}
+
 TEST_CASE("a task's body round-trips without its `**Next action:**` tail", "[workbench][sync][pull][6881]") {
   arena      a;
   auto const s = seed(a.conn());

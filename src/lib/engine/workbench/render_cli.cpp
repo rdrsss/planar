@@ -58,6 +58,24 @@ auto append_conflict_summary(std::string& out, std::size_t conflicts) -> void {
   }
 }
 
+/// @brief One `REFUSED` line per field-edit refusal (task 6910).
+auto refusal_line(const sync::field_edit_refusal& item) -> std::string {
+  return std::format("  REFUSED [{}]: {} ({} {}) - edit via 'decision edit' / 'question answer', not the file\n",
+                     item.field, item.path, item.entity_kind, item.entity_id);
+}
+
+/// @brief The refusal lines plus a one-line summary, appended whenever
+/// `refusals` is non-empty (task 6910). Silent when empty, matching
+/// `append_conflict_summary`'s shape for the sibling per-entity refusal.
+auto append_field_edit_refusals(std::string& out, std::span<const sync::field_edit_refusal> refusals) -> void {
+  for (auto const& item : refusals) {
+    out += refusal_line(item);
+  }
+  if (!refusals.empty()) {
+    out += std::format("  {} field-edit refusal(s) - the entity was left untouched\n", refusals.size());
+  }
+}
+
 auto render_sync_result_verbose(std::int64_t plan_id, std::string_view plan_slug, sync::mode run_mode, std::string_view verb,
                                 const sync::result& value) -> std::string {
   std::string out       = std::format("workbench {}: plan {} ({})\n", verb, plan_id, plan_slug);
@@ -93,6 +111,7 @@ auto render_sync_result_verbose(std::int64_t plan_id, std::string_view plan_slug
     }
   }
   append_conflict_summary(out, value.conflicts);
+  append_field_edit_refusals(out, value.field_edit_refusals);
   return out;
 }
 
@@ -133,6 +152,7 @@ auto render_sync_result_text(std::int64_t plan_id, std::string_view plan_slug, s
     }
   }
   append_conflict_summary(out, value.conflicts);
+  append_field_edit_refusals(out, value.field_edit_refusals);
   return out;
 }
 
@@ -185,6 +205,28 @@ auto render_sync_result_json(const sync::result& value) -> std::string {
     field_number(out, "conflict_id", item.conflict_id);
     out += ',';
     field_string(out, "parse_error", item.parse_error);
+    out += '}';
+  }
+  out += "],";
+  // Task 6910: appended AFTER `entries`, a deliberate C++-only extension
+  // -- the oracle has no equivalent field, since the silent-drop bug this
+  // reports never had a surfaced diagnosis to serialize.
+  field_number(out, "field_edit_refused", static_cast<std::int64_t>(value.field_edit_refused));
+  out += ",\"field_edit_refusals\":[";
+  first = true;
+  for (auto const& item : value.field_edit_refusals) {
+    if (!first) {
+      out += ',';
+    }
+    first = false;
+    out += '{';
+    field_string(out, "path", item.path);
+    out += ',';
+    field_string(out, "entity_kind", item.entity_kind);
+    out += ',';
+    field_number(out, "entity_id", item.entity_id);
+    out += ',';
+    field_string(out, "field", item.field);
     out += '}';
   }
   out += "]}\n";

@@ -111,6 +111,25 @@ export struct malformed_file {
   std::string parse_error; ///< The Zig error tag.
 };
 
+/// @brief One file `pull`/`sync` refused because a NON-BODY field it
+/// cannot round-trip was edited on disk (task 6910).
+///
+/// `pull_to_db` writes only `body` (plus `status` for `task`/`plan`); a
+/// decision's `## Rationale` section and a question's `**Answer:**` line
+/// are rendered TO disk but never read back FROM it. Before task 6910 an
+/// operator edit there was silently discarded on every pull. This is the
+/// per-entity refusal that replaces the silence: the whole entity's pull
+/// is skipped (not just the field), the entity is left untouched, and the
+/// refusal is surfaced here rather than merely counted as `pending` —
+/// `pending` alone does not tell the operator WHY, or that the fix is
+/// `decision edit` / `question answer`, not another pull.
+export struct field_edit_refusal {
+  std::string  path;        ///< ROOT-relative stored path.
+  std::string  entity_kind; ///< `decision` or `question`.
+  std::int64_t entity_id = 0;
+  std::string  field; ///< `rationale` or `answer`.
+};
+
 /// @brief The outcome of one run. Field order matches the `--json` payload.
 export struct result {
   std::size_t                 applied   = 0;                      ///< Changes written.
@@ -123,6 +142,8 @@ export struct result {
   std::size_t                 cleaned               = 0;          ///< Of those, how many `apply_cleanup` removed.
   std::string                 filter_mode           = "failures"; ///< The active mode's label.
   std::vector<entry>          entries;                            ///< Every classified file, in enumeration order.
+  std::size_t                       field_edit_refused = 0; ///< Count of `field_edit_refusals` (task 6910).
+  std::vector<field_edit_refusal>   field_edit_refusals;     ///< One per refused entity.
 };
 
 /// @brief One anchor plan with a workbench tree, as `workbench list` shows it.

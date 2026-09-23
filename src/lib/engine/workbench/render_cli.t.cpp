@@ -190,11 +190,28 @@ TEST_CASE("a malformed entry with no parse_error omits the parenthetical", "[wor
 TEST_CASE("the single-plan JSON payload matches the oracle's field order", "[workbench][render_cli][json]") {
   ws::result value;
   value.entries.push_back(no_op_entry("project_demo/p1-demo-feature/README.md", "plan", 1));
+  // `field_edit_refused` / `field_edit_refusals` are appended AFTER
+  // `entries` -- a deliberate C++-only extension (task 6910), not part of
+  // the oracle's field order. Empty/zero here, since this fixture has no
+  // refusal; see the dedicated `field_edit_refusals` JSON test below.
   CHECK(rc::render_sync_result_json(value) ==
         "{\"applied\":0,\"pending\":0,\"conflicts\":0,\"malformed\":0,\"malformed_files\":[],\"filtered\":0,"
         "\"pre_existing_terminal\":0,\"cleaned\":0,\"filter_mode\":\"failures\",\"entries\":["
         "{\"class\":\"no_op\",\"file_path\":\"project_demo/p1-demo-feature/README.md\",\"entity_kind\":\"plan\","
-        "\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"}]}\n");
+        "\"entity_id\":1,\"conflict_id\":0,\"parse_error\":\"\"}],"
+        "\"field_edit_refused\":0,\"field_edit_refusals\":[]}\n");
+}
+
+TEST_CASE("field_edit_refusals carries the path, kind, id and field (task 6910)", "[workbench][render_cli][json]") {
+  ws::result value;
+  value.field_edit_refused = 1;
+  value.field_edit_refusals.push_back(
+      ws::field_edit_refusal{.path = "project_demo/p1-x/decisions/1-d.md", .entity_kind = "decision", .entity_id = 1,
+                             .field = "rationale"});
+  auto const out = rc::render_sync_result_json(value);
+  CHECK(out.find("\"field_edit_refused\":1,\"field_edit_refusals\":["
+                 "{\"path\":\"project_demo/p1-x/decisions/1-d.md\",\"entity_kind\":\"decision\",\"entity_id\":1,"
+                 "\"field\":\"rationale\"}]") != std::string::npos);
 }
 
 TEST_CASE("malformed_files carries the path and the Zig error tag", "[workbench][render_cli][json]") {
