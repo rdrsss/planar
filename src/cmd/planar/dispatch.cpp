@@ -127,7 +127,7 @@ protected:
 
 private:
   std::streambuf* _sink;
-  bool             _wrote = false;
+  bool            _wrote = false;
 };
 
 /// @brief Run `fn`, reporting whether it wrote anything to `stream`.
@@ -135,9 +135,8 @@ private:
 /// @param fn The callable to run with `stream`'s rdbuf temporarily
 /// replaced by a counting proxy.
 /// @return Whatever `fn` returns.
-template <class Fn>
-auto run_tracking_stdout_writes(std::ostream& stream, Fn&& fn) -> std::pair<std::invoke_result_t<Fn>, bool> {
-  auto* const       orig = stream.rdbuf();
+template <class Fn> auto run_tracking_stdout_writes(std::ostream& stream, Fn&& fn) -> std::pair<std::invoke_result_t<Fn>, bool> {
+  auto* const        orig = stream.rdbuf();
   counting_streambuf counter{orig};
   stream.rdbuf(&counter);
   auto result = std::forward<Fn>(fn)();

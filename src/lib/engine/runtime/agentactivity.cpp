@@ -2233,9 +2233,9 @@ auto next_work(db::connection& conn, std::int64_t plan_id) -> std::expected<std:
       break;
     }
 
-    auto const status             = std::string{stmt->column_text(2)};
-    auto const active_id          = opt_int(*stmt, 4);
-    auto const stale_id           = opt_int(*stmt, 5);
+    auto const status              = std::string{stmt->column_text(2)};
+    auto const active_id           = opt_int(*stmt, 4);
+    auto const stale_id            = opt_int(*stmt, 5);
     auto const has_open_dependency = stmt->column_int64(6) != 0;
 
     // The ladder. `blocked` first and unconditionally — see the header.

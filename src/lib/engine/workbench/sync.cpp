@@ -1401,8 +1401,8 @@ auto run(db::connection& conn, std::int64_t anchor_plan_id, std::string_view roo
       }
       if (refused_field) {
         ++out.field_edit_refused;
-        out.field_edit_refusals.push_back(field_edit_refusal{
-            .path = stored, .entity_kind = e.kind, .entity_id = e.id, .field = std::string{*refused_field}});
+        out.field_edit_refusals.push_back(
+            field_edit_refusal{.path = stored, .entity_kind = e.kind, .entity_id = e.id, .field = std::string{*refused_field}});
         ++out.pending;
       } else if (wants_apply && pull_to_db(conn, e.kind, e.id, *fs_content)) {
         auto const new_updated = fetch_updated_at(conn, e.kind, e.id);

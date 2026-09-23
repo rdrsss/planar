@@ -1423,10 +1423,10 @@ TEST_CASE("next_work excludes a todo task carrying an open depends-on edge, and 
   // new clause. An open `depends-on` edge on an otherwise ordinary `todo`
   // task is the case this clause exists for.
   scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  auto const      fx   = seed(conn, 2);
-  auto const      blocker    = task_id_at(conn, 0);
-  auto const      dependent  = task_id_at(conn, 1);
+  auto            conn      = open_migrated(scratch);
+  auto const      fx        = seed(conn, 2);
+  auto const      blocker   = task_id_at(conn, 0);
+  auto const      dependent = task_id_at(conn, 1);
 
   exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
                          "values ('task', {}, 'task', {}, 'depends-on')",
@@ -1441,7 +1441,7 @@ TEST_CASE("next_work excludes a todo task carrying an open depends-on edge, and 
     REQUIRE(rows.has_value());
     REQUIRE(rows->size() == 2);
 
-    auto const blocker_row = std::ranges::find(*rows, blocker, &aa::next_work_row::task_id);
+    auto const blocker_row   = std::ranges::find(*rows, blocker, &aa::next_work_row::task_id);
     auto const dependent_row = std::ranges::find(*rows, dependent, &aa::next_work_row::task_id);
     REQUIRE(blocker_row != rows->end());
     REQUIRE(dependent_row != rows->end());

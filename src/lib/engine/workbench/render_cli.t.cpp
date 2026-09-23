@@ -205,9 +205,8 @@ TEST_CASE("the single-plan JSON payload matches the oracle's field order", "[wor
 TEST_CASE("field_edit_refusals carries the path, kind, id and field (task 6910)", "[workbench][render_cli][json]") {
   ws::result value;
   value.field_edit_refused = 1;
-  value.field_edit_refusals.push_back(
-      ws::field_edit_refusal{.path = "project_demo/p1-x/decisions/1-d.md", .entity_kind = "decision", .entity_id = 1,
-                             .field = "rationale"});
+  value.field_edit_refusals.push_back(ws::field_edit_refusal{
+      .path = "project_demo/p1-x/decisions/1-d.md", .entity_kind = "decision", .entity_id = 1, .field = "rationale"});
   auto const out = rc::render_sync_result_json(value);
   CHECK(out.find("\"field_edit_refused\":1,\"field_edit_refusals\":["
                  "{\"path\":\"project_demo/p1-x/decisions/1-d.md\",\"entity_kind\":\"decision\",\"entity_id\":1,"

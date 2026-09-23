@@ -60,8 +60,8 @@ auto append_conflict_summary(std::string& out, std::size_t conflicts) -> void {
 
 /// @brief One `REFUSED` line per field-edit refusal (task 6910).
 auto refusal_line(const sync::field_edit_refusal& item) -> std::string {
-  return std::format("  REFUSED [{}]: {} ({} {}) - edit via 'decision edit' / 'question answer', not the file\n",
-                     item.field, item.path, item.entity_kind, item.entity_id);
+  return std::format("  REFUSED [{}]: {} ({} {}) - edit via 'decision edit' / 'question answer', not the file\n", item.field,
+                     item.path, item.entity_kind, item.entity_id);
 }
 
 /// @brief The refusal lines plus a one-line summary, appended whenever

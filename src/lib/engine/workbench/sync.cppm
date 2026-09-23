@@ -124,26 +124,26 @@ export struct malformed_file {
 /// `pending` alone does not tell the operator WHY, or that the fix is
 /// `decision edit` / `question answer`, not another pull.
 export struct field_edit_refusal {
-  std::string  path;        ///< ROOT-relative stored path.
-  std::string  entity_kind; ///< `decision` or `question`.
-  std::int64_t entity_id = 0;
-  std::string  field; ///< `rationale` or `answer`.
+  std::string  path;          ///< ROOT-relative stored path.
+  std::string  entity_kind;   ///< `decision` or `question`.
+  std::int64_t entity_id = 0; ///< The entity id.
+  std::string  field;         ///< `rationale` or `answer`.
 };
 
 /// @brief The outcome of one run. Field order matches the `--json` payload.
 export struct result {
-  std::size_t                 applied   = 0;                      ///< Changes written.
-  std::size_t                 pending   = 0;                      ///< Changes this mode declined to write.
-  std::size_t                 conflicts = 0;                      ///< Conflicting files.
-  std::size_t                 malformed = 0;                      ///< Unparseable files.
-  std::vector<malformed_file> malformed_files;                    ///< One per unparseable file, in `entries` order.
-  std::size_t                 filtered              = 0;          ///< Terminal entities excluded (push only).
-  std::size_t                 pre_existing_terminal = 0;          ///< Filtered entities that still had a file.
-  std::size_t                 cleaned               = 0;          ///< Of those, how many `apply_cleanup` removed.
-  std::string                 filter_mode           = "failures"; ///< The active mode's label.
-  std::vector<entry>          entries;                            ///< Every classified file, in enumeration order.
-  std::size_t                       field_edit_refused = 0; ///< Count of `field_edit_refusals` (task 6910).
-  std::vector<field_edit_refusal>   field_edit_refusals;     ///< One per refused entity.
+  std::size_t                     applied   = 0;                      ///< Changes written.
+  std::size_t                     pending   = 0;                      ///< Changes this mode declined to write.
+  std::size_t                     conflicts = 0;                      ///< Conflicting files.
+  std::size_t                     malformed = 0;                      ///< Unparseable files.
+  std::vector<malformed_file>     malformed_files;                    ///< One per unparseable file, in `entries` order.
+  std::size_t                     filtered              = 0;          ///< Terminal entities excluded (push only).
+  std::size_t                     pre_existing_terminal = 0;          ///< Filtered entities that still had a file.
+  std::size_t                     cleaned               = 0;          ///< Of those, how many `apply_cleanup` removed.
+  std::string                     filter_mode           = "failures"; ///< The active mode's label.
+  std::vector<entry>              entries;                            ///< Every classified file, in enumeration order.
+  std::size_t                     field_edit_refused = 0;             ///< Count of `field_edit_refusals` (task 6910).
+  std::vector<field_edit_refusal> field_edit_refusals;                ///< One per refused entity.
 };
 
 /// @brief One anchor plan with a workbench tree, as `workbench list` shows it.

@@ -221,7 +221,8 @@ TEST_CASE("the threshold gate TRUNCATES while the display ROUNDS", "[cmd][audit]
                       "FAIL: threshold not met (67% < 67%)\n");
 }
 
-TEST_CASE("a failing --json run with a payload emits exactly ONE JSON document on stdout", "[cmd][audit][handoff-readiness][6903]") {
+TEST_CASE("a failing --json run with a payload emits exactly ONE JSON document on stdout",
+          "[cmd][audit][handoff-readiness][6903]") {
   // Task 6903: dispatched via `dispatch.cpp`'s `run_tracking_stdout_writes`
   // -- the handler already wrote `{"total":...}` to stdout before
   // returning failure, so the additive --json error envelope is

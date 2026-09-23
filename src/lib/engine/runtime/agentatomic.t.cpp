@@ -872,12 +872,12 @@ TEST_CASE("release also succeeds on a plan_step claim (task 6890)", "[agentatomi
   auto const       fx   = seed(conn, 1);
   recording_policy policy;
 
-  exec(conn, std::format("insert into plan_steps (plan_id, ordinal, body, status) values ({}, 1, 'Step one', 'pending')",
-                         fx.plan_id));
+  exec(conn,
+       std::format("insert into plan_steps (plan_id, ordinal, body, status) values ({}, 1, 'Step one', 'pending')", fx.plan_id));
   auto const step_id = scalar_int(conn, "select id from plan_steps where plan_id = " + std::to_string(fx.plan_id));
 
-  auto args = basic_args(fx, step_id);
-  args.kind = aa::entity_kind::plan_step;
+  auto args       = basic_args(fx, step_id);
+  args.kind       = aa::entity_kind::plan_step;
   auto const held = atomic::claim_entity(conn, args, true, policy.bind());
   REQUIRE(held.has_value());
 
