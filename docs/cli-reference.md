@@ -904,6 +904,15 @@ For each distinct `(repo_root, branch, head_sha_at_claim)` tuple from `agent_wor
 
 Git-evidence failures never block apply.
 
+**A plan already `done` or `abandoned` (task 6889).** `closeout` on an already-terminal plan
+short-circuits to `ready:true, applied:false` before evaluating the gate rules — there is
+nothing left to close. `hard_evidence.tasks` / `.descendants` / `.claims` are still the REAL
+counts for that plan (collected the same as a live evaluation), so `--dry-run`/`--json` on an
+already-closed plan still tells the operator what closeout found, not an all-zero
+placeholder. Only `git_evidence` (empty) and `epic_merge` (unset, even with `--check-merge`)
+are skipped on this path — advisory locality data that was genuinely never collected, unlike
+the hard-evidence counts.
+
 **Options:**
 
 | Flag | Description | Default |
