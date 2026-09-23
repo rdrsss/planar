@@ -84,6 +84,67 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
   }
 }
 
+/// @brief A `std::streambuf` that forwards every write through unchanged
+/// while counting whether anything was written at all (task 6903).
+///
+/// Detects "the handler already wrote to stdout" AT THE DISPATCH SITE,
+/// rather than special-casing individual verbs (`audit handoff-readiness
+/// --json`, `templates validate --json`, and any future one): a handler
+/// that fails after already emitting its own JSON payload must not also
+/// get the additive `--json` error envelope appended, or a `json.loads`
+/// consumer reading stdout sees two documents on one stream and breaks.
+/// A handler that writes NOTHING before failing is unaffected -- it still
+/// gets the envelope, which is the only document on the stream either way.
+class counting_streambuf final : public std::streambuf {
+public:
+  explicit counting_streambuf(std::streambuf* sink) : _sink(sink) {
+  }
+
+  /// @return Whether any character passed through this buffer.
+  [[nodiscard]] auto wrote_anything() const -> bool {
+    return _wrote;
+  }
+
+protected:
+  auto overflow(int_type ch) -> int_type override {
+    if (ch == traits_type::eof()) {
+      return traits_type::not_eof(ch);
+    }
+    _wrote = true;
+    return _sink->sputc(static_cast<char>(ch));
+  }
+
+  auto xsputn(const char* s, std::streamsize count) -> std::streamsize override {
+    if (count > 0) {
+      _wrote = true;
+    }
+    return _sink->sputn(s, count);
+  }
+
+  auto sync() -> int override {
+    return _sink->pubsync();
+  }
+
+private:
+  std::streambuf* _sink;
+  bool             _wrote = false;
+};
+
+/// @brief Run `fn`, reporting whether it wrote anything to `stream`.
+/// @param stream The stream to intercept (`ctx.out()`).
+/// @param fn The callable to run with `stream`'s rdbuf temporarily
+/// replaced by a counting proxy.
+/// @return Whatever `fn` returns.
+template <class Fn>
+auto run_tracking_stdout_writes(std::ostream& stream, Fn&& fn) -> std::pair<std::invoke_result_t<Fn>, bool> {
+  auto* const       orig = stream.rdbuf();
+  counting_streambuf counter{orig};
+  stream.rdbuf(&counter);
+  auto result = std::forward<Fn>(fn)();
+  stream.rdbuf(orig);
+  return {std::move(result), counter.wrote_anything()};
+}
+
 } // namespace
 
 /// @brief A handler that always refuses with `not_implemented` (exit 64),
@@ -722,10 +783,16 @@ auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> r
     return run_outcome{.code = exit_code(err), .kind = err.kind};
   }
 
-  auto const outcome = found->second(ctx, args);
+  // Task 6903: detect "the handler already wrote a JSON payload to
+  // stdout" HERE, once, rather than special-casing `audit
+  // handoff-readiness --json` and `templates validate --json`
+  // individually. One JSON document per stream is the contract a
+  // `json.loads` consumer relies on; a handler that already emitted its
+  // own body must not ALSO get the additive error envelope appended.
+  auto [outcome, wrote_stdout] = run_tracking_stdout_writes(ctx.out(), [&] { return found->second(ctx, args); });
   if (!outcome) {
     report(outcome.error(), ctx.err());
-    if (want_json_envelope) {
+    if (want_json_envelope && !wrote_stdout) {
       report_json_envelope(key, outcome.error(), ctx.out());
     }
     return run_outcome{.code = exit_code(outcome.error()), .kind = outcome.error().kind};

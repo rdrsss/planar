@@ -2553,16 +2553,16 @@ TEST_CASE("resume validate: a NON-resumable task still writes its payload, then 
   CHECK(got.err == std::format("error: task {} is not resumable\n", task));
   // THE POINT: stdout carries the diagnosis even though the exit is
   // non-zero. A caller reading stdout only on exit 0 loses exactly the
-  // failure list it needs. The additive --json error envelope (decision
-  // 1145, task 6844) is APPENDED after the payload, on a second line, not
-  // substituted for it.
+  // failure list it needs. Task 6903: the additive --json error envelope
+  // (decision 1145, task 6844) is SUPPRESSED here -- the handler already
+  // wrote its own payload, so appending a second JSON document would
+  // break a `json.loads` consumer. The payload is the whole document.
   CHECK(got.out == std::format("{{\"task_id\":{},\"resumable\":false,\"failures\":["
                                "{{\"check\":\"next_action\",\"message\":\"next_action is null\","
                                "\"remediation\":\"planar task update {} --next-action \\\"<text>\\\"\"}},"
                                "{{\"check\":\"snapshot\",\"message\":\"no context snapshot found\","
                                "\"remediation\":\"planar capture snapshot --task {}\"}}]}}\n",
-                               task, task, task) +
-                       planar::cmd::testsupport::json_error_envelope_line("resume validate", "not_found"));
+                               task, task, task));
 }
 
 TEST_CASE("resume validate: text form lists each failure with its remediation", "[cmd][handlers][resume]") {
