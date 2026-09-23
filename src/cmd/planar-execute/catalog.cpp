@@ -64,6 +64,14 @@ auto catalog_json() -> std::string {
   add_string(*host_status, "--profile", "Execution profile to inspect; default: default.");
   host_status->add_flag("--json", "Render the report as JSON.");
 
+  CLI::App* host_drain = host->add_subcommand("drain", "Refuse new submissions for this profile; running work is "
+                                                       "untouched.");
+  add_string(*host_drain, "--profile", "Execution profile to drain; default: default.");
+
+  CLI::App* host_stop = host->add_subcommand("stop", "Ask this profile's daemon to stop; it drains its owned work "
+                                                     "under Centurion's bounded shutdown.");
+  add_string(*host_stop, "--profile", "Execution profile whose daemon to stop; default: default.");
+
   CLI::App* follow = root.add_subcommand("follow", "Stream a run's committed events, resuming from the cursor this "
                                                    "client last accepted.");
   follow->add_option("run-id")->required()->description("Run to follow.");

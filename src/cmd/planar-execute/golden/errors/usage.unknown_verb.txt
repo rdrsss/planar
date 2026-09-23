@@ -10,7 +10,7 @@ Usage:
   planar-execute submit <bundle> [--input <json>] [--profile <name>]
   planar-execute status [<run-id>] [--profile <name>] [--json]
   planar-execute cancel <run-id> [--profile <name>] [--json]
-  planar-execute host status [--profile <name>] [--json]
+  planar-execute host status|drain|stop [--profile <name>] [--json]
   planar-execute follow <run-id> [--from <cursor>] [--profile <name>]
   planar-execute schema
 

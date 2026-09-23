@@ -124,6 +124,8 @@ struct host_hooks {
   std::function<bool(const std::filesystem::path&)> probe_;
   /// Whether a pid is still running; the ownership evidence for a silent socket.
   std::function<bool(std::int64_t)> alive_{};
+  /// Ask a pid to terminate; the seam `stop_host` signals through.
+  std::function<bool(std::int64_t)> terminate_{};
   /// Start the daemon detached; returns a diagnostic on failure.
   std::function<std::expected<void, std::string>(const host_layout&, const std::filesystem::path&)> spawn_;
   /// Wait between readiness polls.
@@ -159,6 +161,48 @@ struct host_hooks {
 [[nodiscard]] auto ensure_host(const profile& resolved, const std::filesystem::path& daemon, const host_hooks& hooks,
                                std::chrono::milliseconds budget = std::chrono::seconds{30})
     -> std::expected<host_endpoint, host_error>;
+
+/// @brief Where a profile's drain marker lives.
+/// @param layout The profile's layout.
+/// @return The marker path.
+[[nodiscard]] auto draining_marker(const host_layout& layout) -> std::filesystem::path;
+
+/// @brief Whether this profile is draining and must not be submitted to.
+/// @param layout The profile's layout.
+/// @return True when the marker is present.
+[[nodiscard]] auto is_draining(const host_layout& layout) -> bool;
+
+/// @brief Start or end a drain.
+///
+/// Draining is a PLANAR-side admission gate, not a daemon state. Centurion
+/// exposes no "stop admitting" operation, so what Planar can honestly stop is
+/// its own submitting: work already running continues, and `host stop` is what
+/// ends the daemon (under Centurion's own bounded, draining shutdown).
+/// @param layout The profile's layout.
+/// @param draining Whether the profile should refuse new submissions.
+/// @return Nothing, or a diagnostic.
+[[nodiscard]] auto set_draining(const host_layout& layout, bool draining) -> std::expected<void, std::string>;
+
+/// @brief How a stop ended.
+enum class stop_result : std::uint8_t {
+  not_running, ///< No daemon was serving this profile; nothing to stop.
+  stopped,     ///< The daemon was signalled and stopped within the budget.
+  timed_out,   ///< The daemon was signalled and had not stopped when the budget expired.
+};
+
+/// @brief Ask the profile's daemon to stop, and wait a bounded time for it.
+///
+/// SIGTERM, because that is the signal `centuriond` bridges to its own
+/// shutdown: admission closes, owned work drains, and the process ends under
+/// Centurion's bounded-shutdown rules. Planar never kills it outright — a
+/// forced stop would abandon exactly the work the drain exists to preserve.
+/// @param layout The profile's layout.
+/// @param hooks Injected liveness, probe, clock and sleep.
+/// @param budget How long to wait for the daemon to go.
+/// @return What happened, or the classified failure.
+[[nodiscard]] auto stop_host(const host_layout& layout, const host_hooks& hooks,
+                             std::chrono::milliseconds budget = std::chrono::seconds{30})
+    -> std::expected<stop_result, host_error>;
 
 /// @brief The production hooks: a real connect probe and a detached spawn.
 /// @param probe Socket-liveness probe, supplied by the caller that links the client.

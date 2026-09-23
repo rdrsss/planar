@@ -24,7 +24,7 @@ auto usage_text() -> std::string_view {
          "  planar-execute submit <bundle> [--input <json>] [--profile <name>]\n"
          "  planar-execute status [<run-id>] [--profile <name>] [--json]\n"
          "  planar-execute cancel <run-id> [--profile <name>] [--json]\n"
-         "  planar-execute host status [--profile <name>] [--json]\n"
+         "  planar-execute host status|drain|stop [--profile <name>] [--json]\n"
          "  planar-execute follow <run-id> [--from <cursor>] [--profile <name>]\n"
          "  planar-execute schema\n"
          "\n"

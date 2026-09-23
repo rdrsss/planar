@@ -296,6 +296,53 @@ auto follow_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
   return 0;
 }
 
+/// @brief Run one `host drain` or `host stop`.
+auto host_lifecycle(std::string_view action, const planar::cmd::execute::run_id_args& asked) -> int {
+  namespace ex = planar::cmd::execute;
+  auto reached = reach_host(asked.profile);
+  if (!reached.has_value()) {
+    std::cerr << "planar-execute: " << reached.error() << '\n';
+    return 1;
+  }
+
+  if (action == "drain") {
+    // Planar cannot tell Centurion to stop admitting — there is no such
+    // operation — so what it stops is its own submitting. Work already
+    // running is untouched, which is the point.
+    if (auto marked = ex::set_draining(reached->layout_, true); !marked.has_value()) {
+      std::cerr << "planar-execute: " << marked.error() << '\n';
+      return 1;
+    }
+    std::cout << std::format("profile '{}' is draining: new submissions are refused, running work is untouched\n", asked.profile);
+    return 0;
+  }
+
+  auto stopped = ex::stop_host(
+      reached->layout_, ex::real_hooks([](const std::filesystem::path& socket) { return ex::probe_socket(socket.c_str()); }));
+  if (!stopped.has_value()) {
+    std::cerr << "planar-execute: " << stopped.error().message_ << '\n';
+    return 1;
+  }
+  // A stopped host leaves no reason to keep refusing submissions: the next one
+  // starts a fresh daemon.
+  if (auto cleared = ex::set_draining(reached->layout_, false); !cleared.has_value()) {
+    std::cerr << "planar-execute: " << cleared.error() << '\n';
+    return 1;
+  }
+  switch (*stopped) {
+  case ex::stop_result::not_running:
+    std::cout << std::format("no daemon was serving profile '{}'\n", asked.profile);
+    return 0;
+  case ex::stop_result::stopped:
+    std::cout << std::format("daemon for profile '{}' stopped and drained\n", asked.profile);
+    return 0;
+  case ex::stop_result::timed_out:
+    std::cerr << std::format("planar-execute: daemon for profile '{}' was asked to stop and is still draining\n", asked.profile);
+    return 1;
+  }
+  return 1;
+}
+
 /// @brief Run one `submit`: ensure the profile's daemon, check identity, start and follow.
 /// @param asked The parsed arguments.
 /// @return The process exit code.
@@ -315,7 +362,13 @@ auto submit_run(const planar::cmd::execute::submit_args& asked) -> int {
   auto const bin_dir = ex::executable_dir();
   auto const daemon  = std::filesystem::path{bin_dir} / "centuriond";
 
-  auto const layout   = ex::layout_for(*resolved);
+  auto const layout = ex::layout_for(*resolved);
+  if (ex::is_draining(layout)) {
+    // Retryable, not a failure of the work: the operator asked this profile to
+    // stop taking new runs, and that is a state it will leave.
+    std::cerr << std::format("planar-execute: profile '{}' is draining and is not accepting new runs\n", resolved->name);
+    return ex::exit_code_for(ex::flow_result::retry_later);
+  }
   auto const recorded = ex::recorded_tuple(layout);
 
   auto ensured = ex::ensure_host(
@@ -485,7 +538,7 @@ auto main(int argc, char** argv) -> int {
     // `host` has exactly one subcommand today; anything else is a usage error
     // rather than a silently ignored token.
     auto const rest = std::span{args}.subspan(2);
-    if (rest.empty() || rest[0] != "status") {
+    if (rest.empty() || (rest[0] != "status" && rest[0] != "drain" && rest[0] != "stop")) {
       print_usage();
       code = 2;
       break;
@@ -496,7 +549,7 @@ auto main(int argc, char** argv) -> int {
       code = 2;
       break;
     }
-    code = host_status(*asked);
+    code = rest[0] == "status" ? host_status(*asked) : host_lifecycle(rest[0], *asked);
     break;
   }
 

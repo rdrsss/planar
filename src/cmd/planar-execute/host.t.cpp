@@ -299,6 +299,105 @@ TEST_CASE("a crashed owner's socket is removed and replaced", "[execute][host]")
   CHECK_FALSE(script.socket_present_at_spawn);
 }
 
+TEST_CASE("draining is a Planar-side gate, not a daemon state", "[execute][host][drain]") {
+  using planar::cmd::execute::draining_marker;
+  using planar::cmd::execute::is_draining;
+  using planar::cmd::execute::set_draining;
+
+  const scratch_state scratch("drain");
+  const auto          layout = layout_for(scratch.make_profile());
+
+  CHECK_FALSE(is_draining(layout));
+  REQUIRE(set_draining(layout, true).has_value());
+  CHECK(is_draining(layout));
+  CHECK(std::filesystem::exists(draining_marker(layout)));
+
+  SECTION("ending a drain is idempotent") {
+    REQUIRE(set_draining(layout, false).has_value());
+    CHECK_FALSE(is_draining(layout));
+    // Clearing an already-cleared drain is a request that has been honoured.
+    REQUIRE(set_draining(layout, false).has_value());
+    CHECK_FALSE(is_draining(layout));
+  }
+
+  SECTION("starting a drain twice is idempotent") {
+    REQUIRE(set_draining(layout, true).has_value());
+    CHECK(is_draining(layout));
+  }
+}
+
+TEST_CASE("stopping a host signals it and waits for it to go", "[execute][host][stop]") {
+  using planar::cmd::execute::stop_host;
+  using planar::cmd::execute::stop_result;
+
+  const scratch_state scratch("stop");
+  const auto          resolved = scratch.make_profile();
+  const auto          layout   = layout_for(resolved);
+
+  SECTION("nothing serving is an outcome, not an error") {
+    // "Stop what is already stopped" is a request that has been honoured.
+    scripted_hooks script;
+    auto           stopped = stop_host(layout, script.hooks());
+    REQUIRE(stopped.has_value());
+    CHECK(*stopped == stop_result::not_running);
+  }
+
+  publish_record(layout, 4242);
+
+  SECTION("a crashed owner's leftover record is not something to signal") {
+    // The realistic stale case: the daemon died and its endpoint record
+    // outlived it. Signalling that pid would be signalling whatever now holds
+    // the number, so the record alone is not evidence of a running daemon.
+    scripted_hooks script;
+    script.owner_alive = false;
+    auto hooks         = script.hooks();
+    int  signals       = 0;
+    hooks.terminate_   = [&](std::int64_t) {
+      ++signals;
+      return true;
+    };
+    auto stopped = stop_host(layout, hooks);
+    REQUIRE(stopped.has_value());
+    CHECK(*stopped == stop_result::not_running);
+    CHECK(signals == 0);
+  }
+
+  SECTION("a live owner is signalled and reported stopped once it goes") {
+    scripted_hooks script;
+    script.owner_alive = true;
+    auto hooks         = script.hooks();
+    int  signals       = 0;
+    hooks.terminate_   = [&](std::int64_t pid) {
+      ++signals;
+      CHECK(pid == 4242);
+      script.owner_alive = false; // it honoured the signal
+      return true;
+    };
+    auto stopped = stop_host(layout, hooks);
+    REQUIRE(stopped.has_value());
+    CHECK(*stopped == stop_result::stopped);
+    CHECK(signals == 1);
+  }
+
+  SECTION("a daemon still draining when the budget expires is reported, not killed") {
+    // Centurion's shutdown is bounded by its own rules; a drain that is still
+    // draining has not failed, and Planar never escalates to a forced kill --
+    // that would abandon the work the drain exists to preserve.
+    scripted_hooks script;
+    script.owner_alive = true;
+    auto hooks         = script.hooks();
+    int  signals       = 0;
+    hooks.terminate_   = [&](std::int64_t) {
+      ++signals;
+      return true; // signalled, but it keeps running
+    };
+    auto stopped = stop_host(layout, hooks, std::chrono::milliseconds{200});
+    REQUIRE(stopped.has_value());
+    CHECK(*stopped == stop_result::timed_out);
+    CHECK(signals == 1); // signalled ONCE; no escalation
+  }
+}
+
 TEST_CASE("a daemon that never accepts is a readiness failure naming its log", "[execute][host]") {
   const scratch_state scratch("readiness");
   scripted_hooks      script; // spawn succeeds, but the probe never turns true

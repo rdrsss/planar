@@ -270,10 +270,68 @@ auto ensure_host(const profile& resolved, const std::filesystem::path& daemon, c
                                                    layout.socket_.string(), budget.count(), layout.log_.string()));
 }
 
+auto draining_marker(const host_layout& layout) -> std::filesystem::path {
+  return layout.home_ / "draining";
+}
+
+auto is_draining(const host_layout& layout) -> bool {
+  std::error_code failure;
+  return std::filesystem::exists(draining_marker(layout), failure);
+}
+
+auto set_draining(const host_layout& layout, bool draining) -> std::expected<void, std::string> {
+  const auto      marker = draining_marker(layout);
+  std::error_code failure;
+  if (!draining) {
+    std::filesystem::remove(marker, failure);
+    return failure ? std::unexpected(std::format("cannot clear {}: {}", marker.string(), failure.message()))
+                   : std::expected<void, std::string>{};
+  }
+  std::filesystem::create_directories(layout.home_, failure);
+  std::ofstream out(marker, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    return std::unexpected(std::format("cannot write {}", marker.string()));
+  }
+  return {};
+}
+
+auto stop_host(const host_layout& layout, const host_hooks& hooks, std::chrono::milliseconds budget)
+    -> std::expected<stop_result, host_error> {
+  const auto record = read_endpoint_record(layout);
+  const auto alive =
+      hooks.alive_ ? hooks.alive_ : [](std::int64_t pid) { return pid > 0 && ::kill(static_cast<pid_t>(pid), 0) == 0; };
+  if (!record.has_value() || !alive(record->pid_)) {
+    // Nothing is serving. Said as an outcome rather than an error: "stop what
+    // is already stopped" is a request that has been honoured.
+    return stop_result::not_running;
+  }
+
+  const auto terminate =
+      hooks.terminate_ ? hooks.terminate_ : [](std::int64_t pid) { return ::kill(static_cast<pid_t>(pid), SIGTERM) == 0; };
+  if (!terminate(record->pid_)) {
+    return fail(host_failure::occupied, std::format("cannot signal pid {} serving {}", record->pid_, layout.socket_.string()));
+  }
+
+  const auto now      = hooks.now_ ? hooks.now_ : [] { return std::chrono::steady_clock::now(); };
+  const auto rest     = hooks.sleep_ ? hooks.sleep_ : [](std::chrono::milliseconds span) { std::this_thread::sleep_for(span); };
+  const auto deadline = now() + budget;
+  while (now() < deadline) {
+    if (!alive(record->pid_)) {
+      return stop_result::stopped;
+    }
+    rest(std::chrono::milliseconds{50});
+  }
+  // Not an error: Centurion's shutdown is bounded but its bound is its own,
+  // and a drain that is still draining has not failed.
+  return stop_result::timed_out;
+}
+
 auto real_hooks(std::function<bool(const std::filesystem::path&)> probe) -> host_hooks {
   return host_hooks{
-      .probe_ = std::move(probe),
-      .spawn_ = [](const host_layout& layout, const std::filesystem::path& daemon) -> std::expected<void, std::string> {
+      .probe_     = std::move(probe),
+      .alive_     = [](std::int64_t pid) { return pid > 0 && ::kill(static_cast<pid_t>(pid), 0) == 0; },
+      .terminate_ = [](std::int64_t pid) { return ::kill(static_cast<pid_t>(pid), SIGTERM) == 0; },
+      .spawn_     = [](const host_layout& layout, const std::filesystem::path& daemon) -> std::expected<void, std::string> {
         if (::access(daemon.c_str(), X_OK) != 0) {
           return std::unexpected(std::format("{} is not an executable daemon", daemon.string()));
         }

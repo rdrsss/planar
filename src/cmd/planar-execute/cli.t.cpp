@@ -374,6 +374,8 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   CHECK(catalog.contains(R"("command":"planar-execute cancel")"));
   CHECK(catalog.contains(R"("command":"planar-execute host status")"));
   CHECK(catalog.contains(R"("command":"planar-execute follow")"));
+  CHECK(catalog.contains(R"("command":"planar-execute host drain")"));
+  CHECK(catalog.contains(R"("command":"planar-execute host stop")"));
   // Single line, no trailing newline: the write site appends exactly one.
   CHECK_FALSE(catalog.contains('\n'));
 
@@ -388,10 +390,10 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   // `--input` and `--profile`; and `--profile`/`--json` on each of `status`,
   // `cancel` and `host status` (task 6485 added `--engine` and the `profile`
   // verb; 6494 `--profile`; 6504 `submit`; 6506 the inspection verbs; 6505
-  // `follow`'s `--from` and `--profile`). Repeats are counted, because each
-  // declaring verb is a separate promise and every one of them is checked
-  // below.
-  REQUIRE(advertised.size() == 17);
+  // `follow`'s `--from` and `--profile`; 6507 `host drain`/`host stop`, one
+  // `--profile` each). Repeats are counted, because each declaring verb is a
+  // separate promise and every one of them is checked below.
+  REQUIRE(advertised.size() == 19);
   for (auto const& flag : advertised) {
     INFO("advertised flag not accepted by its parser: " << flag);
     if (flag == "--profile") {
