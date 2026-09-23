@@ -269,7 +269,13 @@ auto reconcile_cache(db::connection& conn, const im::outcome& staged, const std:
         if (!stepped || *stepped != db::step_result::row)
           return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
         kept_tasks.insert(found->column_int64(0));
-      } else
+      } else if (task.error() == pl::task_error::busy_source)
+        // Task 6908: bucket a post-timeout SQLITE_BUSY the same way the
+        // task verbs do, not with the generic failure every other engine
+        // error here shares -- an orchestrator can retry a busy import
+        // apply, so it should see `busy_source`, not `generic_failure`.
+        return std::unexpected(error_from_body(domain_error_kind::busy_source, "database apply failed: Busy"));
+      else
         return std::unexpected(error_from_body(domain_error_kind::generic_failure, "database apply failed"));
     }
   }
