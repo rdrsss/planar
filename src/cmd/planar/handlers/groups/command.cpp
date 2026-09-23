@@ -1,4 +1,4 @@
-/// @file groups.cpp
+/// @file src/cmd/planar/handlers/groups/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.groups`.
 
 module planar.cmd.planar.handlers.groups;

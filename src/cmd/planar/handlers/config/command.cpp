@@ -1,4 +1,4 @@
-/// @file config.cpp
+/// @file src/cmd/planar/handlers/config/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.config` (plan 996,
 /// task 6259). See config.cppm for the two starter blobs, the ignored
 /// `--format` flag, and the three named `config validate` divergences.

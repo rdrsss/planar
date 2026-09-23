@@ -7,6 +7,8 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
+/// @brief Provide the declare demote command operation.
+/// @param root Input root.
 export auto declare_demote(CLI::App& root) -> void {
   CLI::App* demote = root.add_subcommand(
       "demote", "Reverse a promotion — move an entity back to global personal scope.\n\n  The destination is always global; the "

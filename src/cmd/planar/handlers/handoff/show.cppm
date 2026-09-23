@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::handoff_cli {
+/// @brief Register the show CLI node.
+/// @param handoff Input handoff.
+/// @return Registered CLI node.
 export auto attach_show(CLI::App* handoff) -> CLI::App* {
   CLI::App* show = handoff->add_subcommand("show", "Show a handoff's details.");
   add_string(*show, "--vendor");

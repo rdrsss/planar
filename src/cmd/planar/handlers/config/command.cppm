@@ -1,4 +1,4 @@
-/// @file config.cppm
+/// @file src/cmd/planar/handlers/config/command.cppm
 /// @brief `planar.cmd.planar.handlers.config` — all five `planar config`
 /// leaves (plan 996, task 6259).
 ///

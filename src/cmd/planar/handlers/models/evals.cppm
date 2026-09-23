@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::models_cli {
+/// @brief Register the evals CLI node.
+/// @param models Input models.
+/// @return Registered CLI node.
 export auto attach_evals(CLI::App& models) -> CLI::App* {
   CLI::App* evals = models.add_subcommand(
       "evals",

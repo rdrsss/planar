@@ -1,4 +1,4 @@
-/// @file annotate.cpp
+/// @file src/cmd/planar/handlers/annotate/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.annotate`.
 
 module planar.cmd.planar.handlers.annotate;

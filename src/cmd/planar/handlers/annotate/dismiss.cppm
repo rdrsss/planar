@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the dismiss CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_dismiss(CLI::App& annotate) -> CLI::App* {
   CLI::App* dismiss = annotate.add_subcommand("dismiss", "Dismiss an annotation.");
   add_json(*dismiss);

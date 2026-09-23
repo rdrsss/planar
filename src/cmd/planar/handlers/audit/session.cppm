@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::audit_cli {
+/// @brief Register the session CLI node.
+/// @param audit Input audit.
+/// @return Registered CLI node.
 export auto attach_session(CLI::App* audit) -> CLI::App* {
   CLI::App* session = audit->add_subcommand("session", "Show the timeline for a session.");
   add_json(*session);

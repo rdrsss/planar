@@ -1,4 +1,4 @@
-/// @file health.cpp
+/// @file src/cmd/planar/handlers/health/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.health`.
 /// See health.cppm for the exit-code and scope conventions.
 

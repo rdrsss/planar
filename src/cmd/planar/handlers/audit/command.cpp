@@ -1,4 +1,4 @@
-/// @file audit.cpp
+/// @file src/cmd/planar/handlers/audit/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.audit`.
 /// See audit.cppm for the two-exit-code and null-optional conventions.
 

@@ -10,6 +10,8 @@ import planar.cmd.planar_ext.handlers.schema.command;
 import planar.cmd.planar_ext.handlers.ext.command;
 import planar.cmd.planar_ext.handlers.sync.command;
 namespace planar::cmd::ext {
+/// @brief Build the root CLI application.
+/// @return Root CLI application.
 export auto root_app() -> std::unique_ptr<CLI::App> {
   // Task 6419 moved the `ext`/`sync` verb family in; this description no
   // longer describes a skeleton. Task 6421 landed `ext propagate` itself —

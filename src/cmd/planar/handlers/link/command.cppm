@@ -1,4 +1,4 @@
-/// @file link.cppm
+/// @file src/cmd/planar/handlers/link/command.cppm
 /// @brief `planar.cmd.planar.handlers.link` — the top-level `planar link
 /// <kind:id> --to <system-slug>:<external-id>` leaf (plan 996, task 6301).
 ///

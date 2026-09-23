@@ -53,6 +53,8 @@ import planar.cmd.planar.handlers.workspace;
 
 namespace planar::cmd {
 
+/// @brief Build the root CLI application.
+/// @return Root CLI application.
 export auto root_app() -> std::unique_ptr<CLI::App>;
 
 auto root_app() -> std::unique_ptr<CLI::App> {

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::question_cli {
+/// @brief Register the link CLI node.
+/// @param question Input question.
+/// @return Registered CLI node.
 export auto attach_link(CLI::App& question) -> CLI::App* {
   CLI::App* link = question.add_subcommand("link", "Create an entity link from a question to another entity.");
   add_string(*link, "--relationship");

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::capture_cli {
+/// @brief Register the file CLI node.
+/// @param capture Input capture.
+/// @return Registered CLI node.
 export auto attach_file(CLI::App* capture) -> CLI::App* {
   CLI::App* file = capture->add_subcommand("file", "Attach a file to the active session.");
   add_int(*file, "--session");

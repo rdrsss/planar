@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the capabilities CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_capabilities(CLI::App& annotate) -> CLI::App* {
   CLI::App* capabilities = annotate.add_subcommand("capabilities", "Describe annotation read and command support.");
   add_json(*capabilities);

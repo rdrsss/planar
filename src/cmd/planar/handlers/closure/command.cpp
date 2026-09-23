@@ -1,4 +1,4 @@
-/// @file closure.cpp
+/// @file src/cmd/planar/handlers/closure/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.closure`.
 
 module planar.cmd.planar.handlers.closure;

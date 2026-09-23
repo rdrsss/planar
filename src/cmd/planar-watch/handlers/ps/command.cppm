@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_watch.handlers.shared.cli;
 namespace planar::cmd::watch::handlers::ps_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- ps -----------------------------------------------------------------
   CLI::App* ps = root.add_subcommand("ps", "Lists every currently active agent claim \xe2\x80\x94 one row per claim_token.\n"

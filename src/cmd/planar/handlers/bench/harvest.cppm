@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::bench_cli {
+/// @brief Register the harvest CLI node.
+/// @param bench Input bench.
+/// @return Registered CLI node.
 export auto attach_harvest(CLI::App* bench) -> CLI::App* {
   CLI::App* harvest = bench->add_subcommand("harvest", "Harvest git diff as actual touches for a run/task.");
   add_int_required(*harvest, "--task");

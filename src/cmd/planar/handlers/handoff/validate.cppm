@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::handoff_cli {
+/// @brief Register the validate CLI node.
+/// @param handoff Input handoff.
+/// @return Registered CLI node.
 export auto attach_validate(CLI::App* handoff) -> CLI::App* {
   CLI::App* validate = handoff->add_subcommand("validate", "Validate a pending handoff.");
   add_string(*validate, "--vendor");

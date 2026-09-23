@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::scope_cli {
+/// @brief Register the pop CLI node.
+/// @param scope Input scope.
+/// @return Registered CLI node.
 export auto attach_pop(CLI::App* scope) -> CLI::App* {
   CLI::App* pop = scope->add_subcommand("pop", "Removed in plan 153 M5 — see `planar scope show`.");
   set_allow_extras(*pop);

@@ -1,4 +1,4 @@
-/// @file templates.cpp
+/// @file src/cmd/planar/handlers/templates/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.templates` (plan
 /// 996, task 6190). See templates.cppm for the two-bucket split, the
 /// `$HOME`-not-`$PLANAR_HOME` seam, and the flags two leaves ignore.

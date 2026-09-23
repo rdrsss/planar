@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::models_cli {
+/// @brief Register the registry remove CLI node.
+/// @param registry Input registry.
+/// @return Registered CLI node.
 export auto attach_registry_remove(CLI::App& registry) -> CLI::App* {
   CLI::App* remove = registry.add_subcommand("remove", "Remove a candidate when no immutable evidence references it.");
   add_int_required(*remove, "--candidate");

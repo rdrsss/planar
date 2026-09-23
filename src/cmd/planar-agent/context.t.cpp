@@ -68,8 +68,12 @@ auto make_fixture(std::string_view tag) -> fixture {
 /// @param err The stderr sink.
 /// @return The context.
 auto make_context(const fixture& fx, std::ostream& out, std::ostream& err) -> planar::cmd::agent::context {
-  return planar::cmd::agent::context{
-      std::vector<std::string>{"planar-agent"}, planar::cmd::agent::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::agent::database>(fx.db_path, err), out, err};
+  return planar::cmd::agent::context{std::vector<std::string>{"planar-agent"},
+                                     planar::cmd::agent::map_env(fx.vars),
+                                     fx.root / "proj",
+                                     std::make_shared<planar::cmd::agent::database>(fx.db_path, err),
+                                     out,
+                                     err};
 }
 
 /// @brief Create a fully-migrated database at `path`, the way `planar init`
@@ -101,11 +105,15 @@ TEST_CASE("planar-agent context leaves stamp, filter, capsule, and resolve", "[c
       "seconds'),1,'code');"));
   auto invoke = [&](std::vector<std::string> argv) {
     std::ostringstream          out, err;
-    planar::cmd::agent::context ctx{
-        std::move(argv), planar::cmd::agent::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::agent::database>(fx.db_path, err), out, err};
-    auto root  = planar::cmd::agent::root_app();
-    auto table = planar::cmd::agent::handlers(*root);
-    auto code  = planar::cmd::agent::run(ctx, *root, table);
+    planar::cmd::agent::context ctx{std::move(argv),
+                                    planar::cmd::agent::map_env(fx.vars),
+                                    fx.root / "proj",
+                                    std::make_shared<planar::cmd::agent::database>(fx.db_path, err),
+                                    out,
+                                    err};
+    auto                        root  = planar::cmd::agent::root_app();
+    auto                        table = planar::cmd::agent::handlers(*root);
+    auto                        code  = planar::cmd::agent::run(ctx, *root, table);
     return std::tuple{code, out.str(), err.str()};
   };
   auto [add_code, add_out, add_err] =
@@ -155,11 +163,15 @@ TEST_CASE("planar-agent context keeps record lifecycle boundaries and filters ob
       "seconds'),'plan');"));
   auto invoke = [&](std::vector<std::string> argv) {
     std::ostringstream          out, err;
-    planar::cmd::agent::context ctx{
-        std::move(argv), planar::cmd::agent::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::agent::database>(fx.db_path, err), out, err};
-    auto root  = planar::cmd::agent::root_app();
-    auto table = planar::cmd::agent::handlers(*root);
-    auto code  = planar::cmd::agent::run(ctx, *root, table);
+    planar::cmd::agent::context ctx{std::move(argv),
+                                    planar::cmd::agent::map_env(fx.vars),
+                                    fx.root / "proj",
+                                    std::make_shared<planar::cmd::agent::database>(fx.db_path, err),
+                                    out,
+                                    err};
+    auto                        root  = planar::cmd::agent::root_app();
+    auto                        table = planar::cmd::agent::handlers(*root);
+    auto                        code  = planar::cmd::agent::run(ctx, *root, table);
     return std::tuple{code, out.str(), err.str()};
   };
 

@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::plan_cli {
+/// @brief Register the divergence CLI node.
+/// @param plan Input plan.
+/// @return Registered CLI node.
 export auto attach_divergence(CLI::App& plan) -> CLI::App* {
   CLI::App* divergence = plan.add_subcommand(
       "divergence",

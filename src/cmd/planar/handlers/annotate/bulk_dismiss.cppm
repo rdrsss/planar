@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the bulk dismiss CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_bulk_dismiss(CLI::App& annotate) -> CLI::App* {
   CLI::App* bulk_dismiss = annotate.add_subcommand("bulk-dismiss", "Dismiss every active annotation matching the filter.");
   add_string(*bulk_dismiss, "--operation-id");

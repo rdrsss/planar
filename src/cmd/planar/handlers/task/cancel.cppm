@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::task_cli {
+/// @brief Register the cancel CLI node.
+/// @param task Input task.
+/// @return Registered CLI node.
 export auto attach_cancel(CLI::App& task) -> CLI::App* {
   CLI::App* cancel = task.add_subcommand("cancel", "Cancel a task (single-arg form; Go supports variadic).");
   add_string(*cancel, "--scope");

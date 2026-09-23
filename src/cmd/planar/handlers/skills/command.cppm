@@ -1,4 +1,4 @@
-/// @file skills.cppm
+/// @file src/cmd/planar/handlers/skills/command.cppm
 /// @brief `planar.cmd.planar.handlers.skills` — the `planar skills` leaf
 /// (plan 996, task 6106).
 ///

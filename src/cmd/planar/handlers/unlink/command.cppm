@@ -1,4 +1,4 @@
-/// @file unlink.cppm
+/// @file src/cmd/planar/handlers/unlink/command.cppm
 /// @brief `planar.cmd.planar.handlers.unlink` — the `planar unlink
 /// <link-id>` leaf (plan 996, task 6106).
 ///

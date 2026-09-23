@@ -102,8 +102,7 @@ struct fixture {
 
   fixture()
       : ctx({}, planar::cmd::ext::map_env({{"PLANAR_DB", scratch.path_.string()}}), std::filesystem::path{},
-            std::make_shared<planar::cmd::ext::database>(scratch.path_, std::cerr),
-            std::cout, std::cerr) {
+            std::make_shared<planar::cmd::ext::database>(scratch.path_, std::cerr), std::cout, std::cerr) {
     // Apply the full migration chain directly (not through `planar init`,
     // which does not exist in this test binary's link closure) so
     // `ensure_db()`'s schema-version check passes and every table decision

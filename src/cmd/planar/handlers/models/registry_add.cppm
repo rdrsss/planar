@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::models_cli {
+/// @brief Register the registry add CLI node.
+/// @param registry Input registry.
+/// @return Registered CLI node.
 export auto attach_registry_add(CLI::App& registry) -> CLI::App* {
   CLI::App* add = registry.add_subcommand("add", "Register one exact opaque candidate identifier.");
   add_string_required(*add, "--vendor");

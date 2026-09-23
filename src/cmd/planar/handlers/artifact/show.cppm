@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::artifact_cli {
+/// @brief Register the show CLI node.
+/// @param artifact Input artifact.
+/// @return Registered CLI node.
 export auto attach_show(CLI::App& artifact) -> CLI::App* {
   CLI::App* show = artifact.add_subcommand("show", "Show an artifact's metadata and body.");
   add_json(*show);

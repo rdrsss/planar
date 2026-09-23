@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::scenario_cli {
+/// @brief Register the list CLI node.
+/// @param scenario Input scenario.
+/// @return Registered CLI node.
 export auto attach_list(CLI::App& scenario) -> CLI::App* {
   CLI::App* list = scenario.add_subcommand("list", "List scenarios.");
   add_string(*list, "--scope");

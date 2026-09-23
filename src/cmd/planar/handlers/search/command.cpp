@@ -1,4 +1,4 @@
-/// @file search.cpp
+/// @file src/cmd/planar/handlers/search/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.search`.
 /// See search.cppm for the flag-convention captures.
 

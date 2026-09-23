@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::config_cli {
+/// @brief Register the show CLI node.
+/// @param config Input config.
+/// @return Registered CLI node.
 export auto attach_show(CLI::App* config) -> CLI::App* {
   CLI::App* show = config->add_subcommand("show", "Print the resolved configuration.");
   add_bool(*show, "--effective");

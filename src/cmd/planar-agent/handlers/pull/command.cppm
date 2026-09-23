@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.handlers.shared.cli;
 namespace planar::cmd::agent::handlers::pull_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- pull ---------------------------------------------------------------
   CLI::App* pull = root.add_subcommand("pull", "Atomically pick the next eligible task, claim it, and flip status to doing.");

@@ -78,7 +78,12 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::root_app();
   auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
@@ -188,7 +193,12 @@ TEST_CASE("report's cli_log adapter turns a genuine query failure into cli_adapt
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar", "report", "--json"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+  context            ctx{{"planar", "report", "--json"},
+                         planar::cmd::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
   auto               conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
   // 4 MiB (k_default_max_bytes) plus slack, so the single row alone

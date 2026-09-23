@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::decision_cli {
+/// @brief Register the show CLI node.
+/// @param decision Input decision.
+/// @return Registered CLI node.
 export auto attach_show(CLI::App& decision) -> CLI::App* {
   CLI::App* show = decision.add_subcommand("show", "Show a decision's details.");
   add_json(*show);

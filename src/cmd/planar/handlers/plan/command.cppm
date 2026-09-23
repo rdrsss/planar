@@ -1,4 +1,4 @@
-/// @file plan.cppm
+/// @file src/cmd/planar/handlers/plan/command.cppm
 /// @brief `planar.cmd.planar.handlers.plan` — the `planar plan create` leaf
 /// (plan 996, task 6133).
 ///

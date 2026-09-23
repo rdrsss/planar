@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::task_cli {
+/// @brief Register the facts stage CLI node.
+/// @param facts Input facts.
+/// @return Registered CLI node.
 export auto attach_facts_stage(CLI::App* facts) -> CLI::App* {
   CLI::App* facts_stage = facts->add_subcommand(
       "stage", "Stage this task's routing facts under operator provenance.\n\n  `spec ingest --apply` is the only other "

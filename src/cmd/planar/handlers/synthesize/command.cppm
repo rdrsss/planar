@@ -1,4 +1,4 @@
-/// @file synthesize.cppm
+/// @file src/cmd/planar/handlers/synthesize/command.cppm
 /// @brief Layer-3 composition for `planar synthesize`.
 module;
 

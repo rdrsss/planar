@@ -1,4 +1,4 @@
-/// @file question.cpp
+/// @file src/cmd/planar/handlers/question/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.question`.
 
 module planar.cmd.planar.handlers.question;

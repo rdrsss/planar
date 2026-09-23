@@ -1,4 +1,4 @@
-/// @file import.cppm
+/// @file src/cmd/planar/handlers/import/command.cppm
 /// @brief `planar import`: layer-3 composition of staging and plan creation.
 module;
 

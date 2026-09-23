@@ -1,4 +1,4 @@
-/// @file link.cpp
+/// @file src/cmd/planar/handlers/link/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.link`. See link.cppm
 /// for the stale-oracle-comment finding, the recorded `--propagate`
 /// divergence, and the two refs that parse in opposite directions.

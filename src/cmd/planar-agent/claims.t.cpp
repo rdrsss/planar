@@ -97,8 +97,9 @@ auto run_verb(const scratch_dir& scratch, std::vector<std::string> argv) -> invo
 
   std::ostringstream out;
   std::ostringstream err;
-  agent::context     ctx{argv, agent::map_env({}), scratch.path_, std::make_shared<planar::cmd::agent::database>(scratch.db_path(), err), out, err};
-  auto const         code = agent::run(ctx, *root, table);
+  agent::context     ctx{
+      argv, agent::map_env({}), scratch.path_, std::make_shared<planar::cmd::agent::database>(scratch.db_path(), err), out, err};
+  auto const code = agent::run(ctx, *root, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
 

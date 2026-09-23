@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::capture_cli {
+/// @brief Register the note CLI node.
+/// @param capture Input capture.
+/// @return Registered CLI node.
 export auto attach_note(CLI::App* capture) -> CLI::App* {
   CLI::App* note = capture->add_subcommand("note", "Append a narrative note to the active session.");
   add_int(*note, "--session");

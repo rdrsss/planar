@@ -1,4 +1,4 @@
-/// @file scenario.cpp
+/// @file src/cmd/planar/handlers/scenario/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.scenario`.
 
 module planar.cmd.planar.handlers.scenario;

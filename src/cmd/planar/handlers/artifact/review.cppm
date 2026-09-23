@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::artifact_cli {
+/// @brief Register the review CLI node.
+/// @param artifact Input artifact.
+/// @return Registered CLI node.
 export auto attach_review(CLI::App& artifact) -> CLI::App* {
   CLI::App* review = artifact.add_subcommand("review", "Reviewer entry point for artifact diff.");
   add_bool(*review, "--approve");

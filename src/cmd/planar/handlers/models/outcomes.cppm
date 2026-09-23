@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::models_cli {
+/// @brief Register the outcomes CLI node.
+/// @param models Input models.
+/// @return Registered CLI node.
 export auto attach_outcomes(CLI::App& models) -> CLI::App* {
   CLI::App* outcomes = models.add_subcommand(
       "outcomes", "Read-only. Excluded samples are shown deliberately: they are the\n  audit trail of the evidence boundary. "

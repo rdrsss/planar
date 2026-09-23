@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::audit_cli {
+/// @brief Register the publish decision CLI node.
+/// @param audit Input audit.
+/// @return Registered CLI node.
 export auto attach_publish_decision(CLI::App* audit) -> CLI::App* {
   CLI::App* publish_decision =
       audit->add_subcommand("publish-decision", "Post the decision body to linked operational-plane targets.");

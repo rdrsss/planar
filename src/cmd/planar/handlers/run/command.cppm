@@ -11,6 +11,8 @@ import planar.cmd.planar.handlers.run.finish;
 import planar.cmd.planar.handlers.run.show;
 
 namespace planar::cmd::handlers {
+/// @brief Provide the declare run command operation.
+/// @param root Input root.
 export auto declare_run(CLI::App& root) -> void {
   CLI::App* run = root.add_subcommand(
       "run", "Record operational run traces emitted by workflows.\n\n  Arm defaults to 'op' (or the workflow name when "

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::links_cli {
+/// @brief Register the trail CLI node.
+/// @param links Input links.
+/// @return Registered CLI node.
 export auto attach_trail(CLI::App* links) -> CLI::App* {
   CLI::App* trail = links->add_subcommand("trail", "Show the audit trail for an entity_links row.");
   add_json(*trail);

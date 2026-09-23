@@ -1,4 +1,4 @@
-/// @file version.cppm
+/// @file src/cmd/planar/handlers/version/command.cppm
 /// @brief `planar.cmd.planar.handlers.version` — the `planar version` leaf
 /// (plan 996, task 6105).
 ///

@@ -1,4 +1,4 @@
-/// @file artifact.cpp
+/// @file src/cmd/planar/handlers/artifact/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.artifact`.
 
 module planar.cmd.planar.handlers.artifact;

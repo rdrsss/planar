@@ -1,4 +1,4 @@
-/// @file skills.cpp
+/// @file src/cmd/planar/handlers/skills/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.skills`.
 
 module planar.cmd.planar.handlers.skills;

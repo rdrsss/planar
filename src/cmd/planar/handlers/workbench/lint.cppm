@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::workbench_cli {
+/// @brief Register the lint CLI node.
+/// @param workbench Input workbench.
+/// @return Registered CLI node.
 export auto attach_lint(CLI::App& workbench) -> CLI::App* {
   CLI::App* lint = workbench.add_subcommand("lint", "Validate workbench Markdown frontmatter without syncing.");
   add_bool(*lint, "--all", "Validate every workbench tree");

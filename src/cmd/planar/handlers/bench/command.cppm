@@ -13,6 +13,8 @@ import planar.cmd.planar.handlers.bench.finish;
 import planar.cmd.planar.handlers.bench.show;
 
 namespace planar::cmd::handlers {
+/// @brief Provide the declare bench command operation.
+/// @param root Input root.
 export auto declare_bench(CLI::App& root) -> void {
   CLI::App* bench = root.add_subcommand(
       "bench", "Record measurement-rig data for the vertical-slice decomposition experiment.\n\n  Arms: strict, eligibility, "

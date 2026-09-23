@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::workbench_cli {
+/// @brief Register the publish CLI node.
+/// @param workbench Input workbench.
+/// @return Registered CLI node.
 export auto attach_publish(CLI::App& workbench) -> CLI::App* {
   CLI::App* publish = workbench.add_subcommand("publish", "Render and push workbench files to external system.");
   add_string_required(*publish, "--system");

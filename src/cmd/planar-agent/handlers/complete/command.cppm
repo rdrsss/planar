@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.handlers.shared.cli;
 namespace planar::cmd::agent::handlers::complete_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   CLI::App* complete =
       root.add_subcommand("complete", "Atomically end the work session: task \xE2\x86\x92 done, claim \xE2\x86\x92 completed.");

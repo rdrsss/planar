@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::artifact_cli {
+/// @brief Register the edit CLI node.
+/// @param artifact Input artifact.
+/// @return Registered CLI node.
 export auto attach_edit(CLI::App& artifact) -> CLI::App* {
   CLI::App* edit = artifact.add_subcommand("edit", "Edit an artifact in $EDITOR (editor-first flow).");
   add_bool(*edit, "--no-pull");

@@ -1,4 +1,4 @@
-/// @file workspace.cppm
+/// @file src/cmd/planar/handlers/workspace/command.cppm
 /// @brief `planar.cmd.planar.handlers.workspace` — the `planar workspace
 /// doctor` leaf (plan 996, task 6106).
 ///

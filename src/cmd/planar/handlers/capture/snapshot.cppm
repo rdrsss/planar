@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::capture_cli {
+/// @brief Register the snapshot CLI node.
+/// @param capture Input capture.
+/// @return Registered CLI node.
 export auto attach_snapshot(CLI::App* capture) -> CLI::App* {
   CLI::App* snapshot = capture->add_subcommand("snapshot", "Create a context snapshot.");
   add_int(*snapshot, "--session");

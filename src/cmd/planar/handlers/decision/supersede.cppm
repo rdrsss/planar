@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::decision_cli {
+/// @brief Register the supersede CLI node.
+/// @param decision Input decision.
+/// @return Registered CLI node.
 export auto attach_supersede(CLI::App& decision) -> CLI::App* {
   CLI::App* supersede = decision.add_subcommand("supersede", "Mark a decision as superseded by a newer decision.");
   add_int_required(*supersede, "--by");

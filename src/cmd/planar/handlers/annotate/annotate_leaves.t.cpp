@@ -157,7 +157,12 @@ auto dispatch(const fixture& fx, std::vector<std::string> args, std::optional<st
   } restore{std::cin.rdbuf(input.rdbuf())};
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree    = planar::cmd::root_app();
   auto const         table   = planar::cmd::make_handler_table(*tree);
   auto const         outcome = planar::cmd::run_detailed(ctx, *tree, table);
@@ -180,10 +185,11 @@ auto dispatch_in(const fixture& fx, const std::filesystem::path& cwd, std::vecto
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), cwd, std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
-  auto const         tree    = planar::cmd::root_app();
-  auto const         table   = planar::cmd::make_handler_table(*tree);
-  auto const         outcome = planar::cmd::run_detailed(ctx, *tree, table);
+  context            ctx{
+      std::move(argv), planar::cmd::map_env(fx.vars), cwd, std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+  auto const tree    = planar::cmd::root_app();
+  auto const table   = planar::cmd::make_handler_table(*tree);
+  auto const outcome = planar::cmd::run_detailed(ctx, *tree, table);
   return invocation{.code = outcome.code, .kind = outcome.kind, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
@@ -356,8 +362,10 @@ auto write_file(const fixture& fx, std::string_view relative, std::string_view c
 auto join_association(const fixture& fx, std::string_view slug, const std::filesystem::path& dir) -> void {
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
-  auto               conn = ctx.db().ensure_db();
+  context            ctx{
+      {"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out,
+      err};
+  auto conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
   auto const created = planar::engine::identity::create(
       **conn, {.slug = std::string{slug}, .kind = planar::engine::identity::association_kind::project});
@@ -850,7 +858,12 @@ TEST_CASE("the plan and task filters run on real anchors, not on an empty answer
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
     auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     auto const plan = planar::engine::planning::create_plan(**conn, {.title = "Anchor plan"});

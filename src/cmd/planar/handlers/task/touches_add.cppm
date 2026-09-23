@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::task_cli {
+/// @brief Register the touches add CLI node.
+/// @param touches Input touches.
+/// @return Registered CLI node.
 export auto attach_touches_add(CLI::App& touches) -> CLI::App* {
   CLI::App* add = touches.add_subcommand(
       "add", "Declare that a task touches a repo (and, with --path, a specific file).\n\n  Without --path: writes the repo-level "

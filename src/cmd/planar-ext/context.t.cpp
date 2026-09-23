@@ -54,8 +54,12 @@ struct scratch_db_path {
 /// @param err The stderr sink.
 /// @return The context.
 auto make_context(const std::filesystem::path& path, std::ostream& out, std::ostream& err) -> planar::cmd::ext::context {
-  return planar::cmd::ext::context{
-      {}, planar::cmd::ext::map_env({{"PLANAR_DB", path.string()}}), std::filesystem::path{}, std::make_shared<planar::cmd::ext::database>(path, err), out, err};
+  return planar::cmd::ext::context{{},
+                                   planar::cmd::ext::map_env({{"PLANAR_DB", path.string()}}),
+                                   std::filesystem::path{},
+                                   std::make_shared<planar::cmd::ext::database>(path, err),
+                                   out,
+                                   err};
 }
 
 /// @brief Apply the full embedded migration chain at `path`, the way

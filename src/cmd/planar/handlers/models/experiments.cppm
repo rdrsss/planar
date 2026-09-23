@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::models_cli {
+/// @brief Register the experiments CLI node.
+/// @param models Input models.
+/// @return Registered CLI node.
 export auto attach_experiments(CLI::App& models) -> CLI::App* {
   CLI::App* experiments = models.add_subcommand(
       "experiments", "Read-only. Shows each experiment's frozen manifest identity (the\n  cohort it governs, its manifest "

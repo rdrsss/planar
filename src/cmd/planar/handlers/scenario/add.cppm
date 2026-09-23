@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::scenario_cli {
+/// @brief Register the add CLI node.
+/// @param scenario Input scenario.
+/// @return Registered CLI node.
 export auto attach_add(CLI::App& scenario) -> CLI::App* {
   CLI::App* add = scenario.add_subcommand("add", "Create a new test scenario.");
   add_string(*add, "--body");

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::local_cli {
+/// @brief Register the import CLI node.
+/// @param local Input local.
+/// @return Registered CLI node.
 export auto attach_import(CLI::App* local) -> CLI::App* {
   CLI::App* import_leaf = local->add_subcommand("import", "Import a skill or agent from an external directory.");
   add_string(*import_leaf, "--kind");

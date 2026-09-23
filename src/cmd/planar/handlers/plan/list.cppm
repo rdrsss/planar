@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::plan_cli {
+/// @brief Register the list CLI node.
+/// @param plan Input plan.
+/// @return Registered CLI node.
 export auto attach_list(CLI::App& plan) -> CLI::App* {
   CLI::App* list = plan.add_subcommand("list", "List plans.");
   add_string(*list, "--scope");

@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::plan_cli {
+/// @brief Register the step skip CLI node.
+/// @param step Input step.
+/// @return Registered CLI node.
 export auto attach_step_skip(CLI::App& step) -> CLI::App* {
   CLI::App* skip = step.add_subcommand("skip", "Mark a plan step as skipped.");
   add_string(*skip, "--scope");

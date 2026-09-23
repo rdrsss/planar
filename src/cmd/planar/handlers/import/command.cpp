@@ -1,4 +1,4 @@
-/// @file import.cpp
+/// @file src/cmd/planar/handlers/import/command.cpp
 /// @brief Handler for the import staging and deterministic apply path.
 module planar.cmd.planar.handlers.importer;
 

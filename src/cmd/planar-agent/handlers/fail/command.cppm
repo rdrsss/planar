@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.handlers.shared.cli;
 namespace planar::cmd::agent::handlers::fail_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   CLI::App* fail =
       root.add_subcommand("fail", "Atomically fail the work session: task \xE2\x86\x92 todo, claim \xE2\x86\x92 aborted.");

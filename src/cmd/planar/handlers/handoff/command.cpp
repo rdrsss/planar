@@ -1,4 +1,4 @@
-/// @file handoff.cpp
+/// @file src/cmd/planar/handlers/handoff/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.handoff`.
 
 module planar.cmd.planar.handlers.handoff;

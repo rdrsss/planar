@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_watch.handlers.shared.cli;
 namespace planar::cmd::watch::handlers::run_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- run ------------------------------------------------------------
   // Folded in from `surface.cpp`'s generated `k_path_7/12/13` at task 6613

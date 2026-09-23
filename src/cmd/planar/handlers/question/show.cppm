@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::question_cli {
+/// @brief Register the show CLI node.
+/// @param question Input question.
+/// @return Registered CLI node.
 export auto attach_show(CLI::App& question) -> CLI::App* {
   CLI::App* show = question.add_subcommand("show", "Show a question's details.");
   add_json(*show);

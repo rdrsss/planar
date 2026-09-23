@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the bulk archive CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_bulk_archive(CLI::App& annotate) -> CLI::App* {
   CLI::App* bulk_archive =
       annotate.add_subcommand("bulk-archive", "Archive every annotation matching the filter (including non-active rows).");

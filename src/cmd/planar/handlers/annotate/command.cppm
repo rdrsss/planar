@@ -1,4 +1,4 @@
-/// @file annotate.cppm
+/// @file src/cmd/planar/handlers/annotate/command.cppm
 /// @brief `planar.cmd.planar.handlers.annotate` — the `planar annotate add`
 /// and `planar annotate list` leaves (plan 996, task 6105).
 ///

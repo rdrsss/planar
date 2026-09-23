@@ -1,4 +1,4 @@
-/// @file models.cppm
+/// @file src/cmd/planar/handlers/models/command.cppm
 /// @brief `planar.cmd.planar.handlers.models` — all fourteen `models` leaves
 /// (plan 996, tasks 6149 and 6343).
 ///

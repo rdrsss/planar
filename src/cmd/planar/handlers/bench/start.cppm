@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::bench_cli {
+/// @brief Register the start CLI node.
+/// @param bench Input bench.
+/// @return Registered CLI node.
 export auto attach_start(CLI::App* bench) -> CLI::App* {
   CLI::App* start = bench->add_subcommand(
       "start",

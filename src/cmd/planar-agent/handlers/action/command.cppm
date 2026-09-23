@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.handlers.shared.cli;
 namespace planar::cmd::agent::handlers::action_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- action start / end -------------------------------------------------
   CLI::App* action = root.add_subcommand("action", "Nested action lifecycle (sub-tool-calls inside a claim).");

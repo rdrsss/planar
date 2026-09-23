@@ -1,4 +1,4 @@
-/// @file workbench.cppm
+/// @file src/cmd/planar/handlers/workbench/command.cppm
 /// @brief `planar.cmd.planar.handlers.workbench` — the ten ported
 /// `planar workbench *` leaves (plan 996, task 6037).
 ///

@@ -52,7 +52,12 @@ auto scratch_dir(std::string_view tag) -> std::filesystem::path {
 /// @return The constructed context.
 auto make_context(std::map<std::string, std::string, std::less<>> vars, std::filesystem::path cwd, std::filesystem::path db_path,
                   std::ostream& out, std::ostream& err) -> context {
-  return context{{"planar"}, planar::cmd::map_env(std::move(vars)), std::move(cwd), std::make_shared<planar::cmd::database>(std::move(db_path), err), out, err};
+  return context{{"planar"},
+                 planar::cmd::map_env(std::move(vars)),
+                 std::move(cwd),
+                 std::make_shared<planar::cmd::database>(std::move(db_path), err),
+                 out,
+                 err};
 }
 
 } // namespace

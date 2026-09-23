@@ -1,4 +1,4 @@
-/// @file capture.cppm
+/// @file src/cmd/planar/handlers/capture/command.cppm
 /// @brief `planar.cmd.planar.handlers.capture` — all seven
 /// `planar capture *` leaves as of plan 996 task 6358, which added
 /// `commits` (the group was six of seven since task 6040).

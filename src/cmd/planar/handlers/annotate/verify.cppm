@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the verify CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_verify(CLI::App& annotate) -> CLI::App* {
   CLI::App* verify = annotate.add_subcommand("verify", "Verify annotation anchors against workspace state.");
   add_string(*verify, "--anchor-path");

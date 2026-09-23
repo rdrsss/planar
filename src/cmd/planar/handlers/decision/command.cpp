@@ -1,4 +1,4 @@
-/// @file decision.cpp
+/// @file src/cmd/planar/handlers/decision/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.decision`.
 
 module planar.cmd.planar.handlers.decision;

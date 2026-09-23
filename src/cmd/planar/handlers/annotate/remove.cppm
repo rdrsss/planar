@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the remove CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_remove(CLI::App& annotate) -> CLI::App* {
   CLI::App* remove = annotate.add_subcommand("remove", "Remove an annotation.");
   add_int(*remove, "--expected-revision");

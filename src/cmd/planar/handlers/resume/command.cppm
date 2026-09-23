@@ -1,4 +1,4 @@
-/// @file resume.cppm
+/// @file src/cmd/planar/handlers/resume/command.cppm
 /// @brief `planar.cmd.planar.handlers.resume` — `planar resume validate`,
 /// the no-id cwd-scope derivation, and the 8-section packet body (plan 996,
 /// tasks 6040/6452/6455).

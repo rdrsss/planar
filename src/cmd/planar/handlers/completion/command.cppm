@@ -7,6 +7,8 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
+/// @brief Provide the declare completion command operation.
+/// @param root Input root.
 export auto declare_completion(CLI::App& root) -> void {
   CLI::App* completion = root.add_subcommand("completion", "Generate the autocompletion script for the specified shell.");
   add_positional_described(*completion, "shell", "Shell: bash, zsh, or fish");

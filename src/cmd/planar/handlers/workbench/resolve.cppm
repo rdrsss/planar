@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::workbench_cli {
+/// @brief Register the resolve CLI node.
+/// @param workbench Input workbench.
+/// @return Registered CLI node.
 export auto attach_resolve(CLI::App& workbench) -> CLI::App* {
   CLI::App* resolve = workbench.add_subcommand("resolve", "Settle a sync conflict by choosing FS or DB.");
   add_string_required(*resolve, "--prefer", "Which side to prefer (fs|db)");

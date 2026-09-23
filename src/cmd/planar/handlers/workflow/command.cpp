@@ -1,4 +1,4 @@
-/// @file workflow.cpp
+/// @file src/cmd/planar/handlers/workflow/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.workflow`.
 
 module planar.cmd.planar.handlers.workflow;

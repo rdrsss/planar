@@ -116,7 +116,12 @@ auto dispatch(std::vector<std::string> args, std::map<std::string, std::string, 
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(std::move(vars)), root, std::make_shared<planar::cmd::database>(root / "planar.db", err), out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::map_env(std::move(vars)),
+                         root,
+                         std::make_shared<planar::cmd::database>(root / "planar.db", err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::root_app();
   auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
@@ -238,7 +243,12 @@ TEST_CASE("an unwired leaf falls through to exit 64, not a crash", "[cmd][dispat
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar", "version"}, planar::cmd::map_env({}), root, std::make_shared<planar::cmd::database>(root / "planar.db", err), out, err};
+  context            ctx{{"planar", "version"},
+                         planar::cmd::map_env({}),
+                         root,
+                         std::make_shared<planar::cmd::database>(root / "planar.db", err),
+                         out,
+                         err};
   auto const         tree = planar::cmd::root_app();
   int const          code = planar::cmd::run(ctx, *tree, planar::cmd::handler_table{});
   CHECK(code == 64);
@@ -398,7 +408,12 @@ TEST_CASE("the health DUAL node's parent and child are BOTH wired, and both matt
   auto const         root = std::filesystem::temp_directory_path() / "planar_dispatch_health_probe";
   std::error_code    ec;
   std::filesystem::create_directories(root, ec);
-  context   ctx{{"planar", "health"}, planar::cmd::map_env({}), root, std::make_shared<planar::cmd::database>(root / "planar.db", err), out, err};
+  context   ctx{{"planar", "health"},
+                planar::cmd::map_env({}),
+                root,
+                std::make_shared<planar::cmd::database>(root / "planar.db", err),
+                out,
+                err};
   int const code = planar::cmd::run(ctx, *tree, table);
   CHECK(code == 0);
   CHECK(out.str().contains("hygiene"));

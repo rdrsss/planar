@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::groups_cli {
+/// @brief Register the recommend CLI node.
+/// @param groups Input groups.
+/// @return Registered CLI node.
 export auto attach_recommend(CLI::App* groups) -> CLI::App* {
   CLI::App* recommend = groups->add_subcommand("recommend", "Recommend closure-minimizing task slices for a plan.");
   add_string(*recommend, "--budget");

@@ -1,4 +1,4 @@
-/// @file report.cpp
+/// @file src/cmd/planar/handlers/report/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.report`.
 /// See report.cppm for the flag-validation contract and the privacy note.
 

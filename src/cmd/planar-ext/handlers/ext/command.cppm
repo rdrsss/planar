@@ -12,6 +12,8 @@ auto add_json(CLI::App& app) -> void {
   cliapp::add_bool_flag(app, "--json");
 }
 } // namespace
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   CLI::App* ext = root.add_subcommand("ext", "Register and interact with external systems on the operational plane.\n\n"
                                              "  Sub-commands: register, list, test, create, propagate-one, propagate.\n"

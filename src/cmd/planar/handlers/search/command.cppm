@@ -1,4 +1,4 @@
-/// @file search.cppm
+/// @file src/cmd/planar/handlers/search/command.cppm
 /// @brief `planar.cmd.planar.handlers.search` — the `planar search` leaf
 /// (plan 996, task 6090).
 ///

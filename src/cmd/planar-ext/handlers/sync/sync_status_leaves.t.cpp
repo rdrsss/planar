@@ -101,7 +101,12 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   argv.insert(argv.end(), args.begin(), args.end());
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::ext::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::ext::database>(fx.db_path, err), out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::ext::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::ext::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::ext::root_app();
   auto const         table = planar::cmd::ext::handlers(*tree);
   int const          code  = planar::cmd::ext::run(ctx, *tree, table);

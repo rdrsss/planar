@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::plan_cli {
+/// @brief Register the closeout CLI node.
+/// @param plan Input plan.
+/// @return Registered CLI node.
 export auto attach_closeout(CLI::App& plan) -> CLI::App* {
   CLI::App* closeout = plan.add_subcommand(
       "closeout",

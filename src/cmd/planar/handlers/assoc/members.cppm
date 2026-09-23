@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::assoc_cli {
+/// @brief Register the members CLI node.
+/// @param assoc Input assoc.
+/// @return Registered CLI node.
 export auto attach_members(CLI::App* assoc) -> CLI::App* {
   CLI::App* members = assoc->add_subcommand("members", "List all project members of an association.");
   add_json(*members);

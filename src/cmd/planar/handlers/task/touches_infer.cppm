@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::task_cli {
+/// @brief Register the touches infer CLI node.
+/// @param touches Input touches.
+/// @return Registered CLI node.
 export auto attach_touches_infer(CLI::App& touches) -> CLI::App* {
   CLI::App* infer = touches.add_subcommand(
       "infer",

@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.handlers.shared.cli;
 namespace planar::cmd::agent::handlers::block_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   CLI::App* block = root.add_subcommand("block", "Atomically park the task on an external blocker.");
   shared::add_claim(*block, "Claim token returned by pull/claim");

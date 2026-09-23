@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::task_cli {
+/// @brief Register the block CLI node.
+/// @param task Input task.
+/// @return Registered CLI node.
 export auto attach_block(CLI::App& task) -> CLI::App* {
   CLI::App* block = task.add_subcommand("block", "Mark a task as blocked and record the blocking relationship.");
   add_int_required(*block, "--on", "Blocking task id");

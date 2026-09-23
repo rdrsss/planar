@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::feedback_cli {
+/// @brief Register the triage show CLI node.
+/// @param triage Input triage.
+/// @return Registered CLI node.
 export auto attach_triage_show(CLI::App* triage) -> CLI::App* {
   CLI::App* show = triage->add_subcommand("show", "Show a triaged finding.");
   add_json(*show);

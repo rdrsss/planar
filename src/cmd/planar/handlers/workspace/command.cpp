@@ -1,4 +1,4 @@
-/// @file workspace.cpp
+/// @file src/cmd/planar/handlers/workspace/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.workspace`.
 
 module planar.cmd.planar.handlers.workspace;

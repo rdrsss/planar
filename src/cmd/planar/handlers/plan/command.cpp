@@ -1,4 +1,4 @@
-/// @file plan.cpp
+/// @file src/cmd/planar/handlers/plan/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.plan`.
 
 module planar.cmd.planar.handlers.plan;

@@ -1,4 +1,4 @@
-/// @file test_spec.cppm
+/// @file src/cmd/planar/handlers/test_spec/command.cppm
 /// @brief `planar.cmd.planar.handlers.test_spec` — the `planar test-spec
 /// status` leaf (plan 996, task 6299).
 ///

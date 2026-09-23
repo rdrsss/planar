@@ -115,7 +115,12 @@ auto dispatch(const fixture& fx, std::vector<std::string> args, std::map<std::st
   auto const         cwd = fx.root / "proj";
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::ext::map_env(vars), cwd, std::make_shared<planar::cmd::ext::database>(fx.db_path, err), out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::ext::map_env(vars),
+                         cwd,
+                         std::make_shared<planar::cmd::ext::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::ext::root_app();
   auto const         table = planar::cmd::ext::handlers(*tree);
   int const          code  = planar::cmd::ext::run(ctx, *tree, table);

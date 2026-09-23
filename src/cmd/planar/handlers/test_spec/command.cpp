@@ -1,4 +1,4 @@
-/// @file test_spec.cpp
+/// @file src/cmd/planar/handlers/test_spec/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.test_spec`. See
 /// test_spec.cppm for why a real milestone plan reports "not found".
 

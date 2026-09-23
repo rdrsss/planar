@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::task_cli {
+/// @brief Register the update CLI node.
+/// @param task Input task.
+/// @return Registered CLI node.
 export auto attach_update(CLI::App& task) -> CLI::App* {
   CLI::App* update = task.add_subcommand("update", "Update mutable fields on a task.");
   add_string(*update, "--title");

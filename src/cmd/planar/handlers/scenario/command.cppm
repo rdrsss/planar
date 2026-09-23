@@ -1,4 +1,4 @@
-/// @file scenario.cppm
+/// @file src/cmd/planar/handlers/scenario/command.cppm
 /// @brief `planar.cmd.planar.handlers.scenario` — the six `planar scenario`
 /// CRUD/transition/link leaves (plan 996 roadmap M12 item 9, task 6195).
 ///

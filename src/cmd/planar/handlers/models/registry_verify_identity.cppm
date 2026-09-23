@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::models_cli {
+/// @brief Register the registry verify identity CLI node.
+/// @param registry Input registry.
+/// @return Registered CLI node.
 export auto attach_registry_verify_identity(CLI::App& registry) -> CLI::App* {
   CLI::App* verify_identity =
       registry.add_subcommand("verify-identity", "Compare requested and actual spawn identity without aliasing.");

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::workbench_cli {
+/// @brief Register the push CLI node.
+/// @param workbench Input workbench.
+/// @return Registered CLI node.
 export auto attach_push(CLI::App& workbench) -> CLI::App* {
   CLI::App* push = workbench.add_subcommand("push", "Apply DB→FS changes atomically; report FS→DB drift.");
   add_bool(*push, "--verbose");

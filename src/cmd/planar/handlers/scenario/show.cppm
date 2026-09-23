@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::scenario_cli {
+/// @brief Register the show CLI node.
+/// @param scenario Input scenario.
+/// @return Registered CLI node.
 export auto attach_show(CLI::App& scenario) -> CLI::App* {
   CLI::App* show = scenario.add_subcommand("show", "Show a scenario's details.");
   add_json(*show);

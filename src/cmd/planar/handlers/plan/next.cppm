@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::plan_cli {
+/// @brief Register the next CLI node.
+/// @param plan Input plan.
+/// @return Registered CLI node.
 export auto attach_next(CLI::App& plan) -> CLI::App* {
   CLI::App* next = plan.add_subcommand(
       "next", "Bucketed claim-aware view of next work on a plan.\n\n  Buckets:\n    available  task is todo (or doing without an "

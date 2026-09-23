@@ -7,9 +7,17 @@ import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
 namespace planar::cmd::agent::handlers {
+/// @brief Provide the context add command operation.
+/// @return Success or a command error.
 export auto context_add(context&, const cliapp::parsed_args&) -> handler_result;
+/// @brief Provide the context capsule command operation.
+/// @return Success or a command error.
 export auto context_capsule(context&, const cliapp::parsed_args&) -> handler_result;
+/// @brief Provide the context list command operation.
+/// @return Success or a command error.
 export auto context_list(context&, const cliapp::parsed_args&) -> handler_result;
+/// @brief Provide the context resolve command operation.
+/// @return Success or a command error.
 export auto context_resolve(context&, const cliapp::parsed_args&) -> handler_result;
 
 /// @brief Handle `planar-agent ingest`.

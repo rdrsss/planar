@@ -12,6 +12,8 @@ auto add_json(CLI::App& app) -> void {
   cliapp::add_bool_flag(app, "--json");
 }
 } // namespace
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   CLI::App* sync = root.add_subcommand("sync", "Pull, push, and reconcile drift between local entities and their\n"
                                                "  registered external counterparts.");

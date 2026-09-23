@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::bench_cli {
+/// @brief Register the touch CLI node.
+/// @param bench Input bench.
+/// @return Registered CLI node.
 export auto attach_touch(CLI::App* bench) -> CLI::App* {
   CLI::App* touch = bench->add_subcommand("touch", "Record a declared or actual file touch for a run.");
   add_int_required(*touch, "--task");

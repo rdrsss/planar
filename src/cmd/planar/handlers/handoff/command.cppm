@@ -1,4 +1,4 @@
-/// @file handoff.cppm
+/// @file src/cmd/planar/handlers/handoff/command.cppm
 /// @brief `planar.cmd.planar.handlers.handoff` — the seven
 /// `planar handoff *` leaves (plan 996, task 6040).
 ///

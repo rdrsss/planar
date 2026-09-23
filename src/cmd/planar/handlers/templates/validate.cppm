@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::templates_cli {
+/// @brief Register the validate CLI node.
+/// @param templates Input templates.
+/// @return Registered CLI node.
 export auto attach_validate(CLI::App* templates) -> CLI::App* {
   CLI::App* validate = templates->add_subcommand("validate", "Validate template syntax.");
   add_json(*validate);

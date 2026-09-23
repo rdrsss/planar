@@ -7,6 +7,8 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
+/// @brief Provide the declare explore command operation.
+/// @param root Input root.
 export auto declare_explore(CLI::App& root) -> void {
   CLI::App* explore = root.add_subcommand(
       "explore", "Launch the interactive Planar cockpit.\n\n  Equivalent to invoking `planar` with no verb on a terminal. Use\n  "

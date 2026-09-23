@@ -1,4 +1,4 @@
-/// @file capture.cpp
+/// @file src/cmd/planar/handlers/capture/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.capture`.
 
 module planar.cmd.planar.handlers.capture;

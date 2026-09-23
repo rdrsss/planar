@@ -96,8 +96,12 @@ auto make_fixture(std::string_view tag) -> fixture {
 /// @return The context.
 auto make_context(const fixture& fx, const std::filesystem::path& db_path, std::ostream& out, std::ostream& err)
     -> planar::cmd::watch::context {
-  return planar::cmd::watch::context{
-      std::vector<std::string>{"planar-watch"}, planar::cmd::watch::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::watch::database>(db_path, err), out, err};
+  return planar::cmd::watch::context{std::vector<std::string>{"planar-watch"},
+                                     planar::cmd::watch::map_env(fx.vars),
+                                     fx.root / "proj",
+                                     std::make_shared<planar::cmd::watch::database>(db_path, err),
+                                     out,
+                                     err};
 }
 
 /// @brief Create a fully-migrated database at `path`, the way `planar init`

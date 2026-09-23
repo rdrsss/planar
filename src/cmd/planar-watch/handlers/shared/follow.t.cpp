@@ -144,7 +144,10 @@ TEST_CASE("follow: interruptible_sleep wakes on a transient -wal via the parent-
   std::ostringstream err;
   context            ctx{std::vector<std::string>{"planar-watch"},
                          map_env({{"PLANAR_HOME", (root / "home").string()}, {"HOME", (root / "fakehome").string()}}),
-                         root, std::make_shared<planar::cmd::watch::database>(db_path, err), out, err};
+                         root,
+                         std::make_shared<planar::cmd::watch::database>(db_path, err),
+                         out,
+                         err};
 
   std::jthread writer([&wal_path] {
     std::this_thread::sleep_for(std::chrono::milliseconds(40));

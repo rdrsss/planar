@@ -1,4 +1,4 @@
-/// @file health.cppm
+/// @file src/cmd/planar/handlers/health/command.cppm
 /// @brief `planar.cmd.planar.handlers.health` — the `planar health` DUAL
 /// node and its `hygiene` subcommand (plan 996, tasks 6090 and 6357).
 ///

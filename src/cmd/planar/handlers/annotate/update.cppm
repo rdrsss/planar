@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the update CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_update(CLI::App& annotate) -> CLI::App* {
   CLI::App* update = annotate.add_subcommand("update", "Update an annotation.");
   add_string(*update, "--title");

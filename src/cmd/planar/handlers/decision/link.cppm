@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::decision_cli {
+/// @brief Register the link CLI node.
+/// @param decision Input decision.
+/// @return Registered CLI node.
 export auto attach_link(CLI::App& decision) -> CLI::App* {
   CLI::App* link = decision.add_subcommand("link", "Create an entity link from a decision to another entity.");
   add_string(*link, "--relationship");

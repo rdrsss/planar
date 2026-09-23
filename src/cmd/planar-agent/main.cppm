@@ -25,6 +25,8 @@ import planar.cmd.planar_agent.handlers.dispatch.command;
 import planar.cmd.planar_agent.handlers.context.command;
 
 namespace planar::cmd::agent {
+/// @brief Build the root CLI application.
+/// @return Root CLI application.
 export auto root_app() -> std::unique_ptr<CLI::App> {
   // Every description below is transcribed from the Zig node. The four
   // Declaration order matches the oracle's `handlers/cmd.zig` registry.
@@ -58,6 +60,8 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   return app;
 }
 
+/// @brief List verbs excluded from this binary.
+/// @return Computed value.
 export auto forbidden_verbs() -> std::vector<std::string_view> {
   return {"plan", "task",      "decision", "question", "scenario", "artifact", "annotate", "init",      "workbench", "doc",
           "spec", "templates", "ext",      "sync",     "promote",  "demote",   "capture",  "dashboard", "tree",      "health"};

@@ -7,6 +7,8 @@ import cli11;
 import planar.cliapp.args;
 import planar.cliapp.surface;
 namespace planar::cmd::agent::handlers::shared {
+/// @brief Register this CLI declaration.
+/// @param app Input app.
 export auto add_json(CLI::App& app) -> void {
   cliapp::add_bool_flag(app, "--json");
 }

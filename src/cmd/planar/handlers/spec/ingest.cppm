@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::spec_cli {
+/// @brief Register the ingest CLI node.
+/// @param spec Input spec.
+/// @return Registered CLI node.
 export auto attach_ingest(CLI::App* spec) -> CLI::App* {
   CLI::App* ingest = spec->add_subcommand("ingest", "Decompose workbench spec documents into the task graph.");
   add_bool(*ingest, "--apply");

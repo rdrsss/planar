@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the receipt CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_receipt(CLI::App& annotate) -> CLI::App* {
   CLI::App* receipt = annotate.add_subcommand("receipt", "Look up a durable annotation command receipt.");
   add_string(*receipt, "--source-uuid");

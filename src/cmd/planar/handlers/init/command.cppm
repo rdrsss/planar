@@ -1,4 +1,4 @@
-/// @file init.cppm
+/// @file src/cmd/planar/handlers/init/command.cppm
 /// @brief `planar.cmd.planar.handlers.init` — the `planar init` leaf
 /// (plan 996, task 6132).
 ///

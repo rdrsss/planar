@@ -19,6 +19,8 @@ import planar.cmd.planar_watch.handlers.completion.command;
 import planar.cmd.planar_watch.handlers.schema.command;
 
 namespace planar::cmd::watch {
+/// @brief Build the root CLI application.
+/// @return Root CLI application.
 export auto root_app() -> std::unique_ptr<CLI::App> {
   // The root's description is the multi-line block the oracle's own
   // `--help` renders; `planar-watch schema` reports the one-line
@@ -98,6 +100,8 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   return app;
 }
 
+/// @brief List verbs excluded from this binary.
+/// @return Computed value.
 export auto forbidden_verbs() -> std::vector<std::string_view> {
   return {// Every planar-agent write verb.
           "pull", "claim", "heartbeat", "complete", "fail", "release", "block", "action", "ingest", "reconcile", "abort", "peek",

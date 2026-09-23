@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::question_cli {
+/// @brief Register the edit CLI node.
+/// @param question Input question.
+/// @return Registered CLI node.
 export auto attach_edit(CLI::App& question) -> CLI::App* {
   CLI::App* edit = question.add_subcommand("edit", "Edit a question in $EDITOR (editor-first flow).");
   add_bool(*edit, "--no-pull");

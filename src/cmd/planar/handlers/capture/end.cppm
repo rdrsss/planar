@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::capture_cli {
+/// @brief Register the end CLI node.
+/// @param capture Input capture.
+/// @return Registered CLI node.
 export auto attach_end(CLI::App* capture) -> CLI::App* {
   CLI::App* end = capture->add_subcommand("end", "End the active or specified session.");
   add_int(*end, "--session");

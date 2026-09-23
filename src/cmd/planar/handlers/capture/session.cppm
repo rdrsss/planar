@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::capture_cli {
+/// @brief Register the session CLI node.
+/// @param capture Input capture.
+/// @return Registered CLI node.
 export auto attach_session(CLI::App* capture) -> CLI::App* {
   CLI::App* session =
       capture->add_subcommand("session", "Open or reuse a session for the current (vendor, vendor-session-id) tuple.");

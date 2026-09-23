@@ -163,7 +163,12 @@ auto dispatch_in(const fixture& fx, std::string_view where, std::vector<std::str
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / where, std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::map_env(fx.vars),
+                         fx.root / where,
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::root_app();
   auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);

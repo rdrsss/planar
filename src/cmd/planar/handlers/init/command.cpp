@@ -1,4 +1,4 @@
-/// @file init.cpp
+/// @file src/cmd/planar/handlers/init/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.init`.
 
 module planar.cmd.planar.handlers.init;

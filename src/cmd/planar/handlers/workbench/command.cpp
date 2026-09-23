@@ -1,4 +1,4 @@
-/// @file workbench.cpp
+/// @file src/cmd/planar/handlers/workbench/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.workbench`.
 
 module planar.cmd.planar.handlers.workbench;

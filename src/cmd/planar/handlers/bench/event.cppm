@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::bench_cli {
+/// @brief Register the event CLI node.
+/// @param bench Input bench.
+/// @return Registered CLI node.
 export auto attach_event(CLI::App* bench) -> CLI::App* {
   CLI::App* event = bench->add_subcommand("event", "Append a journal event to a run.");
   add_string_required(*event, "--kind");

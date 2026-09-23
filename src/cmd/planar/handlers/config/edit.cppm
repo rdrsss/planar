@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::config_cli {
+/// @brief Register the edit CLI node.
+/// @param config Input config.
+/// @return Registered CLI node.
 export auto attach_edit(CLI::App* config) -> CLI::App* {
   config->add_subcommand("edit", "Edit the configuration file in $EDITOR.");
   return config->get_subcommand("edit");

@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.handlers.shared.cli;
 namespace planar::cmd::agent::handlers::release_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   CLI::App* release = root.add_subcommand(
       "release", "Graceful give-up: task \xE2\x86\x92 todo, claim \xE2\x86\x92 released (vs fail's aborted).");

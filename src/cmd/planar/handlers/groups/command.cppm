@@ -1,4 +1,4 @@
-/// @file groups.cppm
+/// @file src/cmd/planar/handlers/groups/command.cppm
 /// @brief `planar.cmd.planar.handlers.groups` — the `planar groups recommend`
 /// leaf (plan 996, task 6189).
 ///

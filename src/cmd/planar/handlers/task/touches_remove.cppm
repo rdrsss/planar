@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::task_cli {
+/// @brief Register the touches remove CLI node.
+/// @param touches Input touches.
+/// @return Registered CLI node.
 export auto attach_touches_remove(CLI::App& touches) -> CLI::App* {
   CLI::App* remove = touches.add_subcommand(
       "remove", "Withdraw a touch declaration.\n\n  Without --path: removes the repo-level entity_links 'touches' edge.\n\n  "

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::local_cli {
+/// @brief Register the link CLI node.
+/// @param local Input local.
+/// @return Registered CLI node.
 export auto attach_link(CLI::App* local) -> CLI::App* {
   CLI::App* link = local->add_subcommand("link", "Create or reuse symlinks from vendor paths to local source.");
   add_bool(*link, "--dry-run");

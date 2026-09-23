@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::question_cli {
+/// @brief Register the view CLI node.
+/// @param question Input question.
+/// @return Registered CLI node.
 export auto attach_view(CLI::App& question) -> CLI::App* {
   CLI::App* view = question.add_subcommand("view", "View question's workbench file.");
   add_positional(*view, "question-id");

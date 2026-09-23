@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.handlers.shared.cli;
 namespace planar::cmd::agent::handlers::peek_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- peek ---------------------------------------------------------------
   CLI::App* peek = root.add_subcommand("peek", "Read-only what's-next selector (same query as pull, no writes).");

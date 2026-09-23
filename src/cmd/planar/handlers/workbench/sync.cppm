@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::workbench_cli {
+/// @brief Register the sync CLI node.
+/// @param workbench Input workbench.
+/// @return Registered CLI node.
 export auto attach_sync(CLI::App& workbench) -> CLI::App* {
   CLI::App* sync = workbench.add_subcommand("sync", "Atomically apply FS and DB changes via a unified sync.");
   add_bool(*sync, "--verbose");

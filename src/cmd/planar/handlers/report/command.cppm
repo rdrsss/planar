@@ -1,4 +1,4 @@
-/// @file report.cppm
+/// @file src/cmd/planar/handlers/report/command.cppm
 /// @brief `planar.cmd.planar.handlers.report` — the `planar report` leaf
 /// (plan 996, task 6352).
 ///

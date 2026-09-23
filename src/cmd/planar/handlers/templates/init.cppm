@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::templates_cli {
+/// @brief Register the init CLI node.
+/// @param templates Input templates.
+/// @return Registered CLI node.
 export auto attach_init(CLI::App* templates) -> CLI::App* {
   CLI::App* init = templates->add_subcommand("init", "Extract default templates to disk.");
   add_bool(*init, "--force");

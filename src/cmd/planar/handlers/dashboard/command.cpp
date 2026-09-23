@@ -1,4 +1,4 @@
-/// @file dashboard.cpp
+/// @file src/cmd/planar/handlers/dashboard/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.dashboard`.
 /// See dashboard.cppm for the `--agents` shape split and the `--scope`
 /// slug-namespace note.

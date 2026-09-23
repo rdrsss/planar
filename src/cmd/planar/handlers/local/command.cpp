@@ -1,4 +1,4 @@
-/// @file local.cpp
+/// @file src/cmd/planar/handlers/local/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.local`. See local.cppm
 /// for the environment seam and the four places the orchestration is
 /// load-bearing.

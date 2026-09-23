@@ -1,4 +1,4 @@
-/// @file closure.cppm
+/// @file src/cmd/planar/handlers/closure/command.cppm
 /// @brief `planar.cmd.planar.handlers.closure` — the `planar closure show`
 /// leaf (plan 996, task 6189).
 ///

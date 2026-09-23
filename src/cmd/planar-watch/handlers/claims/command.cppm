@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_watch.handlers.shared.cli;
 namespace planar::cmd::watch::handlers::claims_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- claims -------------------------------------------------------------
   CLI::App* claims = root.add_subcommand("claims", "Returns claim rows from agent_work_claims. The default is\n"

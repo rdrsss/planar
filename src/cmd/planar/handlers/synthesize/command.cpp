@@ -1,4 +1,4 @@
-/// @file synthesize.cpp
+/// @file src/cmd/planar/handlers/synthesize/command.cpp
 /// @brief Synthesis staging plus transactional planning/workbench composition.
 module planar.cmd.planar.handlers.synthesize;
 

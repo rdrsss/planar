@@ -1,4 +1,4 @@
-/// @file local.cppm
+/// @file src/cmd/planar/handlers/local/command.cppm
 /// @brief `planar.cmd.planar.handlers.local` — all five `planar local`
 /// leaves (plan 996, task 6189).
 ///

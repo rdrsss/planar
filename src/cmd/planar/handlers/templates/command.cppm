@@ -1,4 +1,4 @@
-/// @file templates.cppm
+/// @file src/cmd/planar/handlers/templates/command.cppm
 /// @brief `planar.cmd.planar.handlers.templates` — all six
 /// `planar templates` leaves (plan 996, task 6190).
 ///

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::artifact_cli {
+/// @brief Register the update CLI node.
+/// @param artifact Input artifact.
+/// @return Registered CLI node.
 export auto attach_update(CLI::App& artifact) -> CLI::App* {
   CLI::App* update = artifact.add_subcommand("update", "Update mutable fields on an artifact.");
   add_string(*update, "--title");

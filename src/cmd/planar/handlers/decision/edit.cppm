@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::decision_cli {
+/// @brief Register the edit CLI node.
+/// @param decision Input decision.
+/// @return Registered CLI node.
 export auto attach_edit(CLI::App& decision) -> CLI::App* {
   CLI::App* edit = decision.add_subcommand("edit", "Edit a decision in $EDITOR (editor-first flow).");
   add_bool(*edit, "--no-pull");

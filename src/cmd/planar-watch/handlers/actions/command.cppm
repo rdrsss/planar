@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_watch.handlers.shared.cli;
 namespace planar::cmd::watch::handlers::actions_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- actions ------------------------------------------------------------
   CLI::App* actions =

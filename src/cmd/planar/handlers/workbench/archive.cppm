@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::workbench_cli {
+/// @brief Register the archive CLI node.
+/// @param workbench Input workbench.
+/// @return Registered CLI node.
 export auto attach_archive(CLI::App& workbench) -> CLI::App* {
   CLI::App* archive = workbench.add_subcommand("archive", "Archive a feature's workbench filesystem tree.");
   add_json(*archive);

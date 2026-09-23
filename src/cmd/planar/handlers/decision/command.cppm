@@ -1,4 +1,4 @@
-/// @file decision.cppm
+/// @file src/cmd/planar/handlers/decision/command.cppm
 /// @brief `planar.cmd.planar.handlers.decision` — the seven `planar
 /// decision` CRUD/transition/link leaves (plan 996 roadmap M12 item 8,
 /// task 6194).

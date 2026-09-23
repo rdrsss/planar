@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::assoc_cli {
+/// @brief Register the list CLI node.
+/// @param assoc Input assoc.
+/// @return Registered CLI node.
 export auto attach_list(CLI::App* assoc) -> CLI::App* {
   CLI::App* list = assoc->add_subcommand("list", "List all known associations.");
   add_string(*list, "--kind");

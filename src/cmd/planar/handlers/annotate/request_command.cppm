@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the request command CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_request_command(CLI::App& annotate) -> CLI::App* {
   CLI::App* command =
       annotate.add_subcommand("command", "Apply a receipt-backed annotation JSON request from stdin (--request @-).");

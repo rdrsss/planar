@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_watch.handlers.shared.cli;
 namespace planar::cmd::watch::handlers::sync_events_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- sync-events ----------------------------------------------------
   CLI::App* sync_events = root.add_subcommand(

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the add CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_add(CLI::App& annotate) -> CLI::App* {
   CLI::App* add = annotate.add_subcommand("add", "Create a new annotation.");
   add_string(*add, "--anchor-path");

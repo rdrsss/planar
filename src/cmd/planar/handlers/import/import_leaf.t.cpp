@@ -51,7 +51,12 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   std::vector<std::string> argv{"planar"};
   argv.insert(argv.end(), args.begin(), args.end());
   std::ostringstream out, err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
   auto               tree  = planar::cmd::root_app();
   auto               table = planar::cmd::make_handler_table(*tree);
   int                code  = planar::cmd::run(ctx, *tree, table);

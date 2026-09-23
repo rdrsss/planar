@@ -1,4 +1,4 @@
-/// @file spec_ingest.cppm
+/// @file src/cmd/planar/handlers/spec/command.cppm
 /// @brief `planar.cmd.planar.handlers.spec_ingest` — the `spec ingest` leaf
 /// (plan 996, task 6365).
 ///

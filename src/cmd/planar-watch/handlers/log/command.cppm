@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_watch.handlers.shared.cli;
 namespace planar::cmd::watch::handlers::log_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- log ----------------------------------------------------------------
   CLI::App* log = root.add_subcommand("log", "Streams the agent_actions + agent_work_claims history scoped to\n"

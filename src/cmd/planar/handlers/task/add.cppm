@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::task_cli {
+/// @brief Register the add CLI node.
+/// @param task Input task.
+/// @return Registered CLI node.
 export auto attach_add(CLI::App& task) -> CLI::App* {
   CLI::App* add = task.add_subcommand("add", "Create a new task.");
   add_string(*add, "--body");

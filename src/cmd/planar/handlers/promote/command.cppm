@@ -7,6 +7,8 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers {
+/// @brief Provide the declare promote command operation.
+/// @param root Input root.
 export auto declare_promote(CLI::App& root) -> void {
   CLI::App* promote = root.add_subcommand(
       "promote", "Promote an entity from its current scope to a named association.\n\n  Valid entity kinds: plan, task, "

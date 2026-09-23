@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::health_cli {
+/// @brief Register the hygiene CLI node.
+/// @param health Input health.
+/// @return Registered CLI node.
 export auto attach_hygiene(CLI::App* health) -> CLI::App* {
   CLI::App* hygiene = health->add_subcommand(
       "hygiene", "Find draft plans with zero tasks or only terminal tasks, tasks\n  left doing beyond a threshold, and questions "

@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::templates_cli {
+/// @brief Register the render CLI node.
+/// @param templates Input templates.
+/// @return Registered CLI node.
 export auto attach_render(CLI::App* templates) -> CLI::App* {
   CLI::App* render = templates->add_subcommand("render", "Render a template against a database entity (dry run; no writes).");
   add_string_required(*render, "--entity", "Entity ref (kind:id) — task:42, plan:7, scenario:3");

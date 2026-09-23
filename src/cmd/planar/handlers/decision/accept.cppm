@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::decision_cli {
+/// @brief Register the accept CLI node.
+/// @param decision Input decision.
+/// @return Registered CLI node.
 export auto attach_accept(CLI::App& decision) -> CLI::App* {
   CLI::App* accept = decision.add_subcommand("accept", "Accept a proposed decision.");
   add_string(*accept, "--scope");

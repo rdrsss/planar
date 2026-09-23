@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::capture_cli {
+/// @brief Register the commits CLI node.
+/// @param capture Input capture.
+/// @return Registered CLI node.
 export auto attach_commits(CLI::App* capture) -> CLI::App* {
   CLI::App* commits = capture->add_subcommand("commits", "Record explicit git commits into a session.");
   add_int(*commits, "--session");

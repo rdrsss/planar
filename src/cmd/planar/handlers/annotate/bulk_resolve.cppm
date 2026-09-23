@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the bulk resolve CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_bulk_resolve(CLI::App& annotate) -> CLI::App* {
   CLI::App* bulk_resolve = annotate.add_subcommand("bulk-resolve", "Resolve every active annotation matching the filter.");
   add_string(*bulk_resolve, "--operation-id");

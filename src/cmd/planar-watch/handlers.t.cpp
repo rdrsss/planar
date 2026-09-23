@@ -105,7 +105,12 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::watch::database>(fx.db_path, err), out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::watch::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::watch::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::watch::root_app();
   auto const         table = planar::cmd::watch::handlers(*tree);
   int const          code  = planar::cmd::watch::run(ctx, *tree, table);
@@ -407,7 +412,12 @@ TEST_CASE("planar-watch: the read-only handle is exercised END TO END by a real 
   std::vector<std::string> argv{"planar-watch", "claims", "--json"};
   std::ostringstream       out;
   std::ostringstream       err;
-  context                  ctx{std::move(argv), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::watch::database>(fx.db_path, err), out, err};
+  context                  ctx{std::move(argv),
+                               planar::cmd::watch::map_env(fx.vars),
+                               fx.root / "proj",
+                               std::make_shared<planar::cmd::watch::database>(fx.db_path, err),
+                               out,
+                               err};
   auto const               tree  = planar::cmd::watch::root_app();
   auto const               table = planar::cmd::watch::handlers(*tree);
   int const                code  = planar::cmd::watch::run(ctx, *tree, table);
@@ -466,7 +476,12 @@ TEST_CASE("planar-watch: every read verb answers from the same cached read-only 
     full.insert(full.end(), argv.begin(), argv.end());
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{std::move(full), planar::cmd::watch::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::watch::database>(fx.db_path, err), out, err};
+    context            ctx{std::move(full),
+                           planar::cmd::watch::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::watch::database>(fx.db_path, err),
+                           out,
+                           err};
     auto const         tree  = planar::cmd::watch::root_app();
     auto const         table = planar::cmd::watch::handlers(*tree);
 

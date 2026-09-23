@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::decision_cli {
+/// @brief Register the withdraw CLI node.
+/// @param decision Input decision.
+/// @return Registered CLI node.
 export auto attach_withdraw(CLI::App& decision) -> CLI::App* {
   CLI::App* withdraw = decision.add_subcommand("withdraw", "Withdraw a decision.");
   add_string(*withdraw, "--scope");

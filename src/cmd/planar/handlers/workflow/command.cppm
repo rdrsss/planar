@@ -1,4 +1,4 @@
-/// @file workflow.cppm
+/// @file src/cmd/planar/handlers/workflow/command.cppm
 /// @brief `planar.cmd.planar.handlers.workflow` — the `planar workflow
 /// list` and `planar workflow show` leaves (plan 996, task 6105).
 ///

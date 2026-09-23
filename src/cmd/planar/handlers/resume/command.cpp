@@ -1,4 +1,4 @@
-/// @file resume.cpp
+/// @file src/cmd/planar/handlers/resume/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.resume`.
 
 module planar.cmd.planar.handlers.resume;

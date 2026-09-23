@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::decision_cli {
+/// @brief Register the add CLI node.
+/// @param decision Input decision.
+/// @return Registered CLI node.
 export auto attach_add(CLI::App& decision) -> CLI::App* {
   CLI::App* add = decision.add_subcommand("add", "Create a new decision record.");
   add_string(*add, "--body");

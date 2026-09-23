@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::workflow_cli {
+/// @brief Register the run CLI node.
+/// @param workflow Input workflow.
+/// @return Registered CLI node.
 export auto attach_run(CLI::App* workflow) -> CLI::App* {
   CLI::App* run = workflow->add_subcommand(
       "run", "Resolve <name> across shipped and sandbox workflows, then exec\n  `planar-execute run <path> --phase <phase> "

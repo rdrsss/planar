@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::audit_cli {
+/// @brief Register the handoff readiness CLI node.
+/// @param audit Input audit.
+/// @return Registered CLI node.
 export auto attach_handoff_readiness(CLI::App* audit) -> CLI::App* {
   CLI::App* handoff_readiness = audit->add_subcommand("handoff-readiness", "Check resume-readiness for all in-flight tasks.");
   add_int_default(*handoff_readiness, "--threshold", "90");

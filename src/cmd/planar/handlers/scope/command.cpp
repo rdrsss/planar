@@ -1,4 +1,4 @@
-/// @file scope.cpp
+/// @file src/cmd/planar/handlers/scope/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.scope`.
 
 module planar.cmd.planar.handlers.scope;

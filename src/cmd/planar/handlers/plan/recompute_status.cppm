@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::plan_cli {
+/// @brief Register the recompute status CLI node.
+/// @param plan Input plan.
+/// @return Registered CLI node.
 export auto attach_recompute_status(CLI::App& plan) -> CLI::App* {
   CLI::App* recompute_status =
       plan.add_subcommand("recompute-status", "Recompute a plan's roll-up status (--plan <id> or --all).");

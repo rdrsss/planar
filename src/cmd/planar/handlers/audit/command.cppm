@@ -1,4 +1,4 @@
-/// @file audit.cppm
+/// @file src/cmd/planar/handlers/audit/command.cppm
 /// @brief `planar.cmd.planar.handlers.audit` — the `planar audit session`
 /// leaf (plan 996, task 6090).
 ///

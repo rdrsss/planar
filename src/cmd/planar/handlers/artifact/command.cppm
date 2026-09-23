@@ -1,4 +1,4 @@
-/// @file artifact.cppm
+/// @file src/cmd/planar/handlers/artifact/command.cppm
 /// @brief `planar.cmd.planar.handlers.artifact` — the five `planar
 /// artifact` CRUD/link leaves (plan 996 roadmap M12 item 10, task 6196).
 ///

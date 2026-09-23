@@ -7,6 +7,9 @@ import cli11;
 import planar.cmd.planar.declare;
 
 namespace planar::cmd::handlers::plan_cli {
+/// @brief Register the link CLI node.
+/// @param plan Input plan.
+/// @return Registered CLI node.
 export auto attach_link(CLI::App& plan) -> CLI::App* {
   CLI::App* link = plan.add_subcommand("link", "Create an entity link from a plan to another entity.");
   add_string(*link, "--relationship");

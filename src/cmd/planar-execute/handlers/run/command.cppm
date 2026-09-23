@@ -9,6 +9,11 @@ import planar.cmd.planar_execute.selector;
 import planar.cmd.planar_execute.handlers.shared.engine_env;
 
 namespace planar::cmd::execute::handlers::run {
+/// @brief Execute this command.
+/// @param args Input args.
+/// @param out Input out.
+/// @param err Input err.
+/// @return Process exit code.
 export auto execute(std::span<const std::string> args, std::ostream& out, std::ostream& err) -> int {
   auto const parsed = parse_run_args(args);
   if (!parsed.has_value()) {

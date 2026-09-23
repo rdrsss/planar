@@ -1,4 +1,4 @@
-/// @file assoc.cppm
+/// @file src/cmd/planar/handlers/assoc/command.cppm
 /// @brief `planar.cmd.planar.handlers.assoc` — the `planar assoc create`
 /// leaf (plan 996, task 6133).
 ///

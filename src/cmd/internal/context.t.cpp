@@ -18,6 +18,7 @@ struct probe_database {
 };
 } // namespace
 
+/// @brief Context retains the injected object without performing database work.
 TEST_CASE("command context retains the caller's database object without opening it", "[cmd][internal][context]") {
   auto                           database = std::make_shared<probe_database>(std::filesystem::path{"/tmp/injected.db"});
   std::ostringstream             out;

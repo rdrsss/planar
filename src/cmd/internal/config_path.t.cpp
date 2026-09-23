@@ -5,6 +5,7 @@ import std;
 import planar.cmd.internal.environment;
 import planar.cmd.internal.config_path;
 
+/// @brief Config path precedence and tilde expansion stay shared.
 TEST_CASE("config path resolves explicit and home-relative forms", "[cmd][internal][config]") {
   namespace ci = planar::cmd::internal;
   CHECK(ci::resolve_config_path(ci::map_env({{"HOME", "/home/operator"}})) ==

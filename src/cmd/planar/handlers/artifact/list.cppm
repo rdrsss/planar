@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::artifact_cli {
+/// @brief Register the list CLI node.
+/// @param artifact Input artifact.
+/// @return Registered CLI node.
 export auto attach_list(CLI::App& artifact) -> CLI::App* {
   CLI::App* list = artifact.add_subcommand("list", "List artifacts.");
   add_string(*list, "--kind");

@@ -1,4 +1,4 @@
-/// @file feedback.cppm
+/// @file src/cmd/planar/handlers/feedback/command.cppm
 /// @brief `planar.cmd.planar.handlers.feedback` — the `feedback triage`
 /// leaves (plan 996, task 6303).
 ///

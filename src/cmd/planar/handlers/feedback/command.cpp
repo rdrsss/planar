@@ -1,4 +1,4 @@
-/// @file feedback.cpp
+/// @file src/cmd/planar/handlers/feedback/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.feedback`.
 module;
 

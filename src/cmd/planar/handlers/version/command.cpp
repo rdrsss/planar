@@ -1,4 +1,4 @@
-/// @file version.cpp
+/// @file src/cmd/planar/handlers/version/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.version`.
 
 module planar.cmd.planar.handlers.version;

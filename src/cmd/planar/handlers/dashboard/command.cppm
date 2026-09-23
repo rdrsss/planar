@@ -1,4 +1,4 @@
-/// @file dashboard.cppm
+/// @file src/cmd/planar/handlers/dashboard/command.cppm
 /// @brief `planar.cmd.planar.handlers.dashboard` — the `planar dashboard`
 /// leaf (plan 996, task 6329).
 ///

@@ -1,4 +1,4 @@
-/// @file assoc.cpp
+/// @file src/cmd/planar/handlers/assoc/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.assoc`.
 
 module planar.cmd.planar.handlers.assoc;

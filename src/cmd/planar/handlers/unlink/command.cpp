@@ -1,4 +1,4 @@
-/// @file unlink.cpp
+/// @file src/cmd/planar/handlers/unlink/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.unlink`.
 
 module planar.cmd.planar.handlers.unlink;

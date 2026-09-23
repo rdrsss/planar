@@ -1,4 +1,4 @@
-/// @file scope.cppm
+/// @file src/cmd/planar/handlers/scope/command.cppm
 /// @brief `planar.cmd.planar.handlers.scope` — the whole five-leaf `planar
 /// scope` family: `show`, `suggest`, and the three plan-153-M5 removal
 /// stubs `use` / `pop` / `clear` (plan 996, task 6214).

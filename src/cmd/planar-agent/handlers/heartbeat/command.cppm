@@ -8,6 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.handlers.shared.cli;
 namespace planar::cmd::agent::handlers::heartbeat_cli {
+/// @brief Register this CLI declaration.
+/// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- heartbeat ----------------------------------------------------------
   CLI::App* heartbeat = root.add_subcommand("heartbeat", "Refresh the lease on an active claim.");

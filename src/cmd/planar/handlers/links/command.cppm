@@ -1,4 +1,4 @@
-/// @file links.cppm
+/// @file src/cmd/planar/handlers/links/command.cppm
 /// @brief `planar.cmd.planar.handlers.links` — the four `planar links`
 /// leaves plus the shared arm behind `plan link`, `task link` and
 /// `question link` (plan 996 roadmap M12 item 7, task 6193).

@@ -1,4 +1,4 @@
-/// @file question.cppm
+/// @file src/cmd/planar/handlers/question/command.cppm
 /// @brief `planar.cmd.planar.handlers.question` — the five `planar
 /// question` CRUD/transition leaves (plan 996 roadmap M12 item 4, task
 /// 6188).

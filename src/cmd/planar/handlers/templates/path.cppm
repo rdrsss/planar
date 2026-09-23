@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::templates_cli {
+/// @brief Register the path CLI node.
+/// @param templates Input templates.
+/// @return Registered CLI node.
 export auto attach_path(CLI::App* templates) -> CLI::App* {
   CLI::App* path = templates->add_subcommand("path", "Show template resolution paths.");
   add_string(*path, "--system");

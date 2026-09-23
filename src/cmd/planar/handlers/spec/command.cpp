@@ -1,4 +1,4 @@
-/// @file spec_ingest.cpp
+/// @file src/cmd/planar/handlers/spec/command.cpp
 /// @brief Implementation of `planar.cmd.planar.handlers.spec_ingest`. See
 /// spec_ingest.cppm for the port's scope and oracle-faithful all-or-nothing
 /// `--apply` transaction contract.

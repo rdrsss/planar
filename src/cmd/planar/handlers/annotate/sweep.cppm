@@ -9,6 +9,9 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 
 namespace planar::cmd::handlers::annotate_cli {
+/// @brief Register the sweep CLI node.
+/// @param annotate Input annotate.
+/// @return Registered CLI node.
 export auto attach_sweep(CLI::App& annotate) -> CLI::App* {
   CLI::App* sweep = annotate.add_subcommand("sweep", "Sweep stale annotations (resolved/dismissed older than --since-days).");
   add_int_default(*sweep, "--since-days", "30");
