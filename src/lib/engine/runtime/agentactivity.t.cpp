@@ -1405,3 +1405,85 @@ TEST_CASE("log's source queries are oldest-first and honour their limit", "[agen
   CHECK(aa::list_claims_by_entity(conn, "nonsense", task)->empty());
   CHECK(aa::list_claims_by_token(conn, "deadbeef")->empty());
 }
+
+TEST_CASE("next_work excludes a todo task carrying an open depends-on edge, and stops excluding it once the blocker "
+          "closes",
+          "[agentactivity][deps][6898]") {
+  // `pull_next`/`peek_next` (agentatomic.cpp's `pick_next_eligible`) have
+  // carried this dependency-exclusion clause since task 6841; `plan
+  // next`'s OWN bucketer (`next_work`, this function) did not, so `planar
+  // plan next` listed a `todo` task as `available` while `pull`/`peek`
+  // both refused it on the identical row -- contradicting
+  // `docs/cli-reference.md`'s claim that the three share a selector.
+  //
+  // The edge is written directly into `entity_links` rather than through
+  // `task block --on`, because `block` ALSO sets `status = 'blocked'`,
+  // which the pre-existing `status == "blocked"` arm already buckets
+  // correctly -- that would exercise the wrong arm and pass without the
+  // new clause. An open `depends-on` edge on an otherwise ordinary `todo`
+  // task is the case this clause exists for.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 2);
+  auto const      blocker    = task_id_at(conn, 0);
+  auto const      dependent  = task_id_at(conn, 1);
+
+  exec(conn, std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                         "values ('task', {}, 'task', {}, 'depends-on')",
+                         dependent, blocker));
+
+  // Both rows are still `todo` -- the edge alone must exclude the
+  // dependent from `available`.
+  CHECK(scalar_int(conn, "select count(*) from tasks where status = 'todo'") == 2);
+
+  {
+    auto const rows = aa::next_work(conn, fx.plan_id);
+    REQUIRE(rows.has_value());
+    REQUIRE(rows->size() == 2);
+
+    auto const blocker_row = std::ranges::find(*rows, blocker, &aa::next_work_row::task_id);
+    auto const dependent_row = std::ranges::find(*rows, dependent, &aa::next_work_row::task_id);
+    REQUIRE(blocker_row != rows->end());
+    REQUIRE(dependent_row != rows->end());
+
+    CHECK(blocker_row->bucket == aa::next_work_bucket::available);
+    // NOT available: the open depends-on edge excludes it, joining
+    // `blocked` -- the same bucket `plan next`'s packet-readiness gate
+    // already uses for "not dispatchable yet", so the CLI's rendering
+    // needs no new arm.
+    CHECK(dependent_row->bucket == aa::next_work_bucket::blocked);
+  }
+
+  // Close the blocker (todo -> doing -> done, the real lifecycle) and
+  // confirm the exclusion clears.
+  exec(conn, std::format("update tasks set status = 'done' where id = {}", blocker));
+
+  {
+    auto const rows = aa::next_work(conn, fx.plan_id);
+    REQUIRE(rows.has_value());
+    auto const dependent_row = std::ranges::find(*rows, dependent, &aa::next_work_row::task_id);
+    REQUIRE(dependent_row != rows->end());
+    CHECK(dependent_row->bucket == aa::next_work_bucket::available);
+  }
+
+  // A `cancelled` blocker is terminal too (decision 1122, the same set
+  // `clear_unblocked_dependents` already treats as satisfied) -- re-open
+  // the dependency against a cancelled blocker to pin the second terminal
+  // status, not just `done`.
+  exec(conn, std::format("update tasks set status = 'todo' where id = {}", blocker));
+  {
+    auto const rows = aa::next_work(conn, fx.plan_id);
+    REQUIRE(rows.has_value());
+    auto const dependent_row = std::ranges::find(*rows, dependent, &aa::next_work_row::task_id);
+    REQUIRE(dependent_row != rows->end());
+    CHECK(dependent_row->bucket == aa::next_work_bucket::blocked);
+  }
+  exec(conn, std::format("update tasks set status = 'cancelled' where id = {}", blocker));
+  {
+    auto const rows = aa::next_work(conn, fx.plan_id);
+    REQUIRE(rows.has_value());
+    auto const dependent_row = std::ranges::find(*rows, dependent, &aa::next_work_row::task_id);
+    REQUIRE(dependent_row != rows->end());
+    CHECK(dependent_row->bucket == aa::next_work_bucket::available);
+  }
+}
