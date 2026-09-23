@@ -23,11 +23,12 @@ export namespace planar::cmd::execute {
 
 /// @brief Why a host could not be ensured.
 enum class host_failure : std::uint8_t {
-  state_dir, ///< The profile's state directory could not be created or written.
-  lock,      ///< The exclusive startup lock could not be taken, and no host was serving.
-  spawn,     ///< The daemon binary is missing or could not be started.
-  occupied,  ///< A live process claims the socket but is not accepting on it.
-  readiness, ///< A daemon was started but did not accept within the budget.
+  state_dir,     ///< The profile's state directory could not be created or written.
+  lock,          ///< The exclusive startup lock could not be taken, and no host was serving.
+  spawn,         ///< The daemon binary is missing or could not be started.
+  occupied,      ///< A live process claims the socket but is not accepting on it.
+  configuration, ///< The profile declares provider configuration this daemon cannot accept.
+  readiness,     ///< A daemon was started but did not accept within the budget.
 };
 
 /// @brief One classified failure, with a diagnostic naming what to fix.
@@ -118,6 +119,30 @@ struct endpoint_record {
 /// @return The record, or nullopt when absent or unreadable.
 [[nodiscard]] auto read_endpoint_record(const host_layout& layout) -> std::optional<endpoint_record>;
 
+/// @brief How a daemon is started: extra arguments, and environment entries.
+///
+/// Split deliberately. A CREDENTIAL goes in the environment, never in argv:
+/// arguments are visible in every process listing on the machine, and a
+/// bearer token that reaches `ps` has leaked to every user on the host.
+struct spawn_plan {
+  std::vector<std::string> arguments_;   ///< Extra argv entries for the daemon.
+  std::vector<std::string> environment_; ///< Extra `NAME=value` entries.
+};
+
+/// @brief Translate a profile's provider configuration into how to start the daemon.
+///
+/// Planar's `[execute.profiles.<name>.providers.<vendor>]` table is mirrored
+/// onto the provider surface the pinned Centurion ACTUALLY declares, which is
+/// its CLIProxyAPI model transport — one vendor, `cliproxyapi`, with
+/// `base_url`, `api_key` and `trusted_hostnames`. A per-vendor provider schema
+/// is Centurion's own plan 1045 and does not exist yet, so anything else is
+/// REFUSED by name rather than passed through and silently ignored by the
+/// daemon (decision 1146 recorded the deferral; this is the part that can be
+/// honoured today).
+/// @param resolved The resolved profile.
+/// @return How to start the daemon, or the name of the key that cannot be honoured.
+[[nodiscard]] auto provider_spawn_plan(const profile& resolved) -> std::expected<spawn_plan, std::string>;
+
 /// @brief Injected effects, so the decision sequence is testable without a daemon.
 struct host_hooks {
   /// Whether a daemon is accepting on this socket right now.
@@ -127,7 +152,7 @@ struct host_hooks {
   /// Ask a pid to terminate; the seam `stop_host` signals through.
   std::function<bool(std::int64_t)> terminate_{};
   /// Start the daemon detached; returns a diagnostic on failure.
-  std::function<std::expected<void, std::string>(const host_layout&, const std::filesystem::path&)> spawn_;
+  std::function<std::expected<void, std::string>(const host_layout&, const std::filesystem::path&, const spawn_plan&)> spawn_;
   /// Wait between readiness polls.
   std::function<void(std::chrono::milliseconds)> sleep_{};
   /// Now, for the readiness deadline.

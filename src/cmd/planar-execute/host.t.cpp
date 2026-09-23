@@ -75,14 +75,19 @@ struct scripted_hooks {
   bool                                  socket_present_at_spawn = false; ///< Whether a socket file existed when spawn ran.
   std::string                           spawn_error;                     ///< Non-empty makes spawn fail.
   bool                                  owner_alive = false;             ///< What the pid-liveness evidence answers.
+  std::vector<std::string>              spawn_arguments;                 ///< Extra argv the spawn was asked for.
+  std::vector<std::string>              spawn_environment;               ///< Extra environment the spawn was asked for.
   std::chrono::steady_clock::time_point clock{};                         ///< Fake now, advanced by sleep.
 
   [[nodiscard]] auto hooks() -> host_hooks {
     return host_hooks{
         .probe_ = [this](const std::filesystem::path&) { return serving; },
         .alive_ = [this](std::int64_t) { return owner_alive; },
-        .spawn_ = [this](const host_layout& layout, const std::filesystem::path&) -> std::expected<void, std::string> {
+        .spawn_ = [this](const host_layout&                      layout, const std::filesystem::path&,
+                         const planar::cmd::execute::spawn_plan& plan) -> std::expected<void, std::string> {
           ++spawns;
+          spawn_arguments         = plan.arguments_;
+          spawn_environment       = plan.environment_;
           socket_present_at_spawn = std::filesystem::exists(layout.socket_);
           if (!spawn_error.empty()) {
             return std::unexpected(spawn_error);
@@ -297,6 +302,99 @@ TEST_CASE("a crashed owner's socket is removed and replaced", "[execute][host]")
   CHECK(ensured->origin_ == host_origin::spawned);
   CHECK(script.spawns == 1);
   CHECK_FALSE(script.socket_present_at_spawn);
+}
+
+TEST_CASE("provider configuration reaches the daemon, and a credential never reaches argv", "[execute][host][providers]") {
+  using planar::cmd::execute::provider_spawn_plan;
+
+  const scratch_state scratch("providers");
+
+  SECTION("the declared vendor's keys become daemon arguments and environment") {
+    auto resolved                                          = scratch.make_profile();
+    resolved.providers["cliproxyapi"]["base_url"]          = "http://127.0.0.1:8317";
+    resolved.providers["cliproxyapi"]["api_key"]           = "secret-token";
+    resolved.providers["cliproxyapi"]["trusted_hostnames"] = "api.example.com";
+
+    auto plan = provider_spawn_plan(resolved);
+    REQUIRE(plan.has_value());
+
+    std::string argv;
+    for (const auto& item : plan->arguments_) {
+      argv += " " + item;
+    }
+    CHECK(argv.contains("--model-base-url http://127.0.0.1:8317"));
+    CHECK(argv.contains("--trusted-http-hostname api.example.com"));
+    // The whole point: the credential is NOT an argument. Arguments are
+    // visible in `ps` to every user on the machine.
+    CHECK_FALSE(argv.contains("secret-token"));
+    REQUIRE(plan->environment_.size() == 1);
+    CHECK(plan->environment_.front() == "CENTURION_CLIPROXYAPI_API_KEY=secret-token");
+  }
+
+  SECTION("a vendor this daemon does not declare is refused by name") {
+    auto resolved                              = scratch.make_profile();
+    resolved.providers["anthropic"]["api_key"] = "x";
+    auto plan                                  = provider_spawn_plan(resolved);
+    REQUIRE_FALSE(plan.has_value());
+    CHECK(plan.error().contains("anthropic"));
+    CHECK(plan.error().contains("cliproxyapi"));
+  }
+
+  SECTION("an unknown key is refused rather than silently dropped") {
+    // Passing it through would leave the operator believing a setting took
+    // effect that the daemon never saw.
+    auto resolved                                  = scratch.make_profile();
+    resolved.providers["cliproxyapi"]["timeout_s"] = "30";
+    auto plan                                      = provider_spawn_plan(resolved);
+    REQUIRE_FALSE(plan.has_value());
+    CHECK(plan.error().contains("timeout_s"));
+  }
+
+  SECTION("no provider configuration is no arguments") {
+    auto plan = provider_spawn_plan(scratch.make_profile());
+    REQUIRE(plan.has_value());
+    CHECK(plan->arguments_.empty());
+    CHECK(plan->environment_.empty());
+  }
+}
+
+TEST_CASE("a spawned daemon is given the profile's provider settings", "[execute][host][providers]") {
+  // The wiring, not just the translation: ensure_host must hand the plan to
+  // the spawn, or the settings are computed and dropped.
+  const scratch_state scratch("providers-spawn");
+  auto                resolved                  = scratch.make_profile();
+  resolved.providers["cliproxyapi"]["base_url"] = "http://127.0.0.1:8317";
+  resolved.providers["cliproxyapi"]["api_key"]  = "secret-token";
+
+  scripted_hooks script;
+  script.serve_on_spawn = true;
+  auto ensured          = ensure_host(resolved, "/nonexistent/centuriond", script.hooks());
+  REQUIRE(ensured.has_value());
+  REQUIRE(script.spawns == 1);
+
+  std::string argv;
+  for (const auto& item : script.spawn_arguments) {
+    argv += " " + item;
+  }
+  CHECK(argv.contains("--model-base-url"));
+  CHECK_FALSE(argv.contains("secret-token"));
+  REQUIRE(script.spawn_environment.size() == 1);
+  CHECK(script.spawn_environment.front().starts_with("CENTURION_CLIPROXYAPI_API_KEY="));
+}
+
+TEST_CASE("a profile whose provider configuration cannot be honoured never starts a daemon", "[execute][host][providers]") {
+  const scratch_state scratch("providers-refused");
+  auto                resolved               = scratch.make_profile();
+  resolved.providers["anthropic"]["api_key"] = "x";
+
+  scripted_hooks script;
+  script.serve_on_spawn = true;
+  auto ensured          = ensure_host(resolved, "/nonexistent/centuriond", script.hooks());
+  REQUIRE_FALSE(ensured.has_value());
+  CHECK(ensured.error().kind_ == planar::cmd::execute::host_failure::configuration);
+  // Refused BEFORE anything was started: a daemon running with settings the
+  // operator did not get is worse than no daemon.
+  CHECK(script.spawns == 0);
 }
 
 TEST_CASE("draining is a Planar-side gate, not a daemon state", "[execute][host][drain]") {

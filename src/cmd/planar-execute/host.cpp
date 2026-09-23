@@ -256,7 +256,11 @@ auto ensure_host(const profile& resolved, const std::filesystem::path& daemon, c
   std::error_code ignored;
   std::filesystem::remove(layout.socket_, ignored);
 
-  if (auto started = hooks.spawn_(layout, daemon); !started) {
+  auto plan = provider_spawn_plan(resolved);
+  if (!plan) {
+    return fail(host_failure::configuration, plan.error());
+  }
+  if (auto started = hooks.spawn_(layout, daemon, *plan); !started) {
     return fail(host_failure::spawn, started.error());
   }
 
@@ -268,6 +272,36 @@ auto ensure_host(const profile& resolved, const std::filesystem::path& daemon, c
   }
   return fail(host_failure::readiness, std::format("started {} but it did not accept on {} within {}ms; see {}", daemon.string(),
                                                    layout.socket_.string(), budget.count(), layout.log_.string()));
+}
+
+auto provider_spawn_plan(const profile& resolved) -> std::expected<spawn_plan, std::string> {
+  spawn_plan plan;
+  for (const auto& [vendor, settings] : resolved.providers) {
+    if (vendor != "cliproxyapi") {
+      return std::unexpected(
+          std::format("profile '{}' configures provider '{}', which the pinned Centurion does not declare; it exposes one "
+                      "model-transport provider, 'cliproxyapi' (a per-vendor provider schema is Centurion's own plan 1045)",
+                      resolved.name, vendor));
+    }
+    for (const auto& [key, value] : settings) {
+      if (key == "base_url") {
+        plan.arguments_.emplace_back("--model-base-url");
+        plan.arguments_.push_back(value);
+      } else if (key == "api_key") {
+        // ENVIRONMENT, never argv: every argument is visible in `ps` to every
+        // user on the machine, and this one is a bearer credential.
+        plan.environment_.push_back(std::format("CENTURION_CLIPROXYAPI_API_KEY={}", value));
+      } else if (key == "trusted_hostnames") {
+        plan.arguments_.emplace_back("--trusted-http-hostname");
+        plan.arguments_.push_back(value);
+      } else {
+        return std::unexpected(std::format("profile '{}' provider '{}' sets unknown key '{}'; this daemon accepts "
+                                           "base_url, api_key and trusted_hostnames",
+                                           resolved.name, vendor, key));
+      }
+    }
+  }
+  return plan;
 }
 
 auto draining_marker(const host_layout& layout) -> std::filesystem::path {
@@ -331,7 +365,8 @@ auto real_hooks(std::function<bool(const std::filesystem::path&)> probe) -> host
       .probe_     = std::move(probe),
       .alive_     = [](std::int64_t pid) { return pid > 0 && ::kill(static_cast<pid_t>(pid), 0) == 0; },
       .terminate_ = [](std::int64_t pid) { return ::kill(static_cast<pid_t>(pid), SIGTERM) == 0; },
-      .spawn_     = [](const host_layout& layout, const std::filesystem::path& daemon) -> std::expected<void, std::string> {
+      .spawn_     = [](const host_layout& layout, const std::filesystem::path& daemon,
+                       const spawn_plan& plan) -> std::expected<void, std::string> {
         if (::access(daemon.c_str(), X_OK) != 0) {
           return std::unexpected(std::format("{} is not an executable daemon", daemon.string()));
         }
@@ -346,9 +381,15 @@ auto real_hooks(std::function<bool(const std::filesystem::path&)> probe) -> host
           }
         }
         env.push_back(std::format("HOME={}", layout.home_.string()));
+        for (const auto& entry : plan.environment_) {
+          env.push_back(entry);
+        }
 
         std::vector<std::string> arguments{daemon.string()};
-        std::vector<char*>       argv;
+        for (const auto& argument : plan.arguments_) {
+          arguments.push_back(argument);
+        }
+        std::vector<char*> argv;
         argv.reserve(arguments.size() + 1);
         for (auto& argument : arguments) {
           argv.push_back(argument.data());

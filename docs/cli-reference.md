@@ -7048,6 +7048,56 @@ every refusal, with its exact stderr line, is pinned as a fixture under
 `src/cmd/planar-execute/golden/errors/` (plan 1033 M0), and that test also
 asserts the observed exit-code set is exactly `{0, 1, 2}`.
 
+### The Centurion client verbs (plan 1033 M2)
+
+`planar-execute` is becoming a CLIENT of a Centurion daemon (decision 1007 /
+1075). These verbs act on the daemon serving one execution profile
+(`[execute.profiles.<name>]`, default `default`); only `submit` ever STARTS a
+daemon, because for an inspection verb a daemon that is not running is the
+answer rather than a reason to start one.
+
+- `submit <bundle> [--input <json>] [--profile <name>]` — start a bundle run,
+  follow it to a terminal state, and print its result JSON on stdout. Exit `0`
+  when the run completes, `1` when it ends badly or is durably refused, and
+  **`75`** when the daemon refused in a way that stays replayable (a draining
+  host, a transient refusal) — "come back later" is not "the work failed", and
+  a caller that cannot tell them apart records a failure that never happened.
+- `status [<run-id>] [--profile <name>] [--json]` — one run's durable
+  projection, or the profile itself (state directory, socket, whether a daemon
+  is serving) when no run is named. A daemon that is down is a normal answer
+  here, exit `0`.
+- `follow <run-id> [--from <cursor>] [--profile <name>]` — stream the run's
+  committed events, one JSON object per line, resuming after the last event
+  this client accepted. `--from` overrides that remembered cursor; `--from 0`
+  replays from the beginning.
+- `cancel <run-id> [--profile <name>] [--json]` — stop a run this profile
+  admitted. It needs no console session (Centurion ADR-0057).
+- `host status|drain|stop [--profile <name>] [--json]` — report who is serving
+  the profile; refuse new submissions while letting running work finish; or ask
+  the daemon to stop, which it does by draining under Centurion's bounded
+  shutdown. `drain` is a Planar-side admission gate: Centurion exposes no "stop
+  admitting" operation, so what Planar stops is its own submitting.
+
+#### Provider configuration
+
+`[execute.profiles.<name>.providers.<vendor>]` is passed to the daemon when
+Planar starts one. The pinned Centurion declares exactly one provider, its
+CLIProxyAPI model transport, so `<vendor>` must be `cliproxyapi` and its keys
+are:
+
+| Key | Reaches the daemon as |
+|-----|-----------------------|
+| `base_url` | `--model-base-url` |
+| `trusted_hostnames` | `--trusted-http-hostname` |
+| `api_key` | `CENTURION_CLIPROXYAPI_API_KEY` in its environment |
+
+The credential goes in the ENVIRONMENT and never in the argument vector:
+arguments are visible in every process listing on the machine. An unknown
+vendor or an unknown key is **refused by name**, and no daemon is started —
+passing it through would leave an operator believing a setting took effect
+that the daemon never saw. A richer per-vendor provider schema is Centurion's
+own plan 1045 and does not exist yet (Planar decision 1146).
+
 ### `planar-execute run <workflow.lua> --phase <name>`
 
 Load the workflow in the sandbox, register the deterministic host surface
