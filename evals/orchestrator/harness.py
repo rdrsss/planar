@@ -745,6 +745,12 @@ def enforce_spend_ceiling(
     else:
         reason = f"suite spend ${suite_total:.4f} exceeds --max-usd ${options.max_usd:.4f}"
     write_grade(artifact_dir, "over-budget", case_id, options, reason, usage=usage)
+    # The ledger has to carry this too, not just grade.json: a run that
+    # stopped because it hit a ceiling is exactly the kind of result an
+    # operator needs to see when asking "has this case ever passed?"
+    # (task 6852 + 6860; reviewer, M3 cycle 1).
+    if options.mode in {"live", "lifecycle"}:
+        record_ledger_row({"id": case_id}, artifact_dir, options, "over-budget")
     try:
         run_command(["planar-agent", "reconcile", "--plan", plan_id], cwd=repo, env=env)
     except Exception:
@@ -3319,6 +3325,22 @@ def artifact_content_hash(artifact_dir: Path) -> str:
     return hashlib.sha256(payload).hexdigest()[:12]
 
 
+def retained_grade_status(artifact_dir: Path) -> str | None:
+    """The `status` a retained run recorded in its own `grade.json`, or
+    `None` when there is none to read (task 6852/6860). Used so a regrade
+    cannot promote an aborted run to a pass.
+    """
+    path = artifact_dir / "grade.json"
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    status = value.get("status") if isinstance(value, dict) else None
+    return status if isinstance(status, str) else None
+
+
 def record_ledger_row(
     case: dict[str, Any], artifact_dir: Path, options: Options, grade: str
 ) -> None:
@@ -3471,11 +3493,21 @@ def regrade_artifacts(
             status = "blocked" if isinstance(exc, EvalBlocked) else "fail"
             record_ledger_row(case, artifact_dir, options, status)
         raise
+    # A retained run that stopped on its spend ceiling never produced a
+    # gradeable result: the graders above only inspect the artifacts that
+    # DID land, so they can return clean and turn an aborted run into a
+    # `pass` row. The retained verdict wins (reviewer, M3 cycle 1).
+    retained = retained_grade_status(artifact_dir)
+    verdict = "over-budget" if retained == "over-budget" else "pass"
     regrade_path = write_grade(
-        artifact_dir, "pass", case_id, options, target=regrade_artifact_path(artifact_dir)
+        artifact_dir, verdict, case_id, options, target=regrade_artifact_path(artifact_dir)
     )
     if options.mode in {"live", "lifecycle"}:
-        record_ledger_row(case, artifact_dir, options, "pass")
+        record_ledger_row(case, artifact_dir, options, verdict)
+    if verdict == "over-budget":
+        raise EvalFailure(
+            f"{case_id}: retained artifacts are from an over-budget run; not a pass", artifact_dir
+        )
     pass_line(f"{case_id}: retained {options.mode} artifacts regraded")
     print(f"regraded: {regrade_path}")
     print(f"artifacts: {artifact_dir}")
@@ -3548,7 +3580,9 @@ def run_case_trials(
     behavior is unchanged from before task 6859.
 
     A trial that raises `EvalFailure`/`EvalBlocked` is recorded and does
-    NOT stop the remaining trials. Only a 0/N pass rate re-raises (the
+    NOT stop the remaining trials. `EvalOverBudget` is the exception to
+    that: it propagates immediately, because a spend ceiling governs the
+    whole invocation rather than one trial. Only a 0/N pass rate re-raises (the
     last trial's exception), so a fully-failing case still fails the
     overall run; a partially-flaky case reports its rate and succeeds.
     """
@@ -3561,6 +3595,13 @@ def run_case_trials(
     for trial in range(1, options.trials + 1):
         try:
             entrypoint(path, case, options)
+        except EvalOverBudget:
+            # A ceiling is not a per-trial outcome: the remaining trials
+            # would keep spending past the number the operator set, and a
+            # later passing trial would return 0 and hide it. `--trials` is
+            # the mode MOST likely to overspend, so the abort has to escape
+            # the loop it is nested in (task 6852; reviewer, M3 cycle 1).
+            raise
         except (EvalFailure, EvalBlocked) as exc:
             status = "blocked" if isinstance(exc, EvalBlocked) else "fail"
             outcomes.append({"trial": trial, "status": status, "reason": str(exc)})

@@ -4,3 +4,11 @@ Append-only record of graded `live`/`lifecycle` orchestrator eval runs. One row 
 
 | date | case | mode | vendor | surface | model | grade | artifact hash |
 |---|---|---|---|---|---|---|---|
+| 2026-09-23 | budget-guard-probe | live | claude | skill | - | over-budget | dfb439802dbe |
+| 2026-09-23 | second | live | claude | skill | - | over-budget | 737355e92609 |
+| 2026-09-23 | budget-guard-probe | live | claude | skill | - | over-budget | dfb439802dbe |
+| 2026-09-23 | second | live | claude | skill | - | over-budget | 737355e92609 |
+| 2026-09-23 | budget-guard-probe | live | claude | skill | - | over-budget | dfb439802dbe |
+| 2026-09-23 | second | live | claude | skill | - | over-budget | 737355e92609 |
+| 2026-09-23 | budget-guard-probe | live | claude | skill | - | over-budget | dfb439802dbe |
+| 2026-09-23 | second | live | claude | skill | - | over-budget | 737355e92609 |

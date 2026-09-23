@@ -3808,36 +3808,6 @@ class SpendCeilingTests(unittest.TestCase):
                 harness.read_json(second_dir / "grade.json")["status"], "over-budget"
             )
 
-    def test_enforce_spend_ceiling_no_op_call_site_would_never_abort(self) -> None:
-        # Documents the call-site mutant this suite is meant to kill: if
-        # `enforce_spend_ceiling` were replaced by a no-op at its call site
-        # in `run_phase3_preview_from_prepared`, an over-budget run would
-        # grade normally instead of raising. Verified directly here without
-        # touching the shipped code path.
-        usage = {"calls": 1, "total_cost_usd": 999.0, "input_tokens": 1, "output_tokens": 1}
-        options = harness.Options(
-            mode="live",
-            vendor="claude",
-            surface="skill",
-            case_filter=None,
-            results_dir=None,
-            keep=True,
-        )
-        with tempfile.TemporaryDirectory() as raw_tmp:
-            artifact_dir = Path(raw_tmp)
-            with mock.patch.object(harness, "run_command"):
-                with self.assertRaises(harness.EvalOverBudget):
-                    harness.enforce_spend_ceiling(
-                        artifact_dir=artifact_dir,
-                        case_id="probe",
-                        options=options,
-                        repo=artifact_dir,
-                        env={},
-                        plan_id="1",
-                        usage=usage,
-                        case_budget_usd=0.01,
-                    )
-
 
 class TrialsTests(unittest.TestCase):
     def test_single_trial_calls_entrypoint_directly_with_no_wrapper(self) -> None:
@@ -3849,6 +3819,31 @@ class TrialsTests(unittest.TestCase):
 
         harness.run_case_trials(entrypoint, Path("<p>"), live_case(), options)
         self.assertEqual(calls, [1])
+
+    def test_over_budget_aborts_the_whole_trials_run_immediately(self) -> None:
+        """A ceiling governs the invocation, not one trial. Before this,
+        EvalOverBudget (an EvalFailure subclass) was caught per trial, so
+        --trials kept spending past the operator's number and a later
+        passing trial returned 0 (reviewer, M3 cycle 1)."""
+        options = harness.Options(
+            mode="live",
+            vendor="claude",
+            surface="skill",
+            case_filter=None,
+            results_dir=None,
+            keep=True,
+            trials=3,
+        )
+        attempts = {"n": 0}
+
+        def entrypoint(path, case, opts):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise harness.EvalOverBudget("simulated ceiling")
+
+        with self.assertRaises(harness.EvalOverBudget):
+            harness.run_case_trials(entrypoint, Path("<p>"), live_case(), options)
+        self.assertEqual(attempts["n"], 1, "remaining trials must not run after a ceiling")
 
     def test_multiple_trials_report_partial_pass_rate_without_raising(self) -> None:
         options = harness.Options(
@@ -4061,6 +4056,38 @@ class ResultsLedgerTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["grade"], "pass")
             self.assertEqual(rows[0]["case"], live_case()["id"])
+
+    def test_regrade_cannot_promote_an_over_budget_run_to_a_pass(self) -> None:
+        """The graders only inspect the artifacts that DID land, so a run
+        aborted on its spend ceiling grades clean and used to be ledgered
+        as `pass` — the ceiling's own record erased by the regrade of it
+        (reviewer, M3 cycle 1). The retained verdict wins."""
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            artifact_dir = Path(raw_tmp) / "artifacts"
+            artifact_dir.mkdir()
+            options = live_options("claude")
+            write_live_artifacts(artifact_dir, options)
+            harness.write_json(
+                artifact_dir / "run.json",
+                {
+                    "mode": "live",
+                    "case_id": live_case()["id"],
+                    "vendor": "claude",
+                    "surface": "agent",
+                },
+            )
+            # What the abort left behind.
+            harness.write_json(
+                artifact_dir / "grade.json",
+                {"status": "over-budget", "case": live_case()["id"]},
+            )
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                with self.assertRaises(harness.EvalFailure):
+                    harness.regrade_artifacts(artifact_dir, [(Path("<p>"), live_case())])
+                rows = harness.ledger_rows()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["grade"], "over-budget")
 
     def test_ledger_check_cli_reports_violation_and_exits_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp:
