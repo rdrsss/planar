@@ -3038,6 +3038,266 @@ class ReplayDriverRegistryTests(unittest.TestCase):
                 )
 
 
+class ConcurrentCodersGuardTests(unittest.TestCase):
+    """Task 6853: the three new guards `replay_driver_concurrent_coders`
+    calls -- distinctness of concurrent claims, no busy/QueryFailed pull
+    exit, the fan-in merge preceding every complete, and the epic branch
+    actually containing every lane commit. Each guard gets a CALL-SITE
+    test: a mutant that no-ops the guard's check must fail the test.
+    """
+
+    def lane_claims(self) -> list[dict[str, object]]:
+        return [
+            {"lane": 1, "claim_token": "tok-1", "task_id": "11"},
+            {"lane": 2, "claim_token": "tok-2", "task_id": "12"},
+            {"lane": 3, "claim_token": "tok-3", "task_id": "13"},
+        ]
+
+    # -- assert_distinct_lane_claims -------------------------------------
+
+    def test_call_site_detects_duplicate_claim_tokens(self) -> None:
+        claims = self.lane_claims()
+        claims[1]["claim_token"] = claims[0]["claim_token"]
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "duplicate claim tokens"
+        ):
+            harness.assert_distinct_lane_claims(
+                claims, artifacts=Path("<artifacts>"), case_id="probe",
+                options=lifecycle_options(),
+            )
+
+    def test_call_site_detects_duplicate_claimed_tasks(self) -> None:
+        # CALL-SITE test: a mutant that checks only tokens (or that
+        # no-ops the whole function) must fail this test -- two DISTINCT
+        # claim tokens on the SAME task id is the real US-7 race, not a
+        # token collision.
+        claims = self.lane_claims()
+        claims[1]["task_id"] = claims[0]["task_id"]
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "duplicate claimed tasks"
+        ):
+            harness.assert_distinct_lane_claims(
+                claims, artifacts=Path("<artifacts>"), case_id="probe",
+                options=lifecycle_options(),
+            )
+
+    def test_distinct_claims_pass(self) -> None:
+        harness.assert_distinct_lane_claims(
+            self.lane_claims(), artifacts=Path("<artifacts>"), case_id="probe",
+            options=lifecycle_options(),
+        )
+
+    # -- assert_no_concurrent_pull_failures -------------------------------
+
+    def test_call_site_detects_a_failed_concurrent_pull(self) -> None:
+        # CALL-SITE test: a mutant that ignores returncode (e.g. always
+        # treats the batch as clean) must fail this test.
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="{}", stderr="")
+        busy = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Error: QueryFailed: database is locked"
+        )
+        with self.assertRaisesRegex(harness.EvalFailure, "QueryFailed"):
+            harness.assert_no_concurrent_pull_failures(
+                [(1, ok), (2, busy), (3, ok)],
+                artifacts=Path("<artifacts>"), case_id="probe",
+                options=lifecycle_options(),
+            )
+
+    def test_all_pulls_succeeding_passes(self) -> None:
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="{}", stderr="")
+        harness.assert_no_concurrent_pull_failures(
+            [(1, ok), (2, ok), (3, ok)],
+            artifacts=Path("<artifacts>"), case_id="probe",
+            options=lifecycle_options(),
+        )
+
+    # -- assert_merge_precedes_completes -----------------------------------
+
+    def test_call_site_detects_a_complete_before_the_merge(self) -> None:
+        # CALL-SITE test: a mutant that compares against the wrong
+        # timestamp, or that skips this check entirely, must fail this
+        # test -- tok-2's complete is recorded BEFORE merge_ts.
+        records = [
+            observed_record(
+                ts=100.0, seq=0, argv=["complete", "--claim", "tok-1"],
+                stdout=terminal_stdout(claim_token="tok-1"),
+            ),
+            observed_record(
+                ts=50.0, seq=1, argv=["complete", "--claim", "tok-2"],
+                stdout=terminal_stdout(claim_token="tok-2"),
+            ),
+            observed_record(
+                ts=101.0, seq=2, argv=["complete", "--claim", "tok-3"],
+                stdout=terminal_stdout(claim_token="tok-3"),
+            ),
+        ]
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "complete observed before the fan-in merge"
+        ):
+            harness.assert_merge_precedes_completes(
+                60.0, records, ["tok-1", "tok-2", "tok-3"],
+                artifacts=Path("<artifacts>"), case_id="probe",
+                options=lifecycle_options(),
+            )
+
+    def test_call_site_detects_a_missing_complete_record(self) -> None:
+        records = [
+            observed_record(
+                ts=100.0, seq=0, argv=["complete", "--claim", "tok-1"],
+                stdout=terminal_stdout(claim_token="tok-1"),
+            ),
+        ]
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "no successful complete record"
+        ):
+            harness.assert_merge_precedes_completes(
+                60.0, records, ["tok-1", "tok-2"],
+                artifacts=Path("<artifacts>"), case_id="probe",
+                options=lifecycle_options(),
+            )
+
+    def test_all_completes_after_the_merge_pass(self) -> None:
+        records = [
+            observed_record(
+                ts=100.0, seq=0, argv=["complete", "--claim", "tok-1"],
+                stdout=terminal_stdout(claim_token="tok-1"),
+            ),
+            observed_record(
+                ts=101.0, seq=1, argv=["complete", "--claim", "tok-2"],
+                stdout=terminal_stdout(claim_token="tok-2"),
+            ),
+        ]
+        harness.assert_merge_precedes_completes(
+            60.0, records, ["tok-1", "tok-2"],
+            artifacts=Path("<artifacts>"), case_id="probe",
+            options=lifecycle_options(),
+        )
+
+    # -- assert_epic_contains_lane_commits ---------------------------------
+
+    def make_lane_and_epic_repo(self, tmp: Path) -> tuple[dict[str, str], str, str]:
+        """A real 3-lane fan-in in a throwaway git repo -- returns
+        (lane_shas, epic_sha, two_lane_epic_sha), the latter being the
+        epic ref BEFORE the third lane was merged in, i.e. a real epic
+        branch that genuinely omits one lane's commit."""
+        env = dict(os.environ)
+        harness.run_command(["git", "init", "-q"], cwd=tmp, env=env)
+        harness.run_command(["git", "config", "user.name", "t"], cwd=tmp, env=env)
+        harness.run_command(["git", "config", "user.email", "t@t"], cwd=tmp, env=env)
+        (tmp / "value.txt").write_text("baseline\n", encoding="utf-8")
+        harness.run_command(["git", "add", "-A"], cwd=tmp, env=env)
+        harness.run_command(["git", "commit", "-q", "-m", "base"], cwd=tmp, env=env)
+        base = harness.run_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=tmp, env=env
+        ).stdout.strip()
+        lane_shas: dict[str, str] = {}
+        for lane in (1, 2, 3):
+            harness.run_command(
+                ["git", "checkout", "-q", "-b", f"lane-{lane}", base], cwd=tmp, env=env
+            )
+            (tmp / f"lane-{lane}.txt").write_text("approved\n", encoding="utf-8")
+            harness.run_command(["git", "add", "-A"], cwd=tmp, env=env)
+            harness.run_command(
+                ["git", "commit", "-q", "-m", f"lane {lane}"], cwd=tmp, env=env
+            )
+            lane_shas[f"lane-{lane}"] = harness.run_command(
+                ["git", "rev-parse", "HEAD"], cwd=tmp, env=env
+            ).stdout.strip()
+        harness.run_command(
+            ["git", "checkout", "-q", "-b", "epic-fanin", base], cwd=tmp, env=env
+        )
+        harness.run_command(
+            ["git", "merge", "-q", "--no-ff", "lane-1", "-m", "fan in lane-1"],
+            cwd=tmp, env=env,
+        )
+        harness.run_command(
+            ["git", "merge", "-q", "--no-ff", "lane-2", "-m", "fan in lane-2"],
+            cwd=tmp, env=env,
+        )
+        two_lane_epic_sha = harness.run_command(
+            ["git", "rev-parse", "HEAD"], cwd=tmp, env=env
+        ).stdout.strip()
+        harness.run_command(
+            ["git", "merge", "-q", "--no-ff", "lane-3", "-m", "fan in lane-3"],
+            cwd=tmp, env=env,
+        )
+        epic_sha = harness.run_command(
+            ["git", "rev-parse", "HEAD"], cwd=tmp, env=env
+        ).stdout.strip()
+        return lane_shas, epic_sha, two_lane_epic_sha
+
+    def test_call_site_detects_a_lane_missing_from_the_epic_branch(self) -> None:
+        # CALL-SITE test: a mutant that trusts `git merge`'s own exit code
+        # (which fails OPEN on a missing branch -- "Already up to date",
+        # exit 0) rather than checking ancestry must fail this test. The
+        # epic ref here is real: it is the fan-in commit BEFORE lane-3 was
+        # merged, so lane-3's commit genuinely is not its ancestor.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            lane_shas, _epic_sha, two_lane_epic_sha = self.make_lane_and_epic_repo(tmp)
+            with self.assertRaisesRegex(
+                harness.EvalFailure,
+                "epic branch does not contain lane commit.*lane-3",
+            ):
+                harness.assert_epic_contains_lane_commits(
+                    tmp, dict(os.environ), two_lane_epic_sha, lane_shas,
+                    artifacts=Path("<artifacts>"), case_id="probe",
+                    options=lifecycle_options(),
+                )
+
+    def test_epic_branch_containing_every_lane_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            lane_shas, epic_sha, _two_lane_epic_sha = self.make_lane_and_epic_repo(tmp)
+            harness.assert_epic_contains_lane_commits(
+                tmp, dict(os.environ), epic_sha, lane_shas,
+                artifacts=Path("<artifacts>"), case_id="probe",
+                options=lifecycle_options(),
+            )
+
+    # -- REPLAY_DRIVERS dispatch --------------------------------------------
+
+    def test_call_site_dispatches_concurrent_coders(self) -> None:
+        # CALL-SITE test: a mutant that forgets to register
+        # "concurrent-coders" in REPLAY_DRIVERS, or that dispatches to the
+        # wrong driver for its name, must fail this test.
+        case = {"id": "driver-dispatch-probe-concurrent-coders", "setup": {"replay": "concurrent-coders"}}
+        fake_context = harness.LifecycleContext(
+            case_path=Path("<probe>"),
+            case=case,
+            artifacts=Path("<artifacts>"),
+            repo=Path("<repo>"),
+            env={},
+            plan_id="1",
+            task_id="1",
+            task_ids=["1", "2", "3"],
+        )
+        with mock.patch.object(
+            harness, "prepare_lifecycle_fixture", return_value=fake_context
+        ), mock.patch.object(
+            harness, "replay_driver_concurrent_coders"
+        ) as wanted_mock, mock.patch.object(
+            harness, "replay_driver_classic"
+        ) as other_mock, mock.patch.object(
+            harness, "collect_lifecycle_artifacts"
+        ), mock.patch.object(
+            harness, "grade_lifecycle_artifacts"
+        ), mock.patch.object(
+            harness, "write_grade"
+        ), mock.patch.object(
+            harness, "finish_artifacts"
+        ):
+            with mock.patch.dict(
+                harness.REPLAY_DRIVERS,
+                {"concurrent-coders": wanted_mock, "classic": other_mock},
+            ):
+                harness.run_lifecycle_fixture_replay(
+                    Path("<case-path>"), case, lifecycle_options()
+                )
+        wanted_mock.assert_called_once()
+        other_mock.assert_not_called()
+
+
 class RegradeCatchesRetainedObservedLogTest(unittest.TestCase):
     """`grade_lifecycle_artifacts` (and therefore `regrade_artifacts`, which
     calls it on a retained artifact dir) must re-derive the lifecycle

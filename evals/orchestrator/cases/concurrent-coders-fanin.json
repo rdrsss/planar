@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "id": "concurrent-coders-fanin",
+  "skill": "orchestrator",
+  "description": "Three worktree lanes on a three-task plan, claimed and run concurrently; fan-in merges all three lane branches into an epic branch before any claim completes.",
+  "tags": [
+    "lifecycle",
+    "concurrent-coders",
+    "worktree",
+    "fanin"
+  ],
+  "tiers": [
+    "lifecycle"
+  ],
+  "tasks": [
+    {
+      "slug": "lane-a-task",
+      "title": "Set the concurrent-coders lane value (task A)."
+    },
+    {
+      "slug": "lane-b-task",
+      "title": "Set the concurrent-coders lane value (task B)."
+    },
+    {
+      "slug": "lane-c-task",
+      "title": "Set the concurrent-coders lane value (task C)."
+    }
+  ],
+  "setup": {
+    "fixture": "controlled-classic",
+    "specialist_scenario": "success",
+    "plan_status": "active",
+    "strategy": "worktree",
+    "isolation": "worktree",
+    "dispatch_shape": "strict",
+    "replay": "concurrent-coders"
+  },
+  "interaction": [
+    {
+      "send": "Execute with worktree isolation, strict dispatch, and no documentation phase."
+    }
+  ],
+  "lifecycle": {
+    "scenario": "controlled-classic",
+    "surface": "agent",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits worktree isolation, strict dispatch shape, and --no-docs. Dispatch three independent coder lanes concurrently, one per task, each in its own git worktree; fan every lane's branch into a single epic branch before completing any claim. Do not finalize, propagate, or archive.",
+    "timeout_seconds": 600,
+    "operator_responses": [
+      "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Dispatch the three controlled worktree lanes concurrently.",
+      "Use the already pre-committed strict dispatch shape and continue."
+    ]
+  },
+  "expected": {
+    "forbidden_events": [
+      "review-request-changes",
+      "task-completed-before-review",
+      "task-failed",
+      "claim-released",
+      "task-blocked"
+    ],
+    "event_counts": {
+      "claim-acquired": 3,
+      "coder-finished": 3,
+      "task-completed": 3
+    },
+    "post_state": {
+      "tasks": [
+        {
+          "slug": "lane-a-task",
+          "status": "done"
+        },
+        {
+          "slug": "lane-b-task",
+          "status": "done"
+        },
+        {
+          "slug": "lane-c-task",
+          "status": "done"
+        }
+      ],
+      "active_claims": 0,
+      "file_value": "approved"
+    }
+  }
+}

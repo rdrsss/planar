@@ -8,6 +8,7 @@ fixtures that emulate external CLIs remain executable shell test doubles.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as cf
 import hashlib
 import json
 import os
@@ -3554,6 +3555,400 @@ def replay_driver_iteration_cap(
     write_text(context.artifacts / "fail.json", fail.stdout)
 
 
+def assert_no_concurrent_pull_failures(
+    lane_results: list[tuple[int, "subprocess.CompletedProcess[str]"]],
+    *,
+    artifacts: Path,
+    case_id: str,
+    options: Options,
+) -> None:
+    """Task 6853 (US-7): none of the concurrent `planar-agent pull` calls
+    may exit non-zero. A SQLite `database is locked`/busy/`QueryFailed`
+    exit under concurrent writers is exactly the failure mode this case
+    exists to rule out, so a non-zero exit here fails the case rather
+    than being silently ignored or retried.
+    """
+    failed = [
+        (lane, result) for lane, result in lane_results if result.returncode != 0
+    ]
+    if failed:
+        detail = "; ".join(
+            f"lane {lane}: exit {result.returncode}: "
+            f"{(result.stderr or result.stdout).strip()[:200]}"
+            for lane, result in failed
+        )
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            f"concurrent pull failed for {len(failed)} lane(s): {detail}",
+        )
+
+
+def assert_distinct_lane_claims(
+    lane_claims: list[dict[str, Any]],
+    *,
+    artifacts: Path,
+    case_id: str,
+    options: Options,
+) -> None:
+    """Task 6853 (US-7): three concurrent `planar-agent pull` calls
+    against the SAME SQLite database must produce three DISTINCT claim
+    tokens on three DISTINCT tasks. A duplicate of either -- two lanes
+    handed the same claim token, or two lanes handed the same task --
+    means the concurrent writers raced each other into an inconsistent
+    claim state; this fails closed rather than silently letting a later
+    step complete the same task twice.
+    """
+    tokens = [claim["claim_token"] for claim in lane_claims]
+    task_ids = [claim["task_id"] for claim in lane_claims]
+    if len(set(tokens)) != len(tokens):
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            f"concurrent pull produced duplicate claim tokens: {tokens!r}",
+        )
+    if len(set(task_ids)) != len(task_ids):
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            f"concurrent pull produced duplicate claimed tasks: {task_ids!r}",
+        )
+
+
+def assert_merge_precedes_completes(
+    merge_ts: float,
+    observed_records: list[dict[str, Any]],
+    claim_tokens: Iterable[str],
+    *,
+    artifacts: Path,
+    case_id: str,
+    options: Options,
+) -> None:
+    """Task 6853: prove the fan-in merge happened BEFORE every lane's
+    `planar-agent complete`, read back from the observed log's own
+    per-call timestamps rather than trusted from the driver's call
+    order -- a reordering bug in the driver itself would otherwise go
+    undetected. `merge_ts` is the wall-clock time the driver observed
+    the fan-in merge complete (captured immediately after the last `git
+    merge` call returns, before any `complete` is dispatched).
+    """
+    tokens = set(claim_tokens)
+    matched: dict[str, float] = {}
+    for record in observed_records:
+        argv = record.get("argv") or []
+        if not argv or argv[0] != "complete" or record.get("exit_code") != 0:
+            continue
+        token = claim_token_of(argv) or observed_stdout_field(record, "claim_token")
+        if token in tokens:
+            matched[str(token)] = float(record.get("ts", 0))
+    missing = tokens - set(matched)
+    if missing:
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            "no successful complete record found for claim token(s): "
+            f"{sorted(missing)}",
+        )
+    early = {token: ts for token, ts in matched.items() if ts <= merge_ts}
+    if early:
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            "complete observed before the fan-in merge for claim token(s): "
+            + ", ".join(
+                f"{token} (ts={ts}, merge_ts={merge_ts})"
+                for token, ts in sorted(early.items())
+            ),
+        )
+
+
+def assert_epic_contains_lane_commits(
+    repo: Path,
+    env: dict[str, str],
+    epic_sha: str,
+    lane_shas: dict[str, str],
+    *,
+    artifacts: Path,
+    case_id: str,
+    options: Options,
+) -> None:
+    """Task 6853: `git merge` fails OPEN -- `git merge <nonexistent-branch>`
+    prints "Already up to date" and exits 0 -- so a driver that trusted
+    the merge subprocess's own exit code could report a clean fan-in that
+    silently dropped a lane. Verify containment independently with `git
+    merge-base --is-ancestor <lane-sha> <epic-sha>`, which is exactly
+    zero/non-zero on real ancestry and cannot be fooled by that failure
+    mode.
+    """
+    missing = []
+    for lane, sha in lane_shas.items():
+        result = run_command(
+            ["git", "merge-base", "--is-ancestor", sha, epic_sha],
+            cwd=repo,
+            env=env,
+            check=False,
+        )
+        if result.returncode != 0:
+            missing.append(lane)
+    if missing:
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            "epic branch does not contain lane commit(s) for: "
+            + ", ".join(sorted(missing)),
+        )
+
+
+def replay_driver_concurrent_coders(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6853: three independent `git worktree` lanes, claimed and run
+    CONCURRENTLY (`concurrent.futures`, not a sequential loop -- this is
+    the whole point of US-7), each committing to its own branch, fanned
+    into a single epic branch, and ONLY THEN completed. Proves:
+
+    - three concurrent `planar-agent` writers against the same SQLite
+      database produce three distinct claims and no busy/`QueryFailed`
+      exit (`assert_no_concurrent_pull_failures`,
+      `assert_distinct_lane_claims`);
+    - the fan-in merge precedes every `complete` call, read back from the
+      observed log rather than trusted from call order
+      (`assert_merge_precedes_completes`);
+    - the epic branch actually contains every lane's commit, verified
+      with `git merge-base --is-ancestor` rather than trusted from `git
+      merge`'s exit code, which fails OPEN on a missing branch
+      (`assert_epic_contains_lane_commits`).
+    """
+    case_id = case["id"]
+    task_ids = context.task_ids
+    if len(task_ids) < 2:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "concurrent-coders replay requires at least two tasks",
+        )
+    lanes_root = context.artifacts / "lanes"
+    lanes_root.mkdir(parents=True, exist_ok=True)
+    lane_indices = list(range(1, len(task_ids) + 1))
+    lane_dirs: dict[int, Path] = {}
+    for index in lane_indices:
+        lane_dir = lanes_root / f"lane-{index}"
+        run_command(
+            ["git", "worktree", "add", "-b", f"lane-{index}", str(lane_dir), "HEAD"],
+            cwd=context.repo,
+            env=context.env,
+        )
+        lane_dirs[index] = lane_dir
+
+    # US-7: fan the `pull` calls out CONCURRENTLY, not in a sequential
+    # loop -- three real writers against one SQLite database at the same
+    # time is exactly what this case exists to exercise.
+    with cf.ThreadPoolExecutor(max_workers=len(lane_indices)) as pool:
+        pull_futures = {
+            pool.submit(
+                run_command,
+                [
+                    "planar-agent",
+                    "pull",
+                    context.plan_id,
+                    "--role",
+                    "coder",
+                    "--base-ref",
+                    "HEAD",
+                    "--repo-root",
+                    str(lane_dirs[index]),
+                    "--json",
+                ],
+                cwd=lane_dirs[index],
+                env=context.env,
+                check=False,
+            ): index
+            for index in lane_indices
+        }
+        pull_results = [
+            (pull_futures[future], future.result()) for future in cf.as_completed(pull_futures)
+        ]
+    pull_results.sort(key=lambda item: item[0])
+    write_json(
+        context.artifacts / "pulls.concurrent.json",
+        [
+            {
+                "lane": lane,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+            for lane, result in pull_results
+        ],
+    )
+    assert_no_concurrent_pull_failures(
+        pull_results, artifacts=context.artifacts, case_id=case_id, options=options
+    )
+
+    lane_claims: list[dict[str, Any]] = []
+    for lane, result in pull_results:
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise live_failure(
+                context.artifacts,
+                case_id,
+                options,
+                f"lane {lane} pull returned invalid JSON: {exc}",
+            ) from exc
+        claim_token = (
+            payload.get("claim_token")
+            or payload.get("claim", {}).get("claim_token")
+            or payload.get("claim", {}).get("token")
+        )
+        pulled_task_id = payload.get("task", {}).get("id")
+        if not claim_token or pulled_task_id is None:
+            raise live_failure(
+                context.artifacts,
+                case_id,
+                options,
+                f"lane {lane} pull did not receive a claim token and task",
+            )
+        lane_claims.append(
+            {
+                "lane": lane,
+                "claim_token": str(claim_token),
+                "task_id": str(pulled_task_id),
+            }
+        )
+    assert_distinct_lane_claims(
+        lane_claims, artifacts=context.artifacts, case_id=case_id, options=options
+    )
+    write_json(context.artifacts / "lane-claims.json", lane_claims)
+
+    # Coder step: also concurrent, one real commit per lane on its own
+    # branch. `EVAL_REPO_ROOT` redirects control.sh's file writes/git
+    # commands at the lane's own worktree; `EVAL_EVENT_LOG` keeps every
+    # lane's `coder-finished` boundary event landing in the ONE
+    # events.jsonl `merge_lifecycle_events` reads (see control.sh).
+    control_script = str(context.repo / ".eval" / "control.sh")
+    main_event_log = str(context.repo / ".eval" / "events.jsonl")
+
+    def run_lane_coder(entry: dict[str, Any]) -> "subprocess.CompletedProcess[str]":
+        lane_env = dict(context.env)
+        lane_env["EVAL_REPO_ROOT"] = str(lane_dirs[entry["lane"]])
+        lane_env["EVAL_EVENT_LOG"] = main_event_log
+        return run_command(
+            [control_script, "coder-lane", entry["claim_token"], str(entry["lane"])],
+            cwd=context.repo,
+            env=lane_env,
+            check=False,
+        )
+
+    with cf.ThreadPoolExecutor(max_workers=len(lane_claims)) as pool:
+        coder_futures = {
+            pool.submit(run_lane_coder, entry): entry["lane"] for entry in lane_claims
+        }
+        coder_results = {
+            coder_futures[future]: future.result() for future in cf.as_completed(coder_futures)
+        }
+    for entry in lane_claims:
+        result = coder_results[entry["lane"]]
+        write_text(
+            context.artifacts / f"coder-lane-{entry['lane']}.txt",
+            result.stdout + result.stderr,
+        )
+        if result.returncode != 0:
+            raise live_failure(
+                context.artifacts,
+                case_id,
+                options,
+                f"lane {entry['lane']} controlled coder failed: "
+                f"{result.stderr.strip()}",
+            )
+
+    lane_shas: dict[str, str] = {}
+    for entry in lane_claims:
+        lane = entry["lane"]
+        sha = run_command(
+            ["git", "rev-parse", "HEAD"], cwd=lane_dirs[lane], env=context.env
+        ).stdout.strip()
+        lane_shas[f"lane-{lane}"] = sha
+    write_json(context.artifacts / "lane-shas.json", lane_shas)
+
+    # Fan-in: merge every lane branch into a fresh epic branch, ONLY
+    # THEN complete any claim. `--no-ff` so `epic-fanin` always advances
+    # with a real merge commit even when the first merge would otherwise
+    # fast-forward.
+    run_command(["git", "checkout", "-b", "epic-fanin"], cwd=context.repo, env=context.env)
+    for index in lane_indices:
+        run_command(
+            [
+                "git",
+                "merge",
+                "--no-ff",
+                f"lane-{index}",
+                "-m",
+                f"eval: fan in lane-{index}",
+            ],
+            cwd=context.repo,
+            env=context.env,
+        )
+    epic_sha = run_command(
+        ["git", "rev-parse", "HEAD"], cwd=context.repo, env=context.env
+    ).stdout.strip()
+    assert_epic_contains_lane_commits(
+        context.repo,
+        context.env,
+        epic_sha,
+        lane_shas,
+        artifacts=context.artifacts,
+        case_id=case_id,
+        options=options,
+    )
+    # Wall-clock read of the fan-in's own completion, compared below
+    # against the observed log's own `complete` timestamps -- two
+    # independently-recorded clocks, not the driver's call order. The
+    # sleep gives clear separation from git's whole-second commit
+    # timestamp resolution before any `complete` call is dispatched.
+    merge_ts = time.time()
+    time.sleep(1.5)
+    write_json(
+        context.artifacts / "fanin.json",
+        {"epic_sha": epic_sha, "lane_shas": lane_shas, "merge_ts": merge_ts},
+    )
+
+    for entry in lane_claims:
+        complete = run_command(
+            [
+                "planar-agent",
+                "complete",
+                "--claim",
+                entry["claim_token"],
+                "--summary",
+                "controlled concurrent-coders fixture fan-in complete",
+                "--json",
+            ],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(
+            context.artifacts / f"complete-lane-{entry['lane']}.json", complete.stdout
+        )
+
+    observed_records = read_observed_records(context.repo / ".eval" / "observed")
+    assert_merge_precedes_completes(
+        merge_ts,
+        observed_records,
+        [entry["claim_token"] for entry in lane_claims],
+        artifacts=context.artifacts,
+        case_id=case_id,
+        options=options,
+    )
+
+
 # Task 6854/6857: `setup.replay` selects which driver `run_lifecycle_fixture_replay`
 # hands the prepared `LifecycleContext` to. `validate_case` refuses any case
 # naming a key not in this dict, so the registry is the single source of
@@ -3569,6 +3964,7 @@ REPLAY_DRIVERS: dict[
     "dependency-order": replay_driver_dependency_order,
     "lapsed-claim": replay_driver_lapsed_claim,
     "iteration-cap": replay_driver_iteration_cap,
+    "concurrent-coders": replay_driver_concurrent_coders,
 }
 
 
