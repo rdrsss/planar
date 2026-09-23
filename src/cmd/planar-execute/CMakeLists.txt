@@ -99,23 +99,40 @@ planar_binary(planar_execute
     engine.cppm
     selector.cppm
     profile.cppm
+    host.cppm
+    compat.cppm
+    runflow.cppm
   SOURCES
     cli.cpp
     catalog.cpp
     engine.cpp
     selector.cpp
     profile.cpp
+    host.cpp
+    compat.cpp
+    runflow.cpp
+    client_bridge.cpp
   DEPENDS
     cliapp
-    engine_execute)
+    engine_execute
+    # sha256 (layer 1) digests the profile's bundle tree and command policy for
+    # the compatibility tuple (task 6503). It reaches nothing near planar_db.
+    sha256)
 
 # Glaze writes `profile show --json` (selector.cpp, plan 1033 task 6485).
 # Header-only JSON; it reaches nothing near `planar_db`, so the execute-
 # carrier guard above is untouched.
 target_link_libraries(planar_cmd_planar_execute PRIVATE glaze::glaze)
 
+# centurion::client and NOTHING else of Centurion (tech-spec D1). This is the
+# edge cmake/architecture.cmake's Centurion boundary exists to police: rule 1
+# refuses any other centurion_* target, rule 2 refuses a non-execute binary
+# reaching this one, and rule 3 grades the client's own closure for execution
+# components. `client_bridge.cpp` is the only translation unit that uses it.
+target_link_libraries(planar_cmd_planar_execute PRIVATE centurion::client)
+
 if(TARGET planar_cmd_planar_execute_tests)
-  target_link_libraries(planar_cmd_planar_execute_tests PRIVATE glaze::glaze)
+  target_link_libraries(planar_cmd_planar_execute_tests PRIVATE glaze::glaze centurion::client)
   target_compile_definitions(planar_cmd_planar_execute_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_execute>\""
     # golden.t.cpp (plan 1033 M0, task 6484): the committed fixtures and the

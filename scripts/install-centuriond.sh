@@ -120,6 +120,19 @@ from_release() {
 from_source() {
   [[ -f "$src/CMakeLists.txt" ]] || die "Centurion source not found at $src (configure Planar first)"
   say "building centuriond ${CENTURION_TAG} from $src (first build compiles gRPC; expect minutes)"
+  # A build tree remembers the source it was configured against, so a PIN BUMP
+  # (a new tag is a new directory under external/) makes CMake refuse with
+  # "does not match the source used to generate cache". Start that build over
+  # rather than handing the operator that diagnostic: the old tree belongs to a
+  # Centurion that is no longer pinned.
+  local configured_source=""
+  if [[ -f "$build_dir/CMakeCache.txt" ]]; then
+    configured_source="$(awk -F= '/^CMAKE_HOME_DIRECTORY:/ {print $2}' "$build_dir/CMakeCache.txt")"
+    if [[ -n "$configured_source" && "$configured_source" != "$src" ]]; then
+      say "pin changed ($configured_source -> $src); reconfiguring $build_dir from scratch"
+      rm -rf "$build_dir"
+    fi
+  fi
   # Normal-variable overrides only; the daemon's migrations default is baked
   # to the INSTALLED directory, never the source tree.
   cmake -S "$src" -B "$build_dir" -G Ninja \

@@ -595,7 +595,12 @@ set(PLANAR_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE PATH
 # Centurion becomes Planar's workflow engine (decision 1007); `planar-execute`
 # links `centurion::client` and NOTHING else of it (tech-spec D1, guarded by
 # cmake/architecture.cmake). Pinned to Centurion's first pre-release tag,
-# v0.1.0-alpha.1 (commit 174257e7), cut for this milestone.
+# v0.1.0-alpha.4 (commit b98cb4aa). Three decisions this client depends on,
+# each closing a place where Centurion assumed an embedding host that ships
+# C++: ADR-0055 lets a stock daemon INSTALL Planar's Lua from a configured
+# directory, ADR-0056 composes the registry that makes it EVALUATE, and
+# ADR-0057 lets the principal that admitted a run CONTROL it without a
+# console session — which is what `cancel` needs.
 #
 # First-party, so external/, not vendor/: the archive is Centurion's WHOLE
 # source tree including its own committed vendor/ (gRPC 1.82.1, BoringSSL,
@@ -619,12 +624,12 @@ set(PLANAR_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE PATH
 # second reader: cmake/centurion.cmake writes it to centurion-pin.env in the
 # build tree, which install.sh hands to scripts/install-centuriond.sh so the
 # installed daemon is built from, and records, this exact pin.
-set(PLANAR_CENTURION_TAG "v0.1.0-alpha.1")
-set(PLANAR_CENTURION_VERSION "0.1.0-alpha.1")
-set(PLANAR_CENTURION_COMMIT "174257e73dad285716f393043977fecf5ad3f57a")
+set(PLANAR_CENTURION_TAG "v0.1.0-alpha.4")
+set(PLANAR_CENTURION_VERSION "0.1.0-alpha.4")
+set(PLANAR_CENTURION_COMMIT "b98cb4aab4c08c4c5820716a7a9c74100795e507")
 set(PLANAR_CENTURION_URL
   "https://codeload.github.com/rdrsss/centurion/tar.gz/refs/tags/${PLANAR_CENTURION_TAG}")
-set(PLANAR_CENTURION_SHA256 "bd0a09f4309ef303b5385b394f4f0568b5ae0c3a33578e860dd9f28b93018f45")
+set(PLANAR_CENTURION_SHA256 "d60f09c06216770dbbdef177d6b6a197c6f3d54fbdfec80f8a76aaf8ecd42c40")
 if(DEFINED ENV{GITHUB_TOKEN})
   set(_planar_centurion_auth HTTP_HEADER "Authorization: Bearer $ENV{GITHUB_TOKEN}")
 else()
