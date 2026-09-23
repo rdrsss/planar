@@ -501,6 +501,10 @@ eval-orchestrator-live: ## Live host smoke (opt-in; needs provider credentials)
 eval-orchestrator-lifecycle: ## Full controlled lifecycle through a live orchestrator (opt-in)
 	./scripts/eval-orchestrator.sh --lifecycle --vendor $(VENDOR) --surface agent
 
+.PHONY: eval-ledger-check
+eval-ledger-check: ## Fail on any live/lifecycle case with no fresh evals/RESULTS.md row (task 6860)
+	PYTHONDONTWRITEBYTECODE=1 python3 evals/orchestrator/harness.py --ledger-check
+
 # Semantic evaluation lines for the planning surfaces (plan 948). Live by
 # nature — NOT part of `make eval`. Use --dry-run to validate a case:
 #   make eval-planning CASE=spec-draft-quality ARGS="--dry-run"

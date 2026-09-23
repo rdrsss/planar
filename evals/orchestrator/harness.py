@@ -8,6 +8,7 @@ fixtures that emulate external CLIs remain executable shell test doubles.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -18,12 +19,13 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import arena
+import vendors
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES_DIR = ROOT / "evals" / "orchestrator" / "cases"
@@ -47,11 +49,13 @@ RATE_LIMIT_OK_STATUS = "allowed"
 # already permitted. The CLI auto-approves safe builtins like `echo`, but not
 # `planar` — so without an explicit grant the orchestrator cannot run a single
 # intake command and correctly refuses to render a preview it cannot ground.
-CLAUDE_LIVE_ALLOWED_TOOLS = "Bash,Read,Edit,Write,Task"
+# Canonical default lives in `vendors.py` (task 6849 split); these names stay
+# for callers/tests that predate the split.
+CLAUDE_LIVE_ALLOWED_TOOLS = ",".join(vendors.DEFAULT_ALLOWED_TOOLS)
 # Passed as ONE argv element. `--allowedTools` is variadic, so the two-token
 # form swallows the prompt positional that follows it and the CLI dies with
 # "Input must be provided ... when using --print".
-CLAUDE_LIVE_ALLOWED_TOOLS_ARG = f"--allowedTools={CLAUDE_LIVE_ALLOWED_TOOLS}"
+CLAUDE_LIVE_ALLOWED_TOOLS_ARG = vendors.allowed_tools_arg(vendors.DEFAULT_ALLOWED_TOOLS)
 
 
 def rate_limit_reason(text: str) -> str | None:
@@ -141,6 +145,7 @@ _SCHEMA_CONSTRAINT_KEYWORDS = {
     "uniqueItems",
     "minimum",
     "maximum",
+    "exclusiveMinimum",
     "maxProperties",
     "allOf",
     "if",
@@ -251,7 +256,7 @@ def validate_against_json_schema(
     if (
         isinstance(instance, (int, float))
         and not isinstance(instance, bool)
-        and ("minimum" in schema or "maximum" in schema)
+        and ("minimum" in schema or "maximum" in schema or "exclusiveMinimum" in schema)
     ):
         if "minimum" in schema and instance < schema["minimum"]:
             raise SchemaValidationError(
@@ -260,6 +265,11 @@ def validate_against_json_schema(
         if "maximum" in schema and instance > schema["maximum"]:
             raise SchemaValidationError(
                 f"{path}: {instance} exceeds maximum {schema['maximum']}"
+            )
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            raise SchemaValidationError(
+                f"{path}: {instance} does not exceed exclusiveMinimum "
+                f"{schema['exclusiveMinimum']}"
             )
 
     if isinstance(instance, dict):
@@ -360,6 +370,15 @@ class Options:
     case_filter: str | None
     results_dir: Path | None
     keep: bool
+    # Task 6852 (spend ceiling): suite-level cost ceiling and the running
+    # per-run cost total accumulated across every case run through this same
+    # `Options` instance in one `main()` invocation.
+    max_usd: float | None = None
+    suite_spend_usd: list[float] = field(default_factory=list)
+    # Task 6859 (trials): how many times to repeat each selected live/
+    # lifecycle case. 1 (the default) preserves the pre-6859 single-run
+    # behavior exactly.
+    trials: int = 1
 
 
 @dataclass
@@ -605,6 +624,136 @@ def extract_host_transcript(raw: Path, vendor: str, artifact_dir: Path) -> str:
     return final
 
 
+class EvalOverBudget(EvalFailure):
+    """A case's or the suite's spend ceiling was exceeded (task 6852)."""
+
+
+def resolve_allowed_tools(section: dict[str, Any] | None) -> tuple[str, ...]:
+    """Resolve the per-case Claude tool allowlist (task 6850).
+
+    `section` is `case["live"]` or `case["lifecycle"]`; a case that does not
+    declare `allowed_tools` gets `vendors.DEFAULT_ALLOWED_TOOLS`.
+    """
+    if not section:
+        return vendors.DEFAULT_ALLOWED_TOOLS
+    tools = section.get("allowed_tools")
+    if not tools:
+        return vendors.DEFAULT_ALLOWED_TOOLS
+    return tuple(tools)
+
+
+def extract_usage(raw: Path, vendor: str) -> dict[str, Any]:
+    """Extract calls-per-task and token/cost usage from a host transcript
+    (task 6859). Raises `EvalFailure` when the transcript carries no
+    recognizable usage block at all -- a transcript that never reports usage
+    is a harness/host defect, not a zero-cost run, so this never silently
+    returns zeros.
+
+    Claude's stream-json protocol reports usage/cost on its terminal
+    `type: "result"` event (Planar artifact 622). Codex's `exec --json`
+    protocol does not publish a cost figure at all; `total_cost_usd` stays
+    `None` for codex runs and only the token counters are populated, so
+    codex-side spend-ceiling enforcement is necessarily token-based, not
+    cost-based (see `enforce_spend_ceiling`).
+    """
+    objects = jsonl_objects(raw)
+    calls = 0
+    input_tokens = 0
+    output_tokens = 0
+    total_cost_usd: float | None = None
+    if vendor == "claude":
+        for obj in objects:
+            if obj.get("type") != "result":
+                continue
+            calls += 1
+            cost = obj.get("total_cost_usd")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                total_cost_usd = (total_cost_usd or 0.0) + float(cost)
+            usage = obj.get("usage")
+            if isinstance(usage, dict):
+                input_tokens += int(usage.get("input_tokens") or 0)
+                output_tokens += int(usage.get("output_tokens") or 0)
+    else:
+        for obj in objects:
+            candidate = obj if obj.get("type") == "token_count" else obj.get("msg")
+            if not isinstance(candidate, dict) or candidate.get("type") != "token_count":
+                continue
+            calls += 1
+            input_tokens += int(candidate.get("input_tokens") or 0)
+            output_tokens += int(candidate.get("output_tokens") or 0)
+    if calls == 0:
+        raise EvalFailure(
+            f"host transcript carries no usage block for vendor={vendor}: {raw}"
+        )
+    return {
+        "calls": calls,
+        "total_cost_usd": total_cost_usd,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+
+def merge_usage(accumulated: dict[str, Any], turn: dict[str, Any]) -> dict[str, Any]:
+    """Fold one turn's `extract_usage` result into a running total."""
+    cost = accumulated.get("total_cost_usd")
+    turn_cost = turn.get("total_cost_usd")
+    if turn_cost is not None:
+        cost = (cost or 0.0) + turn_cost
+    return {
+        "calls": accumulated.get("calls", 0) + turn["calls"],
+        "total_cost_usd": cost,
+        "input_tokens": accumulated.get("input_tokens", 0) + turn["input_tokens"],
+        "output_tokens": accumulated.get("output_tokens", 0) + turn["output_tokens"],
+    }
+
+
+def enforce_spend_ceiling(
+    *,
+    artifact_dir: Path,
+    case_id: str,
+    options: Options,
+    repo: Path,
+    env: dict[str, str],
+    plan_id: str,
+    usage: dict[str, Any],
+    case_budget_usd: float | None,
+) -> None:
+    """Abort the run if the case or suite spend ceiling was exceeded
+    (task 6852). Cost enforcement is skipped when the vendor reports no
+    cost figure (codex today -- see `extract_usage`); the case still gets
+    graded normally in that case.
+
+    On over-budget: writes `grade.json` with `status: "over-budget"`,
+    reconciles the arena's own claims to zero active via
+    `planar-agent reconcile --plan <plan_id>` (never the operator's
+    database -- `env`/`repo` are always the scratch arena), and raises
+    `EvalOverBudget` with the artifacts retained (the caller's exception
+    handler attaches `artifact_dir` the same way every other fail path
+    does; this function never deletes anything itself).
+    """
+    cost = usage.get("total_cost_usd")
+    if cost is None:
+        return
+    options.suite_spend_usd.append(cost)
+    suite_total = sum(options.suite_spend_usd)
+    over_case = case_budget_usd is not None and cost > case_budget_usd
+    over_suite = options.max_usd is not None and suite_total > options.max_usd
+    if not (over_case or over_suite):
+        return
+    if over_case:
+        reason = f"run cost ${cost:.4f} exceeds case budget.max_usd ${case_budget_usd:.4f}"
+    else:
+        reason = f"suite spend ${suite_total:.4f} exceeds --max-usd ${options.max_usd:.4f}"
+    write_grade(artifact_dir, "over-budget", case_id, options, reason, usage=usage)
+    try:
+        run_command(["planar-agent", "reconcile", "--plan", plan_id], cwd=repo, env=env)
+    except Exception:
+        # Reconciliation is best-effort cleanup; the over-budget failure
+        # itself must still surface even if the reconcile call fails.
+        pass
+    raise EvalOverBudget(f"{case_id}: {reason}", artifact_dir)
+
+
 def extract_session_id(raw: Path, vendor: str) -> str:
     for obj in jsonl_objects(raw):
         if vendor == "codex" and obj.get("type") == "thread.started":
@@ -708,6 +857,10 @@ def validate_case(path: Path, case: Any) -> None:
         timeout = live.get("timeout_seconds", 300)
         if not isinstance(timeout, int) or not 30 <= timeout <= 3600:
             invalid("live timeout_seconds must be 30..3600")
+        try:
+            vendors.validate_allowed_tools(resolve_allowed_tools(live))
+        except vendors.UnknownToolError as exc:
+            invalid(f"live allowed_tools names an unknown tool: {exc.tool}")
     if "lifecycle" in tiers:
         lifecycle = case.get("lifecycle")
         setup = case.get("setup")
@@ -728,6 +881,10 @@ def validate_case(path: Path, case: Any) -> None:
             invalid("controlled lifecycle fixture setup is required")
         if not isinstance(tasks, list) or len(tasks) != 1:
             invalid("lifecycle cases require exactly one task")
+        try:
+            vendors.validate_allowed_tools(resolve_allowed_tools(lifecycle))
+        except vendors.UnknownToolError as exc:
+            invalid(f"lifecycle allowed_tools names an unknown tool: {exc.tool}")
         forbidden_events = expected.get("forbidden_events", [])
         unemittable = [
             name for name in forbidden_events if name not in EMITTABLE_EVENTS
@@ -1316,24 +1473,29 @@ def write_grade(
     reason: str | None = None,
     *,
     target: Path | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> Path:
     """Write the grade record. Writes `artifact_dir/grade.json` by default;
     `target` (used by `regrade_artifacts`, C6 / task 6840) redirects the
     write to a different path so a regrade of retained artifacts never
     overwrites the original run's verdict.
+
+    `usage` (task 6859) carries calls-per-task and provider token/cost
+    counters extracted from the transcript; omitted for modes (contract,
+    lifecycle-fixture) that never invoke a real vendor host.
     """
     path = target if target is not None else artifact_dir / "grade.json"
-    write_json(
-        path,
-        {
-            "status": status,
-            "case_id": case_id,
-            "vendor": options.vendor,
-            "surface": options.surface,
-            "mode": options.mode,
-            "reason": reason,
-        },
-    )
+    record: dict[str, Any] = {
+        "status": status,
+        "case_id": case_id,
+        "vendor": options.vendor,
+        "surface": options.surface,
+        "mode": options.mode,
+        "reason": reason,
+    }
+    if usage is not None:
+        record["usage"] = usage
+    write_json(path, record)
     return path
 
 
@@ -1471,14 +1633,8 @@ def resolve_model_inputs(live: dict[str, Any]) -> tuple[str | None, str | None]:
     )
 
 
-def model_argv(host_model: str | None) -> list[str]:
-    """Argv fragment selecting the orchestration host model.
-
-    Returned as separate elements so the value is never re-parsed. Building a
-    string here (`f"--model {host_model}"`) is what would turn an opaque id
-    into shell syntax.
-    """
-    return ["--model", host_model] if host_model else []
+# Alias: canonical definition moved to `vendors.py` (task 6849 split).
+model_argv = vendors.model_argv
 
 
 def cross_host_assignment(text: str, vendor: str) -> bool:
@@ -1641,9 +1797,15 @@ def grade_live_artifacts(
         )
 
 
-def run_phase3_preview(
+def prepare_phase3_preview(
     case_path: Path, case: dict[str, Any], options: Options
-) -> None:
+) -> Path:
+    """PREPARE step (task 6849 split): build the arena, seed the Planar
+    plan/tasks, snapshot the `before` state, and write `run.json` --
+    everything the live phase3-preview case needs before a vendor host is
+    ever invoked. Never starts `claude`/`codex`. Returns the artifact dir;
+    the RUN step (`run_phase3_preview_from_prepared`) resumes from it.
+    """
     case_id = case["id"]
     artifact_dir = create_artifacts(
         case_id, f"{options.vendor}-{options.surface}", options.results_dir
@@ -1723,16 +1885,16 @@ def run_phase3_preview(
             logical_sqlite_dump(Path(env["PLANAR_DB"])),
         )
         write_text(artifact_dir / "before.git-state", git_state(repo, env))
-
-        prompt = case["live"]["prompt"].replace("{{PLAN_ID}}", plan_id)
-        # Independent structured inputs, validated before they can reach a
-        # command line. `delegated_candidate` is what the orchestrator should
-        # dispatch a child role to; it is graded from the transcript rather
-        # than forced here, because forcing it would test the harness instead
-        # of the orchestrator's own routing.
-        host_model, _delegated_candidate = resolve_model_inputs(case["live"])
-        raw = artifact_dir / "transcript.jsonl"
-        timeout = int(case["live"].get("timeout_seconds", 300))
+        # Task 6850: verify the per-case tool allowlist at PREPARE time,
+        # before any vendor host is invoked, so a typo in `allowed_tools`
+        # fails here rather than mid-run inside a transcript.
+        try:
+            vendors.validate_allowed_tools(resolve_allowed_tools(case["live"]))
+        except vendors.UnknownToolError as exc:
+            raise EvalFailure(
+                f"{case_id}: live allowed_tools names an unknown tool: {exc.tool}",
+                artifact_dir,
+            )
         write_json(
             artifact_dir / "run.json",
             {
@@ -1745,6 +1907,42 @@ def run_phase3_preview(
                 "repo": "repo",
             },
         )
+        return artifact_dir
+    except (EvalFailure, EvalBlocked) as exc:
+        if exc.artifacts is None:
+            exc.artifacts = artifact_dir
+        raise
+
+
+def run_phase3_preview_from_prepared(
+    case_path: Path, case: dict[str, Any], options: Options, artifact_dir: Path
+) -> None:
+    """RUN + GRADE steps (task 6849 split): invoke the vendor host against
+    an artifact dir `prepare_phase3_preview` already prepared, then grade.
+    Recomputes the prompt/model/timeout deterministically from `case` and
+    `run.json`'s `plan_id` rather than threading them through as
+    arguments, matching the pattern `regrade_artifacts` already uses to
+    resume grading from a bare artifact dir.
+    """
+    case_id = case["id"]
+    repo = artifact_dir / "repo"
+    arena_root = artifact_dir / "arena"
+    env = arena.make_arena(arena_root)
+    arena.assert_isolated(env, arena_root)
+    # Re-checked here (not just at prepare time): a `--prepare` and a later
+    # separate `--run` can be two different process invocations, and auth is
+    # only ever read from the live process environment (never persisted into
+    # the scratch arena tree), so it must be verified again immediately
+    # before this step's own host process starts.
+    arena.assert_vendor_auth(env, options.vendor)
+    run_meta = read_json(artifact_dir / "run.json")
+    plan_id = run_meta["plan_id"]
+    prompt = case["live"]["prompt"].replace("{{PLAN_ID}}", plan_id)
+    host_model, _delegated_candidate = resolve_model_inputs(case["live"])
+    allowed_tools = resolve_allowed_tools(case["live"])
+    raw = artifact_dir / "transcript.jsonl"
+    timeout = int(case["live"].get("timeout_seconds", 300))
+    try:
         print(
             f"RUN: {case_id} ({options.vendor}/{options.surface}), timeout {timeout}s",
             flush=True,
@@ -1752,59 +1950,14 @@ def run_phase3_preview(
         print(f"transcript: {raw}", flush=True)
         print(f"follow: tail -f {raw}", flush=True)
 
-        if options.vendor == "codex":
-            if options.surface == "agent":
-                adapter = (
-                    "Do not read or invoke any skill. Immediately spawn the installed "
-                    "orchestrator subagent with agent_type=orchestrator and "
-                    "fork_turns=none, then delegate this entire task to it. An explicit "
-                    "agent type must not use a full-history fork. Do not execute the "
-                    "orchestration workflow in the parent agent. After the child returns, "
-                    "emit its complete final response verbatim: do not summarize, "
-                    "paraphrase, compress task ids into ranges, or omit task slugs. The "
-                    "relayed preview must preserve one explicit id-and-slug row for every "
-                    "task. If the child omitted that identity, ask it to correct the "
-                    f"response before returning. {prompt}"
-                )
-            else:
-                adapter = f"$orchestrator {plan_id}\n\n{prompt}"
-            command = [
-                "codex",
-                "exec",
-                *model_argv(host_model),
-                "--json",
-                "--sandbox",
-                "workspace-write",
-                adapter,
-            ]
-        elif options.surface == "agent":
-            command = [
-                "claude",
-                *model_argv(host_model),
-                "--agent",
-                "orchestrator",
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--permission-mode",
-                "dontAsk",
-                CLAUDE_LIVE_ALLOWED_TOOLS_ARG,
-                prompt,
-            ]
-        else:
-            command = [
-                "claude",
-                *model_argv(host_model),
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--permission-mode",
-                "dontAsk",
-                CLAUDE_LIVE_ALLOWED_TOOLS_ARG,
-                f"/pl-orchestrator {plan_id}\n\n{prompt}",
-            ]
+        command = vendors.build_preview_command(
+            vendor=options.vendor,
+            surface=options.surface,
+            plan_id=plan_id,
+            prompt=prompt,
+            host_model=host_model,
+            allowed_tools=allowed_tools,
+        )
         rc = run_to_file(command, raw, cwd=repo, env=env, timeout_seconds=timeout)
         raw_text = raw.read_text(encoding="utf-8", errors="replace")
         limited = rate_limit_reason(raw_text)
@@ -1828,10 +1981,22 @@ def run_phase3_preview(
                 options,
                 f"{options.vendor}/{options.surface} invocation exited {rc}",
             )
+        usage = extract_usage(raw, options.vendor)
+        case_budget_usd = case["live"].get("budget", {}).get("max_usd")
+        enforce_spend_ceiling(
+            artifact_dir=artifact_dir,
+            case_id=case_id,
+            options=options,
+            repo=repo,
+            env=env,
+            plan_id=plan_id,
+            usage=usage,
+            case_budget_usd=case_budget_usd,
+        )
         extract_host_transcript(raw, options.vendor, artifact_dir)
         collect_live_after(artifact_dir, repo, env, plan_id)
         grade_live_artifacts(case, artifact_dir, options)
-        write_grade(artifact_dir, "pass", case_id, options)
+        write_grade(artifact_dir, "pass", case_id, options, usage=usage)
         pass_line(
             f"{case_id}: {options.vendor}/{options.surface} live phase3-preview"
         )
@@ -1840,6 +2005,14 @@ def run_phase3_preview(
         if exc.artifacts is None:
             exc.artifacts = artifact_dir
         raise
+
+
+def run_phase3_preview(
+    case_path: Path, case: dict[str, Any], options: Options
+) -> None:
+    """Single-step live phase3-preview run: prepare, then run+grade."""
+    artifact_dir = prepare_phase3_preview(case_path, case, options)
+    run_phase3_preview_from_prepared(case_path, case, options, artifact_dir)
 
 
 def toml_string(value: str) -> str:
@@ -2058,6 +2231,22 @@ def prepare_lifecycle_fixture(
             artifacts / "git-status.before.txt",
             run_command(["git", "status", "--short"], cwd=repo, env=env).stdout,
         )
+        # Task 6850: verify the per-case tool allowlist at PREPARE time,
+        # before any vendor host is invoked, so a typo in `allowed_tools`
+        # fails here rather than mid-run inside a transcript. Skipped for
+        # fixture-replay (options.vendor == ""), which never spawns a real
+        # vendor host and so never reads this allowlist.
+        if options.vendor:
+            try:
+                vendors.validate_allowed_tools(
+                    resolve_allowed_tools(case["lifecycle"])
+                )
+            except vendors.UnknownToolError as exc:
+                raise EvalFailure(
+                    f"{case_id}: lifecycle allowed_tools names an unknown tool: "
+                    f"{exc.tool}",
+                    artifacts,
+                )
         write_json(
             artifacts / "run.json",
             {
@@ -2902,16 +3091,26 @@ def append_file(target: Path, source: Path) -> None:
         shutil.copyfileobj(incoming, output)
 
 
-def run_lifecycle_host(
-    case_path: Path, case: dict[str, Any], options: Options
+def run_lifecycle_host_from_prepared(
+    context: LifecycleContext, case: dict[str, Any], options: Options
 ) -> None:
-    context = prepare_lifecycle_fixture(
-        case_path, case, options, f"{options.vendor}-{options.surface}"
-    )
+    """RUN + GRADE steps (task 6849 split) for a lifecycle host run, given a
+    `LifecycleContext` `prepare_lifecycle_fixture` already produced (that
+    function IS this mode's prepare step -- it writes `run.json` and never
+    invokes a vendor host itself).
+    """
     artifacts = context.artifacts
     raw = artifacts / "transcript.jsonl"
     timeout = int(case["lifecycle"].get("timeout_seconds", 600))
     prompt = case["lifecycle"]["prompt"].replace("{{PLAN_ID}}", context.plan_id)
+    allowed_tools = resolve_allowed_tools(case["lifecycle"])
+    case_budget_usd = case["lifecycle"].get("budget", {}).get("max_usd")
+    usage_total: dict[str, Any] = {
+        "calls": 0,
+        "total_cost_usd": None,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
     try:
         print(
             f"RUN: {case['id']} ({options.vendor}/{options.surface} lifecycle), "
@@ -2924,32 +3123,12 @@ def run_lifecycle_host(
             context.repo / ".eval" / "orchestrator.instructions.md"
         ).read_text(encoding="utf-8")
         encoded_instructions = json.dumps(instructions)
-        if options.vendor == "codex":
-            command = [
-                "codex",
-                "exec",
-                "--json",
-                "--sandbox",
-                "workspace-write",
-                "-c",
-                f"developer_instructions={encoded_instructions}",
-                "Execute this lifecycle directly as the orchestrator. "
-                f"Do not read or invoke any skill. {prompt}",
-            ]
-        else:
-            command = [
-                "claude",
-                "--agent",
-                "orchestrator",
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--permission-mode",
-                "dontAsk",
-                CLAUDE_LIVE_ALLOWED_TOOLS_ARG,
-                prompt,
-            ]
+        command = vendors.build_lifecycle_command(
+            vendor=options.vendor,
+            prompt=prompt,
+            encoded_instructions=encoded_instructions,
+            allowed_tools=allowed_tools,
+        )
         rc = run_to_file(
             command, raw, cwd=context.repo, env=context.env, timeout_seconds=timeout
         )
@@ -2975,6 +3154,7 @@ def run_lifecycle_host(
                 options,
                 f"{options.vendor}/{options.surface} lifecycle invocation exited {rc}",
             )
+        usage_total = merge_usage(usage_total, extract_usage(raw, options.vendor))
         session_id = extract_session_id(raw, options.vendor)
         if not session_id:
             raise live_failure(
@@ -2993,31 +3173,13 @@ def run_lifecycle_host(
             if task_status in {"done", "cancelled"}:
                 break
             turn_raw = artifacts / f"transcript.turn-{turn}.jsonl"
-            if options.vendor == "codex":
-                command = [
-                    "codex",
-                    "exec",
-                    "resume",
-                    "--json",
-                    "-c",
-                    f"developer_instructions={encoded_instructions}",
-                    session_id,
-                    response,
-                ]
-            else:
-                command = [
-                    "claude",
-                    "--resume",
-                    session_id,
-                    "-p",
-                    "--output-format",
-                    "stream-json",
-                    "--verbose",
-                    "--permission-mode",
-                    "dontAsk",
-                    CLAUDE_LIVE_ALLOWED_TOOLS_ARG,
-                    response,
-                ]
+            command = vendors.build_lifecycle_resume_command(
+                vendor=options.vendor,
+                session_id=session_id,
+                response=response,
+                encoded_instructions=encoded_instructions,
+                allowed_tools=allowed_tools,
+            )
             rc = run_to_file(
                 command,
                 turn_raw,
@@ -3056,15 +3218,28 @@ def run_lifecycle_host(
                     options,
                     f"{options.vendor}/{options.surface} lifecycle turn {turn} exited {rc}",
                 )
+            usage_total = merge_usage(
+                usage_total, extract_usage(turn_raw, options.vendor)
+            )
             task_status = run_json(
                 ["planar", "task", "show", context.task_id, "--json"],
                 cwd=context.repo,
                 env=context.env,
             ).get("status")
+        enforce_spend_ceiling(
+            artifact_dir=artifacts,
+            case_id=case["id"],
+            options=options,
+            repo=context.repo,
+            env=context.env,
+            plan_id=context.plan_id,
+            usage=usage_total,
+            case_budget_usd=case_budget_usd,
+        )
         extract_host_transcript(raw, options.vendor, artifacts)
         collect_lifecycle_artifacts(context, options)
         grade_lifecycle_artifacts(case, artifacts, options)
-        write_grade(artifacts, "pass", case["id"], options)
+        write_grade(artifacts, "pass", case["id"], options, usage=usage_total)
         pass_line(
             f"{case['id']}: {options.vendor}/{options.surface} controlled lifecycle"
         )
@@ -3073,6 +3248,16 @@ def run_lifecycle_host(
         if exc.artifacts is None:
             exc.artifacts = artifacts
         raise
+
+
+def run_lifecycle_host(
+    case_path: Path, case: dict[str, Any], options: Options
+) -> None:
+    """Single-step controlled-lifecycle host run: prepare, then run+grade."""
+    context = prepare_lifecycle_fixture(
+        case_path, case, options, f"{options.vendor}-{options.surface}"
+    )
+    run_lifecycle_host_from_prepared(context, case, options)
 
 
 def options_from_run(artifact_dir: Path) -> Options:
@@ -3087,6 +3272,156 @@ def options_from_run(artifact_dir: Path) -> Options:
         results_dir=artifact_dir.parent,
         keep=True,
     )
+
+
+# Task 6860: the results ledger. Append-only, committed to the repo (not
+# a runtime artifact); `regrade_artifacts` (the `--grade-artifacts` entry
+# point) is the sole writer, matching "grade_*_artifacts(artifact_dir) is
+# the single grading entry point" from the task-6849 split -- a live or
+# lifecycle run only reaches the ledger once an operator regrades its
+# retained artifacts.
+RESULTS_LEDGER_PATH = ROOT / "evals" / "RESULTS.md"
+LEDGER_TABLE_HEADER = (
+    "| date | case | mode | vendor | surface | model | grade | artifact hash |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+)
+LEDGER_PREAMBLE = (
+    "# Orchestrator eval results ledger\n\n"
+    "Append-only record of graded `live`/`lifecycle` orchestrator eval runs. "
+    "One row per `--grade-artifacts <dir>` regrade (see `regrade_artifacts` "
+    "in `harness.py`). A blocked run (host exit 75) is recorded with grade "
+    "`blocked` and never counts as a pass. Never hand-edit an existing row; "
+    "append a new one instead -- the row for a given artifact hash is the "
+    "regrade's own verdict at that point in time, and a later regrade of "
+    "the same retained artifacts adds another row rather than replacing it.\n\n"
+    + LEDGER_TABLE_HEADER
+)
+_LEDGER_DEFAULT_MAX_AGE_DAYS = 30
+
+
+def ledger_model_label(case: dict[str, Any], vendor: str) -> str:
+    """Best-effort model label for a ledger row. Lifecycle cases carry no
+    explicit model field in the schema, so lifecycle rows fall back to `-`.
+    """
+    live = case.get("live") or {}
+    host_model = live.get("host_model")
+    if isinstance(host_model, str) and host_model:
+        return host_model
+    expected = live.get("expected_models") or {}
+    value = expected.get(vendor)
+    return value if isinstance(value, str) and value else "-"
+
+
+def artifact_content_hash(artifact_dir: Path) -> str:
+    """Short, stable hash identifying this artifact set's graded content."""
+    grade_path = artifact_dir / "grade.json"
+    payload = grade_path.read_bytes() if grade_path.exists() else b""
+    return hashlib.sha256(payload).hexdigest()[:12]
+
+
+def record_ledger_row(
+    case: dict[str, Any], artifact_dir: Path, options: Options, grade: str
+) -> None:
+    """Append one row to `evals/RESULTS.md`. Never rewrites or removes an
+    existing row -- append-only, per task 6860.
+    """
+    RESULTS_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = (
+        RESULTS_LEDGER_PATH.read_text(encoding="utf-8")
+        if RESULTS_LEDGER_PATH.exists()
+        else LEDGER_PREAMBLE
+    )
+    if not existing.endswith("\n"):
+        existing += "\n"
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    row = (
+        f"| {date} | {case['id']} | {options.mode} | {options.vendor or '-'} | "
+        f"{options.surface or '-'} | {ledger_model_label(case, options.vendor)} | "
+        f"{grade} | {artifact_content_hash(artifact_dir)} |\n"
+    )
+    RESULTS_LEDGER_PATH.write_text(existing + row, encoding="utf-8")
+
+
+def ledger_rows() -> list[dict[str, str]]:
+    """Parse `evals/RESULTS.md` into row dicts keyed by the table header.
+    Returns an empty list when the ledger does not exist yet (a fresh
+    checkout before any run has ever been regraded).
+    """
+    if not RESULTS_LEDGER_PATH.exists():
+        return []
+    lines = RESULTS_LEDGER_PATH.read_text(encoding="utf-8").splitlines()
+    data_lines = [
+        line
+        for line in lines
+        if line.startswith("|") and not set(line.replace("|", "").strip()) <= {"-"}
+    ]
+    if len(data_lines) < 2:
+        return []
+    header = [cell.strip() for cell in data_lines[0].strip("|").split("|")]
+    rows: list[dict[str, str]] = []
+    for line in data_lines[1:]:
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != len(header):
+            continue
+        rows.append(dict(zip(header, cells)))
+    return rows
+
+
+def ledger_max_age_days(case: dict[str, Any]) -> int:
+    """The freshness window `make eval-ledger-check` enforces for `case`.
+    Checked on whichever of `live`/`lifecycle` the case declares; a case
+    declaring both is checked against each section's own value.
+    """
+    for section_name in ("live", "lifecycle"):
+        section = case.get(section_name)
+        if isinstance(section, dict):
+            ledger_cfg = section.get("ledger")
+            if isinstance(ledger_cfg, dict) and "max_age_days" in ledger_cfg:
+                return int(ledger_cfg["max_age_days"])
+    return _LEDGER_DEFAULT_MAX_AGE_DAYS
+
+
+def check_ledger_freshness(
+    cases: list[tuple[Path, dict[str, Any]]]
+) -> list[str]:
+    """Return one violation string per case declaring `live`/`lifecycle`
+    that has no non-`blocked` ledger row newer than its
+    `ledger.max_age_days` (task 6860). Empty list means the ledger is
+    current for every such case.
+    """
+    rows = ledger_rows()
+    now = datetime.now(timezone.utc)
+    violations: list[str] = []
+    for _, case in cases:
+        tiers = case.get("tiers", [])
+        if "live" not in tiers and "lifecycle" not in tiers:
+            continue
+        max_age = ledger_max_age_days(case)
+        freshest: datetime | None = None
+        for row in rows:
+            if row.get("case") != case["id"] or row.get("grade") == "blocked":
+                continue
+            try:
+                stamp = datetime.strptime(row["date"], "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+            except (KeyError, ValueError):
+                continue
+            if freshest is None or stamp > freshest:
+                freshest = stamp
+        if freshest is None:
+            violations.append(
+                f"{case['id']}: no non-blocked ledger row recorded in "
+                f"{RESULTS_LEDGER_PATH}"
+            )
+            continue
+        age_days = (now - freshest).days
+        if age_days > max_age:
+            violations.append(
+                f"{case['id']}: newest non-blocked ledger row is {age_days}d old, "
+                f"exceeds ledger.max_age_days {max_age}"
+            )
+    return violations
 
 
 def regrade_artifact_path(artifact_dir: Path) -> Path:
@@ -3121,22 +3456,35 @@ def regrade_artifacts(
     if len(matches) != 1:
         raise EvalFailure(f"cannot resolve case for retained artifacts: {case_id}")
     case = matches[0]
-    if options.mode == "live":
-        grade_live_artifacts(case, artifact_dir, options)
-    elif options.mode in {"lifecycle", "lifecycle-fixture"}:
-        grade_lifecycle_artifacts(case, artifact_dir, options)
-    else:
-        raise EvalFailure(f"artifact mode is not regradable: {options.mode}")
+    try:
+        if options.mode == "live":
+            grade_live_artifacts(case, artifact_dir, options)
+        elif options.mode in {"lifecycle", "lifecycle-fixture"}:
+            grade_lifecycle_artifacts(case, artifact_dir, options)
+        else:
+            raise EvalFailure(f"artifact mode is not regradable: {options.mode}")
+    except (EvalFailure, EvalBlocked) as exc:
+        # Task 6860: the ledger records every graded live/lifecycle run, not
+        # only the ones that pass -- a regrade that disagrees with the
+        # retained run's own verdict is itself evidence, not noise to drop.
+        if options.mode in {"live", "lifecycle"}:
+            status = "blocked" if isinstance(exc, EvalBlocked) else "fail"
+            record_ledger_row(case, artifact_dir, options, status)
+        raise
     regrade_path = write_grade(
         artifact_dir, "pass", case_id, options, target=regrade_artifact_path(artifact_dir)
     )
+    if options.mode in {"live", "lifecycle"}:
+        record_ledger_row(case, artifact_dir, options, "pass")
     pass_line(f"{case_id}: retained {options.mode} artifacts regraded")
     print(f"regraded: {regrade_path}")
     print(f"artifacts: {artifact_dir}")
     return regrade_path
 
 
-def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
+def parse_args(
+    argv: Sequence[str],
+) -> tuple[Options, bool, Path | None, bool, bool]:
     parser = argparse.ArgumentParser(
         description="Run Planar orchestrator contract, live, and lifecycle evals."
     )
@@ -3152,6 +3500,18 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--grade-artifacts", type=Path)
+    # Task 6860: report every case declaring `live`/`lifecycle` whose ledger
+    # row is missing or stale, without regrading anything.
+    parser.add_argument("--ledger-check", action="store_true")
+    # Task 6849: stop after building the arena/plan/tasks and writing
+    # run.json, before any vendor host is invoked.
+    parser.add_argument("--prepare", action="store_true")
+    # Task 6852: suite-level cost ceiling, checked cumulatively across every
+    # case run in this invocation (see Options.suite_spend_usd).
+    parser.add_argument("--max-usd", type=float, dest="max_usd")
+    # Task 6859: repeat each selected live/lifecycle case this many times and
+    # report a per-case pass rate.
+    parser.add_argument("--trials", type=int, default=1)
     args = parser.parse_args(argv)
     if args.live:
         mode = "live"
@@ -3161,6 +3521,8 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
         mode = "lifecycle-fixture"
     else:
         mode = "contract"
+    if args.trials < 1:
+        raise EvalFailure("--trials must be >= 1")
     options = Options(
         mode=mode,
         vendor=args.vendor,
@@ -3168,13 +3530,80 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
         case_filter=args.case_filter,
         results_dir=args.results.resolve() if args.results else None,
         keep=args.keep,
+        max_usd=args.max_usd,
+        trials=args.trials,
     )
-    return options, args.list, args.grade_artifacts
+    return options, args.list, args.grade_artifacts, args.prepare, args.ledger_check
+
+
+def run_case_trials(
+    entrypoint: Callable[[Path, dict[str, Any], Options], None],
+    path: Path,
+    case: dict[str, Any],
+    options: Options,
+) -> None:
+    """Run `entrypoint` `options.trials` times for one case and report a
+    per-case pass rate (task 6859). `options.trials == 1` (the default)
+    calls `entrypoint` directly with no wrapper overhead, so single-run
+    behavior is unchanged from before task 6859.
+
+    A trial that raises `EvalFailure`/`EvalBlocked` is recorded and does
+    NOT stop the remaining trials. Only a 0/N pass rate re-raises (the
+    last trial's exception), so a fully-failing case still fails the
+    overall run; a partially-flaky case reports its rate and succeeds.
+    """
+    if options.trials == 1:
+        entrypoint(path, case, options)
+        return
+    outcomes: list[dict[str, Any]] = []
+    passed = 0
+    last_exc: EvalFailure | EvalBlocked | None = None
+    for trial in range(1, options.trials + 1):
+        try:
+            entrypoint(path, case, options)
+        except (EvalFailure, EvalBlocked) as exc:
+            status = "blocked" if isinstance(exc, EvalBlocked) else "fail"
+            outcomes.append({"trial": trial, "status": status, "reason": str(exc)})
+            last_exc = exc
+        else:
+            passed += 1
+            outcomes.append({"trial": trial, "status": "pass"})
+    pass_rate = passed / options.trials
+    summary = {
+        "case_id": case["id"],
+        "trials": options.trials,
+        "passed": passed,
+        "pass_rate": pass_rate,
+        "outcomes": outcomes,
+    }
+    if options.results_dir is not None:
+        summary_dir = options.results_dir / case["id"]
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        write_json(summary_dir / "trials.json", summary)
+    print(
+        f"TRIALS: {case['id']} {passed}/{options.trials} passed "
+        f"(pass_rate={pass_rate:.2f})",
+        flush=True,
+    )
+    if passed == 0 and last_exc is not None:
+        raise last_exc
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    options, list_only, regrade_path = parse_args(argv or sys.argv[1:])
+    options, list_only, regrade_path, prepare_only, ledger_check_only = parse_args(
+        argv or sys.argv[1:]
+    )
     cases = load_cases()
+    if ledger_check_only:
+        violations = check_ledger_freshness(cases)
+        if violations:
+            for line in violations:
+                print(f"STALE: {line}", file=sys.stderr)
+            raise EvalFailure(
+                f"{len(violations)} case(s) have a missing or stale ledger row"
+            )
+        pass_line(f"{len(cases)} case(s) checked against {RESULTS_LEDGER_PATH.name}")
+        return 0
     if regrade_path is not None:
         regrade_artifacts(regrade_path, cases)
         return 0
@@ -3226,8 +3655,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         runnable = [entry for entry in selected if "live" in entry[1]["tiers"]]
         if not runnable:
             raise EvalFailure("no selected cases declare the live tier")
+        if prepare_only:
+            for path, case in runnable:
+                artifact_dir = prepare_phase3_preview(path, case, options)
+                print(f"PREPARED: {case['id']} {artifact_dir}", flush=True)
+            pass_line(f"{len(runnable)} live orchestrator cases prepared")
+            return 0
         for path, case in runnable:
-            run_phase3_preview(path, case, options)
+            run_case_trials(run_phase3_preview, path, case, options)
         pass_line(f"{len(runnable)} live orchestrator cases")
         return 0
     if options.mode == "lifecycle-fixture":
@@ -3262,8 +3697,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     runnable = [entry for entry in selected if "lifecycle" in entry[1]["tiers"]]
     if not runnable:
         raise EvalFailure("no selected cases declare the lifecycle tier")
+    if prepare_only:
+        for path, case in runnable:
+            context = prepare_lifecycle_fixture(
+                path, case, options, f"{options.vendor}-{options.surface}"
+            )
+            print(f"PREPARED: {case['id']} {context.artifacts}", flush=True)
+        pass_line(f"{len(runnable)} live lifecycle orchestrator cases prepared")
+        return 0
     for path, case in runnable:
-        run_lifecycle_host(path, case, options)
+        run_case_trials(run_lifecycle_host, path, case, options)
     pass_line(f"{len(runnable)} live lifecycle orchestrator cases")
     return 0
 

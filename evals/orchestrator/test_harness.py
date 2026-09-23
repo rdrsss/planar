@@ -3490,5 +3490,585 @@ class SelfTestConstructionErrorNamingTests(unittest.TestCase):
         self.assertIn("selftest-naming-probe-assertion", message)
 
 
+def claude_result_line(cost: float, calls: int = 1) -> str:
+    lines = []
+    for _ in range(calls):
+        lines.append(
+            json.dumps(
+                {
+                    "type": "result",
+                    "total_cost_usd": cost,
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                }
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+class UsageExtractionTests(unittest.TestCase):
+    def test_claude_usage_sums_cost_and_tokens_across_result_events(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            raw = Path(raw_tmp) / "transcript.jsonl"
+            harness.write_text(raw, claude_result_line(0.25))
+            usage = harness.extract_usage(raw, "claude")
+        self.assertEqual(usage["calls"], 1)
+        self.assertAlmostEqual(usage["total_cost_usd"], 0.25)
+        self.assertEqual(usage["input_tokens"], 100)
+        self.assertEqual(usage["output_tokens"], 50)
+
+    def test_codex_usage_reads_token_count_events(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            raw = Path(raw_tmp) / "transcript.jsonl"
+            harness.write_text(
+                raw,
+                json.dumps(
+                    {"type": "token_count", "input_tokens": 40, "output_tokens": 10}
+                )
+                + "\n",
+            )
+            usage = harness.extract_usage(raw, "codex")
+        self.assertEqual(usage["calls"], 1)
+        self.assertIsNone(usage["total_cost_usd"])
+        self.assertEqual(usage["input_tokens"], 40)
+        self.assertEqual(usage["output_tokens"], 10)
+
+    def test_missing_usage_block_is_a_failure_not_zeros(self) -> None:
+        # Task 6859: a transcript that never reports usage is a harness/host
+        # defect, not a free run -- must not silently return zeros.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            raw = Path(raw_tmp) / "transcript.jsonl"
+            harness.write_text(raw, json.dumps({"type": "system"}) + "\n")
+            with self.assertRaises(harness.EvalFailure):
+                harness.extract_usage(raw, "claude")
+            with self.assertRaises(harness.EvalFailure):
+                harness.extract_usage(raw, "codex")
+
+    def test_merge_usage_sums_cost_and_tokens_across_turns(self) -> None:
+        first = {"calls": 1, "total_cost_usd": 0.1, "input_tokens": 10, "output_tokens": 5}
+        second = {"calls": 1, "total_cost_usd": 0.2, "input_tokens": 20, "output_tokens": 8}
+        merged = harness.merge_usage(first, second)
+        self.assertEqual(merged["calls"], 2)
+        self.assertAlmostEqual(merged["total_cost_usd"], 0.3)
+        self.assertEqual(merged["input_tokens"], 30)
+        self.assertEqual(merged["output_tokens"], 13)
+
+    def test_merge_usage_leaves_cost_none_when_vendor_never_reports_it(self) -> None:
+        accumulated = {"calls": 0, "total_cost_usd": None, "input_tokens": 0, "output_tokens": 0}
+        turn = {"calls": 1, "total_cost_usd": None, "input_tokens": 5, "output_tokens": 2}
+        merged = harness.merge_usage(accumulated, turn)
+        self.assertIsNone(merged["total_cost_usd"])
+
+
+class AllowedToolsCallSiteTests(unittest.TestCase):
+    """Proves the PREPARE-time allowlist check (task 6850) is wired into
+    the real prepare functions, not just into `vendors.validate_allowed_tools`
+    standing alone. A no-op in place of either call site would leave
+    `test_vendors.AllowedToolsTests` green while a bad case's typo only
+    surfaced later, inside a live transcript.
+    """
+
+    def test_prepare_phase3_preview_rejects_an_unknown_tool_before_any_host_call(
+        self,
+    ) -> None:
+        case = {
+            "id": "allowlist-guard-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+                "allowed_tools": ["Bash", "NotARealTool"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as results_root:
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+            with mock.patch.object(harness, "run_command"), mock.patch.object(
+                harness, "run_json"
+            ) as run_json_mock, mock.patch.object(
+                harness, "logical_sqlite_dump", return_value=""
+            ), mock.patch.object(
+                harness, "git_state", return_value=""
+            ), mock.patch.object(
+                arena, "stage_vendor_config"
+            ), mock.patch.object(
+                arena, "assert_vendor_auth"
+            ), mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock:
+                run_json_mock.side_effect = [
+                    {"id": 1},  # planar init (unused return)
+                    {"id": 99},  # plan create
+                    {},  # plan next (before)
+                ]
+                with self.assertRaises(harness.EvalFailure) as ctx:
+                    harness.prepare_phase3_preview(
+                        harness.CASES_DIR / "allowlist-guard-probe.json", case, options
+                    )
+                self.assertIn("NotARealTool", str(ctx.exception))
+            run_to_file_mock.assert_not_called()
+
+
+class PrepareRunSplitTests(unittest.TestCase):
+    """Task 6849: `--prepare` builds the arena and writes run.json without
+    ever invoking a vendor host.
+    """
+
+    def test_prepare_phase3_preview_never_calls_run_to_file(self) -> None:
+        case = {
+            "id": "prepare-only-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+            },
+        }
+        with tempfile.TemporaryDirectory() as results_root:
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+            with mock.patch.object(harness, "run_command"), mock.patch.object(
+                harness, "run_json"
+            ) as run_json_mock, mock.patch.object(
+                harness, "logical_sqlite_dump", return_value=""
+            ), mock.patch.object(
+                harness, "git_state", return_value=""
+            ), mock.patch.object(
+                arena, "stage_vendor_config"
+            ), mock.patch.object(
+                arena, "assert_vendor_auth"
+            ), mock.patch.object(
+                harness, "run_to_file"
+            ) as run_to_file_mock:
+                run_json_mock.side_effect = [
+                    {"id": 99},  # plan create
+                    {},  # plan next (before)
+                ]
+                artifact_dir = harness.prepare_phase3_preview(
+                    harness.CASES_DIR / "prepare-only-probe.json", case, options
+                )
+            run_to_file_mock.assert_not_called()
+            self.assertTrue((artifact_dir / "run.json").is_file())
+            run_meta = harness.read_json(artifact_dir / "run.json")
+            self.assertEqual(run_meta["case_id"], "prepare-only-probe")
+            self.assertEqual(run_meta["plan_id"], "99")
+
+    def test_main_prepare_flag_never_invokes_a_vendor_host(self) -> None:
+        # CALL-SITE test for the `--prepare` CLI wiring in `main()`: a
+        # no-op in place of the `prepare_only` branch would fall through to
+        # `run_case_trials`/`run_phase3_preview`, which calls `run_to_file`.
+        with tempfile.TemporaryDirectory() as results_root, mock.patch.object(
+            harness, "prepare_phase3_preview"
+        ) as prepare_mock, mock.patch.object(
+            harness, "require_commands"
+        ), mock.patch.object(
+            harness, "require_current_installed_projection"
+        ), mock.patch.object(
+            harness, "run_to_file"
+        ) as run_to_file_mock:
+            prepare_mock.return_value = Path(results_root)
+            rc = harness.main(
+                [
+                    "--live",
+                    "--prepare",
+                    "--vendor",
+                    "claude",
+                    "--surface",
+                    "skill",
+                    "--case",
+                    "phase3-model-routing-host-boundary",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        prepare_mock.assert_called_once()
+        run_to_file_mock.assert_not_called()
+
+
+class SpendCeilingTests(unittest.TestCase):
+    """Task 6852: exceeding a case or suite spend ceiling aborts the run,
+    reconciles the arena's own claims, and records `status: over-budget`.
+    """
+
+    def _prepared_live_artifact_dir(self, tmp_root: Path, case_id: str) -> Path:
+        artifact_dir = tmp_root / case_id
+        (artifact_dir / "repo").mkdir(parents=True)
+        harness.write_json(
+            artifact_dir / "run.json",
+            {
+                "mode": "live",
+                "case_id": case_id,
+                "case_path": "cases/probe.json",
+                "vendor": "claude",
+                "surface": "skill",
+                "plan_id": "77",
+                "repo": "repo",
+            },
+        )
+        return artifact_dir
+
+    def test_case_budget_exceeded_raises_over_budget_and_reconciles(self) -> None:
+        case = {
+            "id": "budget-guard-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant {{PLAN_ID}}",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+                "budget": {"max_usd": 0.05},
+            },
+        }
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp_root = Path(raw_tmp)
+            artifact_dir = self._prepared_live_artifact_dir(tmp_root, case["id"])
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=None,
+                keep=True,
+            )
+            with mock.patch.object(
+                arena, "assert_vendor_auth"
+            ), mock.patch.object(harness, "run_command") as run_command_mock, \
+                mock.patch.object(harness, "run_to_file") as run_to_file_mock:
+
+                def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
+                    harness.write_text(output, claude_result_line(0.25))
+                    return 0
+
+                run_to_file_mock.side_effect = fake_run_to_file
+                with self.assertRaises(harness.EvalOverBudget):
+                    harness.run_phase3_preview_from_prepared(
+                        Path("<budget-guard-probe>"), case, options, artifact_dir
+                    )
+            reconcile_calls = [
+                call
+                for call in run_command_mock.call_args_list
+                if call.args and call.args[0][:2] == ["planar-agent", "reconcile"]
+            ]
+            self.assertEqual(len(reconcile_calls), 1)
+            grade = harness.read_json(artifact_dir / "grade.json")
+            self.assertEqual(grade["status"], "over-budget")
+            self.assertAlmostEqual(grade["usage"]["total_cost_usd"], 0.25)
+
+    def test_suite_ceiling_accumulates_across_cases_on_one_options_instance(
+        self,
+    ) -> None:
+        case = {
+            "id": "suite-budget-guard-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "live": {
+                "prompt": "irrelevant {{PLAN_ID}}",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+            },
+        }
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp_root = Path(raw_tmp)
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=None,
+                keep=True,
+                max_usd=0.3,
+            )
+            with mock.patch.object(arena, "assert_vendor_auth"), mock.patch.object(
+                harness, "run_command"
+            ), mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
+                mock.patch.object(harness, "collect_live_after"), mock.patch.object(
+                    harness, "grade_live_artifacts"
+                ):
+
+                def fake_run_to_file(command, output, *, cwd, env, timeout_seconds):
+                    harness.write_text(output, claude_result_line(0.2))
+                    return 0
+
+                run_to_file_mock.side_effect = fake_run_to_file
+                first_dir = self._prepared_live_artifact_dir(tmp_root, "first")
+                harness.run_phase3_preview_from_prepared(
+                    Path("<first>"), {**case, "id": "first"}, options, first_dir
+                )
+                second_dir = self._prepared_live_artifact_dir(tmp_root, "second")
+                with self.assertRaises(harness.EvalOverBudget):
+                    harness.run_phase3_preview_from_prepared(
+                        Path("<second>"), {**case, "id": "second"}, options, second_dir
+                    )
+            self.assertEqual(
+                harness.read_json(second_dir / "grade.json")["status"], "over-budget"
+            )
+
+    def test_enforce_spend_ceiling_no_op_call_site_would_never_abort(self) -> None:
+        # Documents the call-site mutant this suite is meant to kill: if
+        # `enforce_spend_ceiling` were replaced by a no-op at its call site
+        # in `run_phase3_preview_from_prepared`, an over-budget run would
+        # grade normally instead of raising. Verified directly here without
+        # touching the shipped code path.
+        usage = {"calls": 1, "total_cost_usd": 999.0, "input_tokens": 1, "output_tokens": 1}
+        options = harness.Options(
+            mode="live",
+            vendor="claude",
+            surface="skill",
+            case_filter=None,
+            results_dir=None,
+            keep=True,
+        )
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            with mock.patch.object(harness, "run_command"):
+                with self.assertRaises(harness.EvalOverBudget):
+                    harness.enforce_spend_ceiling(
+                        artifact_dir=artifact_dir,
+                        case_id="probe",
+                        options=options,
+                        repo=artifact_dir,
+                        env={},
+                        plan_id="1",
+                        usage=usage,
+                        case_budget_usd=0.01,
+                    )
+
+
+class TrialsTests(unittest.TestCase):
+    def test_single_trial_calls_entrypoint_directly_with_no_wrapper(self) -> None:
+        options = live_options()
+        calls = []
+
+        def entrypoint(path, case, opts):
+            calls.append(1)
+
+        harness.run_case_trials(entrypoint, Path("<p>"), live_case(), options)
+        self.assertEqual(calls, [1])
+
+    def test_multiple_trials_report_partial_pass_rate_without_raising(self) -> None:
+        options = harness.Options(
+            mode="live",
+            vendor="claude",
+            surface="skill",
+            case_filter=None,
+            results_dir=None,
+            keep=True,
+            trials=3,
+        )
+        attempts = {"n": 0}
+
+        def entrypoint(path, case, opts):
+            attempts["n"] += 1
+            if attempts["n"] == 2:
+                raise harness.EvalFailure("simulated flake")
+
+        harness.run_case_trials(entrypoint, Path("<p>"), live_case(), options)
+        self.assertEqual(attempts["n"], 3)
+
+    def test_all_trials_failing_reraises(self) -> None:
+        options = harness.Options(
+            mode="live",
+            vendor="claude",
+            surface="skill",
+            case_filter=None,
+            results_dir=None,
+            keep=True,
+            trials=2,
+        )
+
+        def entrypoint(path, case, opts):
+            raise harness.EvalFailure("always fails")
+
+        with self.assertRaises(harness.EvalFailure):
+            harness.run_case_trials(entrypoint, Path("<p>"), live_case(), options)
+
+    def test_trials_summary_is_written_when_results_dir_is_set(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            results_dir = Path(raw_tmp)
+            options = harness.Options(
+                mode="live",
+                vendor="claude",
+                surface="skill",
+                case_filter=None,
+                results_dir=results_dir,
+                keep=True,
+                trials=2,
+            )
+
+            def entrypoint(path, case, opts):
+                return None
+
+            case = live_case()
+            harness.run_case_trials(entrypoint, Path("<p>"), case, options)
+            summary = harness.read_json(results_dir / case["id"] / "trials.json")
+            self.assertEqual(summary["trials"], 2)
+            self.assertEqual(summary["passed"], 2)
+            self.assertEqual(summary["pass_rate"], 1.0)
+
+    def test_main_trials_flag_call_site_invokes_run_case_trials(self) -> None:
+        # CALL-SITE test: a no-op in place of `run_case_trials` in `main()`'s
+        # live branch would fall back to calling `run_phase3_preview` once
+        # per case, silently dropping `--trials`.
+        with mock.patch.object(harness, "run_case_trials") as trials_mock, \
+            mock.patch.object(harness, "require_commands"), mock.patch.object(
+                harness, "require_current_installed_projection"
+            ):
+            rc = harness.main(
+                [
+                    "--live",
+                    "--vendor",
+                    "claude",
+                    "--surface",
+                    "skill",
+                    "--case",
+                    "phase3-model-routing-host-boundary",
+                    "--trials",
+                    "5",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        trials_mock.assert_called_once()
+        self.assertEqual(trials_mock.call_args.args[0], harness.run_phase3_preview)
+
+
+class ResultsLedgerTests(unittest.TestCase):
+    def _case(self, case_id: str = "ledger-probe") -> dict[str, object]:
+        return {
+            "id": case_id,
+            "tiers": ["contract", "live"],
+            "live": {
+                "host_model": "claude-opus-5",
+                "expected_models": {"codex": "gpt-5.6-terra", "claude": "claude-sonnet-5"},
+            },
+        }
+
+    def test_record_ledger_row_is_append_only(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            artifact_dir = Path(raw_tmp) / "artifacts"
+            artifact_dir.mkdir()
+            harness.write_json(artifact_dir / "grade.json", {"status": "pass"})
+            options = live_options("claude")
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                harness.record_ledger_row(self._case(), artifact_dir, options, "pass")
+                first_text = ledger_path.read_text(encoding="utf-8")
+                harness.record_ledger_row(self._case(), artifact_dir, options, "pass")
+                second_text = ledger_path.read_text(encoding="utf-8")
+            self.assertTrue(second_text.startswith(first_text))
+            self.assertEqual(second_text.count("| ledger-probe |"), 2)
+
+    def test_ledger_rows_parses_written_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            artifact_dir = Path(raw_tmp) / "artifacts"
+            artifact_dir.mkdir()
+            harness.write_json(artifact_dir / "grade.json", {"status": "pass"})
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                harness.record_ledger_row(
+                    self._case(), artifact_dir, live_options("claude"), "pass"
+                )
+                rows = harness.ledger_rows()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["case"], "ledger-probe")
+            self.assertEqual(rows[0]["grade"], "pass")
+
+    def test_check_ledger_freshness_flags_case_with_no_row(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                violations = harness.check_ledger_freshness(
+                    [(Path("<p>"), self._case())]
+                )
+            self.assertEqual(len(violations), 1)
+            self.assertIn("ledger-probe", violations[0])
+
+    def test_check_ledger_freshness_ignores_a_blocked_only_row(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            artifact_dir = Path(raw_tmp) / "artifacts"
+            artifact_dir.mkdir()
+            harness.write_json(artifact_dir / "grade.json", {"status": "blocked"})
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                harness.record_ledger_row(
+                    self._case(), artifact_dir, live_options("claude"), "blocked"
+                )
+                violations = harness.check_ledger_freshness(
+                    [(Path("<p>"), self._case())]
+                )
+            self.assertEqual(len(violations), 1)
+            self.assertIn("no non-blocked ledger row", violations[0])
+
+    def test_check_ledger_freshness_accepts_a_fresh_pass_row(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            artifact_dir = Path(raw_tmp) / "artifacts"
+            artifact_dir.mkdir()
+            harness.write_json(artifact_dir / "grade.json", {"status": "pass"})
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                harness.record_ledger_row(
+                    self._case(), artifact_dir, live_options("claude"), "pass"
+                )
+                violations = harness.check_ledger_freshness(
+                    [(Path("<p>"), self._case())]
+                )
+            self.assertEqual(violations, [])
+
+    def test_check_ledger_freshness_flags_a_stale_row(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            ledger_path.write_text(
+                harness.LEDGER_PREAMBLE
+                + "| 2000-01-01 | ledger-probe | live | claude | skill | "
+                "claude-opus-5 | pass | abc123456789 |\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                violations = harness.check_ledger_freshness(
+                    [(Path("<p>"), self._case())]
+                )
+            self.assertEqual(len(violations), 1)
+            self.assertIn("exceeds ledger.max_age_days", violations[0])
+
+    def test_regrade_artifacts_call_site_records_a_pass_row(self) -> None:
+        # CALL-SITE test: proves `regrade_artifacts` (the `--grade-artifacts`
+        # entry point) itself writes the ledger row, not just that
+        # `record_ledger_row` works standing alone. A no-op in place of this
+        # call site would leave every other ledger test green while
+        # `--grade-artifacts` never actually populated the ledger.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            artifact_dir = Path(raw_tmp) / "artifacts"
+            artifact_dir.mkdir()
+            options = live_options("claude")
+            write_live_artifacts(artifact_dir, options)
+            harness.write_json(
+                artifact_dir / "run.json",
+                {
+                    "mode": "live",
+                    "case_id": live_case()["id"],
+                    "vendor": "claude",
+                    "surface": "agent",
+                },
+            )
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                harness.regrade_artifacts(artifact_dir, [(Path("<p>"), live_case())])
+                rows = harness.ledger_rows()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["grade"], "pass")
+            self.assertEqual(rows[0]["case"], live_case()["id"])
+
+    def test_ledger_check_cli_reports_violation_and_exits_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            with mock.patch.object(harness, "RESULTS_LEDGER_PATH", ledger_path):
+                rc = harness.cli_main(["--ledger-check"])
+        self.assertEqual(rc, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
