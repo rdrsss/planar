@@ -438,6 +438,41 @@ TEST_CASE("apply on an already-terminal plan is a no-op with an EMPTY git vector
   CHECK(abandoned->git.empty());
 }
 
+TEST_CASE("hard_evidence on an already-terminal plan reflects its REAL task counts, not zeros",
+          "[engine][planning][closeout][6889]") {
+  // Task 6889: the already-terminal short-circuit returned a
+  // default-constructed `hard_evidence` -- every count zero -- because it
+  // returns BEFORE `collect_task_counts` runs at all. That is a genuine
+  // discrepancy, not a documented one: unlike `git` (empty on this path)
+  // and `epic_merge` (unset on this path), which the header explicitly
+  // calls out, `hard_evidence.tasks`/`descendants`/`claims` carry no such
+  // disclaimer. `ready:true` next to `tasks: open 0 done 0 cancelled 0`
+  // on a plan with real done tasks misrepresents what closeout actually
+  // found.
+  scratch_db_path scratch;
+  auto            conn    = open_migrated(scratch);
+  auto const      plan_id = seed_plan(conn, "wrapped-up", "done");
+  seed_task(conn, plan_id, "t-one", "done");
+  seed_task(conn, plan_id, "t-two", "done");
+  seed_task(conn, plan_id, "t-three", "cancelled");
+
+  auto const result = co::evaluate(conn, plan_id, false, false);
+  REQUIRE(result.has_value());
+  CHECK(result->ready);
+  CHECK_FALSE(result->applied);
+  // The DISTINGUISHING assertion: `done` and `cancelled` differ in count,
+  // so a query that mixed them up, or one that still returned the
+  // default-constructed zero struct, both fail here rather than
+  // coincidentally agreeing.
+  CHECK(result->hard.tasks.open == 0);
+  CHECK(result->hard.tasks.done == 2);
+  CHECK(result->hard.tasks.cancelled == 1);
+  // The two fields that ARE documented as empty on this path stay empty --
+  // this fix must not touch them.
+  CHECK(result->git.empty());
+  CHECK_FALSE(result->epic_merge.has_value());
+}
+
 TEST_CASE("apply on a blocked plan writes nothing", "[engine][planning][closeout]") {
   scratch_db_path scratch;
   auto            conn    = open_migrated(scratch);
