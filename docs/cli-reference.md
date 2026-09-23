@@ -90,6 +90,40 @@ policy). Measured, and confirmed live:
 So a script that branches on an exit code must know which binary produced it.
 Do not port a `planar` expectation onto `planar-agent` unchanged.
 
+### Error envelope tags — one vocabulary per binary (task 6902)
+
+Every failing `--json` invocation on `planar` or `planar-agent` writes an
+ADDITIVE one-line JSON error envelope to **stdout**, alongside the existing
+pinned `error: <verb>: <Tag>` text on stderr (task 6844, decision 1145):
+
+```
+{"error":{"verb":"<verb>","tag":"<tag>"}}
+```
+
+**The two binaries spell `<tag>` in two DIFFERENT, DELIBERATE vocabularies.
+A script that branches on `tag` must know which binary produced the
+envelope, exactly as it already must for the exit code above.**
+
+| Binary | `<tag>` vocabulary | Source | Example |
+|--------|---------------------|--------|---------|
+| `planar` | snake_case `domain_error_kind` enumerator names — one distinct name per kind (`kind_name`, `src/cmd/planar/exit.cppm`). | `kind_name(err.kind)`, always. | `not_found`, `busy_source`, `invalid_input`, `parse_error`, `scope_mismatch` |
+| `planar-agent` | CamelCase Zig-style engine tags — the same spelling the pinned `error: <verb>: <Tag>` stderr line already ends in (`derive_tag`, `src/cmd/planar-agent/exit.cppm`). Falls back to `kind_name(err.kind)` only when the handler's own text does not already end in a bare CamelCase tag. | `derive_tag(err)`. | `ClaimNotFound`, `Busy`, `IllegalTransition`, `QueryFailed` |
+
+The split is intentional, not an oversight: `planar-agent`'s tag is reused
+directly from the handler's own Zig-style failure text because that text is
+already strictly more specific than `planar`'s `domain_error_kind`, which
+collapses many distinct engine failures into `generic_failure` (task 6843's
+`Busy`/`QueryFailed` split exists precisely so that distinction is not lost
+again behind a shared envelope shape). `planar` never emits a CamelCase tag,
+and `planar-agent` never emits a bare `domain_error_kind` name except as its
+documented fallback. **Do not assume the same condition produces the same
+tag spelling on both binaries** — the busy-source case is the sharpest
+example: a lock held past the timeout emits `Busy` from `planar-agent
+heartbeat --json` and `busy_source` from `planar task update --json` for
+the same underlying SQLite busy condition (see
+`src/cmd/planar/task_busy_leaf.t.cpp` and the `Busy`/`QueryFailed`
+scenario in this feature's test spec).
+
 ### Capture Behavior
 
 Every command that writes to the database appends a `session_entries` row to the current active session for the affected task (if the command is task-scoped). If no active session exists, one is created automatically with the current process's vendor string. This is the automatic capture described in the tech spec — agents do not need to call a separate save-state command.
