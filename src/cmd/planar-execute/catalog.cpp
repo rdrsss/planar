@@ -46,6 +46,24 @@ auto catalog_json() -> std::string {
   add_string(*submit, "--input", "Canonical JSON input for the run; default: {}.");
   add_string(*submit, "--profile", "Execution profile whose daemon serves the run; default: default.");
 
+  CLI::App* status = root.add_subcommand("status", "Show one run's durable projection, or the profile's daemon when no "
+                                                   "run is named.");
+  status->add_option("run-id")->description("Run to show; omitted reports the profile's daemon instead.");
+  add_string(*status, "--profile", "Execution profile whose daemon owns the run; default: default.");
+  status->add_flag("--json", "Render the projection as JSON.");
+
+  CLI::App* cancel = root.add_subcommand("cancel", "Cancel a run this profile admitted, without a console session.");
+  cancel->add_option("run-id")->required()->description("Run to cancel.");
+  add_string(*cancel, "--profile", "Execution profile whose daemon owns the run; default: default.");
+  cancel->add_flag("--json", "Render the outcome as JSON.");
+
+  CLI::App* host        = root.add_subcommand("host", "Inspect the daemon serving a profile.");
+  CLI::App* host_status = host->add_subcommand("status", "Report who is serving this profile: the published endpoint "
+                                                         "record, the installed daemon's build identity, and the "
+                                                         "compatibility tuple it was started with.");
+  add_string(*host_status, "--profile", "Execution profile to inspect; default: default.");
+  host_status->add_flag("--json", "Render the report as JSON.");
+
   CLI::App* profile = root.add_subcommand("profile", "Inspect the resolved execution profile.");
   CLI::App* show    = profile->add_subcommand("show", "Print the resolved engine and the provenance that chose it "
                                                       "(flag, env, config file, or embedded default) on stdout.");

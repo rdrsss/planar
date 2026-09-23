@@ -46,11 +46,12 @@ enum class call_outcome {
 
 /// @brief One run as the daemon currently projects it.
 struct run_view {
-  std::string run_id_;      ///< Durable run identifier.
-  std::string status_;      ///< Centurion status, e.g. `RUN_STATUS_COMPLETED`.
-  std::string result_json_; ///< Terminal result payload; empty when there is none.
-  std::string error_json_;  ///< Terminal error payload; empty when there is none.
-  bool        terminal_{};  ///< Whether the status is one a run never leaves.
+  std::string   run_id_;      ///< Durable run identifier.
+  std::string   status_;      ///< Centurion status, e.g. `RUN_STATUS_COMPLETED`.
+  std::string   result_json_; ///< Terminal result payload; empty when there is none.
+  std::string   error_json_;  ///< Terminal error payload; empty when there is none.
+  bool          terminal_{};  ///< Whether the status is one a run never leaves.
+  std::uint64_t sequence_{};  ///< Latest committed history sequence; the cursor `cancel` must quote.
 };
 
 /// @brief The answer to one call: an outcome, the run when there is one, and why when there is not.
@@ -68,6 +69,17 @@ struct call_result {
 /// @return The started run, or why it was refused.
 [[nodiscard]] auto submit_bundle_run(const char* socket_path, const char* bundle_name, const char* input_json,
                                      const char* request_id) -> call_result;
+
+/// @brief Ask the daemon to cancel one run, with no console session.
+///
+/// Centurion authorizes this against the run's admission row (its ADR-0057):
+/// the principal that started a bundle run may control it. An empty console
+/// session is the request shape that selects that basis, not an omission.
+/// @param socket_path The daemon's Unix socket.
+/// @param run_id The run to cancel.
+/// @param expected_sequence The caller's optimistic cursor over the run's history.
+/// @return The run after the control settled, or why it was refused.
+[[nodiscard]] auto cancel_run(const char* socket_path, const char* run_id, std::uint64_t expected_sequence) -> call_result;
 
 /// @brief Read one run's current durable projection.
 /// @param socket_path The daemon's Unix socket.

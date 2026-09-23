@@ -45,7 +45,8 @@ auto view_of(const centurion::client::run_snapshot& snapshot) -> run_view {
                   .status_      = snapshot.status_,
                   .result_json_ = snapshot.result_json_.value_or(std::string{}),
                   .error_json_  = snapshot.error_json_.value_or(std::string{}),
-                  .terminal_    = is_terminal(snapshot.status_)};
+                  .terminal_    = is_terminal(snapshot.status_),
+                  .sequence_    = snapshot.last_event_sequence_};
 }
 
 /// @brief Classify a client failure into what the caller may do about it.
@@ -98,6 +99,19 @@ auto submit_bundle_run(const char* socket_path, const char* bundle_name, const c
     return call_result{.outcome_ = classify(started.error()), .run_ = {}, .message_ = started.error().message_};
   }
   return call_result{.outcome_ = call_outcome::ok, .run_ = view_of(started->run_), .message_ = {}};
+}
+
+auto cancel_run(const char* socket_path, const char* run_id, std::uint64_t expected_sequence) -> call_result {
+  const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{15}};
+  auto                              outcome = centurion::client::cancel_run(
+      target, centurion::client::cancel_run_input{// Empty: the bundle-admitted authorization basis (Centurion ADR-0057).
+                                                  .console_session_id_      = {},
+                                                  .run_id_                  = run_id,
+                                                  .expected_event_sequence_ = expected_sequence});
+  if (!outcome) {
+    return call_result{.outcome_ = classify(outcome.error()), .run_ = {}, .message_ = outcome.error().message_};
+  }
+  return call_result{.outcome_ = call_outcome::ok, .run_ = view_of(outcome->run_), .message_ = {}};
 }
 
 auto fetch_run(const char* socket_path, const char* run_id) -> call_result {

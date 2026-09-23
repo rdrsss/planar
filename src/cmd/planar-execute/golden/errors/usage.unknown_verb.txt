@@ -8,6 +8,9 @@ Usage:
                      [--engine <embedded|centurion>]
   planar-execute profile show [--profile <name>] [--json]
   planar-execute submit <bundle> [--input <json>] [--profile <name>]
+  planar-execute status [<run-id>] [--profile <name>] [--json]
+  planar-execute cancel <run-id> [--profile <name>] [--json]
+  planar-execute host status [--profile <name>] [--json]
   planar-execute schema
 
 Loads the workflow in the sandbox, registers the deterministic host

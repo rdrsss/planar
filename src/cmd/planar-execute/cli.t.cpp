@@ -60,6 +60,7 @@ namespace {
 using planar::cmd::execute::classify;
 using planar::cmd::execute::parse_profile_args;
 using planar::cmd::execute::parse_run_args;
+using planar::cmd::execute::parse_run_id_args;
 using planar::cmd::execute::parse_submit_args;
 using planar::cmd::execute::usage_text;
 using planar::cmd::execute::verb;
@@ -297,6 +298,44 @@ TEST_CASE("the submit verb's arguments parse, and its malformed shapes are refus
   }
 }
 
+TEST_CASE("the inspection verbs share one argument shape, and refuse the wrong ones", "[cmd][execute][cli][6506]") {
+  SECTION("status takes an optional run id") {
+    std::vector<std::string> const none{};
+    auto const                     bare = parse_run_id_args(none, false);
+    REQUIRE(bare.has_value());
+    CHECK(bare->run_id.empty());
+    CHECK(bare->profile == "default");
+
+    std::vector<std::string> const named{"01930000-0000-7000-8000-00000000000a"};
+    auto const                     one = parse_run_id_args(named, false);
+    REQUIRE(one.has_value());
+    CHECK(one->run_id == "01930000-0000-7000-8000-00000000000a");
+  }
+
+  SECTION("cancel requires one") {
+    // The same parser, a different promise: cancelling nothing in particular
+    // is not a request that can be honoured.
+    std::vector<std::string> const none{};
+    CHECK_FALSE(parse_run_id_args(none, true).has_value());
+    std::vector<std::string> const named{"01930000-0000-7000-8000-00000000000a"};
+    CHECK(parse_run_id_args(named, true).has_value());
+  }
+
+  SECTION("a second run id, an unknown flag, and a flag without its value are refused") {
+    std::vector<std::string> const two{"run-a", "run-b"};
+    CHECK_FALSE(parse_run_id_args(two, true).has_value());
+    std::vector<std::string> const unknown{"run-a", "--phase", "p"};
+    CHECK_FALSE(parse_run_id_args(unknown, true).has_value());
+    std::vector<std::string> const dangling{"run-a", "--profile"};
+    CHECK_FALSE(parse_run_id_args(dangling, true).has_value());
+  }
+
+  SECTION("a flag-looking token never becomes the run id") {
+    std::vector<std::string> const flagish{"--bogus"};
+    CHECK_FALSE(parse_run_id_args(flagish, true).has_value());
+  }
+}
+
 TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the same flags", "[cmd][execute][cli][6486]") {
   // The catalog (task 6486, D18) is a DESCRIPTION built separately from
   // `parse_run_args`; nothing stops the two drifting except this case. Both
@@ -308,6 +347,9 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   CHECK(catalog.contains(R"("command":"planar-execute run")"));
   CHECK(catalog.contains(R"("command":"planar-execute schema")"));
   CHECK(catalog.contains(R"("command":"planar-execute submit")"));
+  CHECK(catalog.contains(R"("command":"planar-execute status")"));
+  CHECK(catalog.contains(R"("command":"planar-execute cancel")"));
+  CHECK(catalog.contains(R"("command":"planar-execute host status")"));
   // Single line, no trailing newline: the write site appends exactly one.
   CHECK_FALSE(catalog.contains('\n'));
 
@@ -318,11 +360,13 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
     auto const end   = catalog.find('"', start);
     advertised.emplace_back(catalog.substr(start, end - start));
   }
-  // Five on `run`, `profile show`'s `--profile` and `--json`, and `submit`'s
-  // `--input` and `--profile` (task 6485 added `--engine` and the `profile`
-  // verb; task 6494 `--profile`; task 6504 `submit`). `--profile` appears
-  // twice because two verbs declare it, and both parsers are checked below.
-  REQUIRE(advertised.size() == 9);
+  // Five on `run`; `profile show`'s `--profile` and `--json`; `submit`'s
+  // `--input` and `--profile`; and `--profile`/`--json` on each of `status`,
+  // `cancel` and `host status` (task 6485 added `--engine` and the `profile`
+  // verb; 6494 `--profile`; 6504 `submit`; 6506 the inspection verbs).
+  // Repeats are counted, because each declaring verb is a separate promise
+  // and every one of them is checked below.
+  REQUIRE(advertised.size() == 15);
   for (auto const& flag : advertised) {
     INFO("advertised flag not accepted by its parser: " << flag);
     if (flag == "--profile") {
@@ -336,6 +380,11 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
       auto const                     submit_parsed = parse_submit_args(submitted);
       REQUIRE(submit_parsed.has_value());
       CHECK(submit_parsed->profile == "work");
+      // And the shape `status`/`cancel`/`host status` share.
+      std::vector<std::string> const inspected{"--profile", "work"};
+      auto const                     inspect_parsed = parse_run_id_args(inspected, false);
+      REQUIRE(inspect_parsed.has_value());
+      CHECK(inspect_parsed->profile == "work");
       continue;
     }
     if (flag == "--input") {
@@ -350,6 +399,10 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
       auto const                     parsed = parse_profile_args(profile);
       REQUIRE(parsed.has_value());
       CHECK(parsed->json);
+      std::vector<std::string> const inspected{"--json"};
+      auto const                     inspect_parsed = parse_run_id_args(inspected, false);
+      REQUIRE(inspect_parsed.has_value());
+      CHECK(inspect_parsed->json);
       continue;
     }
     std::vector<std::string> args{"wf.lua", "--phase", "p"};

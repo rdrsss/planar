@@ -146,6 +146,19 @@ export struct submit_args {
 /// @return The parsed arguments, or unset when the shape is wrong.
 export auto parse_submit_args(std::span<const std::string> args) -> std::optional<submit_args>;
 
+/// @brief What `parse_run_id_args` produces — the shape `status`/`cancel` share.
+export struct run_id_args {
+  std::string run_id;              ///< The run; empty is legal for `status`, refused for `cancel`.
+  std::string profile = "default"; ///< Execution profile whose daemon owns the run.
+  bool        json    = false;     ///< Render machine-readable output.
+};
+
+/// @brief Parse the arguments `status` and `cancel` share.
+/// @param args The tokens after the verb.
+/// @param run_id_required Whether an absent run id is a usage failure.
+/// @return The parsed arguments, or unset when the shape is wrong.
+export auto parse_run_id_args(std::span<const std::string> args, bool run_id_required) -> std::optional<run_id_args>;
+
 export enum class verb : std::uint8_t {
   none,    ///< No arguments at all: usage, exit 2.
   help,    ///< `--help` / `-h` / `help`: usage, exit 0.
@@ -153,6 +166,9 @@ export enum class verb : std::uint8_t {
   schema,  ///< The `schema` verb: the JSON catalog on stdout, exit 0 (task 6486).
   profile, ///< The `profile` verb: the resolved engine on stdout (task 6485).
   submit,  ///< The `submit` verb: start a bundle run on the profile's daemon (task 6504).
+  status,  ///< The `status` verb: one run, or the profile's daemon when no run is named (task 6506).
+  cancel,  ///< The `cancel` verb: stop a run this client's profile admitted (task 6506).
+  host,    ///< The `host` verb: `host status`, who is serving this profile (task 6506).
   unknown, ///< Anything else: "unknown verb" + usage, exit 2.
 };
 

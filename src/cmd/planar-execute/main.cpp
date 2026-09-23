@@ -121,6 +121,141 @@ auto translate(const planar::cmd::execute::call_result& answer) -> planar::cmd::
                            .message_ = answer.message_};
 }
 
+/// @brief Render one run as the operator or a script reads it.
+auto render_run(const planar::cmd::execute::run_view& run, bool json) -> std::string {
+  if (json) {
+    return std::format(R"({{"run_id":"{}","status":"{}","terminal":{},"sequence":{},"result":{},"error":{}}})"
+                       "\n",
+                       run.run_id_, run.status_, run.terminal_ ? "true" : "false", run.sequence_,
+                       run.result_json_.empty() ? "null" : run.result_json_, run.error_json_.empty() ? "null" : run.error_json_);
+  }
+  std::string text = std::format("run:      {}\nstatus:   {}\nsequence: {}\n", run.run_id_, run.status_, run.sequence_);
+  if (!run.result_json_.empty()) {
+    text += std::format("result:   {}\n", run.result_json_);
+  }
+  if (!run.error_json_.empty()) {
+    text += std::format("error:    {}\n", run.error_json_);
+  }
+  return text;
+}
+
+/// @brief Resolve a profile and reach its daemon WITHOUT starting one.
+///
+/// `status`, `cancel` and `host status` are inspection verbs: a daemon that is
+/// not running is an answer, not a reason to start one. Only `submit` spawns.
+struct reached_host {
+  planar::cmd::execute::profile     profile_;
+  planar::cmd::execute::host_layout layout_;
+  bool                              serving_{};
+};
+
+auto reach_host(std::string_view profile_name) -> std::expected<reached_host, std::string> {
+  namespace ex        = planar::cmd::execute;
+  auto const resolved = resolve_named_profile(profile_name);
+  if (!resolved.has_value()) {
+    return std::unexpected(resolved.error());
+  }
+  const auto layout = ex::layout_for(*resolved);
+  return reached_host{.profile_ = *resolved, .layout_ = layout, .serving_ = ex::probe_socket(layout.socket_.c_str())};
+}
+
+/// @brief Run one `status`: a named run, or the profile's daemon.
+auto status_run(const planar::cmd::execute::run_id_args& asked) -> int {
+  namespace ex = planar::cmd::execute;
+  auto reached = reach_host(asked.profile);
+  if (!reached.has_value()) {
+    std::cerr << "planar-execute: " << reached.error() << '\n';
+    return 1;
+  }
+  if (asked.run_id.empty()) {
+    // No run named: report the profile itself. A down daemon is a legitimate
+    // answer here, so this exits 0 either way.
+    if (asked.json) {
+      std::cout << std::format(R"({{"profile":"{}","state_dir":"{}","socket":"{}","serving":{}}})"
+                               "\n",
+                               reached->profile_.name, reached->profile_.state_dir, reached->layout_.socket_.string(),
+                               reached->serving_ ? "true" : "false");
+    } else {
+      std::cout << std::format("profile:   {}\nstate_dir: {}\nsocket:    {}\nserving:   {}\n", reached->profile_.name,
+                               reached->profile_.state_dir, reached->layout_.socket_.string(), reached->serving_ ? "yes" : "no");
+    }
+    return 0;
+  }
+  if (!reached->serving_) {
+    std::cerr << std::format("planar-execute: no daemon is serving profile '{}'; nothing to read a run from\n", asked.profile);
+    return 1;
+  }
+  auto answer = ex::fetch_run(reached->layout_.socket_.c_str(), asked.run_id.c_str());
+  if (answer.outcome_ != ex::call_outcome::ok) {
+    std::cerr << "planar-execute: " << answer.message_ << '\n';
+    return 1;
+  }
+  std::cout << render_run(answer.run_, asked.json);
+  return 0;
+}
+
+/// @brief Run one `cancel`: stop a run this profile's principal admitted.
+auto cancel_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
+  namespace ex = planar::cmd::execute;
+  auto reached = reach_host(asked.profile);
+  if (!reached.has_value()) {
+    std::cerr << "planar-execute: " << reached.error() << '\n';
+    return 1;
+  }
+  if (!reached->serving_) {
+    // Nothing is running it, so there is nothing to stop. Said plainly rather
+    // than as a transport error.
+    std::cerr << std::format("planar-execute: no daemon is serving profile '{}'; the run is not executing\n", asked.profile);
+    return 1;
+  }
+  // Read first: the control carries the caller's optimistic cursor over the
+  // run's history, and quoting a stale one would refuse a cancel for a reason
+  // that has nothing to do with the operator's intent.
+  auto current = ex::fetch_run(reached->layout_.socket_.c_str(), asked.run_id.c_str());
+  if (current.outcome_ != ex::call_outcome::ok) {
+    std::cerr << "planar-execute: " << current.message_ << '\n';
+    return 1;
+  }
+  auto cancelled = ex::cancel_run(reached->layout_.socket_.c_str(), asked.run_id.c_str(), current.run_.sequence_);
+  if (cancelled.outcome_ != ex::call_outcome::ok) {
+    std::cerr << "planar-execute: " << cancelled.message_ << '\n';
+    return 1;
+  }
+  std::cout << render_run(cancelled.run_, asked.json);
+  return 0;
+}
+
+/// @brief Run one `host status`: who is serving this profile.
+auto host_status(const planar::cmd::execute::run_id_args& asked) -> int {
+  namespace ex = planar::cmd::execute;
+  auto reached = reach_host(asked.profile);
+  if (!reached.has_value()) {
+    std::cerr << "planar-execute: " << reached.error() << '\n';
+    return 1;
+  }
+  const auto record   = ex::read_endpoint_record(reached->layout_);
+  const auto recorded = ex::recorded_tuple(reached->layout_);
+  if (asked.json) {
+    std::cout << std::format(
+        R"({{"profile":"{}","serving":{},"pid":{},"socket_target":"{}","protocol_version":"{}","daemon_build":"{}"}})"
+        "\n",
+        reached->profile_.name, reached->serving_ ? "true" : "false", record ? record->pid_ : 0,
+        record ? record->socket_target_ : std::string{}, record ? record->protocol_version_ : std::string{},
+        recorded ? recorded->daemon_build_ : std::string{});
+    return 0;
+  }
+  std::cout << std::format("profile:  {}\nserving:  {}\n", reached->profile_.name, reached->serving_ ? "yes" : "no");
+  if (record) {
+    std::cout << std::format("pid:      {}\nendpoint: {}\nprotocol: {}\n", record->pid_, record->socket_target_,
+                             record->protocol_version_);
+  }
+  if (recorded) {
+    std::cout << std::format("daemon:   {}\nbundle:   {}\n", recorded->daemon_build_,
+                             recorded->bundle_digest_.empty() ? std::string{"<none>"} : recorded->bundle_digest_);
+  }
+  return 0;
+}
+
 /// @brief Run one `submit`: ensure the profile's daemon, check identity, start and follow.
 /// @param asked The parsed arguments.
 /// @return The process exit code.
@@ -281,6 +416,47 @@ auto main(int argc, char** argv) -> int {
       break;
     }
     code = submit_run(*asked);
+    break;
+  }
+
+  case planar::cmd::execute::verb::status: {
+    auto const asked = planar::cmd::execute::parse_run_id_args(std::span{args}.subspan(2), false);
+    if (!asked.has_value()) {
+      print_usage();
+      code = 2;
+      break;
+    }
+    code = status_run(*asked);
+    break;
+  }
+
+  case planar::cmd::execute::verb::cancel: {
+    auto const asked = planar::cmd::execute::parse_run_id_args(std::span{args}.subspan(2), true);
+    if (!asked.has_value()) {
+      print_usage();
+      code = 2;
+      break;
+    }
+    code = cancel_run_verb(*asked);
+    break;
+  }
+
+  case planar::cmd::execute::verb::host: {
+    // `host` has exactly one subcommand today; anything else is a usage error
+    // rather than a silently ignored token.
+    auto const rest = std::span{args}.subspan(2);
+    if (rest.empty() || rest[0] != "status") {
+      print_usage();
+      code = 2;
+      break;
+    }
+    auto const asked = planar::cmd::execute::parse_run_id_args(rest.subspan(1), false);
+    if (!asked.has_value() || !asked->run_id.empty()) {
+      print_usage();
+      code = 2;
+      break;
+    }
+    code = host_status(*asked);
     break;
   }
 
