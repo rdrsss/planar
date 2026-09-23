@@ -14,6 +14,8 @@ subprocess.
 
 from __future__ import annotations
 
+import json
+
 # Default Claude tool allowlist (task 6850 default). `--permission-mode
 # dontAsk` suppresses the interactive prompt and denies anything not already
 # permitted, so a case that needs a wider surface (e.g. `Workflow`, `Agent` --
@@ -59,6 +61,84 @@ class UnknownToolError(ValueError):
     def __init__(self, tool: str):
         self.tool = tool
         super().__init__(f"unknown Claude tool in allowed_tools: {tool}")
+
+
+class ToolSurfaceDriftError(ValueError):
+    """Raised when a case declares a tool the live host does not expose.
+
+    Distinct from `UnknownToolError`, which is the prepare-time TYPO check
+    against the static registry. This one is the post-run DRIFT check: the
+    name was on record and still passed validation, but the host that
+    actually ran never offered it, so the allowlist entry was inert and
+    whatever the case meant to permit was silently not permitted.
+    """
+
+    def __init__(self, missing: "list[str]", live: "frozenset[str]"):
+        self.missing = sorted(missing)
+        self.live = live
+        super().__init__(
+            "case declares tool(s) the live host did not expose: "
+            + ", ".join(self.missing)
+            + "; live surface: "
+            + ", ".join(sorted(live))
+        )
+
+
+def extract_live_tool_surface(raw_transcript: str) -> "frozenset[str] | None":
+    """Return the tool names the host enumerated in its `system/init` event.
+
+    Claude's stream-json protocol opens every session with
+    `{"type": "system", "subtype": "init", ..., "tools": [...]}` (Planar
+    artifact 622 observed the shape). That list is the host's REAL tool
+    surface for the run, and any live or lifecycle run has already paid for
+    it -- reading it back costs nothing extra.
+
+    Returns `None` when the transcript carries no init event (a non-Claude
+    vendor, or a transcript shape that predates this). Callers treat `None`
+    as "nothing to reconcile", never as "no drift".
+    """
+    for line in raw_transcript.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "system" or event.get("subtype") != "init":
+            continue
+        tools = event.get("tools")
+        if isinstance(tools, list) and all(isinstance(t, str) for t in tools):
+            return frozenset(tools)
+    return None
+
+
+def reconcile_tool_surface(
+    declared: "list[str] | tuple[str, ...]", live: "frozenset[str] | None"
+) -> "frozenset[str]":
+    """Reconcile a case's declared allowlist against the live tool surface.
+
+    Raises `ToolSurfaceDriftError` for a declared tool the host never
+    exposed -- the failure mode `validate_allowed_tools` CANNOT catch,
+    because the name is on the static registry and a typo check only
+    rejects names that are not. The motivating case is a RENAME: `Task`
+    stays spelled correctly in `KNOWN_CLAUDE_TOOLS` and in every case file
+    long after the host has renamed it, so every prepare-time check passes
+    while the allowlist entry silently does nothing.
+
+    Returns the names in `KNOWN_CLAUDE_TOOLS` that the live host did not
+    expose. Those are reported, never raised on: the registry legitimately
+    spans hosts, versions and configurations, so a registry entry missing
+    from one session is information, not a defect.
+    """
+    if live is None:
+        return frozenset()
+    missing = [tool for tool in declared if tool not in live]
+    if missing:
+        raise ToolSurfaceDriftError(missing, live)
+    return frozenset(KNOWN_CLAUDE_TOOLS - live)
 
 
 def validate_allowed_tools(tools: "list[str] | tuple[str, ...]") -> None:
