@@ -595,9 +595,10 @@ set(PLANAR_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE PATH
 # Centurion becomes Planar's workflow engine (decision 1007); `planar-execute`
 # links `centurion::client` and NOTHING else of it (tech-spec D1, guarded by
 # cmake/architecture.cmake). Pinned to Centurion's first pre-release tag,
-# v0.1.0-alpha.2 (commit de452b3c), which adds the configured bundle directory
-# (Centurion ADR-0055, task 6718) the M2 client needs to get Planar's Lua into
-# a stock daemon at all.
+# v0.1.0-alpha.3 (commit 22ba2e1d). alpha.2 added the configured bundle
+# directory (Centurion ADR-0055) so a stock daemon can INSTALL Planar's Lua;
+# alpha.3 adds ADR-0056 so it also EVALUATES it — without the registry that
+# decision composes, a bundle run is admitted and then never runs.
 #
 # First-party, so external/, not vendor/: the archive is Centurion's WHOLE
 # source tree including its own committed vendor/ (gRPC 1.82.1, BoringSSL,
@@ -621,12 +622,12 @@ set(PLANAR_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE PATH
 # second reader: cmake/centurion.cmake writes it to centurion-pin.env in the
 # build tree, which install.sh hands to scripts/install-centuriond.sh so the
 # installed daemon is built from, and records, this exact pin.
-set(PLANAR_CENTURION_TAG "v0.1.0-alpha.2")
-set(PLANAR_CENTURION_VERSION "0.1.0-alpha.2")
-set(PLANAR_CENTURION_COMMIT "de452b3c0ac24d1a7940b5d501d907f103ded8d5")
+set(PLANAR_CENTURION_TAG "v0.1.0-alpha.3")
+set(PLANAR_CENTURION_VERSION "0.1.0-alpha.3")
+set(PLANAR_CENTURION_COMMIT "22ba2e1dc8c00a6d59587012c4b0b07b456db33f")
 set(PLANAR_CENTURION_URL
   "https://codeload.github.com/rdrsss/centurion/tar.gz/refs/tags/${PLANAR_CENTURION_TAG}")
-set(PLANAR_CENTURION_SHA256 "25850fb7f90c3363c1e041d5b7a112f88681d159709571ab77fac788e8454e53")
+set(PLANAR_CENTURION_SHA256 "67d09df31e5eed06ae0372c07727b34fe8d06c567a32254d4fcf0bd15eb23eeb")
 if(DEFINED ENV{GITHUB_TOKEN})
   set(_planar_centurion_auth HTTP_HEADER "Authorization: Bearer $ENV{GITHUB_TOKEN}")
 else()
