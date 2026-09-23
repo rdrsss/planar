@@ -932,9 +932,9 @@ planar plan next <plan-id> [--include-claimed] [--include-stale] [--json]
 | `available` | Task status `todo` (or `doing` without an active claim) and ready to be pulled. |
 | `claimed` | Task has an active unexpired entry in `agent_work_claims`. |
 | `stale` | Task has a `stale` claim, or an `active` claim whose lease has expired without a reconcile pass. |
-| `blocked` | Task status `blocked`. |
+| `blocked` | Task status `blocked`, OR a `todo`/`doing` task carrying an outbound `depends-on` edge (`entity_links`) to a task whose status is not `done`/`cancelled`. |
 
-Same underlying selector as `planar-agent peek`, but returns the FULL bucket breakdown instead of just picking one row. This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
+Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (task 6841 / decision D6): a task with an open `depends-on` blocker never lands in `available`. This is a distinct query from `pull`/`peek`'s selector — not literally shared code — but the two agree on which rows are dispatchable, so an operator reading `plan next` sees the same eligibility an agent's `pull`/`peek` would (task 6898). `plan next` additionally folds a routing-packet-readiness gate into `blocked` that `pull`/`peek` do NOT apply (they exclude on the dependency clause only, per D6). This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
 
 **Options:**
 
