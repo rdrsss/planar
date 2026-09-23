@@ -101,6 +101,33 @@ auto submit_bundle_run(const char* socket_path, const char* bundle_name, const c
   return call_result{.outcome_ = call_outcome::ok, .run_ = view_of(started->run_), .message_ = {}};
 }
 
+auto follow_run(const char* socket_path, const char* run_id, std::uint64_t after_sequence, const follow_sink& sink)
+    -> call_result {
+  const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path),
+                                           // Long: a follow is meant to sit on a run that may take minutes.
+                                           .deadline_ = std::chrono::hours{1}};
+  std::stop_source                  stopping;
+  auto                              followed = centurion::client::watch_run(
+      target, run_id, after_sequence,
+      [&sink, &stopping](const centurion::client::run_event& event) -> std::expected<void, centurion::client::error> {
+        const bool keep_going = sink(follow_event{.sequence_       = event.sequence_,
+                                                  .event_type_     = event.event_type_,
+                                                  .payload_json_   = event.payload_json_,
+                                                  .current_status_ = event.current_status_.value_or(std::string{})});
+        if (!keep_going) {
+          // Stopping the FOLLOW, never the run: Centurion is explicit that a
+          // client disconnect is not cancellation.
+          stopping.request_stop();
+        }
+        return {};
+      },
+      stopping.get_token());
+  if (!followed) {
+    return call_result{.outcome_ = classify(followed.error()), .run_ = {}, .message_ = followed.error().message_};
+  }
+  return call_result{.outcome_ = call_outcome::ok, .run_ = {}, .message_ = {}};
+}
+
 auto cancel_run(const char* socket_path, const char* run_id, std::uint64_t expected_sequence) -> call_result {
   const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{15}};
   auto                              outcome = centurion::client::cancel_run(

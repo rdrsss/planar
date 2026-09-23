@@ -330,6 +330,29 @@ TEST_CASE("the inspection verbs share one argument shape, and refuse the wrong o
     CHECK_FALSE(parse_run_id_args(dangling, true).has_value());
   }
 
+  SECTION("--from takes a whole number, and nothing else") {
+    std::vector<std::string> const ok{"run-a", "--from", "42"};
+    auto const                     parsed = parse_run_id_args(ok, true);
+    REQUIRE(parsed.has_value());
+    CHECK(*parsed->from == 42U);
+
+    // A trailing-garbage cursor is a typo. Accepting its prefix would follow
+    // from a position the caller never named.
+    std::vector<std::string> const garbage{"run-a", "--from", "42abc"};
+    CHECK_FALSE(parse_run_id_args(garbage, true).has_value());
+    std::vector<std::string> const empty{"run-a", "--from", ""};
+    CHECK_FALSE(parse_run_id_args(empty, true).has_value());
+    std::vector<std::string> const negative{"run-a", "--from", "-1"};
+    CHECK_FALSE(parse_run_id_args(negative, true).has_value());
+  }
+
+  SECTION("no --from means the remembered cursor, not zero") {
+    std::vector<std::string> const none{"run-a"};
+    auto const                     parsed = parse_run_id_args(none, true);
+    REQUIRE(parsed.has_value());
+    CHECK_FALSE(parsed->from.has_value());
+  }
+
   SECTION("a flag-looking token never becomes the run id") {
     std::vector<std::string> const flagish{"--bogus"};
     CHECK_FALSE(parse_run_id_args(flagish, true).has_value());
@@ -350,6 +373,7 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   CHECK(catalog.contains(R"("command":"planar-execute status")"));
   CHECK(catalog.contains(R"("command":"planar-execute cancel")"));
   CHECK(catalog.contains(R"("command":"planar-execute host status")"));
+  CHECK(catalog.contains(R"("command":"planar-execute follow")"));
   // Single line, no trailing newline: the write site appends exactly one.
   CHECK_FALSE(catalog.contains('\n'));
 
@@ -363,10 +387,11 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   // Five on `run`; `profile show`'s `--profile` and `--json`; `submit`'s
   // `--input` and `--profile`; and `--profile`/`--json` on each of `status`,
   // `cancel` and `host status` (task 6485 added `--engine` and the `profile`
-  // verb; 6494 `--profile`; 6504 `submit`; 6506 the inspection verbs).
-  // Repeats are counted, because each declaring verb is a separate promise
-  // and every one of them is checked below.
-  REQUIRE(advertised.size() == 15);
+  // verb; 6494 `--profile`; 6504 `submit`; 6506 the inspection verbs; 6505
+  // `follow`'s `--from` and `--profile`). Repeats are counted, because each
+  // declaring verb is a separate promise and every one of them is checked
+  // below.
+  REQUIRE(advertised.size() == 17);
   for (auto const& flag : advertised) {
     INFO("advertised flag not accepted by its parser: " << flag);
     if (flag == "--profile") {
@@ -385,6 +410,14 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
       auto const                     inspect_parsed = parse_run_id_args(inspected, false);
       REQUIRE(inspect_parsed.has_value());
       CHECK(inspect_parsed->profile == "work");
+      continue;
+    }
+    if (flag == "--from") {
+      std::vector<std::string> const followed{"run-a", "--from", "42"};
+      auto const                     parsed = parse_run_id_args(followed, true);
+      REQUIRE(parsed.has_value());
+      REQUIRE(parsed->from.has_value());
+      CHECK(*parsed->from == 42U);
       continue;
     }
     if (flag == "--input") {

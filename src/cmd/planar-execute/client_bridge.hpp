@@ -70,6 +70,31 @@ struct call_result {
 [[nodiscard]] auto submit_bundle_run(const char* socket_path, const char* bundle_name, const char* input_json,
                                      const char* request_id) -> call_result;
 
+/// @brief One committed event, as the follow surface hands it over.
+struct follow_event {
+  std::uint64_t sequence_{};     ///< Committed event sequence; the cursor advances to this.
+  std::string   event_type_;     ///< Stable discriminator, e.g. `workflow.completed`.
+  std::string   payload_json_;   ///< Canonical JSON of the event.
+  std::string   current_status_; ///< Daemon-supplied status on a transition event; empty otherwise.
+};
+
+/// @brief Per-event callback; returning false stops the follow cleanly.
+using follow_sink = std::function<bool(const follow_event&)>;
+
+/// @brief Follow one run's committed events from an exclusive cursor.
+///
+/// Centurion's own `watch_run` owns the reconnect: a transient transport
+/// failure resumes strictly after the last ACCEPTED event, and no event is
+/// delivered twice. An empty history is a normal stream, not an error, so a
+/// run that has committed nothing yet is followed rather than refused.
+/// @param socket_path The daemon's Unix socket.
+/// @param run_id The run to follow.
+/// @param after_sequence Exclusive cursor; 0 replays from the beginning.
+/// @param sink Invoked once per committed event.
+/// @return How the follow ended.
+[[nodiscard]] auto follow_run(const char* socket_path, const char* run_id, std::uint64_t after_sequence, const follow_sink& sink)
+    -> call_result;
+
 /// @brief Ask the daemon to cancel one run, with no console session.
 ///
 /// Centurion authorizes this against the run's admission row (its ADR-0057):

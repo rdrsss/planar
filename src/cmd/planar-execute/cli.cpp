@@ -25,6 +25,7 @@ auto usage_text() -> std::string_view {
          "  planar-execute status [<run-id>] [--profile <name>] [--json]\n"
          "  planar-execute cancel <run-id> [--profile <name>] [--json]\n"
          "  planar-execute host status [--profile <name>] [--json]\n"
+         "  planar-execute follow <run-id> [--from <cursor>] [--profile <name>]\n"
          "  planar-execute schema\n"
          "\n"
          "Loads the workflow in the sandbox, registers the deterministic host\n"
@@ -44,6 +45,19 @@ auto parse_run_id_args(std::span<const std::string> args, bool run_id_required) 
       parsed.profile = args[++index];
     } else if (token == "--json") {
       parsed.json = true;
+    } else if (token == "--from") {
+      if (index + 1 >= args.size()) {
+        return std::nullopt;
+      }
+      const auto&   value        = args[++index];
+      std::uint64_t cursor       = 0;
+      const auto [stop, failure] = std::from_chars(value.data(), value.data() + value.size(), cursor);
+      // The WHOLE token must be the number: "12abc" is a typo, and accepting
+      // its prefix would silently follow from somewhere the caller never named.
+      if (failure != std::errc{} || stop != value.data() + value.size()) {
+        return std::nullopt;
+      }
+      parsed.from = cursor;
     } else if (token.starts_with("-")) {
       return std::nullopt;
     } else if (saw_run_id) {
@@ -217,6 +231,9 @@ auto classify(std::span<const std::string> argv) -> verb {
   }
   if (token == "host") {
     return verb::host;
+  }
+  if (token == "follow") {
+    return verb::follow;
   }
   return verb::unknown;
 }

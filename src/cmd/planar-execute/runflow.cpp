@@ -35,6 +35,73 @@ auto make_request_id(std::chrono::system_clock::time_point now, std::uint64_t en
                      static_cast<std::uint16_t>(low >> 48U), low & 0xFFFFFFFFFFFFULL);
 }
 
+auto cursor_path(const std::filesystem::path& state_dir, std::string_view run_id) -> std::filesystem::path {
+  // One file per run under a directory of its own, so a cursor never collides
+  // with the daemon's own state and a run id that is not a valid filename
+  // cannot escape it.
+  std::string safe;
+  safe.reserve(run_id.size());
+  for (const char character : run_id) {
+    safe.push_back((std::isalnum(static_cast<unsigned char>(character)) != 0 || character == '-') ? character : '_');
+  }
+  return state_dir / "cursors" / std::format("{}.cursor", safe);
+}
+
+auto read_cursor(const std::filesystem::path& path) -> std::uint64_t {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return 0;
+  }
+  // A failed extraction writes 0 (std::num_get since C++11), which is exactly
+  // the answer this wants, so there is no separate check to make here — one
+  // would be a branch no input can reach. Trailing garbage after digits reads
+  // the digits, which can only yield a SMALLER cursor than was written, and
+  // small replays; it cannot skip.
+  std::uint64_t sequence = 0;
+  in >> sequence;
+  return sequence;
+}
+
+auto write_cursor(const std::filesystem::path& path, std::uint64_t sequence) -> std::expected<void, std::string> {
+  std::error_code failure;
+  std::filesystem::create_directories(path.parent_path(), failure);
+  if (failure) {
+    return std::unexpected(std::format("cannot create {}: {}", path.parent_path().string(), failure.message()));
+  }
+  // Written through a temporary and renamed: a cursor truncated by a crash
+  // mid-write would read as 0 and replay, which is safe, but a PARTIAL number
+  // could read as a smaller-or-larger value, and larger silently skips.
+  const auto staged = path.string() + ".new";
+  {
+    std::ofstream out(staged, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      return std::unexpected(std::format("cannot write {}", staged));
+    }
+    out << sequence << '\n';
+    if (!out) {
+      return std::unexpected(std::format("cannot write {}", staged));
+    }
+  }
+  std::filesystem::rename(staged, path, failure);
+  if (failure) {
+    return std::unexpected(std::format("cannot replace {}: {}", path.string(), failure.message()));
+  }
+  return {};
+}
+
+auto accept_follow_event(std::ostream& out, const std::filesystem::path& cursor_file, std::uint64_t sequence,
+                         std::string_view event_type, std::string_view current_status, std::string_view payload_json)
+    -> std::expected<void, std::string> {
+  // One JSON object per line: a stream a script reads incrementally, which a
+  // single accumulated document could not be.
+  out << std::format(R"({{"sequence":{},"event":"{}","status":{},"payload":{}}})"
+                     "\n",
+                     sequence, event_type, current_status.empty() ? std::string{"null"} : std::format("\"{}\"", current_status),
+                     payload_json.empty() ? std::string{"null"} : std::string(payload_json))
+      << std::flush;
+  return write_cursor(cursor_file, sequence);
+}
+
 auto result_payload(const run_projection& run) -> std::string {
   return run.result_json_.empty() ? "{}" : run.result_json_;
 }

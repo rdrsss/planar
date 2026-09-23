@@ -64,6 +64,12 @@ auto catalog_json() -> std::string {
   add_string(*host_status, "--profile", "Execution profile to inspect; default: default.");
   host_status->add_flag("--json", "Render the report as JSON.");
 
+  CLI::App* follow = root.add_subcommand("follow", "Stream a run's committed events, resuming from the cursor this "
+                                                   "client last accepted.");
+  follow->add_option("run-id")->required()->description("Run to follow.");
+  add_string(*follow, "--from", "Exclusive cursor to resume after; default: the remembered one, else the beginning.");
+  add_string(*follow, "--profile", "Execution profile whose daemon owns the run; default: default.");
+
   CLI::App* profile = root.add_subcommand("profile", "Inspect the resolved execution profile.");
   CLI::App* show    = profile->add_subcommand("show", "Print the resolved engine and the provenance that chose it "
                                                       "(flag, env, config file, or embedded default) on stdout.");

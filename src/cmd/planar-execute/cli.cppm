@@ -148,9 +148,10 @@ export auto parse_submit_args(std::span<const std::string> args) -> std::optiona
 
 /// @brief What `parse_run_id_args` produces — the shape `status`/`cancel` share.
 export struct run_id_args {
-  std::string run_id;              ///< The run; empty is legal for `status`, refused for `cancel`.
-  std::string profile = "default"; ///< Execution profile whose daemon owns the run.
-  bool        json    = false;     ///< Render machine-readable output.
+  std::string                  run_id;              ///< The run; empty is legal for `status`, refused for `cancel`.
+  std::string                  profile = "default"; ///< Execution profile whose daemon owns the run.
+  bool                         json    = false;     ///< Render machine-readable output.
+  std::optional<std::uint64_t> from;                ///< `follow --from`: an explicit cursor overriding the remembered one.
 };
 
 /// @brief Parse the arguments `status` and `cancel` share.
@@ -169,6 +170,7 @@ export enum class verb : std::uint8_t {
   status,  ///< The `status` verb: one run, or the profile's daemon when no run is named (task 6506).
   cancel,  ///< The `cancel` verb: stop a run this client's profile admitted (task 6506).
   host,    ///< The `host` verb: `host status`, who is serving this profile (task 6506).
+  follow,  ///< The `follow` verb: stream a run's events from a durable cursor (task 6505).
   unknown, ///< Anything else: "unknown verb" + usage, exit 2.
 };
 

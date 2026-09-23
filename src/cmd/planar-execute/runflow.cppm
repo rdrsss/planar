@@ -117,6 +117,50 @@ inline constexpr int max_submit_attempts = 3;
                                      std::string_view request_id, std::chrono::milliseconds budget = std::chrono::minutes{30})
     -> flow_outcome;
 
+/// @brief Where one run's follow cursor is remembered, under the profile's state.
+/// @param state_dir The profile's state directory.
+/// @param run_id The run being followed.
+/// @return The cursor file's path.
+[[nodiscard]] auto cursor_path(const std::filesystem::path& state_dir, std::string_view run_id) -> std::filesystem::path;
+
+/// @brief Read one run's remembered cursor.
+///
+/// An absent, empty or unparseable cursor reads as 0 — replay from the
+/// beginning. That is the SAFE direction: re-reading committed history is
+/// free, while trusting a damaged cursor would silently skip events the
+/// caller never saw.
+/// @param path The cursor file.
+/// @return The last accepted sequence, or 0.
+[[nodiscard]] auto read_cursor(const std::filesystem::path& path) -> std::uint64_t;
+
+/// @brief Remember one run's cursor, after the event at that sequence was accepted.
+///
+/// Written after the event is HANDED OVER, never before: a cursor ahead of
+/// what the caller actually saw is the one failure this file cannot recover
+/// from, because the skipped events are not re-delivered.
+/// @param path The cursor file.
+/// @param sequence The last accepted sequence.
+/// @return Nothing, or a diagnostic.
+[[nodiscard]] auto write_cursor(const std::filesystem::path& path, std::uint64_t sequence) -> std::expected<void, std::string>;
+
+/// @brief Hand one followed event to the caller, then advance the cursor.
+///
+/// The ORDER is the contract. The event is written and flushed first; only a
+/// caller that has actually received it may have the cursor moved past it,
+/// because a cursor ahead of what was delivered skips events the daemon never
+/// re-delivers. A cursor that cannot be written is therefore reported AFTER
+/// the event has been emitted, never instead of it.
+/// @param out Where the event line goes.
+/// @param cursor_file The run's cursor file.
+/// @param sequence The event's committed sequence.
+/// @param event_type The event discriminator.
+/// @param current_status Daemon-supplied status, or empty.
+/// @param payload_json Canonical JSON of the event, or empty.
+/// @return Nothing, or why the cursor could not be advanced.
+[[nodiscard]] auto accept_follow_event(std::ostream& out, const std::filesystem::path& cursor_file, std::uint64_t sequence,
+                                       std::string_view event_type, std::string_view current_status,
+                                       std::string_view payload_json) -> std::expected<void, std::string>;
+
 /// @brief Render what a completed run leaves on stdout.
 /// @param run The terminal run.
 /// @return The payload: its result JSON, or `{}` when it carried none.

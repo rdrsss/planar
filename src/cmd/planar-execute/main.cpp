@@ -256,6 +256,46 @@ auto host_status(const planar::cmd::execute::run_id_args& asked) -> int {
   return 0;
 }
 
+/// @brief Run one `follow`: stream a run's events, remembering the cursor.
+auto follow_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
+  namespace ex = planar::cmd::execute;
+  auto reached = reach_host(asked.profile);
+  if (!reached.has_value()) {
+    std::cerr << "planar-execute: " << reached.error() << '\n';
+    return 1;
+  }
+  if (!reached->serving_) {
+    std::cerr << std::format("planar-execute: no daemon is serving profile '{}'; nothing to follow\n", asked.profile);
+    return 1;
+  }
+
+  const auto cursor_file = ex::cursor_path(reached->layout_.home_, asked.run_id);
+  // An explicit --from wins: it is the operator saying "ignore what I saw
+  // before". Otherwise resume after the last event this client ACCEPTED.
+  const auto start = asked.from.value_or(ex::read_cursor(cursor_file));
+
+  std::string cursor_error;
+  auto        followed =
+      ex::follow_run(reached->layout_.socket_.c_str(), asked.run_id.c_str(), start, [&](const ex::follow_event& event) {
+        if (auto accepted = ex::accept_follow_event(std::cout, cursor_file, event.sequence_, event.event_type_,
+                                                    event.current_status_, event.payload_json_);
+            !accepted.has_value()) {
+          cursor_error = accepted.error();
+          return false;
+        }
+        return true;
+      });
+  if (!cursor_error.empty()) {
+    std::cerr << "planar-execute: " << cursor_error << '\n';
+    return 1;
+  }
+  if (followed.outcome_ != ex::call_outcome::ok) {
+    std::cerr << "planar-execute: " << followed.message_ << '\n';
+    return 1;
+  }
+  return 0;
+}
+
 /// @brief Run one `submit`: ensure the profile's daemon, check identity, start and follow.
 /// @param asked The parsed arguments.
 /// @return The process exit code.
@@ -457,6 +497,17 @@ auto main(int argc, char** argv) -> int {
       break;
     }
     code = host_status(*asked);
+    break;
+  }
+
+  case planar::cmd::execute::verb::follow: {
+    auto const asked = planar::cmd::execute::parse_run_id_args(std::span{args}.subspan(2), true);
+    if (!asked.has_value()) {
+      print_usage();
+      code = 2;
+      break;
+    }
+    code = follow_run_verb(*asked);
     break;
   }
 

@@ -182,6 +182,84 @@ TEST_CASE("a run still going when the budget expires is not called failed", "[ex
   CHECK(outcome.run_.run_id_ == "run-1");
 }
 
+TEST_CASE("a follow cursor survives the client that wrote it", "[execute][runflow][cursor]") {
+  using planar::cmd::execute::cursor_path;
+  using planar::cmd::execute::read_cursor;
+  using planar::cmd::execute::write_cursor;
+
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("planar-cursor-{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::filesystem::create_directories(root);
+  const auto path = cursor_path(root, "01930000-0000-7000-8000-00000000000a");
+
+  SECTION("an unseen run resumes from the beginning") {
+    // 0 means "replay everything". Re-reading committed history is free;
+    // guessing forward would skip events the caller never saw.
+    CHECK(read_cursor(path) == 0);
+  }
+
+  SECTION("what was accepted is what is resumed after") {
+    REQUIRE(write_cursor(path, 7).has_value());
+    CHECK(read_cursor(path) == 7);
+    REQUIRE(write_cursor(path, 12).has_value());
+    CHECK(read_cursor(path) == 12);
+  }
+
+  SECTION("a damaged cursor replays rather than skipping") {
+    // The safe direction, in both damaged shapes. Non-numeric content reads as
+    // 0 (a failed extraction writes 0), and digits followed by garbage read
+    // the digits — a SMALLER cursor than was written, which replays. Neither
+    // can produce a larger one, which is the only value that would skip events
+    // the daemon never re-delivers.
+    REQUIRE(write_cursor(path, 9).has_value());
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << "not-a-number";
+    CHECK(read_cursor(path) == 0);
+
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << "4garbage";
+    CHECK(read_cursor(path) == 4);
+  }
+
+  SECTION("an event is delivered even when its cursor cannot be advanced") {
+    // The ordering claim, made falsifiable. If the cursor were written first,
+    // a failure there would swallow the event — and the daemon never
+    // re-delivers it. So the failure must arrive AFTER the event is out.
+    using planar::cmd::execute::accept_follow_event;
+    const auto blocked = root / "cursors";
+    std::filesystem::create_directories(root);
+    // A FILE where the cursor directory must be: creating the directory fails.
+    std::filesystem::remove_all(blocked);
+    std::ofstream(blocked) << "not a directory";
+
+    std::ostringstream out;
+    auto               accepted =
+        accept_follow_event(out, blocked / "run.cursor", 3, "workflow.completed", "RUN_STATUS_COMPLETED", R"({"ok":true})");
+    CHECK_FALSE(accepted.has_value());
+    // The event still reached the caller.
+    CHECK(out.str().contains(R"("sequence":3)"));
+    CHECK(out.str().contains("workflow.completed"));
+    std::filesystem::remove(blocked);
+  }
+
+  SECTION("a delivered event advances the cursor to its sequence") {
+    using planar::cmd::execute::accept_follow_event;
+    std::ostringstream out;
+    REQUIRE(accept_follow_event(out, path, 5, "workflow.running", "RUN_STATUS_RUNNING", {}).has_value());
+    CHECK(read_cursor(path) == 5);
+    CHECK(out.str().contains(R"("status":"RUN_STATUS_RUNNING")"));
+    // An absent payload renders as null rather than as empty text.
+    CHECK(out.str().contains(R"("payload":null)"));
+  }
+
+  SECTION("a run id that is not a filename cannot escape the cursor directory") {
+    const auto escaped = cursor_path(root, "../../etc/passwd");
+    CHECK(escaped.parent_path() == root / "cursors");
+    CHECK(escaped.filename().string().find('/') == std::string::npos);
+  }
+
+  std::error_code ignored;
+  std::filesystem::remove_all(root, ignored);
+}
+
 TEST_CASE("a generated request id is UUIDv7-shaped and time-ordered", "[execute][runflow]") {
   const auto base  = std::chrono::system_clock::time_point{std::chrono::milliseconds{1'790'000'000'000}};
   const auto first = make_request_id(base, 0x0123456789abcdefULL);
