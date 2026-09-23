@@ -1,0 +1,4 @@
+.eval/
+.codex/
+.claude/
+__pycache__/

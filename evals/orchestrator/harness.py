@@ -18,6 +18,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -31,6 +32,21 @@ import vendors
 ROOT = Path(__file__).resolve().parents[2]
 CASES_DIR = ROOT / "evals" / "orchestrator" / "cases"
 FIXTURES_DIR = ROOT / "evals" / "orchestrator" / "fixtures"
+# Task 6858: the pinned-archive vendoring root for lifecycle fixture
+# repositories that are NOT authored directly under FIXTURES_DIR (e.g.
+# `foreign-flat`) -- see `evals/fixtures/vendor_archive.py` and
+# `verify_and_extract_vendored_fixture`. Deliberately a distinct directory
+# from FIXTURES_DIR: FIXTURES_DIR holds the harness-facing control surface
+# (control.sh, the planar-agent wrapper, fixture.json) every lifecycle
+# fixture needs, while VENDORED_FIXTURES_DIR holds only the pinned
+# archive/digest pairs the vendoring rule requires, mirroring the
+# project-root `vendor/` split from authored source.
+VENDORED_FIXTURES_DIR = ROOT / "evals" / "fixtures"
+# The complete set of lifecycle fixture directory names `setup.fixture` may
+# name (task 6858 widens this from the single hardcoded "controlled-classic"
+# literal). Checked here rather than via filesystem existence so
+# `validate_case` stays a pure function of the case document.
+LIFECYCLE_FIXTURES = {"controlled-classic", "foreign-flat"}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # Textual fallback for hosts that report a limit as prose rather than as a
 # structured event. Deliberately does NOT match the bare token `rate_limit`:
@@ -397,6 +413,11 @@ class LifecycleContext:
     # retained-artifact grading path (task.after.json) never has to reach
     # into a list.
     task_ids: list[str] = field(default_factory=list)
+    # Task 6858: the fixture's own test-runner argv, read from
+    # `<fixture>/fixture.json` (see `load_fixture_manifest`) rather than
+    # `collect_lifecycle_artifacts` hardcoding `["make", "test"]` -- the
+    # foreign-flat fixture runs `["./run-tests"]` instead.
+    test_command: list[str] = field(default_factory=lambda: ["make", "test"])
 
 
 def pass_line(message: str) -> None:
@@ -903,7 +924,7 @@ def validate_case(path: Path, case: Any) -> None:
             invalid("controlled-classic lifecycle adapter is required")
         if (
             not isinstance(setup, dict)
-            or setup.get("fixture") != "controlled-classic"
+            or setup.get("fixture") not in LIFECYCLE_FIXTURES
             or not isinstance(setup.get("specialist_scenario"), str)
         ):
             invalid("controlled lifecycle fixture setup is required")
@@ -983,6 +1004,18 @@ def validate_case(path: Path, case: Any) -> None:
                     )
         if not post_state.get("file_value"):
             invalid("lifecycle cases require expected.post_state to set: file_value")
+        # Task 6858: `post_state.file_path` is optional and CASE-level (not
+        # fixture-level, unlike `fixture.json`'s `test_command`) -- it names
+        # the repo-relative acceptance marker `file_value` above is checked
+        # against, defaulting to `src/value.txt` (controlled-classic's own
+        # path, preserved byte-for-byte for every case that omits it) so
+        # the foreign-flat fixture's case can point at its own `STATUS.txt`
+        # instead.
+        file_path = post_state.get("file_path")
+        if file_path is not None and (
+            not isinstance(file_path, str) or not file_path
+        ):
+            invalid("expected.post_state.file_path must be a non-empty string")
         # Task 6855: `post_state.claim_rows` is optional -- most lifecycle
         # cases claim exactly once and never need it -- but when a case
         # declares it (lapsed-claim recovery: pull, let the lease lapse,
@@ -2132,16 +2165,99 @@ def write_claude_agent(
     )
 
 
+def load_fixture_manifest(fixture_root: Path) -> dict[str, Any]:
+    """Read `<fixture>/fixture.json` (task 6858): every controlled lifecycle
+    fixture names its own test-runner argv here rather than
+    `collect_lifecycle_artifacts` hardcoding `make test` -- the foreign-flat
+    fixture runs `./run-tests` instead. Fixture-level (not case-level)
+    because the invocation shape is a property of the repository layout
+    every case against that fixture shares; `expected.post_state.file_path`
+    stays case-level (see `grade_lifecycle_artifacts`) because the
+    acceptance marker a *case* checks is a property of the scenario, not
+    the fixture.
+
+    A fixture directory with no `fixture.json` at all (none existed before
+    task 6858) defaults to controlled-classic's own historical invocation,
+    so this is additive for every pre-existing fixture.
+    """
+    manifest_path = fixture_root / "fixture.json"
+    if not manifest_path.is_file():
+        return {"test_command": ["make", "test"]}
+    manifest = read_json(manifest_path)
+    if not isinstance(manifest, dict):
+        raise EvalFailure(f"malformed fixture manifest: {manifest_path}")
+    manifest.setdefault("test_command", ["make", "test"])
+    return manifest
+
+
+def verify_and_extract_vendored_fixture(
+    manifest: dict[str, Any], dest_parent: Path, case_id: str
+) -> Path:
+    """Resolve a fixture's `repo/` tree from a pinned local archive (task
+    6858), verifying its SHA256 BEFORE ever handing the bytes to `tarfile`
+    -- a tampered or stale archive must fail closed on the digest
+    mismatch, not get quietly unpacked.
+
+    `archive_path`/`digest_path` resolve a LOCAL committed pair under
+    `evals/fixtures/` today (`evals/fixtures/vendor_archive.py` produces
+    them deterministically from `evals/fixtures/<name>.src/repo/`).
+    Swapping this for a pinned remote release URL later is a one-line
+    change to these two lines (fetch-then-verify instead of
+    read-then-verify) -- the verification and extraction below is
+    unchanged either way.
+    """
+    archive_name = manifest["archive"]
+    archive_path = VENDORED_FIXTURES_DIR / f"{archive_name}.tar.gz"
+    digest_path = VENDORED_FIXTURES_DIR / f"{archive_name}.sha256"
+    if not archive_path.is_file() or not digest_path.is_file():
+        raise EvalFailure(
+            f"{case_id} references missing vendored fixture archive: {archive_name}"
+        )
+    archive_bytes = archive_path.read_bytes()
+    actual_digest = hashlib.sha256(archive_bytes).hexdigest()
+    expected_digest = digest_path.read_text(encoding="utf-8").strip().split()[0]
+    if actual_digest != expected_digest:
+        raise EvalFailure(
+            f"{case_id}: vendored fixture archive {archive_name} failed SHA256 "
+            f"verification (expected {expected_digest}, got {actual_digest})"
+        )
+    with tarfile.open(archive_path, "r:gz") as tar:
+        tar.extractall(dest_parent, filter="data")
+    extracted_repo = dest_parent / "repo"
+    if not extracted_repo.is_dir():
+        raise EvalFailure(
+            f"{case_id}: vendored fixture archive {archive_name} did not contain "
+            "a repo/ tree"
+        )
+    return extracted_repo
+
+
 def prepare_lifecycle_fixture(
     case_path: Path, case: dict[str, Any], options: Options, label: str
 ) -> LifecycleContext:
     case_id = case["id"]
     fixture_root = FIXTURES_DIR / case["setup"]["fixture"]
-    if not (fixture_root / "repo").is_dir():
-        raise EvalFailure(f"{case_id} references missing fixture: {fixture_root}")
-    artifacts = create_artifacts(case_id, label, options.results_dir)
-    repo = artifacts / "repo"
-    shutil.copytree(fixture_root / "repo", repo)
+    manifest = load_fixture_manifest(fixture_root)
+    if "archive" in manifest:
+        # Task 6858: the foreign-flat fixture's `repo/` is never committed
+        # directly -- it is vendored (see verify_and_extract_vendored_fixture)
+        # -- so extraction happens into a throwaway temp dir, then copied
+        # into the artifact tree exactly like the local-repo path below,
+        # keeping `artifacts`/`repo` construction identical either way.
+        with tempfile.TemporaryDirectory(prefix="planar-eval-vendor-") as vendor_tmp:
+            vendor_repo = verify_and_extract_vendored_fixture(
+                manifest, Path(vendor_tmp), case_id
+            )
+            artifacts = create_artifacts(case_id, label, options.results_dir)
+            repo = artifacts / "repo"
+            shutil.copytree(vendor_repo, repo)
+    else:
+        repo_source = fixture_root / "repo"
+        if not repo_source.is_dir():
+            raise EvalFailure(f"{case_id} references missing fixture: {fixture_root}")
+        artifacts = create_artifacts(case_id, label, options.results_dir)
+        repo = artifacts / "repo"
+        shutil.copytree(repo_source, repo)
     arena_root = artifacts / "arena"
     env = arena.make_arena(arena_root)
     arena.assert_isolated(env, arena_root)
@@ -2388,7 +2504,15 @@ def prepare_lifecycle_fixture(
             },
         )
         return LifecycleContext(
-            case_path, case, artifacts, repo, env, plan_id, task_id, task_ids
+            case_path,
+            case,
+            artifacts,
+            repo,
+            env,
+            plan_id,
+            task_id,
+            task_ids,
+            manifest["test_command"],
         )
     except Exception as exc:
         if isinstance(exc, (EvalFailure, EvalBlocked)) and exc.artifacts is None:
@@ -2876,7 +3000,10 @@ def collect_lifecycle_artifacts(
         env=env,
     )
     write_json(artifacts / "claims.after.json", claim_state)
-    test_result = run_command(["make", "test"], cwd=repo, env=env, check=False)
+    # Task 6858: the fixture's own test-runner argv (see
+    # `load_fixture_manifest`), not a hardcoded `make test` -- the
+    # foreign-flat fixture runs `./run-tests` instead.
+    test_result = run_command(context.test_command, cwd=repo, env=env, check=False)
     write_text(
         artifacts / "fixture-test.txt", test_result.stdout + test_result.stderr
     )
@@ -2906,13 +3033,21 @@ def grade_lifecycle_artifacts(
     case: dict[str, Any], artifact_dir: Path, options: Options
 ) -> None:
     case_id = case["id"]
+    # Task 6858: `post_state.file_path` (default `src/value.txt`,
+    # controlled-classic's own historical path) names the repo-relative
+    # acceptance marker THIS case checks -- read once, up front, so both
+    # the required-artifact check below and the value comparison further
+    # down agree on the same path.
+    file_path = case.get("expected", {}).get("post_state", {}).get(
+        "file_path", "src/value.txt"
+    )
     required = [
         "events.normalized.json",
         "task.after.json",
         "claims.after.json",
         "fixture-test.txt",
         "fixture-test.json",
-        "repo/src/value.txt",
+        f"repo/{file_path}",
     ]
     missing = [name for name in required if not (artifact_dir / name).is_file()]
     if missing:
@@ -3106,7 +3241,7 @@ def grade_lifecycle_artifacts(
                 options,
                 f"claim row count was {len(claim_rows)}, expected {expected_claim_rows}",
             )
-    actual_value = (artifact_dir / "repo" / "src" / "value.txt").read_text(
+    actual_value = (artifact_dir / "repo" / file_path).read_text(
         encoding="utf-8"
     ).strip()
     expected_value = post_state["file_value"]

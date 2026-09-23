@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -2661,6 +2663,53 @@ class RequiredPostStateTests(unittest.TestCase):
         case["expected"]["post_state"]["claim_rows"] = 0
         harness.validate_case(Path("<probe>"), case)
 
+    def test_file_path_must_be_a_non_empty_string(self) -> None:
+        # Task 6858: post_state.file_path is type-checked whenever a case
+        # declares it -- CALL-SITE test for validate_case's own check (a
+        # no-op there would let a number, a bool, or an empty string
+        # silently reach grade_lifecycle_artifacts, which would then
+        # either crash on a non-string path or read the wrong file).
+        for bad_path in ("", 5, 5.0, True, False):
+            case = minimal_valid_lifecycle_case("bad-file-path")
+            case["expected"] = dict(case["expected"])
+            case["expected"]["post_state"] = dict(case["expected"]["post_state"])
+            case["expected"]["post_state"]["file_path"] = bad_path
+            with self.assertRaisesRegex(
+                harness.EvalFailure,
+                "expected.post_state.file_path must be a non-empty string",
+            ):
+                harness.validate_case(Path("<probe>"), case)
+
+    def test_file_path_absent_is_valid(self) -> None:
+        case = minimal_valid_lifecycle_case("no-file-path")
+        harness.validate_case(Path("<probe>"), case)
+
+    def test_file_path_custom_string_is_valid(self) -> None:
+        case = minimal_valid_lifecycle_case("good-file-path")
+        case["expected"] = dict(case["expected"])
+        case["expected"]["post_state"] = dict(case["expected"]["post_state"])
+        case["expected"]["post_state"]["file_path"] = "STATUS.txt"
+        harness.validate_case(Path("<probe>"), case)
+
+    def test_unknown_fixture_name_fails_validation(self) -> None:
+        # Task 6858 widened setup.fixture from a single hardcoded literal
+        # ("controlled-classic") to a small known set -- an unregistered
+        # fixture name must still fail closed, not silently resolve to a
+        # missing directory later inside prepare_lifecycle_fixture.
+        case = minimal_valid_lifecycle_case("unknown-fixture-probe")
+        case["setup"] = dict(case["setup"])
+        case["setup"]["fixture"] = "not-a-real-fixture"
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "controlled lifecycle fixture setup"
+        ):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_foreign_flat_fixture_name_is_valid(self) -> None:
+        case = minimal_valid_lifecycle_case("foreign-flat-name-probe")
+        case["setup"] = dict(case["setup"])
+        case["setup"]["fixture"] = "foreign-flat"
+        harness.validate_case(Path("<probe>"), case)
+
     def test_duplicate_task_slug_fails_validation(self) -> None:
         case = minimal_valid_lifecycle_case("dup-slug-probe")
         case["tasks"] = [
@@ -2893,6 +2942,276 @@ class ClaimRowsPostStateGradingTests(unittest.TestCase):
             harness.grade_lifecycle_artifacts(
                 lifecycle_case(), artifact_dir, lifecycle_options()
             )
+
+
+class FilePathPostStateGradingTests(unittest.TestCase):
+    """Task 6858: `expected.post_state.file_path` names the repo-relative
+    acceptance marker `file_value` is checked against, defaulting to
+    `src/value.txt` (controlled-classic's own historical path) so every
+    pre-existing case grades byte-identically without declaring it.
+    """
+
+    def file_path_case(self, file_path: str | None) -> dict[str, object]:
+        case = lifecycle_case()
+        case["expected"] = dict(case["expected"])
+        case["expected"]["post_state"] = dict(case["expected"]["post_state"])
+        if file_path is not None:
+            case["expected"]["post_state"]["file_path"] = file_path
+        return case
+
+    def test_default_file_path_still_reads_src_value_txt(self) -> None:
+        # Regression: a case that never declares file_path must keep
+        # reading src/value.txt exactly as before task 6858.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            harness.grade_lifecycle_artifacts(
+                self.file_path_case(None), artifact_dir, lifecycle_options()
+            )
+
+    def test_call_site_reads_the_declared_file_path_not_the_default(self) -> None:
+        # CALL-SITE test: a mutant that ignored post_state.file_path and
+        # kept reading the hardcoded src/value.txt would find NOTHING at
+        # that path in this artifact set (the default src/value.txt is
+        # deleted below) and fail on "artifact set is incomplete", not
+        # reach the value comparison this test actually exercises.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            (artifact_dir / "repo" / "src" / "value.txt").unlink()
+            harness.write_text(artifact_dir / "repo" / "STATUS.txt", "approved\n")
+            harness.grade_lifecycle_artifacts(
+                self.file_path_case("STATUS.txt"), artifact_dir, lifecycle_options()
+            )
+
+    def test_wrong_value_at_the_declared_file_path_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            (artifact_dir / "repo" / "src" / "value.txt").unlink()
+            harness.write_text(artifact_dir / "repo" / "STATUS.txt", "pending\n")
+            with self.assertRaisesRegex(
+                harness.EvalFailure,
+                "fixture value was pending, expected approved",
+            ):
+                harness.grade_lifecycle_artifacts(
+                    self.file_path_case("STATUS.txt"),
+                    artifact_dir,
+                    lifecycle_options(),
+                )
+
+    def test_missing_declared_file_path_fails_naming_it_in_required_set(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            with self.assertRaisesRegex(harness.EvalFailure, "STATUS.txt"):
+                harness.grade_lifecycle_artifacts(
+                    self.file_path_case("STATUS.txt"),
+                    artifact_dir,
+                    lifecycle_options(),
+                )
+
+
+def write_test_archive(dest_dir: Path, name: str, files: dict[str, str]) -> str:
+    """Build a small, real tar.gz under `repo/` at `dest_dir/<name>.tar.gz`
+    and return its SHA256 hex digest -- a minimal stand-in for
+    `evals/fixtures/vendor_archive.py`'s deterministic build, used only to
+    exercise `verify_and_extract_vendored_fixture`'s digest check without
+    depending on the real committed foreign-flat archive.
+    """
+    tar_path = dest_dir / f"{name}.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        root_info = tarfile.TarInfo(name="repo")
+        root_info.type = tarfile.DIRTYPE
+        root_info.mode = 0o755
+        tar.addfile(root_info)
+        for rel, content in files.items():
+            data = content.encode("utf-8")
+            info = tarfile.TarInfo(name=f"repo/{rel}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return hashlib.sha256(tar_path.read_bytes()).hexdigest()
+
+
+class VendoredFixtureArchiveTests(unittest.TestCase):
+    """Task 6858: `verify_and_extract_vendored_fixture` must verify a
+    pinned archive's SHA256 BEFORE ever handing its bytes to `tarfile` --
+    a tampered or stale archive must fail closed on the digest mismatch,
+    not get quietly unpacked. These drive the real function (and, for the
+    call-site case, the real `prepare_lifecycle_fixture` caller) against a
+    real tar.gz built by `write_test_archive` above, never a hand-built
+    events list.
+    """
+
+    def test_matching_digest_extracts_the_repo_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            vendor_dir = Path(raw_tmp) / "vendor"
+            vendor_dir.mkdir()
+            digest = write_test_archive(
+                vendor_dir, "probe", {"marker.txt": "hello\n"}
+            )
+            (vendor_dir / "probe.sha256").write_text(
+                f"{digest}  probe.tar.gz\n", encoding="utf-8"
+            )
+            dest_parent = Path(raw_tmp) / "dest"
+            dest_parent.mkdir()
+            with mock.patch.object(harness, "VENDORED_FIXTURES_DIR", vendor_dir):
+                repo = harness.verify_and_extract_vendored_fixture(
+                    {"archive": "probe"}, dest_parent, "probe-case"
+                )
+            self.assertEqual(repo, dest_parent / "repo")
+            self.assertEqual(
+                (repo / "marker.txt").read_text(encoding="utf-8"), "hello\n"
+            )
+
+    def test_call_site_fails_closed_on_a_tampered_archive_digest_mismatch(
+        self,
+    ) -> None:
+        # CALL-SITE test: a no-op'd verification (skip straight to
+        # tarfile.extractall) would silently unpack this archive -- it is
+        # a perfectly well-formed tar.gz, just not the one the pinned
+        # digest names. The guard must raise BEFORE extraction, naming
+        # both digests, not merely raise for some unrelated reason.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            vendor_dir = Path(raw_tmp) / "vendor"
+            vendor_dir.mkdir()
+            pinned_digest = write_test_archive(
+                vendor_dir, "tampered", {"marker.txt": "original\n"}
+            )
+            # Overwrite the archive bytes with a DIFFERENT, still-valid
+            # tar.gz after pinning the digest -- simulates a swapped or
+            # corrupted archive whose content still parses.
+            write_test_archive(vendor_dir, "tampered", {"marker.txt": "swapped\n"})
+            (vendor_dir / "tampered.sha256").write_text(
+                f"{pinned_digest}  tampered.tar.gz\n", encoding="utf-8"
+            )
+            dest_parent = Path(raw_tmp) / "dest"
+            dest_parent.mkdir()
+            with mock.patch.object(harness, "VENDORED_FIXTURES_DIR", vendor_dir):
+                with self.assertRaisesRegex(
+                    harness.EvalFailure, "failed SHA256 verification"
+                ) as ctx:
+                    harness.verify_and_extract_vendored_fixture(
+                        {"archive": "tampered"}, dest_parent, "probe-case"
+                    )
+            self.assertIn(pinned_digest, str(ctx.exception))
+            # Nothing must have been extracted -- the guard raises before
+            # tarfile is ever opened.
+            self.assertFalse((dest_parent / "repo").exists())
+
+    def test_prepare_lifecycle_fixture_fails_closed_on_a_tampered_archive(
+        self,
+    ) -> None:
+        # Same shape as the guard-level test above, but driving the REAL
+        # `prepare_lifecycle_fixture` caller end to end (fixture_root ->
+        # fixture.json -> verify_and_extract_vendored_fixture), proving
+        # the call site is actually reached on the real lifecycle-fixture
+        # prepare path, not just that the guard function itself works in
+        # isolation.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            fixtures_dir = Path(raw_tmp) / "fixtures"
+            fixture_root = fixtures_dir / "tampered-fixture"
+            fixture_root.mkdir(parents=True)
+            (fixture_root / "fixture.json").write_text(
+                json.dumps({"test_command": ["true"], "archive": "tampered"}),
+                encoding="utf-8",
+            )
+            vendor_dir = Path(raw_tmp) / "vendor"
+            vendor_dir.mkdir()
+            pinned_digest = write_test_archive(
+                vendor_dir, "tampered", {"marker.txt": "original\n"}
+            )
+            write_test_archive(vendor_dir, "tampered", {"marker.txt": "swapped\n"})
+            (vendor_dir / "tampered.sha256").write_text(
+                f"{pinned_digest}  tampered.tar.gz\n", encoding="utf-8"
+            )
+            case = {
+                "id": "tampered-archive-probe",
+                "tasks": [{"slug": "task-one", "title": "Task one"}],
+                "setup": {
+                    "fixture": "tampered-fixture",
+                    "specialist_scenario": "success",
+                },
+            }
+            options = harness.Options(
+                mode="lifecycle-fixture",
+                vendor="",
+                surface="agent",
+                case_filter=None,
+                results_dir=Path(raw_tmp) / "results",
+                keep=True,
+            )
+            with mock.patch.object(
+                harness, "FIXTURES_DIR", fixtures_dir
+            ), mock.patch.object(harness, "VENDORED_FIXTURES_DIR", vendor_dir):
+                with self.assertRaisesRegex(
+                    harness.EvalFailure, "failed SHA256 verification"
+                ):
+                    harness.prepare_lifecycle_fixture(
+                        Path("<tampered-archive-probe>"), case, options, "fixture"
+                    )
+
+    def test_missing_archive_or_digest_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            vendor_dir = Path(raw_tmp) / "vendor"
+            vendor_dir.mkdir()
+            dest_parent = Path(raw_tmp) / "dest"
+            dest_parent.mkdir()
+            with mock.patch.object(harness, "VENDORED_FIXTURES_DIR", vendor_dir):
+                with self.assertRaisesRegex(
+                    harness.EvalFailure, "missing vendored fixture archive"
+                ):
+                    harness.verify_and_extract_vendored_fixture(
+                        {"archive": "does-not-exist"}, dest_parent, "probe-case"
+                    )
+
+    def test_fixture_manifest_without_archive_key_uses_local_repo_dir(
+        self,
+    ) -> None:
+        # controlled-classic (and any future locally-authored fixture)
+        # never declares "archive" in fixture.json -- load_fixture_manifest
+        # must not require one.
+        manifest = harness.load_fixture_manifest(
+            harness.FIXTURES_DIR / "controlled-classic"
+        )
+        self.assertNotIn("archive", manifest)
+        self.assertEqual(manifest["test_command"], ["make", "test"])
+
+    def test_foreign_flat_fixture_manifest_names_the_vendored_archive(
+        self,
+    ) -> None:
+        manifest = harness.load_fixture_manifest(
+            harness.FIXTURES_DIR / "foreign-flat"
+        )
+        self.assertEqual(manifest["archive"], "foreign-flat")
+        self.assertEqual(manifest["test_command"], ["./run-tests"])
+
+    def test_committed_foreign_flat_archive_matches_a_fresh_regeneration(
+        self,
+    ) -> None:
+        # Task 6858 fixture-freshness check: evals/fixtures/foreign-flat.tar.gz
+        # (and its .sha256) must always be exactly what
+        # evals/fixtures/vendor_archive.py would produce from
+        # evals/fixtures/foreign-flat.src/repo/ right now. An edit to the
+        # source tree that forgets to re-run vendor_archive.py fails here,
+        # not silently ships a stale archive.
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(harness.ROOT / "evals" / "fixtures" / "vendor_archive.py"),
+                "foreign-flat",
+                "--check",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"stdout={result.stdout!r} stderr={result.stderr!r}",
+        )
 
 
 class ReplayDriverRegistryTests(unittest.TestCase):
@@ -3556,6 +3875,94 @@ class ArtifactFormatObservedLogGateTest(unittest.TestCase):
             self.assertEqual(links["relationship"], "depends-on")
             self.assertEqual(str(links["from_id"]), context.task_ids[1])
             self.assertEqual(str(links["to_id"]), context.task_ids[0])
+
+    def foreign_flat_options(self, results_root: str) -> harness.Options:
+        return harness.Options(
+            mode="lifecycle-fixture",
+            vendor="",
+            surface="agent",
+            case_filter=None,
+            results_dir=Path(results_root),
+            keep=True,
+        )
+
+    def test_prepare_lifecycle_fixture_extracts_the_vendored_foreign_flat_archive(
+        self,
+    ) -> None:
+        # Task 6858: foreign-flat's repo/ is never committed directly --
+        # it is resolved from the pinned evals/fixtures/foreign-flat.tar.gz
+        # archive (verify_and_extract_vendored_fixture). This drives the
+        # REAL extraction path (not a synthetic repo tree) and asserts the
+        # fixture's own deliberately-un-Planar-like conventions actually
+        # landed: no Makefile, no AGENTS.md, its own run-tests entry point,
+        # and the fixture manifest's test_command threaded onto the
+        # context.
+        case = {
+            "id": "foreign-flat-extract-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "setup": {"fixture": "foreign-flat", "specialist_scenario": "success"},
+        }
+        with tempfile.TemporaryDirectory(
+            prefix="planar-eval-foreign-flat-extract-"
+        ) as results_root:
+            options = self.foreign_flat_options(results_root)
+            context = harness.prepare_lifecycle_fixture(
+                harness.ROOT
+                / "evals"
+                / "orchestrator"
+                / "cases"
+                / "foreign-flat-lifecycle-success.json",
+                case,
+                options,
+                "fixture",
+            )
+            self.assertEqual(context.test_command, ["./run-tests"])
+            self.assertTrue((context.repo / "run-tests").is_file())
+            self.assertTrue((context.repo / "textkit.py").is_file())
+            self.assertTrue((context.repo / "CONTRIBUTING.rst").is_file())
+            self.assertFalse((context.repo / "Makefile").exists())
+            self.assertFalse((context.repo / "AGENTS.md").exists())
+            self.assertFalse((context.repo / "docs").exists())
+
+    def test_collect_lifecycle_artifacts_runs_the_fixtures_own_test_command(
+        self,
+    ) -> None:
+        # CALL-SITE test (task 6858): collect_lifecycle_artifacts must run
+        # `context.test_command`, not a hardcoded `["make", "test"]`. The
+        # foreign-flat repo carries no Makefile at all, so a mutant that
+        # reverted the call site to the hardcoded literal would fail with
+        # make's own "no makefile found" error rather than ever reaching
+        # the fixture's real unittest output asserted below -- this test
+        # names that real output, not just "some failure happened".
+        case = {
+            "id": "foreign-flat-collect-probe",
+            "tasks": [{"slug": "task-one", "title": "Task one"}],
+            "setup": {"fixture": "foreign-flat", "specialist_scenario": "success"},
+        }
+        with tempfile.TemporaryDirectory(
+            prefix="planar-eval-foreign-flat-collect-"
+        ) as results_root:
+            options = self.foreign_flat_options(results_root)
+            context = harness.prepare_lifecycle_fixture(
+                harness.ROOT
+                / "evals"
+                / "orchestrator"
+                / "cases"
+                / "foreign-flat-lifecycle-success.json",
+                case,
+                options,
+                "fixture",
+            )
+            # The driver never ran, so the seeded defect in textkit.py is
+            # still unfixed and the fixture's own ./run-tests genuinely
+            # fails -- collect must surface that as "fixture tests failed".
+            with self.assertRaisesRegex(harness.EvalFailure, "fixture tests failed"):
+                harness.collect_lifecycle_artifacts(context, options)
+            test_output = (context.artifacts / "fixture-test.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Ran 5 tests", test_output)
+            self.assertIn("FAILED", test_output)
 
 
 class RateLimitDetectionTest(unittest.TestCase):
