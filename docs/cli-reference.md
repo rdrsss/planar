@@ -2780,7 +2780,8 @@ row, including `body`, is left untouched) and is reported as a named `field_edit
 (`path`, `entity_kind`, `entity_id`, `field` — `"rationale"` or `"answer"`) rather than an
 undifferentiated `pending` count. This is a PER-ENTITY refusal, like `conflict` — it does not
 abort the rest of the run. The fix is to make the edit through the CLI instead of the file:
-`planar decision edit <id> --rationale ...` or `planar question answer <id> ...`, then pull
+`planar decision edit <id>` (the editor-first flow — the rationale is part of what it opens)
+or `planar question answer <id> ...`, then pull
 again. `--json` always includes `field_edit_refused` (a count) and `field_edit_refusals` (the
 list); the default text summary prints nothing extra when the count is zero.
 
