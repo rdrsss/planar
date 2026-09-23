@@ -103,19 +103,26 @@ planar_binary(planar_execute
     handlers/run/command.cppm
     handlers/profile/command.cppm
     handlers/schema/command.cppm
-    host.cppm
-    compat.cppm
-    runflow.cppm
+    handlers/host/host.cppm
+    handlers/submit/compat.cppm
+    handlers/submit/runflow.cppm
+    handlers/shared/client.cppm
+    handlers/submit/command.cppm
+    handlers/status/command.cppm
+    handlers/cancel/command.cppm
+    handlers/follow/command.cppm
+    handlers/host/command.cppm
   SOURCES
     handlers/shared/cli.cpp
     handlers/schema/catalog.cpp
     handlers/run/engine.cpp
     handlers/shared/selector.cpp
     handlers/profile/profile.cpp
-    host.cpp
-    compat.cpp
-    runflow.cpp
-    client_bridge.cpp
+    handlers/host/host.cpp
+    handlers/submit/compat.cpp
+    handlers/submit/runflow.cpp
+    handlers/shared/client.cpp
+    handlers/shared/client_bridge.cpp
   DEPENDS
     cliapp
     engine_execute
