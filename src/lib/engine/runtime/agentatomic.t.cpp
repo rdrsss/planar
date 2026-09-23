@@ -825,6 +825,67 @@ TEST_CASE("a terminal verb refuses a claim held on a plan", "[agentatomic]") {
   REQUIRE(scalar_text(conn, std::format("select status from agent_work_claims where id = {}", held->id)) == "active");
 }
 
+TEST_CASE("release succeeds on a plan claim, unlike complete (task 6890)", "[agentatomic][6890]") {
+  // Decision, task 6890: the orchestrator ritual takes a plan-level claim
+  // (`planar-agent claim --entity plan:<id> --role orchestrator`), but
+  // every terminal verb refused it with `ClaimNotOnTask`, so a plan claim
+  // could only end by lease expiry. `release` is now the exception --
+  // it is the graceful give-up verb and has no entity transition to
+  // perform for a non-task entity. `complete`/`fail`/`block` still
+  // refuse; only `release`'s guard changed.
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy policy;
+
+  auto const plan_status_before = scalar_text(conn, std::format("select status from plans where id = {}", fx.plan_id));
+
+  auto args       = basic_args(fx, fx.plan_id);
+  args.kind       = aa::entity_kind::plan;
+  auto const held = atomic::claim_entity(conn, args, true, policy.bind());
+  REQUIRE(held.has_value());
+
+  auto const released = atomic::release_work(conn, held->claim_token, "handing off", policy.bind());
+  REQUIRE(released.has_value());
+  REQUIRE(released->released.status == aa::claim_status::released);
+  REQUIRE_FALSE(released->replayed);
+  REQUIRE(scalar_text(conn, std::format("select status from agent_work_claims where id = {}", held->id)) == "released");
+  // The plan's own status is untouched -- there is no task-status
+  // transition to perform for a plan claim, and this verb must not
+  // invent one.
+  REQUIRE(scalar_text(conn, std::format("select status from plans where id = {}", fx.plan_id)) == plan_status_before);
+
+  // `complete` on the SAME kind of claim still refuses -- this is the
+  // OTHER half of the decision: only `release`'s guard relaxed.
+  auto second_args       = basic_args(fx, fx.plan_id);
+  second_args.kind       = aa::entity_kind::plan;
+  auto const second_held = atomic::claim_entity(conn, second_args, true, policy.bind());
+  REQUIRE(second_held.has_value());
+  auto const refused_complete = atomic::complete_work(conn, second_held->claim_token, std::nullopt, policy.bind());
+  REQUIRE_FALSE(refused_complete.has_value());
+  REQUIRE(refused_complete.error() == aa::agent_error::claim_not_on_task);
+}
+
+TEST_CASE("release also succeeds on a plan_step claim (task 6890)", "[agentatomic][6890]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy policy;
+
+  exec(conn, std::format("insert into plan_steps (plan_id, ordinal, body, status) values ({}, 1, 'Step one', 'pending')",
+                         fx.plan_id));
+  auto const step_id = scalar_int(conn, "select id from plan_steps where plan_id = " + std::to_string(fx.plan_id));
+
+  auto args = basic_args(fx, step_id);
+  args.kind = aa::entity_kind::plan_step;
+  auto const held = atomic::claim_entity(conn, args, true, policy.bind());
+  REQUIRE(held.has_value());
+
+  auto const released = atomic::release_work(conn, held->claim_token, std::nullopt, policy.bind());
+  REQUIRE(released.has_value());
+  REQUIRE(scalar_text(conn, std::format("select status from agent_work_claims where id = {}", held->id)) == "released");
+}
+
 TEST_CASE("a terminal verb refuses an EXPIRED lease", "[agentatomic]") {
   // Status alone is not the test: the claim below is still
   // `status='active'` in the row. Only the lease has passed. A guard that

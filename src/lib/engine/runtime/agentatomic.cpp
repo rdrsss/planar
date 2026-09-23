@@ -272,38 +272,54 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
   if (held->status != aa::claim_status::active || !*live) {
     return std::unexpected(aa::agent_error::claim_not_active);
   }
+
+  // Task 6890 / decision D-6890: `release` is the one terminal verb with
+  // NO entity transition to perform on a plan/plan_step claim -- it is the
+  // graceful give-up verb, and giving up a plan-level claim needs nothing
+  // more than flipping the CLAIM to released. `complete`/`fail` still
+  // refuse `ClaimNotOnTask` unconditionally: they exist specifically to
+  // move a TASK's status, which a plan/plan_step claim has none of.
+  // `block_work` never reaches this function at all (see its own
+  // `ClaimNotOnTask` guard below). This is why a plan-level orchestrator
+  // claim used to be endable ONLY by lease expiry -- there was no verb
+  // that could terminate it deliberately.
+  std::optional<std::int64_t> plan_id;
   if (held->kind != aa::entity_kind::task) {
-    return std::unexpected(aa::agent_error::claim_not_on_task);
-  }
+    if (targs.verb != "release") {
+      return std::unexpected(aa::agent_error::claim_not_on_task);
+    }
+    // No task/plan status write, no transition-matrix check, no
+    // recompute -- there is no task row this claim covers.
+  } else {
+    auto const current = aa::current_task_status(conn, held->entity_id);
+    if (!current) {
+      return std::unexpected(current.error());
+    }
+    auto const allowed = policy.check_transition(*current, targs.task_to);
+    if (!allowed) {
+      return std::unexpected(allowed.error());
+    }
 
-  auto const current = aa::current_task_status(conn, held->entity_id);
-  if (!current) {
-    return std::unexpected(current.error());
-  }
-  auto const allowed = policy.check_transition(*current, targs.task_to);
-  if (!allowed) {
-    return std::unexpected(allowed.error());
-  }
+    // Captured BEFORE the flip, because the recompute below needs it and
+    // the claim row is about to be replaced by its released form.
+    plan_id = aa::task_plan_id(conn, held->entity_id);
 
-  // Captured BEFORE the flip, because the recompute below needs it and the
-  // claim row is about to be replaced by its released form.
-  auto const plan_id = aa::task_plan_id(conn, held->entity_id);
+    auto const flipped = set_task_status(conn, held->entity_id, targs.task_to);
+    if (!flipped) {
+      return std::unexpected(flipped.error());
+    }
 
-  auto const flipped = set_task_status(conn, held->entity_id, targs.task_to);
-  if (!flipped) {
-    return std::unexpected(flipped.error());
-  }
-
-  // Mirrors `planar.engine.planning.task`'s own terminal paths
-  // (`mark_done`, `mark_cancelled`, and `update_task` on a terminal
-  // patch): the roll-up runs immediately after the flip, in the same
-  // transaction, and only when the flip actually landed on a terminal
-  // status. `complete` is the only terminal verb this module has that
-  // does (`fail`/`release` return the task to `todo`; `block_work` never
-  // reaches this function) — task 6875.
-  if (targs.task_to == "done") {
-    if (auto const unblocked = policy.clear_unblocked_dependents(conn, held->entity_id); !unblocked) {
-      return std::unexpected(unblocked.error());
+    // Mirrors `planar.engine.planning.task`'s own terminal paths
+    // (`mark_done`, `mark_cancelled`, and `update_task` on a terminal
+    // patch): the roll-up runs immediately after the flip, in the same
+    // transaction, and only when the flip actually landed on a terminal
+    // status. `complete` is the only terminal verb this module has that
+    // does (`fail`/`release` return the task to `todo`; `block_work`
+    // never reaches this function) — task 6875.
+    if (targs.task_to == "done") {
+      if (auto const unblocked = policy.clear_unblocked_dependents(conn, held->entity_id); !unblocked) {
+        return std::unexpected(unblocked.error());
+      }
     }
   }
 
