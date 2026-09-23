@@ -3052,9 +3052,26 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
     """Task 6853: the three new guards `replay_driver_concurrent_coders`
     calls -- distinctness of concurrent claims, no busy/QueryFailed pull
     exit, the fan-in merge preceding every complete, and the epic branch
-    actually containing every lane commit. Each guard gets a CALL-SITE
-    test: a mutant that no-ops the guard's check must fail the test.
+    actually containing every lane commit.
+
+    These exercise each guard FUNCTION in isolation: they prove a guard
+    can reject the violation it exists to catch. They do NOT prove the
+    driver invokes it -- no-opping all four call sites left this class
+    green. That is what `run_concurrent_coders_negative_controls` (driven
+    from the fixture lane under `CONCURRENT_CODERS_SEEDS`) covers; keep
+    both.
+
+    `artifacts` is a per-test tmpdir, never `self.artifacts`: these
+    guards raise through `live_failure`, which WRITES `grade.json` into
+    the path it is given, so a literal placeholder creates a real
+    `<artifacts>/` directory in the repo root (caught by
+    `RealLedgerAndCwdIsolationTests`).
     """
+
+    def setUp(self) -> None:
+        self._artifacts_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._artifacts_tmp.cleanup)
+        self.artifacts = Path(self._artifacts_tmp.name)
 
     def lane_claims(self) -> list[dict[str, object]]:
         return [
@@ -3072,7 +3089,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
             harness.EvalFailure, "duplicate claim tokens"
         ):
             harness.assert_distinct_lane_claims(
-                claims, artifacts=Path("<artifacts>"), case_id="probe",
+                claims, artifacts=self.artifacts, case_id="probe",
                 options=lifecycle_options(),
             )
 
@@ -3087,13 +3104,13 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
             harness.EvalFailure, "duplicate claimed tasks"
         ):
             harness.assert_distinct_lane_claims(
-                claims, artifacts=Path("<artifacts>"), case_id="probe",
+                claims, artifacts=self.artifacts, case_id="probe",
                 options=lifecycle_options(),
             )
 
     def test_distinct_claims_pass(self) -> None:
         harness.assert_distinct_lane_claims(
-            self.lane_claims(), artifacts=Path("<artifacts>"), case_id="probe",
+            self.lane_claims(), artifacts=self.artifacts, case_id="probe",
             options=lifecycle_options(),
         )
 
@@ -3109,7 +3126,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.EvalFailure, "QueryFailed"):
             harness.assert_no_concurrent_pull_failures(
                 [(1, ok), (2, busy), (3, ok)],
-                artifacts=Path("<artifacts>"), case_id="probe",
+                artifacts=self.artifacts, case_id="probe",
                 options=lifecycle_options(),
             )
 
@@ -3117,7 +3134,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="{}", stderr="")
         harness.assert_no_concurrent_pull_failures(
             [(1, ok), (2, ok), (3, ok)],
-            artifacts=Path("<artifacts>"), case_id="probe",
+            artifacts=self.artifacts, case_id="probe",
             options=lifecycle_options(),
         )
 
@@ -3146,7 +3163,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
         ):
             harness.assert_merge_precedes_completes(
                 60.0, records, ["tok-1", "tok-2", "tok-3"],
-                artifacts=Path("<artifacts>"), case_id="probe",
+                artifacts=self.artifacts, case_id="probe",
                 options=lifecycle_options(),
             )
 
@@ -3162,7 +3179,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
         ):
             harness.assert_merge_precedes_completes(
                 60.0, records, ["tok-1", "tok-2"],
-                artifacts=Path("<artifacts>"), case_id="probe",
+                artifacts=self.artifacts, case_id="probe",
                 options=lifecycle_options(),
             )
 
@@ -3179,7 +3196,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
         ]
         harness.assert_merge_precedes_completes(
             60.0, records, ["tok-1", "tok-2"],
-            artifacts=Path("<artifacts>"), case_id="probe",
+            artifacts=self.artifacts, case_id="probe",
             options=lifecycle_options(),
         )
 
@@ -3251,7 +3268,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
             ):
                 harness.assert_epic_contains_lane_commits(
                     tmp, dict(os.environ), two_lane_epic_sha, lane_shas,
-                    artifacts=Path("<artifacts>"), case_id="probe",
+                    artifacts=self.artifacts, case_id="probe",
                     options=lifecycle_options(),
                 )
 
@@ -3261,7 +3278,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
             lane_shas, epic_sha, _two_lane_epic_sha = self.make_lane_and_epic_repo(tmp)
             harness.assert_epic_contains_lane_commits(
                 tmp, dict(os.environ), epic_sha, lane_shas,
-                artifacts=Path("<artifacts>"), case_id="probe",
+                artifacts=self.artifacts, case_id="probe",
                 options=lifecycle_options(),
             )
 
@@ -3275,7 +3292,7 @@ class ConcurrentCodersGuardTests(unittest.TestCase):
         fake_context = harness.LifecycleContext(
             case_path=Path("<probe>"),
             case=case,
-            artifacts=Path("<artifacts>"),
+            artifacts=self.artifacts,
             repo=Path("<repo>"),
             env={},
             plan_id="1",
