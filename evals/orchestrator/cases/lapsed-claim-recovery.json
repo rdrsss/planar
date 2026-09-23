@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "lapsed-claim-recovery",
+  "skill": "orchestrator",
+  "description": "A coder claims a task and finishes real work, but the lease lapses before any terminal verb runs; recovery re-claims with --no-transition (a plain claim would hit IllegalTransition, since the task is still doing) and completes atomically.",
+  "tags": [
+    "lifecycle",
+    "lapsed-claim",
+    "recovery"
+  ],
+  "tiers": [
+    "lifecycle"
+  ],
+  "tasks": [
+    {
+      "slug": "controlled-value",
+      "title": "Set the controlled fixture value to approved."
+    }
+  ],
+  "setup": {
+    "fixture": "controlled-classic",
+    "specialist_scenario": "success",
+    "plan_status": "active",
+    "strategy": "classic",
+    "isolation": "pwd",
+    "dispatch_shape": "strict",
+    "replay": "lapsed-claim"
+  },
+  "interaction": [
+    {
+      "send": "Execute with classic, pwd, strict, and no documentation phase."
+    }
+  ],
+  "lifecycle": {
+    "scenario": "controlled-classic",
+    "surface": "agent",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits strategy classic, isolation pwd, dispatch shape strict, and --no-docs. Execute the controlled task through coder and reviewer until it reaches a terminal state. Do not finalize, propagate, or archive.",
+    "timeout_seconds": 600,
+    "operator_responses": [
+      "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Continue through the controlled coder and reviewer cycle.",
+      "Use the already pre-committed strict dispatch shape and continue."
+    ]
+  },
+  "expected": {
+    "ordered_events": [
+      "claim-acquired",
+      "coder-finished",
+      "claim-acquired",
+      "task-completed"
+    ],
+    "forbidden_events": [
+      "review-approved",
+      "review-request-changes",
+      "test-coder-no-expansion",
+      "task-failed",
+      "claim-released",
+      "task-blocked",
+      "task-completed-before-review"
+    ],
+    "event_counts": {
+      "claim-acquired": 2,
+      "coder-finished": 1,
+      "task-completed": 1
+    },
+    "post_state": {
+      "task_status": "done",
+      "active_claims": 0,
+      "claim_rows": 2,
+      "file_value": "approved"
+    }
+  }
+}

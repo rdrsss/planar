@@ -927,6 +927,19 @@ def validate_case(path: Path, case: Any) -> None:
         replay = (setup or {}).get("replay", "classic")
         if replay not in REPLAY_DRIVERS:
             invalid(f"setup.replay names an unregistered driver: {replay}")
+        # Task 6856: `setup.iteration_cap` is read by `replay_driver_iteration_cap`
+        # at replay time -- the roadmap number ("aborts after the fifth")
+        # belongs in the case file, not hardcoded in the driver, so a
+        # falsifiability probe can raise it and watch the case fail on
+        # `event_counts` rather than editing Python. Optional for every
+        # other driver; type-checked whenever a case declares it.
+        iteration_cap = (setup or {}).get("iteration_cap")
+        if iteration_cap is not None and (
+            isinstance(iteration_cap, bool)
+            or not isinstance(iteration_cap, int)
+            or iteration_cap < 1
+        ):
+            invalid("setup.iteration_cap must be a positive integer")
         try:
             vendors.validate_allowed_tools(resolve_allowed_tools(lifecycle))
         except vendors.UnknownToolError as exc:
@@ -969,6 +982,20 @@ def validate_case(path: Path, case: Any) -> None:
                     )
         if not post_state.get("file_value"):
             invalid("lifecycle cases require expected.post_state to set: file_value")
+        # Task 6855: `post_state.claim_rows` is optional -- most lifecycle
+        # cases claim exactly once and never need it -- but when a case
+        # declares it (lapsed-claim recovery: pull, let the lease lapse,
+        # re-claim with --no-transition -- two rows for one task) the
+        # value must be a real count, not a truthiness-only field like
+        # `active_claims` already is (0 must be checkable there too, which
+        # is why that one is read with `is not None` at grade time).
+        claim_rows = post_state.get("claim_rows")
+        if claim_rows is not None and (
+            isinstance(claim_rows, bool)
+            or not isinstance(claim_rows, int)
+            or claim_rows < 0
+        ):
+            invalid("expected.post_state.claim_rows must be a non-negative integer")
 
 
 def select_cases(
@@ -3054,6 +3081,30 @@ def grade_lifecycle_artifacts(
             options,
             f"active claim count was {active_count}, expected {expected_claims}",
         )
+    # Task 6855: `claim_rows` grades the TOTAL number of `agent_work_claims`
+    # rows the task accumulated (audit trail, every status), not the
+    # currently-active count above -- a lapsed-claim recovery case wants to
+    # prove exactly two rows exist (the lapsed pull, and the --no-transition
+    # recovery claim), which `active_claims: 0` alone cannot distinguish
+    # from a case that only ever claimed once.
+    expected_claim_rows = post_state.get("claim_rows")
+    if expected_claim_rows is not None:
+        audit_path = artifact_dir / "task.audit.json"
+        if not audit_path.is_file():
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                "artifact set is incomplete: task.audit.json",
+            )
+        claim_rows = read_json(audit_path).get("agent_activity", {}).get("claims", [])
+        if len(claim_rows) != expected_claim_rows:
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                f"claim row count was {len(claim_rows)}, expected {expected_claim_rows}",
+            )
     actual_value = (artifact_dir / "repo" / "src" / "value.txt").read_text(
         encoding="utf-8"
     ).strip()
@@ -3293,6 +3344,216 @@ def replay_driver_dependency_order(
     run_step(token2, 2)
 
 
+def replay_driver_lapsed_claim(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6855: a coder's claim lease lapses mid-run -- the fixture coder
+    finishes real work but the lane never reaches a terminal verb, exactly
+    like `replay_driver_session_death` up through the coder step -- except
+    recovery here is the OPERATOR path documented in `agents/methodology.md`
+    "Operator recovery" and `docs/lifecycles.md`'s claim state machine: once
+    the lease lapses the task is still `doing`, so a plain `planar-agent
+    claim` hits `IllegalTransition`; the recovery is `claim --entity
+    task:<id> --no-transition`, then the atomic `complete`.
+
+    Before recovering, the driver proves the lapse is REAL rather than
+    assuming it: `planar-watch ps --plan <id> --stale --json` reports a
+    claim in its `stale` bucket when `status='active' and lease_expires_at
+    < now` (see `live.cppm`'s module header -- the `active` bucket alone
+    checks status only, not expiry, so checking `active` here would not
+    distinguish a genuine lapse from claiming twice back to back). If the
+    first token never shows up as stale, this driver fails closed instead
+    of silently reclaiming a live lease.
+    """
+    case_id = case["id"]
+    claim = run_json(
+        [
+            "planar-agent",
+            "pull",
+            context.plan_id,
+            "--role",
+            "coder",
+            "--base-ref",
+            "HEAD",
+            "--repo-root",
+            str(context.repo),
+            "--ttl",
+            "1",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    token1 = (
+        claim.get("claim_token")
+        or claim.get("claim", {}).get("claim_token")
+        or claim.get("claim", {}).get("token")
+    )
+    if not token1:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "lapsed-claim replay did not receive a claim token",
+        )
+    coder = run_command(
+        ["./.eval/control.sh", "coder", str(token1)],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "coder-1.txt", coder.stdout)
+    # The lane dies here, exactly as session-death does: no complete/fail/
+    # release/block. Wait out the short lease so there is something real to
+    # observe as stale below.
+    time.sleep(2)
+    stale = run_json(
+        ["planar-watch", "ps", "--plan", context.plan_id, "--stale", "--json"],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_json(context.artifacts / "claims.stale-check.json", stale)
+    stale_tokens = {row.get("claim_token") for row in stale.get("stale", [])}
+    if str(token1) not in stale_tokens:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "lapsed-claim replay expected the first claim in the stale "
+            f"bucket before recovery; stale tokens observed: "
+            f"{sorted(t for t in stale_tokens if t)}",
+        )
+    claim2 = run_json(
+        [
+            "planar-agent",
+            "claim",
+            "--entity",
+            f"task:{context.task_id}",
+            "--role",
+            "coder",
+            "--no-transition",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    token2 = (
+        claim2.get("claim_token")
+        or claim2.get("claim", {}).get("claim_token")
+        or claim2.get("claim", {}).get("token")
+    )
+    if not token2:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "lapsed-claim recovery claim did not receive a claim token",
+        )
+    write_json(context.artifacts / "claim-2.json", claim2)
+    complete = run_command(
+        [
+            "planar-agent",
+            "complete",
+            "--claim",
+            str(token2),
+            "--summary",
+            "controlled lapsed-claim recovery",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "complete.json", complete.stdout)
+    # The FIRST claim's row is never touched by the recovery claim or the
+    # complete above (`has_active_claim`'s lease-aware check let the
+    # recovery claim through without a mark-stale sweep -- see
+    # `acquire_claim`), so its `status` column stays 'active' in the DB
+    # forever unless something sweeps it: `ps --plan` (status-only) would
+    # keep counting it, contradicting `active_claims: 0`. Reconcile it AFTER
+    # completion, not before -- reconciling first would flip the task back
+    # to `todo` (the task-reset predicate: `status='doing' and` the claim's
+    # own evidence `and not exists`-another-live-claim), undermining the
+    # very premise this case grades (a plain `claim` hits IllegalTransition
+    # because the task is still `doing`). By the time this runs the task is
+    # already `done`, so the reset predicate's `status='doing'` guard never
+    # matches and reconcile only performs its stale-marking half.
+    reconcile = run_command(
+        ["planar-agent", "reconcile", "--plan", context.plan_id, "--json"],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "reconcile.json", reconcile.stdout)
+
+
+def replay_driver_iteration_cap(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6856: a controlled reviewer bounces UNCONDITIONALLY (the
+    `.eval/scenario` value `reviewer-always-bounce`; see `control.sh`), so
+    nothing in the fixture itself ever stops the loop -- the driver's own
+    cap, read from `setup.iteration_cap` rather than hardcoded, is what has
+    to stop it. This is what `agents/methodology.md`'s iteration-5 contract
+    and `docs/lifecycles.md`'s `abort` -> `planar-agent fail` mapping grade:
+    at iteration 5 `request-changes` is no longer a valid reviewer outcome,
+    the cycle aborts, and abort is the ONE outcome in that table that maps
+    to a real terminal verb rather than a re-spawn or a block-and-escalate
+    (`open-question` maps to `block`, which needs a `--blocker` task id this
+    single-task fixture has none of; `abort` needs only `--reason`).
+
+    The driver raises if the fixture ever approves instead of bouncing --
+    proving the cap, not a fixture running out of scripted bounces, is what
+    ends the loop -- and the loop is structurally bounded to `cap` rounds,
+    so a sixth round is never dispatched at all.
+    """
+    case_id = case["id"]
+    cap = case.get("setup", {}).get("iteration_cap")
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "iteration-cap replay requires a positive setup.iteration_cap",
+        )
+    claim_token, _pulled_task_id = _lifecycle_pull(context, options, case_id)
+    for round_index in range(1, cap + 1):
+        coder = run_command(
+            ["./.eval/control.sh", "coder", str(claim_token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"coder-{round_index}.txt", coder.stdout)
+        reviewer = run_command(
+            ["./.eval/control.sh", "reviewer", str(claim_token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"reviewer-{round_index}.txt", reviewer.stdout)
+        if "decision: request-changes" not in reviewer.stdout:
+            raise live_failure(
+                context.artifacts,
+                case_id,
+                options,
+                f"iteration-cap replay expected round {round_index} to "
+                "bounce (decision: request-changes); the reviewer approved "
+                "instead, so the cap was never exercised",
+            )
+    fail = run_command(
+        [
+            "planar-agent",
+            "fail",
+            "--claim",
+            str(claim_token),
+            "--reason",
+            f"iteration cap ({cap}) reached without reviewer approval",
+            "--category",
+            "validation",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "fail.json", fail.stdout)
+
+
 # Task 6854/6857: `setup.replay` selects which driver `run_lifecycle_fixture_replay`
 # hands the prepared `LifecycleContext` to. `validate_case` refuses any case
 # naming a key not in this dict, so the registry is the single source of
@@ -3306,6 +3567,8 @@ REPLAY_DRIVERS: dict[
     "classic": replay_driver_classic,
     "session-death": replay_driver_session_death,
     "dependency-order": replay_driver_dependency_order,
+    "lapsed-claim": replay_driver_lapsed_claim,
+    "iteration-cap": replay_driver_iteration_cap,
 }
 
 

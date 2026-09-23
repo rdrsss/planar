@@ -2609,6 +2609,58 @@ class RequiredPostStateTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.EvalFailure, "not-a-real-driver"):
             harness.validate_case(Path("<probe>"), case)
 
+    def test_iteration_cap_must_be_a_positive_integer(self) -> None:
+        # Task 6856: setup.iteration_cap is type-checked whenever a case
+        # declares it -- CALL-SITE test for validate_case's own check
+        # (a no-op there would let a string, a bool, zero, or a negative
+        # value silently reach replay_driver_iteration_cap).
+        for bad_cap in (0, -1, "5", 5.0, True):
+            case = minimal_valid_lifecycle_case("bad-iteration-cap")
+            case["setup"] = dict(case["setup"])
+            case["setup"]["iteration_cap"] = bad_cap
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "setup.iteration_cap must be a positive integer"
+            ):
+                harness.validate_case(Path("<probe>"), case)
+
+    def test_iteration_cap_absent_is_valid(self) -> None:
+        case = minimal_valid_lifecycle_case("no-iteration-cap")
+        harness.validate_case(Path("<probe>"), case)
+
+    def test_iteration_cap_positive_integer_is_valid(self) -> None:
+        case = minimal_valid_lifecycle_case("good-iteration-cap")
+        case["setup"] = dict(case["setup"])
+        case["setup"]["iteration_cap"] = 5
+        harness.validate_case(Path("<probe>"), case)
+
+    def test_claim_rows_must_be_a_non_negative_integer(self) -> None:
+        # Task 6855: post_state.claim_rows is type-checked whenever a case
+        # declares it -- CALL-SITE test for validate_case's own check.
+        for bad_rows in (-1, "2", 2.0, True):
+            case = minimal_valid_lifecycle_case("bad-claim-rows")
+            case["expected"] = dict(case["expected"])
+            case["expected"]["post_state"] = dict(case["expected"]["post_state"])
+            case["expected"]["post_state"]["claim_rows"] = bad_rows
+            with self.assertRaisesRegex(
+                harness.EvalFailure,
+                "expected.post_state.claim_rows must be a non-negative integer",
+            ):
+                harness.validate_case(Path("<probe>"), case)
+
+    def test_claim_rows_absent_is_valid(self) -> None:
+        case = minimal_valid_lifecycle_case("no-claim-rows")
+        harness.validate_case(Path("<probe>"), case)
+
+    def test_claim_rows_zero_is_valid(self) -> None:
+        # 0 must be accepted, not treated as falsy-and-therefore-absent --
+        # mirrors the existing active_claims contract (grade time reads it
+        # with `is not None`, not truthiness).
+        case = minimal_valid_lifecycle_case("zero-claim-rows")
+        case["expected"] = dict(case["expected"])
+        case["expected"]["post_state"] = dict(case["expected"]["post_state"])
+        case["expected"]["post_state"]["claim_rows"] = 0
+        harness.validate_case(Path("<probe>"), case)
+
     def test_duplicate_task_slug_fails_validation(self) -> None:
         case = minimal_valid_lifecycle_case("dup-slug-probe")
         case["tasks"] = [
@@ -2764,6 +2816,85 @@ class MultiTaskPostStateGradingTests(unittest.TestCase):
                 )
 
 
+class ClaimRowsPostStateGradingTests(unittest.TestCase):
+    """Task 6855: `expected.post_state.claim_rows` grades the TOTAL number
+    of `agent_work_claims` rows the task accumulated (`task.audit.json`'s
+    `agent_activity.claims`), distinguishing a lapsed-claim recovery (two
+    rows: the lapsed pull, the --no-transition recovery claim) from a case
+    that only ever claimed once.
+    """
+
+    def claim_rows_case(self, expected_rows: int) -> dict[str, object]:
+        case = lifecycle_case()
+        case["expected"] = dict(case["expected"])
+        case["expected"]["post_state"] = dict(case["expected"]["post_state"])
+        case["expected"]["post_state"]["claim_rows"] = expected_rows
+        return case
+
+    def write_audit(self, artifact_dir: Path, claim_count: int) -> None:
+        harness.write_json(
+            artifact_dir / "task.audit.json",
+            {
+                "agent_activity": {
+                    "actions": [],
+                    "claims": [
+                        {
+                            "id": index,
+                            "claim_token": f"tok-{index}",
+                            "status": "released" if index == 0 else "completed",
+                        }
+                        for index in range(claim_count)
+                    ],
+                }
+            },
+        )
+
+    def test_call_site_checks_the_real_audit_claim_count(self) -> None:
+        # CALL-SITE test: a mutant that always reads len(claims) == 1, or
+        # that no-ops the whole claim_rows branch, must fail this test --
+        # the case declares 2, the retained audit only has 1.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            self.write_audit(artifact_dir, 1)
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "claim row count was 1, expected 2"
+            ):
+                harness.grade_lifecycle_artifacts(
+                    self.claim_rows_case(2), artifact_dir, lifecycle_options()
+                )
+
+    def test_matching_claim_rows_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            self.write_audit(artifact_dir, 2)
+            harness.grade_lifecycle_artifacts(
+                self.claim_rows_case(2), artifact_dir, lifecycle_options()
+            )
+
+    def test_missing_task_audit_json_fails_naming_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "task.audit.json"
+            ):
+                harness.grade_lifecycle_artifacts(
+                    self.claim_rows_case(2), artifact_dir, lifecycle_options()
+                )
+
+    def test_absent_claim_rows_key_skips_the_check(self) -> None:
+        # A case that never declares claim_rows must not be affected by
+        # this branch at all -- no task.audit.json needed.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            harness.grade_lifecycle_artifacts(
+                lifecycle_case(), artifact_dir, lifecycle_options()
+            )
+
+
 class ReplayDriverRegistryTests(unittest.TestCase):
     """Task 6854/6857: `run_lifecycle_fixture_replay` dispatches to the
     driver named by `setup.replay` (default `classic`), and every driver
@@ -2816,6 +2947,70 @@ class ReplayDriverRegistryTests(unittest.TestCase):
                 )
         session_death_mock.assert_called_once()
         classic_mock.assert_not_called()
+
+    def test_call_site_dispatches_lapsed_claim_and_iteration_cap(self) -> None:
+        # CALL-SITE test for the two task-6855/6856 drivers: a mutant that
+        # forgets to register either in REPLAY_DRIVERS, or that dispatches
+        # to the wrong driver for its name, must fail this test.
+        for replay_name, driver_attr, other_attrs in (
+            (
+                "lapsed-claim",
+                "replay_driver_lapsed_claim",
+                ("replay_driver_classic", "replay_driver_iteration_cap"),
+            ),
+            (
+                "iteration-cap",
+                "replay_driver_iteration_cap",
+                ("replay_driver_classic", "replay_driver_lapsed_claim"),
+            ),
+        ):
+            case = {
+                "id": f"driver-dispatch-probe-{replay_name}",
+                "setup": {"replay": replay_name},
+            }
+            fake_context = harness.LifecycleContext(
+                case_path=Path("<probe>"),
+                case=case,
+                artifacts=Path("<artifacts>"),
+                repo=Path("<repo>"),
+                env={},
+                plan_id="1",
+                task_id="1",
+                task_ids=["1"],
+            )
+            with mock.patch.object(
+                harness, "prepare_lifecycle_fixture", return_value=fake_context
+            ), mock.patch.object(harness, driver_attr) as wanted_mock, mock.patch.object(
+                harness, other_attrs[0]
+            ) as other_mock_a, mock.patch.object(
+                harness, other_attrs[1]
+            ) as other_mock_b, mock.patch.object(
+                harness, "collect_lifecycle_artifacts"
+            ), mock.patch.object(
+                harness, "grade_lifecycle_artifacts"
+            ), mock.patch.object(
+                harness, "write_grade"
+            ), mock.patch.object(
+                harness, "finish_artifacts"
+            ):
+                with mock.patch.dict(
+                    harness.REPLAY_DRIVERS,
+                    {
+                        replay_name: wanted_mock,
+                        other_attrs[0].removeprefix("replay_driver_").replace(
+                            "_", "-"
+                        ): other_mock_a,
+                        other_attrs[1].removeprefix("replay_driver_").replace(
+                            "_", "-"
+                        ): other_mock_b,
+                    },
+                ):
+                    harness.run_lifecycle_fixture_replay(
+                        Path("<case-path>"), case, lifecycle_options()
+                    )
+            wanted_mock.assert_called_once()
+            other_mock_a.assert_not_called()
+            other_mock_b.assert_not_called()
 
     def test_unregistered_driver_fails_before_any_replay_work(self) -> None:
         case = {

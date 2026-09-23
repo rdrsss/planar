@@ -59,7 +59,19 @@ EOF
     ;;
   reviewer)
     value="$(<"$REPO_ROOT/src/value.txt")"
-    if [ "$SCENARIO" = "reviewer-bounce" ] && [ "$value" = "first-pass" ]; then
+    if [ "$SCENARIO" = "reviewer-always-bounce" ]; then
+      # Task 6856: unconditional bounce, regardless of the coder's output.
+      # Nothing in the fixture ever approves under this scenario -- the
+      # iteration-cap replay driver's own cap is what has to end the loop,
+      # not this script running out of scripted bounces.
+      log_event "review-request-changes"
+      cat <<EOF
+decision: request-changes
+finding: controlled iteration-cap fixture always requests changes.
+remediation: none; this scenario exists to exercise the iteration cap.
+claim: $CLAIM_TOKEN
+EOF
+    elif [ "$SCENARIO" = "reviewer-bounce" ] && [ "$value" = "first-pass" ]; then
       log_event "review-request-changes"
       cat <<EOF
 decision: request-changes
