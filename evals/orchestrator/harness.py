@@ -670,6 +670,57 @@ def resolve_allowed_tools(section: dict[str, Any] | None) -> tuple[str, ...]:
     return tuple(tools)
 
 
+def assert_tool_surface_matches_host(
+    case: dict[str, Any],
+    section_key: str,
+    artifact_dir: Path,
+    options: Options,
+    raw_transcript: str,
+) -> None:
+    """Reconcile the case's declared tool allowlist against the surface the
+    host actually enumerated (task 6913).
+
+    `validate_allowed_tools` is a prepare-time TYPO check against a static
+    registry, and a typo check structurally cannot catch DRIFT: a tool that
+    was renamed upstream stays spelled correctly in both the registry and
+    the case file, so every prepare-time check passes while the allowlist
+    entry silently permits nothing. The motivating example is the `Task`
+    tool name.
+
+    The reconciliation source is the `system/init` event every live run
+    already emits and retains in `transcript.jsonl` (Planar artifact 622),
+    so this costs no additional model spend. A declared tool the host never
+    exposed FAILS the run. Registry names the host did not expose are
+    RECORDED to `tool-surface.json`, never raised on -- the registry
+    legitimately spans vendors, versions and configurations.
+    """
+    declared = resolve_allowed_tools(case.get(section_key))
+    live = vendors.extract_live_tool_surface(raw_transcript)
+    try:
+        unexposed = vendors.reconcile_tool_surface(declared, live)
+    except vendors.ToolSurfaceDriftError as exc:
+        write_json(
+            artifact_dir / "tool-surface.json",
+            {
+                "declared": list(declared),
+                "live": sorted(live) if live is not None else None,
+                "declared_not_exposed": exc.missing,
+            },
+        )
+        raise live_failure(
+            artifact_dir, case["id"], options, f"tool surface drift: {exc}"
+        )
+    write_json(
+        artifact_dir / "tool-surface.json",
+        {
+            "declared": list(declared),
+            "live": sorted(live) if live is not None else None,
+            "declared_not_exposed": [],
+            "registry_not_exposed": sorted(unexposed),
+        },
+    )
+
+
 def extract_usage(raw: Path, vendor: str) -> dict[str, Any]:
     """Extract calls-per-task and token/cost usage from a host transcript
     (task 6859). Raises `EvalFailure` when the transcript carries no
@@ -1817,6 +1868,7 @@ def grade_live_artifacts(
     raw = (artifact_dir / "transcript.jsonl").read_text(
         encoding="utf-8", errors="replace"
     )
+    assert_tool_surface_matches_host(case, "live", artifact_dir, options, raw)
     for task in case["tasks"]:
         slug = task["slug"]
         rows = [line for line in final.splitlines() if slug in line]
@@ -4491,6 +4543,17 @@ def run_lifecycle_host_from_prepared(
             case_budget_usd=case_budget_usd,
         )
         extract_host_transcript(raw, options.vendor, artifacts)
+        # Task 6913: same drift reconciliation the live grader runs, on the
+        # lifecycle section's allowlist. Placed here rather than inside
+        # grade_lifecycle_artifacts because the fixture-replay lane also
+        # calls that function and has no transcript to reconcile against.
+        assert_tool_surface_matches_host(
+            case,
+            "lifecycle",
+            artifacts,
+            options,
+            raw.read_text(encoding="utf-8", errors="replace"),
+        )
         collect_lifecycle_artifacts(context, options)
         grade_lifecycle_artifacts(case, artifacts, options)
         write_grade(artifacts, "pass", case["id"], options, usage=usage_total)

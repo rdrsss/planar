@@ -5434,3 +5434,185 @@ class ContractAssertionsAreContractTierOnlyTests(unittest.TestCase):
                     f"{case['id']} ({case_path.name}) declares assertions no "
                     "tier grades",
                 )
+
+
+INIT_EVENT_TOOLS = ("Bash", "Read", "Edit", "Write", "Agent")
+
+
+def init_transcript(tools: tuple[str, ...] = INIT_EVENT_TOOLS) -> str:
+    """A minimal stream-json transcript carrying one `system/init` event.
+
+    Planar artifact 622 observed this shape: the init event enumerates the
+    host's real tool surface for the session.
+    """
+    return (
+        json.dumps({"type": "system", "subtype": "init", "tools": list(tools)})
+        + "\n"
+        + json.dumps({"type": "assistant", "message": {"content": []}})
+        + "\n"
+    )
+
+
+class ToolSurfaceDriftTests(unittest.TestCase):
+    """Task 6913: `validate_allowed_tools` is a prepare-time TYPO check
+    against a static registry, and a typo check structurally cannot catch
+    DRIFT -- a renamed tool stays spelled correctly in both the registry
+    and the case file, so every prepare-time check passes while the
+    allowlist entry permits nothing.
+
+    These drive the real CALLERS (`grade_live_artifacts` and
+    `run_lifecycle_host_from_prepared`), not the reconciliation helper, so
+    no-opping either call site fails a named test here.
+    """
+
+    # -- the reconciliation itself ---------------------------------------
+
+    def test_init_event_tool_list_is_extracted(self) -> None:
+        self.assertEqual(
+            harness.vendors.extract_live_tool_surface(init_transcript()),
+            frozenset(INIT_EVENT_TOOLS),
+        )
+
+    def test_a_transcript_without_an_init_event_yields_none(self) -> None:
+        self.assertIsNone(harness.vendors.extract_live_tool_surface("{}\n"))
+
+    def test_non_json_lines_are_skipped_not_fatal(self) -> None:
+        noisy = "not json at all\n" + init_transcript()
+        self.assertEqual(
+            harness.vendors.extract_live_tool_surface(noisy), frozenset(INIT_EVENT_TOOLS)
+        )
+
+    def test_a_declared_tool_the_host_never_exposed_raises(self) -> None:
+        with self.assertRaisesRegex(
+            harness.vendors.ToolSurfaceDriftError, "Task"
+        ):
+            harness.vendors.reconcile_tool_surface(
+                ["Bash", "Task"], frozenset(INIT_EVENT_TOOLS)
+            )
+
+    def test_registry_names_absent_from_the_host_are_reported_not_raised(
+        self,
+    ) -> None:
+        unexposed = harness.vendors.reconcile_tool_surface(
+            ["Bash"], frozenset(INIT_EVENT_TOOLS)
+        )
+        self.assertIn("Task", unexposed)
+        self.assertNotIn("Bash", unexposed)
+
+    # -- CALL SITE: grade_live_artifacts ---------------------------------
+
+    def test_live_grader_rejects_a_declared_tool_the_host_did_not_expose(
+        self,
+    ) -> None:
+        # DEFAULT_ALLOWED_TOOLS declares "Task"; the host below exposes
+        # "Agent" instead -- the exact rename this task exists to catch.
+        options = live_options()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_live_artifacts(artifact_dir, options)
+            harness.write_text(
+                artifact_dir / "transcript.jsonl", init_transcript()
+            )
+            with self.assertRaisesRegex(harness.EvalFailure, "tool surface drift"):
+                harness.grade_live_artifacts(live_case(), artifact_dir, options)
+
+    def test_live_grader_accepts_a_host_exposing_every_declared_tool(self) -> None:
+        options = live_options()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_live_artifacts(artifact_dir, options)
+            harness.write_text(
+                artifact_dir / "transcript.jsonl",
+                init_transcript(
+                    tuple(harness.vendors.DEFAULT_ALLOWED_TOOLS) + ("Glob",)
+                ),
+            )
+            harness.grade_live_artifacts(live_case(), artifact_dir, options)
+            recorded = harness.read_json(artifact_dir / "tool-surface.json")
+            self.assertEqual(recorded["declared_not_exposed"], [])
+            self.assertIn("Glob", recorded["live"])
+
+    # -- CALL SITE: run_lifecycle_host_from_prepared ---------------------
+
+    def lifecycle_host_context(self, root: Path) -> harness.LifecycleContext:
+        repo = root / "repo"
+        (repo / ".eval").mkdir(parents=True)
+        harness.write_text(
+            repo / ".eval" / "orchestrator.instructions.md", "probe\n"
+        )
+        artifacts = root / "artifacts"
+        artifacts.mkdir()
+        return harness.LifecycleContext(
+            case_path=Path("<probe>"),
+            case={},
+            artifacts=artifacts,
+            repo=repo,
+            env={},
+            plan_id="1",
+            task_id="1",
+            task_ids=["1"],
+        )
+
+    def run_lifecycle_host_with_transcript(self, transcript: str) -> None:
+        case = {
+            "id": "tool-surface-lifecycle-probe",
+            "lifecycle": {
+                "scenario": "controlled-classic",
+                "surface": "agent",
+                "prompt": "probe {{PLAN_ID}}",
+                "operator_responses": [],
+            },
+            "tasks": [{"slug": "controlled-value", "title": "t"}],
+        }
+        options = harness.Options(
+            mode="lifecycle",
+            vendor="claude",
+            surface="agent",
+            case_filter=None,
+            results_dir=None,
+            keep=False,
+        )
+        with tempfile.TemporaryDirectory() as root_tmp:
+            context = self.lifecycle_host_context(Path(root_tmp))
+
+            def fake_run_to_file(command, target, **kwargs):
+                harness.write_text(target, transcript)
+                return 0
+
+            with mock.patch.object(
+                harness, "run_to_file", side_effect=fake_run_to_file
+            ), mock.patch.object(
+                harness, "extract_usage", return_value={}
+            ), mock.patch.object(
+                harness, "merge_usage", return_value={}
+            ), mock.patch.object(
+                harness, "extract_session_id", return_value="sess-1"
+            ), mock.patch.object(
+                harness, "run_json", return_value={"status": "done"}
+            ), mock.patch.object(
+                harness, "enforce_spend_ceiling"
+            ), mock.patch.object(
+                harness, "extract_host_transcript"
+            ), mock.patch.object(
+                harness, "collect_lifecycle_artifacts"
+            ), mock.patch.object(
+                harness, "grade_lifecycle_artifacts"
+            ), mock.patch.object(
+                harness, "write_grade"
+            ), mock.patch.object(
+                harness, "finish_artifacts"
+            ):
+                harness.run_lifecycle_host_from_prepared(context, case, options)
+
+    def test_lifecycle_host_rejects_a_declared_tool_the_host_did_not_expose(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(harness.EvalFailure, "tool surface drift"):
+            self.run_lifecycle_host_with_transcript(init_transcript())
+
+    def test_lifecycle_host_accepts_a_host_exposing_every_declared_tool(
+        self,
+    ) -> None:
+        self.run_lifecycle_host_with_transcript(
+            init_transcript(tuple(harness.vendors.DEFAULT_ALLOWED_TOOLS))
+        )
