@@ -1,11 +1,11 @@
-/// @file host.t.cpp
-/// @brief The profile's daemon lifecycle: what is written, when a daemon is
-///        started, and when one is not (plan 1033 M2, tasks 6502/6710).
-///
-/// `ensure_host` takes its probe, spawn, clock and sleep as hooks, so every
-/// case here drives the decision sequence with no daemon, no gRPC and no real
-/// waiting. What each case asserts is the DECISION — joined versus spawned
-/// versus refused — plus the one side effect that decision is allowed to have.
+// @file host.t.cpp
+// @brief The profile's daemon lifecycle: what is written, when a daemon is
+//        started, and when one is not (plan 1033 M2, tasks 6502/6710).
+//
+// `ensure_host` takes its probe, spawn, clock and sleep as hooks, so every
+// case here drives the decision sequence with no daemon, no gRPC and no real
+// waiting. What each case asserts is the DECISION — joined versus spawned
+// versus refused — plus the one side effect that decision is allowed to have.
 
 import std;
 import planar.cmd.planar_execute.host;

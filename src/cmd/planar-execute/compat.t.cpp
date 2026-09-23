@@ -1,10 +1,10 @@
-/// @file compat.t.cpp
-/// @brief What makes two clients able to share one daemon, and what does not
-///        (plan 1033 M2, task 6503).
-///
-/// Each case changes exactly ONE thing about the world and asserts that the
-/// comparison notices it and names it. A tuple field that no case can move is
-/// a field the comparison cannot really be said to cover.
+// @file compat.t.cpp
+// @brief What makes two clients able to share one daemon, and what does not
+//        (plan 1033 M2, task 6503).
+//
+// Each case changes exactly ONE thing about the world and asserts that the
+// comparison notices it and names it. A tuple field that no case can move is
+// a field the comparison cannot really be said to cover.
 
 import std;
 import planar.cmd.planar_execute.compat;

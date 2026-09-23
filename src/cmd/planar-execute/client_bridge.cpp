@@ -16,6 +16,9 @@ import centurion.client;
 
 namespace planar::cmd::execute {
 
+/// @brief Definition of the bounded liveness probe; see client_bridge.hpp for the contract.
+/// @param socket_path Filesystem path of the daemon's Unix socket.
+/// @return True when a daemon answered.
 auto probe_socket(const char* socket_path) -> bool {
   if (socket_path == nullptr || *socket_path == '\0') {
     return false;
@@ -83,6 +86,12 @@ auto classify(const centurion::client::error& failure) -> call_outcome {
 
 } // namespace
 
+/// @brief Definition of the bundle-run submission; see client_bridge.hpp for the contract.
+/// @param socket_path The daemon's Unix socket.
+/// @param bundle_name Bundle to start.
+/// @param input_json Canonical JSON input.
+/// @param request_id Durable idempotency key.
+/// @return The started run, or why it was refused.
 auto submit_bundle_run(const char* socket_path, const char* bundle_name, const char* input_json, const char* request_id)
     -> call_result {
   const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{30}};
@@ -101,6 +110,12 @@ auto submit_bundle_run(const char* socket_path, const char* bundle_name, const c
   return call_result{.outcome_ = call_outcome::ok, .run_ = view_of(started->run_), .message_ = {}};
 }
 
+/// @brief Definition of the cursor-based follow; see client_bridge.hpp for the contract.
+/// @param socket_path The daemon's Unix socket.
+/// @param run_id The run to follow.
+/// @param after_sequence Exclusive cursor.
+/// @param sink Invoked once per committed event.
+/// @return How the follow ended.
 auto follow_run(const char* socket_path, const char* run_id, std::uint64_t after_sequence, const follow_sink& sink)
     -> call_result {
   const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path),
@@ -128,6 +143,11 @@ auto follow_run(const char* socket_path, const char* run_id, std::uint64_t after
   return call_result{.outcome_ = call_outcome::ok, .run_ = {}, .message_ = {}};
 }
 
+/// @brief Definition of the console-less cancel; see client_bridge.hpp for the contract.
+/// @param socket_path The daemon's Unix socket.
+/// @param run_id The run to cancel.
+/// @param expected_sequence The caller's optimistic cursor.
+/// @return The run after the control settled, or why it was refused.
 auto cancel_run(const char* socket_path, const char* run_id, std::uint64_t expected_sequence) -> call_result {
   const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{15}};
   auto                              outcome = centurion::client::cancel_run(
@@ -141,6 +161,10 @@ auto cancel_run(const char* socket_path, const char* run_id, std::uint64_t expec
   return call_result{.outcome_ = call_outcome::ok, .run_ = view_of(outcome->run_), .message_ = {}};
 }
 
+/// @brief Definition of the run projection read; see client_bridge.hpp for the contract.
+/// @param socket_path The daemon's Unix socket.
+/// @param run_id The run to read.
+/// @return The run, or why it could not be read.
 auto fetch_run(const char* socket_path, const char* run_id) -> call_result {
   const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{10}};
   auto                              current = centurion::client::get_run(target, run_id);

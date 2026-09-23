@@ -133,7 +133,6 @@ export struct profile_args {
 /// @return The parsed arguments, or unset on a usage failure.
 export auto parse_profile_args(std::span<const std::string> args) -> std::optional<profile_args>;
 
-/// @brief Which top-level shape an argv resolves to.
 /// @brief What `parse_submit_args` produces — the `submit` verb's arguments.
 export struct submit_args {
   std::string bundle;              ///< Bundle name to start; the host's published version is selected.
@@ -160,6 +159,7 @@ export struct run_id_args {
 /// @return The parsed arguments, or unset when the shape is wrong.
 export auto parse_run_id_args(std::span<const std::string> args, bool run_id_required) -> std::optional<run_id_args>;
 
+/// @brief Which top-level shape an argv resolves to.
 export enum class verb : std::uint8_t {
   none,    ///< No arguments at all: usage, exit 2.
   help,    ///< `--help` / `-h` / `help`: usage, exit 0.

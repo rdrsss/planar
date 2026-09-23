@@ -19,19 +19,19 @@ namespace wire {
 
 /// @brief The recorded tuple, as it sits beside the profile's state.
 struct compatibility_wire {
-  std::string protocol_version;
-  std::string daemon_build;
-  std::string bundle_digest;
-  std::string command_policy_digest;
-  std::string planar_db;
-  std::string workbench_root;
-  std::string sibling_bin_dir;
+  std::string protocol_version;      ///< Wire contract the recording client expected.
+  std::string daemon_build;          ///< Installed daemon's build identity.
+  std::string bundle_digest;         ///< Digest over the profile's bundle directory.
+  std::string command_policy_digest; ///< Digest of the command-policy file.
+  std::string planar_db;             ///< Canonical path of the Planar database.
+  std::string workbench_root;        ///< Canonical workbench root.
+  std::string sibling_bin_dir;       ///< Directory the Planar binaries were invoked from.
 };
 
 /// @brief The fields this client reads from the daemon's build identity.
 struct build_identity_wire {
-  std::string tag;
-  std::string binary_sha256;
+  std::string tag;           ///< Pinned Centurion tag the daemon was built from.
+  std::string binary_sha256; ///< Digest of the installed daemon binary.
 };
 
 } // namespace wire

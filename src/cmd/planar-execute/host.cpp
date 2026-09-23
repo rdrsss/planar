@@ -96,14 +96,16 @@ namespace wire {
 
 /// @brief The subset of Centurion's endpoint record this client reads.
 struct endpoint_record_wire {
-  std::int64_t pid{};
-  std::string  instance_id;
-  std::string  protocol_version;
-  std::string  socket_target;
+  std::int64_t pid{};            ///< The owning process, as the record's top level states it.
+  std::string  instance_id;      ///< Per-instance identity of the owner.
+  std::string  protocol_version; ///< Wire contract the owner serves.
+  std::string  socket_target;    ///< The target the owner published.
+
+  /// @brief The owner's process attestation, nested as Centurion writes it.
   struct process_wire {
-    std::int64_t pid{};
-    std::string  start_token;
-  } process{};
+    std::int64_t pid{};       ///< The attested pid; the same number as above when both are present.
+    std::string  start_token; ///< Process-start token, which distinguishes a reused pid from the original.
+  } process{};                ///< The nested attestation block.
 };
 
 } // namespace wire

@@ -1,10 +1,10 @@
-/// @file runflow.t.cpp
-/// @brief Submitting, replaying and following a run (plan 1033 M2, task 6504).
-///
-/// The property that matters most here is the one a green run would never
-/// show: an uncertain submission must be replayed under the SAME request id.
-/// A fresh id would start a second run for work that may already be running,
-/// so every retry case asserts the id the daemon actually saw.
+// @file runflow.t.cpp
+// @brief Submitting, replaying and following a run (plan 1033 M2, task 6504).
+//
+// The property that matters most here is the one a green run would never
+// show: an uncertain submission must be replayed under the SAME request id.
+// A fresh id would start a second run for work that may already be running,
+// so every retry case asserts the id the daemon actually saw.
 
 import std;
 import planar.cmd.planar_execute.runflow;
