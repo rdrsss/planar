@@ -2760,6 +2760,21 @@ when nonzero, and make the command exit 1. JSON always includes `malformed` and
 Conflicts (both FS and DB changed since last sync) are surfaced; they are not resolved
 automatically. Use `workbench resolve` to settle them.
 
+**Non-body field edits are refused, not silently dropped (task 6910).** `pull` writes only
+`body` (plus `status` for `task`/`plan`) — a decision's `## Rationale` section and a
+question's `**Answer:**` line are rendered TO disk on `push` but never read back FROM it on
+`pull`. Before task 6910 an operator edit there was silently discarded on every pull. Now,
+before applying a file whose entity kind is `decision` or `question`, the extracted
+`## Rationale` / `**Answer:**` text on disk is compared against what the database currently
+holds; a difference refuses that ONE entity's pull entirely (not just the field — the whole
+row, including `body`, is left untouched) and is reported as a named `field_edit_refusal`
+(`path`, `entity_kind`, `entity_id`, `field` — `"rationale"` or `"answer"`) rather than an
+undifferentiated `pending` count. This is a PER-ENTITY refusal, like `conflict` — it does not
+abort the rest of the run. The fix is to make the edit through the CLI instead of the file:
+`planar decision edit <id> --rationale ...` or `planar question answer <id> ...`, then pull
+again. `--json` always includes `field_edit_refused` (a count) and `field_edit_refusals` (the
+list); the default text summary prints nothing extra when the count is zero.
+
 **Arguments:**
 
 | Argument | Description |
