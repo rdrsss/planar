@@ -718,6 +718,82 @@ TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, w
   CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
 }
 
+TEST_CASE("migration 38's up guard FIRES when the stored workflow_runs CREATE TABLE text does not match "
+          "the expected literal, refusing by name and leaving schema_migrations at 37",
+          "[db][migrate][6905]") {
+  // Neither 00038's nor 00039's TEMP-table guard had a test proving it
+  // actually FIRES on a mismatch -- only that it stays silent on the
+  // ordinary path (the "adds engine supervision..." case above). This
+  // pins the negative: perturb the stored DDL text migration 38's
+  // `replace()` targets so it cannot match, and require the migration to
+  // fail by its own named constraint rather than silently no-op the
+  // relaxation and still record version 38.
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 39);
+  REQUIRE(chain[37].version_ == 38);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
+
+  // Perturb the stored `workflow_runs` CREATE TABLE text so migration 38's
+  // first `replace()` (targeting the literal
+  // `plan_id       integer not null references plans(id)`) cannot match --
+  // as if an earlier, unrelated edit had reformatted the column
+  // declaration's whitespace. `replace()` on a non-match is a silent
+  // no-op in SQLite, so absent the guard this would record version 38 over
+  // an UNRELAXED `plan_id` constraint.
+  REQUIRE(conn->execute("pragma writable_schema = on;"));
+  REQUIRE(conn->execute("update sqlite_schema set sql = replace(sql, "
+                        "'plan_id       integer not null references plans(id)', "
+                        "'plan_id integer not null references plans(id)') "
+                        "where type = 'table' and name = 'workflow_runs';"));
+  REQUIRE(conn->execute("pragma writable_schema = reset;"));
+  CHECK(scalar(*conn, "select sql like '%plan_id       integer not null references plans(id)%' "
+                      "from sqlite_schema where type = 'table' and name = 'workflow_runs'") == "0");
+
+  auto const applied38 = planar::db::apply_all(*conn, chain.subspan(0, 38));
+  REQUIRE_FALSE(applied38.has_value());
+  CHECK(
+      applied38.error().message_.contains("m00038_up_refused_unexpected_stored_schema_text_plan_id_or_action_kind_not_relaxed"));
+
+  // Refused BY NAME, and the version row was never written -- the failing
+  // migration's own transaction rolled back.
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "37");
+}
+
+TEST_CASE("migration 39's up guard FIRES when the stored workflow_runs CREATE TABLE text does not match "
+          "the expected literal, refusing by name and leaving schema_migrations at 38",
+          "[db][migrate][6905]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 39);
+  REQUIRE(chain[38].version_ == 39);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
+
+  // Perturb the stored `workflow_runs` CREATE TABLE text so migration 39's
+  // first `replace()` (targeting the literal `pid           integer not
+  // null,`) cannot match.
+  REQUIRE(conn->execute("pragma writable_schema = on;"));
+  REQUIRE(conn->execute("update sqlite_schema set sql = replace(sql, "
+                        "'pid           integer not null,', "
+                        "'pid integer not null,') "
+                        "where type = 'table' and name = 'workflow_runs';"));
+  REQUIRE(conn->execute("pragma writable_schema = reset;"));
+  CHECK(scalar(*conn, "select sql like '%pid           integer not null,%' "
+                      "from sqlite_schema where type = 'table' and name = 'workflow_runs'") == "0");
+
+  auto const applied39 = planar::db::apply_all(*conn, chain.subspan(0, 39));
+  REQUIRE_FALSE(applied39.has_value());
+  CHECK(applied39.error().message_.contains("m00039_up_refused_pid_not_relaxed_or_lease_check_missing"));
+
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "38");
+}
+
 TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db][migrate][roundtrip]") {
   scratch_db_path scratch;
   auto            conn = planar::db::connection::open(scratch.path_.string());

@@ -128,3 +128,55 @@ TEST_CASE("planar task update reports Busy / busy_source, not QueryFailed / gene
   CHECK(retried.code == 0);
   CHECK(retried.err.empty());
 }
+
+TEST_CASE("planar task done reports Busy / busy_source, not QueryFailed / generic_failure, "
+          "under a competing write lock",
+          "[cmd][task][busy][6907]") {
+  // Task 6907: mark_done's (and mark_cancelled's / mark_blocked's /
+  // reopen's) busy path is wired to `command_db_error` -- see
+  // `engine/planning/task.cpp` -- exactly like `update_task`'s above, but
+  // was never exercised by a contention test. This mirrors the `task
+  // update` case above for `task done` to close that gap; `mark_done` is
+  // reached identically (`begin_transaction`, `show_task`,
+  // `check_transition`, `set_status`, `clear_unblocked_dependents`,
+  // `record_audit`, `commit`), so the SAME competing IMMEDIATE lock forces
+  // its commit to hit a post-`busy_timeout` SQLITE_BUSY.
+  auto const fx = make_fixture("done");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+
+  auto       conn    = open_db(fx);
+  auto const created = planar::engine::planning::create_task(
+      conn, planar::engine::planning::task_create_args{.title = "Contended", .scope = "global"});
+  REQUIRE(created.has_value());
+  auto const id = std::to_string(created->id);
+
+  // `todo -> done` directly is not a legal transition (the task matrix
+  // requires `doing` first); move it there BEFORE taking the competing
+  // lock, so the contention below lands on `mark_done`'s own write, not
+  // on this setup step.
+  REQUIRE(dispatch(fx, {"task", "update", id, "--status", "doing"}).code == 0);
+
+  auto locker = conn.begin_transaction(planar::db::lock_mode::immediate);
+  REQUIRE(locker.has_value());
+
+  auto const busy = dispatch(fx, {"task", "done", id, "--json"});
+
+  CHECK(busy.code == 1);
+  CHECK(busy.err == std::format("error: task done: Busy\n"));
+  CHECK(busy.out == R"({"error":{"verb":"task done","tag":"busy_source"}}
+)");
+  REQUIRE(busy.kind.has_value());
+  CHECK(*busy.kind == planar::cmd::domain_error_kind::busy_source);
+
+  REQUIRE(locker->commit().has_value());
+
+  // The contended write genuinely never landed while busy.
+  auto const still = planar::engine::planning::show_task(conn, created->id);
+  REQUIRE(still.has_value());
+  CHECK(still->status == planar::engine::planning::task_status::doing);
+
+  // Once uncontended, the same command succeeds cleanly.
+  auto const retried = dispatch(fx, {"task", "done", id, "--json"});
+  CHECK(retried.code == 0);
+  CHECK(retried.err.empty());
+}

@@ -202,6 +202,9 @@ TEST_CASE("error_name emits the operator-visible Zig tags", "[agentactivity]") {
   REQUIRE(aa::error_name(aa::agent_error::worktree_not_found) == "WorktreeNotFound");
   REQUIRE(aa::error_name(aa::agent_error::unknown_status) == "UnknownStatus");
   REQUIRE(aa::error_name(aa::agent_error::query_failed) == "QueryFailed");
+  // Task 6843: a post-timeout SQLITE_BUSY gets its own tag, distinct from
+  // `QueryFailed`, so an orchestrator can retry rather than escalate.
+  REQUIRE(aa::error_name(aa::agent_error::busy) == "Busy");
 }
 
 // ===========================================================================

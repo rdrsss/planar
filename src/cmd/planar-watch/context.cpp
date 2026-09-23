@@ -93,12 +93,10 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   }
   _db.emplace(std::move(*opened));
 
-  // busy_timeout ONLY. WAL is a writer-side pragma a read-only handle
-  // cannot set; attempting it would warn on every invocation.
-  if (auto const busy = _db->execute("PRAGMA busy_timeout = 5000"); !busy) {
-    err() << std::format("warning: failed to set busy_timeout on read-only handle ({}); concurrent writers may delay queries\n",
-                         busy.error().message_);
-  }
+  // `busy_timeout = 5000` is set once, centrally, by
+  // `db::connection::open_read_only` itself (task 6842, decision D7): a
+  // read-only handle gets the busy timeout only (WAL is a writer-side
+  // pragma it cannot set), so no duplicate pragma is needed here.
 
   // The schema-version handshake. The comparison lives in
   // `planar.db.migrate` (see `schema_compatibility`'s decision record —

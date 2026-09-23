@@ -20,12 +20,12 @@
 ///
 ///   1. opens read/write (agent verbs DO write — `agent_actions`,
 ///      `agent_work_claims`, the `routing_dispatch_*` tables; this binary
-///      is not the read-only one),
-///   2. sets `journal_mode = WAL` and `busy_timeout = 5000`, best-effort,
-///      each degrading to a warning on stderr exactly as the Zig original
-///      does,
-///   3. NEVER calls `apply_all`, and
-///   4. refuses BOTH directions of schema skew — `schema_version_behind`
+///      is not the read-only one); `journal_mode = WAL` and
+///      `busy_timeout = 5000` are set once, centrally, by
+///      `db::connection::open` itself (task 6842, decision D7) rather
+///      than duplicated here,
+///   2. NEVER calls `apply_all`, and
+///   3. refuses BOTH directions of schema skew — `schema_version_behind`
 ///      (live DB older than this binary's embedded max; the operator runs
 ///      `planar init`) and `schema_version_ahead` (live DB newer; the
 ///      operator upgrades the binary) — writing the Zig original's

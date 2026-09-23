@@ -89,6 +89,27 @@ auto is_unique_violation(const db::db_error& err) -> bool {
 /// Scoped to the two places a real contended write actually surfaces this —
 /// `begin_transaction` and `transaction::commit` — mirroring
 /// `annotation.cpp`'s `command_db_error` (task 6843).
+///
+/// Task 6909: of this file's `conn.begin_transaction()` call sites (`update_task`,
+/// `mark_done`, `mark_cancelled`, `mark_blocked`, `reopen`), every ONE of
+/// them opens with the default `lock_mode::deferred`, which `transaction`'s
+/// constructor sends to SQLite as a plain `begin;` (`db.cppm:378` /
+/// `db.cpp:186`) — no lock is taken at `BEGIN` itself under deferred mode,
+/// so `tx.error()` immediately after it can be `SQLITE_BUSY` in principle,
+/// but not from lock contention (there is nothing yet to contend over): a
+/// `begin;` fails only for reasons unrelated to a competing writer.
+/// Practically, this means every `command_db_error(tx.error())` call right
+/// after `begin_transaction()` in this file is DEAD for the busy case it
+/// exists to classify. The busy seams that actually fire are the ones
+/// AFTER a write is attempted: a statement's own `step()` (see
+/// `set_status`, whose failure IS reachable and IS pinned, `[cmd][task][busy][6907]`)
+/// and the eventual `transaction::commit()`, where SQLite finally requests
+/// the write lock a deferred transaction never asked for at `BEGIN`. The
+/// dead `begin_transaction`-site wiring is kept, not deleted: a future
+/// move to `lock_mode::immediate` (matching `planar.db.migrate`'s
+/// `apply_all`) would make it live again without a code change, and
+/// deleting it now would silently drop that seam's coverage the day the
+/// lock mode changes.
 /// @param err The transaction-boundary error.
 /// @return `task_error::busy_source` or `task_error::query_failed`.
 auto command_db_error(const db::db_error& err) -> task_error {

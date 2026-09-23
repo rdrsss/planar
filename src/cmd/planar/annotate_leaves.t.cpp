@@ -1552,6 +1552,7 @@ TEST_CASE("annotation command reports a competing write lock as retryable busy w
   auto const source = ann::source_uuid(conn);
   REQUIRE(source.has_value());
 
+  REQUIRE(conn.execute("pragma busy_timeout = 50;"));
   auto lock = conn.begin_transaction(planar::db::lock_mode::immediate);
   REQUIRE(lock.has_value());
   auto const request = std::format(

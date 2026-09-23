@@ -1528,3 +1528,37 @@ TEST_CASE("extract_entity_body strips each kind's wrapper and nothing else", "[w
   // has a `## Content` line keeps it.
   CHECK(ws::extract_entity_body("task", "# Task 1: T\n\n## Content\n\nbody\n") == "## Content\n\nbody");
 }
+
+TEST_CASE("extract_entity_body cuts at the FIRST line matching its own trailing label, "
+          "even when that line is the operator's own prose, not a rendered section (task 6911)",
+          "[workbench][sync][body][6911]") {
+  // The doc comment on `extract_entity_body` (sync.cppm) is explicit: "The
+  // trailing sections are cut at the FIRST line that starts with their
+  // label -- prose that itself begins a line with `## Rationale`,
+  // `**Answer:**` or `**Next action:**` is cut there too." sync.t.cpp:1504
+  // only pins the CROSS-kind non-strip (a task's `## Content` line, which
+  // is never this kind's OWN trailing label, survives). This pins the
+  // documented boundary itself: SAME-kind prose that happens to start a
+  // line with the label it is looking for is truncated there regardless of
+  // authorship -- the strip is a naive first-match, not renderer-aware.
+
+  // decision: `## Rationale` mid-prose truncates the body there, same as
+  // the renderer's own trailing section would.
+  CHECK(ws::extract_entity_body("decision", "# Decision 1: T\n\n**Status:** proposed\n\nWe use SQLite.\n\n"
+                                            "## Rationale\n\nThis line is the operator's own writing, not a "
+                                            "rendered section, but it still starts with the label.\n") == "We use SQLite.");
+
+  // question: an answered question whose own prose contains a line
+  // starting `**Answer:**` truncates there, before the real trailing
+  // answer section is ever reached.
+  CHECK(ws::extract_entity_body("question", "# Question 1: T\n\n**Status:** answered\n\nWhy? Consider: "
+                                            "\n\n**Answer:** is a phrase some replies start with.\n\n"
+                                            "**Answer:** Because.\n") == "Why? Consider:");
+
+  // task: a `**Next action:**`-prefixed line inside the body itself
+  // truncates there, before any trailing next-action line the renderer
+  // would have appended.
+  CHECK(ws::extract_entity_body("task", "# Task 1: T\n\n**Status:** todo  \n\nbody paragraph one.\n\n"
+                                        "**Next action:** was mentioned in a meeting note pasted into the body.\n") ==
+        "body paragraph one.");
+}

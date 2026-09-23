@@ -90,13 +90,9 @@ auto context::ensure_db() -> std::expected<db::connection*, domain_error> {
   auto const allowlist = write_allowlist();
   _db->restrict_writes_to(allowlist);
 
-  if (auto const wal = _db->execute("PRAGMA journal_mode = WAL"); !wal) {
-    err() << std::format("warning: failed to set journal_mode=WAL ({}); latency may degrade\n", wal.error().message_);
-  }
-  if (auto const busy = _db->execute("PRAGMA busy_timeout = 5000"); !busy) {
-    err() << std::format("warning: failed to set busy_timeout ({}); concurrent writers may see SQLITE_BUSY\n",
-                         busy.error().message_);
-  }
+  // `journal_mode = WAL` and `busy_timeout = 5000` are set once, centrally,
+  // by `db::connection::open` itself (task 6842, decision D7) — this binary
+  // always opens read/write, so no duplicate pragma is needed here.
 
   // NO apply_all. `planar init` owns migration; this binary consumes the
   // schema.

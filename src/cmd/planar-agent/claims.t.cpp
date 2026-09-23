@@ -524,8 +524,7 @@ TEST_CASE("run start refuses --ttl 0, writing no row (task 6906)", "[cmd][agent]
   auto const refused = run_verb(
       scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "ttl-zero", "--ttl", "0", "--repo-root", "/tmp"});
   CHECK(refused.code != 0);
-  CHECK(refused.err ==
-        "error: invalid --ttl '0': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n");
+  CHECK(refused.err == "error: invalid --ttl '0': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n");
   CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
 }
 

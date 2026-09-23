@@ -961,10 +961,18 @@ TEST_CASE("planar-agent parity: pull respects an open depends-on blocker, and co
   CHECK(complete1.out == "ok task:1 status:done claim_status:completed\n");
 
   // B's roll-up: `blocked` -> `todo`, WITHOUT going through `task done`.
-  CHECK(scalar_int_state(arena.cpp_root, "select status = 'todo' from tasks where id = 2") == 1);
+  // Black-box convention (CLAUDE.md): assert post-state via `show --json`,
+  // not raw SQL against the fixture database.
+  auto const show_b1 = run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "show", "2", "--json"}, arena.cpp_root,
+                                  "show-b-after-complete");
+  CHECK(show_b1.code == 0);
+  CHECK(show_b1.out.contains(R"("status":"todo")"));
   // D is untouched by the roll-up (it was never `blocked`) and its OWN
   // blocker (B) is still not `done` — still excluded.
-  CHECK(scalar_int_state(arena.cpp_root, "select status = 'todo' from tasks where id = 3") == 1);
+  auto const show_d1 = run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "show", "3", "--json"}, arena.cpp_root,
+                                  "show-d-after-complete");
+  CHECK(show_d1.code == 0);
+  CHECK(show_d1.out.contains(R"("status":"todo")"));
 
   // --- pull #2: B is now eligible (its blocker A is `done`); D is STILL
   //     excluded (its blocker B is `todo`, not `done`), despite still
@@ -974,4 +982,31 @@ TEST_CASE("planar-agent parity: pull respects an open depends-on blocker, and co
   auto const pull2 = run_pinned(cpp_bin(), std::vector<std::string>{"pull", "1"}, arena.cpp_root, "pull-2");
   CHECK(pull2.code == 0);
   CHECK(normalise(pull2.out, arena.cpp_root) == "pulled task:2 claim:<TOKEN> action:2\n");
+}
+
+TEST_CASE("planar-agent parity: task cancel also rolls up a blocked dependent (second production binding)",
+          "[cmd][agent][parity][claims][deps]") {
+  // The case above pins `clear_unblocked_dependents` reached through
+  // `planar-agent complete` -> `mark_done` -- the ONLY production call
+  // site it exercises end to end. `mark_cancelled` is a second, distinct
+  // production call site for the same roll-up (decision 1122: cancelled
+  // is terminal and clears dependents exactly as done does), reached
+  // through `planar task cancel` rather than the agent plane at all. This
+  // case pins that second binding so a regression specific to the
+  // `mark_cancelled` call site (task.cpp) is not masked by the `mark_done`
+  // coverage above.
+  auto const arena = make_arena("cancelpull");
+  seed_arena(arena.cpp_root, 2);
+
+  (void)run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "block", "2", "--on", "1", "--reason", "waiting"},
+                   arena.cpp_root, "block-b-on-a");
+  REQUIRE(scalar_int_state(arena.cpp_root, "select status = 'blocked' from tasks where id = 2") == 1);
+
+  auto const cancel_a = run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "cancel", "1"}, arena.cpp_root, "cancel-a");
+  CHECK(cancel_a.code == 0);
+
+  auto const show_b = run_pinned(cpp_planar_bin(), std::vector<std::string>{"task", "show", "2", "--json"}, arena.cpp_root,
+                                 "show-b-after-cancel");
+  CHECK(show_b.code == 0);
+  CHECK(show_b.out.contains(R"("status":"todo")"));
 }
