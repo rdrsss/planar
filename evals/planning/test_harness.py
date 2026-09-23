@@ -810,7 +810,8 @@ class DrafterRoutingTests(unittest.TestCase):
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "stage_vendor_config", side_effect=_stage_side_effect) as stage_mock, \
                 mock.patch.object(harness.arena, "assert_vendor_auth", side_effect=_auth_side_effect), \
-                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect), \
+                mock.patch.object(harness, "persist_to_ledger"):
             code, out, err = run_harness_main(
                 ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
@@ -831,7 +832,8 @@ class DrafterRoutingTests(unittest.TestCase):
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "stage_vendor_config"), \
                 mock.patch.object(harness.arena, "assert_vendor_auth"), \
-                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect), \
+                mock.patch.object(harness, "persist_to_ledger"):
             code, out, err = run_harness_main(
                 ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
@@ -869,7 +871,8 @@ class DrafterRoutingTests(unittest.TestCase):
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "stage_vendor_config"), \
                 mock.patch.object(harness.arena, "assert_vendor_auth"), \
-                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect), \
+                mock.patch.object(harness, "persist_to_ledger"):
             code, out, err = run_harness_main(
                 ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
@@ -896,7 +899,8 @@ class DrafterRoutingTests(unittest.TestCase):
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "stage_vendor_config"), \
                 mock.patch.object(harness.arena, "assert_vendor_auth"), \
-                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect), \
+                mock.patch.object(harness, "persist_to_ledger"):
             code, out, _err = run_harness_main(
                 ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
@@ -928,6 +932,104 @@ class DrafterRoutingTests(unittest.TestCase):
         self.assertEqual(code, harness.EXIT_FAIL)
         self.assertIn("required read surface", out + err)
         run_model_mock.assert_not_called()
+
+
+class LedgerPersistenceTests(unittest.TestCase):
+    """Task 6894: `{drafter_model, grader_model}` land in the durable,
+    shared `evals/RESULTS.md` ledger via the orchestrator harness's
+    `record_ledger_row` (task 6860 / C6), not only in the printed JSON
+    line -- a live planning run is paid-for, and losing which model
+    drafted and which graded makes the retained result unattributable.
+    """
+
+    _COMPLETE_DRAFT = (
+        "product-spec tech-spec test-spec roadmap\n"
+        "Goal: x\nNon-goals: y\nAcceptance: z\nOpen questions: w\n"
+    )
+
+    @staticmethod
+    def _draft_then_grade_side_effect(calls: list[int]):
+        def _side_effect(argv, prompt, timeout, env):
+            calls.append(1)
+            return (
+                LedgerPersistenceTests._COMPLETE_DRAFT
+                if len(calls) == 1
+                else '{"scores": {"a": 1.0}}'
+            )
+
+        return _side_effect
+
+    def test_persist_to_ledger_writes_case_and_both_models(self) -> None:
+        orch = harness._orchestrator_harness()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            with mock.patch.object(orch, "RESULTS_LEDGER_PATH", ledger_path):
+                harness.persist_to_ledger(
+                    {"id": "persist-probe"},
+                    "claude-haiku-4-5",
+                    "claude-opus-5",
+                    {"mean": 0.9, "min": 0.8, "max": 1.0, "stdev": 0.1},
+                    "pass",
+                )
+                rows = orch.ledger_rows()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["case"], "persist-probe")
+            self.assertEqual(rows[0]["grade"], "pass")
+            self.assertIn("claude-haiku-4-5", rows[0]["model"])
+            self.assertIn("claude-opus-5", rows[0]["model"])
+
+    def test_call_site_records_a_ledger_row_for_a_live_run(self) -> None:
+        # CALL-SITE test: proves `main()` itself invokes `persist_to_ledger`,
+        # not just that the function works standing alone. A no-op in place
+        # of the call site inside `main()` would leave the test above green
+        # while a real `--case ... --model ...` invocation never populated
+        # the ledger (task 6917/6894 review finding: unit-test isolation
+        # from the previous cycle is exactly why this needs its own
+        # end-to-end proof, not just a call-site-unaware unit check).
+        orch = harness._orchestrator_harness()
+        calls: list[int] = []
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                    mock.patch.object(harness.arena, "stage_vendor_config"), \
+                    mock.patch.object(harness.arena, "assert_vendor_auth"), \
+                    mock.patch.object(
+                        harness, "run_model",
+                        side_effect=self._draft_then_grade_side_effect(calls),
+                    ), \
+                    mock.patch.object(orch, "RESULTS_LEDGER_PATH", ledger_path):
+                code, out, err = run_harness_main(
+                    ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+                )
+                rows = orch.ledger_rows()
+            self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
+            case = harness.load_case("spec-draft-quality")
+            self.assertEqual(len(rows), 1, f"expected exactly one ledger row, got: {rows}")
+            self.assertEqual(rows[0]["case"], case["id"])
+            self.assertEqual(rows[0]["grade"], "pass")
+            self.assertIn("claude-haiku-4-5", rows[0]["model"])
+            self.assertIn(case["grader_model"], rows[0]["model"])
+
+    def test_ledger_persist_failure_fails_the_run_not_silently(self) -> None:
+        # "Failure over silence" (this file's own docstring doctrine):
+        # a persistence failure must fail the run, never a pass and never
+        # a silent skip.
+        calls: list[int] = []
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "stage_vendor_config"), \
+                mock.patch.object(harness.arena, "assert_vendor_auth"), \
+                mock.patch.object(
+                    harness, "run_model",
+                    side_effect=self._draft_then_grade_side_effect(calls),
+                ), \
+                mock.patch.object(
+                    harness, "persist_to_ledger", side_effect=RuntimeError("disk full")
+                ):
+            code, out, err = run_harness_main(
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+            )
+        self.assertEqual(code, harness.EXIT_FAIL)
+        self.assertIn("disk full", out + err)
 
 
 if __name__ == "__main__":
