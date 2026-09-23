@@ -100,6 +100,21 @@ pinned `error: <verb>: <Tag>` text on stderr (task 6844, decision 1145):
 {"error":{"verb":"<verb>","tag":"<tag>"}}
 ```
 
+**One JSON document per stream (task 6903).** A handful of `planar`
+handlers write their own JSON payload to stdout and THEN fail (`audit
+handoff-readiness --json` at exit 1 once the pass rate is below
+threshold; `templates validate --json` at exit 2 once an issue is found).
+For those, the envelope above is NOT appended — the handler's own payload
+is the entire document. Appending a second JSON document on the same
+stream would break a `json.loads(proc.stdout)` consumer, which expects
+exactly one value. This is detected once, at the dispatch site, by
+tracking whether the handler wrote anything to stdout before failing —
+not by special-casing individual verbs — so it applies uniformly to any
+handler with this shape, present or future. A handler that writes
+NOTHING before failing (the common case — `resume validate <missing
+task>`, `audit session <missing id>`, and most others) is unaffected: the
+envelope is still the only document on stdout.
+
 **The two binaries spell `<tag>` in two DIFFERENT, DELIBERATE vocabularies.
 A script that branches on `tag` must know which binary produced the
 envelope, exactly as it already must for the exit code above.**
