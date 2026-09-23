@@ -390,6 +390,12 @@ class LifecycleContext:
     env: dict[str, str]
     plan_id: str
     task_id: str
+    # Every task id `prepare_lifecycle_fixture` created for this case, in
+    # `case["tasks"]` order. `task_id` above is always `task_ids[0]` --
+    # kept as its own field (rather than derived) so the single-task
+    # retained-artifact grading path (task.after.json) never has to reach
+    # into a list.
+    task_ids: list[str] = field(default_factory=list)
 
 
 def pass_line(message: str) -> None:
@@ -885,8 +891,27 @@ def validate_case(path: Path, case: Any) -> None:
             or not isinstance(setup.get("specialist_scenario"), str)
         ):
             invalid("controlled lifecycle fixture setup is required")
-        if not isinstance(tasks, list) or len(tasks) != 1:
-            invalid("lifecycle cases require exactly one task")
+        if not isinstance(tasks, list) or not tasks:
+            invalid("lifecycle cases require at least one task")
+        seen_task_slugs: set[str] = set()
+        for task_entry in tasks:
+            slug = task_entry.get("slug") if isinstance(task_entry, dict) else None
+            if not isinstance(slug, str) or not slug:
+                invalid("each lifecycle task requires a slug")
+            if not isinstance(task_entry.get("title"), str) or not task_entry["title"]:
+                invalid(f"lifecycle task {slug} requires a title")
+            if slug in seen_task_slugs:
+                invalid(f"duplicate lifecycle task slug: {slug}")
+            depends_on = task_entry.get("depends_on")
+            if depends_on is not None and depends_on not in seen_task_slugs:
+                invalid(
+                    f"task {slug} depends_on must name an earlier task slug "
+                    "in the same list"
+                )
+            seen_task_slugs.add(slug)
+        replay = (setup or {}).get("replay", "classic")
+        if replay not in REPLAY_DRIVERS:
+            invalid(f"setup.replay names an unregistered driver: {replay}")
         try:
             vendors.validate_allowed_tools(resolve_allowed_tools(lifecycle))
         except vendors.UnknownToolError as exc:
@@ -903,16 +928,32 @@ def validate_case(path: Path, case: Any) -> None:
         post_state = expected.get("post_state")
         if not isinstance(post_state, dict):
             invalid("lifecycle cases require expected.post_state")
-        missing_keys = [
-            key
-            for key in ("task_status", "file_value")
-            if not post_state.get(key)
-        ]
-        if missing_keys:
+        has_task_status = "task_status" in post_state
+        has_tasks = "tasks" in post_state
+        if has_task_status == has_tasks:
             invalid(
-                "lifecycle cases require expected.post_state to set: "
-                + ", ".join(missing_keys)
+                "lifecycle cases require expected.post_state to set exactly "
+                "one of task_status or tasks"
             )
+        if has_task_status and not post_state.get("task_status"):
+            invalid("lifecycle cases require expected.post_state to set: task_status")
+        if has_tasks:
+            tasks_post = post_state.get("tasks")
+            if not isinstance(tasks_post, list) or not tasks_post:
+                invalid("expected.post_state.tasks must be a non-empty array")
+            for post_entry in tasks_post:
+                if (
+                    not isinstance(post_entry, dict)
+                    or not isinstance(post_entry.get("slug"), str)
+                    or not post_entry["slug"]
+                    or not isinstance(post_entry.get("status"), str)
+                    or not post_entry["status"]
+                ):
+                    invalid(
+                        "each expected.post_state.tasks entry requires slug and status"
+                    )
+        if not post_state.get("file_value"):
+            invalid("lifecycle cases require expected.post_state to set: file_value")
 
 
 def select_cases(
@@ -2108,12 +2149,22 @@ def prepare_lifecycle_fixture(
             env=env,
         )
         plan_id = str(plan["id"])
-        task = case["tasks"][0]
-        next_action = (
+        # Default body/next-action reproduce the pre-multi-task behavior
+        # verbatim, so a single-task case (e.g. classic-lifecycle-success)
+        # is prepared byte-identically to before this loop existed.
+        default_next_action = (
             "Run the controlled coder against src/value.txt and observe make test passing."
         )
-        task_value = run_json(
-            [
+        default_body = (
+            "Acceptance: src/value.txt contains approved after reviewer approval. "
+            "See docs/tech-spec.md."
+        )
+        task_id_by_slug: dict[str, str] = {}
+        task_ids: list[str] = []
+        for task in case["tasks"]:
+            task_next_action = task.get("next_action", default_next_action)
+            task_body = task.get("body", default_body)
+            task_add_argv = [
                 "planar",
                 "task",
                 "add",
@@ -2125,37 +2176,56 @@ def prepare_lifecycle_fixture(
                 "--slug",
                 task["slug"],
                 "--body",
-                "Acceptance: src/value.txt contains approved after reviewer approval. "
-                "See docs/tech-spec.md.",
+                task_body,
                 "--next-action",
-                next_action,
+                task_next_action,
                 "--editor=false",
                 "--json",
-            ],
-            cwd=repo,
-            env=env,
-        )
-        task_id = str(task_value["id"])
-        run_command(
-            [
-                "planar",
-                "capture",
-                "snapshot",
-                "--task",
-                task_id,
-                "--next-action",
-                next_action,
-                "--note",
-                "orchestration_checkpoint: v1\n"
-                "stage: verified-slice\n"
-                "iteration_scope: none\n"
-                "iteration: 0\n"
-                "result: lifecycle-fixture-ready",
-                "--json",
-            ],
-            cwd=repo,
-            env=env,
-        )
+            ]
+            if "priority" in task:
+                task_add_argv += ["--priority", str(task["priority"])]
+            task_value = run_json(task_add_argv, cwd=repo, env=env)
+            this_task_id = str(task_value["id"])
+            task_id_by_slug[task["slug"]] = this_task_id
+            task_ids.append(this_task_id)
+            depends_on = task.get("depends_on")
+            if depends_on is not None:
+                blocker_task_id = task_id_by_slug[depends_on]
+                run_command(
+                    [
+                        "planar",
+                        "task",
+                        "link",
+                        this_task_id,
+                        f"task:{blocker_task_id}",
+                        "--relationship",
+                        "depends-on",
+                        "--json",
+                    ],
+                    cwd=repo,
+                    env=env,
+                )
+            run_command(
+                [
+                    "planar",
+                    "capture",
+                    "snapshot",
+                    "--task",
+                    this_task_id,
+                    "--next-action",
+                    task_next_action,
+                    "--note",
+                    "orchestration_checkpoint: v1\n"
+                    "stage: verified-slice\n"
+                    "iteration_scope: none\n"
+                    "iteration: 0\n"
+                    "result: lifecycle-fixture-ready",
+                    "--json",
+                ],
+                cwd=repo,
+                env=env,
+            )
+        task_id = task_ids[0]
 
         for directory in (
             repo / ".eval" / "bin",
@@ -2263,6 +2333,7 @@ def prepare_lifecycle_fixture(
                 "surface": options.surface,
                 "plan_id": plan_id,
                 "task_id": task_id,
+                "task_ids": task_ids,
                 "repo": "repo",
                 # C6: marks this artifact set as one that MUST carry a
                 # `repo/.eval/observed` tree by the time grading runs. A
@@ -2274,7 +2345,7 @@ def prepare_lifecycle_fixture(
             },
         )
         return LifecycleContext(
-            case_path, case, artifacts, repo, env, plan_id, task_id
+            case_path, case, artifacts, repo, env, plan_id, task_id, task_ids
         )
     except Exception as exc:
         if isinstance(exc, (EvalFailure, EvalBlocked)) and exc.artifacts is None:
@@ -2710,6 +2781,25 @@ def collect_lifecycle_artifacts(
     )
     write_json(artifacts / "task.after.json", task)
     write_json(artifacts / "task.audit.json", audit)
+    # `tasks.after.json` covers EVERY task the case created (context.task_ids),
+    # not only the first -- this is what `grade_lifecycle_artifacts` reads
+    # for a case whose `expected.post_state` uses `tasks` rather than the
+    # single-task `task_status` key. `task.after.json` above stays the
+    # first task alone, unconditionally, so a retained artifact set from
+    # before this field existed still regrades.
+    tasks_after: list[dict[str, Any]] = []
+    for task_id_for_collection in context.task_ids or [context.task_id]:
+        if task_id_for_collection == context.task_id:
+            tasks_after.append(task)
+        else:
+            tasks_after.append(
+                run_json(
+                    ["planar", "task", "show", task_id_for_collection, "--json"],
+                    cwd=repo,
+                    env=env,
+                )
+            )
+    write_json(artifacts / "tasks.after.json", tasks_after)
     observed_dir = repo / ".eval" / "observed"
     observed_records = read_observed_records(observed_dir)
     claims = audit.get("agent_activity", {}).get("claims", [])
@@ -2890,20 +2980,55 @@ def grade_lifecycle_artifacts(
                 options,
                 f"event {event} count was {actual}, expected {expected_count}",
             )
-    # `task_status` and `file_value` are REQUIRED on every lifecycle case's
-    # `expected.post_state` (validate_case, task 6837/D4): there is no
-    # longer a silent-skip branch here for either key being absent, because
-    # a lifecycle case can no longer reach this function without them.
+    # `file_value` plus exactly one of `task_status` / `tasks` are REQUIRED
+    # on every lifecycle case's `expected.post_state` (validate_case, task
+    # 6837/D4, widened by task 6854/6857): there is no silent-skip branch
+    # here for any of them being absent, because a lifecycle case can no
+    # longer reach this function without a valid post_state.
     post_state = case.get("expected", {}).get("post_state", {})
-    task = read_json(artifact_dir / "task.after.json")
-    expected_status = post_state["task_status"]
-    if task.get("status") != expected_status:
-        raise live_failure(
-            artifact_dir,
-            case_id,
-            options,
-            f"task status was {task.get('status')}, expected {expected_status}",
-        )
+    if "tasks" in post_state:
+        tasks_after_path = artifact_dir / "tasks.after.json"
+        if not tasks_after_path.is_file():
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                "artifact set is incomplete: tasks.after.json",
+            )
+        tasks_after = {
+            entry.get("slug"): entry
+            for entry in read_json(tasks_after_path)
+            if isinstance(entry, dict)
+        }
+        for post_task in post_state["tasks"]:
+            slug = post_task["slug"]
+            expected_status = post_task["status"]
+            actual_task = tasks_after.get(slug)
+            if actual_task is None:
+                raise live_failure(
+                    artifact_dir,
+                    case_id,
+                    options,
+                    f"tasks.after.json has no entry for task slug {slug}",
+                )
+            if actual_task.get("status") != expected_status:
+                raise live_failure(
+                    artifact_dir,
+                    case_id,
+                    options,
+                    f"task {slug} status was {actual_task.get('status')}, "
+                    f"expected {expected_status}",
+                )
+    else:
+        task = read_json(artifact_dir / "task.after.json")
+        expected_status = post_state["task_status"]
+        if task.get("status") != expected_status:
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                f"task status was {task.get('status')}, expected {expected_status}",
+            )
     claims = read_json(artifact_dir / "claims.after.json")
     active_count = len(claims.get("active", []))
     expected_claims = post_state.get("active_claims")
@@ -2935,6 +3060,240 @@ def grade_lifecycle_artifacts(
         )
 
 
+def _lifecycle_pull(
+    context: LifecycleContext, options: Options, case_id: str
+) -> tuple[str, str | None]:
+    """Shared `planar-agent pull` call every replay driver needs. Returns
+    `(claim_token, pulled_task_id)`; `pulled_task_id` is `None` when the
+    real binary's `--json` shape carries no `task` object (e.g. `no_work`).
+    """
+    claim = run_json(
+        [
+            "planar-agent",
+            "pull",
+            context.plan_id,
+            "--role",
+            "coder",
+            "--base-ref",
+            "HEAD",
+            "--repo-root",
+            str(context.repo),
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    claim_token = (
+        claim.get("claim_token")
+        or claim.get("claim", {}).get("claim_token")
+        or claim.get("claim", {}).get("token")
+    )
+    if not claim_token:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "fixture replay did not receive a claim token",
+        )
+    pulled_task_id = claim.get("task", {}).get("id")
+    return str(claim_token), (str(pulled_task_id) if pulled_task_id is not None else None)
+
+
+def replay_driver_classic(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """The original controlled-classic claim -> coder -> reviewer ->
+    (bounce) -> complete sequence, unchanged from before the driver
+    registry existed (task 6854/6857 substrate generalization).
+    """
+    case_id = case["id"]
+    claim_token, _pulled_task_id = _lifecycle_pull(context, options, case_id)
+    coder = run_command(
+        ["./.eval/control.sh", "coder", str(claim_token)],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "coder-1.txt", coder.stdout)
+    reviewer = run_command(
+        ["./.eval/control.sh", "reviewer", str(claim_token)],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "reviewer-1.txt", reviewer.stdout)
+    if "decision: request-changes" in reviewer.stdout:
+        coder2 = run_command(
+            ["./.eval/control.sh", "coder", str(claim_token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        reviewer2 = run_command(
+            ["./.eval/control.sh", "reviewer", str(claim_token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / "coder-2.txt", coder2.stdout)
+        write_text(context.artifacts / "reviewer-2.txt", reviewer2.stdout)
+    complete = run_command(
+        [
+            "planar-agent",
+            "complete",
+            "--claim",
+            str(claim_token),
+            "--summary",
+            "controlled lifecycle fixture approved",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "complete.json", complete.stdout)
+
+
+def replay_driver_session_death(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6854: claim, run the controlled coder, then exit WITHOUT any
+    terminal verb -- emulating a dead agent session (a coder process that
+    dies before calling complete/fail/release/block). The lease is given a
+    short TTL so `reconcile` can mark it stale immediately rather than the
+    driver having to wait out a real 600s default lease.
+    `planar-agent reconcile --plan <plan-id>` is the recovery path this
+    case exists to grade (agents/methodology.md "Operator recovery";
+    docs/lifecycles.md's session-death reset rule).
+    """
+    case_id = case["id"]
+    claim = run_json(
+        [
+            "planar-agent",
+            "pull",
+            context.plan_id,
+            "--role",
+            "coder",
+            "--base-ref",
+            "HEAD",
+            "--repo-root",
+            str(context.repo),
+            "--ttl",
+            "1",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    claim_token = (
+        claim.get("claim_token")
+        or claim.get("claim", {}).get("claim_token")
+        or claim.get("claim", {}).get("token")
+    )
+    if not claim_token:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "session-death replay did not receive a claim token",
+        )
+    coder = run_command(
+        ["./.eval/control.sh", "session-death", str(claim_token)],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "coder-1.txt", coder.stdout)
+    # The lane dies here: no complete/fail/release/block. Wait out the
+    # short lease before reconcile runs, so the sweep has something
+    # expired to reclaim.
+    time.sleep(2)
+    run_command(
+        ["planar-agent", "reconcile", "--plan", context.plan_id, "--json"],
+        cwd=context.repo,
+        env=context.env,
+    )
+
+
+def replay_driver_dependency_order(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6857: pull repeatedly, recording which task each pull hands
+    back, and assert the dependent task is never claimed before its
+    blocker reaches a terminal status. This is exactly the invariant
+    `pull`/`peek`'s dependency exclusion grades (`entity_links
+    relationship = 'depends-on'`, `src/lib/engine/runtime/agentatomic.cpp`,
+    task 6841 / decision D6): if that exclusion is ever reverted, the
+    first pull below returns the dependent task instead of the blocker
+    and this driver fails closed rather than silently completing both
+    tasks in the wrong order.
+    """
+    case_id = case["id"]
+    blocker_task_id = context.task_ids[0]
+    dependent_task_id = context.task_ids[1]
+
+    def run_step(token: str, index: int) -> None:
+        coder = run_command(
+            ["./.eval/control.sh", "coder", str(token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"coder-{index}.txt", coder.stdout)
+        reviewer = run_command(
+            ["./.eval/control.sh", "reviewer", str(token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"reviewer-{index}.txt", reviewer.stdout)
+        complete = run_command(
+            [
+                "planar-agent",
+                "complete",
+                "--claim",
+                str(token),
+                "--summary",
+                "controlled dependency-order fixture step",
+                "--json",
+            ],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"complete-{index}.json", complete.stdout)
+
+    token1, pulled1 = _lifecycle_pull(context, options, case_id)
+    if pulled1 != blocker_task_id:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "dependency order violated: pull returned task "
+            f"{pulled1!r} before blocker task {blocker_task_id!r} was claimed",
+        )
+    run_step(token1, 1)
+
+    token2, pulled2 = _lifecycle_pull(context, options, case_id)
+    if pulled2 != dependent_task_id:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            f"dependency order violated: pull returned task {pulled2!r}, "
+            f"expected dependent task {dependent_task_id!r} after the "
+            "blocker completed",
+        )
+    run_step(token2, 2)
+
+
+# Task 6854/6857: `setup.replay` selects which driver `run_lifecycle_fixture_replay`
+# hands the prepared `LifecycleContext` to. `validate_case` refuses any case
+# naming a key not in this dict, so the registry is the single source of
+# truth for which replay shapes exist. Every driver owns only the claim/
+# terminal-verb sequence -- `run_lifecycle_fixture_replay` always runs
+# `collect_lifecycle_artifacts` / `grade_lifecycle_artifacts` afterward, so
+# no driver can skip grading.
+REPLAY_DRIVERS: dict[
+    str, Callable[[LifecycleContext, dict[str, Any], Options], None]
+] = {
+    "classic": replay_driver_classic,
+    "session-death": replay_driver_session_death,
+    "dependency-order": replay_driver_dependency_order,
+}
+
+
 def run_lifecycle_fixture_replay(
     case_path: Path,
     case: dict[str, Any],
@@ -2942,7 +3301,8 @@ def run_lifecycle_fixture_replay(
     *,
     seed_violation: str | None = None,
 ) -> None:
-    """Replay the controlled-classic fixture end-to-end and grade it.
+    """Prepare the controlled-classic fixture, dispatch to the case's
+    replay driver (`setup.replay`, default `classic`), then grade.
 
     `seed_violation`, when set, is forwarded as `EVAL_SEED_VIOLATION` to
     every `.eval/control.sh` invocation (task 6892). The fixture's own
@@ -2957,74 +3317,17 @@ def run_lifecycle_fixture_replay(
     context = prepare_lifecycle_fixture(case_path, case, options, label)
     if seed_violation:
         context.env["EVAL_SEED_VIOLATION"] = seed_violation
+    replay_name = case.get("setup", {}).get("replay", "classic")
+    driver = REPLAY_DRIVERS.get(replay_name)
+    if driver is None:
+        raise live_failure(
+            context.artifacts,
+            case["id"],
+            options,
+            f"unknown lifecycle replay driver: {replay_name}",
+        )
     try:
-        claim = run_json(
-            [
-                "planar-agent",
-                "pull",
-                context.plan_id,
-                "--role",
-                "coder",
-                "--base-ref",
-                "HEAD",
-                "--repo-root",
-                str(context.repo),
-                "--json",
-            ],
-            cwd=context.repo,
-            env=context.env,
-        )
-        claim_token = (
-            claim.get("claim_token")
-            or claim.get("claim", {}).get("claim_token")
-            or claim.get("claim", {}).get("token")
-        )
-        if not claim_token:
-            raise live_failure(
-                context.artifacts,
-                case["id"],
-                options,
-                "fixture replay did not receive a claim token",
-            )
-        coder = run_command(
-            ["./.eval/control.sh", "coder", str(claim_token)],
-            cwd=context.repo,
-            env=context.env,
-        )
-        write_text(context.artifacts / "coder-1.txt", coder.stdout)
-        reviewer = run_command(
-            ["./.eval/control.sh", "reviewer", str(claim_token)],
-            cwd=context.repo,
-            env=context.env,
-        )
-        write_text(context.artifacts / "reviewer-1.txt", reviewer.stdout)
-        if "decision: request-changes" in reviewer.stdout:
-            coder2 = run_command(
-                ["./.eval/control.sh", "coder", str(claim_token)],
-                cwd=context.repo,
-                env=context.env,
-            )
-            reviewer2 = run_command(
-                ["./.eval/control.sh", "reviewer", str(claim_token)],
-                cwd=context.repo,
-                env=context.env,
-            )
-            write_text(context.artifacts / "coder-2.txt", coder2.stdout)
-            write_text(context.artifacts / "reviewer-2.txt", reviewer2.stdout)
-        complete = run_command(
-            [
-                "planar-agent",
-                "complete",
-                "--claim",
-                str(claim_token),
-                "--summary",
-                "controlled lifecycle fixture approved",
-                "--json",
-            ],
-            cwd=context.repo,
-            env=context.env,
-        )
-        write_text(context.artifacts / "complete.json", complete.stdout)
+        driver(context, case, options)
         collect_lifecycle_artifacts(context, options)
         grade_lifecycle_artifacts(case, context.artifacts, options)
         write_grade(context.artifacts, "pass", case["id"], options)

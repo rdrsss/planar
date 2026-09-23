@@ -60,6 +60,21 @@
           "title": {
             "type": "string",
             "minLength": 1
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1
+          },
+          "next_action": {
+            "type": "string",
+            "minLength": 1
+          },
+          "depends_on": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "priority": {
+            "type": "integer"
           }
         }
       }
@@ -342,7 +357,7 @@
             "required": ["post_state"],
             "properties": {
               "post_state": {
-                "required": ["task_status", "file_value"]
+                "required": ["file_value"]
               }
             }
           }

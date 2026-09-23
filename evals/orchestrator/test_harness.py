@@ -2602,6 +2602,30 @@ class RequiredPostStateTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.EvalFailure, "post_state"):
             harness.validate_case(Path("<probe>"), case)
 
+    def test_unregistered_replay_driver_fails_validation(self) -> None:
+        case = minimal_valid_lifecycle_case("bad-replay-driver")
+        case["setup"] = dict(case["setup"])
+        case["setup"]["replay"] = "not-a-real-driver"
+        with self.assertRaisesRegex(harness.EvalFailure, "not-a-real-driver"):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_duplicate_task_slug_fails_validation(self) -> None:
+        case = minimal_valid_lifecycle_case("dup-slug-probe")
+        case["tasks"] = [
+            {"slug": "same-slug", "title": "one"},
+            {"slug": "same-slug", "title": "two"},
+        ]
+        with self.assertRaisesRegex(harness.EvalFailure, "duplicate lifecycle task slug"):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_depends_on_unknown_slug_fails_validation(self) -> None:
+        case = minimal_valid_lifecycle_case("bad-depends-on-probe")
+        case["tasks"] = [
+            {"slug": "task-one", "title": "one", "depends_on": "does-not-exist"},
+        ]
+        with self.assertRaisesRegex(harness.EvalFailure, "depends_on"):
+            harness.validate_case(Path("<probe>"), case)
+
     def test_a_non_lifecycle_case_is_unaffected(self) -> None:
         case = {
             "schema_version": 1,
@@ -2640,11 +2664,17 @@ class RequiredPostStateTests(unittest.TestCase):
                     harness.load_cases()
 
     def test_existing_lifecycle_cases_declare_both_keys(self) -> None:
+        # Task 6854/6857: a lifecycle case declares EXACTLY ONE of
+        # task_status (single-task cases) or tasks (multi-task cases),
+        # plus file_value unconditionally, in every repository case.
         for path, case in harness.load_cases():
             if "lifecycle" not in case["tiers"]:
                 continue
             post_state = case["expected"]["post_state"]
-            self.assertTrue(post_state.get("task_status"), path)
+            self.assertTrue(
+                bool(post_state.get("task_status")) != bool(post_state.get("tasks")),
+                path,
+            )
             self.assertTrue(post_state.get("file_value"), path)
 
     def test_grader_no_longer_skips_a_task_status_mismatch(self) -> None:
@@ -2663,6 +2693,153 @@ class RequiredPostStateTests(unittest.TestCase):
             ):
                 harness.grade_lifecycle_artifacts(
                     lifecycle_case(), artifact_dir, lifecycle_options()
+                )
+
+
+class MultiTaskPostStateGradingTests(unittest.TestCase):
+    """Task 6857: `expected.post_state.tasks` (a list of {slug, status})
+    is an alternative to the single-task `task_status` key.
+    `grade_lifecycle_artifacts` must read `tasks.after.json` and check
+    EVERY listed task, not just fall through and silently ignore `tasks`
+    in favor of nothing.
+    """
+
+    def multi_task_case(self) -> dict[str, object]:
+        case = lifecycle_case()
+        case["expected"] = dict(case["expected"])
+        case["expected"]["post_state"] = {
+            "tasks": [
+                {"slug": "blocker-task", "status": "done"},
+                {"slug": "dependent-task", "status": "done"},
+            ],
+            "active_claims": 0,
+            "file_value": "approved",
+        }
+        return case
+
+    def write_tasks_after(self, artifact_dir: Path, statuses: dict[str, str]) -> None:
+        harness.write_json(
+            artifact_dir / "tasks.after.json",
+            [{"slug": slug, "status": status} for slug, status in statuses.items()],
+        )
+
+    def test_call_site_checks_every_listed_task(self) -> None:
+        # CALL-SITE test: a mutant that reads only post_state["tasks"][0],
+        # or that skips the "tasks" branch entirely and falls through to
+        # task.after.json, must fail this test -- the blocker is "done"
+        # (so a task.after.json-only check would pass) but the dependent
+        # is still "doing".
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            self.write_tasks_after(
+                artifact_dir, {"blocker-task": "done", "dependent-task": "doing"}
+            )
+            with self.assertRaisesRegex(
+                harness.EvalFailure,
+                "task dependent-task status was doing, expected done",
+            ):
+                harness.grade_lifecycle_artifacts(
+                    self.multi_task_case(), artifact_dir, lifecycle_options()
+                )
+
+    def test_all_tasks_matching_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            self.write_tasks_after(
+                artifact_dir, {"blocker-task": "done", "dependent-task": "done"}
+            )
+            harness.grade_lifecycle_artifacts(
+                self.multi_task_case(), artifact_dir, lifecycle_options()
+            )
+
+    def test_missing_tasks_after_json_fails_naming_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            artifact_dir = Path(raw_tmp)
+            write_lifecycle_artifacts(artifact_dir)
+            with self.assertRaisesRegex(harness.EvalFailure, "tasks.after.json"):
+                harness.grade_lifecycle_artifacts(
+                    self.multi_task_case(), artifact_dir, lifecycle_options()
+                )
+
+
+class ReplayDriverRegistryTests(unittest.TestCase):
+    """Task 6854/6857: `run_lifecycle_fixture_replay` dispatches to the
+    driver named by `setup.replay` (default `classic`), and every driver
+    still goes through the shared collect/grade wrapper.
+    """
+
+    def test_call_site_dispatches_to_the_named_driver(self) -> None:
+        # CALL-SITE test: a mutant that hardcodes replay_driver_classic (or
+        # otherwise ignores setup.replay) must fail this test.
+        case = {
+            "id": "driver-dispatch-probe",
+            "setup": {"replay": "session-death"},
+        }
+        fake_context = harness.LifecycleContext(
+            case_path=Path("<probe>"),
+            case=case,
+            artifacts=Path("<artifacts>"),
+            repo=Path("<repo>"),
+            env={},
+            plan_id="1",
+            task_id="1",
+            task_ids=["1"],
+        )
+        with mock.patch.object(
+            harness, "prepare_lifecycle_fixture", return_value=fake_context
+        ), mock.patch.object(
+            harness, "replay_driver_classic"
+        ) as classic_mock, mock.patch.object(
+            harness, "replay_driver_session_death"
+        ) as session_death_mock, mock.patch.object(
+            harness, "collect_lifecycle_artifacts"
+        ), mock.patch.object(
+            harness, "grade_lifecycle_artifacts"
+        ), mock.patch.object(
+            harness, "write_grade"
+        ), mock.patch.object(
+            harness, "finish_artifacts"
+        ):
+            # `REPLAY_DRIVERS` closes over the ORIGINAL function objects at
+            # module-import time, so patching the module attribute alone
+            # does not redirect a dict lookup made against the stale copy.
+            # Patch the registry entry too, mirroring how `main()` would
+            # observe a real code change.
+            with mock.patch.dict(
+                harness.REPLAY_DRIVERS,
+                {"session-death": session_death_mock, "classic": classic_mock},
+            ):
+                harness.run_lifecycle_fixture_replay(
+                    Path("<case-path>"), case, lifecycle_options()
+                )
+        session_death_mock.assert_called_once()
+        classic_mock.assert_not_called()
+
+    def test_unregistered_driver_fails_before_any_replay_work(self) -> None:
+        case = {
+            "id": "driver-unregistered-probe",
+            "setup": {"replay": "not-a-real-driver"},
+        }
+        fake_context = harness.LifecycleContext(
+            case_path=Path("<probe>"),
+            case=case,
+            artifacts=Path("<artifacts>"),
+            repo=Path("<repo>"),
+            env={},
+            plan_id="1",
+            task_id="1",
+            task_ids=["1"],
+        )
+        with mock.patch.object(
+            harness, "prepare_lifecycle_fixture", return_value=fake_context
+        ):
+            with self.assertRaisesRegex(
+                harness.EvalFailure, "unknown lifecycle replay driver"
+            ):
+                harness.run_lifecycle_fixture_replay(
+                    Path("<case-path>"), case, lifecycle_options()
                 )
 
 
@@ -2844,6 +3021,59 @@ class ArtifactFormatObservedLogGateTest(unittest.TestCase):
             self.assertEqual(
                 run_json.get("artifact_format"), harness.ARTIFACT_FORMAT_OBSERVED_LOG
             )
+
+    def test_prepare_lifecycle_fixture_creates_every_task_and_wires_depends_on(
+        self,
+    ) -> None:
+        # CALL-SITE test for the multi-task loop in prepare_lifecycle_fixture
+        # (task 6854/6857): a mutant that only creates case["tasks"][0], or
+        # that drops the `planar task link ... --relationship depends-on`
+        # call for a task carrying `depends_on`, must fail this test. Drives
+        # the real function against the real `planar` binary (options.vendor
+        # == "" -- fixture-replay mode, no vendor host or auth needed), the
+        # same shape as the format-marker test above.
+        case = {
+            "id": "multi-task-prepare-probe",
+            "tasks": [
+                {"slug": "blocker-task", "title": "Blocker task"},
+                {
+                    "slug": "dependent-task",
+                    "title": "Dependent task",
+                    "depends_on": "blocker-task",
+                },
+            ],
+            "setup": {
+                "fixture": "controlled-classic",
+                "specialist_scenario": "success",
+            },
+        }
+        with tempfile.TemporaryDirectory(prefix="planar-eval-multitask-") as results_root:
+            options = harness.Options(
+                mode="lifecycle-fixture",
+                vendor="",
+                surface="agent",
+                case_filter=None,
+                results_dir=Path(results_root),
+                keep=True,
+            )
+            context = harness.prepare_lifecycle_fixture(
+                harness.ROOT / "evals" / "orchestrator" / "cases" / "classic-lifecycle-success.json",
+                case,
+                options,
+                "fixture",
+            )
+            self.assertEqual(len(context.task_ids), 2)
+            self.assertEqual(context.task_id, context.task_ids[0])
+            run_meta = harness.read_json(context.artifacts / "run.json")
+            self.assertEqual(run_meta.get("task_ids"), context.task_ids)
+            links = harness.run_json(
+                ["planar", "links", "list", f"task:{context.task_ids[1]}", "--json"],
+                cwd=context.repo,
+                env=context.env,
+            )
+            self.assertEqual(links["relationship"], "depends-on")
+            self.assertEqual(str(links["from_id"]), context.task_ids[1])
+            self.assertEqual(str(links["to_id"]), context.task_ids[0])
 
 
 class RateLimitDetectionTest(unittest.TestCase):

@@ -85,6 +85,19 @@ reason: the controlled lifecycle fixture already has its single acceptance check
 claim: $CLAIM_TOKEN
 EOF
     ;;
+  session-death)
+    # Task 6854: emulates a coder session that dies after doing its work
+    # but before calling any planar-agent terminal verb. Writes the value
+    # and logs the coder-finished boundary event exactly like the `coder`
+    # branch, then exits WITHOUT reviewing or completing -- the harness's
+    # session-death replay driver never calls this script's `reviewer`
+    # branch and never invokes planar-agent complete/fail/release/block
+    # for this claim token.
+    printf '%s\n' "approved" > "$REPO_ROOT/src/value.txt"
+    make -C "$REPO_ROOT" test >/dev/null
+    log_event "coder-finished"
+    exit 0
+    ;;
   *)
     echo "unknown controlled specialist role: $ROLE" >&2
     exit 2
