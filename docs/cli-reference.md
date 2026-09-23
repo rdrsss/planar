@@ -7078,6 +7078,28 @@ answer rather than a reason to start one.
   shutdown. `drain` is a Planar-side admission gate: Centurion exposes no "stop
   admitting" operation, so what Planar stops is its own submitting.
 
+#### The installed daemon
+
+`centuriond` is installed BESIDE the Planar binaries — `make build` copies it
+into `./bin/` and `install.sh` writes `$PLANAR_HOME/bin/centuriond` — because
+`planar-execute` resolves it as its own sibling, the same rule `cli.planar(...)`
+uses for `planar`. What runs is the daemon that shipped with this client, not
+whatever a `PATH` names first.
+
+It is a STOCK Centurion daemon built from the pinned archive (Planar decision
+1075): Planar never patches or forks it, and configuration is the whole
+Planar-specific input. Its migrations and a `build-identity.json` — the tag,
+commit, archive digest, whether it came from a source build or a release
+binary, and the binary's own digest — live under
+`$PLANAR_HOME/share/centurion/`. That identity is one element of the
+compatibility tuple a client compares before joining a daemon another client
+started.
+
+The workflow BUNDLE a daemon runs is not installed yet: publishing
+`workflows/*.lua` with the Lua prelude and the command policy is plan 1033 M3
+(tasks 6510 / 6514), and until it lands a profile points `bundle` at a
+directory the operator supplies.
+
 #### Provider configuration
 
 `[execute.profiles.<name>.providers.<vendor>]` is passed to the daemon when
