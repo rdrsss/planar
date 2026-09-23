@@ -65,8 +65,16 @@ auto classify(const centurion::client::error& failure) -> call_outcome {
     return call_outcome::retryable;
   case error_code::deadline_exceeded:
   case error_code::cancelled:
-  case error_code::internal:
     return call_outcome::uncertain;
+  case error_code::internal:
+    // NOT uncertain. `internal` is Centurion's *unclassified* failure, and it
+    // is what a permanently malformed request gets — a live submit against a
+    // bundle whose contract the host could not use returned `internal` on
+    // every attempt. Treating it as uncertain made the client replay a call
+    // that could never succeed, silently, until its follow budget expired.
+    // Centurion names everything genuinely replayable (`aborted`,
+    // `unavailable`, `resource_exhausted`), so anything else is reported.
+    return call_outcome::refused;
   default:
     return call_outcome::refused;
   }

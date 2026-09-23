@@ -91,6 +91,15 @@ struct flow_outcome {
 /// @return The identifier text.
 [[nodiscard]] auto make_request_id(std::chrono::system_clock::time_point now, std::uint64_t entropy) -> std::string;
 
+/// @brief How many times one submission may be replayed under its request id.
+///
+/// A BOUND, not a tuning knob. An uncertain answer is replayed because the
+/// ledger can resolve it, but a misclassified permanent failure would
+/// otherwise replay until the follow budget expired — silently, since the
+/// diagnostic is only printed at the end. A live submit against a bundle
+/// Centurion could not use did exactly that before this bound existed.
+inline constexpr int max_submit_attempts = 3;
+
 /// @brief Submit one run and follow it until it is terminal or the budget expires.
 ///
 /// An UNCERTAIN submission is replayed under the same request id — never a

@@ -53,7 +53,7 @@ auto submit_and_follow(const run_client& client, std::string_view bundle, std::s
   while (true) {
     ++outcome.attempts_;
     answer = client.submit_(bundle, input_json, request_id);
-    if (answer.outcome_ != daemon_outcome::uncertain || now() >= deadline) {
+    if (answer.outcome_ != daemon_outcome::uncertain || now() >= deadline || outcome.attempts_ >= max_submit_attempts) {
       break;
     }
     rest(std::chrono::milliseconds{100});
@@ -66,13 +66,17 @@ auto submit_and_follow(const run_client& client, std::string_view bundle, std::s
   case daemon_outcome::refused:
     return flow_outcome{.result_ = flow_result::refused, .run_ = {}, .message_ = answer.message_, .attempts_ = outcome.attempts_};
   case daemon_outcome::uncertain:
-    // The budget expired while the answer was still unknown. Uncertain is not
-    // failure: the run may be executing, and the same request id will still
-    // resolve it later.
-    return flow_outcome{.result_ = flow_result::retry_later,
-                        .run_    = {},
-                        .message_ =
-                            answer.message_.empty() ? std::string("the daemon did not answer the submission") : answer.message_,
+    // Still unknown after every allowed replay, or after the budget expired.
+    // Uncertain is not failure: the run may be executing, and the same request
+    // id still resolves it later. The attempt count is part of the message
+    // because "we asked three times and never learned" is what the operator
+    // needs to know.
+    return flow_outcome{.result_   = flow_result::retry_later,
+                        .run_      = {},
+                        .message_  = std::format("{} (after {} attempt(s) under the same request id)",
+                                                 answer.message_.empty() ? std::string("the daemon did not answer the submission")
+                                                                         : answer.message_,
+                                                 outcome.attempts_),
                         .attempts_ = outcome.attempts_};
   case daemon_outcome::ok:
     break;

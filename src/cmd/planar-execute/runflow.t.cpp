@@ -98,6 +98,24 @@ TEST_CASE("an uncertain submission is replayed under the same request id", "[exe
   CHECK(daemon.submitted_ids[1] == request_id); // the SAME id, not a fresh one
 }
 
+TEST_CASE("an endlessly uncertain submission stops replaying and says so", "[execute][runflow]") {
+  // Found live, not by unit test: a permanently failing submit classified as
+  // uncertain replayed silently until the follow budget expired. The bound is
+  // what turns that into a diagnostic a caller can read.
+  scripted_daemon daemon;
+  daemon.submits = {daemon_answer{.outcome_ = daemon_outcome::uncertain, .message_ = "contract is unusable"}};
+
+  const auto outcome = submit_and_follow(daemon.client(), "planar.supervision", "{}", request_id);
+  CHECK(outcome.result_ == flow_result::retry_later);
+  CHECK(outcome.attempts_ == planar::cmd::execute::max_submit_attempts);
+  CHECK(outcome.message_.contains("contract is unusable"));
+  CHECK(outcome.message_.contains("attempt"));
+  // Every attempt reused the one request id.
+  for (const auto& seen : daemon.submitted_ids) {
+    CHECK(seen == request_id);
+  }
+}
+
 TEST_CASE("a retryable refusal is its own outcome, not a failure of the work", "[execute][runflow]") {
   scripted_daemon daemon;
   daemon.submits = {daemon_answer{.outcome_ = daemon_outcome::retryable, .message_ = "host is draining"}};
