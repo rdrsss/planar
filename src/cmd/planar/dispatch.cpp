@@ -136,11 +136,26 @@ private:
 /// replaced by a counting proxy.
 /// @return Whatever `fn` returns.
 template <class Fn> auto run_tracking_stdout_writes(std::ostream& stream, Fn&& fn) -> std::pair<std::invoke_result_t<Fn>, bool> {
+  // The restore is a scope guard, not a statement after the call: a
+  // handler that throws would otherwise leave `stream` pointing at a
+  // destroyed `counting_streambuf`, so any later write — including one
+  // during static destruction — would be a use-after-free. Handlers
+  // surface failure through `std::expected` rather than exceptions, so
+  // this costs nothing on the path we actually take; it removes a trap
+  // for the one that we do not (reviewer, cycle 7).
+  struct restore_rdbuf {
+    std::ostream*   stream;
+    std::streambuf* orig;
+    ~restore_rdbuf() {
+      stream->rdbuf(orig);
+    }
+  };
+
   auto* const        orig = stream.rdbuf();
   counting_streambuf counter{orig};
   stream.rdbuf(&counter);
-  auto result = std::forward<Fn>(fn)();
-  stream.rdbuf(orig);
+  restore_rdbuf const guard{&stream, orig};
+  auto                result = std::forward<Fn>(fn)();
   return {std::move(result), counter.wrote_anything()};
 }
 

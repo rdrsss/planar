@@ -1067,17 +1067,17 @@ auto extract_answer_text(std::string_view raw_body) -> std::string {
     auto const nl   = raw_body.find('\n', pos);
     auto const line = raw_body.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
     if (auto const trimmed = trim_ws(line); trimmed.starts_with(marker)) {
-      auto const first_line = trim_ws(trimmed.substr(marker.size()));
-      auto const rest_start = nl == std::string_view::npos ? raw_body.size() : nl + 1;
-      auto const rest       = cut_before_line(raw_body.substr(rest_start), "**Answered at:**");
-      auto const rest_trim  = trim_ws(rest);
-      if (rest_trim.empty()) {
-        return std::string{first_line};
-      }
-      if (first_line.empty()) {
-        return std::string{rest_trim};
-      }
-      return std::format("{}\n{}", first_line, rest_trim);
+      // The value is everything after the label, VERBATIM, to the
+      // `**Answered at:**` line or the end — end-trimmed only. Rejoining a
+      // first line and a trimmed remainder with a single `\n` (the shape
+      // this carried when it landed) collapsed every interior blank line,
+      // so a stored multi-paragraph answer no longer matched the file it
+      // had just been rendered into: `pull` then refused an UNEDITED
+      // entity forever and swallowed the body edit beside it — the exact
+      // silent drop task 6910 exists to end (reviewer, cycle 7).
+      auto const value_start = static_cast<std::size_t>(trimmed.data() - raw_body.data()) + marker.size();
+      auto const tail        = cut_before_line(raw_body.substr(value_start), "**Answered at:**");
+      return std::string{trim_ws(tail)};
     }
     if (nl == std::string_view::npos) {
       break;

@@ -1556,6 +1556,39 @@ TEST_CASE("editing a question's **Answer:** on disk refuses the pull and leaves 
   CHECK(scalar_text(a.conn(), std::format("select updated_at from questions where id = {}", id)) == before_updated_at);
 }
 
+TEST_CASE("an UNEDITED multi-paragraph answer is not a field edit, and the body beside it still pulls",
+          "[workbench][sync][pull][6910]") {
+  arena      a;
+  auto const s = seed(a.conn());
+  // A blank line inside the stored answer is ordinary for an
+  // operator-written one. The first cut of `extract_answer_text` rejoined
+  // its first line and the trimmed remainder with a single newline, so the
+  // value it recovered never equalled the value push had just rendered:
+  // every pull refused this entity forever AND swallowed the body edit
+  // beside it — the silent drop 6910 exists to end, inverted.
+  exec(a.conn(), std::format("insert into questions (scope_kind, scope_id, title, body, answer_body, answered_at, status) "
+                             "values ('association', {}, 'Which format', 'Original body.', "
+                             "'First para.\n\nSecond para.', '2026-01-01T00:00:00.000Z', 'answered')",
+                             s.assoc_id));
+  auto const id = scalar_id(a.conn(), "select id from questions where title = 'Which format'");
+  exec(a.conn(), std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                             "values ('question', {}, 'plan', {}, 'derives-from')",
+                             id, s.plan_id));
+  REQUIRE(ws::push(a.conn(), s.plan_id, a.root(), wt::mode::failures, false).has_value());
+  auto const file = feature_dir_of(a, s.plan_id) / "questions" / std::format("{}-which-format.md", id);
+  // Touch ONLY the body; the answer is left exactly as push rendered it.
+  edit_file(file, "Original body.", "Edited body by operator.");
+
+  auto pulled = ws::pull(a.conn(), s.plan_id, a.root());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->field_edit_refused == 0);
+  CHECK(pulled->field_edit_refusals.empty());
+  CHECK(pulled->applied == 1);
+  CHECK(scalar_text(a.conn(), std::format("select body from questions where id = {}", id)) == "Edited body by operator.");
+  CHECK(scalar_text(a.conn(), std::format("select answer_body from questions where id = {}", id)) ==
+        "First para.\n\nSecond para.");
+}
+
 TEST_CASE("editing ONLY a decision's body still succeeds, and reports zero field-edit refusals",
           "[workbench][sync][pull][6910]") {
   // The contrast case for the two above: a body-only edit is NOT a
