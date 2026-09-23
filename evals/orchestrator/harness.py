@@ -823,8 +823,23 @@ def validate_case(path: Path, case: Any) -> None:
         or any(tier not in {"contract", "live", "lifecycle"} for tier in tiers)
     ):
         invalid("tiers contain an unsupported value")
-    if not isinstance(assertions, list) or not assertions:
-        invalid("contract_assertions must be a non-empty array")
+    # `contract_assertions` is REQUIRED only for the contract tier, which is
+    # the only tier that grades them: `grade_contract` and
+    # `run_assertion_selftests` both skip a case without "contract" in its
+    # tiers. Demanding them from a lifecycle-only case therefore forced the
+    # author to invent an assertion nothing ever runs -- and the first two
+    # such cases (task 6854/6857) reached for grep pins on a doc sentence
+    # and a C++ source comment, which is exactly the prose-pinning M4
+    # (`hh-drop-prose-pins`) exists to delete. A lifecycle-only case may
+    # omit the key; if it declares one, every per-assertion rule below
+    # still applies.
+    if "contract" in (tiers if isinstance(tiers, list) else []):
+        if not isinstance(assertions, list) or not assertions:
+            invalid("contract tier requires a non-empty contract_assertions array")
+    elif assertions is None:
+        assertions = []
+    elif not isinstance(assertions, list):
+        invalid("contract_assertions must be an array when present")
     assertion_ids: set[str] = set()
     for assertion in assertions:
         if not isinstance(assertion, dict):
@@ -987,7 +1002,7 @@ def regex_search(pattern: str, text: str, *, multiline: bool = False) -> bool:
 
 def grade_contract(case_path: Path, case: dict[str, Any], root: Path = ROOT) -> None:
     case_id = case["id"]
-    for assertion in case["contract_assertions"]:
+    for assertion in case.get("contract_assertions", []):
         assertion_id = assertion["id"]
         matched = 0
         paths = assertion["paths"]
@@ -1469,7 +1484,7 @@ def run_assertion_selftests(
     for _, case in cases:
         if "contract" not in case["tiers"]:
             continue
-        for assertion in case["contract_assertions"]:
+        for assertion in case.get("contract_assertions", []):
             total_assertions += 1
             case_id = case["id"]
             label = f"{case_id}/{assertion['id']}"

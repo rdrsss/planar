@@ -4329,3 +4329,57 @@ class ResultsLedgerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContractAssertionsAreContractTierOnlyTests(unittest.TestCase):
+    """`contract_assertions` is required only by the tier that grades them.
+
+    `grade_contract` and `run_assertion_selftests` both skip a case
+    without "contract" in `tiers`, so demanding the key from a
+    lifecycle-only case produced assertions nothing ever ran -- the first
+    two such cases (tasks 6854/6857) reached for grep pins on a doc
+    sentence and a C++ source comment, which is the prose-pinning M4
+    removes. These cases drive the real caller (`validate_case`) and the
+    real on-disk case files, not a helper in isolation.
+    """
+
+    def test_a_lifecycle_only_case_may_omit_contract_assertions(self) -> None:
+        case = minimal_valid_lifecycle_case("lifecycle-only-no-assertions")
+        case["tiers"] = ["lifecycle"]
+        case.pop("contract_assertions")
+        harness.validate_case(Path("<probe>"), case)
+
+    def test_a_contract_tier_case_still_requires_them(self) -> None:
+        case = minimal_valid_lifecycle_case("contract-tier-no-assertions")
+        case.pop("contract_assertions")
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "contract tier requires"
+        ):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_a_lifecycle_only_case_that_declares_them_is_still_checked(
+        self,
+    ) -> None:
+        case = minimal_valid_lifecycle_case("lifecycle-only-bad-assertion")
+        case["tiers"] = ["lifecycle"]
+        case["contract_assertions"] = [
+            {"id": "Bad Id", "description": "d", "mode": "all",
+             "paths": ["agents/methodology.md"], "pattern": "x"}
+        ]
+        with self.assertRaisesRegex(
+            harness.EvalFailure, "kebab-case|does not match pattern"
+        ):
+            harness.validate_case(Path("<probe>"), case)
+
+    def test_the_shipped_lifecycle_only_cases_declare_no_assertions(self) -> None:
+        # Loads the REAL case files through the real loader: a
+        # reintroduced ungraded assertion on either shipped
+        # lifecycle-only case fails here.
+        for case_path, case in harness.load_cases():
+            if case["tiers"] == ["lifecycle"]:
+                self.assertNotIn(
+                    "contract_assertions",
+                    case,
+                    f"{case['id']} ({case_path.name}) declares assertions no "
+                    "tier grades",
+                )

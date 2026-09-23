@@ -11,7 +11,6 @@
     "description",
     "tags",
     "tiers",
-    "contract_assertions",
     "expected"
   ],
   "properties": {
@@ -43,7 +42,11 @@
       "minItems": 1,
       "uniqueItems": true,
       "items": {
-        "enum": ["contract", "live", "lifecycle"]
+        "enum": [
+          "contract",
+          "live",
+          "lifecycle"
+        ]
       }
     },
     "tasks": {
@@ -51,7 +54,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["slug", "title"],
+        "required": [
+          "slug",
+          "title"
+        ],
         "properties": {
           "slug": {
             "type": "string",
@@ -85,7 +91,13 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "description", "mode", "paths", "pattern"],
+        "required": [
+          "id",
+          "description",
+          "mode",
+          "paths",
+          "pattern"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -96,7 +108,11 @@
             "minLength": 1
           },
           "mode": {
-            "enum": ["all", "any", "none"]
+            "enum": [
+              "all",
+              "any",
+              "none"
+            ]
           },
           "paths": {
             "type": "array",
@@ -127,7 +143,9 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["send"],
+        "required": [
+          "send"
+        ],
         "properties": {
           "send": {
             "type": "string",
@@ -143,10 +161,16 @@
     "live": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scenario", "prompt", "expected_models"],
+      "required": [
+        "scenario",
+        "prompt",
+        "expected_models"
+      ],
       "properties": {
         "scenario": {
-          "enum": ["phase3-preview"]
+          "enum": [
+            "phase3-preview"
+          ]
         },
         "prompt": {
           "type": "string",
@@ -155,7 +179,10 @@
         "expected_models": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["codex", "claude"],
+          "required": [
+            "codex",
+            "claude"
+          ],
           "properties": {
             "codex": {
               "type": "string",
@@ -194,7 +221,9 @@
         "budget": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["max_usd"],
+          "required": [
+            "max_usd"
+          ],
           "properties": {
             "max_usd": {
               "type": "number",
@@ -217,10 +246,16 @@
     "lifecycle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scenario", "surface", "prompt"],
+      "required": [
+        "scenario",
+        "surface",
+        "prompt"
+      ],
       "properties": {
         "scenario": {
-          "enum": ["controlled-classic"]
+          "enum": [
+            "controlled-classic"
+          ]
         },
         "surface": {
           "const": "agent"
@@ -253,7 +288,9 @@
         "budget": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["max_usd"],
+          "required": [
+            "max_usd"
+          ],
           "properties": {
             "max_usd": {
               "type": "number",
@@ -278,7 +315,11 @@
       "additionalProperties": true,
       "properties": {
         "tier": {
-          "enum": ["small", "medium", "large"]
+          "enum": [
+            "small",
+            "medium",
+            "large"
+          ]
         },
         "forbidden_work_type": {
           "type": "string"
@@ -337,7 +378,10 @@
         }
       },
       "then": {
-        "required": ["live", "tasks"]
+        "required": [
+          "live",
+          "tasks"
+        ]
       }
     },
     {
@@ -351,13 +395,21 @@
         }
       },
       "then": {
-        "required": ["lifecycle", "tasks", "setup"],
+        "required": [
+          "lifecycle",
+          "tasks",
+          "setup"
+        ],
         "properties": {
           "expected": {
-            "required": ["post_state"],
+            "required": [
+              "post_state"
+            ],
             "properties": {
               "post_state": {
-                "required": ["file_value"]
+                "required": [
+                  "file_value"
+                ]
               }
             }
           }

@@ -3,22 +3,18 @@
   "id": "session-death-reconciliation",
   "skill": "orchestrator",
   "description": "A coder session dies after finishing work but before calling any terminal verb; planar-agent reconcile clears the stale claim and resets the task to todo.",
-  "tags": ["lifecycle", "session-death", "reconcile"],
-  "tiers": ["lifecycle"],
+  "tags": [
+    "lifecycle",
+    "session-death",
+    "reconcile"
+  ],
+  "tiers": [
+    "lifecycle"
+  ],
   "tasks": [
     {
       "slug": "controlled-value",
       "title": "Set the controlled fixture value to approved."
-    }
-  ],
-  "contract_assertions": [
-    {
-      "id": "reconcile-resets-stale-claim",
-      "description": "A claim left active by a dead session is reset to todo by planar-agent reconcile, not left stranded in doing.",
-      "mode": "all",
-      "paths": ["docs/lifecycles.md"],
-      "pattern": "reconcile.*later marks the claim.*stale.*resets[[:space:]]+the task to `todo`",
-      "multiline": true
     }
   ],
   "setup": {
