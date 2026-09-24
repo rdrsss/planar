@@ -308,3 +308,58 @@ def build_lifecycle_resume_command(
         allowed_tools_arg(allowed_tools),
         response,
     ]
+
+
+# Task 6865 (plan 1065 M4): the binary each vendor's RAW spawn uses --
+# distinct from the builders above, which all wrap the prompt in
+# orchestrator-specific (phase3-preview or lifecycle-turn) framing. A raw
+# spawn is "run this model with this prompt and nothing else", the shape
+# `evals/planning/harness.py` (single-turn planning drafts/grades, claude
+# only) and `evals/candidate-spawn/verify.py` (per-candidate spawn probe,
+# every vendor in `agents/models.md` §Candidate Presets) both need. Before
+# this, each built its own argv inline, which meant three separate places in
+# this repo constructed a headless vendor-CLI invocation instead of one --
+# undermining the very point of a single choke point for the
+# no-headless-llm-shelling boundary. `copilot` and `gemini` are declared
+# even though no orchestrator-framed builder above routes to them: a raw
+# caller needing those vendors must not be pushed back to inline argv either.
+RAW_SPAWN_BINARY: dict[str, str] = {
+    "claude": "claude",
+    "codex": "codex",
+    "copilot": "copilot",
+    "gemini": "gemini",
+}
+
+
+def build_raw_command(
+    *,
+    vendor: str,
+    prompt: str,
+    host_model: "str | None" = None,
+) -> list[str]:
+    """Build a minimal, single-turn argv for `vendor`: the vendor's own
+    non-interactive/permission defaults, an optional model override, and
+    the raw `prompt` as the final positional argument -- no orchestrator
+    phase3-preview or lifecycle-turn framing.
+
+    Raises `ValueError` for a vendor this adapter has no raw-spawn shape
+    for at all. That is distinct from a vendor whose CLI is simply not
+    installed on this machine -- callers check that separately (e.g. with
+    `shutil.which(RAW_SPAWN_BINARY[vendor])`) so an absent CLI reports as a
+    skip, not an adapter gap.
+    """
+    if vendor not in RAW_SPAWN_BINARY:
+        raise ValueError(f"build_raw_command: unknown vendor {vendor!r}")
+    binary = RAW_SPAWN_BINARY[vendor]
+    if vendor == "codex":
+        return [binary, "exec", *model_argv(host_model), prompt]
+    if vendor in ("copilot", "gemini"):
+        argv = [binary, "-p", prompt]
+        if host_model:
+            argv += ["--model", host_model]
+        return argv
+    # claude
+    argv = [binary]
+    argv += model_argv(host_model)
+    argv += ["-p", "--permission-mode", "dontAsk", prompt]
+    return argv

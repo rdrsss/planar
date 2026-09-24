@@ -32,18 +32,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_DOC = REPO_ROOT / "agents" / "models.md"
 
-# Vendors whose CLI this eval knows how to drive. A vendor in the table but not
-# here is reported as unsupported rather than silently ignored.
-SPAWNERS: dict[str, list[str]] = {
-    "claude": ["claude", "-p", "--model", "{candidate}", "--permission-mode", "dontAsk", "{prompt}"],
-    "codex": ["codex", "exec", "--model", "{candidate}", "{prompt}"],
-    "copilot": ["copilot", "-p", "{prompt}", "--model", "{candidate}"],
-    # No gemini CLI on this machine. Declared anyway so its rows report
-    # "gemini CLI not installed" — a skip naming the missing dependency —
-    # instead of "no spawner for vendor", which reads like the eval simply
-    # does not know how to check them.
-    "gemini": ["gemini", "-p", "{prompt}", "--model", "{candidate}"],
-}
+# `evals/orchestrator/vendors.py` is the repo's single choke point for
+# building a headless vendor-CLI invocation (task 6865, plan 1065 M4): this
+# module used to build its own SPAWNERS argv templates inline, which was a
+# second such place and undermined the point of having one auditable
+# adapter for the no-headless-llm-shelling boundary. `build_raw_command` /
+# `RAW_SPAWN_BINARY` know claude, codex, copilot, and gemini -- gemini has
+# no CLI on this machine, but is declared anyway so its rows report
+# "gemini CLI not installed" (a skip naming the missing dependency) instead
+# of "no spawner for vendor", which would read like the eval simply does
+# not know how to check them.
+sys.path.append(str(REPO_ROOT / "evals" / "orchestrator"))
+import vendors  # noqa: E402
 
 PROMPT = "Reply with exactly: OK"
 
@@ -121,16 +121,15 @@ def parse_candidates(doc: str) -> list[tuple[str, str]]:
 
 def spawn(vendor: str, candidate: str, timeout: int) -> tuple[str, str]:
     """Return (status, detail). status ∈ spawnable|not-spawnable|error|skipped."""
-    template = SPAWNERS.get(vendor)
-    if template is None:
+    binary = vendors.RAW_SPAWN_BINARY.get(vendor)
+    if binary is None:
         return "skipped", f"no spawner for vendor '{vendor}'"
-    binary = template[0]
     if shutil.which(binary) is None:
         # Absent CLI is a SKIP, never a pass: saying nothing here would imply
         # the id was checked.
         return "skipped", f"{binary} CLI not installed"
 
-    argv = [part.format(candidate=candidate, prompt=PROMPT) for part in template]
+    argv = vendors.build_raw_command(vendor=vendor, prompt=PROMPT, host_model=candidate)
     try:
         proc = subprocess.run(
             argv,
