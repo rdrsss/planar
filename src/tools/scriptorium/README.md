@@ -22,6 +22,17 @@ The tool parses YAML, validates generated TOML, and writes JSON reports through
 Glaze. Inja and its
 nlohmann dependency are private to this target.
 
+The four skill targets use different layouts. Claude renders flat
+`commands/claude/pl-*.md` files that the installer symlinks into
+`~/.claude/commands/`. Codex renders `skills/codex/pl-*/SKILL.md` directories;
+the installer copies them into `$CODEX_HOME/skills/`. Copilot and Gemini render
+flat `skills/<vendor>/pl-*.md` files, which the installer materializes as
+`SKILL.md` directories under `~/.copilot/skills/` and
+`~/.gemini/antigravity-cli/skills/`, respectively. These paths are relative to
+the Scriptorium output root, normally `$PLANAR_HOME`. The repository
+[README](../../../README.md#vendor-surfaces) lists the staging directories and
+the separate agent surfaces.
+
 `planar-golden.sha256` pins the relative paths and bytes of the 232 current
 projections. It was captured from the external Scriptorium before migration,
 then updated for the intentional `pl-health` command change requiring an

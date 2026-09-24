@@ -274,13 +274,21 @@ Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries —
 
 The bundled agent specs and reference workflows use unified source + generated vendor outputs:
 
-| Surface | Canonical or staged path | Install destination |
-|--------|-------------|---------------------|
-| Unified skill source | `skills/src/` | Rendered by `scriptorium` at install time (`planar skills` is a retirement notice with no subcommands); never installed directly |
-| Claude | `$PLANAR_HOME/commands/claude/` (generated stage) | `~/.claude/commands/` |
-| Codex | `$PLANAR_HOME/codex-skills/` (generated stage) | `$CODEX_HOME/skills/` (normally `~/.codex/skills/`) |
-| Copilot | `$PLANAR_HOME/copilot-skills/` (generated stage), `copilot/` (authored prompts/instructions) | `~/.copilot/skills/`, `~/.copilot/` |
-| Planar agents | `agents/` | `~/.planar/agents/` |
+| Surface | Source or output | Installed skill target |
+|--------|------------------|------------------------|
+| Unified skill source | `skills/src/` in this repository | Never installed directly (`planar skills` is a retirement notice with no subcommands) |
+| Claude | `$PLANAR_HOME/commands/claude/pl-*.md` | Symlinked as flat slash commands in `~/.claude/commands/` |
+| Codex | `$PLANAR_HOME/skills/codex/pl-*/SKILL.md` | Copied into `$CODEX_HOME/skills/pl-*/SKILL.md` (normally `~/.codex/skills/`); also staged under `$PLANAR_HOME/codex-skills/` |
+| Copilot | `$PLANAR_HOME/skills/copilot/pl-*.md` | Materialized as `~/.copilot/skills/pl-*/SKILL.md`, via `$PLANAR_HOME/copilot-skills/` |
+| Gemini | `$PLANAR_HOME/skills/gemini/pl-*.md` | Materialized as `~/.gemini/antigravity-cli/skills/pl-*/SKILL.md`, via `$PLANAR_HOME/gemini-skills/` |
+
+Claude consumes flat command files, while Codex consumes skill directories
+directly. Copilot and Gemini also consume skill directories; the installer
+converts their flat rendered files into `SKILL.md` directories. Installed Codex,
+Copilot, and Gemini skills are real copies so their loaders can discover them
+without following directory symlinks. Copilot also installs authored prompts
+and instructions from `copilot/`. Planar agent sources live in `agents/` and
+have separate vendor-specific outputs and install targets.
 
 Sixteen agent roles cover orchestration and review, planning and ingestion,
 external propagation, repo adoption, introspection and feedback triage,
