@@ -6785,7 +6785,7 @@ Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbe
 
 ### Workflow run correlation flags (`pull` and `claim`)
 
-`pull` and `claim` accept two optional flags for associating a claim with an external workflow harness run (decision 450):
+`pull` and `claim` accept two optional flags for associating a claim with an external workflow harness run (decision 450). Decision 1007 (plan 1033) permits the run these flags correlate against to be driven by an external workflow harness, a host-native workflow, or a background agent rather than only the model orchestrator — see `agents/methodology.md` § Worktrees and `docs/concepts.md` § Worktree.
 
 - `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by the external harness when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
 - `--stage <stage>` — free-text stage name (e.g. `code`, `review`, `plan`) recorded on the claim. Requires `--run`; omitting `--stage` while passing `--run` leaves `stage` NULL. The `context add --claim <token>` verb (task 3901) stamps `run_id` and `stage` server-side from the claim row — the worker passes only `--claim` (decision 447).

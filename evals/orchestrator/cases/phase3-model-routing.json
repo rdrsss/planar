@@ -46,6 +46,38 @@
         "agents/orchestrator.md"
       ],
       "pattern": "one preview row per open task|one row per claim-aware open task"
+    },
+    {
+      "id": "no-non-medium-default-for-decided-work",
+      "description": "No surface's default-tier text ever states a non-medium default for already-decided work (task 6925: restores free-tier coverage for the medium-default pin task 6861 deleted, as a low-edit-distance forbid on the one-word tier swap a copy-edit mistake would actually produce -- 'every task defaults to `medium`' becoming 'every task defaults to `large`' -- rather than a pin on the required sentence).",
+      "mode": "none",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/models.md"
+      ],
+      "pattern": "every task defaults to `large`|every task defaults to `small`"
+    },
+    {
+      "id": "no-title-vocabulary-escalation",
+      "description": "No surface ever licenses task-title vocabulary alone as sufficient escalation evidence (task 6925: restores free-tier coverage for the titles-do-not-escalate pin task 6861 deleted, as a low-edit-distance forbid on the single-word deletion a copy-edit mistake would actually produce -- 'Task-title vocabulary is never sufficient escalation evidence' dropping 'never' -- rather than a pin on the required sentence).",
+      "mode": "none",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md",
+        "agents/models.md"
+      ],
+      "pattern": "Task-title vocabulary is sufficient escalation evidence"
+    },
+    {
+      "id": "no-cross-host-vendor-substitution",
+      "description": "No surface's active-host-boundary text is ever phrased as a conditional exemption for cross-host substitution (task 6925: restores free-tier coverage for the host-boundary-is-operational pin task 6861 deleted, as a low-edit-distance forbid on the single-word inversion a copy-edit mistake would actually produce -- 'Codex dispatches Codex candidates ... even when global configuration names another provider' flipping to 'unless global configuration names another provider', which silently re-legalizes the cross-host substitution the boundary exists to forbid -- rather than a pin on the required sentence).",
+      "mode": "none",
+      "paths": [
+        "skills/src/pl-orchestrator.md",
+        "agents/orchestrator.md"
+      ],
+      "pattern": "unless global configuration names another provider"
     }
   ],
   "setup": {
