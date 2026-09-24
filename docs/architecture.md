@@ -258,14 +258,14 @@ exit-0) is preserved across tiers.
 | 2 | kqueue (macOS/BSD) or inotify (Linux) on the SQLite `-wal` sibling | Sub-millisecond wake from any committed write | ~0 (kernel notification) | Shipped. |
 | 3 | Writer-side `update_hook` → sidecar notify socket | Same as Tier 2, plus per-row filtering | ~0 | Future. |
 
-The abstraction lives at `src/engine/runtime/agentactivity/wake.zig`
-behind a `Wake` struct with `init` / `waitNext` / `close`. The follow
-loop in `src/cmd/planar-watch/handlers/follow.zig` calls
-`Wake.waitNext(timeout_ns)` once per iteration; the wake source
-returns `.wal_changed` when a kernel notification arrived, or
-`.heartbeat` when the timeout elapsed without a notification. The
-`--interval` flag is the HEARTBEAT cadence — a maximum fallback that
-catches coalesced/missed wake events (laptop sleep, ENOMEM, etc.).
+The abstraction lives in `src/cmd/planar-watch/handlers/follow.cpp` as
+the `wake_source` class, constructed around a `wake_event` enum. The follow
+loop in the same file calls `wake_source::wait_next(timeout_ns)` once per
+iteration; the wake source returns `wake_event::wal_changed` when a kernel
+notification arrived, or `wake_event::heartbeat` when the timeout elapsed
+without a notification. The `--interval` flag is the HEARTBEAT cadence — a
+maximum fallback that catches coalesced/missed wake events (laptop sleep,
+ENOMEM, etc.).
 
 Backend selection is compile-time: macOS/BSD get kqueue with
 `EVFILT_VNODE` (`NOTE_WRITE | NOTE_EXTEND | NOTE_DELETE | NOTE_RENAME`)
@@ -373,6 +373,7 @@ CLI11 (vendored, `vendor/cli11/`) owns tokenization and value coercion only — 
 | `cmake/generate_migrations.cmake` | Scans `migrations/*.up.sql`/`*.down.sql`, sorts explicitly, and `#embed`s each pair into a generated `planar.db.migrations` implementation unit. Re-runs configure automatically on new/removed migration files (`file(GLOB CONFIGURE_DEPENDS)`). |
 | `cmake/generate_templates.cmake` | Same pattern for `templates/defaults/` — embeds propagation-template defaults so they compile into the binary. |
 
+<!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ codegen tooling for history -->
 Both superseded the Zig tree's build-time `tools/gen_migrations.zig` / `tools/gen_templates.zig`, deleted with that tree at the M10 cutover.
 
 ---
@@ -795,6 +796,7 @@ itself never opens SQLite and has no write path of its own.
 
 ### Authored-surface validation
 
+<!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ source this tool was ported from, for history -->
 `src/tools/surface_lint/` (ported from the Zig tree's `tools/surface_lint.zig` at task 6402, decision 1000) deterministically scans canonical Markdown under
 `agents/`, `skills/src/`, and `docs/`. Its stable finding codes are
 `surface-link-missing`, `surface-legacy-reference`,

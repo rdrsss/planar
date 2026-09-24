@@ -309,6 +309,57 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
     CHECK(out == "surface-lint: clean (0 files)\n");
   }
 
+  SECTION("path_citation: a stale source-path citation fires; a real path, a suppressed "
+          "placeholder, and a whole-file historical document all stay silent") {
+    // docs/live.md carries three inline-code-span path citations: a
+    // genuinely missing one (fires), a real one resolving against the
+    // fixture tree's own src/real_file.cpp (silent — proves this isn't an
+    // always-fire check), and an illustrative `[touches: ...]` syntax
+    // example silenced by a `surface-lint-ignore surface-path-missing`
+    // comment (silent — proves suppression applies to this new code).
+    // docs/adrs.md cites another deleted path but is entirely silent via
+    // the whole-file historical exemption (task 6930) — files_scanned == 2
+    // proves it was still scanned, not excluded from collection.
+    auto const [out, status] = capture(bin.string(), {(fixtures / "path_citation").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out == "docs/live.md:3: surface-path-missing: authored surface cites a repository path that does not "
+                 "resolve against the working tree: src/ghost_file.cpp\n"
+                 "surface-lint: 1 finding(s) across 2 files\n");
+  }
+
+  SECTION("path_citation_bare: a non-resolving path with NO backticks around it does not fire") {
+    // Pins the deliberate scope boundary documented in checkPathCitations's
+    // module doc (task 6930): only inline CODE-SPAN citations are checked.
+    // A bare, unformatted path mention in plain prose is out of scope by
+    // design, not by accident — this fixture is where a future author who
+    // wants to move that boundary will find the decision recorded.
+    auto const [out, status] = capture(bin.string(), {(fixtures / "path_citation_bare").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(out == "surface-lint: clean (1 files)\n");
+  }
+
+  SECTION("claude_md: CLAUDE.md is scanned; its AGENTS.md symlink is not scanned a second time") {
+    // Task 6930's brief names CLAUDE.md explicitly in scope, but it is a
+    // single top-level file, not a directory under k_scan_dirs, and
+    // (unlike every other in-scope surface) has no dedicated
+    // collect_markdown() walk. This fixture's AGENTS.md is a REAL symlink
+    // to CLAUDE.md, same as this repo's own root: if scan_repository ever
+    // started walking symlinked root files as well, the single stale
+    // citation below would be reported twice, once under each name, and
+    // files_scanned would read 2 instead of 1.
+    auto const [out, status] = capture(bin.string(), {(fixtures / "claude_md").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out == "CLAUDE.md:3: surface-path-missing: authored surface cites a repository path that does not "
+                 "resolve against the working tree: src/ghost_claude.cpp\n"
+                 "surface-lint: 1 finding(s) across 1 files\n");
+  }
+
   SECTION("--command-inventory-json: the pinned 260-entry command_classes table") {
     auto const [out, status] = capture(bin.string(), {"--command-inventory-json"});
     INFO(out);

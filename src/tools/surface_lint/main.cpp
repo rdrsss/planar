@@ -35,12 +35,13 @@ constexpr std::string_view artifacts           = "surface-artifact-set-drift";
 constexpr std::string_view capability          = "surface-capability-drift";
 constexpr std::string_view command             = "surface-command-drift";
 constexpr std::string_view contract            = "surface-contract-missing";
+constexpr std::string_view path                = "surface-path-missing";
 constexpr std::string_view suppression_invalid = "surface-suppression-invalid";
 constexpr std::string_view suppression_unused  = "surface-suppression-unused";
 } // namespace code
 
-constexpr std::array<std::string_view, 6> k_suppressible_codes{code::link,       code::legacy,  code::artifacts,
-                                                               code::capability, code::command, code::contract};
+constexpr std::array<std::string_view, 7> k_suppressible_codes{code::link,    code::legacy,   code::artifacts, code::capability,
+                                                               code::command, code::contract, code::path};
 constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills/src", "docs"};
 
 struct finding_t {
@@ -142,8 +143,16 @@ auto is_ws(char c) -> bool {
 
 auto emit(std::vector<finding_t>& findings, std::vector<suppression_t>& suppressions, std::string_view code_,
           std::string const& file, std::size_t line, std::string message) -> void {
+  // Deliberately NOT `!s.used`: one suppression comment covers every
+  // finding of its code on its target line, not just the first. A single
+  // line can legitimately carry more than one distinct finding of the same
+  // code — e.g. `checkPathCitations` (task 6930) on a line narrating two
+  // different deleted files in one sentence — and a `used`-once match would
+  // silently let the second one through as an unsuppressed finding despite
+  // a suppression visibly sitting right above it. The suppression is still
+  // required to match at least once to avoid `surface-suppression-unused`.
   for (auto& s : suppressions) {
-    if (!s.used && s.target_line == line && s.code == code_) {
+    if (s.target_line == line && s.code == code_) {
       s.used = true;
       return;
     }
@@ -311,6 +320,292 @@ auto check_artifact_set(std::string const& file, std::size_t line_no, std::strin
   if (present >= 3 && present != names.size())
     emit(findings, suppressions, code::artifacts, file, line_no,
          "planning artifact set must contain product-spec, tech-spec, roadmap, and test-spec");
+}
+
+auto marker_run_length(std::string_view text, std::size_t start, char marker) -> std::size_t {
+  std::size_t end = start;
+  while (end < text.size() && text[end] == marker)
+    ++end;
+  return end - start;
+}
+
+// ---------------------------------------------------------------------------
+// checkPathCitations (task 6930) — resolve inline-code-span source-path
+// citations (`` `src/lib/engine/planning/strategy.cpp` ``) against the
+// working tree. `checkLinks` above validates repository-relative Markdown
+// LINK targets; this validates repository-relative PATH CITATIONS inside
+// inline code spans, which is a distinct surface — a stale citation reads
+// as live prose ("Add the event type to `src/engine/...`") with nothing
+// resolving it, which is exactly how 116 citations of files deleted at the
+// M10 cutover sat unnoticed for months (task 6926 / PR #190), and how the
+// hand-fix for them introduced 13 more against the wrong checkout.
+//
+// A candidate is a substring of an inline (single-backtick) span that
+// starts, at a path-char boundary, with one of `k_path_topdirs` followed by
+// `/`, and runs through path characters (alnum, `_`, `-`, `.`, `/`) to a
+// known source-ish extension in `k_path_extensions`. Trailing `.` characters
+// (Markdown sentence punctuation, e.g. "...touch `src/foo.cpp`.") are
+// trimmed before the extension check. Fenced code blocks need no special
+// handling here: their content carries no single-backtick characters, so a
+// ```json example embedding a fake `"path":"src/foo.cpp"` is never scanned
+// as an inline span in the first place — only genuinely inline citations
+// are.
+//
+// Three escape hatches, deliberately narrow (see this file's module doc and
+// task 6930's brief), and deliberately NOT including removing the code-span
+// backticks around a citation to dodge the check — that was tried and
+// reverted (see `k_path_exemptions`'s doc comment for why it is actively
+// harmful, not merely inelegant):
+//   - `k_path_historical_files` / `k_path_historical_dirs` — a handful of
+//     documents that are entirely retrospective (`docs/adrs.md`,
+//     `docs/research/*`) and legitimately narrate deleted paths throughout.
+//     Skipped at the FILE level, matching the task's explicit carve-out for
+//     "the whole document is history" — distinct from, and not a
+//     workaround for, the inline suppression mechanism below (which
+//     explicitly refuses a file-wide `surface-lint-ignore-file`).
+//   - the existing `<!-- surface-lint-ignore surface-path-missing: <why>
+//     -->` inline comment, for a single historical or illustrative line
+//     inside an otherwise-live document (e.g. `CLAUDE.md`,
+//     `docs/architecture.md` outside the cockpit section, or a syntax
+//     example like `[touches: src/lib/engine/x.cpp]`), placed on the line
+//     immediately before — this is the SAME mechanism `checkLinks`/
+//     `checkLegacy`/etc. already use, no new suppression syntax, and it is
+//     ONLY safe when the citation's line starts its own paragraph/table/
+//     list block; a comment line inserted mid-table-row or mid-wrapped-
+//     paragraph changes the rendered document.
+//   - `k_path_exemptions` — a keyed `(file, exact path, reason)` allowlist
+//     for the citations where the inline comment is NOT structurally safe
+//     (a table row, or an interior line of a hard-wrapped paragraph/list
+//     item). See its own doc comment for the full rationale.
+//
+// Multiple distinct missing paths cited on one line are deduplicated to
+// their unique matched strings before emitting, so one suppression comment
+// covers a line that repeats the same illustrative citation twice (as both
+// `docs/workflows.md`'s `[touches: ...]` example and `docs/cli-reference.md`'s
+// `Rework src/alpha.cpp.` / `src/alpha.cpp` pairing do). Two GENUINELY
+// different missing paths on one line would still need the line split, or
+// two suppressions — matching `checkLinks`' identical pre-existing
+// limitation for two distinct broken links on one line.
+//
+// SCOPE, PINNED: only citations inside an inline (single-backtick) code
+// span are checked. A path-shaped token in plain, unformatted prose (no
+// backticks at all) is never scanned and never flagged — this is the same
+// boundary `checkLinks` draws for Markdown link targets, and it is
+// deliberate, not an oversight: formatting a path as code is this
+// codebase's own signal that the string is meant to be resolved literally,
+// and a plain-prose mention (e.g. a sentence just naming a tool by its old
+// name) makes no such claim. `fixtures/path_citation_bare/` pins this
+// decision with a bare, non-resolving path that must NOT produce a finding
+// — if that boundary ever needs to move, the fixture is the place future
+// authors will find the decision recorded, not just this comment.
+
+constexpr std::array<std::string_view, 12> k_path_topdirs{"src",    "migrations", "cmake",     "agents",
+                                                          "skills", "docs",       "templates", "scripts",
+                                                          "vendor", "external",   "tools",     "integration_tests"};
+constexpr std::array<std::string_view, 12> k_path_extensions{"cpp", "cppm", "hpp", "h",     "cc",  "cxx",
+                                                             "zig", "py",   "sql", "cmake", "lua", "sh"};
+
+// Entire documents that are deliberately retrospective and may narrate
+// deleted paths throughout (task 6930 brief: "a file-level exemption for
+// genuinely historical documents is acceptable where the whole document is
+// history"). Exact relative-path match.
+constexpr std::array<std::string_view, 1> k_path_historical_files{"docs/adrs.md"};
+// Same, by directory prefix.
+constexpr std::array<std::string_view, 1> k_path_historical_dirs{"docs/research/"};
+
+auto is_path_historical_file(std::string const& file) -> bool {
+  if (std::ranges::find(k_path_historical_files, file) != k_path_historical_files.end())
+    return true;
+  for (auto dir : k_path_historical_dirs)
+    if (file.starts_with(dir))
+      return true;
+  return false;
+}
+
+// A THIRD, narrower escape hatch: an exact (file, path) pair, with a
+// mandatory reason. This exists for exactly one situation — a citation that
+// is legitimately historical or illustrative but sits inside a Markdown
+// construct where the inline `surface-lint-ignore` comment cannot be placed
+// without changing the rendered document: a TABLE ROW (an HTML-comment line
+// between table rows breaks GFM table continuation) or the MIDDLE of a
+// hard-wrapped paragraph/list item (a comment line there ends the block
+// early and visibly splits the sentence). `checkFeedbackContract`'s sibling
+// checks never hit this because their targets are always link/legacy/
+// command SHAPES on one line, never a citation embedded mid-sentence inside
+// a wrapped physical line.
+//
+// This is deliberately NOT a substitute for de-backticking (removing the
+// code-span formatting around the path) to silence the finding: stripping
+// the backticks was tried and reverted, because it (a) formats a file path
+// as plain prose, which reads worse and is factually wrong once the doc's
+// own convention is "paths are code", (b) leaves no record that a human
+// decided the miss is legitimate — the next reader cannot distinguish an
+// intentional exemption from prose nobody ever formatted, and (c) teaches
+// future authors that the cheap, invisible way to clear a `surface-path-
+// missing` finding is to delete two characters, which silently narrows this
+// tool's coverage over time with no diff that reads as a policy change. A
+// keyed exemption is exactly as narrow (it names one literal path in one
+// file, never a directory or a whole file) but it is visible, grep-able,
+// and requires a reason.
+struct path_exemption_t {
+  std::string_view file;
+  std::string_view path;
+  std::string_view reason;
+};
+constexpr std::array<path_exemption_t, 11> k_path_exemptions{
+    // CLAUDE.md's "Configure-time codegen" table row narrates the
+    // Zig-era build-time codegen tools superseded by cmake/generate_*.cmake.
+    path_exemption_t{"CLAUDE.md", "tools/gen_migrations.zig",
+                     "table row (a preceding comment would break GFM table continuation); "
+                     "deleted with zig/ at the M10 cutover"},
+    path_exemption_t{"CLAUDE.md", "tools/gen_templates.zig", "table row; deleted with zig/ at the M10 cutover"},
+    // CLAUDE.md's "Cross-implementation differential lanes" bullet is a
+    // hard-wrapped paragraph; both retired-lane paths sit mid-sentence on
+    // interior physical lines, not at the paragraph's start. Each of these
+    // two also appears once more, in CLAUDE.md's "Source Layout" opening
+    // paragraph — that occurrence is (file, path)-keyed the same way, not
+    // given its own inline comment, so there is exactly one place recording
+    // why each string is exempt, not two mechanisms disagreeing.
+    path_exemption_t{"CLAUDE.md", "scripts/oracle-retirement-gate.sh",
+                     "mid-wrapped bullet paragraph (a preceding comment would split the "
+                     "sentence); also cited plainly in the Source Layout opening paragraph; "
+                     "deleted with zig/ at the M10 cutover"},
+    path_exemption_t{"CLAUDE.md", "src/cmd/parity_strict.hpp",
+                     "mid-wrapped bullet paragraph; also cited plainly in the Source Layout "
+                     "opening paragraph; deleted with zig/ at the M10 cutover"},
+    // CLAUDE.md's "Authored-surface lint gate" bullet, same shape.
+    path_exemption_t{"CLAUDE.md", "tools/cli_usage_lint.zig",
+                     "mid-wrapped bullet paragraph naming the Zig source this tool was ported "
+                     "from; deleted with zig/ at the M10 cutover"},
+    path_exemption_t{"CLAUDE.md", "tools/surface_lint.zig", "mid-wrapped bullet paragraph; deleted with zig/ at the M10 cutover"},
+    // docs/architecture.md's "Cross-implementation differential lanes"
+    // bullet — same content as CLAUDE.md's, same reason.
+    path_exemption_t{"docs/architecture.md", "scripts/oracle-retirement-gate.sh",
+                     "bullet-list paragraph; deleted with zig/ at the M10 cutover"},
+    path_exemption_t{"docs/architecture.md", "src/cmd/parity_strict.hpp",
+                     "bullet-list paragraph; deleted with zig/ at the M10 cutover"},
+    // docs/concepts.md's "Removed" callout for the never-implemented ANSI
+    // color feature; citation sits mid-wrapped-paragraph.
+    path_exemption_t{"docs/concepts.md", "src/cmd/planar/output.zig",
+                     "mid-wrapped paragraph inside a > **Removed** callout naming the "
+                     "never-C++-ported Zig entry point; deleted with zig/ at the M10 cutover"},
+    // docs/lifecycles.md's own drift-tracking table (§7) catalogs a CLAIM
+    // made elsewhere that has since been fixed; the citation is the claim
+    // being cataloged, in a table cell.
+    path_exemption_t{"docs/lifecycles.md", "src/engine/workbench/terminal.zig",
+                     "table row in the §7 drift-tracking table, cataloging a since-fixed claim; "
+                     "the cited path is the historical claim, not live documentation"},
+    // docs/operations.md's `spec ingest --apply` touches-resolution section:
+    // one of the five illustrative placeholders named in task 6930's brief.
+    // `typo:src/x.cpp` demonstrates the unrelated-repo-slug rejection path;
+    // `src/x.cpp` (the part this tool's matcher extracts) was never meant to
+    // resolve. Mid-wrapped paragraph, so a preceding comment isn't safe.
+    path_exemption_t{"docs/operations.md", "src/x.cpp",
+                     "illustrative placeholder inside a mid-wrapped paragraph: `typo:src/x.cpp` "
+                     "demonstrates the unresolved-unknown-repo path in `spec ingest --apply`'s "
+                     "touches resolution, not a real file"},
+};
+auto is_path_exempt(std::string const& file, std::string_view path) -> bool {
+  for (auto const& e : k_path_exemptions)
+    if (file == e.file && path == e.path)
+      return true;
+  return false;
+}
+
+auto is_path_char(char c) -> bool {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' ||
+         c == '/';
+}
+
+/// @brief True when `span[pos]` starts a path-like token: `pos` is at a
+/// non-path-char boundary (or the start of the span) and `span` continues
+/// from `pos` with one of `k_path_topdirs` followed by `/`.
+auto starts_path_candidate(std::string_view span, std::size_t pos) -> bool {
+  if (pos != 0 && is_path_char(span[pos - 1]))
+    return false;
+  for (auto topdir : k_path_topdirs) {
+    if (span.substr(pos).starts_with(topdir) && span.size() > pos + topdir.size() && span[pos + topdir.size()] == '/')
+      return true;
+  }
+  return false;
+}
+
+/// @brief From a confirmed candidate start at `pos`, consume the maximal
+/// run of path characters, trim trailing `.` (sentence punctuation), and
+/// return the trimmed candidate when it ends with a known source-ish
+/// extension; `std::nullopt` otherwise (e.g. the run has no recognized
+/// extension, as with `handlers/drafting.cppm`'s bare-`handlers/` mentions,
+/// which this deliberately does not chase without a `k_path_topdirs`
+/// prefix).
+auto extract_path_candidate(std::string_view span, std::size_t pos) -> std::optional<std::string_view> {
+  std::size_t end = pos;
+  while (end < span.size() && is_path_char(span[end]))
+    ++end;
+  std::string_view candidate = span.substr(pos, end - pos);
+  while (!candidate.empty() && candidate.back() == '.')
+    candidate.remove_suffix(1);
+  for (auto ext : k_path_extensions) {
+    if (candidate.size() > ext.size() + 1 && candidate.ends_with(ext) && candidate[candidate.size() - ext.size() - 1] == '.')
+      return candidate;
+  }
+  return std::nullopt;
+}
+
+/// @brief Collect every distinct path-citation candidate inside one inline
+/// (single-backtick) span into `out`, deduplicating exact repeats.
+auto collect_path_candidates(std::string_view span, std::vector<std::string>& out) -> void {
+  std::size_t pos = 0;
+  while (pos < span.size()) {
+    if (starts_path_candidate(span, pos)) {
+      if (auto candidate = extract_path_candidate(span, pos); candidate.has_value()) {
+        if (std::ranges::find(out, *candidate) == out.end())
+          out.push_back(std::string{*candidate});
+        pos += candidate->size();
+        continue;
+      }
+    }
+    ++pos;
+  }
+}
+
+auto check_path_citations(fs::path const& root, std::string const& file, std::size_t line_no, std::string_view line,
+                          std::vector<finding_t>& findings, std::vector<suppression_t>& suppressions) -> void {
+  if (is_path_historical_file(file))
+    return;
+  std::vector<std::string> candidates;
+  std::size_t              cursor = 0;
+  while (true) {
+    auto const open = line.find('`', cursor);
+    if (open == std::string_view::npos)
+      break;
+    std::size_t const          run_len = marker_run_length(line, open, '`');
+    std::size_t                search  = open + run_len;
+    std::optional<std::size_t> close;
+    while (true) {
+      auto const candidate_close = line.find('`', search);
+      if (candidate_close == std::string_view::npos)
+        break;
+      std::size_t const candidate_len = marker_run_length(line, candidate_close, '`');
+      if (candidate_len == run_len) {
+        close = candidate_close;
+        break;
+      }
+      search = candidate_close + candidate_len;
+    }
+    if (!close.has_value())
+      break;
+    if (run_len == 1)
+      collect_path_candidates(line.substr(open + run_len, *close - (open + run_len)), candidates);
+    cursor = *close + run_len;
+  }
+  for (auto const& candidate : candidates) {
+    if (is_path_exempt(file, candidate))
+      continue;
+    std::error_code ec;
+    if (!fs::exists(root / fs::path{candidate}, ec))
+      emit(findings, suppressions, code::path, file, line_no,
+           std::format("authored surface cites a repository path that does not resolve against the working tree: {}", candidate));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -616,13 +911,6 @@ auto is_capability_exemption(std::string const& file, std::string_view role, std
     if (file == e.file && role == e.role && shape == e.shape)
       return true;
   return false;
-}
-
-auto marker_run_length(std::string_view text, std::size_t start, char marker) -> std::size_t {
-  std::size_t end = start;
-  while (end < text.size() && text[end] == marker)
-    ++end;
-  return end - start;
 }
 
 auto contains_command_shape(std::string_view line, std::string_view shape) -> bool {
@@ -955,6 +1243,7 @@ auto scan_file_impl(fs::path const& root, std::string const& rel_file, fs::path 
     check_links(root, rel_file, abs_file, line_no, line, result.findings, suppressions);
     check_legacy(rel_file, line_no, line, result.findings, suppressions);
     check_artifact_set(rel_file, line_no, line, result.findings, suppressions);
+    check_path_citations(root, rel_file, line_no, line, result.findings, suppressions);
     if (read_only)
       check_capability(rel_file, role, line_no, line, fence.has_value(), result.findings, suppressions);
     check_command(rel_file, line_no, line, result.findings, suppressions);
@@ -990,6 +1279,15 @@ auto scan_repository(fs::path const& root) -> result_t {
   std::vector<fs::path> paths;
   for (auto rel : k_scan_dirs)
     collect_markdown(root / rel, paths);
+  // CLAUDE.md (task 6930): a single top-level file, not a directory under
+  // `k_scan_dirs`, so it needs its own entry point rather than a `collect_
+  // markdown` walk. `AGENTS.md` is a symlink to `CLAUDE.md` (see this
+  // repo's own CLAUDE.md Â§ Operating Rules) and is deliberately NOT scanned
+  // separately: `fs::directory_iterator` would otherwise open it as a
+  // second regular file with identical content, and every finding in it
+  // would be reported twice under two different names.
+  if (std::error_code ec; fs::exists(root / "CLAUDE.md", ec) && fs::is_regular_file(root / "CLAUDE.md", ec))
+    paths.push_back(root / "CLAUDE.md");
   std::ranges::sort(paths);
   for (auto const& path : paths) {
     std::string const rel_path = relative_path(path.string(), root.string());
