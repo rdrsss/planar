@@ -1673,6 +1673,7 @@ planar task touches infer <task-id> [--repo <slug>] [--apply] [--wide] [--json]
 
 **Description:** Propose path-level `task_touch_paths` rows by extracting path-shaped tokens from the task's own `title`, `body`, and `next_action`, then resolving them against a repo checkout. **Preview by default — without `--apply` nothing is written.**
 
+<!-- surface-lint-ignore surface-path-missing: illustrative token-stripping example, not a real path -->
 Tokens are recovered from the phrasings this codebase actually uses: prose punctuation and backticks are stripped, a trailing `:<line>` or `:<line>-<line>` citation is removed (`docs/cli-reference.md:339` → `docs/cli-reference.md`), and a sentence-ending period is dropped (`Rework src/alpha.cpp.` → `src/alpha.cpp`). URLs, absolute paths, and `../` traversal are rejected.
 
 Each candidate is classified:
@@ -1799,6 +1800,7 @@ This is deliberately not symmetric with `touches add --path`, where a path-touch
 ```json
 {"ok":true,"task_id":42,"repo_id":7,"repo_slug":"acme/protos"}
 ```
+<!-- surface-lint-ignore surface-path-missing: illustrative JSON output example, not a real path -->
 With `--path`, the withdrawn path is echoed as `"path":"src/foo.cpp"`.
 
 **Schema effects:** Without `--path`, deletes from `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`. With `--path`, deletes from `task_touch_paths(task_id, repo_id, path)` and leaves `entity_links` untouched.
@@ -7112,6 +7114,7 @@ planar-ext schema
 planar-execute schema
 ```
 
+<!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ source cli_usage_lint was ported from, for history -->
 The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig tree's `tools/cli_usage_lint.zig` at task 6402). All five binaries are passed to that pass. The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone.
 
 ---

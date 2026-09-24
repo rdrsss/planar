@@ -1073,6 +1073,7 @@ Planar's template plane is the **external-system propagation** templates: JSON d
 
 **SQLite tables:** none — templates are filesystem assets plus an embedded fallback set. **Primary entry points:** `load_template()` in `src/lib/engine/config/templates.cpp` (resolve + load), `src/lib/engine/templates/render.cpp` (render), `src/lib/engine/templates/validate.cpp` (lint).
 
+<!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ reader path this removed section never used, for history -->
 > **Removed (2026-08-07).** An earlier revision of this section described a second, unrelated templates layer: per-entity-kind Markdown files under `templates/entity/` that seeded new entities created through the editor-first `add` verbs, with a `{{.Title}}` placeholder language and an install-time validator. **That layer never existed in this binary.** The files and this documentation both arrived in the Go→Zig bootstrap (`bfa3abc`); the reader was never ported, and `src/cmd/planar/editflow.zig` has never contained the word "template". `templates/entity/` has been deleted rather than left installed and inert. See planar task 5918.
 
 ## Model routing
