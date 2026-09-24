@@ -8,3 +8,4 @@
 # states it rather than relying on that, because the failure mode is silent
 # and the fix costs one line.
 vendor/** linguist-vendored=true
+vendor/** -whitespace

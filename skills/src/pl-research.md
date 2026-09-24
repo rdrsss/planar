@@ -13,9 +13,9 @@ vendor:
             /pl-research "is there prior art for this in tabularium" --scope tabularium
 ---
 
-# Research ({{.VendorTitle}})
+# Research ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `research` agent. See
+{{ VendorTitle }} skill surface for the vendor-neutral `research` agent. See
 [`agents/research.md`](../../agents/research.md) for the full role spec, the
 findings-brief output contract, and the boundaries. See
 [`agents/methodology.md`](../../agents/methodology.md) for the shared claim

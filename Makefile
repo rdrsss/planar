@@ -15,12 +15,14 @@ AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
 EXECUTE_BINARY := planar-execute
 EXT_BINARY    := planar-ext
+SCRIPTORIUM_BINARY := scriptorium
 BIN_DIR       := bin
 BIN           := $(BIN_DIR)/$(BINARY)
 AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
+SCRIPTORIUM_BIN := $(BIN_DIR)/$(SCRIPTORIUM_BINARY)
 
 PREFIX      ?= $(HOME)/.local
 
@@ -46,7 +48,7 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the five Planar binaries plus the pinned centuriond into ./bin/ (at repo root)
+build: ## Build the five Planar binaries, Scriptorium, and pinned centuriond into ./bin/
 	@mkdir -p $(BIN_DIR)
 	cmake --preset release -DPLANAR_VERSION_META=OFF
 	cmake --build build/release $(ARGS)
@@ -55,6 +57,7 @@ build: ## Build the five Planar binaries plus the pinned centuriond into ./bin/ 
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
+	@cp -f $(CPP_RELEASE_BIN_DIR)/$(SCRIPTORIUM_BINARY) $(SCRIPTORIUM_BIN)
 	@# centuriond ships BESIDE planar-execute (task 6711): the client resolves
 	@# the daemon as its own sibling, so a ./bin/ that has the client without
 	@# the daemon produces a "not an executable daemon" refusal at first submit
@@ -65,7 +68,7 @@ build: ## Build the five Planar binaries plus the pinned centuriond into ./bin/ 
 	@cp -f build/centuriond-release/bin/centuriond $(BIN_DIR)/centuriond
 
 .PHONY: install
-install: ## Build and install the five Planar executables into PREFIX/bin (default: ~/.local/bin)
+install: ## Build and install the five Planar executables and Scriptorium into PREFIX/bin
 	cmake --preset release -DPLANAR_VERSION_META=ON
 	cmake --build build/release $(ARGS)
 	cmake --install build/release --prefix $(PREFIX)
@@ -409,7 +412,8 @@ eval: eval-render eval-orchestrator-unit eval-orchestrator eval-orchestrator-fix
 
 .PHONY: eval-render
 eval-render: ## Dry-run scriptorium render of skills/src + agents
-	scriptorium render -config scriptorium.yaml -dry-run
+	cmake --build $(CPP_BUILD_DIR) --target scriptorium
+	$(CPP_BIN_DIR)/scriptorium render --config scriptorium.yaml --dry-run --json >/dev/null
 
 .PHONY: eval-installed
 eval-installed: ## Check installed projections match this checkout (run after ./install.sh)
@@ -476,11 +480,9 @@ eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-
 
 # Why this exists separately from `make eval`, and why test-all uses it:
 #
-# `make eval` also runs `eval-render`, which shells the external
-# `scriptorium` binary. That binary is NOT in install.sh's BUILD_DEPS or
-# RUN_DEPS, so a contributor without it would find `test-all` unrunnable —
-# the "gate that cannot run" failure this repo keeps closing. These three
-# lanes need only python3 and the checkout.
+# `make eval` also runs `eval-render`, which builds the in-tree Scriptorium
+# target first. The three contract lanes below need only python3 and the
+# checkout, so they remain a separate fast gate.
 #
 # They are worth gating because they police the AGENT CONTRACTS: the
 # executable prompts under agents/ and skills/src/ that the orchestrator and

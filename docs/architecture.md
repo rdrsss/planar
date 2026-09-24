@@ -706,9 +706,8 @@ The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion n
 ### Vendor surfaces
 
 Unified skill sources live only in `skills/src/`; vendor-neutral agent role
-sources live in `agents/`. `install.sh` shells the external scriptorium binary
-(plan 918; discovered by `scripts/discover-scriptorium.sh`) to create the
-vendor projections at install time, so `commands/claude/`, `skills/codex/`,
+sources live in `agents/`. `install.sh` builds and shells the in-tree C++ `src/tools/scriptorium/` renderer
+to create the vendor projections at install time, so `commands/claude/`, `skills/codex/`,
 and `skills/copilot/` are generated output trees rather than authored source
 directories.
 
@@ -733,15 +732,11 @@ Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
 frontmatter metadata (one lowercase SHA-256 hex value each, versioned,
 fixed-order, byte-length-prefixed encoding) retired along with the in-tree
 renderer (plan 918 D5) — scriptorium-rendered projections carry neither
-header. Scriptorium tracks render/install freshness out-of-band instead, in
-its own machine-local merkle+xxhash manifest: a registry hash over
-`skills/src/`/`agents/` sources, plus a per-artifact rendered-hash/on-disk-hash
-pair whose mismatch is exactly what `scriptorium check` reports as `stale`
-(source changed since last render) or `drifted` (installed bytes hand-edited
-since last render) — read-only, non-zero exit on any finding.
-`scriptorium status` gives the registry-vs-installed view. This is the
-projection-freshness seam installation tooling now reads, replacing the old
-in-tree renderer's `--check` comparison of complete rendered bytes.
+header. The in-tree Scriptorium compares current source projections with staged bytes:
+`scriptorium check --config scriptorium.yaml --output-root <planar-home>`
+reports missing, changed, and unexpected staged files. `scriptorium status`
+reports per-source rendering freshness. Planar's install manifest below owns
+installed vendor files; Scriptorium maintains no separate registry.
 
 After all selected vendor wiring succeeds, `install.sh` atomically replaces
 `$PLANAR_HOME/install-manifest.json` (normally
@@ -778,9 +773,9 @@ destination-only `unmanaged` entries without treating discovery as ownership.
 Missing, malformed, future-version, and stamped legacy manifests remain
 aggregate manifest states with a source-checkout `./install.sh --prefix
 <resolved-prefix>` bootstrap command; they are never guessed into managed
-rows. Canonical projection drift in the *rendered content itself* (source
-changed, hand-edited install, orphaned install) is scriptorium's own finding
-now — see `scriptorium check`/`scriptorium status` in Recipe 14A.
+rows. Canonical staged projection drift is reported by `scriptorium check`; installed
+file drift is checked against `install-manifest.json` by
+`scripts/check-self-installed.sh` (Recipe 14A).
 
 `planar health` calls this same classifier and folds its summary into the
 `projection_freshness` contributor; classification and ownership decisions

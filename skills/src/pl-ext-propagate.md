@@ -13,9 +13,9 @@ vendor:
             /pl-ext-propagate checkout-rewrite --dry-run
 ---
 
-# Ext-sync Propagate ({{.VendorTitle}})
+# Ext-sync Propagate ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `ext-sync` agent. See [`agents/ext-sync.md`](../../agents/ext-sync.md) for the full role spec, strategy-selection contract, and idempotency invariant.
+{{ VendorTitle }} skill surface for the vendor-neutral `ext-sync` agent. See [`agents/ext-sync.md`](../../agents/ext-sync.md) for the full role spec, strategy-selection contract, and idempotency invariant.
 
 > **Implementation status (plan 996).** The whole-feature walk this skill
 > describes — `ext propagate <plan>` — is **not yet implemented on either

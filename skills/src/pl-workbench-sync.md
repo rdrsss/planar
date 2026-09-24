@@ -12,7 +12,7 @@ vendor:
             /pl-workbench-sync checkout-rewrite
 ---
 
-# Planar Workbench Sync ({{.VendorTitle}})
+# Planar Workbench Sync ({{ VendorTitle }})
 
 High-level bidirectional sync for a feature's workbench tree — pull FS edits into the DB, push DB changes back to the FS, and surface any conflicts for explicit resolution.
 

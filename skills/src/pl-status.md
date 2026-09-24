@@ -11,7 +11,7 @@ vendor:
             /pl-status
 ---
 
-# Pl-Status ({{.VendorTitle}})
+# Pl-Status ({{ VendorTitle }})
 
 Answer “what needs attention now?” for the cwd-derived scope. This is a
 read-only orientation workflow: use the CLI as the only state access layer and

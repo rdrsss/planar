@@ -14,7 +14,7 @@ vendor:
             /pl-observe --plan 808 --vendor codex --system github
 ---
 
-# Planar Observe ({{.VendorTitle}})
+# Planar Observe ({{ VendorTitle }})
 
 Answer “what has been happening on this plan?” from timestamped operational
 evidence. This is a plan-focused activity view, not the scope and next-work

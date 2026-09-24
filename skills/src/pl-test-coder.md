@@ -13,7 +13,7 @@ vendor:
             /pl-test-coder <task-id> --since <commit>
 ---
 
-# Test-coder ({{.VendorTitle}})
+# Test-coder ({{ VendorTitle }})
 
 Independently verify scenarios cited by the Planar test-spec. The coverage
 oracle is `planar test-spec status <plan> --json`.

@@ -35,10 +35,9 @@ shipped through `/pl-sync` and its gated `sync-reconciler` specialist.
 ## Source And Render Model
 
 Planar authors each shared skill once at `skills/src/<name>.md`. `install.sh`
-shells the external scriptorium binary to render vendor outputs (discovered by
-`scripts/discover-scriptorium.sh`: PATH lookup + a `$SCRIPTORIUM_BIN`
-override, gated on a version floor) — `scriptorium render --config
-scriptorium.yaml` (plan 918):
+builds and runs the in-tree `src/tools/scriptorium/` C++ renderer to stage
+vendor outputs — `scriptorium render --config scriptorium.yaml`.
+Inja expressions in authored bodies use `{{ VendorTitle }}` syntax.
 
 - Claude projections are staged under `$PLANAR_HOME/commands/claude/`, installed
   to `~/.claude/commands/`, and invoked as `/<name>`.
@@ -70,10 +69,10 @@ Planar neither generates nor validates it.
 
 Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
 frontmatter metadata retired along with the in-tree renderer (plan 918 D5) —
-scriptorium-rendered projections carry neither header. Scriptorium tracks
-render/install freshness out-of-band in its own machine-local merkle+xxhash
-manifest: `scriptorium check` reports drift (read-only, non-zero exit on any
-finding) and `scriptorium status` gives the registry-vs-installed view.
+scriptorium-rendered projections carry neither header. The in-tree
+`scriptorium check --output-root <planar-home>` compares staged bytes with
+current sources; `scriptorium status` reports per-source rendering freshness.
+`install-manifest.json` remains the installed projection authority.
 `planar skills status`/`planar skills repair`, which used to read the in-band
 digests, retired alongside them; `planar skills` itself is now a placeholder
 verb with no subcommands.

@@ -3,8 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-command -v scriptorium >/dev/null 2>&1 || {
-  echo "error: scriptorium binary not found" >&2
+PLANAR_HOME="${PLANAR_HOME:-$HOME/.planar}"
+SCRIPTORIUM_BIN="$PLANAR_HOME/bin/scriptorium"
+[ -x "$SCRIPTORIUM_BIN" ] || {
+  echo "error: installed scriptorium binary not found: $SCRIPTORIUM_BIN" >&2
   exit 1
 }
 command -v jq >/dev/null 2>&1 || {
@@ -15,26 +17,21 @@ command -v jq >/dev/null 2>&1 || {
 # `status` exits non-zero when the global manifest contains artifacts from
 # another content repo that are undefined by this config. Preserve its JSON and
 # apply the repo-scoped filter below.
-STATUS="$(scriptorium status -config "$ROOT/scriptorium.yaml" -json || true)"
+STATUS="$("$SCRIPTORIUM_BIN" status --config "$ROOT/scriptorium.yaml" --output-root "$PLANAR_HOME" --json || true)"
 printf '%s' "$STATUS" |
   jq -e 'type == "object" and (.artifacts | type == "array")' >/dev/null || {
     echo "error: scriptorium status did not return a valid artifact report" >&2
     exit 1
   }
 
-# Scriptorium owns rendering, while install.sh owns the intentionally
-# vendor-specific projection layouts (notably Codex/Copilot/Gemini SKILL.md
-# directories and agent TOML files). `scriptorium status`'s built-in install
-# layout is therefore not authoritative for Planar's projections. It remains
-# the rendering check; install-manifest.json is the authoritative installed
-# inventory and each row is checked byte-for-byte below.
+# Scriptorium checks staged rendering. install.sh owns vendor-specific
+# projection layouts and records the installed inventory in its manifest.
 render_failures="$(
   printf '%s' "$STATUS" |
     jq -r '
       .artifacts[]
-      | select(.defined == true)
-      | select(.rendered != true)
-      | "\(.kind):\(.slug) rendered=\(.rendered)"
+      | select(.orphaned == true or (.defined == true and .rendered != true))
+      | "\(.kind):\(.slug) rendered=\(.rendered) orphaned=\(.orphaned)"
     '
 )"
 

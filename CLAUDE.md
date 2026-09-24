@@ -84,7 +84,7 @@
 | `src/cmd/` | One directory per binary: `planar/`, `planar-agent/`, `planar-watch/`, `planar-execute/`, `planar-ext/`, plus `internal/` for shared command invocation and database injection. Each binary is its own CMake target wired through `add_subdirectory(src/cmd)`'s guarded registration helper (never a bare `add_executable()` — see `src/cmd/CMakeLists.txt`). |
 | `src/engine/` | Domain logic and state transitions, with `identity/`, `planning/`, `external/`, `runtime/`, and subsystem directories such as `extsync/`, `workbench/`, `templates/`, and `routing/`. Each bucket remains an `engine_*` CMake target. |
 | `src/lib/` | Shared base modules: `db/` (SQLite connection + migrations), `core/`, `cliapp/` (CLI11-backed parser wrapper — help, schema catalog, exit codes, completion), `adapter/`, `http/`, `git/`, `process/`, `json_dom/`, `json_text/`, `log/`, `policy/`, `scope_ref/`, `sha256/`, `activity_rollup/`, `docs_manifest/`, `installed_surface/`, `introspection_preview/`. |
-| `src/tools/` | Project tooling, one directory per tool (decision 1000): `cli_usage_lint/` and `surface_lint/`, ported from the Zig tree's `tools/*.zig` at task 6402. `gen_migrations` / `gen_templates` are superseded by the `cmake/generate_*.cmake` codegen above; `vendor_sync` died with `zig/vendor/` (the build vendors via CPM). |
+| `src/tools/` | Project tooling, one directory per tool (decision 1000): the CLI and surface linters, plus the in-tree `scriptorium/` skill and agent renderer. `gen_migrations` / `gen_templates` are superseded by the `cmake/generate_*.cmake` codegen above; `vendor_sync` died with `zig/vendor/` (the build vendors via CPM). |
 | `src/cmd/parity_harness.hpp` | The cross-process test harness: `run_pinned()` runs a built binary over fixed argv in a PINNED scratch environment (its own `PLANAR_DB`, `HOME`, `PLANAR_WORKBENCH_ROOT`), `make_arena()` builds that environment. This is what carries the black-box lane the deleted Zig `harness.zig` used to carry. A header, included rather than linked, because D15 forbids a `cmd_* -> cmd_*` target edge. |
 | `src/cmd/catalog_parity.hpp`, `src/cmd/planar/catalog_steps.hpp` | Declaration-level catalog comparison and catalog-to-argv conversion. Both were written against the oracle's `schema` output and both outlived it: neither ever ran a binary, and their second-catalog argument is now a fixture. |
 | `vendor/` | CPM's source cache — committed, pinned release archives only (`catch2`, `sqlite`, `lua`, `glaze`, `curl`, `spdlog`, `xxhash`, `cli11`, `tree_sitter`, `tree_sitter_zig`). No `git clone`/submodule vendoring. (`tree_sitter_zig` is a source-parsing grammar used by the introspection adapters, unrelated to the deleted Zig tree.) |
@@ -130,9 +130,8 @@ codegen step.
 
 ```bash
 # Via Makefile (preferred for one-off scripts):
-make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copies all
-                        # five binaries (planar, planar-agent, planar-watch,
-                        # planar-execute, planar-ext) into ./bin/
+make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copies
+                        # five Planar binaries and scriptorium into ./bin/
 make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
                         # cmake --install into PREFIX (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build; ctest
@@ -460,7 +459,7 @@ The defaults follow centurion's proven conventions (decision D4, adopted wholesa
 - User-facing reference docs live under `docs/`: `architecture.md`, `cli-reference.md`, `skill-reference.md`, `concepts.md`, `workflows.md`. Update the relevant doc in the same change as any behavior or architecture change.
 - Project-internal planning artifacts (founding spec, roadmap, ADRs about Planar's own development) live as Planar artifacts under `~/.planar/`, accessible via `planar artifact list --plan <id>` or the workbench.
 - The data model is the primary contract. Schema changes flow through versioned migrations starting at `migrations/00001_foundation.up.sql`; always define and review the schema change before writing application code.
-- Workflow surfaces (Claude commands, Codex skills, Copilot skills/instructions/prompts, Planar agents) stay aligned automatically: render is the install step, so the only authored surface is `skills/src/`. Scriptorium is the sole renderer (plan 918 M5 retired the in-tree renderer verb); its own drift detection (`scriptorium check`/`status`, out-of-band via a merkle+xxhash manifest) is the CI / pre-merge gate for verifying a render independently of `install.sh` — not a planar verb.
+- Workflow surfaces (Claude commands, Codex skills, Copilot skills/instructions/prompts, Planar agents) stay aligned automatically: render is the install step, so the authored surfaces are `skills/src/` and `agents/`. The in-tree C++ Scriptorium compares expected and staged bytes through `scriptorium check`/`status`; `install-manifest.json` tracks installed vendor files.
 - Build/render-time structured data belongs in YAML / JSON (for example the embedded vendor profile); operator-facing runtime settings stay in TOML (`~/.planar/config.toml`, templates, defaults).
 - Skills, agents, commands, and prompts must route through `planar` CLI commands. They must not describe direct database writes or repo-local context scaffolding.
 
@@ -500,4 +499,4 @@ The defaults follow centurion's proven conventions (decision D4, adopted wholesa
 | `docs/architecture.md` drifts from migrations | Schema change not reflected in docs | Update `docs/architecture.md` in the same change as the migration. |
 | Agent or skill scaffolds repo-local context | Pre-context-plane template assumption | Keep context in `docs/`, Planar artifacts, and SQLite. |
 | Workflow surfaces drift apart | Updated one vendor but not the others | Audit Claude, Codex, Copilot, and agent surfaces; run parity checks. |
-| Re-install leaves an orphaned binary/file in `~/.planar/bin` | Stopped shipping an installed artifact without recording it | Add its `$PLANAR_HOME`-relative path to `install-cleanup.txt`; `install.sh` removes listed paths every run (`cmake --install` overwrites what it builds but never deletes a prior install's leftovers). Vendor-surface orphans outside `$PLANAR_HOME` are pruned by scriptorium's render step. |
+| Re-install leaves an orphaned binary/file in `~/.planar/bin` | Stopped shipping an installed artifact without recording it | Add its `$PLANAR_HOME`-relative path to `install-cleanup.txt`; `install.sh` removes listed paths every run (`cmake --install` overwrites what it builds but never deletes a prior install's leftovers). Vendor-surface orphans outside `$PLANAR_HOME` are handled by installer ownership rules. |

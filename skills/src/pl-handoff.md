@@ -15,7 +15,7 @@ vendor:
             /pl-handoff list
 ---
 
-# Planar Handoff ({{.VendorTitle}})
+# Planar Handoff ({{ VendorTitle }})
 
 Implements the end-of-session capture ritual: snapshot the current state, create a handoff record, and validate that the next agent can resume from zero context.
 

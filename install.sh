@@ -92,7 +92,6 @@ INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPO_ROOT/scripts/install-manifest.sh"
-source "$REPO_ROOT/scripts/discover-scriptorium.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -441,7 +440,7 @@ title "Planar — install from $REPO_ROOT"
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
 BUILD_DEPS=(
-  "cmake|cmake|configures, builds, and installs the five Planar binaries"
+  "cmake|cmake|configures, builds, and installs the five Planar binaries and Scriptorium"
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
@@ -501,12 +500,6 @@ fi
 [[ -f "$REPO_ROOT/CMakeLists.txt" ]] || err "CMakeLists.txt not found in $REPO_ROOT (run install.sh from the Planar source repo)"
 [[ -f "$REPO_ROOT/CMakePresets.json" ]] || err "CMakePresets.json not found in $REPO_ROOT"
 
-# scriptorium discovery — fatal, fail fast before the CMake build below.
-# install.sh no longer renders vendor surfaces itself; it shells the
-# scriptorium binary (tech-spec.md § Architecture "How Planar shells
-# scriptorium", decision D2). Resolves $SCRIPTORIUM_BIN into a validated,
-# floor-checked path; aborts with an actionable message if missing/invalid.
-discover_scriptorium_bin
 
 # Runtime tools — non-fatal; the install still produces a working binary, but
 # Planar's git-backed verbs and the bundled agent skills need these to work.
@@ -564,7 +557,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   [[ -f "$REPO_ROOT/install-cleanup.txt" ]] && \
     _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$REPO_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
-  log "build 5 binaries (planar, planar-agent, planar-watch, planar-execute, planar-ext) → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
+  log "build 5 Planar binaries and scriptorium → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
@@ -613,7 +606,12 @@ mkdir -p "$PLANAR_HOME/bin"
 # the operator has not exported one. A later configure reuses external/ and
 # needs neither.
 if [[ -z "${GITHUB_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
-  if _planar_gh_token="$(gh auth token 2>/dev/null)" && [[ -n "$_planar_gh_token" ]]; then
+  # An unauthenticated gh is normal when Centurion is already cached. Its
+  # failed token lookup must not fire the inherited ERR trap inside $().
+  trap - ERR
+  _planar_gh_token="$(gh auth token 2>/dev/null)" || _planar_gh_token=""
+  trap 'on_err $? $LINENO' ERR
+  if [[ -n "$_planar_gh_token" ]]; then
     export GITHUB_TOKEN="$_planar_gh_token"
   fi
   unset _planar_gh_token
@@ -629,6 +627,11 @@ vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"
 vlog "wrote $PLANAR_HOME/bin/planar-execute"
 vlog "wrote $PLANAR_HOME/bin/planar-ext"
+[[ -x "$PLANAR_HOME/bin/scriptorium" ]] || err "the in-tree scriptorium tool was not installed"
+SCRIPTORIUM_BIN="$PLANAR_HOME/bin/scriptorium"
+vlog "wrote $SCRIPTORIUM_BIN"
+[[ "$("$SCRIPTORIUM_BIN" version 2>/dev/null)" == scriptorium\ * ]] || \
+  err "installed $SCRIPTORIUM_BIN but it failed its version smoke check"
 
 # Smoke check — a build can succeed yet produce a binary that won't run. Confirm
 # it executes now (and capture the build id) rather than discovering it broken
@@ -637,7 +640,7 @@ PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
   err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
-ok "built 5 binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+ok "built 5 Planar binaries and scriptorium → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 
 # Stock centuriond from the same pinned Centurion archive planar-execute's
 # client links (plan 1033 M1, task 6709; tech-spec D8/D13). Built as a
@@ -726,8 +729,8 @@ fi
 
 # Render the per-vendor outputs (commands/claude, skills/codex,
 # skills/copilot, skills/gemini, agents/{claude,codex,copilot,gemini})
-# directly into $PLANAR_HOME by shelling the scriptorium binary discovered
-# during preflight, driven by the committed scriptorium.yaml (repo root).
+# directly into $PLANAR_HOME by shelling the CMake-installed in-tree
+# scriptorium binary, driven by the committed scriptorium.yaml (repo root).
 # This replaces Planar's retired in-tree renderer verb (tech-spec.md §
 # Architecture "How Planar shells scriptorium"). Note: `agents/models.md`'s
 # `## Tier Table` is NOT patched by this step, and is not patched anywhere —
@@ -1294,7 +1297,7 @@ skills_n="$(count_glob "$PLANAR_HOME"/commands/claude/pl-*.md)"
 agents_n="$(count_glob "$PLANAR_HOME"/agents/claude/*.md)"
 
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
-log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
+log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext, scriptorium"
 log "surfaces:   $skills_n skills · $agents_n agents · vendors: ${VENDORS:-none}"
 if [[ "$WARN_COUNT" -gt 0 ]]; then
   printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"

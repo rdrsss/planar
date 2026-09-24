@@ -12,7 +12,7 @@ vendor:
             /pl-models-config
 ---
 
-# Pl-Models-Config ({{.VendorTitle}})
+# Pl-Models-Config ({{ VendorTitle }})
 
 Inspect what Planar knows about routing: which opaque candidates are
 registered, what evidence exists, and what tier a role resolves to and why.

@@ -13,7 +13,7 @@ vendor:
             /pl-promote demote task:<task-id>
 ---
 
-# Planar Promote ({{.VendorTitle}})
+# Planar Promote ({{ VendorTitle }})
 
 Moves entities between scopes — typically from personal-global to a named association when ad-hoc work turns out to matter.
 

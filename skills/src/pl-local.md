@@ -16,7 +16,7 @@ vendor:
             /pl-local repair
 ---
 
-# Planar Local Lifecycle ({{.VendorTitle}})
+# Planar Local Lifecycle ({{ VendorTitle }})
 
 Manage operator-authored skills and agents from import through vendor linking,
 inspection, unlinking, legacy migration, and repair. Sources live only under

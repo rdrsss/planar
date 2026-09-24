@@ -14,7 +14,7 @@ vendor:
             /pl-plan link <plan-id> artifact:<artifact-id> --relationship cites
 ---
 
-# Planar Plan ({{.VendorTitle}})
+# Planar Plan ({{ VendorTitle }})
 
 Manages plans — the top-level structured intent for a body of work.
 

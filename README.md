@@ -23,6 +23,7 @@ brew install cmake ninja llvm python git gh jq ripgrep tbb
 - `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries. `install.sh` preflights the exact preset compilers, `/opt/homebrew/opt/llvm/bin/clang` and `/opt/homebrew/opt/llvm/bin/clang++`, before it invokes CMake. Use the repository's `debug` and `release` presets; see [toolchain parity](docs/toolchain-parity.md).
 - `tbb` (>= 2021.5) — **required to build**, since `cmake/dependencies.cmake` vendors Mt-KaHyPar (decision 1006, task 6459) as a pinned CPM source block and Mt-KaHyPar's own CMake `find_package(TBB)`s it. Unlike every other third-party dependency this tree takes, TBB is **not** vendored as source: upstream states TBB does not support static linking, so this is a deliberately accepted dynamic system dependency rather than a hermetic one. `install.sh` preflights `brew --prefix tbb` and fails fast if it is missing, matching CMake's own `find_package(TBB)` failure.
 - `python3` — **required to configure**. Centurion (added as a CMake subdirectory by `cmake/centurion.cmake`, plan 1033) generates a minimized Botan amalgamation at configure time by running Botan's `configure.py`. It is the only host program Centurion's stack adds: `protoc` and the gRPC C++ plugin are built in-tree from Centurion's own vendored protobuf and gRPC, not taken from the host.
+- Scriptorium is built from `src/tools/scriptorium/` and installed by CMake; no external Scriptorium executable is required. Its Inja and nlohmann dependencies are pinned under `vendor/` and private to the tool.
 - Network access plus a GitHub token on the **first** configure of a checkout — `cmake/dependencies.cmake` fetches first-party dependencies (currently Centurion, a private repository) into the gitignored `external/` directory rather than committing them under `vendor/`. Run `GITHUB_TOKEN=$(gh auth token) cmake --preset debug` once; later configures reuse `external/` offline. Third-party dependencies remain committed under `vendor/` and never need the network.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
@@ -60,7 +61,7 @@ cmake --build build/release
 cmake --install build/release --prefix "$HOME/.planar"
 ```
 
-This puts all five binaries at `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`. The four that open a database (all but `planar-execute`, which holds no SQLite handle at all) statically link the vendored SQLite amalgamation — no system library dependency.
+This puts the five Planar binaries and the in-tree `scriptorium` renderer in `~/.planar/bin/`. The four that open a database (all but `planar-execute`, which holds no SQLite handle at all) statically link the vendored SQLite amalgamation — no system library dependency.
 
 Add `~/.planar/bin` to your `$PATH`, then verify:
 
@@ -69,7 +70,7 @@ export PATH="$HOME/.planar/bin:$PATH"
 planar health
 ```
 
-This installs only the five binaries. Migrations and propagation templates are *embedded* at build time, so the CLI works standalone against a local database. Agent specs, slash commands, and skills are **not** embedded — they are separate source files rendered and staged by `install.sh` — so none of the vendor surfaces (Claude `/pl-*` slash commands, Codex skills, Copilot skills) are wired up by a `cmake --install` alone; for those, use the [full install](INSTALL.md#full-install-installsh).
+This installs the five Planar binaries and the Scriptorium renderer. Migrations and propagation templates are *embedded* at build time, so the CLI works standalone against a local database. Agent specs, slash commands, and skills are **not** embedded — they are separate source files rendered and staged by `install.sh` — so none of the vendor surfaces (Claude `/pl-*` slash commands, Codex skills, Copilot skills) are wired up by a `cmake --install` alone; for those, use the [full install](INSTALL.md#full-install-installsh).
 
 The full install also puts a stock `centuriond` — the Centurion workflow daemon `planar-execute` is becoming a client of (plan 1033) — at `~/.planar/bin/centuriond`, with its migrations and a `build-identity.json` under `~/.planar/share/centurion/`. It is built from the same pinned Centurion archive as a separate CMake project (or taken from a checksum-verified Centurion release binary once the pinned tag publishes one) by `scripts/install-centuriond.sh`; the first build compiles Centurion's gRPC stack and takes several minutes. A bare `cmake --install` does not install it.
 
@@ -299,7 +300,7 @@ knowledge, operational observation, the complete local lifecycle (with
 introspection and feedback triage, guarded sync reconciliation, and gated
 documentation maintenance. Repo-relative vendor trees are not checked in;
 canonical edits belong in `skills/src/`, and drift is gated by semantic lint
-plus scriptorium's own `scriptorium check` / `scriptorium status` against an
+plus the in-tree `scriptorium check` / `scriptorium status` against an
 out-of-tree staging directory (`planar skills render` no longer exists).
 
 ## Repository layout
@@ -311,7 +312,7 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `CMakeLists.txt`, `CMakePresets.json` | Top-level CMake project (C++26, modules) and the pinned `debug`/`release` presets |
 | `src/cmd/` | One directory per binary — `planar/`, `planar-agent/`, `planar-watch/`, `planar-execute/`, `planar-ext/` — each its own CMake target |
 | `src/lib/` | Shared C++ modules: `db/` (connection + migrations), `cliapp/` (CLI11-backed parser wrapper), `engine/` (domain logic, bucketed as `identity/`, `planning/`, `external/`, `runtime/` plus subsystem dirs), `adapter/`, `http/`, and other leaf libraries |
-| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `surface_lint/`) |
+| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `surface_lint/`, `scriptorium/`) |
 | `cmake/dependencies.cmake` | Every third-party dependency as a pinned `CPMAddPackage(...)` (release archive + SHA256, cached under `vendor/`) |
 | `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/` and `templates/defaults/` into generated modules the runtime embeds |
 | `vendor/` | CPM's committed source cache — pinned release archives only, no `git clone`/submodule vendoring |

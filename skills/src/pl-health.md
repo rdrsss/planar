@@ -13,7 +13,7 @@ vendor:
             /pl-health --json
 ---
 
-# Planar Health ({{.VendorTitle}})
+# Planar Health ({{ VendorTitle }})
 
 Explain whether Planar is operational and whether in-flight work can be resumed.
 This is a read-only orientation workflow. It names the contributors that affect
@@ -44,7 +44,7 @@ errors.
    stale handoffs, and `projection_freshness`. Include the field value, why it
    affects `overall`, and the executable route below. Do not reproduce the raw
    JSON or print empty diagnostic trees.
-3. Use `scriptorium status --config scriptorium.yaml --json` only when
+3. Use `scriptorium status --config scriptorium.yaml --output-root "${PLANAR_HOME:-$HOME/.planar}" --json` only when
    `projection_freshness` is not fresh or its evidence needs projection-level
    explanation. Planar retired its in-band projection tracking (plan 918);
    scriptorium owns it now. Report stale,
@@ -66,7 +66,7 @@ errors.
 | `not_resumable_tasks > 0` | One or more doing/blocked tasks lack a next action or context snapshot. Route to `planar audit handoff-readiness --json`, then `planar resume validate <task-id> --json` for each reported task; use `pl-resume` or `pl-doctor` for guided remediation. |
 | `stale_handoffs > 0` | Pending or validated handoffs exceeded the freshness window. Route to `planar handoff list --status pending --json` and `planar handoff list --status validated --json`, then inspect with `planar handoff show <handoff-id> --json`; use `pl-doctor` before any abandon action. |
 | expired claim evidence | Health may expose interrupted work without being the claim inventory. Preview reconciliation with `planar-agent reconcile --dry-run --json`; use `pl-doctor` for the operator-confirmed apply path. Never reconcile a live claim. |
-| projection `stale` or `missing` | Managed installed output differs from or lacks its staged projection. Report the health result's `repair_command` when present — it is the full reinstall (`./install.sh --prefix <planar-home>`), which is the single recovery path since plan 918 D5 removed the per-name repair verb. For projection-level detail inspect with `scriptorium status --config scriptorium.yaml --json`, or preview drift read-only with `scriptorium check --config scriptorium.yaml --vendor <vendor> --json`. Repair is a separate, explicit action. |
+| projection `stale` or `missing` | Managed installed output differs from or lacks its staged projection. Report the health result's `repair_command` when present — it is the full reinstall (`./install.sh --prefix <planar-home>`), which is the single recovery path since plan 918 D5 removed the per-name repair verb. For projection-level detail inspect with `scriptorium status --config scriptorium.yaml --output-root "${PLANAR_HOME:-$HOME/.planar}" --json`, or preview drift read-only with `scriptorium check --config scriptorium.yaml --output-root "${PLANAR_HOME:-$HOME/.planar}" --vendor <vendor> --json`. Repair is a separate, explicit action. |
 | projection `legacy` | A Planar-owned installation has no current manifest. Report the single reinstall guidance emitted by health/status; do not fabricate one missing row per projection. |
 | projection `unmanaged` | Informational only. It is operator-authored, remains usable, and must not be replaced or treated as degraded. |
 | configuration failure | Run `planar config path`, `planar config validate`, and `planar config show --effective`; guide the operator to `planar config edit` only after validation identifies a configuration change. |
@@ -163,7 +163,7 @@ zero count or healthy installation emits no warning.
 ## Next actions
 
 Give zero to three executable recommendations tied to actual contributors,
-such as `scriptorium status --config scriptorium.yaml --json`, `planar resume validate <task-id>`, or
+such as `scriptorium status --config scriptorium.yaml --output-root "${PLANAR_HOME:-$HOME/.planar}" --json`, `planar resume validate <task-id>`, or
 invoking `pl-doctor`; omit generic advice when health is clean.
 
 ## Recovery

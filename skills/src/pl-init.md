@@ -11,7 +11,7 @@ vendor:
             /pl-init [--name <text>] [--db <path>]
 ---
 
-# Planar Init ({{.VendorTitle}})
+# Planar Init ({{ VendorTitle }})
 
 Initializes a fresh Planar installation for the current working directory.
 

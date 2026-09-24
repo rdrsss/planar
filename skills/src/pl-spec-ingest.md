@@ -14,9 +14,9 @@ vendor:
             /pl-spec-ingest 42 --format json
 ---
 
-# Spec Ingest ({{.VendorTitle}})
+# Spec Ingest ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `ingestor` agent. See [`agents/ingestor.md`](../../agents/ingestor.md) for the full role spec, input/output contract, and idempotency contract.
+{{ VendorTitle }} skill surface for the vendor-neutral `ingestor` agent. See [`agents/ingestor.md`](../../agents/ingestor.md) for the full role spec, input/output contract, and idempotency contract.
 
 ## When to use
 

@@ -16,9 +16,9 @@ vendor:
             /pl-synthesize . --literal                # delegate to pl-import
 ---
 
-# Planar Synthesize ({{.VendorTitle}})
+# Planar Synthesize ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `synthesizer` agent. See [`agents/synthesizer.md`](../../agents/synthesizer.md) for the full role spec, input/output contract, and sequencing.
+{{ VendorTitle }} skill surface for the vendor-neutral `synthesizer` agent. See [`agents/synthesizer.md`](../../agents/synthesizer.md) for the full role spec, input/output contract, and sequencing.
 
 Vendor-neutral skill that imports an existing repo by SYNTHESIZING fresh planning artifacts from the repo's docs + git log + source code, rather than transcribing the existing docs verbatim.
 

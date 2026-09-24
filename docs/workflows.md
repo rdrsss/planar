@@ -1596,53 +1596,21 @@ difference. After promotion, you can run `planar local unlink fixup-protos
 
 ## Recipe 14A — Inspect and reconcile installed canonical projections
 
-Canonical vendor installs are rendered and drift-tracked by the external
-scriptorium binary now (plan 918), not by Planar's own (retired) `skills
-status`/`skills repair` verbs — `planar skills` is a placeholder with no
-subcommands. Planar's own `~/.planar/install-manifest.json` still records
-which files `install.sh` wired for which vendor (staged/installed paths,
-copy-vs-link kind), but drift detection on rendered content itself is
-scriptorium's job, tracked in its own machine-local merkle+xxhash manifest.
+Canonical sources are rendered by the in-tree Scriptorium tool during
+`install.sh`. Planar's own `install-manifest.json` records installed projections.
+Run these inspections from the repository root:
 
-Start with a read-only inspection, run from the repo root (`scriptorium.yaml`
-supplies the source roots and vendor set — no `--source` needed):
-
-```
-scriptorium check --config scriptorium.yaml
-scriptorium check --config scriptorium.yaml --vendor codex --json
-scriptorium status --config scriptorium.yaml
+```bash
+~/.planar/bin/scriptorium check --config scriptorium.yaml --output-root ~/.planar
+~/.planar/bin/scriptorium status --config scriptorium.yaml --output-root ~/.planar --json
+scripts/check-self-installed.sh
 ```
 
-`check` reports `stale` (source changed since the last render), `drifted`
-(the installed file was hand-edited since the last render), and `orphaned`
-(a tracked install whose source no longer exists) findings, and exits
-non-zero on any finding — it never writes anything. `status` gives the
-fuller per-artifact registry-vs-installed picture: defined → rendered →
-installed (to which vendors), plus the same drifted/orphaned flags.
-
-Reconcile with `update` (alias `sync`):
-
-```
-scriptorium update --config scriptorium.yaml --vendor codex
-scriptorium update --config scriptorium.yaml --vendor codex --force
-scriptorium status --config scriptorium.yaml --vendor codex
-```
-
-`update` re-renders and re-installs only what actually changed since the last
-render; by default it refuses to overwrite a hand-edited install or an
-untracked pre-existing file (reported as `refused`) — pass `--force` once
-you've confirmed the overwrite is wanted, and `--prune` to additionally
-remove install records (and their files) whose source no longer exists. If
-scriptorium itself is missing or below the required version floor,
-`install.sh` aborts with an actionable message (`scripts/discover-scriptorium.sh`);
-from the Planar source checkout, re-run:
-
-```
-./install.sh --prefix ~/.planar
-```
-
-Then re-run `scriptorium status`. Personal `planar local` extensions remain
-untouched throughout — they sit outside scriptorium's registry.
+`check` compares current sources with staged bytes and reports missing, changed,
+and unexpected projections. `status` reports rendering freshness per source.
+The self-installed check also verifies installed paths against the Planar
+manifest. To repair a managed projection, run `./install.sh --prefix ~/.planar`.
+Personal `planar local` extensions remain outside this install manifest.
 
 ---
 
@@ -3004,7 +2972,7 @@ not recommend a claimed, stale, or blocked task. `pl-observe` is read-only and
 distinguishes an empty interval from unavailable telemetry. `pl-health` never
 repairs: it explains each degraded contributor and routes to `pl-doctor`,
 `pl-resume`, reconciliation preview, configuration validation, or the exact
-`scriptorium check`/`scriptorium update` preview (canonical projection drift
+`scriptorium check` inspection (canonical projection drift
 is now scriptorium's finding, not a Planar `skills repair` verb — that verb
 retired with the in-tree renderer). Use `/pl-plan` and `/pl-task` for the full
 lifecycle once a target is selected; both read post-state after mutations, and

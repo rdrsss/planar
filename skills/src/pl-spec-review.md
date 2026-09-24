@@ -12,9 +12,9 @@ vendor:
             /pl-spec-review <plan-id> --write
 ---
 
-# Spec Review ({{.VendorTitle}})
+# Spec Review ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `spec-reviewer` agent.
+{{ VendorTitle }} skill surface for the vendor-neutral `spec-reviewer` agent.
 See [`agents/spec-reviewer.md`](../../agents/spec-reviewer.md) for the full
 review contract, verdicts, and write-mode boundary.
 

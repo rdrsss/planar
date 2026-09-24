@@ -13,7 +13,7 @@ vendor:
             /pl-scope suggest
 ---
 
-# Planar Scope ({{.VendorTitle}})
+# Planar Scope ({{ VendorTitle }})
 
 Inspects the scope Planar derives from the current working directory and shows how to override it on a per-verb basis. There is no scope stack to manage.
 

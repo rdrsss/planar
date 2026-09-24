@@ -70,8 +70,7 @@ grep -q '"kind": "agent".*"install_kind": "link"' "$MANIFEST"
 
 # Digest-less path: what scriptorium actually writes — a SKILL.md with no
 # x-planar-source-digest/x-planar-projection-digest headers at all (the
-# legacy in-band scheme retires with skillrender; scriptorium tracks install
-# drift out-of-band in its own merkle+xxhash manifest — tech-spec.md D5).
+# legacy in-band scheme retired; the in-tree renderer checks staged bytes).
 # Confirms install_manifest_add records the row with both digest fields
 # empty rather than erroring, and — the actual drift-comparison behavior —
 # that the legacy mismatch guard never fires for this case even when the
