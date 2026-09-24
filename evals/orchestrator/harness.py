@@ -42,6 +42,11 @@ FIXTURES_DIR = ROOT / "evals" / "orchestrator" / "fixtures"
 # archive/digest pairs the vendoring rule requires, mirroring the
 # project-root `vendor/` split from authored source.
 VENDORED_FIXTURES_DIR = ROOT / "evals" / "fixtures"
+# Task 6922: the `planar-agent` observation wrapper and `record_observed.py`
+# helper are shared across every lifecycle fixture from this one location,
+# never duplicated per-fixture. `prepare_lifecycle_fixture` copies from here
+# regardless of which fixture a case names.
+SHARED_FIXTURE_DIR = FIXTURES_DIR / "_shared"
 # The complete set of lifecycle fixture directory names `setup.fixture` may
 # name (task 6858 widens this from the single hardcoded "controlled-classic"
 # literal). Checked here rather than via filesystem existence so
@@ -2521,11 +2526,17 @@ def prepare_lifecycle_fixture(
             raise EvalFailure("missing command: planar-agent")
         write_text(repo / ".eval" / "real-planar-agent", real_planar_agent + "\n")
         shutil.copy2(fixture_root / "control.sh", repo / ".eval" / "control.sh")
+        # Task 6922: the `planar-agent` observation wrapper and its
+        # `record_observed.py` helper are shared across every lifecycle
+        # fixture from one location (`_shared/`), never a per-fixture copy
+        # -- the wrapper was hardened three times in this plan, and a
+        # per-fixture copy silently keeps the old behaviour the next time
+        # that happens.
         shutil.copy2(
-            fixture_root / "planar-agent", repo / ".eval" / "bin" / "planar-agent"
+            SHARED_FIXTURE_DIR / "planar-agent", repo / ".eval" / "bin" / "planar-agent"
         )
         shutil.copy2(
-            fixture_root / "record_observed.py",
+            SHARED_FIXTURE_DIR / "record_observed.py",
             repo / ".eval" / "record_observed.py",
         )
         os.chmod(repo / ".eval" / "control.sh", 0o755)
@@ -5169,6 +5180,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         self_tests_run, total_assertions, selftest_outcomes = run_assertion_selftests(
             selected
         )
+        if total_assertions == 0:
+            # Task 6927: a case set that legitimately loads but contains no
+            # contract-tier assertion must not report a silent pass. A
+            # single-case filtered run still yields >= 1 assertion, so this
+            # floor never rejects legitimate `--case` filtering; it only
+            # rejects a run that graded nothing. The unknown-`--case`-filter
+            # route already fails closed via `select_cases` (see
+            # "unknown or ambiguous case id" above) -- this is the other,
+            # previously uncovered route to the same vacuous-pass shape.
+            raise EvalFailure(
+                "0 contract assertions selected -- nothing was graded "
+                "(check --case filter and case tiering)"
+            )
         emit_aggregate_report(
             selftest_outcomes,
             total=total_assertions,

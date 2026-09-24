@@ -1038,7 +1038,7 @@ class AssertionSelfTestTests(unittest.TestCase):
         # would leave the count check unenforced by `make eval` even
         # though the function itself still works when called by hand.
         with mock.patch.object(
-            harness, "run_assertion_selftests", return_value=(0, 0, [])
+            harness, "run_assertion_selftests", return_value=(1, 1, [])
         ) as selftests_mock:
             code = harness.main(["--contract-only"])
         self.assertEqual(code, 0)
@@ -1136,6 +1136,52 @@ class AssertionSelfTestTests(unittest.TestCase):
                 harness.run_one_assertion_selftest("probe-case", assertion)
 
 
+class ContractLaneZeroAssertionFloorTests(unittest.TestCase):
+    """Task 6927: the contract lane must not report `PASS: 0 of 0` and
+    exit 0 for a case set that legitimately loads but contains zero
+    contract-tier assertions. These drive the real CALLER (`main` /
+    `cli_main` in contract mode), not `run_assertion_selftests` in
+    isolation, so a caller that bypasses the floor is caught here.
+    """
+
+    def test_contract_free_case_set_fails_closed_instead_of_zero_of_zero(
+        self,
+    ) -> None:
+        # A legitimately-loaded case set with no contract-tier case (or a
+        # `run_assertion_selftests` that otherwise returns zero total
+        # assertions) must fail the batch rather than print "PASS: 0 of 0".
+        with mock.patch.object(
+            harness, "run_assertion_selftests", return_value=(0, 0, [])
+        ):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = harness.cli_main(["--contract-only"])
+        self.assertNotEqual(code, 0)
+        output = stderr.getvalue()
+        self.assertIn("FAIL:", output)
+        self.assertNotIn("PASS: 0 of 0", output)
+
+    def test_legitimate_single_case_filter_still_passes(self) -> None:
+        # A single-case `--case` filter naming a real contract-tier case
+        # still yields >= 1 assertion, so the new floor must not reject
+        # legitimate filtering.
+        cases = harness.load_cases()
+        contract_entries = [
+            (path, case) for path, case in cases if "contract" in case["tiers"]
+        ]
+        self.assertGreater(len(contract_entries), 0)
+        target_id = contract_entries[0][1]["id"]
+        self.assertGreater(
+            len(contract_entries[0][1].get("contract_assertions", [])), 0
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = harness.cli_main(["--contract-only", "--case", target_id])
+        self.assertEqual(code, 0)
+        self.assertIn("PASS:", stdout.getvalue())
+        self.assertNotIn("PASS: 0 of 0", stdout.getvalue())
+
+
 class AggregateContractReportTests(unittest.TestCase):
     """Task 6840 / C6: contract mode collects every failing case into one
     aggregate report instead of stopping at the first `EvalFailure`. These
@@ -1169,7 +1215,7 @@ class AggregateContractReportTests(unittest.TestCase):
         with mock.patch.object(
             harness, "grade_contract", side_effect=fake_grade_contract
         ), mock.patch.object(
-            harness, "run_assertion_selftests", return_value=(0, 0, [])
+            harness, "run_assertion_selftests", return_value=(1, 1, [])
         ):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
@@ -1204,7 +1250,7 @@ class AggregateContractReportTests(unittest.TestCase):
         with mock.patch.object(
             harness, "grade_contract", side_effect=fake_grade_contract
         ), mock.patch.object(
-            harness, "run_assertion_selftests", return_value=(0, 0, [])
+            harness, "run_assertion_selftests", return_value=(1, 1, [])
         ):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
@@ -1233,7 +1279,7 @@ class AggregateContractReportTests(unittest.TestCase):
         with mock.patch.object(
             harness, "grade_contract", side_effect=fake_grade_contract
         ), mock.patch.object(
-            harness, "run_assertion_selftests", return_value=(0, 0, [])
+            harness, "run_assertion_selftests", return_value=(1, 1, [])
         ):
             code = harness.main(["--contract-only"])
 
@@ -1258,7 +1304,7 @@ class AggregateContractReportTests(unittest.TestCase):
         with mock.patch.object(
             harness, "grade_contract", side_effect=fake_grade_contract
         ), mock.patch.object(
-            harness, "run_assertion_selftests", return_value=(0, 0, [])
+            harness, "run_assertion_selftests", return_value=(1, 1, [])
         ):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
@@ -1424,11 +1470,14 @@ class WrapperObservedLogTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.eval_dir = Path(self.tmp.name) / ".eval"
         (self.eval_dir / "bin").mkdir(parents=True)
+        # Task 6922: the observation wrapper and its helper live in the one
+        # shared location now, not under a per-fixture directory.
         shutil.copy2(
-            FIXTURE_ROOT / "planar-agent", self.eval_dir / "bin" / "planar-agent"
+            harness.SHARED_FIXTURE_DIR / "planar-agent",
+            self.eval_dir / "bin" / "planar-agent",
         )
         shutil.copy2(
-            FIXTURE_ROOT / "record_observed.py",
+            harness.SHARED_FIXTURE_DIR / "record_observed.py",
             self.eval_dir / "record_observed.py",
         )
         os.chmod(self.eval_dir / "bin" / "planar-agent", 0o755)
@@ -3033,6 +3082,76 @@ def write_test_archive(dest_dir: Path, name: str, files: dict[str, str]) -> str:
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
     return hashlib.sha256(tar_path.read_bytes()).hexdigest()
+
+
+class SharedFixtureObservationSurfaceTests(unittest.TestCase):
+    """Task 6922: `planar-agent` (the PATH wrapper that records the
+    observed log) and `record_observed.py` live in exactly one place
+    (`harness.SHARED_FIXTURE_DIR`) and every lifecycle fixture directory
+    under `harness.FIXTURES_DIR` must NOT carry its own copy. That wrapper
+    was hardened three times this plan; a per-fixture copy would silently
+    keep the old behaviour in whichever fixture a fix missed. This test is
+    the actual deliverable -- it is what prevents the duplication from
+    coming back.
+    """
+
+    OBSERVATION_FILES = ("planar-agent", "record_observed.py")
+
+    def test_no_fixture_directory_carries_its_own_copy(self) -> None:
+        offenders = []
+        for fixture_name in sorted(harness.LIFECYCLE_FIXTURES):
+            fixture_root = harness.FIXTURES_DIR / fixture_name
+            for filename in self.OBSERVATION_FILES:
+                if (fixture_root / filename).exists():
+                    offenders.append(str(fixture_root / filename))
+        self.assertEqual(
+            offenders,
+            [],
+            f"fixture directories must not carry their own observation "
+            f"wrapper copy; found: {offenders}",
+        )
+
+    def test_shared_dir_holds_both_observation_files(self) -> None:
+        for filename in self.OBSERVATION_FILES:
+            self.assertTrue(
+                (harness.SHARED_FIXTURE_DIR / filename).is_file(),
+                f"missing shared observation file: {filename}",
+            )
+
+    def test_prepare_lifecycle_fixture_copies_from_the_shared_dir(self) -> None:
+        # CALL-SITE test: proves `prepare_lifecycle_fixture` itself reads
+        # from `SHARED_FIXTURE_DIR`, not merely that the directory exists.
+        # Point `SHARED_FIXTURE_DIR` at a scratch copy carrying a marked
+        # wrapper and confirm the marker lands in the prepared repo.
+        cases = harness.load_cases()
+        case_path, case = next(
+            (path, c) for path, c in cases if c["id"] == "classic-lifecycle-success"
+        )
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            shared_copy = Path(raw_tmp) / "_shared"
+            shutil.copytree(harness.SHARED_FIXTURE_DIR, shared_copy)
+            marker = "# task-6922-marker\n"
+            wrapper = shared_copy / "planar-agent"
+            wrapper.write_text(marker + wrapper.read_text(encoding="utf-8"))
+            with mock.patch.object(harness, "SHARED_FIXTURE_DIR", shared_copy):
+                options = harness.Options(
+                    mode="lifecycle",
+                    vendor="",
+                    surface="agent",
+                    case_filter=None,
+                    results_dir=None,
+                    keep=False,
+                )
+                ctx = harness.prepare_lifecycle_fixture(
+                    case_path, case, options, "shared-fixture-copy-probe"
+                )
+                try:
+                    installed = (
+                        ctx.repo / ".eval" / "bin" / "planar-agent"
+                    ).read_text(encoding="utf-8")
+                    self.assertIn(marker, installed)
+                finally:
+                    shutil.rmtree(ctx.artifacts, ignore_errors=True)
 
 
 class VendoredFixtureArchiveTests(unittest.TestCase):
