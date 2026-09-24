@@ -198,6 +198,14 @@ endef
 CPP_FILES := $(shell find src scripts/toolchain-probes -type f \( -name '*.cppm' -o -name '*.cpp' \) \
 	-not -path '*/vendor/*' -not -path '*/build/*' 2>/dev/null)
 
+.PHONY: thread-lambda-catch2-lint
+thread-lambda-catch2-lint: ## Flag a Catch2 macro reachable from a thread lambda through helpers (task 6923)
+	python3 scripts/thread-lambda-catch2-lint.py
+
+.PHONY: thread-lambda-catch2-lint-selftest
+thread-lambda-catch2-lint-selftest: ## Regression tests for thread-lambda-catch2-lint.py itself, incl. the real historical bug
+	PYTHONDONTWRITEBYTECODE=1 python3 -m pytest scripts/test_thread_lambda_catch2_lint.py -q
+
 .PHONY: cpp-lint-gate
 cpp-lint-gate: ## The GATING half of cpp-lint (clang-format --Werror + doxygen); composed into test-all
 	# TASK 6054. `cpp-lint` has three steps and only TWO of them gate: a
@@ -234,6 +242,24 @@ cpp-lint-gate: ## The GATING half of cpp-lint (clang-format --Werror + doxygen);
 	# WARN_FORMAT diagnostic as authoritative and never retries it, however
 	# many attempts remain. Only a crash with NO diagnostic text is retried.
 	DOXYGEN_MAX_ATTEMPTS=8 scripts/cpp-lint-doxygen.sh Doxyfile.lint
+	@echo "== cpp-lint-gate: thread-lambda-catch2-lint SELF-TEST (task 6923) =="
+	# The lint's own regression suite runs BEFORE the lint, and includes the
+	# real historical bug (a worker lambda reaching REQUIRE through two
+	# helper calls). Without this, a change that breaks the lint's detection
+	# logic leaves it exiting 0 on a clean tree and nothing notices -- the
+	# lint would keep "passing" while detecting nothing, which is the exact
+	# vacuous-pass shape plan 1065 exists to remove.
+	PYTHONDONTWRITEBYTECODE=1 python3 -m pytest scripts/test_thread_lambda_catch2_lint.py -q
+	@echo "== cpp-lint-gate: thread-lambda-catch2-lint (task 6923) =="
+	# Catch2's assertion macros are not thread-safe (agentatomic.t.cpp,
+	# commit a59cb74f: an intermittent abort, ~1 full suite run in 4, from
+	# a worker lambda reaching a macro through two helper calls). This is a
+	# heuristic single-file reachability scan, not a full C++ parse --
+	# see the header of scripts/thread-lambda-catch2-lint.py for exactly
+	# what it does and does not catch. Pure Python, no build dependency;
+	# composed here because it is fast (~0.2s/file) and already verified
+	# clean across the whole src/ tree.
+	python3 scripts/thread-lambda-catch2-lint.py
 
 cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C++ (docs/toolchain-parity.md)
 	$(call require_pinned_llvm,$(CLANG_FORMAT_BIN))
@@ -253,6 +279,8 @@ cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C+
 	find src -type f \( -name '*.cppm' -o -name '*.cpp' \) -print0 | xargs -0 $(CLANG_TIDY_BIN) -p $(CPP_BUILD_DIR)
 	@echo "== cpp-lint: doxygen Doxyfile.lint (retries only on signal death; see docs/toolchain-parity.md) =="
 	scripts/cpp-lint-doxygen.sh Doxyfile.lint
+	@echo "== cpp-lint: thread-lambda-catch2-lint (task 6923) =="
+	python3 scripts/thread-lambda-catch2-lint.py
 	# NOTE — scripts/toolchain-probes/*.cpp are deliberately clang-format-
 	# checked above but NOT clang-tidied: they are standalone toolchain-
 	# verification probes compiled directly against the pinned clang++
@@ -512,6 +540,17 @@ eval-orchestrator-lifecycle: ## Full controlled lifecycle through a live orchest
 .PHONY: eval-ledger-check
 eval-ledger-check: ## Fail on any live/lifecycle case with no fresh evals/RESULTS.md row (task 6860)
 	PYTHONDONTWRITEBYTECODE=1 python3 evals/orchestrator/harness.py --ledger-check
+
+# Regenerate a vendored lifecycle fixture archive + digest from its authored
+# source tree (evals/fixtures/vendor_archive.py). The freshness check itself
+# is gated by a unit test that shells this script with --check (task 6922);
+# this target is the missing companion for the regeneration command, which
+# previously existed only in the script's own --help text.
+#   make eval-fixture-vendor NAME=foreign-flat
+NAME ?= foreign-flat
+.PHONY: eval-fixture-vendor
+eval-fixture-vendor: ## Regenerate a vendored lifecycle fixture archive: make eval-fixture-vendor NAME=<name>
+	python3 evals/fixtures/vendor_archive.py $(NAME)
 
 # Semantic evaluation lines for the planning surfaces (plan 948). Live by
 # nature — NOT part of `make eval`. Use --dry-run to validate a case:
