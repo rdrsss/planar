@@ -37,6 +37,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -187,6 +188,89 @@ def load_case(case_id: str) -> dict[str, Any]:
         raise ConfigError(f"case '{case_id}' must declare at least one trial")
     case["kind"] = kind
     return case
+
+
+DEFAULT_LEDGER_MAX_AGE_DAYS = 30
+
+
+def ledger_max_age_days(case: dict[str, Any]) -> int:
+    """Per-case ledger staleness budget, defaulting to
+    `DEFAULT_LEDGER_MAX_AGE_DAYS`. Mirrors the orchestrator harness's own
+    `ledger.max_age_days` shape so both tiers read the same key.
+    """
+    ledger = case.get("ledger")
+    if isinstance(ledger, dict):
+        value = ledger.get("max_age_days")
+        if isinstance(value, int) and value > 0:
+            return value
+    return DEFAULT_LEDGER_MAX_AGE_DAYS
+
+
+def live_gradable_cases() -> list[dict[str, Any]]:
+    """Every planning case whose RESOLVED kind has a live grading path.
+
+    Resolution goes through `load_case`, not a direct read, because a case
+    may omit `kind` entirely and inherit the `draft-quality` default --
+    reading the raw JSON would classify `spec-draft-quality` (which omits
+    it) as having no live path, silently exempting the one case that does.
+    """
+    cases: list[dict[str, Any]] = []
+    for path in sorted((EVAL_ROOT / "cases").glob("*.json")):
+        try:
+            case = load_case(path.stem)
+        except ConfigError:
+            # A malformed case is the case-validation lane's problem, not
+            # this one's; skipping here keeps a freshness check from
+            # reporting a second, confusing failure for the same defect.
+            continue
+        if case["kind"] in LIVE_KINDS:
+            cases.append(case)
+    return cases
+
+
+def check_ledger_freshness() -> list[str]:
+    """Return one violation per live-gradable planning case with no
+    non-`blocked` ledger row newer than its `ledger.max_age_days`
+    (task 6919).
+
+    The orchestrator harness's own `check_ledger_freshness` only iterates
+    `evals/orchestrator/cases/*.json`, so planning rows -- durable since
+    task 6894 -- fed no freshness gate at all. A planning case IS live and
+    paid-for, and the same staleness argument applies: a threshold that has
+    not been re-measured against a current model is exactly the kind of
+    claim this suite should not make silently.
+    """
+    orchestrator_harness = _orchestrator_harness()
+    rows = orchestrator_harness.ledger_rows()
+    now = datetime.now(timezone.utc)
+    violations: list[str] = []
+    for case in live_gradable_cases():
+        max_age = ledger_max_age_days(case)
+        freshest: datetime | None = None
+        for row in rows:
+            if row.get("case") != case["id"] or row.get("grade") == "blocked":
+                continue
+            try:
+                stamp = datetime.strptime(row["date"], "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+            except (KeyError, ValueError):
+                continue
+            if freshest is None or stamp > freshest:
+                freshest = stamp
+        if freshest is None:
+            violations.append(
+                f"{case['id']}: no non-blocked ledger row recorded in "
+                f"{orchestrator_harness.RESULTS_LEDGER_PATH}"
+            )
+            continue
+        age_days = (now - freshest).days
+        if age_days > max_age:
+            violations.append(
+                f"{case['id']}: newest non-blocked ledger row is {age_days}d "
+                f"old, exceeds ledger.max_age_days {max_age}"
+            )
+    return violations
 
 
 def assert_live_path(case: dict[str, Any]) -> None:
@@ -776,12 +860,41 @@ def persist_to_ledger(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--case", required=True)
+    # Not `required=True`: --ledger-check is a suite-wide report and names
+    # no case. Enforced below instead, so the missing-CASE error still fires
+    # for every other invocation.
+    ap.add_argument("--case")
     ap.add_argument("--model", help="host model; recorded in the result so a score is attributable")
     ap.add_argument("--trials", type=int, help="override the case trial count")
     ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--dry-run", action="store_true", help="validate case, assets, and structure offline")
+    ap.add_argument(
+        "--ledger-check",
+        action="store_true",
+        help="report live-gradable planning cases with a missing or stale evals/RESULTS.md row, then exit",
+    )
     args = ap.parse_args()
+
+    # Task 6919: a standalone report, like the orchestrator harness's own
+    # --ledger-check. Runs before CASE is resolved because it is not about
+    # one case, and needs no provider call.
+    if args.ledger_check:
+        violations = check_ledger_freshness()
+        for violation in violations:
+            print(f"STALE: {violation}", file=sys.stderr)
+        if violations:
+            print(
+                f"FAIL: {len(violations)} planning case(s) have a missing or "
+                "stale ledger row",
+                file=sys.stderr,
+            )
+            return EXIT_FAIL
+        print("ledger-check: every live-gradable planning case has a fresh row")
+        return EXIT_PASS
+
+    if not args.case:
+        print("error: --case is required", file=sys.stderr)
+        return EXIT_FAIL
 
     try:
         case = load_case(args.case)

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -1048,3 +1049,91 @@ class LedgerPersistenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
+
+
+class PlanningLedgerFreshnessTests(unittest.TestCase):
+    """Task 6919: the orchestrator harness's `check_ledger_freshness` only
+    iterates `evals/orchestrator/cases/*.json`, so the planning ledger rows
+    made durable by task 6894 fed no freshness gate at all. A planning case
+    is live and paid-for; a threshold not re-measured against a current
+    model is exactly the claim this suite should not make silently.
+    """
+
+    def ledger(self, body: str):
+        """Point the ORCHESTRATOR module's ledger path at a temp file.
+
+        The planning check reads rows through `_orchestrator_harness()`, so
+        that module -- not this one -- owns `RESULTS_LEDGER_PATH`. Patching
+        the wrong module would leave the real committed ledger in play.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            "w", suffix=".md", delete=False, encoding="utf-8"
+        )
+        tmp.write(body)
+        tmp.close()
+        self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
+        return mock.patch.object(
+            harness._orchestrator_harness(), "RESULTS_LEDGER_PATH", Path(tmp.name)
+        )
+
+    HEADER = (
+        "| date | case | mode | vendor | surface | cost | grade | sha |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+    )
+
+    def test_the_kind_default_is_resolved_not_read_raw(self) -> None:
+        # `spec-draft-quality.json` omits `kind` entirely and inherits the
+        # `draft-quality` default in `load_case`. Reading the raw JSON would
+        # classify the one live-gradable case as having no live path and
+        # silently exempt it from the gate -- the exact vacuous-exemption
+        # this check exists to prevent.
+        ids = [case["id"] for case in harness.live_gradable_cases()]
+        self.assertIn("spec-draft-quality", ids)
+        self.assertNotIn("ingest-sentinel-lineage", ids)
+
+    def test_an_empty_ledger_reports_every_live_gradable_case(self) -> None:
+        with self.ledger(self.HEADER):
+            violations = harness.check_ledger_freshness()
+        self.assertTrue(
+            any("spec-draft-quality" in v and "no non-blocked" in v for v in violations),
+            violations,
+        )
+
+    def test_a_fresh_row_clears_the_case(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        row = f"| {today} | spec-draft-quality | live | claude | skill | - | pass | abc |\n"
+        with self.ledger(self.HEADER + row):
+            self.assertEqual(harness.check_ledger_freshness(), [])
+
+    def test_a_blocked_row_does_not_clear_the_case(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        row = f"| {today} | spec-draft-quality | live | claude | skill | - | blocked | abc |\n"
+        with self.ledger(self.HEADER + row):
+            violations = harness.check_ledger_freshness()
+        self.assertTrue(any("spec-draft-quality" in v for v in violations), violations)
+
+    def test_a_row_past_max_age_is_reported_as_stale(self) -> None:
+        old = (datetime.now(timezone.utc) - timedelta(days=400)).strftime("%Y-%m-%d")
+        row = f"| {old} | spec-draft-quality | live | claude | skill | - | pass | abc |\n"
+        with self.ledger(self.HEADER + row):
+            violations = harness.check_ledger_freshness()
+        self.assertTrue(
+            any("exceeds ledger.max_age_days" in v for v in violations), violations
+        )
+
+    def test_call_site_main_ledger_check_exits_nonzero_on_a_violation(self) -> None:
+        # Drives the real CLI entry point, not `check_ledger_freshness`
+        # directly: no-opping the `--ledger-check` branch in `main` fails
+        # here, which a helper-only test would not catch.
+        with self.ledger(self.HEADER), mock.patch.object(
+            sys, "argv", ["harness.py", "--ledger-check"]
+        ):
+            self.assertNotEqual(harness.main(), 0)
+
+    def test_call_site_main_ledger_check_exits_zero_when_fresh(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        row = f"| {today} | spec-draft-quality | live | claude | skill | - | pass | abc |\n"
+        with self.ledger(self.HEADER + row), mock.patch.object(
+            sys, "argv", ["harness.py", "--ledger-check"]
+        ):
+            self.assertEqual(harness.main(), 0)
