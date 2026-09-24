@@ -1113,6 +1113,20 @@ TEST_CASE("16 threads claiming 16 DISTINCT tasks via claim_entity produce 16 dis
   auto            control = open_migrated(scratch);
   auto const      fx      = seed(control, k_threads);
 
+  // Catch2 is NOT thread-safe: its assertion macros race on a single
+  // output-redirect state, and `activate()` asserts `!m_redirectActive`.
+  // `task_id_at` reaches `scalar_int`, which is four `REQUIRE`s, so calling
+  // it from inside the worker below put sixteen threads through those
+  // macros at once and aborted the process intermittently (measured ~1 run
+  // in 4 of the full suite; `--repeat until-fail:300` reproduces in
+  // seconds). Resolve every id HERE, on the main thread, so the worker
+  // path contains no Catch2 macro at all.
+  std::vector<std::int64_t> task_ids;
+  task_ids.reserve(k_threads);
+  for (int i = 0; i < k_threads; ++i) {
+    task_ids.push_back(task_id_at(control, i));
+  }
+
   std::latch                gate{k_threads};
   std::atomic<int>          winners{0};
   std::atomic<int>          busy{0};
@@ -1129,7 +1143,7 @@ TEST_CASE("16 threads claiming 16 DISTINCT tasks via claim_entity produce 16 dis
         return;
       }
       recording_policy policy;
-      auto const       task = task_id_at(*conn, i);
+      auto const       task = task_ids[static_cast<std::size_t>(i)];
       gate.arrive_and_wait();
       auto const held = atomic::claim_entity(*conn, basic_args(fx, task), true, policy.bind());
       if (held) {

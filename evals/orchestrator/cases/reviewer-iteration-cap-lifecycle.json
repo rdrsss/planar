@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "reviewer-iteration-cap-lifecycle",
+  "skill": "orchestrator",
+  "description": "A controlled reviewer bounces unconditionally; the orchestrator's 5-iteration cap ends the cycle with planar-agent fail rather than looping until the fixture runs out of scripted bounces. Complements the contract-tier grep pin in reviewer-iteration-cap.json (id reviewer-iteration-five-terminates) with a real lifecycle replay of the same invariant.",
+  "tags": [
+    "lifecycle",
+    "iteration-cap",
+    "reviewer-bounce"
+  ],
+  "tiers": [
+    "lifecycle"
+  ],
+  "tasks": [
+    {
+      "slug": "controlled-value",
+      "title": "Set the controlled fixture value to approved."
+    }
+  ],
+  "setup": {
+    "fixture": "controlled-classic",
+    "specialist_scenario": "reviewer-always-bounce",
+    "plan_status": "active",
+    "strategy": "classic",
+    "isolation": "pwd",
+    "dispatch_shape": "strict",
+    "replay": "iteration-cap",
+    "iteration_cap": 5
+  },
+  "interaction": [
+    {
+      "send": "Execute with classic, pwd, strict, and no documentation phase."
+    }
+  ],
+  "lifecycle": {
+    "scenario": "controlled-classic",
+    "surface": "agent",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits strategy classic, isolation pwd, dispatch shape strict, and --no-docs. Execute the controlled task through coder and reviewer. The controlled reviewer never approves; stop at the iteration cap rather than looping indefinitely. Do not finalize, propagate, or archive.",
+    "timeout_seconds": 600,
+    "operator_responses": [
+      "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Continue through the controlled coder and reviewer cycle.",
+      "Use the already pre-committed strict dispatch shape and continue."
+    ]
+  },
+  "expected": {
+    "ordered_events": [
+      "claim-acquired",
+      "coder-finished",
+      "review-request-changes",
+      "coder-finished",
+      "review-request-changes",
+      "coder-finished",
+      "review-request-changes",
+      "coder-finished",
+      "review-request-changes",
+      "coder-finished",
+      "review-request-changes",
+      "task-failed"
+    ],
+    "forbidden_events": [
+      "review-approved",
+      "task-completed",
+      "claim-released",
+      "task-blocked",
+      "task-completed-before-review"
+    ],
+    "event_counts": {
+      "review-request-changes": 5,
+      "claim-acquired": 1,
+      "coder-finished": 5,
+      "task-failed": 1
+    },
+    "post_state": {
+      "task_status": "todo",
+      "active_claims": 0,
+      "file_value": "approved"
+    }
+  }
+}

@@ -29,6 +29,7 @@ rate limit — neither a pass nor a failure).
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import shutil
@@ -51,6 +52,34 @@ REPO_ROOT = EVAL_ROOT.parents[1]
 # elsewhere resolve to the orchestrator's module instead of this one.
 sys.path.append(str(EVAL_ROOT.parent / "orchestrator"))
 import arena  # noqa: E402
+
+# The orchestrator's `record_ledger_row` (task 6894 / tech-spec 619 C6) is
+# reused rather than re-implemented, but a bare `import harness` is unsafe
+# here even with sys.path ordering: BOTH directories ship a `harness.py`,
+# and `evals/planning/test_harness.py` imports *this* file under the literal
+# module name `harness` (see its own top-of-file comment). If that import
+# already ran in this process, `sys.modules["harness"]` is already bound to
+# THIS file -- a subsequent bare `import harness` here would silently bind
+# to itself instead of the orchestrator's module. Loading by explicit file
+# path under a distinct module name sidesteps the name collision entirely.
+_ORCHESTRATOR_HARNESS_MODULE_NAME = "planar_eval_orchestrator_harness"
+
+
+def _orchestrator_harness():
+    """Return the orchestrator harness module (`evals/orchestrator/harness.py`),
+    loading it by path under a collision-safe name on first use. Cached in
+    `sys.modules` so repeated calls (e.g. once per trial) reuse the same
+    module object rather than re-executing it.
+    """
+    cached = sys.modules.get(_ORCHESTRATOR_HARNESS_MODULE_NAME)
+    if cached is not None:
+        return cached
+    path = EVAL_ROOT.parent / "orchestrator" / "harness.py"
+    spec = importlib.util.spec_from_file_location(_ORCHESTRATOR_HARNESS_MODULE_NAME, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_ORCHESTRATOR_HARNESS_MODULE_NAME] = module
+    spec.loader.exec_module(module)
+    return module
 
 EXIT_PASS, EXIT_FAIL, EXIT_CONFIG, EXIT_BLOCKED = 0, 1, 2, 75
 
@@ -678,6 +707,62 @@ def host_argv(model: str | None) -> list[str]:
     return argv
 
 
+def persist_to_ledger(
+    case: dict[str, Any],
+    drafter_model: str | None,
+    grader_model: str,
+    stats: dict[str, float],
+    verdict: str,
+) -> None:
+    """Persist `{drafter_model, grader_model}` next to a durable ledger row
+    (task 6894 / tech-spec 619 C6), rather than leaving attribution only in
+    the printed JSON line: a live planning run is paid-for, and losing which
+    model drafted and which graded makes the retained result unattributable.
+
+    Reuses the orchestrator harness's `record_ledger_row` (task 6860)
+    instead of a second Markdown-table emitter -- two writers to one
+    append-only file would drift. `record_ledger_row` derives its model
+    column from `case["live"]["host_model"]`; this harness has no `live`
+    section on its own case schema, so a synthetic wrapper case carries
+    both model ids through that one column.
+
+    This harness retains no artifact directory of its own (unlike the
+    orchestrator harness's `--keep` retention path). `record_ledger_row`
+    still wants an `artifact_dir` to compute its content hash from a
+    `grade.json`, so this writes one to a throwaway temporary directory
+    that is deleted the moment this function returns -- nothing new is
+    retained on disk; only the ledger row persists.
+    """
+    orchestrator_harness = _orchestrator_harness()
+    ledger_case = {
+        "id": case["id"],
+        "live": {
+            "host_model": f"drafter={drafter_model or '(host default)'};grader={grader_model}",
+        },
+    }
+    with tempfile.TemporaryDirectory(prefix="planar-eval-planning-ledger-") as tmp:
+        artifact_dir = Path(tmp)
+        orchestrator_harness.write_json(
+            artifact_dir / "grade.json",
+            {
+                "status": verdict,
+                "case_id": case["id"],
+                "drafter_model": drafter_model,
+                "grader_model": grader_model,
+                "stats": stats,
+            },
+        )
+        options = orchestrator_harness.Options(
+            mode="planning",
+            vendor="claude",
+            surface="skill",
+            case_filter=None,
+            results_dir=None,
+            keep=False,
+        )
+        orchestrator_harness.record_ledger_row(ledger_case, artifact_dir, options, verdict)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", required=True)
@@ -951,9 +1036,22 @@ def main() -> int:
         f"\nmean {stats['mean']:.2f}  min {stats['min']:.2f}  max {stats['max']:.2f}  "
         f"stdev {stats['stdev']:.2f}  (threshold {threshold:.2f})"
     )
-    # Both models that produced this result, machine-readable so a caller
-    # (or a future results ledger, tech-spec 619 component C6) does not have
-    # to re-derive attribution from the human-readable lines above.
+    verdict = "pass" if stats["mean"] >= threshold else "fail"
+    try:
+        # Durable attribution (task 6894 / C6): both models land in
+        # evals/RESULTS.md via record_ledger_row, not only in the printed
+        # line below. Never skipped or downgraded to a warning -- a failed
+        # persist here is exactly the "check that looks green while
+        # measuring nothing" failure mode this file's own docstring warns
+        # against.
+        persist_to_ledger(case, args.model, grader_model, stats, verdict)
+    except Exception as exc:
+        print(f"FAIL: could not persist result to the results ledger: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    # Both models that produced this result, machine-readable so a piping
+    # caller does not have to re-derive attribution from the human-readable
+    # lines above or re-parse the ledger. The durable copy is the ledger row
+    # written just above; this print is a convenience for the caller only.
     print(json.dumps({
         "case": case["id"],
         "drafter_model": args.model,
