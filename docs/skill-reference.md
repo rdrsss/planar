@@ -58,7 +58,7 @@ the selected vendors.
 Vendor profile data lives in scriptorium's built-in per-vendor profiles
 (claude/codex/copilot/gemini), with the repo-root `scriptorium.yaml`
 supplying overrides/additions; model-tier resolution stays Planar-side in the
-shared resolver (`src/engine/models.zig`) and is regenerated into
+shared resolver (`src/lib/engine/models/`) and is regenerated into
 the Tier Table lives in `agents/models.md`, hand-maintained; Planar no longer generates it.
 Static render paths show each tier's default model (`list[0]` when the config
 uses candidate lists); runtime orchestration may further select a
@@ -284,7 +284,7 @@ Source: `skills/src/pl-import.md` · `agents/importer.md`
 
 Synthesize fresh planning artifacts for a repo from its existing docs + git log + source code via an LLM pass. Sibling of `/pl-import` (which transcribes). Reach for `/pl-synthesize` when docs are messy, docs-only, or mid-evolution; reach for `/pl-import` when docs are clean and current.
 
-The LLM runs in the vendor skill, not in the Planar binary. `src/engine/synthesize.zig` builds the deterministic `codeprobe.EvidenceMap` floor, writes a fingerprinted `synthesis.Request` to a cache file for the skill to consume, then on the follow-up invocation validates the skill's `Result` and merges it with the deterministic baseline.
+The LLM runs in the vendor skill, not in the Planar binary. `src/lib/engine/synthesize/synthesize.cpp` builds the deterministic `codeprobe.EvidenceMap` floor, writes a fingerprinted `synthesis.Request` to a cache file for the skill to consume, then on the follow-up invocation validates the skill's `Result` and merges it with the deterministic baseline.
 
 **Example:**
 ```
@@ -556,7 +556,7 @@ the `planar decision`, `artifact`, `annotate`, and `links` domains.
 **Example:**
 ```
 /pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17
-/pl-knowledge annotate --anchor-path src/db/db.zig --line-start 88 "Explain the retry boundary"
+/pl-knowledge annotate --anchor-path src/lib/db/db.cpp --line-start 88 "Explain the retry boundary"
 /pl-knowledge link annotation:12 plan:42 --relationship addresses
 /pl-knowledge link decision:9 artifact:17 --relationship cites
 ```

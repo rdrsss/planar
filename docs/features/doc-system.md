@@ -63,7 +63,7 @@ and emit a worklist for the operator to gate.
 Source scope (what the root hash covers):
 
 - **Include:** `src/`, `migrations/`, `templates/`, `vendor/`,
-  `build.zig`, `build.zig.zon`, any non-dotfile top-level file, and
+  `CMakeLists.txt`, `CMakePresets.json`, any non-dotfile top-level file, and
   `docs/*` (for the `doc_hash` halves of entries).
 - **Exclude:** `.git/`, all dotfile ancestors, anything matched by a
   `.gitignore` rule.

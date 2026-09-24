@@ -83,7 +83,7 @@ Two annotations are load-bearing:
   A bare path resolves only when the anchor's association has exactly one
   member repo; with two there is no principled choice, and the entry is
   reported rather than guessed. An entry naming an unknown repo
-  (`typo:src/x.zig`) is likewise reported, never re-read as a bare path —
+  (`typo:src/x.cpp`) is likewise reported, never re-read as a bare path —
   falling back would attach the declaration to the wrong tree while looking
   like it worked. Unresolved entries are counted and warned about at the end
   of `spec ingest --apply`.

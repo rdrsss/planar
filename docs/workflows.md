@@ -30,7 +30,7 @@ artifacts: product-spec.md, tech-spec.md, roadmap.md, test-spec.md
 
 ### Step 2 — Review and edit
 
-Open the workbench directory. Read all four documents. Edit the `roadmap.md` section headers and bullet points — these become plan and task rows. **Annotate every testable bullet with a `[slug: foo-bar]` tag** so the test-spec can cite it by stable name even before ids are assigned. **Also annotate the files each bullet will touch** — `[touches: src/engine/x.zig]`, or `[touches: <repo-slug>:src/engine/x.zig]` in a polyrepo association. This is the cheapest moment to record it: you are holding the spec and already know the target files, whereas inferring them later from prose recovers only 20–44% of tasks. Touch declarations are what parallel-eligibility rule 2 reads and what closure extraction seeds from; a task with none is treated as touching everything and never runs in parallel. Edit the `## Decisions` section in `tech-spec.md` — these become decision rows. Edit acceptance criteria in `product-spec.md` — these become scenario rows. Edit the `## Scenarios` section in `test-spec.md` — each `### Scenario:` H3 becomes a `test_scenarios` row with `verifies` edges to the cited tasks. Cite tasks via `**Verifies:** task:<slug>` referencing the `[slug: …]` annotations on the roadmap bullets. The test-spec's four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens** — name the bucket in each scenario title (e.g. `### Scenario: Error return — export fails on missing header`), not as `### <bucket>` group headers; the coverage-gap checklist at the bottom is the reviewer's compliance pass.
+Open the workbench directory. Read all four documents. Edit the `roadmap.md` section headers and bullet points — these become plan and task rows. **Annotate every testable bullet with a `[slug: foo-bar]` tag** so the test-spec can cite it by stable name even before ids are assigned. **Also annotate the files each bullet will touch** — `[touches: src/lib/engine/x.cpp]`, or `[touches: <repo-slug>:src/lib/engine/x.cpp]` in a polyrepo association. This is the cheapest moment to record it: you are holding the spec and already know the target files, whereas inferring them later from prose recovers only 20–44% of tasks. Touch declarations are what parallel-eligibility rule 2 reads and what closure extraction seeds from; a task with none is treated as touching everything and never runs in parallel. Edit the `## Decisions` section in `tech-spec.md` — these become decision rows. Edit acceptance criteria in `product-spec.md` — these become scenario rows. Edit the `## Scenarios` section in `test-spec.md` — each `### Scenario:` H3 becomes a `test_scenarios` row with `verifies` edges to the cited tasks. Cite tasks via `**Verifies:** task:<slug>` referencing the `[slug: …]` annotations on the roadmap bullets. The test-spec's four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens** — name the bucket in each scenario title (e.g. `### Scenario: Error return — export fails on missing header`), not as `### <bucket>` group headers; the coverage-gap checklist at the bottom is the reviewer's compliance pass.
 
 When satisfied, signal readiness to ingest.
 
@@ -682,7 +682,7 @@ Items already in the database are reported as **Skipped**. Only new items appear
 
 Use this when the repo is docs-only or has no implementation yet — a freshly cut roadmap, a planning sandbox, or a project where the code tree is intentionally empty. `import` would treat every roadmap-adding commit as evidence that the work is done; `synthesize` reads the source tree and refuses to mark anything done when there is no source to back the claim.
 
-**What happens:** the synthesizer's deterministic floor probes the source tree, sees zero meaningful evidence, and sets `greenfield=true` on the `synthesis.Request`. The vendor skill's contract forbids `status != "todo"` under greenfield; `synthesis.Validate` in `src/engine/synthesize.zig` enforces it. Every task lands as todo regardless of what the docs claim.
+**What happens:** the synthesizer's deterministic floor probes the source tree, sees zero meaningful evidence, and sets `greenfield=true` on the staged `request`. The vendor skill's contract forbids `status != "todo"` under greenfield; `validate_result()` in `src/lib/engine/synthesize/synthesize.cpp` enforces it. Every task lands as todo regardless of what the docs claim.
 
 ### Step 1 — Run synthesize against the greenfield repo
 
@@ -1937,7 +1937,7 @@ The session id surfaced by `dashboard --agents` is the Planar-side id; pair it w
 ### Failure modes
 
 - **Malformed payload** (`{` truncated, not JSON): `ingest` exits non-zero with `error: malformed event payload…` on stderr and writes no rows.
-- **Unknown `event_type`** (the payload is valid JSON but the event_type field is outside the adapter's known set): `ingest` exits non-zero with `error: unknown event_type in payload…`. Add the new event type to `src/engine/external/agentingest/claude.zig` if you want it recorded.
+- **Unknown `event_type`** (the payload is valid JSON but the event_type field is outside the adapter's known set): `ingest` exits non-zero with `error: unknown event_type in payload…`. Add the new event type to the claude branch of `parse()` in `src/cmd/planar-agent/handlers/ingest.cpp` if you want it recorded.
 - **`$PLANAR_DB` missing or unreadable**: the schema-version handshake fails at startup; `ingest` exits non-zero before parsing.
 
 Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction rolls back so no partial rows land in `sessions` or `agent_actions`.
@@ -2035,7 +2035,7 @@ The Copilot adapter accepts BOTH `status` (Copilot's documented field name) and 
 ### Failure modes
 
 - **Malformed payload** (`{` truncated, not JSON, missing required `event` or `session_id` field): `ingest` exits non-zero with `error: malformed event payload (vendor=copilot)…` on stderr and writes no rows.
-- **Unknown event** (payload is valid JSON but `event` is not in the table above): `ingest` exits non-zero with `error: unknown event_type in payload (vendor=copilot)…`. Add the new event name to `src/engine/external/agentingest/copilot.zig` if you want it recorded.
+- **Unknown event** (payload is valid JSON but `event` is not in the table above): `ingest` exits non-zero with `error: unknown event_type in payload (vendor=copilot)…`. Add the new event name to the copilot branch of `parse()` in `src/cmd/planar-agent/handlers/ingest.cpp` if you want it recorded.
 - **`$PLANAR_DB` missing or unreadable**: the schema-version handshake fails at startup; `ingest` exits non-zero before parsing.
 
 Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction rolls back so no partial rows land in `sessions` or `agent_actions`.
@@ -2160,7 +2160,7 @@ Each root action (orchestrator dispatch, `parent_action_id IS NULL`) renders flu
 
 ```
 action:12  scope:project:my-app  vendor:claude  activity:"dispatching M4 coders"  branch:feat/m4  last_hb:2s
-└── scope:project:my-app  vendor:claude  activity:"writing tree.zig"  branch:feat/m4  last_hb:5s
+└── scope:project:my-app  vendor:claude  activity:"writing tree.cpp"  branch:feat/m4  last_hb:5s
 └── scope:project:my-app  vendor:claude  activity:"writing tests"     branch:feat/m4  last_hb:8s
 ```
 
@@ -2174,7 +2174,7 @@ See [CLI reference: planar-watch tree](cli-reference.md#planar-watch-tree--m4-ad
 
 ### Capability boundary
 
-The verb set is enforced by `src/cmd/planar-watch/handlers/cmd.zig`: there is no `pull`, `claim`, `complete`, `fail`, `release`, `block`, `heartbeat`, `action`, `ingest`, `reconcile`, or `abort` in the tree. The strict-read-only DB handle (`runtime.ensureDbStrictReadOnly` → `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`) refuses any write SQL with `SQLITE_READONLY` at the driver layer — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`. Both defenses must be in place; either failing alone is treated as a regression by `integration_tests/planar_watch_test.zig`.
+The verb set is enforced by `root_app()` in `src/cmd/planar-watch/tree.cpp`'s registered-command list: there is no `pull`, `claim`, `complete`, `fail`, `release`, `block`, `heartbeat`, `action`, `ingest`, `reconcile`, or `abort` in the tree, pinned by `src/cmd/planar-watch/capability.t.cpp`. The strict-read-only DB handle (`db::connection::open_read_only` → `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)` in `src/lib/db/db.cpp`) refuses any write SQL with `SQLITE_READONLY` at the driver layer — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`. Both defenses must be in place; `src/cmd/planar-watch/context.t.cpp` treats either failing alone as a regression.
 
 ## Recipe 20 — Clean up terminal-status workbench files from historical or manual recovery
 
@@ -2321,7 +2321,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the runner that acts on that output — running the git worktree/branch/merge ops and spawning coders — may be the model orchestrator through the host's subagent dispatch surface, a host-native workflow, or a background agent (decision 1007, plan 1033). The seam is an optional deterministic helper, not the only permitted path. The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
+> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the runner that acts on that output — running the git worktree/branch/merge ops and spawning coders — may be the model orchestrator through the host's subagent dispatch surface, a host-native workflow, or a background agent (decision 1007, plan 1033). The seam is an optional deterministic helper, not the only permitted path. The six eligibility rules are the engine's (`recommend-strategy`, `src/lib/engine/planning/strategy.cpp`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -3020,7 +3020,7 @@ typed relationships:
 
 ```bash
 /pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17
-/pl-knowledge annotate --anchor-path src/db/db.zig --line-start 88 \
+/pl-knowledge annotate --anchor-path src/lib/db/db.cpp --line-start 88 \
   "Explain the retry boundary"
 /pl-knowledge link decision:9 artifact:17 --relationship cites
 ```
@@ -3140,7 +3140,7 @@ after an explicit dispatch decision with a newly confirmed maximum wave size.
 Run tabularium's `/tabularium-doc-maintain` (raised to tabularium at the
 doc-cluster transfer, planar plan 933; formerly planar's `/pl-doc-maintain`).
 Before classifying manifest rows, the workflow derives
-the migration tail/schema insert, exact four binaries from `build.zig`,
+the migration tail/schema insert, exact five binaries from `CMakeLists.txt`,
 canonical generated-surface boundary, and `AGENTS.md`/`CLAUDE.md` equivalence.
 An explicit contradiction becomes an operator-gated
 `guidance-identity-drift` row. Approve, reject, or defer it like any other row;
