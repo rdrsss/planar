@@ -538,8 +538,15 @@ eval-orchestrator-lifecycle: ## Full controlled lifecycle through a live orchest
 	./scripts/eval-orchestrator.sh --lifecycle --vendor $(VENDOR) --surface agent
 
 .PHONY: eval-ledger-check
-eval-ledger-check: ## Fail on any live/lifecycle case with no fresh evals/RESULTS.md row (task 6860)
-	PYTHONDONTWRITEBYTECODE=1 python3 evals/orchestrator/harness.py --ledger-check
+eval-ledger-check: ## Fail on any live/lifecycle or live-gradable planning case with no fresh evals/RESULTS.md row (tasks 6860, 6919)
+	# Both tiers, and BOTH must run even when the first reports violations --
+	# a `;` between them, not `&&`, so the operator sees the whole stale set
+	# in one pass instead of fixing the orchestrator tier only to discover
+	# the planning tier on the next run. The exit code is the OR of the two.
+	@rc=0; \
+	PYTHONDONTWRITEBYTECODE=1 python3 evals/orchestrator/harness.py --ledger-check || rc=1; \
+	PYTHONDONTWRITEBYTECODE=1 python3 evals/planning/harness.py --ledger-check || rc=1; \
+	exit $$rc
 
 # Regenerate a vendored lifecycle fixture archive + digest from its authored
 # source tree (evals/fixtures/vendor_archive.py). The freshness check itself
