@@ -23,7 +23,7 @@
 /// ## `engine_external` did not exist before this task
 ///
 /// `unlink` was blocked TWICE: on layer 3, and on a layer-2 bucket the C++
-/// tree had never stood up. `src/lib/engine/external/` was created here,
+/// tree had never stood up. `src/engine/external/` was created here,
 /// scoped to the create/show/delete third of the Zig original — see that
 /// directory's CMakeLists.txt for what was deferred and with which verb.
 ///

@@ -36,7 +36,7 @@
 # module's header and `restrict_writes_to`'s own doc comment
 # (src/lib/db/db.cppm) for why this is a RUNTIME enforcement rather than a
 # call-site convention: a source-text audit already measured this write
-# surface wrong once, missing `src/lib/engine/external/sync.cpp`'s
+# surface wrong once, missing `src/engine/external/sync.cpp`'s
 # `table_for`-interpolated `UPDATE`. `capability.t.cpp` is the test that
 # proves the boundary holds, against real prepared statements.
 

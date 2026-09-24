@@ -3,7 +3,7 @@
 // <slug>] [--apply] [--wide] [--json]` (plan 996, task 6330).
 //
 // The extraction and resolution RULES are pinned at the engine level in
-// `src/lib/engine/planning/touchinfer.t.cpp`. This file covers what that one
+// `src/engine/planning/touchinfer.t.cpp`. This file covers what that one
 // cannot reach: dispatch wiring, repo resolution (`--repo` and cwd-prefix),
 // the exit-code mapping, the exact preview bytes, and the `--apply`
 // transaction's effect on `entity_links` and `task_touch_paths`.

@@ -3,7 +3,7 @@
 // task 6278).
 //
 // The engine's own byte-for-byte cases live in
-// `src/lib/engine/tree/walk.t.cpp`. What this file pins is the half the
+// `src/engine/tree/walk.t.cpp`. What this file pins is the half the
 // engine cannot see: flag PARSING, the cwd-derived scope path, and the
 // exit-code mapping — three arms that were each captured from the oracle
 // in a pinned scratch arena and that do NOT agree with one another.

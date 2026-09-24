@@ -77,7 +77,7 @@ planar workbench push <plan-id>
 
 ## Front matter contract
 
-Every `.md` file written by this skill carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/lib/engine/workbench/parse.cppm`](../../src/lib/engine/workbench/parse.cppm). Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync.
+Every `.md` file written by this skill carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/engine/workbench/parse.cppm`](../../src/engine/workbench/parse.cppm). Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync.
 
 Required fields for planner-written artifact files:
 

@@ -86,7 +86,7 @@ export auto json_string(std::string_view text) -> std::string;
 // shortest-round-trip-in-fixed-notation algorithm, plus a fifth site that
 // had never implemented it at all. ONLY ONE OF THEM WAS CORRECT:
 //
-//   src/lib/engine/execute/manifest.cpp  `format_double`      (correct)
+//   src/engine/execute/manifest.cpp  `format_double`      (correct)
 //   src/cmd/planar/handlers/search.cpp   `format_zig_float`   (WRONG --
 //       it never stripped the `+` from `to_chars(scientific)`'s `e+NN`,
 //       and `std::from_chars` REJECTS a leading `+` rather than skipping
@@ -98,10 +98,10 @@ export auto json_string(std::string_view text) -> std::string;
 //   src/lib/json_dom/json_dom.cpp        `format_double`      (WRONG --
 //       plain `std::to_chars` default, so `1.375e-06` where the correct
 //       site prints `0.000001375`; task 6261)
-//   src/lib/engine/models/render.cpp     `json_number`        (WRONG --
+//   src/engine/models/render.cpp     `json_number`        (WRONG --
 //       `std::format("{}", v)`, scientific notation AND a bare `inf`;
 //       tasks 6186/6261)
-//   src/lib/engine/models/legacy.cpp     `json_number`        (WRONG --
+//   src/engine/models/legacy.cpp     `json_number`        (WRONG --
 //       the same `std::format("{}", v)` body; feeds `approval_rate` and
 //       `avg_iterations`. Non-finite is unreachable there (the
 //       denominator is a dispatch count of at least one), so it was not a

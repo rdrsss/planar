@@ -5,7 +5,7 @@ as diagrams with the verb that fires each edge. This page is the graph;
 [concepts.md](concepts.md) is the prose model and
 [cli-reference.md](cli-reference.md) is the per-flag contract. When the
 three disagree, the transition matrices in
-`src/lib/engine/planning/transitions.cpp` and the `CHECK` constraints in
+`src/engine/planning/transitions.cpp` and the `CHECK` constraints in
 `migrations/` are authoritative, and this page cites them.
 
 Diagrams are Mermaid. Edge labels name the CLI verb (or the engine event)
@@ -22,7 +22,7 @@ with the shipped binary.
 Three mechanisms, in layers, decide whether a status write lands:
 
 1. **The transition matrix.** One arm per entity kind in
-   `check_transition` (`src/lib/engine/planning/transitions.cpp`).
+   `check_transition` (`src/engine/planning/transitions.cpp`).
    Identity moves (`from == to`) always succeed before any arm is consulted,
    which is why re-answering an answered question or re-retiring a retired
    scenario is a silent no-op rather than a refusal.
@@ -98,7 +98,7 @@ stateDiagram-v2
 
 The stored spelling of the in-flight state is `in-progress` (hyphen).
 `skip` is legal only from `pending`; `done` is legal from `pending` or
-`in-progress`. Source: `src/lib/engine/planning/plan_step.cppm`.
+`in-progress`. Source: `src/engine/planning/plan_step.cppm`.
 
 ### 2.3 Task
 
@@ -123,7 +123,7 @@ stateDiagram-v2
 ```
 
 Verb to edge map (`src/cmd/planar/handlers/task.cpp`,
-`src/lib/engine/planning/task.cpp`):
+`src/engine/planning/task.cpp`):
 
 | Verb | Edge | Guards and side effects |
 |---|---|---|
@@ -308,7 +308,7 @@ stateDiagram-v2
 ```
 
 Each terminal verb runs one transaction
-(`src/lib/engine/runtime/agentatomic.cpp`): fetch claim → require live →
+(`src/engine/runtime/agentatomic.cpp`): fetch claim → require live →
 require `entity_kind = task` → `check_transition` → flip `tasks.status` →
 close every open `agent_actions` row on the claim → flip claim status →
 plan recompute → commit.
@@ -415,7 +415,7 @@ and `finish` accepts any caller-supplied terminal string.
 
 ### 3.5 Routing dispatch authorization
 
-Two-phase, immutable-evidence flow in `src/lib/engine/routing/`:
+Two-phase, immutable-evidence flow in `src/engine/routing/`:
 
 ```mermaid
 flowchart LR
@@ -440,7 +440,7 @@ machine; a preview only *carries* the claim token as one bound value.
 ### 4.1 Plan auto-promotion
 
 Runs inside every task write (`recompute_status`,
-`src/lib/engine/planning/plan.cpp`). Input is the plan's **own** task
+`src/engine/planning/plan.cpp`). Input is the plan's **own** task
 aggregate; child plans never roll up into their parent.
 
 | Current plan | Task aggregate | Target |
@@ -473,7 +473,7 @@ flowchart TD
 ### 4.3 Closeout gate
 
 `plan closeout <id> [--dry-run] [--check-merge]`
-(`src/lib/engine/planning/closeout.cppm`):
+(`src/engine/planning/closeout.cppm`):
 
 ```mermaid
 flowchart TD
@@ -881,11 +881,11 @@ bug, unless noted.
 | Claim | Where | What the code does |
 |---|---|---|
 | Plan status flips write a `session_entries` note beginning `plan_status: <id>`, recoverable with `audit trail --grep "^plan_status:"` | `docs/concepts.md` § Plan (**fixed at task 6825** — now describes the `audit_log` row), `agents/methodology.md` § Plan-status invariant (still open) | The C++ roll-up writes an `audit_log` `status_change` row with a free-text summary; no `plan_status:` sentinel is produced anywhere in `src/` |
-| `planar health` `overall` is one of `ok`, `degraded`, `critical` | `skills/src/pl-health.md` | Two values only, `ok` and `degraded` (`src/lib/engine/health/health.cpp`) |
+| `planar health` `overall` is one of `ok`, `degraded`, `critical` | `skills/src/pl-health.md` | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
 | Whole-tree `ext propagate <plan>` is not yet implemented | `skills/src/pl-ext-propagate.md` (still open); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
 | `planar models list\|refresh\|routing\|apply\|candidates` exist, and `models evals` takes only `--json` | `docs/cli-reference.md` § Domain `models`, `docs/concepts.md` § Model routing, `docs/workflows.md` Recipe 25, `docs/skill-reference.md` § `/pl-models-config` (**all fixed at task 6825**) | The `models` group's subcommands are exactly `evals`, `resolve`, `experiments`, `outcomes`, `registry`; `evals` declares ten cohort flags (`src/cmd/planar/handlers/models.cpp`). The binary's own `planar models --help` group description still narrates the removed family — a binary-side drift, not fixed here |
-| Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench | `src/lib/engine/workbench/terminal.cppm` |
-| `closure compute` is deferred with its dependencies | header comment in `src/lib/engine/closure/store.cppm` | `compute.cpp` implements the tree-sitter extraction and is wired to `planar closure compute` |
+| Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench | `src/engine/workbench/terminal.cppm` |
+| `closure compute` is deferred with its dependencies | header comment in `src/engine/closure/store.cppm` | `compute.cpp` implements the tree-sitter extraction and is wired to `planar closure compute` |
 | `derive_from_cwd` redirects a git-worktree cwd to its parent repo | Zig-era behaviour | Not ported; the module header names it as a residual gap |
 
 ---
@@ -894,19 +894,19 @@ bug, unless noted.
 
 | Machine | Matrix / rule | Value set |
 |---|---|---|
-| plan, task, question, decision, scenario, artifact, annotation, handoff | `src/lib/engine/planning/transitions.cpp` | `migrations/00002_planning.up.sql`, `00003_work_items.up.sql`, `00005_sessions.up.sql`, `00012_annotations.up.sql` |
-| plan step | `src/lib/engine/planning/plan_step.cppm` | `00003_work_items.up.sql` |
-| plan auto-promotion | `compute_target`, `src/lib/engine/planning/plan.cpp` | |
-| dependency unblock | `clear_unblocked_dependents`, `src/lib/engine/planning/task.cpp` | `00033_rename_blocks_to_depends_on.up.sql` |
-| closeout gate | `src/lib/engine/planning/closeout.cppm` | |
-| agent claim, action | `src/lib/engine/runtime/agentactivity.cpp`, `agentatomic.cpp` | `00015_agent_activity.up.sql`, `00029_agent_failure_categories.up.sql` |
-| workflow run, context record | `src/lib/engine/runtime/workflowruns.cppm` | `00022_workflow_context_plane.up.sql` |
-| routing dispatch | `src/lib/engine/routing/routing.cppm` | `00030_adaptive_routing_evidence.up.sql`, `00031_dispatch_confirmation_tokens.up.sql` |
-| resume readiness | `src/lib/engine/runtime/resumecheck.cppm` | |
-| health | `src/lib/engine/health/health.cpp` | |
-| workbench sync | `src/lib/engine/workbench/sync.cppm`, `terminal.cppm` | `00007_workbench.up.sql` |
-| spec ingest | `src/lib/engine/ingest/{parse,diff,coverage,materialize}.cppm` | |
-| external link, sync event | `src/lib/engine/external/sync.cpp`, `link.cpp` | `00006_external.up.sql`, `00027_external_sync_baseline.up.sql` |
-| feedback triage | `src/lib/engine/planning/feedback_triage.cppm` | `00028_feedback_triage.up.sql` |
-| scope | `src/lib/engine/identity/scope.cppm` | |
-| planar-execute | `src/lib/engine/execute/manifest.cpp`, `src/cmd/planar-execute/handlers/run/engine.cppm` | |
+| plan, task, question, decision, scenario, artifact, annotation, handoff | `src/engine/planning/transitions.cpp` | `migrations/00002_planning.up.sql`, `00003_work_items.up.sql`, `00005_sessions.up.sql`, `00012_annotations.up.sql` |
+| plan step | `src/engine/planning/plan_step.cppm` | `00003_work_items.up.sql` |
+| plan auto-promotion | `compute_target`, `src/engine/planning/plan.cpp` | |
+| dependency unblock | `clear_unblocked_dependents`, `src/engine/planning/task.cpp` | `00033_rename_blocks_to_depends_on.up.sql` |
+| closeout gate | `src/engine/planning/closeout.cppm` | |
+| agent claim, action | `src/engine/runtime/agentactivity.cpp`, `agentatomic.cpp` | `00015_agent_activity.up.sql`, `00029_agent_failure_categories.up.sql` |
+| workflow run, context record | `src/engine/runtime/workflowruns.cppm` | `00022_workflow_context_plane.up.sql` |
+| routing dispatch | `src/engine/routing/routing.cppm` | `00030_adaptive_routing_evidence.up.sql`, `00031_dispatch_confirmation_tokens.up.sql` |
+| resume readiness | `src/engine/runtime/resumecheck.cppm` | |
+| health | `src/engine/health/health.cpp` | |
+| workbench sync | `src/engine/workbench/sync.cppm`, `terminal.cppm` | `00007_workbench.up.sql` |
+| spec ingest | `src/engine/ingest/{parse,diff,coverage,materialize}.cppm` | |
+| external link, sync event | `src/engine/external/sync.cpp`, `link.cpp` | `00006_external.up.sql`, `00027_external_sync_baseline.up.sql` |
+| feedback triage | `src/engine/planning/feedback_triage.cppm` | `00028_feedback_triage.up.sql` |
+| scope | `src/engine/identity/scope.cppm` | |
+| planar-execute | `src/engine/execute/manifest.cpp`, `src/cmd/planar-execute/handlers/run/engine.cppm` | |

@@ -39,7 +39,7 @@
 // The alternatives were rejected on what they cover, not on cost:
 //
 //   * RENDERER-LEVEL, with rows constructed in memory (what
-//     `src/lib/engine/runtime/agentrender.t.cpp` does). The six verbs expose
+//     `src/engine/runtime/agentrender.t.cpp` does). The six verbs expose
 //     no such seam: `ledger.cppm` and `live.cppm` export handlers taking a
 //     `context&` (a live SQLite handle) and `parsed_args`, and the only
 //     separable render functions are the column helpers `format.t.cpp`

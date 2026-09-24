@@ -3,7 +3,7 @@
 // Exercises the extracted `normalize_assoc`/`resolve` primitives directly
 // against a real, migrated on-disk SQLite database. The cross-consumer
 // agreement test lives in
-// src/lib/engine/planning/scope_ref_agreement.t.cpp — it needs both this
+// src/engine/planning/scope_ref_agreement.t.cpp — it needs both this
 // module AND `planar.engine.identity.scope` on the same test binary,
 // which is what `TEST_DEPENDS` is for (see that CMakeLists.txt).
 //

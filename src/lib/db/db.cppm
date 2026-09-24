@@ -389,7 +389,7 @@ public:
   /// PARSED table name, so the restriction holds no matter how the SQL was
   /// composed — including a table name interpolated into the query string
   /// at runtime, which a grep over the source cannot see. Planar's own
-  /// history has exactly this defect shape (`src/lib/engine/external/
+  /// history has exactly this defect shape (`src/engine/external/
   /// sync.cpp`'s `table_for`-composed `UPDATE`), which is the reason this
   /// method exists rather than a lint over call sites.
   ///

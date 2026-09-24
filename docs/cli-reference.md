@@ -205,7 +205,7 @@ The exit code is `5` (`domain_error_kind::scope_mismatch`) — the same code as 
 
 ### No escape hatch
 
-There is no flag that downgrades a cross-scope-guard refusal to a warning. `--no-scope-check` does not exist on this binary — it is absent from every command's flag set in `planar schema`, and passing it fails at parse time with exit 2 (`error: <cmd>: The following argument was not expected: --no-scope-check`), not with the scope guard's own exit code. (An engine-layer `guard_write` bypass parameter of the same shape exists at `src/lib/engine/identity/scope.cppm` and is unit-tested, but no `cmd/` handler ever calls it with `true` — no verb can reach it from the CLI.)
+There is no flag that downgrades a cross-scope-guard refusal to a warning. `--no-scope-check` does not exist on this binary — it is absent from every command's flag set in `planar schema`, and passing it fails at parse time with exit 2 (`error: <cmd>: The following argument was not expected: --no-scope-check`), not with the scope guard's own exit code. (An engine-layer `guard_write` bypass parameter of the same shape exists at `src/engine/identity/scope.cppm` and is unit-tested, but no `cmd/` handler ever calls it with `true` — no verb can reach it from the CLI.)
 
 The only remedies are:
 

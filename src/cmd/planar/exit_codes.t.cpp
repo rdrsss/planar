@@ -34,7 +34,7 @@
 //
 // Also pinned here, and moved DOWN-STREAM rather than dropped: the
 // `scope_mismatch -> 5` assertion that used to live in
-// src/lib/engine/identity/scope.t.cpp against the shared layer-1 table. An
+// src/engine/identity/scope.t.cpp against the shared layer-1 table. An
 // engine test may not import a `cmd_*` module (an upward layer-2 ->
 // layer-3 edge; cmake/architecture.cmake FATALs on it), so it lands here,
 // in all three binaries, which is strictly more coverage than the two lines

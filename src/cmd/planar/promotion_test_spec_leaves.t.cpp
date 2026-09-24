@@ -3,8 +3,8 @@
 // `planar promote`, `planar demote` and `planar test-spec status`.
 //
 // The engines' own byte-for-byte cases live in
-// `src/lib/engine/promotion/promotion.t.cpp` and
-// `src/lib/engine/planning/test_spec_status.t.cpp` — both buckets were
+// `src/engine/promotion/promotion.t.cpp` and
+// `src/engine/planning/test_spec_status.t.cpp` — both buckets were
 // ported complete, renderers included, before any handler existed to call
 // them. What this file pins is the half those cannot see: ref DECODING,
 // the pre-read that runs before the engine, and the exit-code mapping.

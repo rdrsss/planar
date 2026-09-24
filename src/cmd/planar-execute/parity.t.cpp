@@ -423,7 +423,7 @@ TEST_CASE("planar-execute: ctx.brief maps a missing plan to 'not found', byte-id
           "[cmd][execute][parity][workflow]") {
   // Task 6125 ported the brief compiler; this is no longer a declared
   // divergence (see the retired test this replaced, and
-  // src/lib/engine/execute/CMakeLists.txt). A full happy-path differential —
+  // src/engine/execute/CMakeLists.txt). A full happy-path differential —
   // real plan/task/claim state seeded through both binaries' own `plan
   // add`/`task add` verbs, then diffing the compiled brief body — is a
   // heavier fixture than this file's other cases build; that positive-path

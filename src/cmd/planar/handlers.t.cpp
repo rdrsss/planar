@@ -1150,7 +1150,7 @@ TEST_CASE("workspace init meta repo layout failure commits registration and repo
 // task 6110 — `workspace routing show`.
 //
 // The decoder and both renderers are unit-tested in
-// src/lib/engine/workspace/routing.t.cpp. What only THIS layer can cover is
+// src/engine/workspace/routing.t.cpp. What only THIS layer can cover is
 // the path resolution, the file read, and the mapping of four failures onto
 // three exit codes — including the two decode failures that share one
 // message template and differ only in exit code.

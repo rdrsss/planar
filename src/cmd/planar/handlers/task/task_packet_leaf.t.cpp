@@ -3,7 +3,7 @@
 // 996, task 6324).
 //
 // The readiness RULES are pinned at the engine level in
-// `src/lib/engine/ingest/packet.t.cpp`, on the same SQL seed. This file covers
+// `src/engine/ingest/packet.t.cpp`, on the same SQL seed. This file covers
 // what that one cannot reach: the dispatch wiring, the exit-code mapping, and
 // the exact envelope an ORCHESTRATOR parses.
 //
@@ -165,7 +165,7 @@ auto seed(const fixture& fx) -> void {
                "('task',100,'decision',20,'cites'),('task',100,'task',101,'depends-on'),"
                "('test_scenario',30,'task',100,'verifies'),('test_scenario',30,'plan',1,'derives-from')");
   exec_sql(fx, "insert into task_touch_paths (task_id, repo_id, path) "
-               "values (100, 900, 'src/lib/engine/ingest/packet.cpp')");
+               "values (100, 900, 'src/engine/ingest/packet.cpp')");
   exec_sql(fx,
            std::format("insert into routing_task_facts (task_id, fact_kind, value_type, value_bool, value_text, "
                        "source_entity_kind, source_entity_id, source_locator, source_digest, materializer_version) values "

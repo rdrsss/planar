@@ -20,7 +20,7 @@
 // `sync status` reads `external_links` (optionally joined to
 // `external_systems` for `--system`) and nothing else — `link::list`
 // carries no join to `tasks`/`plans`/`questions`, confirmed by reading
-// `src/lib/engine/external/link.cpp`. The original file's `seed_tree` (a
+// `src/engine/external/link.cpp`. The original file's `seed_tree` (a
 // plan/task tree for the SIBLING `plan descendants` cases) was therefore
 // never load-bearing for these three cases; it stayed on `planar` with
 // `plan descendants` and is not reproduced here.

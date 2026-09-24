@@ -8,7 +8,7 @@
 # this M0 scaffold task (only `core` exists; the tech-spec's file-level tree
 # names dozens more that land over the following milestones), so this walk
 # classifies a module's layer from its *name*, which already encodes its
-# position in the file tree (src/cmd/<bin>/, src/lib/engine/<bucket>/,
+# position in the file tree (src/cmd/<bin>/, src/engine/<bucket>/,
 # src/lib/<name>/) rather than maintaining a hand-written per-module
 # allow-list that would need editing on every future planar_module() call:
 #

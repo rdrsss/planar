@@ -21,7 +21,7 @@
 //
 // The task brief for this binary records a live measurement error: an
 // earlier accounting of this exact write surface was WRONG because
-// `src/lib/engine/external/sync.cpp:352` composes its `UPDATE` with a
+// `src/engine/external/sync.cpp:352` composes its `UPDATE` with a
 // table name interpolated at RUNTIME (`table_for` at that file's `:39`
 // maps to `tasks`/`plans`/`questions`/`artifacts`) — a grep for
 // `update plans` never finds it, because the literal text `update plans`

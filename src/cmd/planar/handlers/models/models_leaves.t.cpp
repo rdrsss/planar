@@ -472,7 +472,7 @@ auto seed_ready_task(const fixture& fx) -> void {
              "('test_scenario', 30, 'task', 100, 'verifies'),"
              "('test_scenario', 30, 'plan', 1, 'derives-from')");
   exec(conn, "insert into task_touch_paths (task_id, repo_id, path) "
-             "values (100, 1, 'src/lib/engine/ingest/packet.cpp')");
+             "values (100, 1, 'src/engine/ingest/packet.cpp')");
   exec(conn, std::format("insert into routing_task_facts (task_id, fact_kind, value_type, value_bool, value_text, "
                          "source_entity_kind, source_entity_id, source_locator, source_digest, materializer_version) values "
                          "(100,'acceptance_complete','bool',1,null,'task',100,'body#acceptance-criteria','{}','spec-ingest-v1'),"

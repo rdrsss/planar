@@ -50,7 +50,7 @@
 #
 #   unlink             Blocked TWICE. Layer 3 was missing AND so was its
 #                      layer-2 bucket -- there was no engine_external in
-#                      the tree at all. src/lib/engine/external/ was stood
+#                      the tree at all. src/engine/external/ was stood
 #                      up here (create/show/delete only; see that
 #                      directory's CMakeLists for what is deferred and with
 #                      which verb). The leaf then composes engine_external
@@ -204,7 +204,7 @@
 #   resume (the packet)  Blocked at LAYER 2 on four unported surfaces; the
 #                        inventory and the captured payload are in
 #                        src/cmd/planar/handlers/resume/command.cppm and
-#                        src/lib/engine/runtime/CMakeLists.txt. Registered
+#                        src/engine/runtime/CMakeLists.txt. Registered
 #                        as a `not_implemented` placeholder (exit 64) rather
 #                        than left unwired, because an unwired DUAL node
 #                        would fall to the help path and exit 0 — a silent
@@ -358,7 +358,7 @@
 # TASK 6278 added `tree` -- the hierarchical drill-down verb, and the
 # largest single unblocked leaf left in the inventory (1284 non-test Zig
 # lines). Its engine is the new layer-2 `engine_tree`; see
-# src/lib/engine/tree/CMakeLists.txt for what was ported, what was
+# src/engine/tree/CMakeLists.txt for what was ported, what was
 # deliberately not, and why the agent-activity rollup is duplicated there
 # rather than reached sideways into `engine_runtime`.
 #
@@ -428,7 +428,7 @@
 #     are free" is HALF TRUE. `workbench edit` and `extract-questions` need
 #     nothing missing; `workbench publish` calls
 #     `engine.extsync.parent_issue.recordLink`, and that module is listed
-#     unported in src/lib/engine/extsync/CMakeLists.txt.
+#     unported in src/engine/extsync/CMakeLists.txt.
 #   - `link` is NOT engine-blocked -- `external::link::create` and
 #     `external::system::show_by_slug` are both here. It is blocked on one
 #     FLAG: `--propagate` runs `ext propagate`. The oracle's own
@@ -801,7 +801,7 @@ planar_binary(planar
     # New at task 6324, for `task packet` (handlers/task/command.cpp). The leaf uses
     # exactly one entry point — `packet::assemble_task` plus its two
     # renderers. It does NOT reach the spec-ingest read pipeline; see
-    # src/lib/engine/ingest/CMakeLists.txt for why the routing packet shares
+    # src/engine/ingest/CMakeLists.txt for why the routing packet shares
     # that bucket instead of getting an `engine_routing` one of its own.
     engine_ingest
     engine_importer

@@ -486,8 +486,8 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // (`sessioncommits.zig`), not to `harvest.zig`, which shells exactly
       // two git subcommands (`diff --name-only`, `ls-files --others`) and
       // writes through the already-ported `touch_idempotent`. See
-      // `src/lib/engine/runs/harvest.cppm` for the port and
-      // `src/lib/engine/runs/CMakeLists.txt` for the closing account.
+      // `src/engine/runs/harvest.cppm` for the port and
+      // `src/engine/runs/CMakeLists.txt` for the closing account.
       // The five `config` leaves -- `show`, `edit`, `validate`, `init`,
       // `path` -- left this inventory at task 6259. Their engine half
       // (`planar.engine.config`) had been complete since commit 82820b7;
@@ -597,7 +597,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // was ported straight to layer 1 as `planar.installed_surface`
       // (src/lib/installed_surface) — it holds no `db` edge, so there was
       // nothing pulling it toward `engine_health` in the first place. See
-      // handlers/health.cppm and src/lib/engine/health/health.cppm.
+      // handlers/health.cppm and src/engine/health/health.cppm.
       // `import` is wired at task 6106: its filesystem-only request/cache
       // engine stays below the handler, while this layer composes the
       // deterministic plan write without a D15 peer dependency.
@@ -680,7 +680,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       //
       // It is also the ONE leaf in this tree with a deliberate behavioural
       // divergence from the oracle, confined to advisory fields. See
-      // `src/lib/engine/planning/closeout.cppm`'s DIVERGENCE section and the
+      // `src/engine/planning/closeout.cppm`'s DIVERGENCE section and the
       // note in that bucket's CMakeLists before assuming a git-evidence
       // difference is a bug.
       //
@@ -755,7 +755,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // resolve` note above). It landed in `engine_ingest` rather than a new
       // `engine_routing` bucket because its freshness computation is defined
       // in terms of `materialize`'s digests and D15/D18 FATAL on a
-      // layer-2-to-layer-2 edge — see src/lib/engine/ingest/CMakeLists.txt.
+      // layer-2-to-layer-2 edge — see src/engine/ingest/CMakeLists.txt.
       // `task touches infer` left this inventory at task 6330, completing
       // the `task touches` family. Its deferral note called it "773 lines
       // of git-diff and language-aware path inference"; running the oracle
@@ -775,7 +775,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // GLOBAL (exit 0) — three different meanings for the same empty
       // value. `--sort` is accepted and INERT in the oracle, and is
       // reproduced that way deliberately; see
-      // `src/lib/engine/tree/CMakeLists.txt`.
+      // `src/engine/tree/CMakeLists.txt`.
       // `workbench edit` and `workbench extract-questions` LEFT this
       // inventory at task 6302. Neither was ever architecturally blocked:
       // `edit` is push -> spawn `$EDITOR` on the feature directory -> pull

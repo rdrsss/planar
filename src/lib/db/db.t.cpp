@@ -127,7 +127,7 @@ TEST_CASE("restrict_writes_to denies a write against a table named only at RUNTI
   std::vector<std::string> const allowed{"allowed"};
   conn->restrict_writes_to(allowed);
 
-  // Composed exactly the way `src/lib/engine/external/sync.cpp`'s
+  // Composed exactly the way `src/engine/external/sync.cpp`'s
   // `table_for`-driven UPDATE composes its statement: the table name is
   // spliced into the SQL text at runtime rather than appearing as a
   // literal anywhere a source-text scan would find it. A grep for

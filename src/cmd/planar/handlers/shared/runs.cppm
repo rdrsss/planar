@@ -14,7 +14,7 @@
 /// 6362 once `planar.engine.runs.harvest` existed to call — its own engine
 /// half was deferred WITH its git-subprocess dependency at task 6095, and
 /// the layer-1 `planar.git` seam that closed that gap (tasks 6128/6137)
-/// did not exist yet either. See `src/lib/engine/runs/CMakeLists.txt` for
+/// did not exist yet either. See `src/engine/runs/CMakeLists.txt` for
 /// the full account.
 ///
 /// ## What this layer adds over the engine

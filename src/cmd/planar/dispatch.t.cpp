@@ -659,7 +659,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // previous cycle's note that it should be deferred WITH `routing build`
   // did not survive checking: `show` decodes routing-table.json off disk
   // and never calls the builder. Argued in full in
-  // src/lib/engine/workspace/routing.cppm's header.
+  // src/engine/workspace/routing.cppm's header.
   // 47 before task 6272 ported ONE leaf out of it — `workflow run` — with
   // the layer-1 `planar.process` spawn seam it had been deferred on since
   // task 6105. That leaves 46, and the count is the WHOLE story of that
@@ -944,7 +944,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // layout suggests, because that bucket cannot be built: the packet's
   // freshness computation is defined in terms of `materialize`'s digests and
   // D15/D18 FATAL on a layer-2-to-layer-2 edge. It landed in `engine_ingest`
-  // instead — see src/lib/engine/ingest/CMakeLists.txt for why that is the
+  // instead — see src/engine/ingest/CMakeLists.txt for why that is the
   // honest placement rather than a workaround, and why D19's
   // extract-to-layer-1 remedy was measured and rejected.
   //
@@ -1086,7 +1086,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // four other consumers and was the ONLY thing this leaf was still
   // missing — its own engine half is two git subcommands plus the
   // already-ported `touch_idempotent` primitive. See
-  // `src/lib/engine/runs/harvest.cppm` and surface.cpp's entry for the
+  // `src/engine/runs/harvest.cppm` and surface.cpp's entry for the
   // full account.
   // 7 -> 6 at task 6365: `spec ingest` moved. Its brief carried the
   // now-familiar hypothesis that this is handler wiring over an

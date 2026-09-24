@@ -32,7 +32,7 @@
 // every exit code, and the whole `unlink` id-parsing table — is still a
 // live byte-for-byte diff against the oracle and still passes UNCHANGED.
 // That is the load-bearing fact of this swap: nothing under
-// `src/lib/engine/` moved.
+// `src/engine/` moved.
 //
 // And the question the deleted help-page diffs actually answered — "was
 // this tree transcribed from the oracle correctly?" — is now answered

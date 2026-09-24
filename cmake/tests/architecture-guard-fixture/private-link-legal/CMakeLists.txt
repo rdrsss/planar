@@ -7,7 +7,7 @@
 # aborting configure on the ordinary, textbook spelling
 # target_link_libraries(planar_X PRIVATE planar_Y) and telling the author
 # to "replace it with a plain target name" when they already had. This was
-# not latent: src/lib/engine/config/CMakeLists.txt already writes exactly
+# not latent: src/engine/config/CMakeLists.txt already writes exactly
 # this PRIVATE spelling and only escaped because none of its PRIVATE deps
 # (glaze::glaze) contain the substring "planar_".
 #

@@ -528,7 +528,7 @@ set(PLANAR_WHFC_DIR "${WHFC_SOURCE_DIR}")
 # the identical call's directory in the checkout that originally vendored
 # it (`3762`), and ON vs OFF `PLANAR_WITH_MTKAHYPAR` make no difference to
 # either -- the CPMAddPackage call for mtkahypar itself is unconditional
-# (only the *link* in src/lib/engine/grouping/ is gated on the option), so
+# (only the *link* in src/engine/grouping/ is gated on the option), so
 # the option was never the actual variable. A literal key tied to the pin
 # (the released version tag) keeps the directory name stable across every
 # checkout location while remaining a real vendored source tree, not a
@@ -558,7 +558,7 @@ CPMAddPackage(
     # `cmd_planar` is 83% of the ctest suite's wall time.
     #
     # Safe because the seam is a C ABI: `mtkahypar.h` is confined to
-    # `src/lib/engine/grouping/mtkahypar.cpp`'s translation unit, and the
+    # `src/engine/grouping/mtkahypar.cpp`'s translation unit, and the
     # pinned toolchain enables no libc++ hardening or _GLIBCXX_DEBUG mode
     # that would change a layout across the boundary. Nobody debugs into
     # this library; it is SYSTEM and EXCLUDE_FROM_ALL for the same reason.

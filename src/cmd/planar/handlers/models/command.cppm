@@ -9,7 +9,7 @@
 /// `roles` (task 6111). See `models_resolve`'s own doc comment for the
 /// two-branch shape (task-bound vs. planning) and the adapter it owns:
 /// `engine::ingest::packet::evidence` -> `engine::models::profile::fact`,
-/// which is this handler's job per `src/lib/engine/models/CMakeLists.txt`'s
+/// which is this handler's job per `src/engine/models/CMakeLists.txt`'s
 /// note on where that seam belongs.
 ///
 /// "Fourteen" is the LEAF count and is correct as written (verified, task

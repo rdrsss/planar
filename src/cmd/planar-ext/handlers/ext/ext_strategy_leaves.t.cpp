@@ -25,7 +25,7 @@ import planar.db.migrate;
 import planar.engine.extsync;
 import planar.cmd.planar_ext.handlers.ext_strategy;
 
-#include "../lib/engine/external/scratch_db.hpp"
+#include "../src/engine/external/scratch_db.hpp"
 
 namespace {
 

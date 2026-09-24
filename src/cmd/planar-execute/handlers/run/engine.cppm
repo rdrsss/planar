@@ -38,7 +38,7 @@
 /// Task 6107 stopped at `luaL_newstate()` and exited 64 naming the gap,
 /// because there was no Lua in the tree and no `engine_execute` bucket. Both
 /// exist now (task 6042): `cmake/dependencies.cmake` pins Lua 5.5.0 and
-/// `src/lib/engine/execute/` holds the sandbox, the frozen twenty-five
+/// `src/engine/execute/` holds the sandbox, the frozen twenty-five
 /// function host surface and the run loop. Exit code 64 is gone from this
 /// binary — a `run` over a readable workflow now runs it.
 ///
@@ -46,7 +46,7 @@
 /// `ctx.brief`, whose body compiles a real coder brief from the ported
 /// `state`/`schema`/`brief` slice of the retired Zig harness's
 /// `state.zig`/`schema.zig`/`brief.zig`. See
-/// src/lib/engine/execute/CMakeLists.txt for exactly which slice — the
+/// src/engine/execute/CMakeLists.txt for exactly which slice — the
 /// harness-only helpers those files also carried are deliberately not
 /// ported (no consumer on this binary's host surface).
 ///
@@ -56,7 +56,7 @@
 /// function, not a re-entrant path back into an LLM client. plan 633's D5 is
 /// the reason this binary exists in its current form at all, `cli.t.cpp`
 /// holds the advertised-surface half of that lock, and
-/// `src/lib/engine/execute/surface.t.cpp` holds the live-state half.
+/// `src/engine/execute/surface.t.cpp` holds the live-state half.
 module;
 
 export module planar.cmd.planar_execute.engine;
