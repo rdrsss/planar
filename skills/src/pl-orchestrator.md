@@ -345,8 +345,9 @@ isolation. `parallel-fanout` requires worktrees. Planar's installed
 - `barrier_check` / `reconcile_plan` — fan-in and recovery;
 - `teardown` — owned cleanup targets.
 
-The model performs Git worktree/branch/merge operations and spawns specialists;
-there is no external harness.
+The model orchestrator, a host-native workflow, or a background agent performs
+Git worktree/branch/merge operations and spawns specialists (decision 1007);
+the seam is an optional deterministic helper, not the only permitted path.
 
 **Fan-in before terminal completion.** Commit verification assets, obtain the
 configured review disposition, merge a verified lane into the epic worktree,

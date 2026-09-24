@@ -2246,8 +2246,9 @@ Alternatives:
   classic                Sequential cycles, reviewer per cycle. Isolation: pwd or worktree.
                          [continuity guarantee — today's behavior bit-for-bit]
   parallel-fanout        Fan out to N coders on the parallel-eligible subset, staged by the
-                         `blocks` graph; reviewer at fan-in. Model-runnable via
-                         workflows/parallel-dispatch.lua — no external harness.
+                         `blocks` graph; reviewer at fan-in. workflows/parallel-dispatch.lua
+                         is an optional deterministic helper; the orchestrator, a host-native
+                         workflow, or a background agent may run this path.
                          [throughput + integrated review]                                 ← recommended
   barrel-deferred        Back-to-back coder cycles; reviewer at boundary on union diff.
                          Isolation: pwd or worktree.
@@ -2320,7 +2321,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the model orchestrator runs the git worktree/branch/merge ops and spawns coders through the host's subagent dispatch surface. There is **no external harness** in this path (and no revival of centurion). The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
+> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the runner that acts on that output — running the git worktree/branch/merge ops and spawning coders — may be the model orchestrator through the host's subagent dispatch surface, a host-native workflow, or a background agent (decision 1007, plan 1033). The seam is an optional deterministic helper, not the only permitted path. The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.zig`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 

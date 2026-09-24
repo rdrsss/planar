@@ -261,11 +261,11 @@ Finalization (Phase 3.7) does merge + DB closeout: the plan transitions to `done
 
 ### External harness finalization hook
 
-An external workflow harness may expose a **finalization hook after a clean workflow run** — the harness-side equivalent of the orchestrator's Phase 3.7. When a `.lua` workflow script completes all its worker tasks without a `failure-surfaced` or `abort` outcome, the harness is expected to invoke the janitor (or run `planar plan closeout` directly as an operator-aligned harness call) to mirror what the model-driven orchestrator does in Phase 3.7. This is an **integration point**; its contract here is:
+Decision 1007 (plan 1033; see [`docs/concepts.md` §Deterministic workflow engine](../docs/concepts.md#deterministic-workflow-engine)) permits an external workflow harness, a host-native workflow, or a background agent to drive dispatch — the seam-only doctrine this section used to describe is retired, and the finalization hook below applies to whichever of these is doing the driving. Any of them may expose a **finalization hook after a clean workflow run** — the equivalent of the orchestrator's Phase 3.7. When a `.lua` workflow script, a host-native workflow, or a background agent completes all its worker tasks without a `failure-surfaced` or `abort` outcome, the dispatcher is expected to invoke the janitor (or run `planar plan closeout` directly as an operator-aligned call) to mirror what the model-driven orchestrator does in Phase 3.7. This is an **integration point**; its contract here is:
 
 - The hook fires only on a clean workflow run (all workers green, no unresolved test-coder failures, no orphaned claims blocking the gate).
 - The hook is gated identically to the orchestrator's Phase 3.7: `planar plan closeout --dry-run` must pass before apply; `ready: false` surfaces to the operator and halts without force-closing.
-- Coders dispatched by an external harness still never call `planar plan closeout`; the finalization hook is the harness-level call, operating at the operator-plane boundary, not the agent-plane boundary.
+- Coders dispatched by any of these paths still never call `planar plan closeout`; the finalization hook is the dispatcher-level call, operating at the operator-plane boundary, not the agent-plane boundary.
 - In mock mode the hook should be a no-op or dry-run-only.
 
 ## Flow
@@ -436,12 +436,12 @@ Four named strategies run in the **model-driven orchestrator**. The three sequen
   selectable worktree isolation is allowed when rollback or checkout hygiene
   matters. This is an expert, explicit opt-in for operators who accept
   gates-only risk. It is supported but never recommended by the orchestrator.
-- **`parallel-fanout`** — N coders fanned out across the parallel-eligible subset, each in its own worktree off a shared epic branch, staged into dependency-respecting waves and consolidated at fan-in. **Model-runnable** (plan 760): the model orchestrator drives the worktree/branch/merge git ops and spawns the N coders concurrently through the host's subagent dispatch surface, while the deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam (which reads `recommend-strategy` + the `depends-on` graph and HANDS BACK). There is **no external harness** in this path — the runner is the model orchestrator plus existing Planar primitives (`recommend-strategy`, `planar-agent pull --worktree`, `planar-agent reconcile`, the atomic terminal verbs). Recommended for: multi-lane plans (≥3 tasks, ≥2 parallel-eligible) whose lanes touch disjoint files.
+- **`parallel-fanout`** — N coders fanned out across the parallel-eligible subset, each in its own worktree off a shared epic branch, staged into dependency-respecting waves and consolidated at fan-in. **Model-runnable** (plan 760): the deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam (which reads `recommend-strategy` + the `depends-on` graph and HANDS BACK) — an optional deterministic helper, not the only permitted path. The runner that executes the seam's output — cutting worktrees, spawning the N coders, running the merges — may be the model orchestrator (through the host's subagent dispatch surface), a host-native workflow, or a background agent (decision 1007); every runner still drives Planar exclusively through existing primitives (`recommend-strategy`, `planar-agent pull --worktree`, `planar-agent reconcile`, the atomic terminal verbs). Recommended for: multi-lane plans (≥3 tasks, ≥2 parallel-eligible) whose lanes touch disjoint files.
 
 Phase 3.5 remains per coder cycle under every named strategy. Strategy changes
 reviewer cadence, never the coverage gate.
 
-`isolated-sequential` is retained only as a descriptive alias for `classic` + `worktree` isolation. It is no longer an external-harness-only escape hatch. The same spawn-free seam that powers `parallel-fanout` exposes a `cycle_plan` phase for single-lane worktree bookkeeping; the model still performs the git worktree/branch/merge operations and spawns the coder.
+`isolated-sequential` is retained only as a descriptive alias for `classic` + `worktree` isolation. It is no longer an external-harness-only escape hatch — decision 1007 permits the model orchestrator, a host-native workflow, or a background agent equally. The same spawn-free seam that powers `parallel-fanout` exposes a `cycle_plan` phase for single-lane worktree bookkeeping; whichever of the three is driving still performs the git worktree/branch/merge operations and spawns the coder.
 
 ### Continuity guarantee: `classic`
 
@@ -484,7 +484,7 @@ The orchestrator proposes a strategy per plan based on plan shape, with status-q
 1. `barrel-bypass` is excluded from recommendation. It may be selected only by
    an explicit operator choice at the strategy gate or invocation flag.
 2. If the plan has a multi-milestone roadmap and at most one parallel-eligible task per milestone → recommend `barrel-deferred`.
-3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible → recommend `parallel-fanout` (model-runnable via the `workflows/parallel-dispatch.lua` seam — staged worktree waves, per-lane coders fanned out concurrently, fan-in merge, no external harness).
+3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible → recommend `parallel-fanout` (model-runnable via the `workflows/parallel-dispatch.lua` seam — staged worktree waves, per-lane coders fanned out concurrently, fan-in merge; runnable by the model orchestrator, a host-native workflow, or a background agent).
 4. Else if the plan has exactly 1 task → recommend `classic`.
 5. Else if the most recent dispatch on this plan used a non-default,
    non-bypass strategy `S` → recommend `S` (stickiness — the operator already
@@ -534,11 +534,14 @@ The dispatch-shape gate's six shapes (`strict`, `grouped`, `single`, `barrel-gro
 
 Worktree lifecycle — the `epic/` integration branch and per-task `cycle/`
 working branches, their creation, fan-in merge, retention of failed lanes, and
-full teardown on plan completion — is **model-driven** for both sequential
-worktree isolation and `parallel-fanout`. The deterministic bookkeeping lives in
-the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one
-sequential lane, while `plan`/`waves` compute parallel lanes. The model runs the
-git ops and spawns the coders. There is no external harness in this path. The
+full teardown on plan completion — is driven by the model orchestrator, a
+host-native workflow, or a background agent (decision 1007) for both
+sequential worktree isolation and `parallel-fanout`. The deterministic
+bookkeeping lives in the spawn-free `workflows/parallel-dispatch.lua` seam:
+`cycle_plan` computes one sequential lane, while `plan`/`waves` compute
+parallel lanes. The seam is an optional deterministic helper for this
+bookkeeping, not a required exclusive path — whichever of the three drives
+dispatch still runs the git ops and spawns the coders itself. The
 branch/path naming scheme is locked in the tech spec (epic
 `epic/p<plan>-<slug>`, lane `cycle/p<plan>/<task-slug>`); the six
 parallel-eligibility rules are the engine's (`recommend-strategy`) and apply
@@ -1182,7 +1185,7 @@ reviewer treats the coder's diff.
 
 - Parallel coder dispatch is **model-driven under `parallel-fanout`** (plan 760): the model spawns N coders concurrently through the host's subagent dispatch surface, each in its own worktree, against the parallel-eligible subset. The codified eligibility test (six parallelizability rules) is the engine's, consumed via `recommend-strategy` and never re-derived.
 - **Eligibility is not independence.** Rule 2 proves the lanes touch disjoint files; it cannot prove they are unordered. Two tasks routinely have disjoint touch sets *and* a real dependency — one creates a module the other imports, so the file sets never overlap because only the author edits the new file. Rule 1 catches ordering only from a declared `depends-on` edge, and nothing infers those edges: touch inference improves rule 2 alone. As touch coverage rises, more plans will *look* parallelizable while undeclared ordering stays invisible, so the orchestrator's pre-dispatch ordering check (Phase 3 step 3) is what stands between eligibility and a correct fan-out. Record any ordering the operator names with `planar task block <task> --on <blocker>` so rule 1 enforces it thereafter. Sequential strategies (`classic` and the barrel modes) run one coder at a time in the confirmed isolation mode: `pwd` or `worktree`.
-- The substrate that lets worktree-isolated coders run without clobbering the operator checkout — per-task worktrees on epic-child branches, staged waves with a fan-in barrier for `parallel-fanout`, and the fan-in merge — is computed by the spawn-free `workflows/parallel-dispatch.lua` seam and executed by the model. See [Worktrees](#worktrees) for the ownership boundary.
+- The substrate that lets worktree-isolated coders run without clobbering the operator checkout — per-task worktrees on epic-child branches, staged waves with a fan-in barrier for `parallel-fanout`, and the fan-in merge — is computed by the spawn-free `workflows/parallel-dispatch.lua` seam, an optional deterministic helper, and executed by the model orchestrator, a host-native workflow, or a background agent (decision 1007). See [Worktrees](#worktrees) for the ownership boundary.
 - Reviewers may run in parallel against independent coder outputs. Under `parallel-fanout` a single reviewer cycle runs against the integrated diff on the epic, not per child.
 - A single task is always coder→reviewer sequential — never two coders on the same task simultaneously.
 - Stale claims are not ignored silently. The operator or orchestrator must reconcile or force-takeover them before treating the work as available.
