@@ -439,7 +439,7 @@ Two verbs onboard an existing repo into Planar. They share the downstream `/pl-s
 
 - `synthesize` is a **synthesis** verb. It reads both the existing docs *and* the source tree as input, then produces fresh `product_spec` / `tech_spec` / `roadmap` artifacts via an LLM pass. The original docs are preserved on the same anchor plan as `kind=research` reference artifacts — superseded but not deleted. Reach for it when the planning material is scattered across multiple drafts, mid-evolution, or contradicted by reality (e.g. a roadmap claims a milestone is done but no source files back the claim).
 
-The load-bearing rule for `synthesize` is that **code presence beats text claims**. A task the LLM proposes with `status != "todo"` must cite a `code_evidence` path that exists in the probed source tree; the binary's `Validate` step (`src/engine/synthesize.zig`) refuses results that violate the invariant. A roadmap line that says "M3 is finished" is treated as TODO unless source files, tests, or CI configs corroborate the claim. The greenfield case (no source detected) collapses naturally onto all-todo output.
+The load-bearing rule for `synthesize` is that **code presence beats text claims**. A task the LLM proposes with `status != "todo"` must cite a `code_evidence` path that exists in the probed source tree; the binary's `validate_result()` step (`src/lib/engine/synthesize/synthesize.cpp`) refuses results that violate the invariant. A roadmap line that says "M3 is finished" is treated as TODO unless source files, tests, or CI configs corroborate the claim. The greenfield case (no source detected) collapses naturally onto all-todo output.
 
 ### Picking between the two
 
@@ -803,7 +803,7 @@ When the orchestrator (or harness) dispatches into a worktree, it persists the a
 - **`planar-watch` surfaces it.** Every claim-bearing view (`claims`, `log`, `feed`, `ps`) and `planar dashboard --agents` include the column.
 - **`planar-agent pull` and `claim --entity` accept `--worktree <path>`** as the canonical write path.
 
-The standalone-entity alternative remains available — the forward-compat `validateWorktreeId` hook in `src/engine/runtime/agentactivity/store.zig` is the seam — but the claim-attached model satisfies every current use case (dispatch persistence, resume recovery, observability).
+The standalone-entity alternative remains available — the forward-compat `validate_worktree_id` hook in `src/lib/engine/runtime/agentactivity.cpp` is the seam — but the claim-attached model satisfies every current use case (dispatch persistence, resume recovery, observability).
 
 ### Which strategies use worktrees
 
@@ -1008,7 +1008,7 @@ Push, restore, and the new `gc` verb honor a status-based filter so the workbenc
 
 `push --apply-cleanup` and `push --filter-mode all` are mutually exclusive (the modes express opposite intents — clean up vs. include everything).
 
-**SQLite table:** `workbench_sync_state` (tracks per-file sync state). **Primary verbs:** `planar workbench push`, `planar workbench pull`, `planar workbench sync`, `planar workbench status`, `planar workbench archive`, `planar workbench restore`, `planar workbench gc`, `planar workbench publish`. **Primary engine module:** `src/engine/workbench/terminal.zig` (the comptime status table that backs the filter — a future status added by a migration is a compile-time error here).
+**SQLite table:** `workbench_sync_state` (tracks per-file sync state). **Primary verbs:** `planar workbench push`, `planar workbench pull`, `planar workbench sync`, `planar workbench status`, `planar workbench archive`, `planar workbench restore`, `planar workbench gc`, `planar workbench publish`. **Primary engine module:** `src/lib/engine/workbench/terminal.cppm` (the exhaustive `switch`-backed status classifier — a future status added by a migration is a compile-time error here).
 
 ---
 
@@ -1071,13 +1071,13 @@ A **handoff** record is written at the end of a session via `planar handoff`. It
 
 Planar's template plane is the **external-system propagation** templates: JSON documents that render a Planar entity into the payload a target system expects (GitHub Issues, Jira). They resolve through a three-level fallback chain — operator overrides in `~/.planar/templates/<kind>/<slug>.json`, default copies in `~/.planar/templates/defaults/`, then the set embedded in the binary — and are surfaced by `planar templates {list, show, render, validate, init, path}`.
 
-**SQLite tables:** none — templates are filesystem assets plus an embedded fallback set. **Primary entry points:** `src/engine/templates/loader.zig` (resolve + load), `render.zig` (render), `validate.zig` (lint).
+**SQLite tables:** none — templates are filesystem assets plus an embedded fallback set. **Primary entry points:** `load_template()` in `src/lib/engine/config/templates.cpp` (resolve + load), `src/lib/engine/templates/render.cpp` (render), `src/lib/engine/templates/validate.cpp` (lint).
 
 > **Removed (2026-08-07).** An earlier revision of this section described a second, unrelated templates layer: per-entity-kind Markdown files under `templates/entity/` that seeded new entities created through the editor-first `add` verbs, with a `{{.Title}}` placeholder language and an install-time validator. **That layer never existed in this binary.** The files and this documentation both arrived in the Go→Zig bootstrap (`bfa3abc`); the reader was never ported, and `src/cmd/planar/editflow.zig` has never contained the word "template". `templates/entity/` has been deleted rather than left installed and inert. See planar task 5918.
 
 ## Model routing
 
-Which model an agent role spawns is **config-driven and unified** (plan 540, extended plan 899). The Planar config (`~/.planar/config.toml`, embedded defaults in `src/engine/config/defaults.toml`) carries:
+Which model an agent role spawns is **config-driven and unified** (plan 540, extended plan 899). The Planar config (`~/.planar/config.toml`, embedded defaults in `src/lib/engine/config/defaults.toml`) carries:
 
 - `[models.<vendor>]` — per-vendor **tier maps**: the canonical `small` / `medium` / `large` tiers → a **scalar-or-list** candidate value (e.g. `[models.claude] medium = "claude-sonnet-5"`). A scalar is one candidate; an ordered list (`large = ["gpt-5.6-sol", "gpt-5.5"]`) names several — `list[0]` is always the **tier default**, the model any caller gets when it resolves a bare `(vendor, tier)`/`(vendor, role)` pair with no work type in hand. Every existing scalar config resolves unchanged.
 - `[routing.<vendor>.<tier>]` — a **work-type → candidate** map (plan 899 D4/D9/D10/D11): each key is one of `schema | engine | architectural | cli | feature | mechanical` and its value is a candidate **model id string** naming one member of that tier's candidate list (never a list index — index values silently re-route when the list is reordered). Ships as an embedded default (only `mechanical` is routed by default, to the tier default) and is fully operator-overridable. `planar config validate` rejects a routing entry naming a model id absent from the matching tier's candidate list.
@@ -1292,7 +1292,7 @@ Planar's usage-introspection loop (capture → report → introspect) applies a 
 
 ### Tier 1: Structurally-redacted diagnostic bundle
 
-`planar report [--json]` is **privacy-safe by query construction**. The aggregate queries in `src/engine/introspect.zig` select only counts, error categories, verb paths, statuses, and timestamps from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or any column that could carry operator-authored or PII-adjacent text. This guarantee is testable with sentinel fixtures and holds with no human in the loop.
+`planar report [--json]` is **privacy-safe by query construction**. The aggregate queries in `src/lib/engine/introspect/introspect.cpp` select only counts, error categories, verb paths, statuses, and timestamps from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or any column that could carry operator-authored or PII-adjacent text. This guarantee is testable with sentinel fixtures and holds with no human in the loop.
 
 The `cli_invocations` table enforces the same guarantee at the write site: the capture hook serializes flag **names** and positional **arity** only (`args_shape`). There is no code path that writes an argument value into the table. A future query bug cannot leak an argument value from this table because argument values are never there to leak.
 
