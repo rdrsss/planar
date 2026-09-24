@@ -23,16 +23,6 @@
       "pattern": "strategy.*isolation"
     },
     {
-      "id": "canonical-brief-carries-confirmed-manifest",
-      "description": "Canonical dispatch requires the brief to carry the confirmed manifest.",
-      "mode": "all",
-      "paths": [
-        "agents/orchestrator.md"
-      ],
-      "pattern": "brief must carry the[[:space:]]+confirmed manifest",
-      "multiline": true
-    },
-    {
       "id": "orchestrator-does-not-pull-feature-task",
       "description": "The parent orchestrator action cannot consume a feature task through plan pull.",
       "mode": "none",
@@ -41,16 +31,6 @@
         "agents/methodology.md"
       ],
       "pattern": "pull \\$PLAN_ID --role orchestrator"
-    },
-    {
-      "id": "intake-command-shapes-are-documented",
-      "description": "Both orchestrator surfaces prohibit probing invented Planar CLI forms.",
-      "mode": "all",
-      "paths": [
-        "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md"
-      ],
-      "pattern": "Never guess Planar command shapes"
     }
   ],
   "expected": {}

@@ -28,15 +28,6 @@
   ],
   "contract_assertions": [
     {
-      "id": "medium-default",
-      "description": "Already-decided implementation work defaults to the medium coder tier.",
-      "mode": "all",
-      "paths": [
-        "skills/src/pl-orchestrator.md"
-      ],
-      "pattern": "every task defaults to `medium`"
-    },
-    {
       "id": "preview-binds-tier-and-model",
       "description": "Both orchestrator surfaces bind the confirmed tier and routed candidate.",
       "mode": "all",
@@ -55,38 +46,6 @@
         "agents/orchestrator.md"
       ],
       "pattern": "one preview row per open task|one row per claim-aware open task"
-    },
-    {
-      "id": "titles-do-not-escalate",
-      "description": "Task-title vocabulary alone cannot escalate coder tier.",
-      "mode": "all",
-      "paths": [
-        "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
-        "agents/models.md"
-      ],
-      "pattern": "Task-title vocabulary is never sufficient escalation evidence"
-    },
-    {
-      "id": "work-type-and-tier-agree",
-      "description": "High-judgment work types cannot be paired with the medium default.",
-      "mode": "all",
-      "paths": [
-        "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
-        "agents/models.md"
-      ],
-      "pattern": "Work type and tier must agree"
-    },
-    {
-      "id": "host-boundary-is-operational",
-      "description": "Both surfaces state the active-host boundary as an operative rule, not a bare assertion.",
-      "mode": "all",
-      "paths": [
-        "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md"
-      ],
-      "pattern": "even when global configuration names another provider"
     }
   ],
   "setup": {

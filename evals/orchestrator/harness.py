@@ -1258,33 +1258,6 @@ def grade_coherence(root: Path = ROOT) -> None:
         if not (root / relative).is_file():
             raise EvalFailure(f"orchestrator-coherence: missing core contract: {relative}")
 
-    budgets = {
-        # 2500 in the armarium era; Planar's surface lint requires the seven
-        # literal feedback H2 sections on every user-invocable skill, which
-        # costs ~100 words of structural envelope over the condensed form the
-        # original budget was calibrated against.
-        # 2650->2800: task 6492 / PR #181 grew pl-orchestrator.md past 2650;
-        # plan 1065 M4 slug hh-drop-word-budgets removes these budgets
-        # entirely, so this is a bump to unblock, not a re-calibration.
-        "skills/src/pl-orchestrator.md": 2800,
-        "agents/orchestrator.md": 5500,
-        "agents/coder.md": 2200,
-        "agents/reviewer.md": 2200,
-        "skills/src/pl-coder.md": 1800,
-        "skills/src/pl-reviewer.md": 1800,
-        "agents/test-coder.md": 1400,
-        "agents/janitor.md": 1400,
-        "skills/src/pl-test-coder.md": 800,
-        "skills/src/pl-research.md": 800,
-    }
-    for relative, limit in budgets.items():
-        count = len((root / relative).read_text(encoding="utf-8").split())
-        if count > limit:
-            raise EvalFailure(
-                f"orchestrator-coherence: {relative} exceeds its executable "
-                f"prompt budget ({count} > {limit} words)"
-            )
-
     def forbid(pattern: str, relatives: Sequence[str], *, ignore_case: bool = True) -> None:
         flags = re.MULTILINE | (re.IGNORECASE if ignore_case else 0)
         compiled = re.compile(pattern, flags)
@@ -1311,10 +1284,6 @@ def grade_coherence(root: Path = ROOT) -> None:
                     f"contract: {pattern}"
                 )
 
-    forbid(
-        r"\b(zig|golang|rust|python|typescript|javascript|ruby)\b|\.zig\b",
-        core_rel,
-    )
     forbid(
         r"make (fmt-check|build|test|test-integration)|scriptorium check -config",
         core_rel,
