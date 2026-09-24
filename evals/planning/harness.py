@@ -52,6 +52,7 @@ REPO_ROOT = EVAL_ROOT.parents[1]
 # elsewhere resolve to the orchestrator's module instead of this one.
 sys.path.append(str(EVAL_ROOT.parent / "orchestrator"))
 import arena  # noqa: E402
+import vendors  # noqa: E402
 
 # The orchestrator's `record_ledger_row` (task 6894 / tech-spec 619 C6) is
 # reused rather than re-implemented, but a bare `import harness` is unsafe
@@ -676,10 +677,16 @@ def aggregate(trials: list[TrialResult]) -> dict[str, float]:
     }
 
 
-def run_model(argv: list[str], prompt: str, timeout: int, env: Mapping[str, str]) -> str:
+def run_model(argv: list[str], timeout: int, env: Mapping[str, str]) -> str:
+    """Spawn a fully-built argv (prompt already the final positional element
+    -- see `host_argv`). Task 6865: this used to take `(argv, prompt)` and
+    append the prompt itself; now that `host_argv` builds through the shared
+    vendor adapter, which already returns the prompt in place, appending it
+    again here would duplicate it.
+    """
     try:
         proc = subprocess.run(
-            [*argv, prompt],
+            argv,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -699,12 +706,16 @@ def run_model(argv: list[str], prompt: str, timeout: int, env: Mapping[str, str]
     return proc.stdout
 
 
-def host_argv(model: str | None) -> list[str]:
-    """Separate argv elements: an opaque model id must never become shell syntax."""
-    argv = ["claude", "-p", "--permission-mode", "dontAsk"]
-    if model:
-        argv[1:1] = ["--model", model]
-    return argv
+def host_argv(model: str | None, prompt: str) -> list[str]:
+    """Argv for a single claude turn, built through the shared vendor
+    adapter (`evals/orchestrator/vendors.py::build_raw_command`, task 6865)
+    instead of assembling `["claude", "-p", ...]` inline here -- this
+    harness is one of the repo's few legitimate headless-vendor-CLI call
+    sites (`no-headless-llm-shelling`), and that boundary is only
+    enforceable while there is one auditable place building such argv, not
+    three. This harness always spawns claude (never codex/copilot/gemini).
+    """
+    return vendors.build_raw_command(vendor="claude", prompt=prompt, host_model=model)
 
 
 def persist_to_ledger(
@@ -988,7 +999,7 @@ def main() -> int:
                 # (Planar artifact 626 / task 6872). Fail closed before the
                 # host spawns.
                 arena.assert_vendor_auth(trial_env, "claude")
-                draft = run_model(host_argv(args.model), draft_prompt, args.timeout, trial_env)
+                draft = run_model(host_argv(args.model, draft_prompt), args.timeout, trial_env)
             except Blocked as exc:
                 print(f"blocked: {exc}", file=sys.stderr)
                 return EXIT_BLOCKED
@@ -1013,8 +1024,10 @@ def main() -> int:
                 # so this call site is what actually keeps drafting and
                 # grading on independent models.
                 raw = run_model(
-                    host_argv(grader_model),
-                    f"{grader_prompt}\n\n--- DRAFT UNDER REVIEW ---\n{draft}",
+                    host_argv(
+                        grader_model,
+                        f"{grader_prompt}\n\n--- DRAFT UNDER REVIEW ---\n{draft}",
+                    ),
                     args.timeout,
                     trial_env,
                 )

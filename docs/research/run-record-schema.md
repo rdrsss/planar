@@ -139,9 +139,16 @@ deletion path.
 ## 3. What is deliberately absent: no `run_metrics` table
 
 Primary metrics — wall-clock, total tokens, touch precision/recall,
-merge-conflict count, parallelism recovered — are computed by **named,
+merge-conflict count, parallelism recovered — were computed by **named,
 checked-in SQL queries** over the raw tables, living in a `metrics/`
 directory, never materialized into a table.
+
+> **Retired (plan 1065 M4, task 6865):** `scripts/bench-matrix.sh` (the
+> closure-measurement confirmatory-run driver these queries read) and the
+> `metrics/` query directory have been removed in favor of the M3 cost
+> capture in `evals/orchestrator/`. This section is kept as the historical
+> rationale for the design; it no longer describes files present in the
+> tree.
 
 Rationale: storing pre-aggregated metrics invites two failure modes the
 experiment exists to avoid. Staleness (the stored number drifts from the

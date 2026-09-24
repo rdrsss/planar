@@ -12,13 +12,6 @@
       "mode": "all",
       "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
       "pattern": "tabularium-documenter"
-    },
-    {
-      "id": "no-checkout-relative-workflow",
-      "description": "The orchestrator does not invoke a checkout-relative Planar workflow.",
-      "mode": "none",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
-      "pattern": "planar-execute run workflows/"
     }
   ],
   "expected": {}

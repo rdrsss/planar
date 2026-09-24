@@ -118,7 +118,7 @@ make eval-orchestrator-unit
 make eval-orchestrator-contract
 make eval-orchestrator-fixtures
 ./scripts/eval-orchestrator.sh --list
-./scripts/eval-orchestrator.sh --contract-only --case worktree-fanin-before-complete
+./scripts/eval-orchestrator.sh --contract-only --case ambiguous-tier-requires-operator-answer
 ```
 
 The first live case exercises the Phase 3 preview boundary:

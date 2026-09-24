@@ -456,18 +456,28 @@ class BriefCompletenessTests(unittest.TestCase):
 
 
 class HostArgvTests(unittest.TestCase):
+    """Task 6865: `host_argv` now delegates to
+    `vendors.build_raw_command`, so its own return shape is
+    `vendors.py`'s to test (see `test_vendors.py`); these cases just pin
+    that `host_argv` actually calls it with `vendor="claude"` and the
+    prompt in place, rather than re-testing the adapter's argv shape here.
+    """
+
     def test_model_is_a_separate_argv_element(self) -> None:
-        argv = harness.host_argv("claude-opus-5")
+        argv = harness.host_argv("claude-opus-5", "hello")
         self.assertIn("--model", argv)
         self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5")
 
     def test_opaque_id_is_never_shell_syntax(self) -> None:
         hostile = "--opaque;$(whoami)"
-        argv = harness.host_argv(hostile)
+        argv = harness.host_argv(hostile, "hello")
         self.assertEqual(argv[argv.index("--model") + 1], hostile)
 
     def test_absent_model_omits_the_flag(self) -> None:
-        self.assertNotIn("--model", harness.host_argv(None))
+        self.assertNotIn("--model", harness.host_argv(None, "hello"))
+
+    def test_prompt_is_the_final_argv_element(self) -> None:
+        self.assertEqual(harness.host_argv(None, "hello")[-1], "hello")
 
 
 class LiveHostAuthBeforeSpawnTests(unittest.TestCase):
@@ -802,7 +812,7 @@ class DrafterRoutingTests(unittest.TestCase):
 
         run_model_calls = []
 
-        def _run_model_side_effect(argv, prompt, timeout, env):
+        def _run_model_side_effect(argv, timeout, env):
             call_order.append("run_model")
             run_model_calls.append(1)
             return self._COMPLETE_DRAFT if len(run_model_calls) == 1 else '{"scores": {"a": 1.0}}'
@@ -823,8 +833,12 @@ class DrafterRoutingTests(unittest.TestCase):
     def test_drafter_prompt_invokes_the_installed_pl_spec_draft_surface(self) -> None:
         prompts: list[tuple[list[str], str]] = []
 
-        def _run_model_side_effect(argv, prompt, timeout, env):
-            prompts.append((list(argv), prompt))
+        def _run_model_side_effect(argv, timeout, env):
+            # `host_argv` now builds argv through `vendors.build_raw_command`,
+            # which appends the prompt as argv's own last element (task
+            # 6865) -- so it is read back from there rather than taken as a
+            # separate parameter.
+            prompts.append((list(argv), argv[-1]))
             if len(prompts) == 1:
                 return self._COMPLETE_DRAFT
             return '{"scores": {"a": 1.0}}'
@@ -864,7 +878,7 @@ class DrafterRoutingTests(unittest.TestCase):
         case = harness.load_case("spec-draft-quality")
         argvs: list[list[str]] = []
 
-        def _run_model_side_effect(argv, prompt, timeout, env):
+        def _run_model_side_effect(argv, timeout, env):
             argvs.append(list(argv))
             return self._COMPLETE_DRAFT if len(argvs) == 1 else '{"scores": {"a": 1.0}}'
 
@@ -889,7 +903,7 @@ class DrafterRoutingTests(unittest.TestCase):
 
         case = harness.load_case("spec-draft-quality")
 
-        def _run_model_side_effect(argv, prompt, timeout, env):
+        def _run_model_side_effect(argv, timeout, env):
             calls = _run_model_side_effect.calls
             calls.append(1)
             return self._COMPLETE_DRAFT if len(calls) == 1 else '{"scores": {"a": 1.0}}'
@@ -949,7 +963,7 @@ class LedgerPersistenceTests(unittest.TestCase):
 
     @staticmethod
     def _draft_then_grade_side_effect(calls: list[int]):
-        def _side_effect(argv, prompt, timeout, env):
+        def _side_effect(argv, timeout, env):
             calls.append(1)
             return (
                 LedgerPersistenceTests._COMPLETE_DRAFT
