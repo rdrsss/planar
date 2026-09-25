@@ -871,7 +871,7 @@ installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
 stages skills, agents, workflows, and vendor wiring under `~/.planar`, by
 shelling the `scriptorium` binary after the CMake build.
 
-The black-box lane follows two stylistic conventions documented in [`CLAUDE.md` § Black-box CLI test methodology](../CLAUDE.md#black-box-cli-test-methodology): focused per-leaf tests live beside their command family under `src/cmd/planar/handlers/<family>/` and pin that verb's contract; tests spanning several families remain beside the binary entry point. Cross-process scenario tests (`src/cmd/planar/cross_process.t.cpp`, `src/cmd/*/parity.t.cpp`) walk realistic operator workflows end-to-end through many verbs and several binaries. `planar_binary()` discovers nested `*.t.cpp` files so colocated tests remain in the binary's test target.
+The black-box lane follows two stylistic conventions documented in [`CLAUDE.md` § Black-box CLI test methodology](../CLAUDE.md#black-box-cli-test-methodology): focused per-leaf tests live beside their command family under `src/cmd/planar/handlers/<family>/` and pin that verb's contract; multi-command lifecycle scenarios and their inventory live in [`src/cmd/integration_tests/`](../src/cmd/integration_tests/README.md). `planar`-only scenarios share an injected in-memory SQLite connection across handler invocations; cross-binary tests use a scratch database file and real processes, as in `src/cmd/planar/cross_process.t.cpp`. The `src/cmd/*/parity.t.cpp` cases pin process-level output. `planar_binary()` discovers nested `*.t.cpp` files so colocated tests remain in the binary's test target; `src/cmd/integration_tests/CMakeLists.txt` adds its scenarios to that target explicitly.
 
 ---
 

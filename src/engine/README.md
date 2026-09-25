@@ -4,6 +4,8 @@
 handlers in [`src/cmd/`](../cmd/README.md) parse requests and call these
 modules; the engine does not assemble CLI applications. Storage and migrations
 live in `src/lib/db/` and `migrations/`.
+Multi-command lifecycle scenarios and their coverage inventory live in
+[`src/cmd/integration_tests/`](../cmd/integration_tests/README.md).
 
 ## State inventory
 

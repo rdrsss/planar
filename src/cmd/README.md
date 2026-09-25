@@ -15,6 +15,7 @@ and dispatches from `main.cpp`. Handlers translate CLI requests into calls to
 | [`planar-execute/`](planar-execute/README.md) | Workflow configuration, local run and Centurion client commands; no SQLite handle. |
 | [`planar-ext/`](planar-ext/README.md) | External system and sync CLI. SQLite authorizer permits writes only to `external_links`, `external_systems` and `sync_events`. |
 | [`internal/`](internal/README.md) | Shared invocation context, environment/config path resolution and injected lazy database holder for the database-using binaries. |
+| [`integration_tests/`](integration_tests/README.md) | Multi-command lifecycle scenarios and their coverage inventory. `planar`-only cases share an injected in-memory database; cross-binary cases use a scratch database file. |
 
 `CMakeLists.txt` registers the command targets. Binary targets do not link
 other binary targets. The shared parser, help renderer, schema catalog and

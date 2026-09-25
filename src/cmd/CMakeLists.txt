@@ -28,6 +28,7 @@ add_subdirectory(planar-agent)
 add_subdirectory(planar-watch)
 add_subdirectory(planar-execute)
 add_subdirectory(planar-ext)
+add_subdirectory(integration_tests)
 
 # --- cross-binary black-box coverage (plan 996, task 6547, decision 1035) ---
 #
