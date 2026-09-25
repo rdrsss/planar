@@ -197,7 +197,7 @@ distinction is load-bearing — never collapse them.
   decision: it claimed `64` for an unknown flag (actually `2`; `64` means
   NOT IMPLEMENTED), glossed `2` as "system error" so a typo read as a
   database failure, and omitted `5`/`6`/`7`. `pl-health` then mapped exit 2
-  to `critical`, so `planar health --typo` reported a CRITICAL system. The
+  to `critical`, so `planar health --typo` reported a CRITICAL system. <!-- cli-lint-ignore: `--typo` is deliberately invalid; it IS the typo this sentence is about --> The
   gate runs representative refusals on all four binaries and also fails when
   the table OMITS a code a checked case returns. Note the per-binary split it
   asserts: a parse failure is `2` on `planar` and `1` on

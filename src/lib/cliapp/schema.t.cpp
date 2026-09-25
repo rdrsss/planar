@@ -420,6 +420,27 @@ auto capture(std::string const& env_assignment, std::string const& bin, std::vec
   return {contents, status};
 }
 
+/// @brief Count non-overlapping occurrences of `needle` in `haystack`.
+///
+/// Used to discriminate "reported once" from "reported once per path" when
+/// a file is reachable under two names (task 6932's CLAUDE.md/AGENTS.md
+/// symlink); a `contains` check cannot tell those apart.
+/// @param haystack The text to search.
+/// @param needle The substring to count.
+/// @return The number of non-overlapping occurrences.
+auto count_flag_occurrences(std::string_view haystack, std::string_view needle) -> std::size_t {
+  std::size_t count  = 0;
+  std::size_t cursor = 0;
+  while (true) {
+    auto const at = haystack.find(needle, cursor);
+    if (at == std::string_view::npos)
+      break;
+    ++count;
+    cursor = at + needle.size();
+  }
+  return count;
+}
+
 } // namespace
 
 TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11-derived catalog",
@@ -494,6 +515,42 @@ TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11
     CHECK(WEXITSTATUS(status) == 1);
     CHECK(out.contains("planar task add"));
     CHECK(out.contains("--this-flag-does-not-exist"));
+  }
+
+  SECTION("CLAUDE.md is scanned, and its AGENTS.md symlink is not scanned a second time") {
+    // Task 6932: `k_scan_dirs` covered agents/, skills/src/ and docs/ only,
+    // so CLAUDE.md -- the file every agent in this repository reads first,
+    // and the densest source of claim-ritual and verb examples -- had never
+    // had a single command example checked against a live catalog. Task
+    // 6869 had already found a documented `planar-agent claim --metadata`
+    // there that fails at parse time.
+    //
+    // The symlink half is not incidental: `AGENTS.md` is a symlink to
+    // `CLAUDE.md` (see this repo's CLAUDE.md, "Operating Rules"), so a
+    // naive directory walk would report every finding twice under two
+    // paths. Asserting the COUNT is what discriminates "scanned once" from
+    // "scanned twice"; asserting only `.contains("CLAUDE.md")` would pass
+    // either way.
+    {
+      std::ofstream out(scratch_root / "CLAUDE.md", std::ios::trunc);
+      out << "Run `planar task add --claude-md-only-flag` per the guide.\n";
+    }
+    std::error_code link_ec;
+    std::filesystem::remove(scratch_root / "AGENTS.md", link_ec);
+    std::filesystem::create_symlink("CLAUDE.md", scratch_root / "AGENTS.md", link_ec);
+    INFO("symlink: " << link_ec.message());
+    write_doc("Run `planar task add --json` to create a task.\n");
+
+    auto const [out, status] = capture("", lint_tool.string(), {scratch_root.string(), stub_bin.string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out.contains("--claude-md-only-flag"));
+    CHECK(count_flag_occurrences(out, "--claude-md-only-flag") == 1);
+    CHECK_FALSE(out.contains("AGENTS.md"));
+
+    std::filesystem::remove(scratch_root / "CLAUDE.md", link_ec);
+    std::filesystem::remove(scratch_root / "AGENTS.md", link_ec);
   }
 
   SECTION("scope: an unknown COMMAND path is NOT a violation, by the tool's own design") {
