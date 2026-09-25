@@ -624,6 +624,28 @@ auto main(int argc, char** argv) -> int {
   for (auto rel : k_scan_dirs)
     scan_dir(catalog, bin_names, fs::path{repo_root} / rel, violations, files_scanned);
 
+  // CLAUDE.md (task 6932): a single top-level file rather than a directory,
+  // so it needs its own entry point instead of a `k_scan_dirs` walk. It was
+  // absent from the scan set entirely -- the file every agent in this
+  // repository reads first, dense with claim-ritual and verb examples, and
+  // no schema check had ever validated one of them against the live
+  // catalogs. Task 6869 found a documented `planar-agent claim --metadata`
+  // that fails at parse time; a wrong flag here propagates into every
+  // agent's behaviour.
+  //
+  // `AGENTS.md` is a SYMLINK to `CLAUDE.md` (see § Operating Rules) and is
+  // deliberately NOT scanned: walking it would report every finding twice
+  // at a second path. The same reasoning and the same fixture shape as
+  // `surface_lint`'s own CLAUDE.md entry point (task 6930).
+  if (std::error_code ec;
+      fs::exists(fs::path{repo_root} / "CLAUDE.md", ec) && fs::is_regular_file(fs::path{repo_root} / "CLAUDE.md", ec)) {
+    auto const    claude_md = fs::path{repo_root} / "CLAUDE.md";
+    std::ifstream in(claude_md, std::ios::binary);
+    std::string   content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    ++files_scanned;
+    scan_file(catalog, bin_names, claude_md.string(), content, violations);
+  }
+
   auto const policy = check_command_policy(catalog, bin_names, fs::path{repo_root});
   if (!policy.has_value()) {
     std::println(stderr, "error: {}", policy.error());
