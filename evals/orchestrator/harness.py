@@ -3548,7 +3548,7 @@ def replay_driver_dependency_order(
     back, and assert the dependent task is never claimed before its
     blocker reaches a terminal status. This is exactly the invariant
     `pull`/`peek`'s dependency exclusion grades (`entity_links
-    relationship = 'depends-on'`, `src/lib/engine/runtime/agentatomic.cpp`,
+    relationship = 'depends-on'`, `src/engine/runtime/agentatomic.cpp`,
     task 6841 / decision D6): if that exclusion is ever reverted, the
     first pull below returns the dependent task instead of the blocker
     and this driver fails closed rather than silently completing both
