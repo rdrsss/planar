@@ -814,6 +814,7 @@ planar_binary(planar
     engine_health
     engine_models
     engine_planning
+    document_authority
     # New at task 6299, for handlers/shared/promotion.cpp. `promote` and `demote`
     # are the binary's only consumers of this bucket, and it carries their
     # output renderers as well as the two mutations — see its own header for

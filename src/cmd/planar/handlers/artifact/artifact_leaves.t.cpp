@@ -829,4 +829,32 @@ TEST_CASE("document authority derives and validates every adjacent Unicode passa
                              "--segment-quote",    "Canonical",      "--json"});
   CHECK(stale.code != 0);
   CHECK(stale.err.contains("stale_revision"));
+
+  auto forged_quote =
+      dispatch(fx, {"document",           "validate-range", "--kind",       "artifact",    "--id",           "1",
+                    "--content-revision", revision,         "--start-key",  paragraph_key, "--start-offset", "0",
+                    "--end-key",          paragraph_key,    "--end-offset", "15",          "--covered-key",  paragraph_key,
+                    "--segment-quote",    "forged passage", "--json"});
+  CHECK(forged_quote.code != 0);
+  CHECK(forged_quote.err.contains("forged_quote"));
+
+  auto reversed = dispatch(fx, {"document", "validate-range", "--kind", "artifact", "--id", "1", "--content-revision", revision,
+                                "--start-key", unicode_key, "--start-offset", "0", "--end-key", heading_key, "--end-offset", "7",
+                                "--covered-key", unicode_key, "--json"});
+  CHECK(reversed.code != 0);
+  CHECK(reversed.err.contains("reversed_range"));
+
+  auto foreign = dispatch(fx, {"document", "validate-range", "--kind", "artifact", "--id", "1", "--content-revision", revision,
+                               "--start-key", heading_key, "--start-offset", "0", "--end-key", "artifact:2:foreign:0",
+                               "--end-offset", "1", "--covered-key", heading_key, "--json"});
+  CHECK(foreign.code != 0);
+  CHECK(foreign.err.contains("foreign_key"));
+
+  REQUIRE(dispatch(fx, {"artifact", "update", "1", "--body", "changed after projection", "--json"}).code == 0);
+  auto mutated = dispatch(fx, {"document",           "validate-range", "--kind",       "artifact",  "--id",           "1",
+                               "--content-revision", revision,         "--start-key",  heading_key, "--start-offset", "0",
+                               "--end-key",          heading_key,      "--end-offset", "7",         "--covered-key",  heading_key,
+                               "--segment-quote",    "Heading",        "--json"});
+  CHECK(mutated.code != 0);
+  CHECK(mutated.err.contains("stale_revision"));
 }

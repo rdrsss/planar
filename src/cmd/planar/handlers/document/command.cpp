@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.document_authority;
 import planar.sha256;
 import planar.cmd.planar.context;
 import planar.cmd.planar.declare;
@@ -206,6 +207,23 @@ auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
   return offset <= value.size() && (offset == value.size() || (static_cast<unsigned char>(value[offset]) & 0xc0U) != 0x80U);
 }
 
+auto authoritative_document(db::connection& conn, std::string_view kind, std::int64_t id)
+    -> std::expected<document, domain_error> {
+  auto projected = document_authority::project(conn, kind, id);
+  if (!projected) {
+    auto error_kind = projected.error() == document_authority::error::not_found ? domain_error_kind::not_found
+                                                                                : domain_error_kind::generic_failure;
+    return std::unexpected(error_from_body(error_kind, "document projection failed"));
+  }
+  document result{.id = projected->id, .revision = projected->content_revision};
+  for (auto const& item : projected->passages)
+    result.passages.push_back({.key = item.key, .kind = item.kind, .text = item.text,
+                               .source_kind = item.source.kind, .source_id = item.source.id,
+                               .source_path = item.source.path, .start_line = item.source.start_line,
+                               .end_line = item.source.end_line});
+  return result;
+}
+
 } // namespace
 
 auto document_project(context& ctx, const cliapp::parsed_args& args) -> handler_result {
@@ -215,7 +233,7 @@ auto document_project(context& ctx, const cliapp::parsed_args& args) -> handler_
   auto conn = ctx.ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
-  auto doc = build_document(**conn, src->first, src->second);
+  auto doc = authoritative_document(**conn, src->first, src->second);
   if (!doc)
     return std::unexpected(doc.error());
   ctx.out() << render(*doc) << '\n';
@@ -229,7 +247,7 @@ auto document_validate_range(context& ctx, const cliapp::parsed_args& args) -> h
   auto conn = ctx.ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
-  auto doc = build_document(**conn, src->first, src->second);
+  auto doc = authoritative_document(**conn, src->first, src->second);
   if (!doc)
     return std::unexpected(doc.error());
   auto revision     = cliapp::flag_string(args, "--content-revision");
