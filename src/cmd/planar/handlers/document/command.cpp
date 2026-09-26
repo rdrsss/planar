@@ -217,10 +217,14 @@ auto authoritative_document(db::connection& conn, std::string_view kind, std::in
   }
   document result{.id = projected->id, .revision = projected->content_revision};
   for (auto const& item : projected->passages)
-    result.passages.push_back({.key = item.key, .kind = item.kind, .text = item.text,
-                               .source_kind = item.source.kind, .source_id = item.source.id,
-                               .source_path = item.source.path, .start_line = item.source.start_line,
-                               .end_line = item.source.end_line});
+    result.passages.push_back({.key         = item.key,
+                               .kind        = item.kind,
+                               .text        = item.text,
+                               .source_kind = item.source.kind,
+                               .source_id   = item.source.id,
+                               .source_path = item.source.path,
+                               .start_line  = item.source.start_line,
+                               .end_line    = item.source.end_line});
   return result;
 }
 
