@@ -164,6 +164,7 @@ through `resolve_write_scope`. `derive_write_scope_ranked` performs step 3 and
 shares its ranking with `resolve_read_scope_set`, which backs `scope show`.
 Doc comments on those functions are the authoritative specification.
 
+<!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ path this earlier edition cited, for history -->
 Earlier editions pointed at `src/engine/identity/scope.zig`. The Zig tree was
 deleted at the M10 cutover; that path no longer exists.
 

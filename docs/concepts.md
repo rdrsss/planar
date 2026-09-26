@@ -439,7 +439,7 @@ Two verbs onboard an existing repo into Planar. They share the downstream `/pl-s
 
 - `synthesize` is a **synthesis** verb. It reads both the existing docs *and* the source tree as input, then produces fresh `product_spec` / `tech_spec` / `roadmap` artifacts via an LLM pass. The original docs are preserved on the same anchor plan as `kind=research` reference artifacts — superseded but not deleted. Reach for it when the planning material is scattered across multiple drafts, mid-evolution, or contradicted by reality (e.g. a roadmap claims a milestone is done but no source files back the claim).
 
-The load-bearing rule for `synthesize` is that **code presence beats text claims**. A task the LLM proposes with `status != "todo"` must cite a `code_evidence` path that exists in the probed source tree; the binary's `Validate` step (`src/engine/synthesize.zig`) refuses results that violate the invariant. A roadmap line that says "M3 is finished" is treated as TODO unless source files, tests, or CI configs corroborate the claim. The greenfield case (no source detected) collapses naturally onto all-todo output.
+The load-bearing rule for `synthesize` is that **code presence beats text claims**. A task the LLM proposes with `status != "todo"` must cite a `code_evidence` path that exists in the probed source tree; the binary's `validate_result()` step (`src/engine/synthesize/synthesize.cpp`) refuses results that violate the invariant. A roadmap line that says "M3 is finished" is treated as TODO unless source files, tests, or CI configs corroborate the claim. The greenfield case (no source detected) collapses naturally onto all-todo output.
 
 ### Picking between the two
 
@@ -686,12 +686,12 @@ An orchestration strategy is the operator-facing dispatch frame for a plan. It b
 | Strategy | One-line description |
 |----------|----------------------|
 | `classic` | Sequential cycles, reviewer per cycle. Default isolation is `pwd` on the current branch; `worktree` isolation is selectable when rollback or pwd hygiene matters. |
-| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; staged into dependency-respecting waves; one consolidated reviewer pass at fan-in. **Model-runnable** via the spawn-free `workflows/parallel-dispatch.lua` seam (plan 760) — no external harness. |
+| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; staged into dependency-respecting waves; one consolidated reviewer pass at fan-in. **Model-runnable** via the spawn-free `workflows/parallel-dispatch.lua` seam (plan 760), an optional deterministic helper — the model orchestrator, a host-native workflow, or a background agent may run this path (decision 1007). |
 | `isolated-sequential` | Descriptive alias for `classic` + `worktree` isolation: one cycle worktree per task, reviewer per cycle. |
 | `barrel-deferred` | Coder cycles run back-to-back; reviewer fires once at a milestone or plan boundary on the union diff. Supports both `pwd` and `worktree` isolation. |
 | `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` twice + `make coverage` + `make cli-usage-check` + render check + remaining validators) are the entire signal. Supports both `pwd` and `worktree` isolation. |
 
-The model-driven `/pl-orchestrator` skill runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The model runs the git worktree/branch/merge ops and spawns the coders; the seam only computes and hands back. There is **no external harness**. In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
+The model-driven `/pl-orchestrator` skill runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The seam only computes and hands back — it is an optional deterministic helper, not the only permitted path. The runner that acts on the hand-back, running the git worktree/branch/merge ops and spawning the coders, may be the model orchestrator, a host-native workflow, or a background agent (decision 1007, plan 1033). In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
 
 ### Declaring what a task touches
 
@@ -780,7 +780,7 @@ For the canonical axis table, named bundles, invalid-combination list, and recom
 
 A Planar worktree is a git working tree created for an isolated coder cycle. It is a real `git worktree add` checkout — Planar does not reinvent the git primitive, it just owns the path convention and the persistence of which claim owns which worktree.
 
-**Worktree lifecycle — creation, the epic/cycle branch model, fan-in merge, failed-lane retention, and full teardown on plan completion — is model-driven for both sequential worktree isolation and `parallel-fanout`**. The deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane, and `plan`/`waves` compute fan-out lanes. The model runs the git ops and spawns the coders. Parallel eligibility applies only to `parallel-fanout`; a single sequential worktree lane does not require `task_touches`.
+**Worktree lifecycle — creation, the epic/cycle branch model, fan-in merge, failed-lane retention, and full teardown on plan completion — is driven by the model orchestrator, a host-native workflow, or a background agent (decision 1007) for both sequential worktree isolation and `parallel-fanout`**. The deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam, an optional deterministic helper: `cycle_plan` computes one sequential lane, and `plan`/`waves` compute fan-out lanes. Whichever of the three is driving still runs the git ops and spawns the coders itself. Parallel eligibility applies only to `parallel-fanout`; a single sequential worktree lane does not require `task_touches`.
 
 ### Topology — epic + child, main checkout stays on master
 
@@ -803,7 +803,7 @@ When the orchestrator (or harness) dispatches into a worktree, it persists the a
 - **`planar-watch` surfaces it.** Every claim-bearing view (`claims`, `log`, `feed`, `ps`) and `planar dashboard --agents` include the column.
 - **`planar-agent pull` and `claim --entity` accept `--worktree <path>`** as the canonical write path.
 
-The standalone-entity alternative remains available — the forward-compat `validateWorktreeId` hook in `src/engine/runtime/agentactivity/store.zig` is the seam — but the claim-attached model satisfies every current use case (dispatch persistence, resume recovery, observability).
+The standalone-entity alternative remains available — the forward-compat `validate_worktree_id` hook in `src/engine/runtime/agentactivity.cpp` is the seam — but the claim-attached model satisfies every current use case (dispatch persistence, resume recovery, observability).
 
 ### Which strategies use worktrees
 
@@ -1008,7 +1008,7 @@ Push, restore, and the new `gc` verb honor a status-based filter so the workbenc
 
 `push --apply-cleanup` and `push --filter-mode all` are mutually exclusive (the modes express opposite intents — clean up vs. include everything).
 
-**SQLite table:** `workbench_sync_state` (tracks per-file sync state). **Primary verbs:** `planar workbench push`, `planar workbench pull`, `planar workbench sync`, `planar workbench status`, `planar workbench archive`, `planar workbench restore`, `planar workbench gc`, `planar workbench publish`. **Primary engine module:** `src/engine/workbench/terminal.zig` (the comptime status table that backs the filter — a future status added by a migration is a compile-time error here).
+**SQLite table:** `workbench_sync_state` (tracks per-file sync state). **Primary verbs:** `planar workbench push`, `planar workbench pull`, `planar workbench sync`, `planar workbench status`, `planar workbench archive`, `planar workbench restore`, `planar workbench gc`, `planar workbench publish`. **Primary engine module:** `src/engine/workbench/terminal.cppm` (the exhaustive `switch`-backed status classifier — a future status added by a migration is a compile-time error here).
 
 ---
 
@@ -1071,8 +1071,9 @@ A **handoff** record is written at the end of a session via `planar handoff`. It
 
 Planar's template plane is the **external-system propagation** templates: JSON documents that render a Planar entity into the payload a target system expects (GitHub Issues, Jira). They resolve through a three-level fallback chain — operator overrides in `~/.planar/templates/<kind>/<slug>.json`, default copies in `~/.planar/templates/defaults/`, then the set embedded in the binary — and are surfaced by `planar templates {list, show, render, validate, init, path}`.
 
-**SQLite tables:** none — templates are filesystem assets plus an embedded fallback set. **Primary entry points:** `src/engine/templates/loader.zig` (resolve + load), `render.zig` (render), `validate.zig` (lint).
+**SQLite tables:** none — templates are filesystem assets plus an embedded fallback set. **Primary entry points:** `load_template()` in `src/engine/config/templates.cpp` (resolve + load), `src/engine/templates/render.cpp` (render), `src/engine/templates/validate.cpp` (lint).
 
+<!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ reader path this removed section never used, for history -->
 > **Removed (2026-08-07).** An earlier revision of this section described a second, unrelated templates layer: per-entity-kind Markdown files under `templates/entity/` that seeded new entities created through the editor-first `add` verbs, with a `{{.Title}}` placeholder language and an install-time validator. **That layer never existed in this binary.** The files and this documentation both arrived in the Go→Zig bootstrap (`bfa3abc`); the reader was never ported, and `src/cmd/planar/editflow.zig` has never contained the word "template". `templates/entity/` has been deleted rather than left installed and inert. See planar task 5918.
 
 ## Model routing
@@ -1292,7 +1293,7 @@ Planar's usage-introspection loop (capture → report → introspect) applies a 
 
 ### Tier 1: Structurally-redacted diagnostic bundle
 
-`planar report [--json]` is **privacy-safe by query construction**. The aggregate queries in `src/engine/introspect.zig` select only counts, error categories, verb paths, statuses, and timestamps from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or any column that could carry operator-authored or PII-adjacent text. This guarantee is testable with sentinel fixtures and holds with no human in the loop.
+`planar report [--json]` is **privacy-safe by query construction**. The aggregate queries in `src/engine/introspect/introspect.cpp` select only counts, error categories, verb paths, statuses, and timestamps from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or any column that could carry operator-authored or PII-adjacent text. This guarantee is testable with sentinel fixtures and holds with no human in the loop.
 
 The `cli_invocations` table enforces the same guarantee at the write site: the capture hook serializes flag **names** and positional **arity** only (`args_shape`). There is no code path that writes an argument value into the table. A future query bug cannot leak an argument value from this table because argument values are never there to leak.
 

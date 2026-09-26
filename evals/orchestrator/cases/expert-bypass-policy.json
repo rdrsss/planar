@@ -7,26 +7,15 @@
   "tiers": ["contract"],
   "contract_assertions": [
     {
-      "id": "never-recommended",
-      "description": "Every policy surface excludes bypass from recommendation.",
-      "mode": "all",
+      "id": "recommendation-never-outputs-bypass",
+      "description": "The strategy recommendation algorithm's output space never maps any plan shape to barrel-bypass (US-10: grade the recommendation state, not the prose that explains the exclusion). barrel-bypass is reachable only through an explicit operator choice at the strategy gate.",
+      "mode": "none",
       "paths": [
         "skills/src/pl-orchestrator.md",
         "agents/orchestrator.md",
         "agents/methodology.md"
       ],
-      "pattern": "never recommended|excluded from recommendation"
-    },
-    {
-      "id": "explicit-expert-choice",
-      "description": "Bypass is described as an explicit expert choice.",
-      "mode": "all",
-      "paths": [
-        "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
-        "agents/methodology.md"
-      ],
-      "pattern": "expert.*opt-in|expert operator|explicit expert"
+      "pattern": "recommend `barrel-bypass`"
     }
   ],
   "expected": {}

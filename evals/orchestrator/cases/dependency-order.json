@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "id": "dependency-order",
+  "skill": "orchestrator",
+  "description": "A two-task plan with a depends-on edge; the dependent task is never claimed before its blocker reaches done.",
+  "tags": [
+    "lifecycle",
+    "dependency-order",
+    "pull"
+  ],
+  "tiers": [
+    "lifecycle"
+  ],
+  "tasks": [
+    {
+      "slug": "blocker-task",
+      "title": "Set the controlled fixture value (blocker task)."
+    },
+    {
+      "slug": "dependent-task",
+      "title": "Set the controlled fixture value (dependent task).",
+      "depends_on": "blocker-task",
+      "priority": 1
+    }
+  ],
+  "setup": {
+    "fixture": "controlled-classic",
+    "specialist_scenario": "success",
+    "plan_status": "active",
+    "strategy": "classic",
+    "isolation": "pwd",
+    "dispatch_shape": "strict",
+    "replay": "dependency-order"
+  },
+  "interaction": [
+    {
+      "send": "Execute with classic, pwd, strict, and no documentation phase."
+    }
+  ],
+  "lifecycle": {
+    "scenario": "controlled-classic",
+    "surface": "agent",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits strategy classic, isolation pwd, dispatch shape strict, and --no-docs. Execute the controlled dependency-ordered tasks through coder and reviewer until both reach a terminal state. Do not finalize, propagate, or archive.",
+    "timeout_seconds": 600,
+    "operator_responses": [
+      "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Continue through the controlled coder and reviewer cycle.",
+      "Use the already pre-committed strict dispatch shape and continue."
+    ]
+  },
+  "expected": {
+    "ordered_events": [
+      "claim-acquired",
+      "coder-finished",
+      "review-approved",
+      "task-completed",
+      "claim-acquired",
+      "coder-finished",
+      "review-approved",
+      "task-completed"
+    ],
+    "forbidden_events": [
+      "review-request-changes",
+      "task-completed-before-review",
+      "task-failed",
+      "claim-released",
+      "task-blocked"
+    ],
+    "event_counts": {
+      "claim-acquired": 2,
+      "coder-finished": 2,
+      "review-approved": 2,
+      "task-completed": 2
+    },
+    "post_state": {
+      "tasks": [
+        {
+          "slug": "blocker-task",
+          "status": "done"
+        },
+        {
+          "slug": "dependent-task",
+          "status": "done"
+        }
+      ],
+      "active_claims": 0,
+      "file_value": "approved"
+    }
+  }
+}

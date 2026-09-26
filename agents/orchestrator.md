@@ -235,8 +235,11 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    explicitly confirmed. The preview is unconditional for direct claims and
    resumes too.
 4. Plan dispatch: run `planar-agent peek <plan>` before writing. Acquire each
-   task claim explicitly with the confirmed `--metadata` and `--worktree`
-   values, then compose the canonical brief from task/spec evidence. Worktree
+   task claim explicitly with the confirmed `--worktree` value (`planar-agent
+   claim` has no `--metadata` flag; record the confirmed strategy metadata on
+   the claim's action row instead — `planar-agent action start --claim <token>
+   --metadata '<confirmed-json>'`), then compose the canonical brief from
+   task/spec evidence. Worktree
    bookkeeping comes from `parallel-dispatch.lua`. The brief must carry the
    confirmed manifest — grouping, isolation, model tier, strategy metadata,
    spec citations, and locked decisions. A generic claim-and-go brief that

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "id": "session-death-reconciliation",
+  "skill": "orchestrator",
+  "description": "A coder session dies after finishing work but before calling any terminal verb; planar-agent reconcile clears the stale claim and resets the task to todo.",
+  "tags": [
+    "lifecycle",
+    "session-death",
+    "reconcile"
+  ],
+  "tiers": [
+    "lifecycle"
+  ],
+  "tasks": [
+    {
+      "slug": "controlled-value",
+      "title": "Set the controlled fixture value to approved."
+    }
+  ],
+  "setup": {
+    "fixture": "controlled-classic",
+    "specialist_scenario": "success",
+    "plan_status": "active",
+    "strategy": "classic",
+    "isolation": "pwd",
+    "dispatch_shape": "strict",
+    "replay": "session-death"
+  },
+  "interaction": [
+    {
+      "send": "Execute with classic, pwd, strict, and no documentation phase."
+    }
+  ],
+  "lifecycle": {
+    "scenario": "controlled-classic",
+    "surface": "agent",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits strategy classic, isolation pwd, dispatch shape strict, and --no-docs. Execute the controlled task through coder and reviewer until it reaches a terminal state. Do not finalize, propagate, or archive.",
+    "timeout_seconds": 600,
+    "operator_responses": [
+      "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Continue through the controlled coder and reviewer cycle.",
+      "Use the already pre-committed strict dispatch shape and continue."
+    ]
+  },
+  "expected": {
+    "ordered_events": [
+      "claim-acquired",
+      "coder-finished"
+    ],
+    "forbidden_events": [
+      "review-approved",
+      "review-request-changes",
+      "test-coder-no-expansion",
+      "task-completed",
+      "task-failed",
+      "claim-released",
+      "task-blocked",
+      "task-completed-before-review"
+    ],
+    "event_counts": {
+      "claim-acquired": 1,
+      "coder-finished": 1
+    },
+    "post_state": {
+      "task_status": "todo",
+      "active_claims": 0,
+      "file_value": "approved"
+    }
+  }
+}

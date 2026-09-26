@@ -213,6 +213,9 @@ extractor, no grouping. Arms: `strict`, `eligibility`.
    *Touches:* `metrics/rq1_touch_accuracy.sql`, `metrics/tokens_per_plan.sql`,
    `metrics/wallclock_per_plan.sql`, `metrics/conflicts.sql`, `metrics/README.md`.
    *Accept:* each query runs against a pilot DB and returns sane shape.
+   *Retired (plan 1065 M4, task 6865):* this milestone's driver
+   (`scripts/bench-matrix.sh`) and the `metrics/` directory it fed have been
+   removed in favor of the M3 cost capture in `evals/orchestrator/`.
 
 7. **Pilot.** One plan, one rep, `strict` + `eligibility` only. Produces the
    first RQ1 number. **Hard go/no-go gate** for M2/M3.

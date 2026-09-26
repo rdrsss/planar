@@ -8,6 +8,8 @@ fixtures that emulate external CLIs remain executable shell test doubles.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as cf
+import hashlib
 import json
 import os
 import re
@@ -16,18 +18,40 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import arena
+import vendors
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES_DIR = ROOT / "evals" / "orchestrator" / "cases"
 FIXTURES_DIR = ROOT / "evals" / "orchestrator" / "fixtures"
+# Task 6858: the pinned-archive vendoring root for lifecycle fixture
+# repositories that are NOT authored directly under FIXTURES_DIR (e.g.
+# `foreign-flat`) -- see `evals/fixtures/vendor_archive.py` and
+# `verify_and_extract_vendored_fixture`. Deliberately a distinct directory
+# from FIXTURES_DIR: FIXTURES_DIR holds the harness-facing control surface
+# (control.sh, the planar-agent wrapper, fixture.json) every lifecycle
+# fixture needs, while VENDORED_FIXTURES_DIR holds only the pinned
+# archive/digest pairs the vendoring rule requires, mirroring the
+# project-root `vendor/` split from authored source.
+VENDORED_FIXTURES_DIR = ROOT / "evals" / "fixtures"
+# Task 6922: the `planar-agent` observation wrapper and `record_observed.py`
+# helper are shared across every lifecycle fixture from this one location,
+# never duplicated per-fixture. `prepare_lifecycle_fixture` copies from here
+# regardless of which fixture a case names.
+SHARED_FIXTURE_DIR = FIXTURES_DIR / "_shared"
+# The complete set of lifecycle fixture directory names `setup.fixture` may
+# name (task 6858 widens this from the single hardcoded "controlled-classic"
+# literal). Checked here rather than via filesystem existence so
+# `validate_case` stays a pure function of the case document.
+LIFECYCLE_FIXTURES = {"controlled-classic", "foreign-flat"}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # Textual fallback for hosts that report a limit as prose rather than as a
 # structured event. Deliberately does NOT match the bare token `rate_limit`:
@@ -47,11 +71,13 @@ RATE_LIMIT_OK_STATUS = "allowed"
 # already permitted. The CLI auto-approves safe builtins like `echo`, but not
 # `planar` — so without an explicit grant the orchestrator cannot run a single
 # intake command and correctly refuses to render a preview it cannot ground.
-CLAUDE_LIVE_ALLOWED_TOOLS = "Bash,Read,Edit,Write,Task"
+# Canonical default lives in `vendors.py` (task 6849 split); these names stay
+# for callers/tests that predate the split.
+CLAUDE_LIVE_ALLOWED_TOOLS = ",".join(vendors.DEFAULT_ALLOWED_TOOLS)
 # Passed as ONE argv element. `--allowedTools` is variadic, so the two-token
 # form swallows the prompt positional that follows it and the CLI dies with
 # "Input must be provided ... when using --print".
-CLAUDE_LIVE_ALLOWED_TOOLS_ARG = f"--allowedTools={CLAUDE_LIVE_ALLOWED_TOOLS}"
+CLAUDE_LIVE_ALLOWED_TOOLS_ARG = vendors.allowed_tools_arg(vendors.DEFAULT_ALLOWED_TOOLS)
 
 
 def rate_limit_reason(text: str) -> str | None:
@@ -141,6 +167,7 @@ _SCHEMA_CONSTRAINT_KEYWORDS = {
     "uniqueItems",
     "minimum",
     "maximum",
+    "exclusiveMinimum",
     "maxProperties",
     "allOf",
     "if",
@@ -251,7 +278,7 @@ def validate_against_json_schema(
     if (
         isinstance(instance, (int, float))
         and not isinstance(instance, bool)
-        and ("minimum" in schema or "maximum" in schema)
+        and ("minimum" in schema or "maximum" in schema or "exclusiveMinimum" in schema)
     ):
         if "minimum" in schema and instance < schema["minimum"]:
             raise SchemaValidationError(
@@ -260,6 +287,11 @@ def validate_against_json_schema(
         if "maximum" in schema and instance > schema["maximum"]:
             raise SchemaValidationError(
                 f"{path}: {instance} exceeds maximum {schema['maximum']}"
+            )
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            raise SchemaValidationError(
+                f"{path}: {instance} does not exceed exclusiveMinimum "
+                f"{schema['exclusiveMinimum']}"
             )
 
     if isinstance(instance, dict):
@@ -360,6 +392,15 @@ class Options:
     case_filter: str | None
     results_dir: Path | None
     keep: bool
+    # Task 6852 (spend ceiling): suite-level cost ceiling and the running
+    # per-run cost total accumulated across every case run through this same
+    # `Options` instance in one `main()` invocation.
+    max_usd: float | None = None
+    suite_spend_usd: list[float] = field(default_factory=list)
+    # Task 6859 (trials): how many times to repeat each selected live/
+    # lifecycle case. 1 (the default) preserves the pre-6859 single-run
+    # behavior exactly.
+    trials: int = 1
 
 
 @dataclass
@@ -371,6 +412,17 @@ class LifecycleContext:
     env: dict[str, str]
     plan_id: str
     task_id: str
+    # Every task id `prepare_lifecycle_fixture` created for this case, in
+    # `case["tasks"]` order. `task_id` above is always `task_ids[0]` --
+    # kept as its own field (rather than derived) so the single-task
+    # retained-artifact grading path (task.after.json) never has to reach
+    # into a list.
+    task_ids: list[str] = field(default_factory=list)
+    # Task 6858: the fixture's own test-runner argv, read from
+    # `<fixture>/fixture.json` (see `load_fixture_manifest`) rather than
+    # `collect_lifecycle_artifacts` hardcoding `["make", "test"]` -- the
+    # foreign-flat fixture runs `["./run-tests"]` instead.
+    test_command: list[str] = field(default_factory=lambda: ["make", "test"])
 
 
 def pass_line(message: str) -> None:
@@ -605,6 +657,249 @@ def extract_host_transcript(raw: Path, vendor: str, artifact_dir: Path) -> str:
     return final
 
 
+class EvalOverBudget(EvalFailure):
+    """A case's or the suite's spend ceiling was exceeded (task 6852)."""
+
+
+def resolve_allowed_tools(section: dict[str, Any] | None) -> tuple[str, ...]:
+    """Resolve the per-case Claude tool allowlist (task 6850).
+
+    `section` is `case["live"]` or `case["lifecycle"]`; a case that does not
+    declare `allowed_tools` gets `vendors.DEFAULT_ALLOWED_TOOLS`.
+    """
+    if not section:
+        return vendors.DEFAULT_ALLOWED_TOOLS
+    tools = section.get("allowed_tools")
+    if not tools:
+        return vendors.DEFAULT_ALLOWED_TOOLS
+    return tuple(tools)
+
+
+def assert_tool_surface_matches_host(
+    case: dict[str, Any],
+    section_key: str,
+    artifact_dir: Path,
+    options: Options,
+    raw_transcript: str,
+) -> None:
+    """Reconcile the case's declared tool allowlist against the surface the
+    host actually enumerated (task 6913).
+
+    `validate_allowed_tools` is a prepare-time TYPO check against a static
+    registry, and a typo check structurally cannot catch DRIFT: a tool that
+    was renamed upstream stays spelled correctly in both the registry and
+    the case file, so every prepare-time check passes while the allowlist
+    entry silently permits nothing. The motivating example is the `Task`
+    tool name.
+
+    The reconciliation source is the `system/init` event every live run
+    already emits and retains in `transcript.jsonl` (Planar artifact 622),
+    so this costs no additional model spend. A declared tool the host never
+    exposed FAILS the run. Registry names the host did not expose are
+    RECORDED to `tool-surface.json`, never raised on -- the registry
+    legitimately spans vendors, versions and configurations.
+    """
+    declared = resolve_allowed_tools(case.get(section_key))
+    live = vendors.extract_live_tool_surface(raw_transcript)
+    try:
+        unexposed = vendors.reconcile_tool_surface(declared, live)
+    except vendors.ToolSurfaceDriftError as exc:
+        write_json(
+            artifact_dir / "tool-surface.json",
+            {
+                "declared": list(declared),
+                "live": sorted(live) if live is not None else None,
+                "declared_not_exposed": exc.missing,
+            },
+        )
+        raise live_failure(
+            artifact_dir, case["id"], options, f"tool surface drift: {exc}"
+        )
+    write_json(
+        artifact_dir / "tool-surface.json",
+        {
+            "declared": list(declared),
+            "live": sorted(live) if live is not None else None,
+            "declared_not_exposed": [],
+            "registry_not_exposed": sorted(unexposed),
+        },
+    )
+
+
+def extract_usage(raw: Path, vendor: str) -> dict[str, Any]:
+    """Extract calls-per-task and token/cost usage from a host transcript
+    (task 6859). Raises `EvalFailure` when the transcript carries no
+    recognizable usage block at all -- a transcript that never reports usage
+    is a harness/host defect, not a zero-cost run, so this never silently
+    returns zeros.
+
+    Claude's stream-json protocol reports usage/cost on its terminal
+    `type: "result"` event (Planar artifact 622). Codex's `exec --json`
+    protocol does not publish a cost figure at all; `total_cost_usd` stays
+    `None` for codex runs and only the token counters are populated, so
+    codex-side spend-ceiling enforcement is necessarily token-based, not
+    cost-based (see `enforce_spend_ceiling`).
+    """
+    objects = jsonl_objects(raw)
+    calls = 0
+    input_tokens = 0
+    output_tokens = 0
+    total_cost_usd: float | None = None
+    if vendor == "claude":
+        for obj in objects:
+            if obj.get("type") != "result":
+                continue
+            calls += 1
+            cost = obj.get("total_cost_usd")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                total_cost_usd = (total_cost_usd or 0.0) + float(cost)
+            usage = obj.get("usage")
+            if isinstance(usage, dict):
+                input_tokens += int(usage.get("input_tokens") or 0)
+                output_tokens += int(usage.get("output_tokens") or 0)
+    else:
+        for obj in objects:
+            candidate = obj if obj.get("type") == "token_count" else obj.get("msg")
+            if not isinstance(candidate, dict) or candidate.get("type") != "token_count":
+                continue
+            calls += 1
+            input_tokens += int(candidate.get("input_tokens") or 0)
+            output_tokens += int(candidate.get("output_tokens") or 0)
+    if calls == 0:
+        raise EvalFailure(
+            f"host transcript carries no usage block for vendor={vendor}: {raw}"
+        )
+    return {
+        "calls": calls,
+        "total_cost_usd": total_cost_usd,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+
+def merge_usage(accumulated: dict[str, Any], turn: dict[str, Any]) -> dict[str, Any]:
+    """Fold one turn's `extract_usage` result into a running total."""
+    cost = accumulated.get("total_cost_usd")
+    turn_cost = turn.get("total_cost_usd")
+    if turn_cost is not None:
+        cost = (cost or 0.0) + turn_cost
+    return {
+        "calls": accumulated.get("calls", 0) + turn["calls"],
+        "total_cost_usd": cost,
+        "input_tokens": accumulated.get("input_tokens", 0) + turn["input_tokens"],
+        "output_tokens": accumulated.get("output_tokens", 0) + turn["output_tokens"],
+    }
+
+
+def active_claims_for_plan(repo: Path, env: dict[str, str], plan_id: str) -> list[dict[str, Any]]:
+    """Return `planar-watch ps --plan <plan_id> --json`'s `active` rows."""
+    return run_json(
+        ["planar-watch", "ps", "--plan", plan_id, "--json"], cwd=repo, env=env
+    ).get("active", [])
+
+
+def release_arena_claims(
+    *, artifact_dir: Path, repo: Path, env: dict[str, str], plan_id: str
+) -> str | None:
+    """Release every claim the arena's own plan still holds, then run
+    `planar-agent reconcile` as a backstop for a token this function lost
+    track of, then assert the post-state (task 6916).
+
+    `planar-agent reconcile` only stales a claim whose LEASE HAS ALREADY
+    EXPIRED (measured on this plan building the lapsed-claim case, task
+    6855) -- it does nothing for a claim this run aborted mid-flight while
+    the lease was still live, so reconcile alone cannot make US-12's "zero
+    active claims" promise true. `planar-agent release --claim <token>` is
+    the terminal verb this function calls directly for every claim it
+    finds via `planar-watch ps`, since it is a claim the harness's own
+    arena opened.
+
+    Returns `None` when the post-cleanup active-claim count is verified
+    zero. Returns a human-readable message otherwise -- either a cleanup
+    step raised, or claims are still active after cleanup ran -- for the
+    caller to surface (recorded into the artifacts and/or printed) WITHOUT
+    ever raising itself: a cleanup failure must never replace the
+    over-budget failure that triggered the cleanup.
+    """
+    try:
+        for claim in active_claims_for_plan(repo, env, plan_id):
+            token = claim.get("claim_token")
+            if not token:
+                continue
+            run_command(["planar-agent", "release", "--claim", token], cwd=repo, env=env)
+        run_command(["planar-agent", "reconcile", "--plan", plan_id], cwd=repo, env=env)
+        remaining = active_claims_for_plan(repo, env, plan_id)
+    except Exception as exc:
+        return f"over-budget cleanup failed before it could verify zero active claims: {exc}"
+    if remaining:
+        tokens = ", ".join(str(claim.get("claim_token", "?")) for claim in remaining)
+        return (
+            f"{len(remaining)} claim(s) still active after over-budget cleanup: {tokens}"
+        )
+    return None
+
+
+def enforce_spend_ceiling(
+    *,
+    artifact_dir: Path,
+    case_id: str,
+    options: Options,
+    repo: Path,
+    env: dict[str, str],
+    plan_id: str,
+    usage: dict[str, Any],
+    case_budget_usd: float | None,
+) -> None:
+    """Abort the run if the case or suite spend ceiling was exceeded
+    (task 6852). Cost enforcement is skipped when the vendor reports no
+    cost figure (codex today -- see `extract_usage`); the case still gets
+    graded normally in that case.
+
+    On over-budget: writes `grade.json` with `status: "over-budget"`,
+    releases and reconciles the arena's own claims to zero active via
+    `release_arena_claims` (never the operator's database -- `env`/`repo`
+    are always the scratch arena), and raises `EvalOverBudget` with the
+    artifacts retained (the caller's exception handler attaches
+    `artifact_dir` the same way every other fail path does; this function
+    never deletes anything itself).
+    """
+    cost = usage.get("total_cost_usd")
+    if cost is None:
+        return
+    options.suite_spend_usd.append(cost)
+    suite_total = sum(options.suite_spend_usd)
+    over_case = case_budget_usd is not None and cost > case_budget_usd
+    over_suite = options.max_usd is not None and suite_total > options.max_usd
+    if not (over_case or over_suite):
+        return
+    if over_case:
+        reason = f"run cost ${cost:.4f} exceeds case budget.max_usd ${case_budget_usd:.4f}"
+    else:
+        reason = f"suite spend ${suite_total:.4f} exceeds --max-usd ${options.max_usd:.4f}"
+    write_grade(artifact_dir, "over-budget", case_id, options, reason, usage=usage)
+    # The ledger has to carry this too, not just grade.json: a run that
+    # stopped because it hit a ceiling is exactly the kind of result an
+    # operator needs to see when asking "has this case ever passed?"
+    # (task 6852 + 6860; reviewer, M3 cycle 1).
+    if options.mode in {"live", "lifecycle"}:
+        record_ledger_row({"id": case_id}, artifact_dir, options, "over-budget")
+    # Task 6916: the previous `except Exception: pass` around a bare
+    # `reconcile` call swallowed both halves of the problem it was meant to
+    # solve -- reconcile doesn't stale a live lease, and any failure to
+    # even try was invisible. `release_arena_claims` never raises; a
+    # non-`None` return means cleanup did not reach zero active claims, and
+    # that has to be VISIBLE (written to disk, printed to stderr) without
+    # ever standing in for the over-budget failure this function still
+    # raises unconditionally below.
+    cleanup_error = release_arena_claims(
+        artifact_dir=artifact_dir, repo=repo, env=env, plan_id=plan_id
+    )
+    if cleanup_error is not None:
+        write_text(artifact_dir / "cleanup-error.txt", cleanup_error + "\n")
+        print(f"WARN: {case_id}: {cleanup_error}", file=sys.stderr)
+    raise EvalOverBudget(f"{case_id}: {reason}", artifact_dir)
+
+
 def extract_session_id(raw: Path, vendor: str) -> str:
     for obj in jsonl_objects(raw):
         if vendor == "codex" and obj.get("type") == "thread.started":
@@ -632,6 +927,39 @@ def load_cases() -> list[tuple[Path, dict[str, Any]]]:
     if not loaded:
         raise EvalFailure(f"no orchestrator cases found in {CASES_DIR}")
     return loaded
+
+
+def validate_case_budget_for_vendor(case: dict[str, Any], options: Options, section: str) -> None:
+    """Refuse a case whose declared `budget.max_usd` cannot be enforced
+    against the vendor this invocation actually targets (task 6914).
+
+    `budget.max_usd` is a CASE field, but which vendor runs it is an
+    `Options`/CLI (`--vendor`) concern decided per invocation, not at
+    case-load time -- the same case file runs against either vendor
+    across different invocations. `validate_case` (schema-level, called
+    from `load_cases` for every loaded case before any vendor is chosen)
+    is therefore too early to know this combination; the earliest point
+    it IS knowable is here, in each mode's prepare step, which already
+    has both `case` and `options.vendor` and has not yet started `git
+    init`, staged vendor config, or invoked any vendor host.
+
+    `codex exec` reports no cost figure (see `extract_usage`), so
+    `enforce_spend_ceiling` can never fire for a codex run -- a
+    `budget.max_usd` the README documents as a limitation is still a
+    silently-inert cap once it is actually declared on a codex case,
+    which is worse than no cap at all (reviewer M3 caveat, task 6914).
+    """
+    if options.vendor != "codex":
+        return
+    section_case = case.get(section)
+    budget = (section_case or {}).get("budget") if isinstance(section_case, dict) else None
+    if isinstance(budget, dict) and budget.get("max_usd") is not None:
+        raise EvalFailure(
+            f"{case['id']}: {section}.budget.max_usd cannot be enforced against "
+            "--vendor codex (codex exec reports no cost figure -- see "
+            "extract_usage in evals/orchestrator/harness.py); drop the budget "
+            "or run this case under --vendor claude"
+        )
 
 
 def validate_case(path: Path, case: Any) -> None:
@@ -662,8 +990,23 @@ def validate_case(path: Path, case: Any) -> None:
         or any(tier not in {"contract", "live", "lifecycle"} for tier in tiers)
     ):
         invalid("tiers contain an unsupported value")
-    if not isinstance(assertions, list) or not assertions:
-        invalid("contract_assertions must be a non-empty array")
+    # `contract_assertions` is REQUIRED only for the contract tier, which is
+    # the only tier that grades them: `grade_contract` and
+    # `run_assertion_selftests` both skip a case without "contract" in its
+    # tiers. Demanding them from a lifecycle-only case therefore forced the
+    # author to invent an assertion nothing ever runs -- and the first two
+    # such cases (task 6854/6857) reached for grep pins on a doc sentence
+    # and a C++ source comment, which is exactly the prose-pinning M4
+    # (`hh-drop-prose-pins`) exists to delete. A lifecycle-only case may
+    # omit the key; if it declares one, every per-assertion rule below
+    # still applies.
+    if "contract" in (tiers if isinstance(tiers, list) else []):
+        if not isinstance(assertions, list) or not assertions:
+            invalid("contract tier requires a non-empty contract_assertions array")
+    elif assertions is None:
+        assertions = []
+    elif not isinstance(assertions, list):
+        invalid("contract_assertions must be an array when present")
     assertion_ids: set[str] = set()
     for assertion in assertions:
         if not isinstance(assertion, dict):
@@ -708,6 +1051,10 @@ def validate_case(path: Path, case: Any) -> None:
         timeout = live.get("timeout_seconds", 300)
         if not isinstance(timeout, int) or not 30 <= timeout <= 3600:
             invalid("live timeout_seconds must be 30..3600")
+        try:
+            vendors.validate_allowed_tools(resolve_allowed_tools(live))
+        except vendors.UnknownToolError as exc:
+            invalid(f"live allowed_tools names an unknown tool: {exc.tool}")
     if "lifecycle" in tiers:
         lifecycle = case.get("lifecycle")
         setup = case.get("setup")
@@ -722,12 +1069,48 @@ def validate_case(path: Path, case: Any) -> None:
             invalid("controlled-classic lifecycle adapter is required")
         if (
             not isinstance(setup, dict)
-            or setup.get("fixture") != "controlled-classic"
+            or setup.get("fixture") not in LIFECYCLE_FIXTURES
             or not isinstance(setup.get("specialist_scenario"), str)
         ):
             invalid("controlled lifecycle fixture setup is required")
-        if not isinstance(tasks, list) or len(tasks) != 1:
-            invalid("lifecycle cases require exactly one task")
+        if not isinstance(tasks, list) or not tasks:
+            invalid("lifecycle cases require at least one task")
+        seen_task_slugs: set[str] = set()
+        for task_entry in tasks:
+            slug = task_entry.get("slug") if isinstance(task_entry, dict) else None
+            if not isinstance(slug, str) or not slug:
+                invalid("each lifecycle task requires a slug")
+            if not isinstance(task_entry.get("title"), str) or not task_entry["title"]:
+                invalid(f"lifecycle task {slug} requires a title")
+            if slug in seen_task_slugs:
+                invalid(f"duplicate lifecycle task slug: {slug}")
+            depends_on = task_entry.get("depends_on")
+            if depends_on is not None and depends_on not in seen_task_slugs:
+                invalid(
+                    f"task {slug} depends_on must name an earlier task slug "
+                    "in the same list"
+                )
+            seen_task_slugs.add(slug)
+        replay = (setup or {}).get("replay", "classic")
+        if replay not in REPLAY_DRIVERS:
+            invalid(f"setup.replay names an unregistered driver: {replay}")
+        # Task 6856: `setup.iteration_cap` is read by `replay_driver_iteration_cap`
+        # at replay time -- the roadmap number ("aborts after the fifth")
+        # belongs in the case file, not hardcoded in the driver, so a
+        # falsifiability probe can raise it and watch the case fail on
+        # `event_counts` rather than editing Python. Optional for every
+        # other driver; type-checked whenever a case declares it.
+        iteration_cap = (setup or {}).get("iteration_cap")
+        if iteration_cap is not None and (
+            isinstance(iteration_cap, bool)
+            or not isinstance(iteration_cap, int)
+            or iteration_cap < 1
+        ):
+            invalid("setup.iteration_cap must be a positive integer")
+        try:
+            vendors.validate_allowed_tools(resolve_allowed_tools(lifecycle))
+        except vendors.UnknownToolError as exc:
+            invalid(f"lifecycle allowed_tools names an unknown tool: {exc.tool}")
         forbidden_events = expected.get("forbidden_events", [])
         unemittable = [
             name for name in forbidden_events if name not in EMITTABLE_EVENTS
@@ -740,16 +1123,58 @@ def validate_case(path: Path, case: Any) -> None:
         post_state = expected.get("post_state")
         if not isinstance(post_state, dict):
             invalid("lifecycle cases require expected.post_state")
-        missing_keys = [
-            key
-            for key in ("task_status", "file_value")
-            if not post_state.get(key)
-        ]
-        if missing_keys:
+        has_task_status = "task_status" in post_state
+        has_tasks = "tasks" in post_state
+        if has_task_status == has_tasks:
             invalid(
-                "lifecycle cases require expected.post_state to set: "
-                + ", ".join(missing_keys)
+                "lifecycle cases require expected.post_state to set exactly "
+                "one of task_status or tasks"
             )
+        if has_task_status and not post_state.get("task_status"):
+            invalid("lifecycle cases require expected.post_state to set: task_status")
+        if has_tasks:
+            tasks_post = post_state.get("tasks")
+            if not isinstance(tasks_post, list) or not tasks_post:
+                invalid("expected.post_state.tasks must be a non-empty array")
+            for post_entry in tasks_post:
+                if (
+                    not isinstance(post_entry, dict)
+                    or not isinstance(post_entry.get("slug"), str)
+                    or not post_entry["slug"]
+                    or not isinstance(post_entry.get("status"), str)
+                    or not post_entry["status"]
+                ):
+                    invalid(
+                        "each expected.post_state.tasks entry requires slug and status"
+                    )
+        if not post_state.get("file_value"):
+            invalid("lifecycle cases require expected.post_state to set: file_value")
+        # Task 6858: `post_state.file_path` is optional and CASE-level (not
+        # fixture-level, unlike `fixture.json`'s `test_command`) -- it names
+        # the repo-relative acceptance marker `file_value` above is checked
+        # against, defaulting to `src/value.txt` (controlled-classic's own
+        # path, preserved byte-for-byte for every case that omits it) so
+        # the foreign-flat fixture's case can point at its own `STATUS.txt`
+        # instead.
+        file_path = post_state.get("file_path")
+        if file_path is not None and (
+            not isinstance(file_path, str) or not file_path
+        ):
+            invalid("expected.post_state.file_path must be a non-empty string")
+        # Task 6855: `post_state.claim_rows` is optional -- most lifecycle
+        # cases claim exactly once and never need it -- but when a case
+        # declares it (lapsed-claim recovery: pull, let the lease lapse,
+        # re-claim with --no-transition -- two rows for one task) the
+        # value must be a real count, not a truthiness-only field like
+        # `active_claims` already is (0 must be checkable there too, which
+        # is why that one is read with `is not None` at grade time).
+        claim_rows = post_state.get("claim_rows")
+        if claim_rows is not None and (
+            isinstance(claim_rows, bool)
+            or not isinstance(claim_rows, int)
+            or claim_rows < 0
+        ):
+            invalid("expected.post_state.claim_rows must be a non-negative integer")
 
 
 def select_cases(
@@ -783,7 +1208,7 @@ def regex_search(pattern: str, text: str, *, multiline: bool = False) -> bool:
 
 def grade_contract(case_path: Path, case: dict[str, Any], root: Path = ROOT) -> None:
     case_id = case["id"]
-    for assertion in case["contract_assertions"]:
+    for assertion in case.get("contract_assertions", []):
         assertion_id = assertion["id"]
         matched = 0
         paths = assertion["paths"]
@@ -838,33 +1263,6 @@ def grade_coherence(root: Path = ROOT) -> None:
         if not (root / relative).is_file():
             raise EvalFailure(f"orchestrator-coherence: missing core contract: {relative}")
 
-    budgets = {
-        # 2500 in the armarium era; Planar's surface lint requires the seven
-        # literal feedback H2 sections on every user-invocable skill, which
-        # costs ~100 words of structural envelope over the condensed form the
-        # original budget was calibrated against.
-        # 2650->2800: task 6492 / PR #181 grew pl-orchestrator.md past 2650;
-        # plan 1065 M4 slug hh-drop-word-budgets removes these budgets
-        # entirely, so this is a bump to unblock, not a re-calibration.
-        "skills/src/pl-orchestrator.md": 2800,
-        "agents/orchestrator.md": 5500,
-        "agents/coder.md": 2200,
-        "agents/reviewer.md": 2200,
-        "skills/src/pl-coder.md": 1800,
-        "skills/src/pl-reviewer.md": 1800,
-        "agents/test-coder.md": 1400,
-        "agents/janitor.md": 1400,
-        "skills/src/pl-test-coder.md": 800,
-        "skills/src/pl-research.md": 800,
-    }
-    for relative, limit in budgets.items():
-        count = len((root / relative).read_text(encoding="utf-8").split())
-        if count > limit:
-            raise EvalFailure(
-                f"orchestrator-coherence: {relative} exceeds its executable "
-                f"prompt budget ({count} > {limit} words)"
-            )
-
     def forbid(pattern: str, relatives: Sequence[str], *, ignore_case: bool = True) -> None:
         flags = re.MULTILINE | (re.IGNORECASE if ignore_case else 0)
         compiled = re.compile(pattern, flags)
@@ -891,10 +1289,6 @@ def grade_coherence(root: Path = ROOT) -> None:
                     f"contract: {pattern}"
                 )
 
-    forbid(
-        r"\b(zig|golang|rust|python|typescript|javascript|ruby)\b|\.zig\b",
-        core_rel,
-    )
     forbid(
         r"make (fmt-check|build|test|test-integration)|scriptorium check -config",
         core_rel,
@@ -1265,7 +1659,7 @@ def run_assertion_selftests(
     for _, case in cases:
         if "contract" not in case["tiers"]:
             continue
-        for assertion in case["contract_assertions"]:
+        for assertion in case.get("contract_assertions", []):
             total_assertions += 1
             case_id = case["id"]
             label = f"{case_id}/{assertion['id']}"
@@ -1316,24 +1710,29 @@ def write_grade(
     reason: str | None = None,
     *,
     target: Path | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> Path:
     """Write the grade record. Writes `artifact_dir/grade.json` by default;
     `target` (used by `regrade_artifacts`, C6 / task 6840) redirects the
     write to a different path so a regrade of retained artifacts never
     overwrites the original run's verdict.
+
+    `usage` (task 6859) carries calls-per-task and provider token/cost
+    counters extracted from the transcript; omitted for modes (contract,
+    lifecycle-fixture) that never invoke a real vendor host.
     """
     path = target if target is not None else artifact_dir / "grade.json"
-    write_json(
-        path,
-        {
-            "status": status,
-            "case_id": case_id,
-            "vendor": options.vendor,
-            "surface": options.surface,
-            "mode": options.mode,
-            "reason": reason,
-        },
-    )
+    record: dict[str, Any] = {
+        "status": status,
+        "case_id": case_id,
+        "vendor": options.vendor,
+        "surface": options.surface,
+        "mode": options.mode,
+        "reason": reason,
+    }
+    if usage is not None:
+        record["usage"] = usage
+    write_json(path, record)
     return path
 
 
@@ -1471,14 +1870,8 @@ def resolve_model_inputs(live: dict[str, Any]) -> tuple[str | None, str | None]:
     )
 
 
-def model_argv(host_model: str | None) -> list[str]:
-    """Argv fragment selecting the orchestration host model.
-
-    Returned as separate elements so the value is never re-parsed. Building a
-    string here (`f"--model {host_model}"`) is what would turn an opaque id
-    into shell syntax.
-    """
-    return ["--model", host_model] if host_model else []
+# Alias: canonical definition moved to `vendors.py` (task 6849 split).
+model_argv = vendors.model_argv
 
 
 def cross_host_assignment(text: str, vendor: str) -> bool:
@@ -1538,6 +1931,7 @@ def grade_live_artifacts(
     raw = (artifact_dir / "transcript.jsonl").read_text(
         encoding="utf-8", errors="replace"
     )
+    assert_tool_surface_matches_host(case, "live", artifact_dir, options, raw)
     for task in case["tasks"]:
         slug = task["slug"]
         rows = [line for line in final.splitlines() if slug in line]
@@ -1641,9 +2035,19 @@ def grade_live_artifacts(
         )
 
 
-def run_phase3_preview(
+def prepare_phase3_preview(
     case_path: Path, case: dict[str, Any], options: Options
-) -> None:
+) -> Path:
+    """PREPARE step (task 6849 split): build the arena, seed the Planar
+    plan/tasks, snapshot the `before` state, and write `run.json` --
+    everything the live phase3-preview case needs before a vendor host is
+    ever invoked. Never starts `claude`/`codex`. Returns the artifact dir;
+    the RUN step (`run_phase3_preview_from_prepared`) resumes from it.
+    """
+    # Task 6914: refused before any artifact directory exists or any
+    # command runs -- the earliest point `case` and `options.vendor` are
+    # both known.
+    validate_case_budget_for_vendor(case, options, "live")
     case_id = case["id"]
     artifact_dir = create_artifacts(
         case_id, f"{options.vendor}-{options.surface}", options.results_dir
@@ -1723,16 +2127,16 @@ def run_phase3_preview(
             logical_sqlite_dump(Path(env["PLANAR_DB"])),
         )
         write_text(artifact_dir / "before.git-state", git_state(repo, env))
-
-        prompt = case["live"]["prompt"].replace("{{PLAN_ID}}", plan_id)
-        # Independent structured inputs, validated before they can reach a
-        # command line. `delegated_candidate` is what the orchestrator should
-        # dispatch a child role to; it is graded from the transcript rather
-        # than forced here, because forcing it would test the harness instead
-        # of the orchestrator's own routing.
-        host_model, _delegated_candidate = resolve_model_inputs(case["live"])
-        raw = artifact_dir / "transcript.jsonl"
-        timeout = int(case["live"].get("timeout_seconds", 300))
+        # Task 6850: verify the per-case tool allowlist at PREPARE time,
+        # before any vendor host is invoked, so a typo in `allowed_tools`
+        # fails here rather than mid-run inside a transcript.
+        try:
+            vendors.validate_allowed_tools(resolve_allowed_tools(case["live"]))
+        except vendors.UnknownToolError as exc:
+            raise EvalFailure(
+                f"{case_id}: live allowed_tools names an unknown tool: {exc.tool}",
+                artifact_dir,
+            )
         write_json(
             artifact_dir / "run.json",
             {
@@ -1745,6 +2149,42 @@ def run_phase3_preview(
                 "repo": "repo",
             },
         )
+        return artifact_dir
+    except (EvalFailure, EvalBlocked) as exc:
+        if exc.artifacts is None:
+            exc.artifacts = artifact_dir
+        raise
+
+
+def run_phase3_preview_from_prepared(
+    case_path: Path, case: dict[str, Any], options: Options, artifact_dir: Path
+) -> None:
+    """RUN + GRADE steps (task 6849 split): invoke the vendor host against
+    an artifact dir `prepare_phase3_preview` already prepared, then grade.
+    Recomputes the prompt/model/timeout deterministically from `case` and
+    `run.json`'s `plan_id` rather than threading them through as
+    arguments, matching the pattern `regrade_artifacts` already uses to
+    resume grading from a bare artifact dir.
+    """
+    case_id = case["id"]
+    repo = artifact_dir / "repo"
+    arena_root = artifact_dir / "arena"
+    env = arena.make_arena(arena_root)
+    arena.assert_isolated(env, arena_root)
+    # Re-checked here (not just at prepare time): a `--prepare` and a later
+    # separate `--run` can be two different process invocations, and auth is
+    # only ever read from the live process environment (never persisted into
+    # the scratch arena tree), so it must be verified again immediately
+    # before this step's own host process starts.
+    arena.assert_vendor_auth(env, options.vendor)
+    run_meta = read_json(artifact_dir / "run.json")
+    plan_id = run_meta["plan_id"]
+    prompt = case["live"]["prompt"].replace("{{PLAN_ID}}", plan_id)
+    host_model, _delegated_candidate = resolve_model_inputs(case["live"])
+    allowed_tools = resolve_allowed_tools(case["live"])
+    raw = artifact_dir / "transcript.jsonl"
+    timeout = int(case["live"].get("timeout_seconds", 300))
+    try:
         print(
             f"RUN: {case_id} ({options.vendor}/{options.surface}), timeout {timeout}s",
             flush=True,
@@ -1752,59 +2192,14 @@ def run_phase3_preview(
         print(f"transcript: {raw}", flush=True)
         print(f"follow: tail -f {raw}", flush=True)
 
-        if options.vendor == "codex":
-            if options.surface == "agent":
-                adapter = (
-                    "Do not read or invoke any skill. Immediately spawn the installed "
-                    "orchestrator subagent with agent_type=orchestrator and "
-                    "fork_turns=none, then delegate this entire task to it. An explicit "
-                    "agent type must not use a full-history fork. Do not execute the "
-                    "orchestration workflow in the parent agent. After the child returns, "
-                    "emit its complete final response verbatim: do not summarize, "
-                    "paraphrase, compress task ids into ranges, or omit task slugs. The "
-                    "relayed preview must preserve one explicit id-and-slug row for every "
-                    "task. If the child omitted that identity, ask it to correct the "
-                    f"response before returning. {prompt}"
-                )
-            else:
-                adapter = f"$orchestrator {plan_id}\n\n{prompt}"
-            command = [
-                "codex",
-                "exec",
-                *model_argv(host_model),
-                "--json",
-                "--sandbox",
-                "workspace-write",
-                adapter,
-            ]
-        elif options.surface == "agent":
-            command = [
-                "claude",
-                *model_argv(host_model),
-                "--agent",
-                "orchestrator",
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--permission-mode",
-                "dontAsk",
-                CLAUDE_LIVE_ALLOWED_TOOLS_ARG,
-                prompt,
-            ]
-        else:
-            command = [
-                "claude",
-                *model_argv(host_model),
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--permission-mode",
-                "dontAsk",
-                CLAUDE_LIVE_ALLOWED_TOOLS_ARG,
-                f"/pl-orchestrator {plan_id}\n\n{prompt}",
-            ]
+        command = vendors.build_preview_command(
+            vendor=options.vendor,
+            surface=options.surface,
+            plan_id=plan_id,
+            prompt=prompt,
+            host_model=host_model,
+            allowed_tools=allowed_tools,
+        )
         rc = run_to_file(command, raw, cwd=repo, env=env, timeout_seconds=timeout)
         raw_text = raw.read_text(encoding="utf-8", errors="replace")
         limited = rate_limit_reason(raw_text)
@@ -1828,10 +2223,22 @@ def run_phase3_preview(
                 options,
                 f"{options.vendor}/{options.surface} invocation exited {rc}",
             )
+        usage = extract_usage(raw, options.vendor)
+        case_budget_usd = case["live"].get("budget", {}).get("max_usd")
+        enforce_spend_ceiling(
+            artifact_dir=artifact_dir,
+            case_id=case_id,
+            options=options,
+            repo=repo,
+            env=env,
+            plan_id=plan_id,
+            usage=usage,
+            case_budget_usd=case_budget_usd,
+        )
         extract_host_transcript(raw, options.vendor, artifact_dir)
         collect_live_after(artifact_dir, repo, env, plan_id)
         grade_live_artifacts(case, artifact_dir, options)
-        write_grade(artifact_dir, "pass", case_id, options)
+        write_grade(artifact_dir, "pass", case_id, options, usage=usage)
         pass_line(
             f"{case_id}: {options.vendor}/{options.surface} live phase3-preview"
         )
@@ -1840,6 +2247,14 @@ def run_phase3_preview(
         if exc.artifacts is None:
             exc.artifacts = artifact_dir
         raise
+
+
+def run_phase3_preview(
+    case_path: Path, case: dict[str, Any], options: Options
+) -> None:
+    """Single-step live phase3-preview run: prepare, then run+grade."""
+    artifact_dir = prepare_phase3_preview(case_path, case, options)
+    run_phase3_preview_from_prepared(case_path, case, options, artifact_dir)
 
 
 def toml_string(value: str) -> str:
@@ -1869,16 +2284,104 @@ def write_claude_agent(
     )
 
 
+def load_fixture_manifest(fixture_root: Path) -> dict[str, Any]:
+    """Read `<fixture>/fixture.json` (task 6858): every controlled lifecycle
+    fixture names its own test-runner argv here rather than
+    `collect_lifecycle_artifacts` hardcoding `make test` -- the foreign-flat
+    fixture runs `./run-tests` instead. Fixture-level (not case-level)
+    because the invocation shape is a property of the repository layout
+    every case against that fixture shares; `expected.post_state.file_path`
+    stays case-level (see `grade_lifecycle_artifacts`) because the
+    acceptance marker a *case* checks is a property of the scenario, not
+    the fixture.
+
+    A fixture directory with no `fixture.json` at all (none existed before
+    task 6858) defaults to controlled-classic's own historical invocation,
+    so this is additive for every pre-existing fixture.
+    """
+    manifest_path = fixture_root / "fixture.json"
+    if not manifest_path.is_file():
+        return {"test_command": ["make", "test"]}
+    manifest = read_json(manifest_path)
+    if not isinstance(manifest, dict):
+        raise EvalFailure(f"malformed fixture manifest: {manifest_path}")
+    manifest.setdefault("test_command", ["make", "test"])
+    return manifest
+
+
+def verify_and_extract_vendored_fixture(
+    manifest: dict[str, Any], dest_parent: Path, case_id: str
+) -> Path:
+    """Resolve a fixture's `repo/` tree from a pinned local archive (task
+    6858), verifying its SHA256 BEFORE ever handing the bytes to `tarfile`
+    -- a tampered or stale archive must fail closed on the digest
+    mismatch, not get quietly unpacked.
+
+    `archive_path`/`digest_path` resolve a LOCAL committed pair under
+    `evals/fixtures/` today (`evals/fixtures/vendor_archive.py` produces
+    them deterministically from `evals/fixtures/<name>.src/repo/`).
+    Swapping this for a pinned remote release URL later is a one-line
+    change to these two lines (fetch-then-verify instead of
+    read-then-verify) -- the verification and extraction below is
+    unchanged either way.
+    """
+    archive_name = manifest["archive"]
+    archive_path = VENDORED_FIXTURES_DIR / f"{archive_name}.tar.gz"
+    digest_path = VENDORED_FIXTURES_DIR / f"{archive_name}.sha256"
+    if not archive_path.is_file() or not digest_path.is_file():
+        raise EvalFailure(
+            f"{case_id} references missing vendored fixture archive: {archive_name}"
+        )
+    archive_bytes = archive_path.read_bytes()
+    actual_digest = hashlib.sha256(archive_bytes).hexdigest()
+    expected_digest = digest_path.read_text(encoding="utf-8").strip().split()[0]
+    if actual_digest != expected_digest:
+        raise EvalFailure(
+            f"{case_id}: vendored fixture archive {archive_name} failed SHA256 "
+            f"verification (expected {expected_digest}, got {actual_digest})"
+        )
+    with tarfile.open(archive_path, "r:gz") as tar:
+        tar.extractall(dest_parent, filter="data")
+    extracted_repo = dest_parent / "repo"
+    if not extracted_repo.is_dir():
+        raise EvalFailure(
+            f"{case_id}: vendored fixture archive {archive_name} did not contain "
+            "a repo/ tree"
+        )
+    return extracted_repo
+
+
 def prepare_lifecycle_fixture(
     case_path: Path, case: dict[str, Any], options: Options, label: str
 ) -> LifecycleContext:
+    # Task 6914: refused before any artifact directory, arena, or fixture
+    # extraction happens. A no-op for fixture-replay (`options.vendor ==
+    # ""`), which never spawns a real vendor host and so never needs cost
+    # enforcement.
+    validate_case_budget_for_vendor(case, options, "lifecycle")
     case_id = case["id"]
     fixture_root = FIXTURES_DIR / case["setup"]["fixture"]
-    if not (fixture_root / "repo").is_dir():
-        raise EvalFailure(f"{case_id} references missing fixture: {fixture_root}")
-    artifacts = create_artifacts(case_id, label, options.results_dir)
-    repo = artifacts / "repo"
-    shutil.copytree(fixture_root / "repo", repo)
+    manifest = load_fixture_manifest(fixture_root)
+    if "archive" in manifest:
+        # Task 6858: the foreign-flat fixture's `repo/` is never committed
+        # directly -- it is vendored (see verify_and_extract_vendored_fixture)
+        # -- so extraction happens into a throwaway temp dir, then copied
+        # into the artifact tree exactly like the local-repo path below,
+        # keeping `artifacts`/`repo` construction identical either way.
+        with tempfile.TemporaryDirectory(prefix="planar-eval-vendor-") as vendor_tmp:
+            vendor_repo = verify_and_extract_vendored_fixture(
+                manifest, Path(vendor_tmp), case_id
+            )
+            artifacts = create_artifacts(case_id, label, options.results_dir)
+            repo = artifacts / "repo"
+            shutil.copytree(vendor_repo, repo)
+    else:
+        repo_source = fixture_root / "repo"
+        if not repo_source.is_dir():
+            raise EvalFailure(f"{case_id} references missing fixture: {fixture_root}")
+        artifacts = create_artifacts(case_id, label, options.results_dir)
+        repo = artifacts / "repo"
+        shutil.copytree(repo_source, repo)
     arena_root = artifacts / "arena"
     env = arena.make_arena(arena_root)
     arena.assert_isolated(env, arena_root)
@@ -1929,12 +2432,22 @@ def prepare_lifecycle_fixture(
             env=env,
         )
         plan_id = str(plan["id"])
-        task = case["tasks"][0]
-        next_action = (
+        # Default body/next-action reproduce the pre-multi-task behavior
+        # verbatim, so a single-task case (e.g. classic-lifecycle-success)
+        # is prepared byte-identically to before this loop existed.
+        default_next_action = (
             "Run the controlled coder against src/value.txt and observe make test passing."
         )
-        task_value = run_json(
-            [
+        default_body = (
+            "Acceptance: src/value.txt contains approved after reviewer approval. "
+            "See docs/tech-spec.md."
+        )
+        task_id_by_slug: dict[str, str] = {}
+        task_ids: list[str] = []
+        for task in case["tasks"]:
+            task_next_action = task.get("next_action", default_next_action)
+            task_body = task.get("body", default_body)
+            task_add_argv = [
                 "planar",
                 "task",
                 "add",
@@ -1946,37 +2459,56 @@ def prepare_lifecycle_fixture(
                 "--slug",
                 task["slug"],
                 "--body",
-                "Acceptance: src/value.txt contains approved after reviewer approval. "
-                "See docs/tech-spec.md.",
+                task_body,
                 "--next-action",
-                next_action,
+                task_next_action,
                 "--editor=false",
                 "--json",
-            ],
-            cwd=repo,
-            env=env,
-        )
-        task_id = str(task_value["id"])
-        run_command(
-            [
-                "planar",
-                "capture",
-                "snapshot",
-                "--task",
-                task_id,
-                "--next-action",
-                next_action,
-                "--note",
-                "orchestration_checkpoint: v1\n"
-                "stage: verified-slice\n"
-                "iteration_scope: none\n"
-                "iteration: 0\n"
-                "result: lifecycle-fixture-ready",
-                "--json",
-            ],
-            cwd=repo,
-            env=env,
-        )
+            ]
+            if "priority" in task:
+                task_add_argv += ["--priority", str(task["priority"])]
+            task_value = run_json(task_add_argv, cwd=repo, env=env)
+            this_task_id = str(task_value["id"])
+            task_id_by_slug[task["slug"]] = this_task_id
+            task_ids.append(this_task_id)
+            depends_on = task.get("depends_on")
+            if depends_on is not None:
+                blocker_task_id = task_id_by_slug[depends_on]
+                run_command(
+                    [
+                        "planar",
+                        "task",
+                        "link",
+                        this_task_id,
+                        f"task:{blocker_task_id}",
+                        "--relationship",
+                        "depends-on",
+                        "--json",
+                    ],
+                    cwd=repo,
+                    env=env,
+                )
+            run_command(
+                [
+                    "planar",
+                    "capture",
+                    "snapshot",
+                    "--task",
+                    this_task_id,
+                    "--next-action",
+                    task_next_action,
+                    "--note",
+                    "orchestration_checkpoint: v1\n"
+                    "stage: verified-slice\n"
+                    "iteration_scope: none\n"
+                    "iteration: 0\n"
+                    "result: lifecycle-fixture-ready",
+                    "--json",
+                ],
+                cwd=repo,
+                env=env,
+            )
+        task_id = task_ids[0]
 
         for directory in (
             repo / ".eval" / "bin",
@@ -1994,11 +2526,17 @@ def prepare_lifecycle_fixture(
             raise EvalFailure("missing command: planar-agent")
         write_text(repo / ".eval" / "real-planar-agent", real_planar_agent + "\n")
         shutil.copy2(fixture_root / "control.sh", repo / ".eval" / "control.sh")
+        # Task 6922: the `planar-agent` observation wrapper and its
+        # `record_observed.py` helper are shared across every lifecycle
+        # fixture from one location (`_shared/`), never a per-fixture copy
+        # -- the wrapper was hardened three times in this plan, and a
+        # per-fixture copy silently keeps the old behaviour the next time
+        # that happens.
         shutil.copy2(
-            fixture_root / "planar-agent", repo / ".eval" / "bin" / "planar-agent"
+            SHARED_FIXTURE_DIR / "planar-agent", repo / ".eval" / "bin" / "planar-agent"
         )
         shutil.copy2(
-            fixture_root / "record_observed.py",
+            SHARED_FIXTURE_DIR / "record_observed.py",
             repo / ".eval" / "record_observed.py",
         )
         os.chmod(repo / ".eval" / "control.sh", 0o755)
@@ -2058,6 +2596,22 @@ def prepare_lifecycle_fixture(
             artifacts / "git-status.before.txt",
             run_command(["git", "status", "--short"], cwd=repo, env=env).stdout,
         )
+        # Task 6850: verify the per-case tool allowlist at PREPARE time,
+        # before any vendor host is invoked, so a typo in `allowed_tools`
+        # fails here rather than mid-run inside a transcript. Skipped for
+        # fixture-replay (options.vendor == ""), which never spawns a real
+        # vendor host and so never reads this allowlist.
+        if options.vendor:
+            try:
+                vendors.validate_allowed_tools(
+                    resolve_allowed_tools(case["lifecycle"])
+                )
+            except vendors.UnknownToolError as exc:
+                raise EvalFailure(
+                    f"{case_id}: lifecycle allowed_tools names an unknown tool: "
+                    f"{exc.tool}",
+                    artifacts,
+                )
         write_json(
             artifacts / "run.json",
             {
@@ -2068,6 +2622,7 @@ def prepare_lifecycle_fixture(
                 "surface": options.surface,
                 "plan_id": plan_id,
                 "task_id": task_id,
+                "task_ids": task_ids,
                 "repo": "repo",
                 # C6: marks this artifact set as one that MUST carry a
                 # `repo/.eval/observed` tree by the time grading runs. A
@@ -2079,7 +2634,15 @@ def prepare_lifecycle_fixture(
             },
         )
         return LifecycleContext(
-            case_path, case, artifacts, repo, env, plan_id, task_id
+            case_path,
+            case,
+            artifacts,
+            repo,
+            env,
+            plan_id,
+            task_id,
+            task_ids,
+            manifest["test_command"],
         )
     except Exception as exc:
         if isinstance(exc, (EvalFailure, EvalBlocked)) and exc.artifacts is None:
@@ -2515,6 +3078,25 @@ def collect_lifecycle_artifacts(
     )
     write_json(artifacts / "task.after.json", task)
     write_json(artifacts / "task.audit.json", audit)
+    # `tasks.after.json` covers EVERY task the case created (context.task_ids),
+    # not only the first -- this is what `grade_lifecycle_artifacts` reads
+    # for a case whose `expected.post_state` uses `tasks` rather than the
+    # single-task `task_status` key. `task.after.json` above stays the
+    # first task alone, unconditionally, so a retained artifact set from
+    # before this field existed still regrades.
+    tasks_after: list[dict[str, Any]] = []
+    for task_id_for_collection in context.task_ids or [context.task_id]:
+        if task_id_for_collection == context.task_id:
+            tasks_after.append(task)
+        else:
+            tasks_after.append(
+                run_json(
+                    ["planar", "task", "show", task_id_for_collection, "--json"],
+                    cwd=repo,
+                    env=env,
+                )
+            )
+    write_json(artifacts / "tasks.after.json", tasks_after)
     observed_dir = repo / ".eval" / "observed"
     observed_records = read_observed_records(observed_dir)
     claims = audit.get("agent_activity", {}).get("claims", [])
@@ -2548,7 +3130,10 @@ def collect_lifecycle_artifacts(
         env=env,
     )
     write_json(artifacts / "claims.after.json", claim_state)
-    test_result = run_command(["make", "test"], cwd=repo, env=env, check=False)
+    # Task 6858: the fixture's own test-runner argv (see
+    # `load_fixture_manifest`), not a hardcoded `make test` -- the
+    # foreign-flat fixture runs `./run-tests` instead.
+    test_result = run_command(context.test_command, cwd=repo, env=env, check=False)
     write_text(
         artifacts / "fixture-test.txt", test_result.stdout + test_result.stderr
     )
@@ -2578,13 +3163,21 @@ def grade_lifecycle_artifacts(
     case: dict[str, Any], artifact_dir: Path, options: Options
 ) -> None:
     case_id = case["id"]
+    # Task 6858: `post_state.file_path` (default `src/value.txt`,
+    # controlled-classic's own historical path) names the repo-relative
+    # acceptance marker THIS case checks -- read once, up front, so both
+    # the required-artifact check below and the value comparison further
+    # down agree on the same path.
+    file_path = case.get("expected", {}).get("post_state", {}).get(
+        "file_path", "src/value.txt"
+    )
     required = [
         "events.normalized.json",
         "task.after.json",
         "claims.after.json",
         "fixture-test.txt",
         "fixture-test.json",
-        "repo/src/value.txt",
+        f"repo/{file_path}",
     ]
     missing = [name for name in required if not (artifact_dir / name).is_file()]
     if missing:
@@ -2695,20 +3288,55 @@ def grade_lifecycle_artifacts(
                 options,
                 f"event {event} count was {actual}, expected {expected_count}",
             )
-    # `task_status` and `file_value` are REQUIRED on every lifecycle case's
-    # `expected.post_state` (validate_case, task 6837/D4): there is no
-    # longer a silent-skip branch here for either key being absent, because
-    # a lifecycle case can no longer reach this function without them.
+    # `file_value` plus exactly one of `task_status` / `tasks` are REQUIRED
+    # on every lifecycle case's `expected.post_state` (validate_case, task
+    # 6837/D4, widened by task 6854/6857): there is no silent-skip branch
+    # here for any of them being absent, because a lifecycle case can no
+    # longer reach this function without a valid post_state.
     post_state = case.get("expected", {}).get("post_state", {})
-    task = read_json(artifact_dir / "task.after.json")
-    expected_status = post_state["task_status"]
-    if task.get("status") != expected_status:
-        raise live_failure(
-            artifact_dir,
-            case_id,
-            options,
-            f"task status was {task.get('status')}, expected {expected_status}",
-        )
+    if "tasks" in post_state:
+        tasks_after_path = artifact_dir / "tasks.after.json"
+        if not tasks_after_path.is_file():
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                "artifact set is incomplete: tasks.after.json",
+            )
+        tasks_after = {
+            entry.get("slug"): entry
+            for entry in read_json(tasks_after_path)
+            if isinstance(entry, dict)
+        }
+        for post_task in post_state["tasks"]:
+            slug = post_task["slug"]
+            expected_status = post_task["status"]
+            actual_task = tasks_after.get(slug)
+            if actual_task is None:
+                raise live_failure(
+                    artifact_dir,
+                    case_id,
+                    options,
+                    f"tasks.after.json has no entry for task slug {slug}",
+                )
+            if actual_task.get("status") != expected_status:
+                raise live_failure(
+                    artifact_dir,
+                    case_id,
+                    options,
+                    f"task {slug} status was {actual_task.get('status')}, "
+                    f"expected {expected_status}",
+                )
+    else:
+        task = read_json(artifact_dir / "task.after.json")
+        expected_status = post_state["task_status"]
+        if task.get("status") != expected_status:
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                f"task status was {task.get('status')}, expected {expected_status}",
+            )
     claims = read_json(artifact_dir / "claims.after.json")
     active_count = len(claims.get("active", []))
     expected_claims = post_state.get("active_claims")
@@ -2719,7 +3347,31 @@ def grade_lifecycle_artifacts(
             options,
             f"active claim count was {active_count}, expected {expected_claims}",
         )
-    actual_value = (artifact_dir / "repo" / "src" / "value.txt").read_text(
+    # Task 6855: `claim_rows` grades the TOTAL number of `agent_work_claims`
+    # rows the task accumulated (audit trail, every status), not the
+    # currently-active count above -- a lapsed-claim recovery case wants to
+    # prove exactly two rows exist (the lapsed pull, and the --no-transition
+    # recovery claim), which `active_claims: 0` alone cannot distinguish
+    # from a case that only ever claimed once.
+    expected_claim_rows = post_state.get("claim_rows")
+    if expected_claim_rows is not None:
+        audit_path = artifact_dir / "task.audit.json"
+        if not audit_path.is_file():
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                "artifact set is incomplete: task.audit.json",
+            )
+        claim_rows = read_json(audit_path).get("agent_activity", {}).get("claims", [])
+        if len(claim_rows) != expected_claim_rows:
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                f"claim row count was {len(claim_rows)}, expected {expected_claim_rows}",
+            )
+    actual_value = (artifact_dir / "repo" / file_path).read_text(
         encoding="utf-8"
     ).strip()
     expected_value = post_state["file_value"]
@@ -2740,6 +3392,917 @@ def grade_lifecycle_artifacts(
         )
 
 
+def _lifecycle_pull(
+    context: LifecycleContext, options: Options, case_id: str
+) -> tuple[str, str | None]:
+    """Shared `planar-agent pull` call every replay driver needs. Returns
+    `(claim_token, pulled_task_id)`; `pulled_task_id` is `None` when the
+    real binary's `--json` shape carries no `task` object (e.g. `no_work`).
+    """
+    claim = run_json(
+        [
+            "planar-agent",
+            "pull",
+            context.plan_id,
+            "--role",
+            "coder",
+            "--base-ref",
+            "HEAD",
+            "--repo-root",
+            str(context.repo),
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    claim_token = (
+        claim.get("claim_token")
+        or claim.get("claim", {}).get("claim_token")
+        or claim.get("claim", {}).get("token")
+    )
+    if not claim_token:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "fixture replay did not receive a claim token",
+        )
+    pulled_task_id = claim.get("task", {}).get("id")
+    return str(claim_token), (str(pulled_task_id) if pulled_task_id is not None else None)
+
+
+def replay_driver_classic(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """The original controlled-classic claim -> coder -> reviewer ->
+    (bounce) -> complete sequence, unchanged from before the driver
+    registry existed (task 6854/6857 substrate generalization).
+    """
+    case_id = case["id"]
+    claim_token, _pulled_task_id = _lifecycle_pull(context, options, case_id)
+    coder = run_command(
+        ["./.eval/control.sh", "coder", str(claim_token)],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "coder-1.txt", coder.stdout)
+    reviewer = run_command(
+        ["./.eval/control.sh", "reviewer", str(claim_token)],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "reviewer-1.txt", reviewer.stdout)
+    if "decision: request-changes" in reviewer.stdout:
+        coder2 = run_command(
+            ["./.eval/control.sh", "coder", str(claim_token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        reviewer2 = run_command(
+            ["./.eval/control.sh", "reviewer", str(claim_token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / "coder-2.txt", coder2.stdout)
+        write_text(context.artifacts / "reviewer-2.txt", reviewer2.stdout)
+    complete = run_command(
+        [
+            "planar-agent",
+            "complete",
+            "--claim",
+            str(claim_token),
+            "--summary",
+            "controlled lifecycle fixture approved",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "complete.json", complete.stdout)
+
+
+def replay_driver_session_death(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6854: claim, run the controlled coder, then exit WITHOUT any
+    terminal verb -- emulating a dead agent session (a coder process that
+    dies before calling complete/fail/release/block). The lease is given a
+    short TTL so `reconcile` can mark it stale immediately rather than the
+    driver having to wait out a real 600s default lease.
+    `planar-agent reconcile --plan <plan-id>` is the recovery path this
+    case exists to grade (agents/methodology.md "Operator recovery";
+    docs/lifecycles.md's session-death reset rule).
+    """
+    case_id = case["id"]
+    claim = run_json(
+        [
+            "planar-agent",
+            "pull",
+            context.plan_id,
+            "--role",
+            "coder",
+            "--base-ref",
+            "HEAD",
+            "--repo-root",
+            str(context.repo),
+            "--ttl",
+            "1",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    claim_token = (
+        claim.get("claim_token")
+        or claim.get("claim", {}).get("claim_token")
+        or claim.get("claim", {}).get("token")
+    )
+    if not claim_token:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "session-death replay did not receive a claim token",
+        )
+    coder = run_command(
+        ["./.eval/control.sh", "session-death", str(claim_token)],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "coder-1.txt", coder.stdout)
+    # The lane dies here: no complete/fail/release/block. Wait out the
+    # short lease before reconcile runs, so the sweep has something
+    # expired to reclaim.
+    time.sleep(2)
+    run_command(
+        ["planar-agent", "reconcile", "--plan", context.plan_id, "--json"],
+        cwd=context.repo,
+        env=context.env,
+    )
+
+
+def replay_driver_dependency_order(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6857: pull repeatedly, recording which task each pull hands
+    back, and assert the dependent task is never claimed before its
+    blocker reaches a terminal status. This is exactly the invariant
+    `pull`/`peek`'s dependency exclusion grades (`entity_links
+    relationship = 'depends-on'`, `src/lib/engine/runtime/agentatomic.cpp`,
+    task 6841 / decision D6): if that exclusion is ever reverted, the
+    first pull below returns the dependent task instead of the blocker
+    and this driver fails closed rather than silently completing both
+    tasks in the wrong order.
+    """
+    case_id = case["id"]
+    blocker_task_id = context.task_ids[0]
+    dependent_task_id = context.task_ids[1]
+
+    def run_step(token: str, index: int) -> None:
+        coder = run_command(
+            ["./.eval/control.sh", "coder", str(token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"coder-{index}.txt", coder.stdout)
+        reviewer = run_command(
+            ["./.eval/control.sh", "reviewer", str(token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"reviewer-{index}.txt", reviewer.stdout)
+        complete = run_command(
+            [
+                "planar-agent",
+                "complete",
+                "--claim",
+                str(token),
+                "--summary",
+                "controlled dependency-order fixture step",
+                "--json",
+            ],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"complete-{index}.json", complete.stdout)
+
+    token1, pulled1 = _lifecycle_pull(context, options, case_id)
+    if pulled1 != blocker_task_id:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "dependency order violated: pull returned task "
+            f"{pulled1!r} before blocker task {blocker_task_id!r} was claimed",
+        )
+    run_step(token1, 1)
+
+    token2, pulled2 = _lifecycle_pull(context, options, case_id)
+    if pulled2 != dependent_task_id:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            f"dependency order violated: pull returned task {pulled2!r}, "
+            f"expected dependent task {dependent_task_id!r} after the "
+            "blocker completed",
+        )
+    run_step(token2, 2)
+
+
+def replay_driver_lapsed_claim(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6855: a coder's claim lease lapses mid-run -- the fixture coder
+    finishes real work but the lane never reaches a terminal verb, exactly
+    like `replay_driver_session_death` up through the coder step -- except
+    recovery here is the OPERATOR path documented in `agents/methodology.md`
+    "Operator recovery" and `docs/lifecycles.md`'s claim state machine: once
+    the lease lapses the task is still `doing`, so a plain `planar-agent
+    claim` hits `IllegalTransition`; the recovery is `claim --entity
+    task:<id> --no-transition`, then the atomic `complete`.
+
+    Before recovering, the driver proves the lapse is REAL rather than
+    assuming it: `planar-watch ps --plan <id> --stale --json` reports a
+    claim in its `stale` bucket when `status='active' and lease_expires_at
+    < now` (see `live.cppm`'s module header -- the `active` bucket alone
+    checks status only, not expiry, so checking `active` here would not
+    distinguish a genuine lapse from claiming twice back to back). If the
+    first token never shows up as stale, this driver fails closed instead
+    of silently reclaiming a live lease.
+    """
+    case_id = case["id"]
+    claim = run_json(
+        [
+            "planar-agent",
+            "pull",
+            context.plan_id,
+            "--role",
+            "coder",
+            "--base-ref",
+            "HEAD",
+            "--repo-root",
+            str(context.repo),
+            "--ttl",
+            "1",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    token1 = (
+        claim.get("claim_token")
+        or claim.get("claim", {}).get("claim_token")
+        or claim.get("claim", {}).get("token")
+    )
+    if not token1:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "lapsed-claim replay did not receive a claim token",
+        )
+    coder = run_command(
+        ["./.eval/control.sh", "coder", str(token1)],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "coder-1.txt", coder.stdout)
+    # The lane dies here, exactly as session-death does: no complete/fail/
+    # release/block. Wait out the short lease so there is something real to
+    # observe as stale below.
+    time.sleep(2)
+    stale = run_json(
+        ["planar-watch", "ps", "--plan", context.plan_id, "--stale", "--json"],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_json(context.artifacts / "claims.stale-check.json", stale)
+    stale_tokens = {row.get("claim_token") for row in stale.get("stale", [])}
+    if str(token1) not in stale_tokens:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "lapsed-claim replay expected the first claim in the stale "
+            f"bucket before recovery; stale tokens observed: "
+            f"{sorted(t for t in stale_tokens if t)}",
+        )
+    claim2 = run_json(
+        [
+            "planar-agent",
+            "claim",
+            "--entity",
+            f"task:{context.task_id}",
+            "--role",
+            "coder",
+            "--no-transition",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    token2 = (
+        claim2.get("claim_token")
+        or claim2.get("claim", {}).get("claim_token")
+        or claim2.get("claim", {}).get("token")
+    )
+    if not token2:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "lapsed-claim recovery claim did not receive a claim token",
+        )
+    write_json(context.artifacts / "claim-2.json", claim2)
+    complete = run_command(
+        [
+            "planar-agent",
+            "complete",
+            "--claim",
+            str(token2),
+            "--summary",
+            "controlled lapsed-claim recovery",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "complete.json", complete.stdout)
+    # The FIRST claim's row is never touched by the recovery claim or the
+    # complete above (`has_active_claim`'s lease-aware check let the
+    # recovery claim through without a mark-stale sweep -- see
+    # `acquire_claim`), so its `status` column stays 'active' in the DB
+    # forever unless something sweeps it: `ps --plan` (status-only) would
+    # keep counting it, contradicting `active_claims: 0`. Reconcile it AFTER
+    # completion, not before -- reconciling first would flip the task back
+    # to `todo` (the task-reset predicate: `status='doing' and` the claim's
+    # own evidence `and not exists`-another-live-claim), undermining the
+    # very premise this case grades (a plain `claim` hits IllegalTransition
+    # because the task is still `doing`). By the time this runs the task is
+    # already `done`, so the reset predicate's `status='doing'` guard never
+    # matches and reconcile only performs its stale-marking half.
+    reconcile = run_command(
+        ["planar-agent", "reconcile", "--plan", context.plan_id, "--json"],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "reconcile.json", reconcile.stdout)
+
+
+def replay_driver_iteration_cap(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6856: a controlled reviewer bounces UNCONDITIONALLY (the
+    `.eval/scenario` value `reviewer-always-bounce`; see `control.sh`), so
+    nothing in the fixture itself ever stops the loop -- the driver's own
+    cap, read from `setup.iteration_cap` rather than hardcoded, is what has
+    to stop it. This is what `agents/methodology.md`'s iteration-5 contract
+    and `docs/lifecycles.md`'s `abort` -> `planar-agent fail` mapping grade:
+    at iteration 5 `request-changes` is no longer a valid reviewer outcome,
+    the cycle aborts, and abort is the ONE outcome in that table that maps
+    to a real terminal verb rather than a re-spawn or a block-and-escalate
+    (`open-question` maps to `block`, which needs a `--blocker` task id this
+    single-task fixture has none of; `abort` needs only `--reason`).
+
+    The driver raises if the fixture ever approves instead of bouncing --
+    proving the cap, not a fixture running out of scripted bounces, is what
+    ends the loop -- and the loop is structurally bounded to `cap` rounds,
+    so a sixth round is never dispatched at all.
+    """
+    case_id = case["id"]
+    cap = case.get("setup", {}).get("iteration_cap")
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "iteration-cap replay requires a positive setup.iteration_cap",
+        )
+    claim_token, _pulled_task_id = _lifecycle_pull(context, options, case_id)
+    for round_index in range(1, cap + 1):
+        coder = run_command(
+            ["./.eval/control.sh", "coder", str(claim_token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"coder-{round_index}.txt", coder.stdout)
+        reviewer = run_command(
+            ["./.eval/control.sh", "reviewer", str(claim_token)],
+            cwd=context.repo,
+            env=context.env,
+        )
+        write_text(context.artifacts / f"reviewer-{round_index}.txt", reviewer.stdout)
+        if "decision: request-changes" not in reviewer.stdout:
+            raise live_failure(
+                context.artifacts,
+                case_id,
+                options,
+                f"iteration-cap replay expected round {round_index} to "
+                "bounce (decision: request-changes); the reviewer approved "
+                "instead, so the cap was never exercised",
+            )
+    fail = run_command(
+        [
+            "planar-agent",
+            "fail",
+            "--claim",
+            str(claim_token),
+            "--reason",
+            f"iteration cap ({cap}) reached without reviewer approval",
+            "--category",
+            "validation",
+            "--json",
+        ],
+        cwd=context.repo,
+        env=context.env,
+    )
+    write_text(context.artifacts / "fail.json", fail.stdout)
+
+
+def assert_no_concurrent_pull_failures(
+    lane_results: list[tuple[int, "subprocess.CompletedProcess[str]"]],
+    *,
+    artifacts: Path,
+    case_id: str,
+    options: Options,
+) -> None:
+    """Task 6853 (US-7): none of the concurrent `planar-agent pull` calls
+    may exit non-zero. A SQLite `database is locked`/busy/`QueryFailed`
+    exit under concurrent writers is exactly the failure mode this case
+    exists to rule out, so a non-zero exit here fails the case rather
+    than being silently ignored or retried.
+    """
+    failed = [
+        (lane, result) for lane, result in lane_results if result.returncode != 0
+    ]
+    if failed:
+        detail = "; ".join(
+            f"lane {lane}: exit {result.returncode}: "
+            f"{(result.stderr or result.stdout).strip()[:200]}"
+            for lane, result in failed
+        )
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            f"concurrent pull failed for {len(failed)} lane(s): {detail}",
+        )
+
+
+def assert_distinct_lane_claims(
+    lane_claims: list[dict[str, Any]],
+    *,
+    artifacts: Path,
+    case_id: str,
+    options: Options,
+) -> None:
+    """Task 6853 (US-7): three concurrent `planar-agent pull` calls
+    against the SAME SQLite database must produce three DISTINCT claim
+    tokens on three DISTINCT tasks. A duplicate of either -- two lanes
+    handed the same claim token, or two lanes handed the same task --
+    means the concurrent writers raced each other into an inconsistent
+    claim state; this fails closed rather than silently letting a later
+    step complete the same task twice.
+    """
+    tokens = [claim["claim_token"] for claim in lane_claims]
+    task_ids = [claim["task_id"] for claim in lane_claims]
+    if len(set(tokens)) != len(tokens):
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            f"concurrent pull produced duplicate claim tokens: {tokens!r}",
+        )
+    if len(set(task_ids)) != len(task_ids):
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            f"concurrent pull produced duplicate claimed tasks: {task_ids!r}",
+        )
+
+
+def assert_merge_precedes_completes(
+    merge_ts: float,
+    observed_records: list[dict[str, Any]],
+    claim_tokens: Iterable[str],
+    *,
+    artifacts: Path,
+    case_id: str,
+    options: Options,
+) -> None:
+    """Task 6853: prove the fan-in merge happened BEFORE every lane's
+    `planar-agent complete`, read back from the observed log's own
+    per-call timestamps rather than trusted from the driver's call
+    order -- a reordering bug in the driver itself would otherwise go
+    undetected. `merge_ts` is the wall-clock time the driver observed
+    the fan-in merge complete (captured immediately after the last `git
+    merge` call returns, before any `complete` is dispatched).
+    """
+    tokens = set(claim_tokens)
+    matched: dict[str, float] = {}
+    for record in observed_records:
+        argv = record.get("argv") or []
+        if not argv or argv[0] != "complete" or record.get("exit_code") != 0:
+            continue
+        token = claim_token_of(argv) or observed_stdout_field(record, "claim_token")
+        if token in tokens:
+            matched[str(token)] = float(record.get("ts", 0))
+    missing = tokens - set(matched)
+    if missing:
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            "no successful complete record found for claim token(s): "
+            f"{sorted(missing)}",
+        )
+    early = {token: ts for token, ts in matched.items() if ts <= merge_ts}
+    if early:
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            "complete observed before the fan-in merge for claim token(s): "
+            + ", ".join(
+                f"{token} (ts={ts}, merge_ts={merge_ts})"
+                for token, ts in sorted(early.items())
+            ),
+        )
+
+
+def assert_epic_contains_lane_commits(
+    repo: Path,
+    env: dict[str, str],
+    epic_sha: str,
+    lane_shas: dict[str, str],
+    *,
+    artifacts: Path,
+    case_id: str,
+    options: Options,
+) -> None:
+    """Task 6853: `git merge` fails OPEN -- `git merge <nonexistent-branch>`
+    prints "Already up to date" and exits 0 -- so a driver that trusted
+    the merge subprocess's own exit code could report a clean fan-in that
+    silently dropped a lane. Verify containment independently with `git
+    merge-base --is-ancestor <lane-sha> <epic-sha>`, which is exactly
+    zero/non-zero on real ancestry and cannot be fooled by that failure
+    mode.
+    """
+    missing = []
+    for lane, sha in lane_shas.items():
+        result = run_command(
+            ["git", "merge-base", "--is-ancestor", sha, epic_sha],
+            cwd=repo,
+            env=env,
+            check=False,
+        )
+        if result.returncode != 0:
+            missing.append(lane)
+    if missing:
+        raise live_failure(
+            artifacts,
+            case_id,
+            options,
+            "epic branch does not contain lane commit(s) for: "
+            + ", ".join(sorted(missing)),
+        )
+
+
+# Task 6853 (reviewer re-dispatch): four deliberately-injected faults, one
+# per guard `replay_driver_concurrent_coders` calls, forwarded to the
+# driver the SAME way `EVAL_SEED_VIOLATION` already reaches the classic
+# fixture's own `control.sh` (see `LIFECYCLE_SEEDED_VIOLATION` /
+# `run_lifecycle_fixture_negative_control`): a value on
+# `context.env["EVAL_SEED_VIOLATION"]`, forwarded unconditionally by
+# `run_lifecycle_fixture_replay`'s `seed_violation` parameter, and never
+# set during a real run. Each corrupts state at the exact point its
+# named guard checks it, so a REAL run of this driver -- real worktrees,
+# real concurrent `planar-agent` calls, real git merges -- exercises the
+# call site itself, not just the guard function in isolation.
+# `run_concurrent_coders_negative_controls` drives all four end-to-end.
+CONCURRENT_CODERS_SEEDS = (
+    "concurrent-pull-failure",
+    "duplicate-task-claim",
+    "partial-fanin",
+    "complete-before-fanin",
+)
+
+
+def replay_driver_concurrent_coders(
+    context: LifecycleContext, case: dict[str, Any], options: Options
+) -> None:
+    """Task 6853: three independent `git worktree` lanes, claimed and run
+    CONCURRENTLY (`concurrent.futures`, not a sequential loop -- this is
+    the whole point of US-7), each committing to its own branch, fanned
+    into a single epic branch, and ONLY THEN completed. Proves:
+
+    - three concurrent `planar-agent` writers against the same SQLite
+      database produce three distinct claims and no busy/`QueryFailed`
+      exit (`assert_no_concurrent_pull_failures`,
+      `assert_distinct_lane_claims`);
+    - the fan-in merge precedes every `complete` call, read back from the
+      observed log rather than trusted from call order
+      (`assert_merge_precedes_completes`);
+    - the epic branch actually contains every lane's commit, verified
+      with `git merge-base --is-ancestor` rather than trusted from `git
+      merge`'s exit code, which fails OPEN on a missing branch
+      (`assert_epic_contains_lane_commits`).
+
+    `context.env["EVAL_SEED_VIOLATION"]`, when one of
+    `CONCURRENT_CODERS_SEEDS`, deliberately corrupts state right before
+    the one guard named above that is supposed to catch it -- see
+    `run_concurrent_coders_negative_controls`, which drives this end to
+    end under each seed and requires the matching `EvalFailure`.
+    """
+    case_id = case["id"]
+    seed = context.env.get("EVAL_SEED_VIOLATION")
+    task_ids = context.task_ids
+    if len(task_ids) < 2:
+        raise live_failure(
+            context.artifacts,
+            case_id,
+            options,
+            "concurrent-coders replay requires at least two tasks",
+        )
+    lanes_root = context.artifacts / "lanes"
+    lanes_root.mkdir(parents=True, exist_ok=True)
+    lane_indices = list(range(1, len(task_ids) + 1))
+    lane_dirs: dict[int, Path] = {}
+    for index in lane_indices:
+        lane_dir = lanes_root / f"lane-{index}"
+        run_command(
+            ["git", "worktree", "add", "-b", f"lane-{index}", str(lane_dir), "HEAD"],
+            cwd=context.repo,
+            env=context.env,
+        )
+        lane_dirs[index] = lane_dir
+
+    # US-7: fan the `pull` calls out CONCURRENTLY, not in a sequential
+    # loop -- three real writers against one SQLite database at the same
+    # time is exactly what this case exists to exercise.
+    with cf.ThreadPoolExecutor(max_workers=len(lane_indices)) as pool:
+        pull_futures = {
+            pool.submit(
+                run_command,
+                [
+                    "planar-agent",
+                    "pull",
+                    context.plan_id,
+                    "--role",
+                    "coder",
+                    "--base-ref",
+                    "HEAD",
+                    "--repo-root",
+                    str(lane_dirs[index]),
+                    "--json",
+                ],
+                cwd=lane_dirs[index],
+                env=context.env,
+                check=False,
+            ): index
+            for index in lane_indices
+        }
+        pull_results = [
+            (pull_futures[future], future.result()) for future in cf.as_completed(pull_futures)
+        ]
+    pull_results.sort(key=lambda item: item[0])
+    write_json(
+        context.artifacts / "pulls.concurrent.json",
+        [
+            {
+                "lane": lane,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+            for lane, result in pull_results
+        ],
+    )
+    if seed == "concurrent-pull-failure" and pull_results:
+        # Deliberately corrupt one lane's REAL successful pull result into
+        # a busy/QueryFailed exit right before the guard that is supposed
+        # to catch it -- proving the call site, not just the function.
+        lane, real_result = pull_results[0]
+        pull_results[0] = (
+            lane,
+            subprocess.CompletedProcess(
+                real_result.args,
+                1,
+                real_result.stdout,
+                "seeded: QueryFailed: database is locked",
+            ),
+        )
+    assert_no_concurrent_pull_failures(
+        pull_results, artifacts=context.artifacts, case_id=case_id, options=options
+    )
+
+    lane_claims: list[dict[str, Any]] = []
+    for lane, result in pull_results:
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise live_failure(
+                context.artifacts,
+                case_id,
+                options,
+                f"lane {lane} pull returned invalid JSON: {exc}",
+            ) from exc
+        claim_token = (
+            payload.get("claim_token")
+            or payload.get("claim", {}).get("claim_token")
+            or payload.get("claim", {}).get("token")
+        )
+        pulled_task_id = payload.get("task", {}).get("id")
+        if not claim_token or pulled_task_id is None:
+            raise live_failure(
+                context.artifacts,
+                case_id,
+                options,
+                f"lane {lane} pull did not receive a claim token and task",
+            )
+        lane_claims.append(
+            {
+                "lane": lane,
+                "claim_token": str(claim_token),
+                "task_id": str(pulled_task_id),
+            }
+        )
+    if seed == "duplicate-task-claim" and len(lane_claims) > 1:
+        # Deliberately alias two lanes' claimed task ids -- the real
+        # locking already prevents this from happening organically, so
+        # the seed corrupts the recorded claim right before the guard
+        # that is supposed to catch it.
+        lane_claims[1]["task_id"] = lane_claims[0]["task_id"]
+    assert_distinct_lane_claims(
+        lane_claims, artifacts=context.artifacts, case_id=case_id, options=options
+    )
+    write_json(context.artifacts / "lane-claims.json", lane_claims)
+
+    # Coder step: also concurrent, one real commit per lane on its own
+    # branch. `EVAL_REPO_ROOT` redirects control.sh's file writes/git
+    # commands at the lane's own worktree; `EVAL_EVENT_LOG` keeps every
+    # lane's `coder-finished` boundary event landing in the ONE
+    # events.jsonl `merge_lifecycle_events` reads (see control.sh).
+    control_script = str(context.repo / ".eval" / "control.sh")
+    main_event_log = str(context.repo / ".eval" / "events.jsonl")
+
+    def run_lane_coder(entry: dict[str, Any]) -> "subprocess.CompletedProcess[str]":
+        lane_env = dict(context.env)
+        lane_env["EVAL_REPO_ROOT"] = str(lane_dirs[entry["lane"]])
+        lane_env["EVAL_EVENT_LOG"] = main_event_log
+        return run_command(
+            [control_script, "coder-lane", entry["claim_token"], str(entry["lane"])],
+            cwd=context.repo,
+            env=lane_env,
+            check=False,
+        )
+
+    with cf.ThreadPoolExecutor(max_workers=len(lane_claims)) as pool:
+        coder_futures = {
+            pool.submit(run_lane_coder, entry): entry["lane"] for entry in lane_claims
+        }
+        coder_results = {
+            coder_futures[future]: future.result() for future in cf.as_completed(coder_futures)
+        }
+    for entry in lane_claims:
+        result = coder_results[entry["lane"]]
+        write_text(
+            context.artifacts / f"coder-lane-{entry['lane']}.txt",
+            result.stdout + result.stderr,
+        )
+        if result.returncode != 0:
+            raise live_failure(
+                context.artifacts,
+                case_id,
+                options,
+                f"lane {entry['lane']} controlled coder failed: "
+                f"{result.stderr.strip()}",
+            )
+
+    lane_shas: dict[str, str] = {}
+    for entry in lane_claims:
+        lane = entry["lane"]
+        sha = run_command(
+            ["git", "rev-parse", "HEAD"], cwd=lane_dirs[lane], env=context.env
+        ).stdout.strip()
+        lane_shas[f"lane-{lane}"] = sha
+    write_json(context.artifacts / "lane-shas.json", lane_shas)
+
+    # Fan-in: merge every lane branch into a fresh epic branch, ONLY THEN
+    # complete any claim -- `do_fanin_merge` and `do_completes` are
+    # ordinarily called merge-then-completes below, but the
+    # "complete-before-fanin" seed swaps that order for real (not a
+    # timestamp trick) to prove `assert_merge_precedes_completes` catches
+    # exactly the reordering the falsifiability probe describes. `--no-ff`
+    # so `epic-fanin` always advances with a real merge commit even when
+    # the first merge would otherwise fast-forward. The "partial-fanin"
+    # seed drops the LAST lane from the merge set entirely, so the epic
+    # branch genuinely -- not synthetically -- lacks that lane's commit.
+    merge_lane_indices = (
+        lane_indices[:-1] if seed == "partial-fanin" else lane_indices
+    )
+
+    def do_fanin_merge() -> tuple[str, float]:
+        run_command(
+            ["git", "checkout", "-b", "epic-fanin"], cwd=context.repo, env=context.env
+        )
+        for index in merge_lane_indices:
+            run_command(
+                [
+                    "git",
+                    "merge",
+                    "--no-ff",
+                    f"lane-{index}",
+                    "-m",
+                    f"eval: fan in lane-{index}",
+                ],
+                cwd=context.repo,
+                env=context.env,
+            )
+        epic_sha = run_command(
+            ["git", "rev-parse", "HEAD"], cwd=context.repo, env=context.env
+        ).stdout.strip()
+        assert_epic_contains_lane_commits(
+            context.repo,
+            context.env,
+            epic_sha,
+            lane_shas,
+            artifacts=context.artifacts,
+            case_id=case_id,
+            options=options,
+        )
+        # Wall-clock read of the fan-in's own completion, compared below
+        # against the observed log's own `complete` timestamps -- two
+        # independently-recorded clocks, not the driver's call order. The
+        # sleep gives clear separation from git's whole-second commit
+        # timestamp resolution before any `complete` call is dispatched.
+        ts = time.time()
+        time.sleep(1.5)
+        write_json(
+            context.artifacts / "fanin.json",
+            {"epic_sha": epic_sha, "lane_shas": lane_shas, "merge_ts": ts},
+        )
+        return epic_sha, ts
+
+    def do_completes() -> None:
+        for entry in lane_claims:
+            complete = run_command(
+                [
+                    "planar-agent",
+                    "complete",
+                    "--claim",
+                    entry["claim_token"],
+                    "--summary",
+                    "controlled concurrent-coders fixture fan-in complete",
+                    "--json",
+                ],
+                cwd=context.repo,
+                env=context.env,
+            )
+            write_text(
+                context.artifacts / f"complete-lane-{entry['lane']}.json",
+                complete.stdout,
+            )
+
+    if seed == "complete-before-fanin":
+        do_completes()
+        _epic_sha, merge_ts = do_fanin_merge()
+    else:
+        _epic_sha, merge_ts = do_fanin_merge()
+        do_completes()
+
+    observed_records = read_observed_records(context.repo / ".eval" / "observed")
+    assert_merge_precedes_completes(
+        merge_ts,
+        observed_records,
+        [entry["claim_token"] for entry in lane_claims],
+        artifacts=context.artifacts,
+        case_id=case_id,
+        options=options,
+    )
+
+
+# Task 6854/6857: `setup.replay` selects which driver `run_lifecycle_fixture_replay`
+# hands the prepared `LifecycleContext` to. `validate_case` refuses any case
+# naming a key not in this dict, so the registry is the single source of
+# truth for which replay shapes exist. Every driver owns only the claim/
+# terminal-verb sequence -- `run_lifecycle_fixture_replay` always runs
+# `collect_lifecycle_artifacts` / `grade_lifecycle_artifacts` afterward, so
+# no driver can skip grading.
+REPLAY_DRIVERS: dict[
+    str, Callable[[LifecycleContext, dict[str, Any], Options], None]
+] = {
+    "classic": replay_driver_classic,
+    "session-death": replay_driver_session_death,
+    "dependency-order": replay_driver_dependency_order,
+    "lapsed-claim": replay_driver_lapsed_claim,
+    "iteration-cap": replay_driver_iteration_cap,
+    "concurrent-coders": replay_driver_concurrent_coders,
+}
+
+
 def run_lifecycle_fixture_replay(
     case_path: Path,
     case: dict[str, Any],
@@ -2747,7 +4310,8 @@ def run_lifecycle_fixture_replay(
     *,
     seed_violation: str | None = None,
 ) -> None:
-    """Replay the controlled-classic fixture end-to-end and grade it.
+    """Prepare the controlled-classic fixture, dispatch to the case's
+    replay driver (`setup.replay`, default `classic`), then grade.
 
     `seed_violation`, when set, is forwarded as `EVAL_SEED_VIOLATION` to
     every `.eval/control.sh` invocation (task 6892). The fixture's own
@@ -2762,74 +4326,17 @@ def run_lifecycle_fixture_replay(
     context = prepare_lifecycle_fixture(case_path, case, options, label)
     if seed_violation:
         context.env["EVAL_SEED_VIOLATION"] = seed_violation
+    replay_name = case.get("setup", {}).get("replay", "classic")
+    driver = REPLAY_DRIVERS.get(replay_name)
+    if driver is None:
+        raise live_failure(
+            context.artifacts,
+            case["id"],
+            options,
+            f"unknown lifecycle replay driver: {replay_name}",
+        )
     try:
-        claim = run_json(
-            [
-                "planar-agent",
-                "pull",
-                context.plan_id,
-                "--role",
-                "coder",
-                "--base-ref",
-                "HEAD",
-                "--repo-root",
-                str(context.repo),
-                "--json",
-            ],
-            cwd=context.repo,
-            env=context.env,
-        )
-        claim_token = (
-            claim.get("claim_token")
-            or claim.get("claim", {}).get("claim_token")
-            or claim.get("claim", {}).get("token")
-        )
-        if not claim_token:
-            raise live_failure(
-                context.artifacts,
-                case["id"],
-                options,
-                "fixture replay did not receive a claim token",
-            )
-        coder = run_command(
-            ["./.eval/control.sh", "coder", str(claim_token)],
-            cwd=context.repo,
-            env=context.env,
-        )
-        write_text(context.artifacts / "coder-1.txt", coder.stdout)
-        reviewer = run_command(
-            ["./.eval/control.sh", "reviewer", str(claim_token)],
-            cwd=context.repo,
-            env=context.env,
-        )
-        write_text(context.artifacts / "reviewer-1.txt", reviewer.stdout)
-        if "decision: request-changes" in reviewer.stdout:
-            coder2 = run_command(
-                ["./.eval/control.sh", "coder", str(claim_token)],
-                cwd=context.repo,
-                env=context.env,
-            )
-            reviewer2 = run_command(
-                ["./.eval/control.sh", "reviewer", str(claim_token)],
-                cwd=context.repo,
-                env=context.env,
-            )
-            write_text(context.artifacts / "coder-2.txt", coder2.stdout)
-            write_text(context.artifacts / "reviewer-2.txt", reviewer2.stdout)
-        complete = run_command(
-            [
-                "planar-agent",
-                "complete",
-                "--claim",
-                str(claim_token),
-                "--summary",
-                "controlled lifecycle fixture approved",
-                "--json",
-            ],
-            cwd=context.repo,
-            env=context.env,
-        )
-        write_text(context.artifacts / "complete.json", complete.stdout)
+        driver(context, case, options)
         collect_lifecycle_artifacts(context, options)
         grade_lifecycle_artifacts(case, context.artifacts, options)
         write_grade(context.artifacts, "pass", case["id"], options)
@@ -2896,22 +4403,98 @@ def run_lifecycle_fixture_negative_control(
     )
 
 
+def run_concurrent_coders_negative_controls(
+    cases: list[tuple[Path, dict[str, Any]]], options: Options
+) -> None:
+    """Task 6853 (reviewer re-dispatch, "call sites are untested"): drive a
+    REAL `replay_driver_concurrent_coders` run under each of
+    `CONCURRENT_CODERS_SEEDS` and require the matching `EvalFailure`.
+
+    `ConcurrentCodersGuardTests` (test_harness.py) already proves each
+    guard function CAN reject the violation it names, given adversarial
+    input built by hand. That leaves the call sites unproven: nothing
+    observed whether the driver actually invokes a guard on the path an
+    operator run takes. This function closes that gap the same way
+    `run_lifecycle_fixture_negative_control` closes it for the classic
+    fixture -- a REAL end-to-end replay (real worktrees, real concurrent
+    `planar-agent` calls, real git merges), seeded via the same
+    `EVAL_SEED_VIOLATION` channel, required to fail for the SPECIFIC
+    reason named, not merely to fail. No-op'ing a guard's call site
+    (without touching the guard function itself) makes the corresponding
+    seed's run stop raising, which this control turns into a suite
+    failure.
+    """
+    candidates = [
+        (path, case)
+        for path, case in cases
+        if case.get("setup", {}).get("replay") == "concurrent-coders"
+    ]
+    if not candidates:
+        raise EvalFailure(
+            "concurrent-coders negative control needs a repository case "
+            "whose setup.replay is 'concurrent-coders'"
+        )
+    path, case = candidates[0]
+    # One substring per seed, matched against the exact guard message the
+    # call site is supposed to produce -- keeps this control from passing
+    # on an unrelated failure the way a bare `except EvalFailure: pass`
+    # would.
+    expected_substrings = {
+        "concurrent-pull-failure": "concurrent pull failed for",
+        "duplicate-task-claim": "duplicate claimed tasks",
+        "partial-fanin": "epic branch does not contain lane commit",
+        "complete-before-fanin": "complete observed before the fan-in merge",
+    }
+    for seed in CONCURRENT_CODERS_SEEDS:
+        expected_substring = expected_substrings[seed]
+        try:
+            run_lifecycle_fixture_replay(path, case, options, seed_violation=seed)
+        except EvalFailure as exc:
+            if expected_substring not in str(exc):
+                raise EvalFailure(
+                    "concurrent-coders negative control failed for the "
+                    f"wrong reason under seed {seed!r} (expected "
+                    f"{expected_substring!r}): {exc}"
+                ) from exc
+            if (
+                exc.artifacts is not None
+                and not options.keep
+                and options.results_dir is None
+            ):
+                shutil.rmtree(exc.artifacts, ignore_errors=True)
+            continue
+        raise EvalFailure(
+            f"concurrent-coders negative control was not detected: "
+            f"{case['id']} did not fail under EVAL_SEED_VIOLATION={seed}"
+        )
+
+
 def append_file(target: Path, source: Path) -> None:
     with target.open("ab") as output, source.open("rb") as incoming:
         output.write(b"\n")
         shutil.copyfileobj(incoming, output)
 
 
-def run_lifecycle_host(
-    case_path: Path, case: dict[str, Any], options: Options
+def run_lifecycle_host_from_prepared(
+    context: LifecycleContext, case: dict[str, Any], options: Options
 ) -> None:
-    context = prepare_lifecycle_fixture(
-        case_path, case, options, f"{options.vendor}-{options.surface}"
-    )
+    """RUN + GRADE steps (task 6849 split) for a lifecycle host run, given a
+    `LifecycleContext` `prepare_lifecycle_fixture` already produced (that
+    function IS this mode's prepare step -- it writes `run.json` and never
+    invokes a vendor host itself).
+    """
     artifacts = context.artifacts
     raw = artifacts / "transcript.jsonl"
     timeout = int(case["lifecycle"].get("timeout_seconds", 600))
     prompt = case["lifecycle"]["prompt"].replace("{{PLAN_ID}}", context.plan_id)
+    allowed_tools = resolve_allowed_tools(case["lifecycle"])
+    case_budget_usd = case["lifecycle"].get("budget", {}).get("max_usd")
+    usage_total: dict[str, Any] = {
+        "calls": 0,
+        "total_cost_usd": None,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
     try:
         print(
             f"RUN: {case['id']} ({options.vendor}/{options.surface} lifecycle), "
@@ -2924,32 +4507,12 @@ def run_lifecycle_host(
             context.repo / ".eval" / "orchestrator.instructions.md"
         ).read_text(encoding="utf-8")
         encoded_instructions = json.dumps(instructions)
-        if options.vendor == "codex":
-            command = [
-                "codex",
-                "exec",
-                "--json",
-                "--sandbox",
-                "workspace-write",
-                "-c",
-                f"developer_instructions={encoded_instructions}",
-                "Execute this lifecycle directly as the orchestrator. "
-                f"Do not read or invoke any skill. {prompt}",
-            ]
-        else:
-            command = [
-                "claude",
-                "--agent",
-                "orchestrator",
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--permission-mode",
-                "dontAsk",
-                CLAUDE_LIVE_ALLOWED_TOOLS_ARG,
-                prompt,
-            ]
+        command = vendors.build_lifecycle_command(
+            vendor=options.vendor,
+            prompt=prompt,
+            encoded_instructions=encoded_instructions,
+            allowed_tools=allowed_tools,
+        )
         rc = run_to_file(
             command, raw, cwd=context.repo, env=context.env, timeout_seconds=timeout
         )
@@ -2975,6 +4538,7 @@ def run_lifecycle_host(
                 options,
                 f"{options.vendor}/{options.surface} lifecycle invocation exited {rc}",
             )
+        usage_total = merge_usage(usage_total, extract_usage(raw, options.vendor))
         session_id = extract_session_id(raw, options.vendor)
         if not session_id:
             raise live_failure(
@@ -2993,31 +4557,13 @@ def run_lifecycle_host(
             if task_status in {"done", "cancelled"}:
                 break
             turn_raw = artifacts / f"transcript.turn-{turn}.jsonl"
-            if options.vendor == "codex":
-                command = [
-                    "codex",
-                    "exec",
-                    "resume",
-                    "--json",
-                    "-c",
-                    f"developer_instructions={encoded_instructions}",
-                    session_id,
-                    response,
-                ]
-            else:
-                command = [
-                    "claude",
-                    "--resume",
-                    session_id,
-                    "-p",
-                    "--output-format",
-                    "stream-json",
-                    "--verbose",
-                    "--permission-mode",
-                    "dontAsk",
-                    CLAUDE_LIVE_ALLOWED_TOOLS_ARG,
-                    response,
-                ]
+            command = vendors.build_lifecycle_resume_command(
+                vendor=options.vendor,
+                session_id=session_id,
+                response=response,
+                encoded_instructions=encoded_instructions,
+                allowed_tools=allowed_tools,
+            )
             rc = run_to_file(
                 command,
                 turn_raw,
@@ -3056,15 +4602,39 @@ def run_lifecycle_host(
                     options,
                     f"{options.vendor}/{options.surface} lifecycle turn {turn} exited {rc}",
                 )
+            usage_total = merge_usage(
+                usage_total, extract_usage(turn_raw, options.vendor)
+            )
             task_status = run_json(
                 ["planar", "task", "show", context.task_id, "--json"],
                 cwd=context.repo,
                 env=context.env,
             ).get("status")
+        enforce_spend_ceiling(
+            artifact_dir=artifacts,
+            case_id=case["id"],
+            options=options,
+            repo=context.repo,
+            env=context.env,
+            plan_id=context.plan_id,
+            usage=usage_total,
+            case_budget_usd=case_budget_usd,
+        )
         extract_host_transcript(raw, options.vendor, artifacts)
+        # Task 6913: same drift reconciliation the live grader runs, on the
+        # lifecycle section's allowlist. Placed here rather than inside
+        # grade_lifecycle_artifacts because the fixture-replay lane also
+        # calls that function and has no transcript to reconcile against.
+        assert_tool_surface_matches_host(
+            case,
+            "lifecycle",
+            artifacts,
+            options,
+            raw.read_text(encoding="utf-8", errors="replace"),
+        )
         collect_lifecycle_artifacts(context, options)
         grade_lifecycle_artifacts(case, artifacts, options)
-        write_grade(artifacts, "pass", case["id"], options)
+        write_grade(artifacts, "pass", case["id"], options, usage=usage_total)
         pass_line(
             f"{case['id']}: {options.vendor}/{options.surface} controlled lifecycle"
         )
@@ -3073,6 +4643,112 @@ def run_lifecycle_host(
         if exc.artifacts is None:
             exc.artifacts = artifacts
         raise
+
+
+def run_lifecycle_host(
+    case_path: Path, case: dict[str, Any], options: Options
+) -> None:
+    """Single-step controlled-lifecycle host run: prepare, then run+grade."""
+    context = prepare_lifecycle_fixture(
+        case_path, case, options, f"{options.vendor}-{options.surface}"
+    )
+    run_lifecycle_host_from_prepared(context, case, options)
+
+
+def lifecycle_context_from_prepared(
+    artifact_dir: Path, case_path: Path, case: dict[str, Any], options: Options
+) -> LifecycleContext:
+    """Reconstruct the `LifecycleContext` `prepare_lifecycle_fixture` built
+    for a lifecycle host run, from `run.json` plus the artifact tree
+    already on disk (task 6915's `--run-prepared`, a second, separate
+    process invocation from the one that ran `--prepare`).
+
+    Rebuilds the arena env the same idempotent way
+    `run_phase3_preview_from_prepared` does: `arena.make_arena` on the
+    existing `arena/` dir only recreates directories that are already
+    there (`mkdir(..., exist_ok=True)`) and returns a fresh env dict; it
+    never wipes the Planar DB or anything else `prepare_lifecycle_fixture`
+    already wrote. `test_command` is re-derived from the case's own
+    fixture manifest (deterministic from `case["setup"]["fixture"]`),
+    matching how the live `_from_prepared` path recomputes its prompt
+    from `case` rather than threading it through as an argument. Vendor
+    auth is re-checked here rather than trusted from prepare time, for the
+    same reason `run_phase3_preview_from_prepared` re-checks it: auth is
+    only ever read from the live process environment, never persisted
+    into the scratch arena tree, so a `--prepare` and a later
+    `--run-prepared` in a different process must each verify it fresh.
+    """
+    run_meta = read_json(artifact_dir / "run.json")
+    repo = artifact_dir / "repo"
+    arena_root = artifact_dir / "arena"
+    env = arena.make_arena(arena_root)
+    arena.assert_isolated(env, arena_root)
+    if options.vendor:
+        arena.assert_vendor_auth(env, options.vendor)
+    # `prepare_lifecycle_fixture` prepends the fixture's `planar-agent`
+    # wrapper to PATH before it ever writes `run.json`; the reconstructed
+    # env must carry the same prefix or the resumed run would shell the
+    # real `planar-agent` instead of the recording wrapper.
+    env["PATH"] = str(repo / ".eval" / "bin") + os.pathsep + env["PATH"]
+    fixture_root = FIXTURES_DIR / case["setup"]["fixture"]
+    manifest = load_fixture_manifest(fixture_root)
+    task_id = run_meta["task_id"]
+    task_ids = run_meta.get("task_ids") or [task_id]
+    return LifecycleContext(
+        case_path,
+        case,
+        artifact_dir,
+        repo,
+        env,
+        run_meta["plan_id"],
+        task_id,
+        task_ids,
+        manifest["test_command"],
+    )
+
+
+def run_prepared_artifacts(
+    artifact_dir: Path, cases: list[tuple[Path, dict[str, Any]]]
+) -> Path:
+    """RUN + GRADE a `--prepare`d arena in a second, separate invocation
+    (task 6915). `prepare_phase3_preview`/`prepare_lifecycle_fixture` write
+    `run.json` and stop before any vendor host runs; before this, nothing
+    on the CLI surface ever called `run_phase3_preview_from_prepared` /
+    `run_lifecycle_host_from_prepared`, so the prepare -> run -> grade
+    split was never exercised end to end as two separate invocations.
+
+    Recomputes the case, prompt, and (for lifecycle) test command
+    deterministically from `run.json` plus the loaded case definitions,
+    the same "recompute from case + run.json" pattern `regrade_artifacts`
+    already established for resuming from a bare artifact dir -- but
+    unlike `--grade-artifacts`, this ACTUALLY invokes the vendor host (a
+    `--prepare`d arena has no transcript yet); it must not be pointed at
+    an already-graded dir.
+    """
+    artifact_dir = artifact_dir.resolve()
+    run_path = artifact_dir / "run.json"
+    if not run_path.is_file():
+        raise EvalFailure(
+            f"--run-prepared {artifact_dir} has no run.json -- run --prepare first"
+        )
+    run_meta = read_json(run_path)
+    case_id = run_meta.get("case_id")
+    matches = [case for _, case in cases if case["id"] == case_id]
+    if len(matches) != 1:
+        raise EvalFailure(f"cannot resolve case for prepared artifacts: {case_id}")
+    case = matches[0]
+    case_path = ROOT / run_meta["case_path"]
+    options = options_from_run(artifact_dir)
+    mode = run_meta.get("mode")
+    if mode == "live":
+        run_phase3_preview_from_prepared(case_path, case, options, artifact_dir)
+    elif mode == "lifecycle":
+        context = lifecycle_context_from_prepared(artifact_dir, case_path, case, options)
+        run_lifecycle_host_from_prepared(context, case, options)
+    else:
+        raise EvalFailure(f"--run-prepared does not support mode: {mode}")
+    print(f"artifacts: {artifact_dir}")
+    return artifact_dir
 
 
 def options_from_run(artifact_dir: Path) -> Options:
@@ -3087,6 +4763,172 @@ def options_from_run(artifact_dir: Path) -> Options:
         results_dir=artifact_dir.parent,
         keep=True,
     )
+
+
+# Task 6860: the results ledger. Append-only, committed to the repo (not
+# a runtime artifact); `regrade_artifacts` (the `--grade-artifacts` entry
+# point) is the sole writer, matching "grade_*_artifacts(artifact_dir) is
+# the single grading entry point" from the task-6849 split -- a live or
+# lifecycle run only reaches the ledger once an operator regrades its
+# retained artifacts.
+RESULTS_LEDGER_PATH = ROOT / "evals" / "RESULTS.md"
+LEDGER_TABLE_HEADER = (
+    "| date | case | mode | vendor | surface | model | grade | artifact hash |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+)
+LEDGER_PREAMBLE = (
+    "# Orchestrator eval results ledger\n\n"
+    "Append-only record of graded `live`/`lifecycle` orchestrator eval runs. "
+    "One row per `--grade-artifacts <dir>` regrade (see `regrade_artifacts` "
+    "in `harness.py`). A blocked run (host exit 75) is recorded with grade "
+    "`blocked` and never counts as a pass. Never hand-edit an existing row; "
+    "append a new one instead -- the row for a given artifact hash is the "
+    "regrade's own verdict at that point in time, and a later regrade of "
+    "the same retained artifacts adds another row rather than replacing it.\n\n"
+    + LEDGER_TABLE_HEADER
+)
+_LEDGER_DEFAULT_MAX_AGE_DAYS = 30
+
+
+def ledger_model_label(case: dict[str, Any], vendor: str) -> str:
+    """Best-effort model label for a ledger row. Lifecycle cases carry no
+    explicit model field in the schema, so lifecycle rows fall back to `-`.
+    """
+    live = case.get("live") or {}
+    host_model = live.get("host_model")
+    if isinstance(host_model, str) and host_model:
+        return host_model
+    expected = live.get("expected_models") or {}
+    value = expected.get(vendor)
+    return value if isinstance(value, str) and value else "-"
+
+
+def artifact_content_hash(artifact_dir: Path) -> str:
+    """Short, stable hash identifying this artifact set's graded content."""
+    grade_path = artifact_dir / "grade.json"
+    payload = grade_path.read_bytes() if grade_path.exists() else b""
+    return hashlib.sha256(payload).hexdigest()[:12]
+
+
+def retained_grade_status(artifact_dir: Path) -> str | None:
+    """The `status` a retained run recorded in its own `grade.json`, or
+    `None` when there is none to read (task 6852/6860). Used so a regrade
+    cannot promote an aborted run to a pass.
+    """
+    path = artifact_dir / "grade.json"
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    status = value.get("status") if isinstance(value, dict) else None
+    return status if isinstance(status, str) else None
+
+
+def record_ledger_row(
+    case: dict[str, Any], artifact_dir: Path, options: Options, grade: str
+) -> None:
+    """Append one row to `evals/RESULTS.md`. Never rewrites or removes an
+    existing row -- append-only, per task 6860.
+    """
+    RESULTS_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = (
+        RESULTS_LEDGER_PATH.read_text(encoding="utf-8")
+        if RESULTS_LEDGER_PATH.exists()
+        else LEDGER_PREAMBLE
+    )
+    if not existing.endswith("\n"):
+        existing += "\n"
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    row = (
+        f"| {date} | {case['id']} | {options.mode} | {options.vendor or '-'} | "
+        f"{options.surface or '-'} | {ledger_model_label(case, options.vendor)} | "
+        f"{grade} | {artifact_content_hash(artifact_dir)} |\n"
+    )
+    RESULTS_LEDGER_PATH.write_text(existing + row, encoding="utf-8")
+
+
+def ledger_rows() -> list[dict[str, str]]:
+    """Parse `evals/RESULTS.md` into row dicts keyed by the table header.
+    Returns an empty list when the ledger does not exist yet (a fresh
+    checkout before any run has ever been regraded).
+    """
+    if not RESULTS_LEDGER_PATH.exists():
+        return []
+    lines = RESULTS_LEDGER_PATH.read_text(encoding="utf-8").splitlines()
+    data_lines = [
+        line
+        for line in lines
+        if line.startswith("|") and not set(line.replace("|", "").strip()) <= {"-"}
+    ]
+    if len(data_lines) < 2:
+        return []
+    header = [cell.strip() for cell in data_lines[0].strip("|").split("|")]
+    rows: list[dict[str, str]] = []
+    for line in data_lines[1:]:
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != len(header):
+            continue
+        rows.append(dict(zip(header, cells)))
+    return rows
+
+
+def ledger_max_age_days(case: dict[str, Any]) -> int:
+    """The freshness window `make eval-ledger-check` enforces for `case`.
+    Checked on whichever of `live`/`lifecycle` the case declares; a case
+    declaring both is checked against each section's own value.
+    """
+    for section_name in ("live", "lifecycle"):
+        section = case.get(section_name)
+        if isinstance(section, dict):
+            ledger_cfg = section.get("ledger")
+            if isinstance(ledger_cfg, dict) and "max_age_days" in ledger_cfg:
+                return int(ledger_cfg["max_age_days"])
+    return _LEDGER_DEFAULT_MAX_AGE_DAYS
+
+
+def check_ledger_freshness(
+    cases: list[tuple[Path, dict[str, Any]]]
+) -> list[str]:
+    """Return one violation string per case declaring `live`/`lifecycle`
+    that has no non-`blocked` ledger row newer than its
+    `ledger.max_age_days` (task 6860). Empty list means the ledger is
+    current for every such case.
+    """
+    rows = ledger_rows()
+    now = datetime.now(timezone.utc)
+    violations: list[str] = []
+    for _, case in cases:
+        tiers = case.get("tiers", [])
+        if "live" not in tiers and "lifecycle" not in tiers:
+            continue
+        max_age = ledger_max_age_days(case)
+        freshest: datetime | None = None
+        for row in rows:
+            if row.get("case") != case["id"] or row.get("grade") == "blocked":
+                continue
+            try:
+                stamp = datetime.strptime(row["date"], "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+            except (KeyError, ValueError):
+                continue
+            if freshest is None or stamp > freshest:
+                freshest = stamp
+        if freshest is None:
+            violations.append(
+                f"{case['id']}: no non-blocked ledger row recorded in "
+                f"{RESULTS_LEDGER_PATH}"
+            )
+            continue
+        age_days = (now - freshest).days
+        if age_days > max_age:
+            violations.append(
+                f"{case['id']}: newest non-blocked ledger row is {age_days}d old, "
+                f"exceeds ledger.max_age_days {max_age}"
+            )
+    return violations
 
 
 def regrade_artifact_path(artifact_dir: Path) -> Path:
@@ -3121,22 +4963,45 @@ def regrade_artifacts(
     if len(matches) != 1:
         raise EvalFailure(f"cannot resolve case for retained artifacts: {case_id}")
     case = matches[0]
-    if options.mode == "live":
-        grade_live_artifacts(case, artifact_dir, options)
-    elif options.mode in {"lifecycle", "lifecycle-fixture"}:
-        grade_lifecycle_artifacts(case, artifact_dir, options)
-    else:
-        raise EvalFailure(f"artifact mode is not regradable: {options.mode}")
+    try:
+        if options.mode == "live":
+            grade_live_artifacts(case, artifact_dir, options)
+        elif options.mode in {"lifecycle", "lifecycle-fixture"}:
+            grade_lifecycle_artifacts(case, artifact_dir, options)
+        else:
+            raise EvalFailure(f"artifact mode is not regradable: {options.mode}")
+    except (EvalFailure, EvalBlocked) as exc:
+        # Task 6860: the ledger records every graded live/lifecycle run, not
+        # only the ones that pass -- a regrade that disagrees with the
+        # retained run's own verdict is itself evidence, not noise to drop.
+        if options.mode in {"live", "lifecycle"}:
+            status = "blocked" if isinstance(exc, EvalBlocked) else "fail"
+            record_ledger_row(case, artifact_dir, options, status)
+        raise
+    # A retained run that stopped on its spend ceiling never produced a
+    # gradeable result: the graders above only inspect the artifacts that
+    # DID land, so they can return clean and turn an aborted run into a
+    # `pass` row. The retained verdict wins (reviewer, M3 cycle 1).
+    retained = retained_grade_status(artifact_dir)
+    verdict = "over-budget" if retained == "over-budget" else "pass"
     regrade_path = write_grade(
-        artifact_dir, "pass", case_id, options, target=regrade_artifact_path(artifact_dir)
+        artifact_dir, verdict, case_id, options, target=regrade_artifact_path(artifact_dir)
     )
+    if options.mode in {"live", "lifecycle"}:
+        record_ledger_row(case, artifact_dir, options, verdict)
+    if verdict == "over-budget":
+        raise EvalFailure(
+            f"{case_id}: retained artifacts are from an over-budget run; not a pass", artifact_dir
+        )
     pass_line(f"{case_id}: retained {options.mode} artifacts regraded")
     print(f"regraded: {regrade_path}")
     print(f"artifacts: {artifact_dir}")
     return regrade_path
 
 
-def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
+def parse_args(
+    argv: Sequence[str],
+) -> tuple[Options, bool, Path | None, bool, bool, Path | None]:
     parser = argparse.ArgumentParser(
         description="Run Planar orchestrator contract, live, and lifecycle evals."
     )
@@ -3152,6 +5017,22 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--grade-artifacts", type=Path)
+    # Task 6860: report every case declaring `live`/`lifecycle` whose ledger
+    # row is missing or stale, without regrading anything.
+    parser.add_argument("--ledger-check", action="store_true")
+    # Task 6849: stop after building the arena/plan/tasks and writing
+    # run.json, before any vendor host is invoked.
+    parser.add_argument("--prepare", action="store_true")
+    # Task 6915: resume a `--prepare`d artifact dir in a second, separate
+    # invocation -- runs the vendor host and grades, mirroring how
+    # `--grade-artifacts` resumes grading alone from a bare artifact dir.
+    parser.add_argument("--run-prepared", type=Path)
+    # Task 6852: suite-level cost ceiling, checked cumulatively across every
+    # case run in this invocation (see Options.suite_spend_usd).
+    parser.add_argument("--max-usd", type=float, dest="max_usd")
+    # Task 6859: repeat each selected live/lifecycle case this many times and
+    # report a per-case pass rate.
+    parser.add_argument("--trials", type=int, default=1)
     args = parser.parse_args(argv)
     if args.live:
         mode = "live"
@@ -3161,6 +5042,8 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
         mode = "lifecycle-fixture"
     else:
         mode = "contract"
+    if args.trials < 1:
+        raise EvalFailure("--trials must be >= 1")
     options = Options(
         mode=mode,
         vendor=args.vendor,
@@ -3168,15 +5051,106 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, bool, Path | None]:
         case_filter=args.case_filter,
         results_dir=args.results.resolve() if args.results else None,
         keep=args.keep,
+        max_usd=args.max_usd,
+        trials=args.trials,
     )
-    return options, args.list, args.grade_artifacts
+    return (
+        options,
+        args.list,
+        args.grade_artifacts,
+        args.prepare,
+        args.ledger_check,
+        args.run_prepared,
+    )
+
+
+def run_case_trials(
+    entrypoint: Callable[[Path, dict[str, Any], Options], None],
+    path: Path,
+    case: dict[str, Any],
+    options: Options,
+) -> None:
+    """Run `entrypoint` `options.trials` times for one case and report a
+    per-case pass rate (task 6859). `options.trials == 1` (the default)
+    calls `entrypoint` directly with no wrapper overhead, so single-run
+    behavior is unchanged from before task 6859.
+
+    A trial that raises `EvalFailure`/`EvalBlocked` is recorded and does
+    NOT stop the remaining trials. `EvalOverBudget` is the exception to
+    that: it propagates immediately, because a spend ceiling governs the
+    whole invocation rather than one trial. Only a 0/N pass rate re-raises (the
+    last trial's exception), so a fully-failing case still fails the
+    overall run; a partially-flaky case reports its rate and succeeds.
+    """
+    if options.trials == 1:
+        entrypoint(path, case, options)
+        return
+    outcomes: list[dict[str, Any]] = []
+    passed = 0
+    last_exc: EvalFailure | EvalBlocked | None = None
+    for trial in range(1, options.trials + 1):
+        try:
+            entrypoint(path, case, options)
+        except EvalOverBudget:
+            # A ceiling is not a per-trial outcome: the remaining trials
+            # would keep spending past the number the operator set, and a
+            # later passing trial would return 0 and hide it. `--trials` is
+            # the mode MOST likely to overspend, so the abort has to escape
+            # the loop it is nested in (task 6852; reviewer, M3 cycle 1).
+            raise
+        except (EvalFailure, EvalBlocked) as exc:
+            status = "blocked" if isinstance(exc, EvalBlocked) else "fail"
+            outcomes.append({"trial": trial, "status": status, "reason": str(exc)})
+            last_exc = exc
+        else:
+            passed += 1
+            outcomes.append({"trial": trial, "status": "pass"})
+    pass_rate = passed / options.trials
+    summary = {
+        "case_id": case["id"],
+        "trials": options.trials,
+        "passed": passed,
+        "pass_rate": pass_rate,
+        "outcomes": outcomes,
+    }
+    if options.results_dir is not None:
+        summary_dir = options.results_dir / case["id"]
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        write_json(summary_dir / "trials.json", summary)
+    print(
+        f"TRIALS: {case['id']} {passed}/{options.trials} passed "
+        f"(pass_rate={pass_rate:.2f})",
+        flush=True,
+    )
+    if passed == 0 and last_exc is not None:
+        raise last_exc
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    options, list_only, regrade_path = parse_args(argv or sys.argv[1:])
+    (
+        options,
+        list_only,
+        regrade_path,
+        prepare_only,
+        ledger_check_only,
+        run_prepared_path,
+    ) = parse_args(argv or sys.argv[1:])
     cases = load_cases()
+    if ledger_check_only:
+        violations = check_ledger_freshness(cases)
+        if violations:
+            for line in violations:
+                print(f"STALE: {line}", file=sys.stderr)
+            raise EvalFailure(
+                f"{len(violations)} case(s) have a missing or stale ledger row"
+            )
+        pass_line(f"{len(cases)} case(s) checked against {RESULTS_LEDGER_PATH.name}")
+        return 0
     if regrade_path is not None:
         regrade_artifacts(regrade_path, cases)
+        return 0
+    if run_prepared_path is not None:
+        run_prepared_artifacts(run_prepared_path, cases)
         return 0
     selected = select_cases(cases, options.case_filter)
     if list_only:
@@ -3206,6 +5180,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         self_tests_run, total_assertions, selftest_outcomes = run_assertion_selftests(
             selected
         )
+        if total_assertions == 0:
+            # Task 6927: a case set that legitimately loads but contains no
+            # contract-tier assertion must not report a silent pass. A
+            # single-case filtered run still yields >= 1 assertion, so this
+            # floor never rejects legitimate `--case` filtering; it only
+            # rejects a run that graded nothing. The unknown-`--case`-filter
+            # route already fails closed via `select_cases` (see
+            # "unknown or ambiguous case id" above) -- this is the other,
+            # previously uncovered route to the same vacuous-pass shape.
+            raise EvalFailure(
+                "0 contract assertions selected -- nothing was graded "
+                "(check --case filter and case tiering)"
+            )
         emit_aggregate_report(
             selftest_outcomes,
             total=total_assertions,
@@ -3226,8 +5213,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         runnable = [entry for entry in selected if "live" in entry[1]["tiers"]]
         if not runnable:
             raise EvalFailure("no selected cases declare the live tier")
+        if prepare_only:
+            for path, case in runnable:
+                artifact_dir = prepare_phase3_preview(path, case, options)
+                print(f"PREPARED: {case['id']} {artifact_dir}", flush=True)
+            pass_line(f"{len(runnable)} live orchestrator cases prepared")
+            return 0
         for path, case in runnable:
-            run_phase3_preview(path, case, options)
+            run_case_trials(run_phase3_preview, path, case, options)
         pass_line(f"{len(runnable)} live orchestrator cases")
         return 0
     if options.mode == "lifecycle-fixture":
@@ -3242,6 +5235,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # filter narrowing `runnable` never skips this control.
         run_lifecycle_fixture_negative_control(cases, options)
         pass_line("lifecycle fixture negative control")
+        # Task 6853 (reviewer re-dispatch): same shape, one control per
+        # concurrent-coders guard call site. Also uses `cases`, not
+        # `selected`, for the same reason as the control above.
+        run_concurrent_coders_negative_controls(cases, options)
+        pass_line("concurrent-coders fan-in negative controls")
         fixture_outcomes = collect_case_failures(
             runnable,
             lambda path, case: run_lifecycle_fixture_replay(path, case, options),
@@ -3262,8 +5260,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     runnable = [entry for entry in selected if "lifecycle" in entry[1]["tiers"]]
     if not runnable:
         raise EvalFailure("no selected cases declare the lifecycle tier")
+    if prepare_only:
+        for path, case in runnable:
+            context = prepare_lifecycle_fixture(
+                path, case, options, f"{options.vendor}-{options.surface}"
+            )
+            print(f"PREPARED: {case['id']} {context.artifacts}", flush=True)
+        pass_line(f"{len(runnable)} live lifecycle orchestrator cases prepared")
+        return 0
     for path, case in runnable:
-        run_lifecycle_host(path, case, options)
+        run_case_trials(run_lifecycle_host, path, case, options)
     pass_line(f"{len(runnable)} live lifecycle orchestrator cases")
     return 0
 

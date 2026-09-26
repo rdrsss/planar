@@ -15,10 +15,10 @@
     },
     {
       "id": "no-round-up",
-      "description": "The skill does not resolve ambiguity by silently escalating to large.",
-      "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md"],
-      "pattern": "requires an operator answer"
+      "description": "No surface's ambiguity handling ever outputs an auto-escalation to large (US-10: grade the absence of the silent-escalation behavior, not the sentence that disclaims it).",
+      "mode": "none",
+      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md", "agents/models.md"],
+      "pattern": "default to `large`"
     }
   ],
   "expected": {}

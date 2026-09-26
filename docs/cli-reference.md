@@ -1647,7 +1647,7 @@ planar task touches add <task-id> <repo-slug> [--path <p>]
 
 **Output (`--json`):**
 ```json
-{"ok":true,"task_id":42,"repo_id":7,"repo_slug":"acme/protos","path":"src/foo.zig"}
+{"ok":true,"task_id":42,"repo_id":7,"repo_slug":"acme/protos","path":"src/foo.cpp"}
 ```
 (`path` is `null` for a repo-level add.)
 
@@ -1673,7 +1673,8 @@ planar task touches infer <task-id> [--repo <slug>] [--apply] [--wide] [--json]
 
 **Description:** Propose path-level `task_touch_paths` rows by extracting path-shaped tokens from the task's own `title`, `body`, and `next_action`, then resolving them against a repo checkout. **Preview by default — without `--apply` nothing is written.**
 
-Tokens are recovered from the phrasings this codebase actually uses: prose punctuation and backticks are stripped, a trailing `:<line>` or `:<line>-<line>` citation is removed (`docs/cli-reference.md:339` → `docs/cli-reference.md`), and a sentence-ending period is dropped (`Rework src/alpha.zig.` → `src/alpha.zig`). URLs, absolute paths, and `../` traversal are rejected.
+<!-- surface-lint-ignore surface-path-missing: illustrative token-stripping example, not a real path -->
+Tokens are recovered from the phrasings this codebase actually uses: prose punctuation and backticks are stripped, a trailing `:<line>` or `:<line>-<line>` citation is removed (`docs/cli-reference.md:339` → `docs/cli-reference.md`), and a sentence-ending period is dropped (`Rework src/alpha.cpp.` → `src/alpha.cpp`). URLs, absolute paths, and `../` traversal are rejected.
 
 Each candidate is classified:
 
@@ -1719,8 +1720,8 @@ Repo selection: `--repo <slug>` names the checkout. Without it, the repo is deri
 **Output (`--json`):**
 ```json
 {"task_id":42,"repo_id":7,"repo_slug":"acme/protos","applied":true,"written":2,"review":1,
- "candidates":[{"token":"src/foo.zig","evidence":"body","classification":"resolved","paths":["src/foo.zig"]},
-               {"token":"src/gone.zig","evidence":"body","classification":"unresolved","paths":[]}]}
+ "candidates":[{"token":"src/foo.cpp","evidence":"body","classification":"resolved","paths":["src/foo.cpp"]},
+               {"token":"src/gone.cpp","evidence":"body","classification":"unresolved","paths":[]}]}
 ```
 
 **Schema effects:** With `--apply`, inserts `task_touch_paths(task_id, repo_id, path)` for every path of every writable candidate, plus the coarse `entity_links(relationship='touches')` repo edge — a path-touch implies the repo-touch. Both are wrapped in a savepoint: a partial commit would leave the repo edge without its path rows, and `plan recommend-strategy` would then fall back to the whole-repo signal and serialize a task that should have been eligible. Writes are idempotent against `unique(task_id, repo_id, path)`, so re-running is a no-op.
@@ -1756,7 +1757,7 @@ planar task touches list <task-id> [--json]
 
 **Output (`--json`):**
 ```json
-{"task_id":42,"repos":["acme/protos"],"paths":[{"repo":"acme/protos","path":"src/foo.zig"}]}
+{"task_id":42,"repos":["acme/protos"],"paths":[{"repo":"acme/protos","path":"src/foo.cpp"}]}
 ```
 
 **Exit codes:**
@@ -1799,7 +1800,8 @@ This is deliberately not symmetric with `touches add --path`, where a path-touch
 ```json
 {"ok":true,"task_id":42,"repo_id":7,"repo_slug":"acme/protos"}
 ```
-With `--path`, the withdrawn path is echoed as `"path":"src/foo.zig"`.
+<!-- surface-lint-ignore surface-path-missing: illustrative JSON output example, not a real path -->
+With `--path`, the withdrawn path is echoed as `"path":"src/foo.cpp"`.
 
 **Schema effects:** Without `--path`, deletes from `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`. With `--path`, deletes from `task_touch_paths(task_id, repo_id, path)` and leaves `entity_links` untouched.
 
@@ -5335,7 +5337,7 @@ Writes (only with `--apply`):
 - `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
 - `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
 
-**Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/import.zig`). Both verbs converge on the same downstream pipeline.
+**Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/importer/importer.cpp`). Both verbs converge on the same downstream pipeline.
 
 **Exit codes:**
 - `0` — success (preview, dry-run, apply, or cache-miss "awaiting synthesis").
@@ -6785,7 +6787,7 @@ Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbe
 
 ### Workflow run correlation flags (`pull` and `claim`)
 
-`pull` and `claim` accept two optional flags for associating a claim with an external workflow harness run (decision 450):
+`pull` and `claim` accept two optional flags for associating a claim with an external workflow harness run (decision 450). Decision 1007 (plan 1033) permits the run these flags correlate against to be driven by an external workflow harness, a host-native workflow, or a background agent rather than only the model orchestrator — see `agents/methodology.md` § Worktrees and `docs/concepts.md` § Worktree.
 
 - `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by the external harness when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
 - `--stage <stage>` — free-text stage name (e.g. `code`, `review`, `plan`) recorded on the claim. Requires `--run`; omitting `--stage` while passing `--run` leaves `stage` NULL. The `context add --claim <token>` verb (task 3901) stamps `run_id` and `stage` server-side from the claim row — the worker passes only `--claim` (decision 447).
@@ -6828,7 +6830,7 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
 1. The command tree (`src/cmd/planar-watch/`) registers exactly nine read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
-2. The bootstrap calls `runtime.ensureDbStrictReadOnly` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `openReadOnly: write SQL is rejected at the driver layer` unit test in `src/db/sqlite.zig`.
+2. The bootstrap calls `db::connection::open_read_only` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
 
@@ -6892,7 +6894,7 @@ planar-watch completion <bash|zsh|fish>
 
 Full text column order (M3): `<entity>:<id>  scope:<label>  activity:"<summary>"  vendor:<v>  branch:<b>  worktree:<basename>  sha:<8-char>  last_hb:<rel>  [category:<value>]  token:<tok>`. `planar-watch claims` uses the same categorized-only addition before its `token:` column. JSON claim rows always carry nullable `failure_category` additively.
 
-Implementation: `src/cmd/planar-watch/handlers/ps.zig` (tasks 3053–3058).
+Implementation: `ps()` in `src/cmd/planar-watch/handlers/live.cpp` (tasks 3053–3058).
 
 ### `planar-watch feed` — M3 flag addition (plan 467)
 
@@ -6931,7 +6933,7 @@ Each row shows the same columns as `ps`: `scope`, `vendor`, `activity`, `worktre
 
 **Choosing `tree` vs `ps --group-by`:** `ps --group-by role` is the flat-by-role view — use it when each claim's identity (role, vendor, heartbeat recency) is the question. `tree` is the topology view — use it when the orchestrator→coder dispatch fanout is the question (e.g. "which sub-agents did orchestrator A dispatch?"). When fanout density exceeds what `--group-by` makes readable (≥ 3 orchestrators each with multiple coders), prefer `tree`.
 
-**Implementation:** `src/cmd/planar-watch/handlers/tree.zig` (plan 467 M4, tasks 3064–3067).
+**Implementation:** `tree()` in `src/cmd/planar-watch/handlers/live.cpp` (plan 467 M4, tasks 3064–3067).
 
 ### `planar-watch run` — workflow run observability (plan 585)
 
@@ -7075,7 +7077,7 @@ planar-watch run show <id> --json:
 latest_action: { kind: string, summary: string, started_at: ISO8601 } | null
 ```
 
-`null` when no `agent_actions` row exists for the claim. The field is sourced from `agentactivity.store.latestActionForClaim` (implementation: `src/cmd/planar-watch/handlers/ps.zig`). The `feed` and `log` verbs do **not** embed `latest_action` on their claim payloads — they are time-ordered event streams where the action rows are already present as first-class events.
+`null` when no `agent_actions` row exists for the claim. The field is sourced from `latest_action_for_claim()` (implementation: `src/engine/runtime/agentactivity.cpp`). The `feed` and `log` verbs do **not** embed `latest_action` on their claim payloads — they are time-ordered event streams where the action rows are already present as first-class events.
 
 ### Exit codes
 
@@ -7112,6 +7114,7 @@ planar-ext schema
 planar-execute schema
 ```
 
+<!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ source cli_usage_lint was ported from, for history -->
 The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig tree's `tools/cli_usage_lint.zig` at task 6402). All five binaries are passed to that pass. The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone.
 
 ---
@@ -7503,7 +7506,7 @@ events:
 
 When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `claim_failure_categories`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
 
-**Privacy:** All queries are structurally redacted by construction in `src/engine/introspect.zig`. The bundle selects only counts, closed categories, provider identities, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never release reasons or action summaries, never scope slugs, and never path-bearing columns. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
+**Privacy:** All queries are structurally redacted by construction in `src/engine/introspect/introspect.cpp`. The bundle selects only counts, closed categories, provider identities, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never release reasons or action summaries, never scope slugs, and never path-bearing columns. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
 
 **Flags:**
 

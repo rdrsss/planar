@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -456,18 +457,28 @@ class BriefCompletenessTests(unittest.TestCase):
 
 
 class HostArgvTests(unittest.TestCase):
+    """Task 6865: `host_argv` now delegates to
+    `vendors.build_raw_command`, so its own return shape is
+    `vendors.py`'s to test (see `test_vendors.py`); these cases just pin
+    that `host_argv` actually calls it with `vendor="claude"` and the
+    prompt in place, rather than re-testing the adapter's argv shape here.
+    """
+
     def test_model_is_a_separate_argv_element(self) -> None:
-        argv = harness.host_argv("claude-opus-5")
+        argv = harness.host_argv("claude-opus-5", "hello")
         self.assertIn("--model", argv)
         self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5")
 
     def test_opaque_id_is_never_shell_syntax(self) -> None:
         hostile = "--opaque;$(whoami)"
-        argv = harness.host_argv(hostile)
+        argv = harness.host_argv(hostile, "hello")
         self.assertEqual(argv[argv.index("--model") + 1], hostile)
 
     def test_absent_model_omits_the_flag(self) -> None:
-        self.assertNotIn("--model", harness.host_argv(None))
+        self.assertNotIn("--model", harness.host_argv(None, "hello"))
+
+    def test_prompt_is_the_final_argv_element(self) -> None:
+        self.assertEqual(harness.host_argv(None, "hello")[-1], "hello")
 
 
 class LiveHostAuthBeforeSpawnTests(unittest.TestCase):
@@ -802,7 +813,7 @@ class DrafterRoutingTests(unittest.TestCase):
 
         run_model_calls = []
 
-        def _run_model_side_effect(argv, prompt, timeout, env):
+        def _run_model_side_effect(argv, timeout, env):
             call_order.append("run_model")
             run_model_calls.append(1)
             return self._COMPLETE_DRAFT if len(run_model_calls) == 1 else '{"scores": {"a": 1.0}}'
@@ -810,7 +821,8 @@ class DrafterRoutingTests(unittest.TestCase):
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "stage_vendor_config", side_effect=_stage_side_effect) as stage_mock, \
                 mock.patch.object(harness.arena, "assert_vendor_auth", side_effect=_auth_side_effect), \
-                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect), \
+                mock.patch.object(harness, "persist_to_ledger"):
             code, out, err = run_harness_main(
                 ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
@@ -822,8 +834,12 @@ class DrafterRoutingTests(unittest.TestCase):
     def test_drafter_prompt_invokes_the_installed_pl_spec_draft_surface(self) -> None:
         prompts: list[tuple[list[str], str]] = []
 
-        def _run_model_side_effect(argv, prompt, timeout, env):
-            prompts.append((list(argv), prompt))
+        def _run_model_side_effect(argv, timeout, env):
+            # `host_argv` now builds argv through `vendors.build_raw_command`,
+            # which appends the prompt as argv's own last element (task
+            # 6865) -- so it is read back from there rather than taken as a
+            # separate parameter.
+            prompts.append((list(argv), argv[-1]))
             if len(prompts) == 1:
                 return self._COMPLETE_DRAFT
             return '{"scores": {"a": 1.0}}'
@@ -831,7 +847,8 @@ class DrafterRoutingTests(unittest.TestCase):
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "stage_vendor_config"), \
                 mock.patch.object(harness.arena, "assert_vendor_auth"), \
-                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect), \
+                mock.patch.object(harness, "persist_to_ledger"):
             code, out, err = run_harness_main(
                 ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
@@ -862,14 +879,15 @@ class DrafterRoutingTests(unittest.TestCase):
         case = harness.load_case("spec-draft-quality")
         argvs: list[list[str]] = []
 
-        def _run_model_side_effect(argv, prompt, timeout, env):
+        def _run_model_side_effect(argv, timeout, env):
             argvs.append(list(argv))
             return self._COMPLETE_DRAFT if len(argvs) == 1 else '{"scores": {"a": 1.0}}'
 
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "stage_vendor_config"), \
                 mock.patch.object(harness.arena, "assert_vendor_auth"), \
-                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect), \
+                mock.patch.object(harness, "persist_to_ledger"):
             code, out, err = run_harness_main(
                 ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
@@ -886,7 +904,7 @@ class DrafterRoutingTests(unittest.TestCase):
 
         case = harness.load_case("spec-draft-quality")
 
-        def _run_model_side_effect(argv, prompt, timeout, env):
+        def _run_model_side_effect(argv, timeout, env):
             calls = _run_model_side_effect.calls
             calls.append(1)
             return self._COMPLETE_DRAFT if len(calls) == 1 else '{"scores": {"a": 1.0}}'
@@ -896,7 +914,8 @@ class DrafterRoutingTests(unittest.TestCase):
         with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
                 mock.patch.object(harness.arena, "stage_vendor_config"), \
                 mock.patch.object(harness.arena, "assert_vendor_auth"), \
-                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect):
+                mock.patch.object(harness, "run_model", side_effect=_run_model_side_effect), \
+                mock.patch.object(harness, "persist_to_ledger"):
             code, out, _err = run_harness_main(
                 ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
             )
@@ -930,5 +949,191 @@ class DrafterRoutingTests(unittest.TestCase):
         run_model_mock.assert_not_called()
 
 
+class LedgerPersistenceTests(unittest.TestCase):
+    """Task 6894: `{drafter_model, grader_model}` land in the durable,
+    shared `evals/RESULTS.md` ledger via the orchestrator harness's
+    `record_ledger_row` (task 6860 / C6), not only in the printed JSON
+    line -- a live planning run is paid-for, and losing which model
+    drafted and which graded makes the retained result unattributable.
+    """
+
+    _COMPLETE_DRAFT = (
+        "product-spec tech-spec test-spec roadmap\n"
+        "Goal: x\nNon-goals: y\nAcceptance: z\nOpen questions: w\n"
+    )
+
+    @staticmethod
+    def _draft_then_grade_side_effect(calls: list[int]):
+        def _side_effect(argv, timeout, env):
+            calls.append(1)
+            return (
+                LedgerPersistenceTests._COMPLETE_DRAFT
+                if len(calls) == 1
+                else '{"scores": {"a": 1.0}}'
+            )
+
+        return _side_effect
+
+    def test_persist_to_ledger_writes_case_and_both_models(self) -> None:
+        orch = harness._orchestrator_harness()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            with mock.patch.object(orch, "RESULTS_LEDGER_PATH", ledger_path):
+                harness.persist_to_ledger(
+                    {"id": "persist-probe"},
+                    "claude-haiku-4-5",
+                    "claude-opus-5",
+                    {"mean": 0.9, "min": 0.8, "max": 1.0, "stdev": 0.1},
+                    "pass",
+                )
+                rows = orch.ledger_rows()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["case"], "persist-probe")
+            self.assertEqual(rows[0]["grade"], "pass")
+            self.assertIn("claude-haiku-4-5", rows[0]["model"])
+            self.assertIn("claude-opus-5", rows[0]["model"])
+
+    def test_call_site_records_a_ledger_row_for_a_live_run(self) -> None:
+        # CALL-SITE test: proves `main()` itself invokes `persist_to_ledger`,
+        # not just that the function works standing alone. A no-op in place
+        # of the call site inside `main()` would leave the test above green
+        # while a real `--case ... --model ...` invocation never populated
+        # the ledger (task 6917/6894 review finding: unit-test isolation
+        # from the previous cycle is exactly why this needs its own
+        # end-to-end proof, not just a call-site-unaware unit check).
+        orch = harness._orchestrator_harness()
+        calls: list[int] = []
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            ledger_path = Path(raw_tmp) / "RESULTS.md"
+            with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                    mock.patch.object(harness.arena, "stage_vendor_config"), \
+                    mock.patch.object(harness.arena, "assert_vendor_auth"), \
+                    mock.patch.object(
+                        harness, "run_model",
+                        side_effect=self._draft_then_grade_side_effect(calls),
+                    ), \
+                    mock.patch.object(orch, "RESULTS_LEDGER_PATH", ledger_path):
+                code, out, err = run_harness_main(
+                    ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+                )
+                rows = orch.ledger_rows()
+            self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
+            case = harness.load_case("spec-draft-quality")
+            self.assertEqual(len(rows), 1, f"expected exactly one ledger row, got: {rows}")
+            self.assertEqual(rows[0]["case"], case["id"])
+            self.assertEqual(rows[0]["grade"], "pass")
+            self.assertIn("claude-haiku-4-5", rows[0]["model"])
+            self.assertIn(case["grader_model"], rows[0]["model"])
+
+    def test_ledger_persist_failure_fails_the_run_not_silently(self) -> None:
+        # "Failure over silence" (this file's own docstring doctrine):
+        # a persistence failure must fail the run, never a pass and never
+        # a silent skip.
+        calls: list[int] = []
+        with mock.patch.object(harness.shutil, "which", return_value="/usr/bin/claude"), \
+                mock.patch.object(harness.arena, "stage_vendor_config"), \
+                mock.patch.object(harness.arena, "assert_vendor_auth"), \
+                mock.patch.object(
+                    harness, "run_model",
+                    side_effect=self._draft_then_grade_side_effect(calls),
+                ), \
+                mock.patch.object(
+                    harness, "persist_to_ledger", side_effect=RuntimeError("disk full")
+                ):
+            code, out, err = run_harness_main(
+                ["--case", "spec-draft-quality", "--trials", "1", "--model", "claude-haiku-4-5"]
+            )
+        self.assertEqual(code, harness.EXIT_FAIL)
+        self.assertIn("disk full", out + err)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
+
+
+class PlanningLedgerFreshnessTests(unittest.TestCase):
+    """Task 6919: the orchestrator harness's `check_ledger_freshness` only
+    iterates `evals/orchestrator/cases/*.json`, so the planning ledger rows
+    made durable by task 6894 fed no freshness gate at all. A planning case
+    is live and paid-for; a threshold not re-measured against a current
+    model is exactly the claim this suite should not make silently.
+    """
+
+    def ledger(self, body: str):
+        """Point the ORCHESTRATOR module's ledger path at a temp file.
+
+        The planning check reads rows through `_orchestrator_harness()`, so
+        that module -- not this one -- owns `RESULTS_LEDGER_PATH`. Patching
+        the wrong module would leave the real committed ledger in play.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            "w", suffix=".md", delete=False, encoding="utf-8"
+        )
+        tmp.write(body)
+        tmp.close()
+        self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
+        return mock.patch.object(
+            harness._orchestrator_harness(), "RESULTS_LEDGER_PATH", Path(tmp.name)
+        )
+
+    HEADER = (
+        "| date | case | mode | vendor | surface | cost | grade | sha |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+    )
+
+    def test_the_kind_default_is_resolved_not_read_raw(self) -> None:
+        # `spec-draft-quality.json` omits `kind` entirely and inherits the
+        # `draft-quality` default in `load_case`. Reading the raw JSON would
+        # classify the one live-gradable case as having no live path and
+        # silently exempt it from the gate -- the exact vacuous-exemption
+        # this check exists to prevent.
+        ids = [case["id"] for case in harness.live_gradable_cases()]
+        self.assertIn("spec-draft-quality", ids)
+        self.assertNotIn("ingest-sentinel-lineage", ids)
+
+    def test_an_empty_ledger_reports_every_live_gradable_case(self) -> None:
+        with self.ledger(self.HEADER):
+            violations = harness.check_ledger_freshness()
+        self.assertTrue(
+            any("spec-draft-quality" in v and "no non-blocked" in v for v in violations),
+            violations,
+        )
+
+    def test_a_fresh_row_clears_the_case(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        row = f"| {today} | spec-draft-quality | live | claude | skill | - | pass | abc |\n"
+        with self.ledger(self.HEADER + row):
+            self.assertEqual(harness.check_ledger_freshness(), [])
+
+    def test_a_blocked_row_does_not_clear_the_case(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        row = f"| {today} | spec-draft-quality | live | claude | skill | - | blocked | abc |\n"
+        with self.ledger(self.HEADER + row):
+            violations = harness.check_ledger_freshness()
+        self.assertTrue(any("spec-draft-quality" in v for v in violations), violations)
+
+    def test_a_row_past_max_age_is_reported_as_stale(self) -> None:
+        old = (datetime.now(timezone.utc) - timedelta(days=400)).strftime("%Y-%m-%d")
+        row = f"| {old} | spec-draft-quality | live | claude | skill | - | pass | abc |\n"
+        with self.ledger(self.HEADER + row):
+            violations = harness.check_ledger_freshness()
+        self.assertTrue(
+            any("exceeds ledger.max_age_days" in v for v in violations), violations
+        )
+
+    def test_call_site_main_ledger_check_exits_nonzero_on_a_violation(self) -> None:
+        # Drives the real CLI entry point, not `check_ledger_freshness`
+        # directly: no-opping the `--ledger-check` branch in `main` fails
+        # here, which a helper-only test would not catch.
+        with self.ledger(self.HEADER), mock.patch.object(
+            sys, "argv", ["harness.py", "--ledger-check"]
+        ):
+            self.assertNotEqual(harness.main(), 0)
+
+    def test_call_site_main_ledger_check_exits_zero_when_fresh(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        row = f"| {today} | spec-draft-quality | live | claude | skill | - | pass | abc |\n"
+        with self.ledger(self.HEADER + row), mock.patch.object(
+            sys, "argv", ["harness.py", "--ledger-check"]
+        ):
+            self.assertEqual(harness.main(), 0)

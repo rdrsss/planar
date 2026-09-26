@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "foreign-flat-lifecycle-success",
+  "skill": "orchestrator",
+  "description": "A controlled classic cycle against a purpose-built non-Planar fixture (no Makefile, no AGENTS.md, no docs/product-spec family, a real Python unittest suite invoked via ./run-tests) claims one task, dispatches an isolated coder and reviewer, and completes only after approval.",
+  "tags": ["lifecycle", "classic", "success", "foreign-fixture"],
+  "tiers": ["contract", "lifecycle"],
+  "tasks": [
+    {
+      "slug": "fix-dedupe-words",
+      "title": "Fix textkit.dedupe_words dropping the final deduplicated word.",
+      "body": "textkit.py's dedupe_words() collapses consecutive duplicate words, but its final `result[:-1]` slice drops the last kept word before joining, so `dedupe_words(\"x y y\")` incorrectly returns \"x\" instead of \"x y\" (and `dedupe_words(\"a b c\")` returns \"a b\" instead of \"a b c\"). Fix the implementation so every consecutive-duplicate-collapsed word is preserved. Acceptance: STATUS.txt contains approved and ./run-tests exits 0.",
+      "next_action": "Run the controlled coder against textkit.py and observe ./run-tests passing."
+    }
+  ],
+  "contract_assertions": [
+    {
+      "id": "review-before-complete",
+      "description": "The orchestrator applies the reviewer decision before terminal completion.",
+      "mode": "all",
+      "paths": ["agents/orchestrator.md"],
+      "pattern": "Apply the reviewer's decision"
+    }
+  ],
+  "setup": {
+    "fixture": "foreign-flat",
+    "specialist_scenario": "success",
+    "plan_status": "active",
+    "strategy": "classic",
+    "isolation": "pwd",
+    "dispatch_shape": "strict"
+  },
+  "interaction": [
+    {
+      "send": "Execute with classic, pwd, strict, and no documentation phase."
+    }
+  ],
+  "lifecycle": {
+    "scenario": "controlled-classic",
+    "surface": "agent",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits strategy classic, isolation pwd, dispatch shape strict, and --no-docs. Execute the controlled task through coder and reviewer until it reaches a terminal state. Do not finalize, propagate, or archive.",
+    "timeout_seconds": 600,
+    "operator_responses": [
+      "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Continue through the controlled coder and reviewer cycle.",
+      "Use the already pre-committed strict dispatch shape and continue."
+    ]
+  },
+  "expected": {
+    "ordered_events": [
+      "claim-acquired",
+      "coder-finished",
+      "review-approved",
+      "task-completed"
+    ],
+    "forbidden_events": [
+      "review-request-changes",
+      "task-completed-before-review"
+    ],
+    "event_counts": {
+      "claim-acquired": 1,
+      "coder-finished": 1,
+      "review-approved": 1,
+      "task-completed": 1
+    },
+    "post_state": {
+      "task_status": "done",
+      "active_claims": 0,
+      "file_value": "approved",
+      "file_path": "STATUS.txt"
+    }
+  }
+}

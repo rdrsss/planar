@@ -65,7 +65,7 @@ planar init
 `init` does three things:
 
 1. Applies every migration embedded in the binary (sourced from
-   `migrations/` at build time via `tools/gen_migrations.zig`) against
+   `migrations/` at configure time via `cmake/generate_migrations.cmake`) against
    the new database. The public schema-version contract is the
    `schema_migrations` table — query it any time with
    `sqlite3 ~/.planar/planar.db "select * from schema_migrations;"`.
