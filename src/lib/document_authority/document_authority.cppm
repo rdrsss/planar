@@ -76,12 +76,11 @@ auto trim(std::string_view input) -> std::string_view {
 }
 
 auto classify(std::string_view line) -> std::pair<std::string, std::string_view> {
-  auto value = trim(line);
-  if (value.starts_with("# ")) {
-    while (value.starts_with("#"))
-      value.remove_prefix(1);
-    return {"heading", trim(value)};
-  }
+  auto value         = trim(line);
+  auto heading_marks = std::ranges::find_if(value, [](char c) { return c != '#'; }) - value.begin();
+  if (heading_marks >= 1 && heading_marks <= 6 && static_cast<std::size_t>(heading_marks) < value.size() &&
+      value[static_cast<std::size_t>(heading_marks)] == ' ')
+    return {"heading", trim(value.substr(static_cast<std::size_t>(heading_marks) + 1))};
   if ((value.starts_with("- [ ] ") || value.starts_with("- [x] ") || value.starts_with("- [X] ") || value.starts_with("* [ ] ") ||
        value.starts_with("* [x] ") || value.starts_with("* [X] ")))
     return {"task_list_item", trim(value.substr(6))};
