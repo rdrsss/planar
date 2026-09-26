@@ -858,3 +858,36 @@ TEST_CASE("document authority derives and validates every adjacent Unicode passa
   CHECK(mutated.code != 0);
   CHECK(mutated.err.contains("stale_revision"));
 }
+
+TEST_CASE("document authority matches the rich Markdown parity fixture", "[cmd][document][markdown]") {
+  auto const fx = make_fixture("doc_markdown");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  auto const body = R"MARKDOWN(# [Linked](https://example.test) <em>heading</em>
+unsafe [label](javascript:bad) and [safe](#anchor)
+```cpp
+int main() {
+  return 0;
+}
+```
+| H1 | H2 |
+| --- | :---: |
+| a | b |
+| c | d |
+<script>alert(1)</script>Visible)MARKDOWN";
+  REQUIRE(dispatch(fx, {"artifact", "add", "Rich parity", "--kind", "tech_spec", "--body", body, "--json"}).code == 0);
+
+  auto const projected = dispatch(fx, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  REQUIRE(projected.code == 0);
+  CHECK(projected.out.contains(
+      R"("kind":"heading","text":"Linked heading","source":{"kind":"artifact","id":"1","path":"body","start_line":1,"end_line":1})"));
+  CHECK(projected.out.contains(
+      R"("kind":"paragraph","text":"unsafe label and safe","source":{"kind":"artifact","id":"1","path":"body","start_line":2,"end_line":2})"));
+  CHECK(projected.out.contains(
+      R"("kind":"code","text":"int main() {\n  return 0;\n}","source":{"kind":"artifact","id":"1","path":"body","start_line":3,"end_line":7})"));
+  CHECK(projected.out.contains(
+      R"("kind":"table","text":"H1 H2 a b c d","source":{"kind":"artifact","id":"1","path":"body","start_line":8,"end_line":11})"));
+  CHECK(projected.out.contains(
+      R"("kind":"paragraph","text":"alert(1)Visible","source":{"kind":"artifact","id":"1","path":"body","start_line":12,"end_line":12})"));
+  CHECK_FALSE(projected.out.contains("javascript:bad"));
+  CHECK_FALSE(projected.out.contains("<script>"));
+}

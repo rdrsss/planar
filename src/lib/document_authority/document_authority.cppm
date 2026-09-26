@@ -75,46 +75,186 @@ auto trim(std::string_view input) -> std::string_view {
   return input;
 }
 
-auto classify(std::string_view line) -> std::pair<std::string, std::string_view> {
-  auto value         = trim(line);
-  auto heading_marks = std::ranges::find_if(value, [](char c) { return c != '#'; }) - value.begin();
-  if (heading_marks >= 1 && heading_marks <= 6 && static_cast<std::size_t>(heading_marks) < value.size() &&
-      value[static_cast<std::size_t>(heading_marks)] == ' ')
-    return {"heading", trim(value.substr(static_cast<std::size_t>(heading_marks) + 1))};
+auto strip_html(std::string_view line) -> std::string {
+  std::string result;
+  for (std::size_t cursor = 0; cursor < line.size();) {
+    if (line[cursor] == '<') {
+      auto close = line.find('>', cursor + 1);
+      if (close != std::string_view::npos) {
+        cursor = close + 1;
+        continue;
+      }
+    }
+    result.push_back(line[cursor++]);
+  }
+  return result;
+}
+
+auto flatten_links(std::string_view line) -> std::string {
+  std::string result;
+  std::size_t cursor = 0;
+  while (cursor < line.size()) {
+    auto open = line.find('[', cursor);
+    if (open == std::string_view::npos) {
+      result.append(line.substr(cursor));
+      break;
+    }
+    auto label_end = line.find(']', open + 1);
+    if (label_end == std::string_view::npos || label_end == open + 1 || label_end + 1 >= line.size() ||
+        line[label_end + 1] != '(') {
+      result.append(line.substr(cursor, open - cursor + 1));
+      cursor = open + 1;
+      continue;
+    }
+    auto href_end = line.find(')', label_end + 2);
+    auto href = href_end == std::string_view::npos ? std::string_view{} : line.substr(label_end + 2, href_end - label_end - 2);
+    if (href.empty() || std::ranges::any_of(href, [](unsigned char c) { return std::isspace(c) != 0 || c == ')'; })) {
+      result.append(line.substr(cursor, open - cursor + 1));
+      cursor = open + 1;
+      continue;
+    }
+    result.append(line.substr(cursor, open - cursor));
+    result.append(line.substr(open + 1, label_end - open - 1));
+    cursor = href_end + 1;
+  }
+  return result;
+}
+
+auto classify(std::string_view line) -> std::pair<std::string, std::string> {
+  auto heading_marks = std::ranges::find_if(line, [](char c) { return c != '#'; }) - line.begin();
+  if (heading_marks >= 1 && heading_marks <= 6 && static_cast<std::size_t>(heading_marks) + 1 < line.size() &&
+      line[static_cast<std::size_t>(heading_marks)] == ' ')
+    return {"heading", flatten_links(line.substr(static_cast<std::size_t>(heading_marks) + 1))};
+
+  auto first = line.find_first_not_of(" \t");
+  auto value = first == std::string_view::npos ? std::string_view{} : line.substr(first);
   if ((value.starts_with("- [ ] ") || value.starts_with("- [x] ") || value.starts_with("- [X] ") || value.starts_with("* [ ] ") ||
-       value.starts_with("* [x] ") || value.starts_with("* [X] ")))
-    return {"task_list_item", trim(value.substr(6))};
+       value.starts_with("* [x] ") || value.starts_with("* [X] ") || value.starts_with("+ [ ] ") || value.starts_with("+ [x] ") ||
+       value.starts_with("+ [X] ")))
+    return {"task_list_item", flatten_links(value.substr(6))};
   if (value.starts_with("- ") || value.starts_with("* ") || value.starts_with("+ "))
-    return {"list_item", trim(value.substr(2))};
+    return {"list_item", flatten_links(value.substr(2))};
   auto ordered_end = value.find(". ");
   if (ordered_end != std::string_view::npos && ordered_end > 0 &&
       std::ranges::all_of(value.substr(0, ordered_end), [](unsigned char c) { return std::isdigit(c) != 0; }))
-    return {"list_item", trim(value.substr(ordered_end + 2))};
-  if (value.starts_with(">"))
-    return {"quote", trim(value.substr(1))};
-  return {"paragraph", value};
+    return {"list_item", flatten_links(value.substr(ordered_end + 2))};
+  if (line.starts_with(">"))
+    return {"quote", flatten_links(line.substr(line.starts_with("> ") ? 2 : 1))};
+  return {"paragraph", flatten_links(line)};
+}
+
+auto fenced_open(std::string_view line) -> std::optional<std::string> {
+  if (!line.starts_with("```"))
+    return std::nullopt;
+  auto suffix = line.substr(3);
+  if (suffix.contains('`'))
+    return std::nullopt;
+  return std::string{trim(suffix)};
+}
+
+auto fenced_close(std::string_view line) -> bool {
+  return line.starts_with("```") && std::ranges::all_of(line.substr(3), [](unsigned char c) { return std::isspace(c) != 0; });
+}
+
+auto table_row(std::string_view line) -> bool {
+  auto value = trim(line);
+  return value.size() >= 2 && value.front() == '|' && value.back() == '|';
+}
+
+auto table_cells(std::string_view line) -> std::vector<std::string> {
+  auto value = trim(line);
+  value.remove_prefix(1);
+  value.remove_suffix(1);
+  std::vector<std::string> result;
+  for (auto part : std::views::split(value, '|'))
+    result.emplace_back(trim(std::string_view{part.begin(), part.end()}));
+  return result;
+}
+
+auto table_delimiter(std::string_view line) -> bool {
+  auto value = trim(line);
+  if (value.starts_with('|'))
+    value.remove_prefix(1);
+  if (value.ends_with('|'))
+    value.remove_suffix(1);
+  std::size_t count = 0;
+  for (auto part : std::views::split(value, '|')) {
+    auto cell = trim(std::string_view{part.begin(), part.end()});
+    if (cell.starts_with(':'))
+      cell.remove_prefix(1);
+    if (cell.ends_with(':'))
+      cell.remove_suffix(1);
+    if (cell.size() < 3 || !std::ranges::all_of(cell, [](char c) { return c == '-'; }))
+      return false;
+    ++count;
+  }
+  return count >= 2;
 }
 
 auto add_markdown(document& doc, std::string_view source_kind, std::string source_id, std::string_view path,
                   std::string_view body) -> void {
   std::map<std::string, std::size_t, std::less<>> occurrences;
-  std::size_t                                     line_no = 0;
+  std::vector<std::string_view>                   lines;
   for (auto part : std::views::split(body, '\n')) {
-    ++line_no;
     std::string_view line{part.begin(), part.end()};
-    if (trim(line).empty())
-      continue;
-    auto [kind, text] = classify(line);
-    auto identity     = sha256::hex(std::format("{}\n{}\n{}\n{}\n{}", source_kind, source_id, path, kind, text));
-    auto occurrence   = occurrences[identity]++;
+    if (line.ends_with('\r'))
+      line.remove_suffix(1);
+    lines.push_back(line);
+  }
+  auto append = [&](std::string kind, std::string text, std::size_t start_line, std::size_t end_line) {
+    auto identity   = sha256::hex(std::format("{}\n{}\n{}\n{}\n{}", source_kind, source_id, path, kind, text));
+    auto occurrence = occurrences[identity]++;
     doc.passages.push_back({.key    = std::format("{}:{}:{}:{}", source_kind, source_id, identity, occurrence),
                             .kind   = std::move(kind),
-                            .text   = std::string{text},
+                            .text   = std::move(text),
                             .source = {.kind       = std::string{source_kind},
                                        .id         = source_id,
                                        .path       = std::string{path},
-                                       .start_line = static_cast<std::int64_t>(line_no),
-                                       .end_line   = static_cast<std::int64_t>(line_no)}});
+                                       .start_line = static_cast<std::int64_t>(start_line),
+                                       .end_line   = static_cast<std::int64_t>(end_line)}});
+  };
+
+  for (std::size_t index = 0; index < lines.size(); ++index) {
+    auto const raw_line = lines[index];
+    auto const line     = strip_html(raw_line);
+    if (trim(line).empty())
+      continue;
+    if (auto language = fenced_open(raw_line)) {
+      auto const  start_line = index + 1;
+      std::string text;
+      bool        first_body_line = true;
+      while (++index < lines.size() && !fenced_close(lines[index])) {
+        if (!first_body_line)
+          text += '\n';
+        text += lines[index];
+        first_body_line = false;
+      }
+      append("code", std::move(text), start_line, index < lines.size() ? index + 1 : lines.size());
+      continue;
+    }
+    if (table_row(line) && index + 1 < lines.size() && table_delimiter(lines[index + 1])) {
+      auto const start_line = index + 1;
+      auto       rows       = std::vector{table_cells(line)};
+      index += 2;
+      while (index < lines.size() && table_row(lines[index])) {
+        rows.push_back(table_cells(lines[index]));
+        ++index;
+      }
+      --index;
+      std::string text;
+      bool        first_cell = true;
+      for (auto const& row : rows)
+        for (auto const& cell : row) {
+          if (!first_cell)
+            text += ' ';
+          text += cell;
+          first_cell = false;
+        }
+      append("table", std::move(text), start_line, index + 1);
+      continue;
+    }
+    auto [kind, text] = classify(line);
+    append(std::move(kind), std::move(text), index + 1, index + 1);
   }
 }
 
