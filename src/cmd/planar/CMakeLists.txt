@@ -653,6 +653,7 @@ planar_binary(planar
     handlers/artifact/list.cppm
     handlers/artifact/show.cppm
     handlers/artifact/add.cppm
+    handlers/document/command.cppm
     editor.cppm
     editflow.cppm
     handlers/shared/drafting.cppm
@@ -754,6 +755,7 @@ planar_binary(planar
     handlers/decision/command.cpp
     handlers/scenario/command.cpp
     handlers/artifact/command.cpp
+    handlers/document/command.cpp
     editor.cpp
     editflow.cpp
     handlers/shared/drafting.cpp

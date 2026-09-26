@@ -723,3 +723,110 @@ TEST_CASE("artifact link requires --relationship before checking the subject", "
   auto conn = open_db(fx);
   CHECK(query_rows(conn, "select count(*) from entity_links", 1) == "0");
 }
+
+TEST_CASE("document authority derives and validates every adjacent Unicode passage", "[cmd][document][range]") {
+  auto const fx = make_fixture("doc_range");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Canonical", "--kind", "tech_spec", "--body",
+                        "# Heading\nFirst paragraph\n- middle item\nUnicode café ☕", "--json"})
+              .code == 0);
+
+  auto const projected = dispatch(fx, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  REQUIRE(projected.code == 0);
+  CHECK(projected.out.contains("\"contract_version\":\"block-document-v1\""));
+  CHECK(projected.out.contains("\"text\":\"Unicode café ☕\""));
+
+  auto field = [&](std::string_view marker, std::size_t from = 0) {
+    auto begin = projected.out.find(marker, from);
+    REQUIRE(begin != std::string::npos);
+    begin += marker.size();
+    auto end = projected.out.find('"', begin);
+    REQUIRE(end != std::string::npos);
+    return std::pair{projected.out.substr(begin, end - begin), end};
+  };
+  auto const [revision, revision_end]       = field("\"content_revision\":\"");
+  auto const [title_key, title_end]         = field("\"key\":\"", revision_end);
+  auto const [heading_key, heading_end]     = field("\"key\":\"", title_end);
+  auto const [paragraph_key, paragraph_end] = field("\"key\":\"", heading_end);
+  auto const [list_key, list_end]           = field("\"key\":\"", paragraph_end);
+  auto const [unicode_key, ignored]         = field("\"key\":\"", list_end);
+
+  auto const valid = dispatch(fx, {"document",
+                                   "validate-range",
+                                   "--kind",
+                                   "artifact",
+                                   "--id",
+                                   "1",
+                                   "--content-revision",
+                                   revision,
+                                   "--start-key",
+                                   heading_key,
+                                   "--start-offset",
+                                   "0",
+                                   "--end-key",
+                                   unicode_key,
+                                   "--end-offset",
+                                   "17",
+                                   "--covered-key",
+                                   heading_key,
+                                   "--covered-key",
+                                   paragraph_key,
+                                   "--covered-key",
+                                   list_key,
+                                   "--covered-key",
+                                   unicode_key,
+                                   "--segment-quote",
+                                   "Heading",
+                                   "--segment-quote",
+                                   "First paragraph",
+                                   "--segment-quote",
+                                   "middle item",
+                                   "--segment-quote",
+                                   "Unicode café ☕",
+                                   "--json"});
+  CHECK(valid.code == 0);
+  CHECK(valid.out.contains("\"normalized_quote\":\"Heading\\nFirst paragraph\\nmiddle item\\nUnicode café ☕\""));
+
+  auto omitted = dispatch(fx, {"document",
+                               "validate-range",
+                               "--kind",
+                               "artifact",
+                               "--id",
+                               "1",
+                               "--content-revision",
+                               revision,
+                               "--start-key",
+                               heading_key,
+                               "--start-offset",
+                               "0",
+                               "--end-key",
+                               unicode_key,
+                               "--end-offset",
+                               "17",
+                               "--covered-key",
+                               heading_key,
+                               "--covered-key",
+                               unicode_key,
+                               "--segment-quote",
+                               "Heading",
+                               "--segment-quote",
+                               "Unicode café ☕",
+                               "--json"});
+  CHECK(omitted.code != 0);
+  CHECK(omitted.err.contains("noncontiguous_covered_keys"));
+
+  auto mid_codepoint = dispatch(
+      fx,
+      {"document",      "validate-range", "--kind",          "artifact", "--id",      "1",         "--content-revision", revision,
+       "--start-key",   unicode_key,      "--start-offset",  "12",       "--end-key", unicode_key, "--end-offset",       "13",
+       "--covered-key", unicode_key,      "--segment-quote", "",         "--json"});
+  CHECK(mid_codepoint.code != 0);
+  CHECK(mid_codepoint.err.contains("invalid_utf8_boundary"));
+
+  auto stale = dispatch(fx, {"document",           "validate-range", "--kind",       "artifact", "--id",           "1",
+                             "--content-revision", "forged",         "--start-key",  title_key,  "--start-offset", "0",
+                             "--end-key",          title_key,        "--end-offset", "9",        "--covered-key",  title_key,
+                             "--segment-quote",    "Canonical",      "--json"});
+  CHECK(stale.code != 0);
+  CHECK(stale.err.contains("stale_revision"));
+}

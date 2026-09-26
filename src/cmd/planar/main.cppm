@@ -8,6 +8,7 @@ import planar.cliapp.surface;
 import planar.cmd.planar.handlers.explore.command;
 import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.artifact;
+import planar.cmd.planar.handlers.document;
 import planar.cmd.planar.handlers.assoc;
 import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.capture;
@@ -64,15 +65,16 @@ auto root_app() -> std::unique_ptr<CLI::App> {
 
   // Root declaration order is observable in help and the schema catalog.
   // Keep this sequence pinned when changing command modules.
-  handlers::declare_init(*app);       // 1
-  handlers::declare_scope(*app);      // 2
-  handlers::declare_assoc(*app);      // 3
-  handlers::declare_plan(*app);       // 4
-  handlers::declare_task(*app);       // 5
-  handlers::declare_question(*app);   // 6
-  handlers::declare_scenario(*app);   // 7
-  handlers::declare_decision(*app);   // 8
-  handlers::declare_artifact(*app);   // 9
+  handlers::declare_init(*app);     // 1
+  handlers::declare_scope(*app);    // 2
+  handlers::declare_assoc(*app);    // 3
+  handlers::declare_plan(*app);     // 4
+  handlers::declare_task(*app);     // 5
+  handlers::declare_question(*app); // 6
+  handlers::declare_scenario(*app); // 7
+  handlers::declare_decision(*app); // 8
+  handlers::declare_artifact(*app); // 9
+  handlers::declare_document(*app);
   handlers::declare_annotate(*app);   // 10
   handlers::declare_promote(*app);    // 11
   handlers::declare_demote(*app);     // 12

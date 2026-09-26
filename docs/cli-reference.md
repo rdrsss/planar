@@ -2432,6 +2432,30 @@ artifact 3: "Billing Tech Spec"  [tech_spec, draft]  (scope: association:3 [from
 
 ---
 
+### `planar document project`
+
+```bash
+planar document project --kind plan|artifact --id <id> --json
+```
+
+Emits Planar's authoritative `block-document-v1` projection. Each passage has
+a stable key, authoritative text, and source mapping. `content_revision` binds
+the complete ordered projection to the source state.
+
+### `planar document validate-range`
+
+```bash
+planar document validate-range --kind plan|artifact --id <id> \
+  --content-revision <revision> --start-key <key> --start-offset <bytes> \
+  --end-key <key> --end-offset <bytes> \
+  --covered-key <key>... --segment-quote <text>... --json
+```
+
+Validates a complete adjacent range at one content revision. Offsets are UTF-8
+byte offsets and must lie on code-point boundaries. Covered keys and segment
+quotes are evidence, not authority: Planar recomputes and compares them before
+returning the canonical keys, segment quotes, and normalized full quote.
+
 ### `planar artifact show <artifact-id>`
 
 **Synopsis:**
