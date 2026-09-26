@@ -891,3 +891,62 @@ int main() {
   CHECK_FALSE(projected.out.contains("javascript:bad"));
   CHECK_FALSE(projected.out.contains("<script>"));
 }
+
+TEST_CASE("plan document authority covers canonical selectable sections once and in order", "[cmd][document][plan]") {
+  auto const fx = make_fixture("doc_plan_full");
+  seed_association_and_plan(fx);
+  REQUIRE(
+      dispatch(fx, {"artifact", "add", "Product", "--kind", "product_spec", "--body", "Artifact body", "--plan", "1", "--json"})
+          .code == 0);
+  REQUIRE(dispatch(fx, {"decision", "add", "Decision A", "--body", "Decision body", "--plan", "1", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"question", "add", "Question A", "--body", "Question body", "--plan", "1", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "step", "add", "1", "Milestone body", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Task A", "--plan", "1", "--body", "Task body", "--editor=false", "--json"}).code == 0);
+  {
+    auto conn = open_db(fx);
+    // A second relationship to the same decision is a reference, not a
+    // second authored passage. The projection's DISTINCT is the canonical
+    // render-once/link-later rule from block-document-v1.
+    REQUIRE(conn.execute("insert or ignore into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
+                         "values ('plan',1,'decision',1,'cites')"));
+    REQUIRE(conn.execute("insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
+                         "values ('plan',1,'task',1,'depends-on')"));
+    REQUIRE(conn.execute("insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
+                         "values ('plan',1,'repo',1,'touches')"));
+  }
+
+  auto const projected = dispatch(fx, {"document", "project", "--kind", "plan", "--id", "1", "--json"});
+  REQUIRE(projected.code == 0);
+  auto const artifact   = projected.out.find(R"("source":{"kind":"artifact")");
+  auto const decision   = projected.out.find(R"("source":{"kind":"decision")");
+  auto const question   = projected.out.find(R"("source":{"kind":"question")");
+  auto const milestone  = projected.out.find(R"("source":{"kind":"plan_step")");
+  auto const task       = projected.out.find(R"("source":{"kind":"task")");
+  auto const dependency = projected.out.find(R"("path":"relationship")", task);
+  auto const resource   = projected.out.find(R"("text":"touches")", dependency);
+  CHECK(artifact < decision);
+  CHECK(decision < question);
+  CHECK(question < milestone);
+  CHECK(milestone < task);
+  CHECK(task < dependency);
+  CHECK(dependency < resource);
+  CHECK(projected.out.contains(R"("key":"decision:1:)"));
+  CHECK(projected.out.contains(R"("key":"question:1:)"));
+  CHECK(projected.out.contains(R"("key":"plan_step:1:)"));
+  CHECK(projected.out.contains(R"("key":"task:1:)"));
+  CHECK(projected.out.contains(R"("key":"entity_link:)"));
+  CHECK(projected.out.contains(R"("path":"ordinal")"));
+  CHECK(projected.out.contains(R"("path":"endpoints")"));
+  auto const decision_body = projected.out.find("Decision body");
+  REQUIRE(decision_body != std::string::npos);
+  CHECK(projected.out.find("Decision body", decision_body + 1) == std::string::npos);
+
+  auto const revision_marker = std::string_view{R"("content_revision":")"};
+  auto const revision_begin  = projected.out.find(revision_marker) + revision_marker.size();
+  auto const revision_end    = projected.out.find('"', revision_begin);
+  auto const revision        = projected.out.substr(revision_begin, revision_end - revision_begin);
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--body", "Task changed", "--json"}).code == 0);
+  auto const after = dispatch(fx, {"document", "project", "--kind", "plan", "--id", "1", "--json"});
+  REQUIRE(after.code == 0);
+  CHECK_FALSE(after.out.contains(std::format(R"("content_revision":"{}")", revision)));
+}

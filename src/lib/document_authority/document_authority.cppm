@@ -234,7 +234,7 @@ auto add_markdown(document& doc, std::string_view source_kind, std::string sourc
     }
     if (table_row(line) && index + 1 < lines.size() && table_delimiter(lines[index + 1])) {
       auto const start_line = index + 1;
-      auto       rows       = std::vector{table_cells(line)};
+      auto       rows       = std::vector<std::vector<std::string>>{table_cells(line)};
       index += 2;
       while (index < lines.size() && table_row(lines[index])) {
         rows.push_back(table_cells(lines[index]));
@@ -265,8 +265,8 @@ auto bind_id(db::connection& conn, std::string_view sql, std::int64_t id) -> std
   return std::move(*stmt);
 }
 
-auto add_rows(document& doc, db::statement& stmt, std::string_view source_kind, std::string_view title_prefix = "")
-    -> std::expected<void, error> {
+auto add_rows(document& doc, db::statement& stmt, std::string_view source_kind, std::string_view title_path = "title",
+              std::string_view body_path = "body", std::string_view title_prefix = "") -> std::expected<void, error> {
   while (true) {
     auto row = stmt.step();
     if (!row)
@@ -274,10 +274,19 @@ auto add_rows(document& doc, db::statement& stmt, std::string_view source_kind, 
     if (*row == db::step_result::done)
       return {};
     auto id = std::to_string(stmt.column_int64(0));
-    add_markdown(doc, source_kind, id, "title", std::format("{}{}", title_prefix, stmt.column_text(1)));
+    add_markdown(doc, source_kind, id, title_path, std::format("{}{}", title_prefix, stmt.column_text(1)));
     if (!stmt.is_null(2))
-      add_markdown(doc, source_kind, id, "body", stmt.column_text(2));
+      add_markdown(doc, source_kind, id, body_path, stmt.column_text(2));
   }
+}
+
+auto append_rows(document& doc, db::connection& conn, std::int64_t plan_id, std::string_view sql, std::string_view source_kind,
+                 std::string_view title_path = "title", std::string_view body_path = "body", std::string_view title_prefix = "")
+    -> std::expected<void, error> {
+  auto stmt = bind_id(conn, sql, plan_id);
+  if (!stmt)
+    return std::unexpected(stmt.error());
+  return add_rows(doc, *stmt, source_kind, title_path, body_path, title_prefix);
 }
 
 auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
@@ -313,17 +322,84 @@ auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
     if (!plan->is_null(1))
       detail::add_markdown(result, "plan", std::to_string(id), "summary", plan->column_text(1));
 
-    auto append = [&](std::string_view sql, std::string_view source_kind) -> std::expected<void, error> {
-      auto stmt = detail::bind_id(conn, sql, id);
-      if (!stmt)
-        return std::unexpected(stmt.error());
-      return detail::add_rows(result, *stmt, source_kind);
-    };
-    if (auto value = append("select a.id, a.title, a.body from entity_links e join artifacts a on a.id=e.to_id "
-                            "where e.from_kind='plan' and e.from_id=? and e.to_kind='artifact' and e.relationship='derives-from' "
-                            "order by case a.kind when 'product_spec' then 1 when 'tech_spec' then 2 when 'roadmap' then 3 "
-                            "when 'test_spec' then 4 else 5 end, a.id",
-                            "artifact");
+    // Primary content is emitted in the block-document-v1 canonical order.
+    // Every row below has a durable source identity. Source-less absent/partial
+    // placeholders and reference-only links remain presentation metadata: they
+    // cannot be selected and therefore deliberately do not enter range authority.
+    if (auto value =
+            detail::append_rows(result, conn, id,
+                                "select distinct a.id, a.title, a.body from entity_links e join artifacts a on "
+                                "((e.from_kind='artifact' and e.from_id=a.id) or (e.to_kind='artifact' and e.to_id=a.id)) "
+                                "where e.relationship='derives-from' and ((e.from_kind='plan' and e.from_id=?1) or "
+                                "(e.to_kind='plan' and e.to_id=?1)) "
+                                "order by case a.kind when 'product_spec' then 1 when 'tech_spec' then 2 when 'roadmap' then 3 "
+                                "when 'test_spec' then 4 else 5 end, a.id",
+                                "artifact");
+        !value)
+      return std::unexpected(value.error());
+
+    if (auto value =
+            detail::append_rows(result, conn, id,
+                                "select distinct d.id, d.title, d.body from entity_links e join decisions d on "
+                                "((e.from_kind='decision' and e.from_id=d.id) or (e.to_kind='decision' and e.to_id=d.id)) "
+                                "where (e.from_kind='plan' and e.from_id=?1) or (e.to_kind='plan' and e.to_id=?1) order by d.id",
+                                "decision");
+        !value)
+      return std::unexpected(value.error());
+
+    if (auto value =
+            detail::append_rows(result, conn, id,
+                                "select distinct q.id, q.title, q.body from entity_links e join questions q on "
+                                "((e.from_kind='question' and e.from_id=q.id) or (e.to_kind='question' and e.to_id=q.id)) "
+                                "where (e.from_kind='plan' and e.from_id=?1) or (e.to_kind='plan' and e.to_id=?1) order by q.id",
+                                "question");
+        !value)
+      return std::unexpected(value.error());
+
+    if (auto value =
+            detail::append_rows(result, conn, id,
+                                "select p.id, 'Parent plan', p.title from plans root join plans p on p.id=root.parent_plan_id "
+                                "where root.id=? order by p.id",
+                                "plan", "relationship", "title");
+        !value)
+      return std::unexpected(value.error());
+    if (auto value = detail::append_rows(
+            result, conn, id, "select p.id, 'Child plan', p.title from plans p where p.parent_plan_id=? order by p.title, p.id",
+            "plan", "relationship", "title");
+        !value)
+      return std::unexpected(value.error());
+
+    if (auto value = detail::append_rows(
+            result, conn, id,
+            "select s.id, 'Milestone ' || s.ordinal, s.body from plan_steps s where s.plan_id=? order by s.ordinal, s.id",
+            "plan_step", "ordinal", "body");
+        !value)
+      return std::unexpected(value.error());
+
+    if (auto value = detail::append_rows(result, conn, id,
+                                         "select t.id, t.title, coalesce(t.body, '') from tasks t where t.plan_id=? "
+                                         "order by t.priority, t.id",
+                                         "task");
+        !value)
+      return std::unexpected(value.error());
+
+    if (auto value = detail::append_rows(
+            result, conn, id,
+            "select e.id, e.relationship, e.from_kind || ':' || e.from_id || ' → ' || e.to_kind || ':' || e.to_id "
+            "from entity_links e where e.relationship='depends-on' and "
+            "((e.from_kind='plan' and e.from_id=?1) or (e.to_kind='plan' and e.to_id=?1)) order by e.id",
+            "entity_link", "relationship", "endpoints");
+        !value)
+      return std::unexpected(value.error());
+
+    if (auto value = detail::append_rows(
+            result, conn, id,
+            "select e.id, e.relationship, e.from_kind || ':' || e.from_id || ' → ' || e.to_kind || ':' || e.to_id "
+            "from entity_links e where e.relationship not in ('derives-from','depends-on') and "
+            "((e.from_kind='plan' and e.from_id=?1) or (e.to_kind='plan' and e.to_id=?1)) and "
+            "e.from_kind not in ('decision','question') and e.to_kind not in ('decision','question') "
+            "order by e.relationship, e.id",
+            "entity_link", "relationship", "endpoints");
         !value)
       return std::unexpected(value.error());
   } else
