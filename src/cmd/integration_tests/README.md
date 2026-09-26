@@ -24,6 +24,31 @@ object.
 
 ## Scenario inventory
 
+### Multi-plan ingestion and execution
+
+`planning_lifecycle.t.cpp` contains one continuous ceremony over an anchor
+plan, two child milestone plans, and five tasks:
+
+1. Create the anchor and four reviewed spec artifacts through `planar`; push
+   them into a scratch workbench. A strict ingest preview confirms coverage
+   while leaving the plan and task rows untouched.
+2. Apply ingestion to create both milestone plans, their four tasks, and four
+   verifying scenarios. Accept the authored decision and re-apply to refresh
+   routing facts; all four ingested task packets must report `ready: true`.
+3. Add a preflight task directly to the anchor. Block three milestone tasks
+   in a dependency chain, then move preflight and the first milestone task
+   through `doing` to `done` using operator commands.
+4. Completing each blocker unblocks the next task. The Foundation child closes
+   when its tasks finish, then Delivery closes when its tasks finish. The
+   anchor remains active until `plan closeout` reports ready and applies.
+
+This scenario uses `task update --status doing` to exercise the operator
+transition. The separate `planar-agent` claim, heartbeat, and terminal-verb
+ritual requires a file-backed database shared across binaries; it is covered
+by the cross-process suite.
+
+### Coverage index
+
 Each row identifies a *workflow* to exercise through commands. The engine
 tests cover the full legal/illegal transition matrices; these scenarios check
 composition, persistence, audit effects, and refused writes. Add a scenario
@@ -32,9 +57,9 @@ table. Keep narrow single-verb cases next to their handler.
 
 | State family | Command-level scenario | Coverage |
 | --- | --- | --- |
-| Plan | Draft → active → paused → active → done; refuse skipped and terminal transitions | `planning_lifecycle.t.cpp` |
+| Plan | Draft → active → paused → active → done; multi-plan ingest, child roll-ups, anchor closeout | `planning_lifecycle.t.cpp` |
 | Plan step | Add → in progress → done or skip; enforce step ordering | [`plan_task_remainder_leaves.t.cpp`](../planar/plan_task_remainder_leaves.t.cpp), engine transition tests |
-| Task and plan roll-up | Todo → doing → done → reopen promotes, closes and reopens a child plan; dependency block/unblock | `planning_lifecycle.t.cpp`, [`task.t.cpp`](../../engine/planning/task.t.cpp), [`plan.t.cpp`](../../engine/planning/plan.t.cpp) |
+| Task and plan roll-up | Todo → doing → done → reopen; dependency blocking and cascading unblock across two child plans | `planning_lifecycle.t.cpp`, [`task.t.cpp`](../../engine/planning/task.t.cpp), [`plan.t.cpp`](../../engine/planning/plan.t.cpp) |
 | Question | Open → answered or wontfix; repeated answer and terminal guard | [`question.t.cpp`](../../engine/planning/question.t.cpp), handler tests |
 | Decision | Proposed → accepted → superseded or withdrawn | [`decision.t.cpp`](../../engine/planning/decision.t.cpp), handler tests |
 | Test scenario | Draft → ready → verified/failing → retired; verification audit | [`scenario.t.cpp`](../../engine/planning/scenario.t.cpp), handler tests |
