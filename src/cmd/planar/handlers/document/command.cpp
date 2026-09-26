@@ -7,6 +7,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.db.migrate;
 import planar.document_authority;
 import planar.sha256;
 import planar.cmd.planar.context;
@@ -228,16 +229,43 @@ auto authoritative_document(db::connection& conn, std::string_view kind, std::in
   return result;
 }
 
+auto open_authority_source(context& ctx) -> std::expected<db::connection, domain_error> {
+  auto opened = db::connection::open_read_only(ctx.db_path().string());
+  if (!opened)
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("failed to open document source {} read-only: {}",
+                                                                        ctx.db_path().string(), opened.error().message_)));
+
+  auto const compatibility = db::assert_schema_compatible(*opened);
+  if (!compatibility)
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure,
+                        std::format("document source schema check failed: {}", compatibility.error().message_)));
+  if (compatibility->verdict_ == db::schema_compatibility::behind)
+    return std::unexpected(
+        error_from_body(domain_error_kind::schema_version_behind,
+                        std::format("document source schema version {} is older than this binary requires ({})",
+                                    compatibility->live_, compatibility->embedded_max_)));
+  if (compatibility->verdict_ == db::schema_compatibility::ahead)
+    return std::unexpected(
+        error_from_body(domain_error_kind::schema_version_ahead,
+                        std::format("document source schema version {} is newer than this binary supports ({})",
+                                    compatibility->live_, compatibility->embedded_max_)));
+  if (compatibility->verdict_ == db::schema_compatibility::gap)
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "document source schema has a missing migration"));
+  return std::move(*opened);
+}
+
 } // namespace
 
 auto document_project(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto src = source(args);
   if (!src)
     return std::unexpected(src.error());
-  auto conn = ctx.ensure_db();
+  auto conn = open_authority_source(ctx);
   if (!conn)
     return std::unexpected(conn.error());
-  auto doc = authoritative_document(**conn, src->first, src->second);
+  auto doc = authoritative_document(*conn, src->first, src->second);
   if (!doc)
     return std::unexpected(doc.error());
   ctx.out() << render(*doc) << '\n';
@@ -248,10 +276,10 @@ auto document_validate_range(context& ctx, const cliapp::parsed_args& args) -> h
   auto src = source(args);
   if (!src)
     return std::unexpected(src.error());
-  auto conn = ctx.ensure_db();
+  auto conn = open_authority_source(ctx);
   if (!conn)
     return std::unexpected(conn.error());
-  auto doc = authoritative_document(**conn, src->first, src->second);
+  auto doc = authoritative_document(*conn, src->first, src->second);
   if (!doc)
     return std::unexpected(doc.error());
   auto revision     = cliapp::flag_string(args, "--content-revision");

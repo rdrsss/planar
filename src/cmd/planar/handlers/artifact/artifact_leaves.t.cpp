@@ -54,6 +54,7 @@
 
 import std;
 import planar.db;
+import planar.document_authority;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.main;
@@ -857,6 +858,91 @@ TEST_CASE("document authority derives and validates every adjacent Unicode passa
                                "--segment-quote",    "Heading",        "--json"});
   CHECK(mutated.code != 0);
   CHECK(mutated.err.contains("stale_revision"));
+}
+
+TEST_CASE("document authority refuses missing and unmigrated sources without creating or migrating them",
+          "[cmd][document][readonly]") {
+  auto missing              = make_fixture("doc_readonly_missing");
+  missing.db_path           = missing.root / "absent" / "nested" / "planar.db";
+  auto const missing_result = dispatch(missing, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  CHECK(missing_result.code != 0);
+  CHECK_FALSE(std::filesystem::exists(missing.db_path));
+  CHECK_FALSE(std::filesystem::exists(missing.db_path.parent_path()));
+
+  auto const unmigrated = make_fixture("doc_readonly_unmigrated");
+  {
+    auto created = planar::db::connection::open(unmigrated.db_path.string());
+    REQUIRE(created.has_value());
+  }
+  auto const before_size       = std::filesystem::file_size(unmigrated.db_path);
+  auto const unmigrated_result = dispatch(unmigrated, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  CHECK(unmigrated_result.code != 0);
+  CHECK(std::filesystem::file_size(unmigrated.db_path) == before_size);
+  auto conn = open_db(unmigrated);
+  CHECK(query_rows(conn, "select count(*) from sqlite_master where type='table' and name='schema_migrations'", 1) == "0");
+}
+
+TEST_CASE("document authority projects one coherent snapshot while a writer changes related rows", "[cmd][document][snapshot]") {
+  auto const fx = make_fixture("doc_snapshot");
+  seed_association_and_plan(fx);
+  REQUIRE(dispatch(fx, {"task", "add", "Snapshot task", "--plan", "1", "--body", "A", "--editor=false", "--json"}).code == 0);
+  {
+    auto        conn = open_db(fx);
+    std::string long_summary;
+    for (int i = 0; i < 30000; ++i)
+      long_summary += std::format("line {}\n", i);
+    auto stmt = conn.prepare("update plans set title='Plan A', summary=? where id=1");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_text(1, long_summary));
+    REQUIRE(stmt->step() == planar::db::step_result::done);
+  }
+
+  std::atomic<bool> writer_ready{false};
+  std::atomic<bool> writer_failed{false};
+  std::jthread      writer([&](std::stop_token stop) {
+    auto opened = planar::db::connection::open(fx.db_path.string());
+    if (!opened) {
+      writer_failed.store(true, std::memory_order_release);
+      writer_ready.store(true, std::memory_order_release);
+      return;
+    }
+    auto conn    = std::move(*opened);
+    bool state_b = true;
+    writer_ready.store(true, std::memory_order_release);
+    while (!stop.stop_requested()) {
+      auto txn = conn.begin_transaction(planar::db::lock_mode::immediate);
+      if (!txn)
+        continue;
+      auto const tag = state_b ? "B" : "A";
+      if (!conn.execute(
+              std::format("update plans set title='Plan {}' where id=1; update tasks set body='{}' where id=1;", tag, tag)) ||
+          !txn->commit()) {
+        writer_failed.store(true, std::memory_order_release);
+        return;
+      }
+      state_b = !state_b;
+    }
+  });
+  while (!writer_ready.load(std::memory_order_acquire))
+    std::this_thread::yield();
+  REQUIRE_FALSE(writer_failed.load(std::memory_order_acquire));
+
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    auto reader = planar::db::connection::open_read_only(fx.db_path.string());
+    REQUIRE(reader.has_value());
+    auto projected = planar::document_authority::project(*reader, "plan", 1);
+    REQUIRE(projected.has_value());
+    auto const title = std::ranges::find_if(
+        projected->passages, [](auto const& item) { return item.source.kind == "plan" && item.source.path == "title"; });
+    auto const task_body = std::ranges::find_if(
+        projected->passages, [](auto const& item) { return item.source.kind == "task" && item.source.path == "body"; });
+    REQUIRE(title != projected->passages.end());
+    REQUIRE(task_body != projected->passages.end());
+    CHECK((title->text == "Plan A" || title->text == "Plan B"));
+    CHECK(task_body->text == title->text.substr(title->text.size() - 1));
+  }
+  writer.request_stop();
+  CHECK_FALSE(writer_failed.load(std::memory_order_acquire));
 }
 
 TEST_CASE("document authority matches the rich Markdown parity fixture", "[cmd][document][markdown]") {

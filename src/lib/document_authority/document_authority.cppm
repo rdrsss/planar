@@ -294,8 +294,12 @@ auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
 }
 } // namespace detail
 
-/// Project a plan or artifact using the caller's current transaction/snapshot.
+/// Project a plan or artifact inside one deferred read snapshot.
 [[nodiscard]] auto project(db::connection& conn, std::string_view kind, std::int64_t id) -> std::expected<document, error> {
+  auto snapshot = conn.begin_transaction(db::lock_mode::deferred);
+  if (!snapshot)
+    return std::unexpected(error::query_failed);
+
   document result{.id = std::format("{}:{}", kind, id)};
   if (kind == "artifact") {
     auto stmt = detail::bind_id(conn, "select title, body from artifacts where id = ?", id);
@@ -410,6 +414,8 @@ auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
     canonical += std::format("\n{}\n{}\n{}\n{}:{}:{}:{}:{}", p.key, p.kind, p.text, p.source.kind, p.source.id, p.source.path,
                              p.source.start_line, p.source.end_line);
   result.content_revision = sha256::hex(canonical);
+  if (!snapshot->commit())
+    return std::unexpected(error::query_failed);
   return result;
 }
 
