@@ -77,15 +77,22 @@ auto trim(std::string_view input) -> std::string_view {
 
 auto classify(std::string_view line) -> std::pair<std::string, std::string_view> {
   auto value = trim(line);
-  if (value.starts_with("#")) {
+  if (value.starts_with("# ")) {
     while (value.starts_with("#"))
       value.remove_prefix(1);
     return {"heading", trim(value)};
   }
-  if (value.starts_with("- ") || value.starts_with("* "))
+  if ((value.starts_with("- [ ] ") || value.starts_with("- [x] ") || value.starts_with("- [X] ") || value.starts_with("* [ ] ") ||
+       value.starts_with("* [x] ") || value.starts_with("* [X] ")))
+    return {"task_list_item", trim(value.substr(6))};
+  if (value.starts_with("- ") || value.starts_with("* ") || value.starts_with("+ "))
     return {"list_item", trim(value.substr(2))};
-  if (value.starts_with("> "))
-    return {"quote", trim(value.substr(2))};
+  auto ordered_end = value.find(". ");
+  if (ordered_end != std::string_view::npos && ordered_end > 0 &&
+      std::ranges::all_of(value.substr(0, ordered_end), [](unsigned char c) { return std::isdigit(c) != 0; }))
+    return {"list_item", trim(value.substr(ordered_end + 2))};
+  if (value.starts_with(">"))
+    return {"quote", trim(value.substr(1))};
   return {"paragraph", value};
 }
 
@@ -105,7 +112,7 @@ auto add_markdown(document& doc, std::string_view source_kind, std::string sourc
                             .kind   = std::move(kind),
                             .text   = std::string{text},
                             .source = {.kind       = std::string{source_kind},
-                                       .id         = std::move(source_id),
+                                       .id         = source_id,
                                        .path       = std::string{path},
                                        .start_line = static_cast<std::int64_t>(line_no),
                                        .end_line   = static_cast<std::int64_t>(line_no)}});
@@ -119,7 +126,7 @@ auto bind_id(db::connection& conn, std::string_view sql, std::int64_t id) -> std
   return std::move(*stmt);
 }
 
-auto add_rows(document& doc, db::statement& stmt, std::string_view source_kind, std::string_view title_prefix = "## ")
+auto add_rows(document& doc, db::statement& stmt, std::string_view source_kind, std::string_view title_prefix = "")
     -> std::expected<void, error> {
   while (true) {
     auto row = stmt.step();
@@ -176,48 +183,10 @@ auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
     if (auto value = append("select a.id, a.title, a.body from entity_links e join artifacts a on a.id=e.to_id "
                             "where e.from_kind='plan' and e.from_id=? and e.to_kind='artifact' and e.relationship='derives-from' "
                             "order by case a.kind when 'product_spec' then 1 when 'tech_spec' then 2 when 'roadmap' then 3 "
-                            "when 'test_spec' then 4 else 5 end, e.created_at, e.id",
+                            "when 'test_spec' then 4 else 5 end, a.id",
                             "artifact");
         !value)
       return std::unexpected(value.error());
-    if (auto value = append("select d.id,d.title,d.body from entity_links e join decisions d on "
-                            "((e.from_kind='decision' and d.id=e.from_id) or (e.to_kind='decision' and d.id=e.to_id)) "
-                            "where ((e.from_kind='plan' and e.from_id=?) or (e.to_kind='plan' and e.to_id=?)) order by d.id",
-                            "decision");
-        !value) {
-      // The statement has two placeholders; use the dedicated form below.
-      auto stmt =
-          conn.prepare("select d.id,d.title,d.body from entity_links e join decisions d on "
-                       "((e.from_kind='decision' and d.id=e.from_id) or (e.to_kind='decision' and d.id=e.to_id)) "
-                       "where ((e.from_kind='plan' and e.from_id=?1) or (e.to_kind='plan' and e.to_id=?1)) order by d.id");
-      if (!stmt || !stmt->bind_int64(1, id))
-        return std::unexpected(error::query_failed);
-      if (auto added = detail::add_rows(result, *stmt, "decision"); !added)
-        return std::unexpected(added.error());
-    }
-    auto questions =
-        conn.prepare("select q.id,q.title,q.body from entity_links e join questions q on "
-                     "((e.from_kind='question' and q.id=e.from_id) or (e.to_kind='question' and q.id=e.to_id)) "
-                     "where ((e.from_kind='plan' and e.from_id=?1) or (e.to_kind='plan' and e.to_id=?1)) order by q.id");
-    if (!questions || !questions->bind_int64(1, id))
-      return std::unexpected(error::query_failed);
-    if (auto added = detail::add_rows(result, *questions, "question"); !added)
-      return std::unexpected(added.error());
-    if (auto value =
-            append("select id, 'Milestone ' || ordinal, body from plan_steps where plan_id=? order by ordinal,id", "plan_step");
-        !value)
-      return std::unexpected(value.error());
-    if (auto value = append("select id,title,body from tasks where plan_id=? order by priority,id", "task"); !value)
-      return std::unexpected(value.error());
-    auto deps = conn.prepare(
-        "select e.id,e.relationship,e.from_kind || ':' || e.from_id || ' → ' || e.to_kind || ':' || e.to_id "
-        "from entity_links e where e.relationship='depends-on' and ((e.from_kind='plan' and e.from_id=?1) "
-        "or (e.to_kind='plan' and e.to_id=?1) or (e.from_kind='task' and e.from_id in (select id from tasks where plan_id=?1)) "
-        "or (e.to_kind='task' and e.to_id in (select id from tasks where plan_id=?1))) order by e.id");
-    if (!deps || !deps->bind_int64(1, id))
-      return std::unexpected(error::query_failed);
-    if (auto added = detail::add_rows(result, *deps, "entity_link"); !added)
-      return std::unexpected(added.error());
   } else
     return std::unexpected(error::invalid_kind);
 
