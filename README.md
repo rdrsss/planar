@@ -354,4 +354,4 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 
 ## License
 
-To be determined. License selection is part of the first formal release.
+MIT — see [LICENSE](LICENSE).
