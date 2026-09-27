@@ -159,7 +159,7 @@ do not reach for a suppression.
 |---|---|---|
 | macOS (Homebrew, Apple Silicon) | `/opt/homebrew/opt/llvm` (keg-only; not on `PATH`) | **Verified** — this document's probes ran against it directly. |
 | macOS (Homebrew, Intel) | `/usr/local/opt/llvm` | Not verified on this task (no Intel Mac available); same keg-only layout, different prefix root — Homebrew's own convention. |
-| Linux (apt.llvm.org, Debian/Ubuntu) | `/usr/lib/llvm-<N>/bin/clang++`, alternatives symlink `clang++-<N>` at `/usr/bin/clang++-<N>` | **Specified, not yet verified.** Derived from centurion's `docs/toolchain-parity.md` (its `linux-container-base` preset pins `/usr/bin/clang-22` / `/usr/bin/clang++-22` against `llvm-toolchain-<codename>-22`, matching apt.llvm.org's major-and-codename-pinned repository naming). Planar's own Linux lane does not exist yet (tech-spec § Presets: `linux-container` "follows post-cutover"); when it lands, pin apt.llvm.org's `llvm-toolchain-<codename>-<major>` for whatever major this table currently pins (23 once stable, else the same major as the macOS row) and verify with the same probes under the target Debian/Ubuntu base image before trusting this row. |
+| Linux (apt.llvm.org, Debian/Ubuntu) | `/usr/lib/llvm-<N>/bin/clang++`, alternatives symlink `clang++-<N>` at `/usr/bin/clang++-<N>` | **Builds; suite run but not yet counted** (task 6936). Measured against `debian:trixie-slim` with apt.llvm.org's `clang-23` / `libc++-23-dev` (prefix `/usr/lib/llvm-23`): the tree configures, compiles and links, and the full ctest run exits 0. The run's final pass count was not captured (BuildKit caps a step's log at 2 MiB), so treat this row as "builds and runs" rather than a verified pass tally until a run records one. The Linux-only flag additions are in § Linux flag additions below; the test-only `sqlite3` CLI dependency is task 6944. |
 
 ## How the prefix is found (task 6755, decision 1123)
 
@@ -223,11 +223,11 @@ failed an hour later on `make surface-lint`, which needed to rebuild the
 lint tool). Re-running configure over the stale tree is NOT enough: the
 cached tool paths survive it (see the previous paragraph). Delete it.
 
-**Linux is still specified, not verified.** Everything above was verified
-on macOS ARM (see the probe transcript below); the Linux branch of step 3
-is structural, and the platform table's Linux row remains
-"specified, not yet verified". Discovery makes a Linux configure possible;
-it does not by itself make Linux a tested host.
+**Linux builds, but is not yet a counted host.** Everything above was
+verified on macOS ARM (see the probe transcript below). The Linux branch
+has since been exercised against apt.llvm.org's `/usr/lib/llvm-23`
+(task 6936): discovery accepts it, and the tree builds and runs its suite.
+See the platform table's Linux row for what was and was not measured.
 
 ## Derived import-std / embed flag set (macOS, verified)
 
@@ -238,7 +238,12 @@ Since task 6755 these are produced by `cmake/llvm-toolchain.cmake` against
 the DISCOVERED prefix rather than written literally into the preset; the
 values below are what that resolves to on this machine, and the libc++
 library directory is read out of `libc++.modules.json`'s location rather
-than assumed to be `lib/c++` (apt.llvm.org puts it under `lib/<triple>`):
+than assumed to be `lib/c++`. Three layouts are accepted: Homebrew's
+`lib/c++/libc++.modules.json`, apt.llvm.org's `lib/libc++.modules.json`
+directly under `lib/` (for example `/usr/lib/llvm-23/lib/libc++.modules.json`),
+and `lib/<subdir>/libc++.modules.json`. Before task 6936 only the first and
+last were globbed, so the apt.llvm.org layout was refused as "built without
+module support" (the macOS values below are unchanged by that fix):
 
 ```
 CMAKE_EXPERIMENTAL_CXX_IMPORT_STD = f35a9ac6-8463-4d38-8eec-5d6008153e7d   # CMake 4.4.x gate UUID
@@ -247,6 +252,24 @@ CMAKE_CXX_COMPILER               = /opt/homebrew/opt/llvm/bin/clang++
 CMAKE_CXX_FLAGS                  = -stdlib=libc++ -nostdinc++ -isystem /opt/homebrew/opt/llvm/include/c++/v1
 CMAKE_EXE_LINKER_FLAGS           = -stdlib=libc++ -L/opt/homebrew/opt/llvm/lib/c++ -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++
 CMAKE_CXX_STDLIB_MODULES_JSON    = /opt/homebrew/opt/llvm/lib/c++/libc++.modules.json
+```
+
+### Linux flag additions (non-Apple UNIX only)
+
+`cmake/llvm-toolchain.cmake` appends two flags on non-Apple UNIX, and only
+there, so the macOS values above stay byte-identical (task 6936):
+
+| Flag | Appended to | Why |
+|---|---|---|
+| `-Wno-unused-command-line-argument` | `CMAKE_CXX_FLAGS` | With `-nostdinc++ -isystem …/c++/v1` supplied, `-stdlib=libc++` has no compile-time effect on Linux and clang reports it as unused. That is fatal only in third-party sub-builds with their own `-Werror` (Centurion's vendored BoringSSL was the first). It silences a driver diagnostic, not one about code; first-party targets keep `PLANAR_WARNINGS_AS_ERRORS`. |
+| `-lc++abi` | `CMAKE_EXE_LINKER_FLAGS` | libc++abi is folded into libc++ on macOS but is a separate DSO on Linux that the driver does not add; without it a link fails with `libc++abi.so.1: DSO missing from command line` (Centurion's vendored `protoc` was the first). |
+
+Against `/usr/lib/llvm-23` the resolved values are therefore:
+
+```
+CMAKE_CXX_FLAGS        = -stdlib=libc++ -nostdinc++ -isystem /usr/lib/llvm-23/include/c++/v1 -Wno-unused-command-line-argument
+CMAKE_EXE_LINKER_FLAGS = -stdlib=libc++ -L/usr/lib/llvm-23/lib -Wl,-rpath,/usr/lib/llvm-23/lib -lc++abi
+CMAKE_CXX_STDLIB_MODULES_JSON = /usr/lib/llvm-23/lib/libc++.modules.json
 ```
 
 Per target (not global — forcing it onto vendored CPM targets like Glaze or

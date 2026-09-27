@@ -2427,7 +2427,10 @@ TEST_CASE("extract-questions and the workbench edit round trip are pinned", "[cm
     REQUIRE(file.good());
     file << "#!/bin/sh\n"
          << "printf '%s\\n' \"$1\" >> " << (space.cpp_root / "argv-witness").string() << "\n"
-         << "sed -i '' 's/^Intro line\\./XYZZY-PARITY-EDIT/' \"$1/1-bullet-spec.md\"\n"
+         << "f=\"$1/1-bullet-spec.md\"\n"
+         // `sed -i ''` is BSD-only: GNU sed takes the '' as the script and the
+         // script as a filename. The temp-file form is portable (task 6936).
+         << "sed 's/^Intro line\\./XYZZY-PARITY-EDIT/' \"$f\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"\n"
          << "exit 0\n";
     file.close();
     std::error_code ec;

@@ -5,6 +5,14 @@ module;
 #include <cerrno>
 #include <csignal>
 #include <fcntl.h>
+// `<time.h>` for `nanosleep`/`struct timespec` in `wait_next_degraded`, which
+// is the fallback path on EVERY platform -- so the declaration has to be
+// unconditional, not inside one of the branches below. macOS got it for free
+// via the kqueue branch's `<sys/time.h>`; on Linux neither `<poll.h>` nor
+// `<sys/inotify.h>` pulls it in, and the whole `planar-watch` target failed
+// to compile with "missing '#include <time.h>'; 'nanosleep' must be declared
+// before it is used" (measured building the Linux gate, task 6936).
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
