@@ -416,10 +416,11 @@ TEST_CASE("an editor that rewrites a spec's body lands that text in the row", "[
   REQUIRE(dispatch(fx, {"workbench", "push", "1"}).code == 0);
 
   auto const spec = feature_dir(fx) / "1-bullet-spec.md";
-  write_script(fx.root / "stub-editor", std::format("#!/bin/sh\n"
-                                                    "sed -i '' 's/^Intro line\\./XYZZY-EDIT-PROVENANCE/' {}\n"
-                                                    "exit 0\n",
-                                                    spec.string()));
+  write_script(fx.root / "stub-editor",
+               std::format("#!/bin/sh\n"
+                           "sed 's/^Intro line\\./XYZZY-EDIT-PROVENANCE/' {0} > {0}.tmp && mv {0}.tmp {0}\n"
+                           "exit 0\n",
+                           spec.string()));
   fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();
 
   auto const res = dispatch(fx, {"workbench", "edit", "1"});
@@ -444,7 +445,7 @@ TEST_CASE("a non-zero editor exit aborts before the pull, leaving the row alone"
   // here would hold whether or not the pull ran and would witness nothing.
   auto const spec = feature_dir(fx) / "1-bullet-spec.md";
   write_script(fx.root / "stub-editor", std::format("#!/bin/sh\n"
-                                                    "sed -i '' 's/^Intro line\\./SHOULD-NOT-LAND/' {}\n"
+                                                    "sed 's/^Intro line\\./SHOULD-NOT-LAND/' {0} > {0}.tmp && mv {0}.tmp {0}\n"
                                                     "exit 7\n",
                                                     spec.string()));
   fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();

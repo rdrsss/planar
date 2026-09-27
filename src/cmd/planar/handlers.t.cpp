@@ -2451,7 +2451,13 @@ TEST_CASE("capture commits reports an unresolvable --since ref", "[cmd][handlers
   }
   REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
 
-  auto const got = dispatch(fx, {"capture", "commits", "--since", "not-a-ref"});
+  // `--repo` EXPLICITLY, as the neighbouring walk test already does and says
+  // it does. Omitting it leaves `--repo` at its `.` default -- the PROCESS
+  // cwd, not the seeded repo -- so this case only reached the ref-resolution
+  // path because ctest happens to run the binary inside a git repo on macOS.
+  // In a container it produced "repo is not a git repository: ." instead, and
+  // the assertion below was never exercising what it names (task 6936).
+  auto const got = dispatch(fx, {"capture", "commits", "--repo", (fx.root / "proj").string(), "--since", "not-a-ref"});
   CHECK(got.code == 1);
   CHECK(got.out.empty());
   CHECK(got.err == "error: cannot resolve ref 'not-a-ref'\n");
@@ -2465,7 +2471,9 @@ TEST_CASE("capture commits reports unresolvable SHAs distinctly from an unresolv
   }
   REQUIRE(dispatch(fx, {"capture", "session"}).code == 0);
 
-  auto const got = dispatch(fx, {"capture", "commits", "not-a-real-sha"});
+  // Same reason as the --since case above: `--repo` explicit, so the SHA
+  // resolution path is reached regardless of the process cwd (task 6936).
+  auto const got = dispatch(fx, {"capture", "commits", "--repo", (fx.root / "proj").string(), "not-a-real-sha"});
   CHECK(got.code == 1);
   CHECK(got.out.empty());
   CHECK(got.err == "error: one or more commit SHAs could not be resolved\n");
