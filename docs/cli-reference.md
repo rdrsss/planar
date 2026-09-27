@@ -136,7 +136,7 @@ tag spelling on both binaries** — the busy-source case is the sharpest
 example: a lock held past the timeout emits `Busy` from `planar-agent
 heartbeat --json` and `busy_source` from `planar task update --json` for
 the same underlying SQLite busy condition (see
-`src/cmd/planar/task_busy_leaf.t.cpp` and the `Busy`/`QueryFailed`
+`src/cmd/planar/handlers/task/task_busy_leaf.t.cpp` and the `Busy`/`QueryFailed`
 scenario in this feature's test spec).
 
 ### Capture Behavior
@@ -6894,7 +6894,7 @@ planar-watch completion <bash|zsh|fish>
 
 Full text column order (M3): `<entity>:<id>  scope:<label>  activity:"<summary>"  vendor:<v>  branch:<b>  worktree:<basename>  sha:<8-char>  last_hb:<rel>  [category:<value>]  token:<tok>`. `planar-watch claims` uses the same categorized-only addition before its `token:` column. JSON claim rows always carry nullable `failure_category` additively.
 
-Implementation: `ps()` in `src/cmd/planar-watch/handlers/live.cpp` (tasks 3053–3058).
+Implementation: `ps()` in `src/cmd/planar-watch/handlers/shared/live.cpp` (tasks 3053–3058).
 
 ### `planar-watch feed` — M3 flag addition (plan 467)
 
@@ -6933,7 +6933,7 @@ Each row shows the same columns as `ps`: `scope`, `vendor`, `activity`, `worktre
 
 **Choosing `tree` vs `ps --group-by`:** `ps --group-by role` is the flat-by-role view — use it when each claim's identity (role, vendor, heartbeat recency) is the question. `tree` is the topology view — use it when the orchestrator→coder dispatch fanout is the question (e.g. "which sub-agents did orchestrator A dispatch?"). When fanout density exceeds what `--group-by` makes readable (≥ 3 orchestrators each with multiple coders), prefer `tree`.
 
-**Implementation:** `tree()` in `src/cmd/planar-watch/handlers/live.cpp` (plan 467 M4, tasks 3064–3067).
+**Implementation:** `tree()` in `src/cmd/planar-watch/handlers/shared/live.cpp` (plan 467 M4, tasks 3064–3067).
 
 ### `planar-watch run` — workflow run observability (plan 585)
 

@@ -199,7 +199,7 @@ manifest; local personal skills remain under `planar local`.
    output cases.
 5. **Wire build and installer:** make `install.sh` build and use its own
    `$PLANAR_HOME/bin/scriptorium` after CMake installation; remove the
-   external discovery preflight and `scripts/discover-scriptorium.sh`.
+   external discovery preflight and its `discover-scriptorium.sh` helper.
    Update `scripts/check-self-installed.sh` and installer tests to use the
    installed tool and the intended staging root. Keep full vendor link/copy
    and install-manifest verification.

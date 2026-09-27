@@ -258,7 +258,7 @@ exit-0) is preserved across tiers.
 | 2 | kqueue (macOS/BSD) or inotify (Linux) on the SQLite `-wal` sibling | Sub-millisecond wake from any committed write | ~0 (kernel notification) | Shipped. |
 | 3 | Writer-side `update_hook` → sidecar notify socket | Same as Tier 2, plus per-row filtering | ~0 | Future. |
 
-The abstraction lives in `src/cmd/planar-watch/handlers/follow.cpp` as
+The abstraction lives in `src/cmd/planar-watch/handlers/shared/follow.cpp` as
 the `wake_source` class, constructed around a `wake_event` enum. The follow
 loop in the same file calls `wake_source::wait_next(timeout_ns)` once per
 iteration; the wake source returns `wake_event::wal_changed` when a kernel

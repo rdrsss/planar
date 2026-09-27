@@ -1906,7 +1906,7 @@ The session id surfaced by `dashboard --agents` is the Planar-side id; pair it w
 ### Failure modes
 
 - **Malformed payload** (`{` truncated, not JSON): `ingest` exits non-zero with `error: malformed event payload…` on stderr and writes no rows.
-- **Unknown `event_type`** (the payload is valid JSON but the event_type field is outside the adapter's known set): `ingest` exits non-zero with `error: unknown event_type in payload…`. Add the new event type to the claude branch of `parse()` in `src/cmd/planar-agent/handlers/ingest.cpp` if you want it recorded.
+- **Unknown `event_type`** (the payload is valid JSON but the event_type field is outside the adapter's known set): `ingest` exits non-zero with `error: unknown event_type in payload…`. Add the new event type to the claude branch of `parse()` in `src/cmd/planar-agent/handlers/ingest/ingest.cpp` if you want it recorded.
 - **`$PLANAR_DB` missing or unreadable**: the schema-version handshake fails at startup; `ingest` exits non-zero before parsing.
 
 Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction rolls back so no partial rows land in `sessions` or `agent_actions`.
@@ -2004,7 +2004,7 @@ The Copilot adapter accepts BOTH `status` (Copilot's documented field name) and 
 ### Failure modes
 
 - **Malformed payload** (`{` truncated, not JSON, missing required `event` or `session_id` field): `ingest` exits non-zero with `error: malformed event payload (vendor=copilot)…` on stderr and writes no rows.
-- **Unknown event** (payload is valid JSON but `event` is not in the table above): `ingest` exits non-zero with `error: unknown event_type in payload (vendor=copilot)…`. Add the new event name to the copilot branch of `parse()` in `src/cmd/planar-agent/handlers/ingest.cpp` if you want it recorded.
+- **Unknown event** (payload is valid JSON but `event` is not in the table above): `ingest` exits non-zero with `error: unknown event_type in payload (vendor=copilot)…`. Add the new event name to the copilot branch of `parse()` in `src/cmd/planar-agent/handlers/ingest/ingest.cpp` if you want it recorded.
 - **`$PLANAR_DB` missing or unreadable**: the schema-version handshake fails at startup; `ingest` exits non-zero before parsing.
 
 Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction rolls back so no partial rows land in `sessions` or `agent_actions`.
@@ -2143,7 +2143,7 @@ See [CLI reference: planar-watch tree](cli-reference.md#planar-watch-tree--m4-ad
 
 ### Capability boundary
 
-The verb set is enforced by `root_app()` in `src/cmd/planar-watch/tree.cpp`'s registered-command list: there is no `pull`, `claim`, `complete`, `fail`, `release`, `block`, `heartbeat`, `action`, `ingest`, `reconcile`, or `abort` in the tree, pinned by `src/cmd/planar-watch/capability.t.cpp`. The strict-read-only DB handle (`db::connection::open_read_only` → `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)` in `src/lib/db/db.cpp`) refuses any write SQL with `SQLITE_READONLY` at the driver layer — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`. Both defenses must be in place; `src/cmd/planar-watch/context.t.cpp` treats either failing alone as a regression.
+The verb set is enforced by `root_app()` in `src/cmd/planar-watch/main.cppm`'s registered-command list: there is no `pull`, `claim`, `complete`, `fail`, `release`, `block`, `heartbeat`, `action`, `ingest`, `reconcile`, or `abort` in the tree, pinned by `src/cmd/planar-watch/capability.t.cpp`. The strict-read-only DB handle (`db::connection::open_read_only` → `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)` in `src/lib/db/db.cpp`) refuses any write SQL with `SQLITE_READONLY` at the driver layer — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`. Both defenses must be in place; `src/cmd/planar-watch/context.t.cpp` treats either failing alone as a regression.
 
 ## Recipe 20 — Clean up terminal-status workbench files from historical or manual recovery
 
