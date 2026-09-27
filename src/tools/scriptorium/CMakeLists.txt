@@ -6,9 +6,7 @@ set_target_properties(scriptorium PROPERTIES
   CXX_MODULE_STD ON
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_include_directories(scriptorium SYSTEM PRIVATE
-  "${glaze_SOURCE_DIR}/include"
-  "${inja_SOURCE_DIR}/include"
-  "${nlohmann_json_SOURCE_DIR}/include")
+  "${glaze_SOURCE_DIR}/include")
 if(PLANAR_WARNINGS_AS_ERRORS)
   target_compile_options(scriptorium PRIVATE -Werror)
 endif()

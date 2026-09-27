@@ -15,12 +15,21 @@ build/debug/bin/scriptorium status --config scriptorium.yaml --output-root /tmp/
 ctest --test-dir build/debug -R scriptorium_projection --output-on-failure
 ```
 
-Sources under `skills/src/` and `agents/` have YAML frontmatter and an
-Inja body. Vendor-specific text uses expressions such as
+Sources under `skills/src/` and `agents/` have YAML frontmatter and a
+template body. Vendor-specific text uses actions such as
 `{{ VendorTitle }}`. Markdown headings retain their literal `##` prefix.
 The tool parses YAML, validates generated TOML, and writes JSON reports through
-Glaze. Inja and its
-nlohmann dependency are private to this target.
+Glaze, which is its only third-party dependency.
+
+Body rendering is a direct substitution over a flat string context
+(`substitute()` in `core.cpp`): an action names one context key, dotted for
+the nested `Vendor.*` fields. There are no conditionals, loops, includes or
+filters, because the corpus does not use any — all 52 actions across the 40
+templated sources are `{{ VendorTitle }}`. An unknown name, a malformed
+action, an unterminated one, and a legacy Go-style `{{.Name}}` each fail the
+render at exit 2 rather than staging a plausible-looking projection. Reach
+for a real template engine when a source genuinely needs branching; until
+then this keeps the tool's dependency set at one.
 
 The four skill targets use different layouts. Claude renders flat
 `commands/claude/pl-*.md` files that the installer symlinks into

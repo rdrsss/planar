@@ -2,7 +2,6 @@ module;
 #include <glaze/json.hpp>
 #include <glaze/toml.hpp>
 #include <glaze/yaml.hpp>
-#include <inja/inja.hpp>
 module planar.tools.scriptorium;
 import std;
 
@@ -232,8 +231,50 @@ auto discover(const std::vector<fs::path>& roots) -> std::vector<source> {
   }
   return out;
 }
+/// @brief Substitute every `{{ Name }}` action in one authored body.
+///
+/// The authored corpus is a flat string context and nothing else: no
+/// conditionals, loops, includes or filters. An unknown name, a malformed
+/// action or an unterminated one FAILS the render, because a silently
+/// ignored action would stage a plausible-looking projection.
+/// @param src Source whose body is rendered; its path names the diagnostic.
+/// @param ctx Flat context; nested fields are dotted (`Vendor.name`).
+/// @return The rendered body.
+auto substitute(const source& src, const std::map<std::string, std::string>& ctx) -> std::string {
+  const std::string_view body{src.body};
+  auto        fail = [&src](const std::string& why) { throw std::runtime_error(src.path.string() + ": template: " + why); };
+  std::string out;
+  out.reserve(body.size());
+  for (std::size_t at = 0; at < body.size();) {
+    const auto open = body.find("{{", at);
+    if (open == std::string_view::npos) {
+      out += body.substr(at);
+      break;
+    }
+    out += body.substr(at, open - at);
+    const auto close = body.find("}}", open + 2);
+    if (close == std::string_view::npos)
+      fail("unterminated action");
+    auto name = body.substr(open + 2, close - (open + 2));
+    while (!name.empty() && (name.front() == ' ' || name.front() == '\t'))
+      name.remove_prefix(1);
+    while (!name.empty() && (name.back() == ' ' || name.back() == '\t'))
+      name.remove_suffix(1);
+    const auto shaped = !name.empty() && name.front() != '.' && name.back() != '.' && std::ranges::all_of(name, [](char c) {
+      return (std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '_' || c == '.';
+    });
+    if (!shaped)
+      fail("invalid action \"" + std::string{name} + "\"");
+    const auto it = ctx.find(std::string{name});
+    if (it == ctx.end())
+      fail("unknown variable \"" + std::string{name} + "\"");
+    out += it->second;
+    at = close + 2;
+  }
+  return out;
+}
 auto render_body(const source& src, const profile* p) -> std::string {
-  nlohmann::json ctx = {{"Slug", src.meta.slug}, {"Description", src.meta.description}};
+  std::map<std::string, std::string> ctx{{"Slug", src.meta.slug}, {"Description", src.meta.description}};
   if (p) {
     std::string invoke = p->invoke, install = p->install_path;
     auto        replace_slug = [&](std::string& x) {
@@ -243,27 +284,19 @@ auto render_body(const source& src, const profile* p) -> std::string {
     };
     replace_slug(invoke);
     replace_slug(install);
-    auto it            = src.meta.vendor.find(p->name);
-    auto extra         = it == src.meta.vendor.end() ? vendor_extra{} : it->second;
-    ctx["VendorName"]  = p->name;
-    ctx["VendorTitle"] = p->title;
-    ctx["Invoke"]      = invoke;
-    ctx["InstallPath"] = install;
-    ctx["Model"]       = extra.model.empty() ? src.meta.model : extra.model;
-    ctx["Vendor"]      = {{"argument_hint", extra.argument_hint},
-                          {"invocation_examples", extra.invocation_examples},
-                          {"model", extra.model},
-                          {"name", extra.name}};
+    auto it                           = src.meta.vendor.find(p->name);
+    auto extra                        = it == src.meta.vendor.end() ? vendor_extra{} : it->second;
+    ctx["VendorName"]                 = p->name;
+    ctx["VendorTitle"]                = p->title;
+    ctx["Invoke"]                     = invoke;
+    ctx["InstallPath"]                = install;
+    ctx["Model"]                      = extra.model.empty() ? src.meta.model : extra.model;
+    ctx["Vendor.argument_hint"]       = extra.argument_hint;
+    ctx["Vendor.invocation_examples"] = extra.invocation_examples;
+    ctx["Vendor.model"]               = extra.model;
+    ctx["Vendor.name"]                = extra.name;
   }
-  inja::Environment env;
-  env.set_html_autoescape(false);
-  env.set_line_statement("@@INJA_LINE@@");
-  env.set_search_included_templates_in_files(false);
-  try {
-    return env.render(src.body, ctx);
-  } catch (const std::exception& e) {
-    throw std::runtime_error(src.path.string() + ": template: " + e.what());
-  }
+  return substitute(src, ctx);
 }
 auto project(const source& src, const profile& p) -> std::optional<projection> {
   const auto& m     = src.meta;

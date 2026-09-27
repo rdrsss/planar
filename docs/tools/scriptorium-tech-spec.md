@@ -14,8 +14,8 @@ first-party headers. It reads the existing `scriptorium.yaml`, `skills/src/`
 and `agents/` sources, and stages the same vendor files that `install.sh`
 currently consumes. Glaze handles YAML input, TOML validation, and JSON
 reports; explicit TOML quoting preserves the existing Codex agent bytes.
-Inja renders source bodies. Its nlohmann dependency is confined to this
-tool's private template adapter; other Planar targets continue to use Glaze.
+A direct substitution pass renders source bodies, so Glaze is the tool's
+only third-party dependency.
 
 The in-tree tool implements `render`, `check`, `status` and `version`. Those
 are the rendering and inspection operations Planar uses. `install.sh`
@@ -26,6 +26,28 @@ this Planar-specific tool. Their absence must be explicit in help and the
 updated documentation.
 
 ### Template engine assessment
+
+**Superseded: no template engine is vendored.** The corpus decided this. All
+52 actions across the 40 templated sources are `{{ VendorTitle }}` — one
+variable, no conditionals, loops, includes or filters — so body rendering is
+a direct substitution over a flat string context (`substitute()` in
+`core.cpp`), and Glaze remains the tool's only third-party dependency.
+
+Inja was vendored first, with nlohmann as its required data representation,
+and was removed once the corpus was measured: the pair cost 21 MB across
+1,271 committed files to substitute a single variable. Removing it was
+verified byte-for-byte — all 232 projections render identically before and
+after — and the four failure modes (unknown name, malformed action,
+unterminated action, legacy Go-style `{{.Name}}`) each still fail at exit 2.
+
+The original assessment is retained below, because it remains the correct
+analysis of what to adopt IF a source ever needs real branching. Note its
+own last row — a small in-tree renderer, "narrowest solution for current
+actions" — is what shipped. Its stated objection, that Planar would then own
+a template language, is weaker than it appeared: Planar already owns one in
+`src/engine/templates/render.cpp` for propagation payloads, though that
+renderer is deliberately coupled to a planning-entity context and is not
+reusable here.
 
 Glaze parses source/config YAML and handles JSON reports. Inja's
 private rendering context uses nlohmann, which is an intentional second
