@@ -10,63 +10,100 @@ export namespace planar::document_authority {
 
 /// A stable source mapping for one projected passage.
 struct source_mapping {
-  std::string  kind;
-  std::string  id;
-  std::string  path;
+  /// Source entity kind.
+  std::string kind;
+  /// Stable source entity identifier.
+  std::string id;
+  /// Field path within the source entity.
+  std::string path;
+  /// One-based first source line represented by the passage.
   std::int64_t start_line;
+  /// One-based last source line represented by the passage.
   std::int64_t end_line;
 };
 
 /// One ordered passage in an authoritative document revision.
 struct passage {
-  std::string    key;
-  std::string    kind;
-  std::string    text;
+  /// Stable key identifying the passage within the projection.
+  std::string key;
+  /// Projected passage kind.
+  std::string kind;
+  /// Normalized passage text.
+  std::string text;
+  /// Authoritative source location for the passage.
   source_mapping source;
 };
 
 /// A complete, immutable projection built from one database connection.
 struct document {
-  std::string          id;
-  std::string          content_revision;
+  /// Stable identifier for the projected document.
+  std::string id;
+  /// Digest binding evidence to this projection revision.
+  std::string content_revision;
+  /// Ordered authoritative passages in the projection.
   std::vector<passage> passages;
 };
 
 /// Caller evidence for a complete adjacent range.
 struct range_evidence {
-  std::string              content_revision;
-  std::string              start_key;
-  std::size_t              start_offset;
-  std::string              end_key;
-  std::size_t              end_offset;
+  /// Revision claimed by the caller.
+  std::string content_revision;
+  /// Key of the first covered passage.
+  std::string start_key;
+  /// UTF-8 byte offset where the range starts.
+  std::size_t start_offset;
+  /// Key of the last covered passage.
+  std::string end_key;
+  /// UTF-8 byte offset where the range ends.
+  std::size_t end_offset;
+  /// Complete ordered set of passage keys covered by the range.
   std::vector<std::string> covered_keys;
+  /// Exact quoted segment for each covered passage.
   std::vector<std::string> segment_quotes;
 };
 
 /// A range accepted against the same authoritative snapshot.
 struct validated_range {
-  std::string              document_id;
-  std::string              content_revision;
+  /// Identifier of the validated document.
+  std::string document_id;
+  /// Revision against which the evidence was validated.
+  std::string content_revision;
+  /// Complete ordered set of validated passage keys.
   std::vector<std::string> covered_keys;
+  /// Exact validated quote for each covered passage.
   std::vector<std::string> segment_quotes;
-  std::string              normalized_quote;
+  /// Validated segments joined into one normalized quote.
+  std::string normalized_quote;
 };
 
 /// Typed projection or validation refusal.
 enum class error {
+  /// The requested projection kind is unsupported.
   invalid_kind,
+  /// The requested source entity does not exist.
   not_found,
+  /// A database query required for projection failed.
   query_failed,
+  /// The evidence refers to a different projection revision.
   stale_revision,
+  /// A range boundary passage is absent from the projection.
   missing_boundary,
+  /// Evidence includes a passage outside the boundary range.
   foreign_key,
+  /// The ending boundary precedes the starting boundary.
   reversed_range,
+  /// A byte offset splits a UTF-8 code point.
   invalid_utf8_boundary,
+  /// The covered passage keys are incomplete or out of order.
   noncontiguous_covered_keys,
+  /// A supplied segment quote does not match projected text.
   forged_quote,
 };
 
 namespace detail {
+/// @brief Remove horizontal whitespace and carriage returns from both ends.
+/// @param input The view to trim.
+/// @return A view into `input` containing the trimmed text.
 auto trim(std::string_view input) -> std::string_view {
   while (!input.empty() && (input.front() == ' ' || input.front() == '\t' || input.front() == '\r'))
     input.remove_prefix(1);
@@ -75,6 +112,9 @@ auto trim(std::string_view input) -> std::string_view {
   return input;
 }
 
+/// @brief Remove complete inline HTML tags while preserving their text content.
+/// @param line One Markdown source line.
+/// @return The line without complete `<...>` tags.
 auto strip_html(std::string_view line) -> std::string {
   std::string result;
   for (std::size_t cursor = 0; cursor < line.size();) {
@@ -90,6 +130,9 @@ auto strip_html(std::string_view line) -> std::string {
   return result;
 }
 
+/// @brief Replace well-formed Markdown links with their visible labels.
+/// @param line One Markdown source line.
+/// @return The line with supported link destinations removed.
 auto flatten_links(std::string_view line) -> std::string {
   std::string result;
   std::size_t cursor = 0;
@@ -120,6 +163,9 @@ auto flatten_links(std::string_view line) -> std::string {
   return result;
 }
 
+/// @brief Classify one Markdown line and derive its selectable visible text.
+/// @param line The tag-stripped source line.
+/// @return The passage kind and canonical visible text.
 auto classify(std::string_view line) -> std::pair<std::string, std::string> {
   auto heading_marks = std::ranges::find_if(line, [](char c) { return c != '#'; }) - line.begin();
   if (heading_marks >= 1 && heading_marks <= 6 && static_cast<std::size_t>(heading_marks) + 1 < line.size() &&
@@ -143,6 +189,9 @@ auto classify(std::string_view line) -> std::pair<std::string, std::string> {
   return {"paragraph", flatten_links(line)};
 }
 
+/// @brief Recognize an opening backtick fence.
+/// @param line The unmodified source line.
+/// @return Its trimmed language suffix, or no value when it is not an opening fence.
 auto fenced_open(std::string_view line) -> std::optional<std::string> {
   if (!line.starts_with("```"))
     return std::nullopt;
@@ -152,15 +201,24 @@ auto fenced_open(std::string_view line) -> std::optional<std::string> {
   return std::string{trim(suffix)};
 }
 
+/// @brief Recognize a closing backtick fence.
+/// @param line The unmodified source line.
+/// @return Whether the line is a closing fence.
 auto fenced_close(std::string_view line) -> bool {
   return line.starts_with("```") && std::ranges::all_of(line.substr(3), [](unsigned char c) { return std::isspace(c) != 0; });
 }
 
+/// @brief Determine whether a line has the pipe-delimited table-row shape.
+/// @param line One Markdown source line.
+/// @return Whether both outer pipe delimiters are present.
 auto table_row(std::string_view line) -> bool {
   auto value = trim(line);
   return value.size() >= 2 && value.front() == '|' && value.back() == '|';
 }
 
+/// @brief Split a pipe-delimited Markdown row into trimmed cells.
+/// @param line A line accepted by `table_row`.
+/// @return The ordered cell text.
 auto table_cells(std::string_view line) -> std::vector<std::string> {
   auto value = trim(line);
   value.remove_prefix(1);
@@ -171,6 +229,9 @@ auto table_cells(std::string_view line) -> std::vector<std::string> {
   return result;
 }
 
+/// @brief Recognize the alignment delimiter beneath a Markdown table header.
+/// @param line The candidate delimiter row.
+/// @return Whether it contains at least two valid delimiter cells.
 auto table_delimiter(std::string_view line) -> bool {
   auto value = trim(line);
   if (value.starts_with('|'))
@@ -191,6 +252,12 @@ auto table_delimiter(std::string_view line) -> bool {
   return count >= 2;
 }
 
+/// @brief Parse Markdown into stable, source-mapped selectable passages.
+/// @param doc The projection receiving the passages.
+/// @param source_kind The Planar entity kind that owns the text.
+/// @param source_id The stable entity identifier.
+/// @param path The field path within the source entity.
+/// @param body The Markdown source text.
 auto add_markdown(document& doc, std::string_view source_kind, std::string source_id, std::string_view path,
                   std::string_view body) -> void {
   std::map<std::string, std::size_t, std::less<>> occurrences;
@@ -258,6 +325,11 @@ auto add_markdown(document& doc, std::string_view source_kind, std::string sourc
   }
 }
 
+/// @brief Prepare a one-identifier query and bind its identifier.
+/// @param conn The snapshot-scoped database connection.
+/// @param sql SQL whose first parameter is the entity identifier.
+/// @param id The identifier to bind.
+/// @return The prepared statement, or `query_failed`.
 auto bind_id(db::connection& conn, std::string_view sql, std::int64_t id) -> std::expected<db::statement, error> {
   auto stmt = conn.prepare(sql);
   if (!stmt || !stmt->bind_int64(1, id))
@@ -265,6 +337,14 @@ auto bind_id(db::connection& conn, std::string_view sql, std::int64_t id) -> std
   return std::move(*stmt);
 }
 
+/// @brief Append title and optional body passages from every result row.
+/// @param doc The projection receiving passages.
+/// @param stmt A statement yielding id, title, and body columns.
+/// @param source_kind The entity kind represented by each row.
+/// @param title_path The source path assigned to title passages.
+/// @param body_path The source path assigned to body passages.
+/// @param title_prefix Text prepended before parsing each title.
+/// @return Success, or `query_failed` when row iteration fails.
 auto add_rows(document& doc, db::statement& stmt, std::string_view source_kind, std::string_view title_path = "title",
               std::string_view body_path = "body", std::string_view title_prefix = "") -> std::expected<void, error> {
   while (true) {
@@ -280,6 +360,16 @@ auto add_rows(document& doc, db::statement& stmt, std::string_view source_kind, 
   }
 }
 
+/// @brief Execute a plan-id query and append all of its projected rows.
+/// @param doc The projection receiving passages.
+/// @param conn The snapshot-scoped database connection.
+/// @param plan_id The plan identifier bound to the query.
+/// @param sql SQL yielding id, title, and body columns.
+/// @param source_kind The entity kind represented by each row.
+/// @param title_path The source path assigned to title passages.
+/// @param body_path The source path assigned to body passages.
+/// @param title_prefix Text prepended before parsing each title.
+/// @return Success, or the query failure.
 auto append_rows(document& doc, db::connection& conn, std::int64_t plan_id, std::string_view sql, std::string_view source_kind,
                  std::string_view title_path = "title", std::string_view body_path = "body", std::string_view title_prefix = "")
     -> std::expected<void, error> {
@@ -289,12 +379,20 @@ auto append_rows(document& doc, db::connection& conn, std::int64_t plan_id, std:
   return add_rows(doc, *stmt, source_kind, title_path, body_path, title_prefix);
 }
 
+/// @brief Check that a byte offset does not split a UTF-8 code point.
+/// @param value The UTF-8 passage text.
+/// @param offset The byte offset to test.
+/// @return Whether the offset is in range and lies on a code-point boundary.
 auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
   return offset <= value.size() && (offset == value.size() || (static_cast<unsigned char>(value[offset]) & 0xc0U) != 0x80U);
 }
 } // namespace detail
 
-/// Project a plan or artifact inside one deferred read snapshot.
+/// @brief Project a plan or artifact inside one deferred read snapshot.
+/// @param conn The database connection used for the read snapshot.
+/// @param kind The supported entity kind to project.
+/// @param id The identifier of the entity to project.
+/// @return The authoritative document projection, or a projection error.
 [[nodiscard]] auto project(db::connection& conn, std::string_view kind, std::int64_t id) -> std::expected<document, error> {
   auto snapshot = conn.begin_transaction(db::lock_mode::deferred);
   if (!snapshot)
@@ -419,7 +517,10 @@ auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
   return result;
 }
 
-/// Validate complete range evidence against a freshly projected snapshot.
+/// @brief Validate complete range evidence against a freshly projected snapshot.
+/// @param doc The authoritative document projection containing the passage.
+/// @param evidence The revision-bound range evidence to validate.
+/// @return The validated range, or an evidence validation error.
 [[nodiscard]] auto validate(const document& doc, const range_evidence& evidence) -> std::expected<validated_range, error> {
   if (evidence.content_revision != doc.content_revision)
     return std::unexpected(error::stale_revision);
