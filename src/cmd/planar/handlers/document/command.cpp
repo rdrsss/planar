@@ -30,6 +30,7 @@ struct passage {
 };
 
 struct document {
+  std::string          source_uuid;
   std::string          id;
   std::string          revision;
   std::vector<passage> passages;
@@ -126,7 +127,7 @@ auto bind_id(db::connection& conn, std::string_view sql, std::int64_t id) -> std
 }
 
 auto build_document(db::connection& conn, std::string_view kind, std::int64_t id) -> std::expected<document, domain_error> {
-  document result{.id = std::format("{}:{}", kind, id)};
+  document result{.source_uuid = {}, .id = std::format("{}:{}", kind, id)};
   if (kind == "artifact") {
     auto stmt = bind_id(conn, "select title, body from artifacts where id = ?", id);
     if (!stmt)
@@ -180,9 +181,9 @@ auto build_document(db::connection& conn, std::string_view kind, std::int64_t id
 }
 
 auto render(const document& doc) -> std::string {
-  std::string out =
-      std::format("{{\"contract_version\":\"block-document-v1\",\"document_id\":{},\"content_revision\":{},\"passages\":[",
-                  json(doc.id), json(doc.revision));
+  std::string out = std::format(
+      "{{\"contract_version\":\"block-document-v1\",\"source_uuid\":{},\"document_id\":{},\"content_revision\":{},\"passages\":[",
+      json(doc.source_uuid), json(doc.id), json(doc.revision));
   for (std::size_t i = 0; i < doc.passages.size(); ++i) {
     auto const& p = doc.passages[i];
     if (i != 0)
@@ -216,7 +217,7 @@ auto authoritative_document(db::connection& conn, std::string_view kind, std::in
                                                                                 : domain_error_kind::generic_failure;
     return std::unexpected(error_from_body(error_kind, "document projection failed"));
   }
-  document result{.id = projected->id, .revision = projected->content_revision};
+  document result{.source_uuid = projected->source_uuid, .id = projected->id, .revision = projected->content_revision};
   for (auto const& item : projected->passages)
     result.passages.push_back({.key         = item.key,
                                .kind        = item.kind,
@@ -325,9 +326,9 @@ auto document_validate_range(context& ctx, const cliapp::parsed_args& args) -> h
       normalized += '\n';
     normalized += actual_quotes[i];
   }
-  std::string out = std::format(
-      "{{\"contract_version\":\"block-range-validation-v1\",\"document_id\":{},\"content_revision\":{},\"covered_keys\":[",
-      json(doc->id), json(doc->revision));
+  std::string out = std::format("{{\"contract_version\":\"block-range-validation-v1\",\"source_uuid\":{},\"document_id\":{},"
+                                "\"content_revision\":{},\"covered_keys\":[",
+                                json(doc->source_uuid), json(doc->id), json(doc->revision));
   for (std::size_t i = 0; i < actual_keys.size(); ++i) {
     if (i != 0)
       out += ',';

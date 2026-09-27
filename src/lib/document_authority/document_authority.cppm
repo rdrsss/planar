@@ -36,6 +36,8 @@ struct passage {
 
 /// A complete, immutable projection built from one database connection.
 struct document {
+  /// Immutable identity of the Planar database that owns the document.
+  std::string source_uuid;
   /// Stable identifier for the projected document.
   std::string id;
   /// Digest binding evidence to this projection revision.
@@ -398,7 +400,15 @@ auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
   if (!snapshot)
     return std::unexpected(error::query_failed);
 
-  document result{.id = std::format("{}:{}", kind, id)};
+  auto identity = conn.prepare("select source_uuid from annotation_source_identity where singleton = 1");
+  if (!identity)
+    return std::unexpected(error::query_failed);
+  auto identity_row = identity->step();
+  if (!identity_row || *identity_row != db::step_result::row || identity->column_text(0).empty())
+    return std::unexpected(error::query_failed);
+
+  document result{.source_uuid = std::string{identity->column_text(0)}};
+  result.id = std::format("{}:{}:{}", result.source_uuid, kind, id);
   if (kind == "artifact") {
     auto stmt = detail::bind_id(conn, "select title, body from artifacts where id = ?", id);
     if (!stmt)
@@ -507,7 +517,10 @@ auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
   } else
     return std::unexpected(error::invalid_kind);
 
-  std::string canonical = "block-document-v1\n" + result.id;
+  for (auto& item : result.passages)
+    item.key = std::format("{}:{}", result.source_uuid, item.key);
+
+  std::string canonical = "block-document-v1\n" + result.source_uuid + "\n" + result.id;
   for (auto const& p : result.passages)
     canonical += std::format("\n{}\n{}\n{}\n{}:{}:{}:{}:{}", p.key, p.kind, p.text, p.source.kind, p.source.id, p.source.path,
                              p.source.start_line, p.source.end_line);

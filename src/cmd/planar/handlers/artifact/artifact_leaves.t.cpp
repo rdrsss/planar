@@ -860,6 +860,46 @@ TEST_CASE("document authority derives and validates every adjacent Unicode passa
   CHECK(mutated.err.contains("stale_revision"));
 }
 
+TEST_CASE("document authority rejects identical range evidence from another database source", "[cmd][document][source]") {
+  auto const first  = make_fixture("doc_source_first");
+  auto const second = make_fixture("doc_source_second");
+  for (auto const* fx : {&first, &second}) {
+    REQUIRE(dispatch(*fx, {"init", "--json"}).code == 0);
+    REQUIRE(dispatch(*fx, {"artifact", "add", "Same", "--kind", "tech_spec", "--body", "Same body", "--json"}).code == 0);
+  }
+
+  auto const projected = dispatch(first, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  REQUIRE(projected.code == 0);
+  auto field = [&](std::string_view marker, std::size_t from = 0) {
+    auto begin = projected.out.find(marker, from);
+    REQUIRE(begin != std::string::npos);
+    begin += marker.size();
+    auto end = projected.out.find('"', begin);
+    REQUIRE(end != std::string::npos);
+    return std::pair{projected.out.substr(begin, end - begin), end};
+  };
+  auto const [source_uuid, source_end] = field("\"source_uuid\":\"");
+  auto const [document_id, id_end]     = field("\"document_id\":\"", source_end);
+  auto const [revision, revision_end]  = field("\"content_revision\":\"", id_end);
+  auto const [title_key, ignored]      = field("\"key\":\"", revision_end);
+  CHECK(document_id.starts_with(source_uuid + ":artifact:1"));
+  CHECK(title_key.starts_with(source_uuid + ":artifact:1:"));
+
+  auto const replay =
+      dispatch(second, {"document",           "validate-range", "--kind",       "artifact", "--id",           "1",
+                        "--content-revision", revision,         "--start-key",  title_key,  "--start-offset", "0",
+                        "--end-key",          title_key,        "--end-offset", "4",        "--covered-key",  title_key,
+                        "--segment-quote",    "Same",           "--json"});
+  CHECK(replay.code != 0);
+  CHECK(replay.err.contains("stale_revision"));
+
+  auto const second_projection = dispatch(second, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  REQUIRE(second_projection.code == 0);
+  CHECK_FALSE(second_projection.out.contains(std::format("\"source_uuid\":\"{}\"", source_uuid)));
+  CHECK_FALSE(second_projection.out.contains(std::format("\"content_revision\":\"{}\"", revision)));
+  CHECK_FALSE(second_projection.out.contains(std::format("\"key\":\"{}\"", title_key)));
+}
+
 TEST_CASE("document authority refuses missing and unmigrated sources without creating or migrating them",
           "[cmd][document][readonly]") {
   auto missing              = make_fixture("doc_readonly_missing");
@@ -1016,11 +1056,15 @@ TEST_CASE("plan document authority covers canonical selectable sections once and
   CHECK(milestone < task);
   CHECK(task < dependency);
   CHECK(dependency < resource);
-  CHECK(projected.out.contains(R"("key":"decision:1:)"));
-  CHECK(projected.out.contains(R"("key":"question:1:)"));
-  CHECK(projected.out.contains(R"("key":"plan_step:1:)"));
-  CHECK(projected.out.contains(R"("key":"task:1:)"));
-  CHECK(projected.out.contains(R"("key":"entity_link:)"));
+  auto const source_marker = std::string_view{R"("source_uuid":")"};
+  auto const source_begin  = projected.out.find(source_marker) + source_marker.size();
+  auto const source_end    = projected.out.find('"', source_begin);
+  auto const source_uuid   = projected.out.substr(source_begin, source_end - source_begin);
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:decision:1:", source_uuid)));
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:question:1:", source_uuid)));
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:plan_step:1:", source_uuid)));
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:task:1:", source_uuid)));
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:entity_link:", source_uuid)));
   CHECK(projected.out.contains(R"("path":"ordinal")"));
   CHECK(projected.out.contains(R"("path":"endpoints")"));
   auto const decision_body = projected.out.find("Decision body");
