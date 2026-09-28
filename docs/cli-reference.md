@@ -5498,8 +5498,8 @@ work types are `schema`, `engine`, `architectural`, `cli`, `feature`, and
 ```toml
 [models.claude]
 small  = "claude-haiku-4-5"
-medium = "claude-sonnet-5"
-large  = ["claude-opus-4-8", "claude-fable-5"]
+medium = "claude-sonnet-5-5"
+large  = ["claude-opus-5-5", "claude-fable-5"]
 
 [models.codex]
 small  = "gpt-5.6-luna"

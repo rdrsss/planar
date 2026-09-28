@@ -45,8 +45,8 @@ Table below without consulting Planar configuration.
 | Tier | Claude | Codex | Copilot | Gemini |
 | ------ | ------ | ----- | ------- | ------ |
 | small | claude-haiku-4-5 | gpt-6-luna | gpt-5-mini | gemini-3.1-flash |
-| medium | claude-sonnet-5 | gpt-6-sol | gpt-5 | gemini-3.1-pro |
-| large | claude-opus-5 | gpt-6-astra | claude-opus-4 | gemini-3.1-pro |
+| medium | claude-sonnet-5-5 | gpt-6-sol | gpt-5 | gemini-3.1-pro |
+| large | claude-opus-5-5 | gpt-6-astra | claude-opus-4 | gemini-3.1-pro |
 
 At-a-glance defaults: the model a caller gets resolving a bare `(vendor, tier)`
 with no work type in hand. The full preset data is §Candidate Presets below.
@@ -101,12 +101,14 @@ Identifiers).
 
 | Candidate | Tier | Use when | Characteristics |
 | --------- | ---- | -------- | --------------- |
-| `claude-opus-5` | large | **Tier default.** Bare `large` resolutions, reviewers, escalated coders. | 1M ctx · effort→`max` · thinking **on by default** · 512-tok cache min · $5/$25 |
+| `claude-opus-5-5` | large | **Tier default.** Bare `large` resolutions, reviewers, escalated coders. | Not yet recorded. Spawn verified only. |
+| `claude-opus-5` | large | Prior Opus default; routable fallback. | 1M ctx · effort→`max` · thinking **on by default** · 512-tok cache min · $5/$25 |
 | `claude-opus-4-8` | large | Prior Opus default; routable fallback. | 1M ctx · effort→`max` · adaptive thinking (off if unset) · $5/$25 |
 | `claude-fable-5` | large | Wrong early judgement cascades hardest; shipped seed routes `architectural` here. | Mythos-class, above opus · thinking always on · 1M ctx · $10/$50 |
 | `claude-opus-4-7` | large | Image-bearing work — the only `large` candidate with high-res vision (2576px), so dense diagrams and screenshots survive. **Not** for latency-sensitive dispatch: it has no fast mode. | 1M ctx · effort→`max` · high-res vision (2576px) · no fast mode · $5/$25 |
 | `claude-opus-4-6` | large | **Never at `xhigh`** — its effort ladder stops at `max`, so an `xhigh` dispatch silently loses the effort it asked for. No recorded evidence yet separates it from 4-7/4-8 on anything else. | 1M ctx · effort→`high`/`max` only, **no `xhigh`** · $5/$25 |
-| `claude-sonnet-5` | medium | **Tier default.** Everyday coder dispatches. | 1M ctx · effort→`max` incl. `xhigh` · adaptive on by default · new tokenizer (~30% more tokens for the same text) · $3/$15 |
+| `claude-sonnet-5-5` | medium | **Tier default.** Everyday coder dispatches. | Not yet recorded. Spawn verified only. |
+| `claude-sonnet-5` | medium | Prior Sonnet default; routable fallback. | 1M ctx · effort→`max` incl. `xhigh` · adaptive on by default · new tokenizer (~30% more tokens for the same text) · $3/$15 |
 | `claude-sonnet-4-6` | medium | Long-context runs where token cost dominates: same $/token as sonnet-5, but sonnet-5's tokenizer emits ~30% more tokens for identical text, so the same task bills more there. **Never at `xhigh`.** | 1M ctx · effort→`max`, no `xhigh` · older tokenizer · $3/$15 |
 | `claude-haiku-4-5` | small | **Tier default.** Mechanical and routine work. | 200K ctx / 64K out — the only non-1M candidate · $1/$5 |
 
@@ -177,8 +179,8 @@ the tier default — and are listed for completeness; the one substantive route 
 | Vendor | Tier | Work type | Candidate |
 | ------- | ------ | ------------- | --------- |
 | claude | small | mechanical | `claude-haiku-4-5` |
-| claude | medium | mechanical | `claude-sonnet-5` |
-| claude | large | mechanical | `claude-opus-5` |
+| claude | medium | mechanical | `claude-sonnet-5-5` |
+| claude | large | mechanical | `claude-opus-5-5` |
 | claude | large | architectural | `claude-fable-5` |
 | codex | small | mechanical | `gpt-6-luna` |
 | codex | medium | mechanical | `gpt-6-sol` |
@@ -366,7 +368,7 @@ ad-hoc labels (the orchestrator's classifier and `planar models evals`'
 scorecard both key on `schema | engine | architectural | cli | feature |
 mechanical`). The shipped priors:
 
-- **`claude-fable-5` vs `claude-opus-5`** (Claude `large`): opus is the tier
+- **`claude-fable-5` vs `claude-opus-5-5`** (Claude `large`): opus is the tier
   default — reviewers, escalated coders, and every bare large resolution get
   opus. Fable is Mythos-class (above opus) and is routed only where a wrong
   early judgment cascades hardest: §Work-type routes routes `architectural` →
@@ -388,7 +390,8 @@ mechanical`). The shipped priors:
   - **No date suffixes.** `claude-sonnet-4-6-20251114`-style strings are not the identifiers on this host.
   - **Bare aliases are not spawn-stable.** The host documents `opus`, `sonnet`, `haiku`, and `fable` as aliases for *the latest* model, so what they resolve to changes as models ship. Accept them as operator input if useful, but record and pin full identifiers.
   - This verification is host- and version-specific. Re-probe when the installed CLI changes rather than treating the list as permanent.
-  - `claude-opus-5` is the `large` tier default in the Tier Table; `claude-opus-4-8` stays listed as a routable fallback.
+  - `claude-opus-5-5` is the `large` tier default and `claude-sonnet-5-5` the `medium` tier default in the Tier Table (operator decision, 2026-09-28). `claude-opus-5`, `claude-opus-4-8` and `claude-sonnet-5` stay listed as routable fallbacks.
+  - `claude-opus-5-5` and `claude-sonnet-5-5` were verified spawn-safe on claude 2.1.284 (probed 2026-09-28): each returned a normal completion, and an invalid control failed with `unrecognized_model`. Their characteristics (context window, effort ladder, thinking default, price) have not been recorded, so no `Use when` distinction rests on them yet.
 - The GPT-6 identifiers and workload descriptions above are documented in the
   [official OpenAI model catalog](https://developers.openai.com/api/docs/models).
   The Codex host lists all three as available, but Planar's opaque registry
