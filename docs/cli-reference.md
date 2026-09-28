@@ -5499,7 +5499,7 @@ work types are `schema`, `engine`, `architectural`, `cli`, `feature`, and
 [models.claude]
 small  = "claude-haiku-4-5"
 medium = "claude-sonnet-5-5"
-large  = ["claude-opus-5-5", "claude-fable-5"]
+large  = ["claude-opus-5-5", "claude-fable-5-1"]
 
 [models.codex]
 small  = "gpt-5.6-luna"
