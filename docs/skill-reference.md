@@ -1,6 +1,6 @@
 # Planar Skill Reference
 
-Skills are the primary way users and agents interact with Planar. Each skill composes `planar` binary verbs into a higher-level workflow. Authoring is unified: one source file under `skills/src/` renders to the three vendor surfaces.
+Skills are the primary way users and agents interact with Planar. Each skill composes `planar` binary verbs into a higher-level workflow. Authoring is unified: one source file under `skills/src/` renders to the four vendor surfaces (Claude, Codex, Copilot, Gemini).
 
 This document lists every available skill, grouped by purpose, with a one-line description and an example invocation. For the full behavior spec of each skill, open the source file linked under each entry.
 
@@ -20,9 +20,9 @@ shows the underlying supported interface.
 | Record or connect durable technical knowledge | `/pl-knowledge ...` | `planar decision`, `planar artifact`, `planar annotate`, `planar links` |
 | Manage machine-local skills and agents | `/pl-local ...` | `planar local import|link|list|unlink|migrate`; repair uses `planar local link --reconcile` |
 | Resume interrupted work or diagnose degraded state | `/pl-resume <task-id>` or `/pl-doctor` | `planar resume`, `planar audit`, `planar health`, `planar-agent reconcile` |
-| Inspect one external item's local history | `/pl-audit-trail <system:key>` | `planar audit trail` |
+| Inspect one external link's local history | `/pl-audit-trail --link <link-id>` | `planar audit trail --link <link-id>` |
 | Reconcile a local/external sync conflict | `/pl-sync status` or `/pl-sync resolve <event-id>` | `planar-ext sync status`, `planar audit trail`, guarded `planar-ext sync resolve` |
-| Maintain published documentation | Raised to tabularium (owns the doc-system tool and its `/pl-doc-maintain` full loop / `/pl-documenter` proposal sweep); planar drives the underlying tool verbs | `tabularium diff|cover|nodoc|lint|build|verify` |
+| Maintain published documentation | Raised to tabularium (owns the doc-system tool and its `/tabularium-doc-maintain` full loop / `/tabularium-documenter` proposal sweep); planar drives the underlying tool verbs | `tabularium diff|cover|nodoc|lint|build|verify` |
 
 `/pl-local-import` remains an import-only compatibility entry point; prefer
 `/pl-local` for the complete local lifecycle. Documentation maintenance was
@@ -37,7 +37,9 @@ shipped through `/pl-sync` and its gated `sync-reconciler` specialist.
 Planar authors each shared skill once at `skills/src/<name>.md`. `install.sh`
 builds and runs the in-tree `src/tools/scriptorium/` C++ renderer to stage
 vendor outputs — `scriptorium render --config scriptorium.yaml`.
-Inja expressions in authored bodies use `{{ VendorTitle }}` syntax.
+Authored bodies use `{{ Name }}` substitution actions (for example
+`{{ VendorTitle }}`), replaced by direct substitution; an unknown name or a
+malformed action fails the render.
 
 - Claude projections are staged under `$PLANAR_HOME/commands/claude/`, installed
   to `~/.claude/commands/`, and invoked as `/<name>`.
@@ -46,6 +48,8 @@ Inja expressions in authored bodies use `{{ VendorTitle }}` syntax.
   `$CODEX_HOME/skills/` (normally `~/.codex/skills/`).
 - Copilot projections are staged under `$PLANAR_HOME/copilot-skills/` and
   installed to `~/.copilot/skills/`.
+- Gemini projections are staged under `$PLANAR_HOME/gemini-skills/` and
+  installed to `~/.gemini/antigravity-cli/skills/`.
 
 The old repo-relative `commands/claude/`, `skills/codex/`, and
 `skills/copilot/` trees are not checked in. Do not author, link documentation
@@ -57,8 +61,8 @@ the selected vendors.
 Vendor profile data lives in scriptorium's built-in per-vendor profiles
 (claude/codex/copilot/gemini), with the repo-root `scriptorium.yaml`
 supplying overrides/additions; model-tier resolution stays Planar-side in the
-shared resolver (`src/engine/models/`) and is regenerated into
-the Tier Table lives in `agents/models.md`, hand-maintained; Planar no longer generates it.
+shared resolver (`src/engine/models/`). The Tier Table lives in
+`agents/models.md`, hand-maintained; Planar no longer generates it.
 Static render paths show each tier's default model (`list[0]` when the config
 uses candidate lists); runtime orchestration may further select a
 per-work-type candidate through the shared model resolver. Drift between
@@ -205,9 +209,9 @@ binary capability boundary; the cue changes transcript visibility only.
 
 ## Binary architecture
 
-Planar ships four executables. Three are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary across those four is locked by the `src/cmd/*/capability.t.cpp` tests. The fourth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
+Planar ships five executables. Four are planning-state binaries, each with a disjoint capability boundary over the shared SQLite DB enforced by its verb set (not by runtime ACLs); skills and agents reach for the binary that matches the work - and only that binary. The capability boundary of `planar-agent`, `planar-watch`, and `planar-ext` is locked by the `src/cmd/*/capability.t.cpp` tests; `planar`'s surface is pinned by `src/cmd/planar/parity.t.cpp` and the `schema` catalog. The fifth, `planar-execute`, is the deterministic, spawn-free Lua workflow engine and holds no DB handle.
 
-- `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `doc`, `spec`, `templates`, `ext`, `sync`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
+- `planar` — operator binary. Read-write to the full schema; owns every planning-entity verb (`plan`, `task`, `decision`, `question`, `scenario`, `artifact`, `workbench`, `spec`, `templates`, `init`, `dashboard`, `tree`, `audit`, `health`, …). Has **no** `agent` subcommand namespace; agent-table writes live on `planar-agent` and agent-table reads live on `planar-watch`.
 - `planar-agent` — agent-callable coordination binary. Read-write only to its
   bounded coordination surfaces (`agent_actions`, `agent_work_claims`,
   `workflow_runs`, and `context_records`) plus `tasks.status` as part of atomic
@@ -215,8 +219,9 @@ Planar ships four executables. Three are planning-state binaries, each with a di
   workflow/context, and recovery surfaces. **Capability invariant:** a vendor
   hook configured with only `planar-agent` on its PATH cannot touch any plan /
   decision / question / scenario / artifact / annotation row.
-- `planar-watch` — human-facing read-only viewer. Opens SQLite via `file:?mode=ro` so the driver itself refuses any write SQL. Verbs: `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `version`, `completion`. **Capability invariant:** a watcher process holding the binary on PATH cannot corrupt operator state even under hostile verb invocation — enforced both by the zero-write verb set and the read-only DB handle.
+- `planar-watch` — human-facing read-only viewer. Opens SQLite via `file:?mode=ro` so the driver itself refuses any write SQL. Verbs: `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `version`, `completion`, `schema`. **Capability invariant:** a watcher process holding the binary on PATH cannot corrupt operator state even under hostile verb invocation — enforced both by the zero-write verb set and the read-only DB handle.
 - `planar-execute` — deterministic, spawn-free Lua workflow engine (plan 633). A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result. It holds **no** DB handle (it shells the planning-state binaries for state) and exposes **no** model-spawning host function, so it is a workflow runner, not a harness. It is outside the claim ritual.
+- `planar-ext` — operational-plane binary. Owns the `ext` and `sync` verb domains and both external adapters (Jira, GitHub Issues). Opens SQLite directly: read-only on planning tables, read-write on exactly `external_links`, `external_systems`, and `sync_events`. `planar-ext sync pull` reports remote values; it never writes them into planning entities.
 
 An external Lua-based **harness** (a **separate external project**, distinct from `planar-execute`) is a pure CLI driver that shells these binaries to orchestrate LLM calls; it holds no DB handle and is not part of the Planar binary set.
 
@@ -239,6 +244,69 @@ compose: the `planar-agent` claim ritual, `planar test-spec status` coverage
 gating, and the dispatch-preview model-tier/routing surface. See
 [`docs/operations.md` §2 The Orchestration Lifecycle](operations.md#2-the-orchestration-lifecycle)
 and [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
+
+### `/pl-orchestrator`
+
+Deliver software in a Planar-managed Git repository: coordinate planning, spec review, ingestion, implementation, verification, finalization, propagation, documentation, and archive with explicit operator gates.
+
+**Example:**
+```
+/pl-orchestrator <goal>
+/pl-orchestrator <plan-id> --strategy classic --isolation worktree
+/pl-orchestrator <plan-id> --strategy parallel-fanout --max-wave-size 2
+/pl-orchestrator <plan-id> --finalize --archive
+```
+
+Source: `skills/src/pl-orchestrator.md` · `agents/orchestrator.md`
+
+---
+
+### `/pl-coder`
+
+Implements scoped coding tasks. Called by the orchestrator.
+
+**Example:** `/pl-coder <task-id>`
+
+Source: `skills/src/pl-coder.md` · `agents/coder.md`
+
+---
+
+### `/pl-test-coder`
+
+Adversarial verification author dispatched between coder and reviewer. Adds repository-native verification assets for cited test-spec scenarios and surfaces first-run failures without weakening them.
+
+**Example:**
+```
+/pl-test-coder <task-id>
+/pl-test-coder <plan-id> --plan
+/pl-test-coder <task-id> --since <commit>
+```
+
+Source: `skills/src/pl-test-coder.md` · `agents/test-coder.md`
+
+---
+
+### `/pl-reviewer`
+
+Reviews coder output. Returns one of approve / request-changes / open-question / abort.
+
+**Example:** `/pl-reviewer <task-id> <iteration>`
+
+Source: `skills/src/pl-reviewer.md` · `agents/reviewer.md`
+
+---
+
+### `/pl-research`
+
+Read-only investigation. Runs a bounded, cited findings-brief investigation for a question and returns it; it writes no code and makes no repository or Planar writes.
+
+**Example:**
+```
+/pl-research "what does the claim ritual actually enforce on a stale lease"
+/pl-research "is there prior art for this in tabularium" --scope tabularium
+```
+
+Source: `skills/src/pl-research.md` · `agents/research.md`
 
 ---
 
@@ -358,7 +426,7 @@ Source: `skills/src/pl-spec-ingest.md` · `agents/ingestor.md`
 
 ### `/pl-ext-propagate`
 
-Propagate a feature tree (anchor plan + descendants) to a registered external operational system. Creates external counterparts (Jira epics/stories/subtasks, GitHub parent issues) and records `external_links(link_role='mirror')` rows. Idempotent: already-linked entities are skipped. **Not yet implemented** as of plan 996 — the whole-tree walk lives on neither binary yet; use `planar-ext ext propagate-one` for a single entity today. See `docs/cli-reference.md`.
+Propagate a feature tree (anchor plan + descendants) to a registered external operational system. Creates external counterparts (Jira epics/stories/subtasks, GitHub parent issues) and records `external_links(link_role='mirror')` rows. Idempotent: already-linked entities are skipped. The whole-tree walk is `planar-ext ext propagate <plan-id>`; `planar-ext ext propagate-one` creates a single entity's counterpart. See `docs/cli-reference.md`.
 
 **Example:**
 ```
@@ -535,7 +603,7 @@ Capture open questions during a session, answer them, and link to tasks and spec
 
 **Example:**
 ```
-/pl-question add "Which date format for export timestamps?" --task <task-id>
+/pl-question add "Which date format for export timestamps?" --plan <plan-id>
 /pl-question answer <question-id> "ISO 8601 UTC, no timezone offset"
 ```
 
@@ -570,8 +638,8 @@ Author test scenarios from a spec or task, verify them, and record outcomes.
 
 **Example:**
 ```
-/pl-scenario add --task <task-id> "Export with 10k rows completes in under 5s"
-/pl-scenario pass <scenario-id>
+/pl-scenario add "Export with 10k rows completes in under 5s" --related <task-id>
+/pl-scenario verify <scenario-id> --outcome pass
 ```
 
 Source: `skills/src/pl-scenario.md`
@@ -665,7 +733,7 @@ For a given external link, show every local session, decision, and commit tied t
 
 **Example:**
 ```
-/pl-audit-trail my-jira:PROJ-1234
+/pl-audit-trail --link <link-id>
 ```
 
 Source: `skills/src/pl-audit-trail.md`
@@ -811,7 +879,7 @@ Inspect, validate, and render Planar JSON templates for external-system propagat
 ```
 /pl-templates list
 /pl-templates validate
-/pl-templates render task:<task-id> --system my-jira
+/pl-templates render default github-issues issue --entity task:<task-id>
 ```
 
 Source: `skills/src/pl-templates.md`
@@ -828,8 +896,9 @@ Source: `skills/src/pl-models-config.md`
 
 ## Documentation Maintenance
 
-The documenter and doc-author roles and the `/pl-documenter` / `/pl-doc-maintain`
-skills that drive the gated documentation-maintenance loop were raised to
+The documenter and doc-author roles and the `/tabularium-documenter` /
+`/tabularium-doc-maintain` skills (formerly `/pl-documenter` / `/pl-doc-maintain`)
+that drive the gated documentation-maintenance loop were raised to
 tabularium (the stack's standalone documentation tool, which owns the manifest
 database they operate) at the doc-cluster transfer (planar plan 933). They no
 longer render or install from this repo — see tabularium's own skill and agent
@@ -907,6 +976,24 @@ Source: `skills/src/pl-feedback-triage.md` · `agents/feedback-triager.md`
 
 ---
 
+### `/pl-report-issue`
+
+Assemble and post a GitHub issue from a feedback-plan finding and the
+`planar report --json` diagnostic bundle. The complete issue body is rendered
+for operator review and posted via `gh issue create` only after explicit
+confirmation; the posted issue is recorded as a record-only external link on
+the finding.
+
+**Example:**
+```
+/pl-report-issue --finding question:42
+/pl-report-issue --finding task:17 --days 14
+```
+
+Source: `skills/src/pl-report-issue.md`
+
+---
+
 ## Agent Role Specs
 
 The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — live here too (raised to armarium at plan 918/929, returned at the armarium reintegration). The documenter and doc-author roles live in tabularium (which owns the doc-system tool they drive; moved at the doc-cluster transfer, planar plan 933); see tabularium's own agent sources for those.
@@ -927,6 +1014,8 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
 | `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
 | `agents/ext-sync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
+| `agents/importer.md` | Importer role: translates an existing repository's planning content into Planar; deterministic classifier first, optional LLM interpretation pass |
+| `agents/synthesizer.md` | Synthesizer role: produces fresh planning artifacts from existing docs, git log, and source code via an LLM pass |
 | `(raised to tabularium)` | Documenter and doc-author roles — read-only documentation drift classifier and operator-approved prose author — raised to tabularium at the doc-cluster transfer (planar plan 933) |
 | `agents/introspector.md` | Introspector role: cross-vendor redacted signal adapters, preview/apply gate, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |

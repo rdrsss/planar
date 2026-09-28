@@ -7,7 +7,7 @@
 # ratio. Fails when the ratio drops below the recorded baseline so a new
 # leaf added without a test trips CI immediately.
 #
-# Companion to CLAUDE.md "Integration test methodology": new verbs /
+# Companion to docs/testing.md § Contribution policy: new verbs /
 # subcommands require integration-test coverage as part of the same PR.
 #
 # ## Re-pointed from the Zig corpus to the C++ corpus (task 6436, decision
@@ -22,7 +22,7 @@
 #
 # The decision (see task 6436's body and decision 1035): RE-POINT at the
 # C++ corpus rather than retire the gate. The rule it enforces —
-# CLAUDE.md's "a PR adding a verb/subcommand must add coverage in the same
+# docs/testing.md's "a change adding a verb/subcommand must add coverage in the same
 # PR" — is still worth a mechanical guard, and this gate is the only one
 # that exists. Retiring it would mean nothing catches the next silent
 # regression the way task 6546 caught eight of them.
@@ -239,7 +239,7 @@ case "$MODE" in
       ADDED=$((TOTAL - base_total))
       echo "FAIL: $ADDED new leaf(s) added since baseline but exercised count did not grow." >&2
       echo "  New CLI surfaces require integration-test coverage in the same PR." >&2
-      echo "  See CLAUDE.md 'Integration test methodology' § contribution policy." >&2
+      echo "  See docs/testing.md § Contribution policy." >&2
       echo "" >&2
       echo "  Currently uncovered leaves include:" >&2
       head -20 "$TMP_UNCOVERED" | sed 's/^/    /' >&2

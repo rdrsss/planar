@@ -8,7 +8,7 @@ shared_notes:
 slug: pl-resume
 vendor:
     claude:
-        argument_hint: '[<task-id> | <plan-id>] [--budget <tokens>]'
+        argument_hint: '[<task-id> | <plan-id>]'
         invocation_examples: |
             /pl-resume 42
             /pl-resume validate 42
@@ -28,7 +28,7 @@ Produces a structured resume packet containing the task identity, current status
 Wraps [`resume`](../../docs/cli-reference.md#domain-resume):
 
 ```
-planar resume [<task-id> | <plan-id>] [--budget <tokens>] [--no-pull]
+planar resume [<task-id> | <plan-id>] [--json]
 planar resume validate <task-id>
 ```
 
@@ -49,7 +49,7 @@ For the canonical worktree path/branch/topology conventions (`epic/<plan-slug>` 
 
 ## Context
 
-Report the resolved scope, task or plan, packet budget, pull policy, vendor,
+Report the resolved scope, task or plan, vendor,
 claim/handoff source, and validate or resume mode.
 
 ## Intent
@@ -62,7 +62,7 @@ from durable state.
 Report `attempted`, `applied` (the succeeded count), `skipped`, and `failed` across validation,
 optional operational pull, and packet assembly targets. Resume and validation
 are reads except for the CLI's explicit pull; name every failed link/system or
-packet component. `--no-pull` and absent optional evidence are explained skips.
+packet component. Absent optional evidence is an explained skip.
 
 ## Result
 
@@ -75,7 +75,7 @@ last verified local state.
 ## Warnings
 
 Name failed freshness pulls, missing resumability fields, stale claims,
-unavailable worktree paths, truncation due to budget, and partial evidence.
+unavailable worktree paths, and partial evidence.
 Do not warn for an intentionally omitted optional section or a valid legacy
 no-worktree path.
 
@@ -88,7 +88,7 @@ lead with their concrete capture or handoff remediation.
 ## Recovery
 
 For every failed target, give `planar resume validate <task-id>` plus the exact
-idempotent retry `planar resume <task-id> [--budget <tokens>] [--no-pull]`.
+idempotent retry `planar resume <task-id> --json`.
 Name each failed external link's `planar-ext sync status --entity <kind:id>
 --system <slug> --json` inspection. A successful pull or packet component is
 retained; never imply cross-target rollback.

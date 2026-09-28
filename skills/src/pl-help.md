@@ -35,9 +35,12 @@ interface.
 Wraps [`help`](../../docs/cli-reference.md#domain-help):
 
 ```
-planar help [<subcommand> [<sub-subcommand>]]
-planar <subcommand> --help
+planar --help
+planar <subcommand> [<sub-subcommand>] --help
 ```
+
+There is no `planar help` verb; help is reached only through `--help` / `-h`
+on any node.
 
 ## When To Invoke
 
@@ -63,9 +66,8 @@ authored; do not claim that the planned skill can be invoked.
 If the request is a verb lookup rather than an outcome, bypass intent routing:
 
 ```
-planar help task
-planar help sync resolve
 planar task --help
+planar-ext sync resolve --help
 ```
 
 ## Output Contract
@@ -104,7 +106,7 @@ Give zero to three executable commands, beginning with the selected example.
 ### Recovery
 
 When routing fails or a named verb is unavailable, give the exact inspection
-command: `planar help`, `planar <subcommand> --help`, or `planar schema`.
+command: `planar --help`, `planar <subcommand> --help`, or `planar schema`.
 
 ## Docs Domain
 
@@ -157,8 +159,8 @@ the request; do not pad the response with unrelated commands.
 
 ## Recovery
 
-For a failed lookup, provide the exact broader command, such as `planar help`,
-`planar help <subcommand>`, or `tabularium schema`. This skill is read-only and
+For a failed lookup, provide the exact broader command, such as `planar --help`,
+`planar <subcommand> --help`, or `tabularium schema`. This skill is read-only and
 has no undo path.
 
 ## Vendor Notes

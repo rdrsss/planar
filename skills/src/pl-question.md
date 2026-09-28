@@ -25,12 +25,12 @@ Records open questions with their body text, answers them when resolved, marks t
 
 Wraps [`question`](../../docs/cli-reference.md#domain-question):
 
-> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
+> **Scope.** Reads use the cwd-derived scope. No `question` verb runs the cross-scope guard (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)), so confirm an existing question's stored scope with `question show --json` before mutating it. Pass `--scope <slug>` on `question add` or `question link` when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
 
 ```
 planar question add <title> [--body <text>] [--scope <scope>]
-planar question answer <question-id> <answer>
-planar question wontfix <question-id>
+planar question answer <question-id> --answer <text>
+planar question wontfix <question-id> [--reason <text>]
 planar question list [--status <status>] [--scope <scope>]
 planar question show <question-id>
 planar question link <question-id> <to-kind:to-id> --relationship <kind>

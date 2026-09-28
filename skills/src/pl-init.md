@@ -6,9 +6,9 @@ shared_notes:
 slug: pl-init
 vendor:
     claude:
-        argument_hint: '[--name <text>] [--db <path>]'
+        argument_hint: '[--name <text>]'
         invocation_examples: |
-            /pl-init [--name <text>] [--db <path>]
+            /pl-init [--name <text>]
 ---
 
 # Planar Init ({{ VendorTitle }})

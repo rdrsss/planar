@@ -24,7 +24,7 @@ The planner creates:
 Expected output:
 ```
 plan 42 created  [draft]  billing-export-csv
-workbench: ~/.planar/workbench/project:my-app/p42-billing-export-csv/
+workbench: ~/.planar/workbench/project_my-app/p42-billing-export-csv/
 artifacts: product-spec.md, tech-spec.md, roadmap.md, test-spec.md
 ```
 
@@ -99,10 +99,11 @@ Review the diff. If it looks correct:
 
 Add `--strict` to the apply call when the test-spec is meant to be complete — the gate will reject the apply if any slug-bearing task is still uncovered.
 
-Tasks, child plans, and decisions are now in the database. The anchor plan status is unchanged (still `draft`). Activate it before execution:
+Tasks, child plans, and decisions are now in the database. A successful apply also activates a `draft` anchor plan (the apply summary ends with `(anchor plan activated)`). Confirm before execution:
 
 ```
-planar plan update 42 --status active
+planar plan show 42
+# status: active
 ```
 
 ---
@@ -318,12 +319,6 @@ For the canonical contract see `agents/methodology.md` § Barrel modes; for the 
 
 ## Recipe 3 — Propagate to GitHub Issues
 
-> **Not yet implemented (plan 996).** The whole-feature walk (`ext propagate`)
-> this recipe describes is not yet available on `planar-ext` — it is tracked
-> separately (task 6421, in progress at time of writing). For a single plan
-> or task today, use `planar-ext ext propagate-one <system> --from <kind:id>`
-> directly instead of the recipe below.
-
 Use this after tasks are done (or any time you want external counterparts created).
 
 **What happens:** The ext-sync agent walks the feature tree top-down. It creates external counterparts for every entity not yet linked and records `external_links(link_role='mirror')` rows and `sync_events(outcome='ok')` rows.
@@ -343,10 +338,12 @@ planar-ext ext register github my-gh --project myorg/myrepo
 On first propagation, the strategy is selected automatically:
 
 - Jira → `jira-epic` (always)
-- GitHub Issues → `github-parent-issue` (always)
+- GitHub Issues → by the number of distinct repos the feature touches:
+  none → `github-zero-repo`, one → `github-parent-issue`
 
-There is no repo-count-based selection: the multi-repo `github-projects-v2`
-strategy is permanently cut (decision 1001) and does not exist. The selected
+A GitHub feature touching two or more repos is refused: the multi-repo
+`github-projects-v2` strategy is permanently cut (decision 1001) and cannot
+be executed. The selected
 strategy is cached and reused on subsequent propagation runs. To force
 re-detection:
 
@@ -475,8 +472,8 @@ non-Planar collaborators can read or comment on it.
 **What happens:** `workbench publish` renders the workbench files
 for a plan and pushes them to a registered external system via the
 adapter layer. The destination system, credentials, and projection
-template come from the system registration (see Recipe 7 for
-registration and Recipe 8 for propagation).
+template come from the system registration (see Recipe 3 for
+registration and propagation).
 
 ### Publish the workbench tree
 
@@ -539,8 +536,7 @@ planar workbench archive 42
 
 Expected output:
 ```
-archived plan:42  removed ~/.planar/workbench/project:my-app/p42-billing-export-csv/
-database: all entities retained
+archived: ~/.planar/workbench/project_my-app/p42-billing-export-csv (plan 42)
 ```
 
 Via skill:
@@ -556,8 +552,7 @@ planar workbench restore 42
 
 Expected output:
 ```
-restored plan:42 → ~/.planar/workbench/project:my-app/p42-billing-export-csv/
-12 files written
+restored: ~/.planar/workbench/project_my-app/p42-billing-export-csv (plan 42)
 ```
 
 The restored tree is byte-identical to the pre-archive state. All workbench sync state (`workbench_sync_state`) is restored, so `workbench status` and subsequent push/pull/sync operations work correctly.
@@ -701,7 +696,7 @@ Awaiting LLM synthesis. Re-run `planar synthesize ~/projects/holdfast` after the
 
 ### Step 2 — The vendor skill produces a Result
 
-The Claude / Codex / Copilot skill picks up the pending request, runs the LLM at temperature 0, and writes a Result whose every task has `status=todo`. `synthesis.Validate` rejects any Result that violates the greenfield invariant.
+The Claude / Codex / Copilot / Gemini skill picks up the pending request, runs the LLM at temperature 0, and writes a Result whose every task has `status=todo`. `validate_result()` rejects any Result that violates the greenfield invariant.
 
 ### Step 3 — Re-run synthesize to merge and preview
 
@@ -760,7 +755,7 @@ Preview shows tasks with code-evidence citations annotated:
 + task     Implement Reader pagination       [doing — cited: Sources/Lectio/Reader/Pager.swift]
 ```
 
-The "code wins" rule: if the docs claim a task is done but no source file backs the claim, the LLM is contractually forbidden from marking it done — `synthesis.Validate` rejects the Result.
+The "code wins" rule: if the docs claim a task is done but no source file backs the claim, the LLM is contractually forbidden from marking it done — `validate_result()` rejects the Result.
 
 ### Step 3 — Compare with import
 
@@ -884,7 +879,7 @@ id  title                                              status  plan
 Answer a question:
 
 ```
-planar question answer 5 "ISO 8601 UTC, no timezone offset — confirmed with consumer team"
+planar question answer 5 --answer "ISO 8601 UTC, no timezone offset — confirmed with consumer team"
 ```
 
 Mark a question as won't-fix (decided not to address):
@@ -927,7 +922,7 @@ Fix drift by either updating the spec body or updating the entity status, then r
 
 Use this when a planner dispatches coder agents to different repos in parallel — the polyrepo orchestrator case. The strict write-scope resolver was designed for it; this recipe walks through the call shape that keeps each coder writing to the correct association without explicit `--scope` plumbing everywhere.
 
-**What happens:** Each coder runs in its own process with `cwd` set to the repo it owns. Step 2 of `ResolveForWrite` (cwd derivation, most-specific-wins) picks the right association from cwd alone. The orchestrator itself — whose cwd may not match any single target repo — passes `--scope` explicitly on cross-repo writes. A second layer, the [cross-scope guard](concepts.md#cross-scope-guard), then verifies the operator's resolved scope agrees with each *target entity's* stored scope before the write proceeds: a coder that drifts into the wrong cwd, or an orchestrator that passes a stale `--scope`, gets refused with exit 1 instead of silently writing under the wrong association.
+**What happens:** Each coder runs in its own process with `cwd` set to the repo it owns. Step 2 of `ResolveForWrite` (cwd derivation, most-specific-wins) picks the right association from cwd alone. The orchestrator itself — whose cwd may not match any single target repo — passes `--scope` explicitly on cross-repo writes. A second layer, the [cross-scope guard](concepts.md#cross-scope-guard), then verifies the operator's resolved scope agrees with each *target entity's* stored scope before the write proceeds: a coder that drifts into the wrong cwd, or an orchestrator that passes a stale `--scope`, gets refused with exit 5 instead of silently writing under the wrong association.
 
 ### Coder pattern: rely on cwd derivation
 
@@ -951,7 +946,7 @@ planar task add "Fix the repo-local build script" --scope repo:repo-a
 planar task update 142 --next-action "rerun make test" --scope repo:repo-a
 ```
 
-That keeps repo-owned work distinct from association-owned cross-repo coordination. The guard treats `repo:repo-a` and `assoc:project-repo-a` as different scopes.
+That keeps repo-owned work distinct from association-owned cross-repo coordination. The guard treats `repo:repo-a` and `assoc:project:repo-a` as different scopes.
 
 ### Orchestrator pattern: pass `--scope` explicitly
 
@@ -959,20 +954,17 @@ The orchestrator's own cwd is wherever it was invoked from — usually a workspa
 
 ```bash
 planar task update 142 --next-action "wire up the CSV writer" \
-  --scope assoc:project-repo-b
+  --scope assoc:project:repo-b
 ```
 
-The success line shows `[from flag]`. The guard then verifies the explicit scope matches task 142's stored scope. This protects against the silent-wrong-scope class of bug: if the orchestrator's ambient stack has stale entries from a previous run, the explicit flag still routes the write correctly *and* the guard catches the case where the flag itself is wrong. New decisions logged from the orchestrator follow the same pattern:
+The success line shows `[from flag]`. The guard then verifies the explicit scope matches task 142's stored scope. This protects against the silent-wrong-scope class of bug: the explicit flag routes the write correctly regardless of the orchestrator's cwd, *and* the guard catches the case where the flag itself is wrong. New decisions logged from the orchestrator follow the same pattern:
 
 ```bash
 planar decision add "Adopt strict resolver for writes" \
-  --scope assoc:project-repo-b \
-  --kind design
+  --scope assoc:project:repo-b
 ```
 
-`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision edit`, `decision accept`, `decision withdraw`, `decision supersede`, and `audit publish-decision` calls.
-
-### Debugging stale stack state
+`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision accept`, `decision withdraw`, and `audit publish-decision` calls; `decision edit` and `decision supersede` run no scope guard.
 
 ### Inspecting the resolved scope
 
@@ -981,7 +973,7 @@ planar decision add "Adopt strict resolver for writes" \
 ```
 $ planar scope show
 resolved scope (from cwd):
-  project:repo-a  (root_path: /Users/mn/work/repo-a)
+  project:repo-a
 ```
 
 From a workspace root, it lists the org plus every member project. From outside any registered scope, it says `none` and tells you to `cd` or pass `--scope`.
@@ -1069,7 +1061,7 @@ identical and the cache hits — no tokens are spent.
 ### Populating the cache (recommended): `pl-workspace-scan --enrich`
 
 The canonical producer is the `pl-workspace-scan` vendor skill (Claude /
-Codex / Copilot). The skill runs inside an LLM session, fingerprints
+Codex / Copilot / Gemini). The skill runs inside an LLM session, fingerprints
 every project, calls the model with temperature 0, and writes the
 results into the cache before invoking the builder:
 
@@ -1156,7 +1148,7 @@ Use this when your daily working tree is a workspace directory (`~/work/`, `~/pr
 
 **What happens:** `planar workspace init` builds the org + project rows in one transaction, creates the state directory under `~/.planar/workspaces/<org_id>/`, scans the member repos to produce a structured routing table, regenerates `AGENTS.md` from that table, and installs symlinks at the workspace root (`AGENTS.md`, `CLAUDE.md`) that point at the canonical content. Subsequent shape changes (new repo, new plans, dependencies shifting) are absorbed by re-running the routing build and regenerate verbs; the symlinks stay valid.
 
-**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on every mutating verb that takes an existing entity id, not only on `spec ingest` (the original lectio incident). When you are working from the workspace root (`~/work/`), cwd resolves to `org:work`; a `planar task update 142` against a task that belongs to repo A's project association is refused unless you `cd ~/work/repo-a` first or pass that association explicitly, for example `--scope assoc:repo-a`. A task stored directly on the repository scope instead needs `--scope repo:repo-a`. The same rule applies to `plan update`, `decision edit`, `decision supersede`, `audit publish-decision`, `artifact update`, single-target `sync push`/`sync pull`/`sync resolve`, `ext create --from`, `ext propagate`, `link`/`unlink`, and `links update`. Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
+**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on ten verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw`, `closure compute`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
 
 ### Step 1 — Initialize the workspace
 
@@ -1294,11 +1286,11 @@ rm ~/work/AGENTS.md ~/work/CLAUDE.md
 # Drop the canonical state directory
 rm -rf ~/.planar/workspaces/1/
 
-# (Optional) drop the org association from the database
-planar assoc remove org:work
+# (Optional) drop each member repo's membership in the org
+planar assoc remove org:work ~/work/repo-a
 ```
 
-The `associations` row, the `projects` rows, and their membership links remain in the database after the filesystem cleanup unless the final step is taken. Removing the org also cascades the `project_associations` membership rows; the projects themselves stay (they may belong to other orgs or be referenced directly). Subsequent `planar workspace doctor` runs treat the now-absent state dir as a deleted workspace and emit no warnings for an org that is no longer registered.
+The `associations` row, the `projects` rows, and their membership links remain in the database after the filesystem cleanup. `assoc remove <slug> <repo-path>` removes one repo's membership at a time; there is no verb that deletes the org association row itself, and the projects themselves stay (they may belong to other orgs or be referenced directly). Subsequent `planar workspace doctor` runs treat the now-absent state dir as a deleted workspace and emit no warnings for an org that is no longer registered.
 
 ### Cross-references
 
@@ -1396,10 +1388,10 @@ planar task list --scope assoc:project:my-app
 ### Review the audit trail for an external ticket
 
 ```
-/pl-audit-trail my-jira:PROJ-1234
+/pl-audit-trail --link <link-id>
 ```
 
-Shows every local session, decision, commit annotation, and sync event tied to the external ticket.
+Shows every local session, decision, commit annotation, and sync event tied to the external link.
 
 ### Check system health before a session
 
@@ -1412,13 +1404,13 @@ Reports schema version, open sessions, unresolved sync conflicts, and handoff re
 ### Sync local changes to the remote
 
 ```
-planar-ext sync push --system my-jira
+planar-ext sync push --all --system my-jira
 ```
 
 Pushes local mutations (status changes, field updates) to the external system for all entities that have an `external_links(link_role='mirror')` row.
 
 ```
-planar-ext sync pull --system my-jira
+planar-ext sync pull --all --system my-jira
 ```
 
 Pulls remote changes into `sync_events` rows. Conflicts (both sides changed) are surfaced as `sync_events(outcome='conflict')` and require explicit resolution via `planar-ext sync resolve`.
@@ -1521,7 +1513,7 @@ Edit the source SKILL.md directly:
 vim ~/.planar/local/skills/fixup-protos/SKILL.md
 ```
 
-The vendor surface paths resolve to the source through symlinks (file symlink for Claude, directory symlink for Codex / Copilot), so every vendor sees the edit immediately — no re-link required. Exception: if `os.Symlink` failed at link time (filesystems that reject symlinks), the link layer falls back to a file copy (or a directory-tree copy for the dir-symlink layout) and the operator must re-run `planar local link` after every edit. The link layer emits a warning naming this case so it is never silent.
+The vendor surface paths resolve to the source through symlinks (file symlink for Claude, directory symlink for Codex / Copilot), so every vendor sees the edit immediately — no re-link required. Exception: if symlink creation failed at link time (filesystems that reject symlinks), the link layer falls back to a file copy (or a directory-tree copy for the dir-symlink layout) and the operator must re-run `planar local link` after every edit. The link layer emits a warning naming this case so it is never silent.
 
 ### Step 4 — Restrict to one vendor (optional)
 
@@ -1706,9 +1698,9 @@ By design, the `planar` binary has **no `planar agent` subcommand**. Agent obser
 |--------|------|-------|
 | `planar` (this binary) | Operator reads of agent state, folded into existing verbs. | `dashboard --agents`, `plan next`, `tree`, `audit trail`, `health` |
 | `planar-agent` | Agent ritual + operator-recovery writes. Owns every write to `agent_work_claims` / `agent_actions`. | `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`end`, `ingest`, `reconcile`, `abort` |
-| `planar-watch` | Live streaming viewer (forthcoming in plan 85 M8). Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log` |
+| `planar-watch` | Live streaming viewer. Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run list`/`show`, `sync-events` |
 
-This recipe covers the **planar** binary's read surface. The ritual recipe for `planar-agent` lives in plan 85 M5; the streaming-viewer recipe for `planar-watch` lives in plan 85 M8.
+This recipe covers the **planar** binary's read surface. The claim ritual for `planar-agent` is in `agents/methodology.md` § Coordination claims; the streaming-viewer recipe for `planar-watch` is [Recipe 19](#recipe-19--live-agent-cockpit-with-planar-watch).
 
 ### Step 1 — Survey what's in flight
 
@@ -1767,14 +1759,16 @@ planar plan next 85 --json | jq '.summary, .claimed[0]'
 ### Step 3 — Walk a plan's hierarchy
 
 ```
-planar plan show 85                    # plan row, steps, child plans
+planar plan show 85                    # the plan's own row
+planar plan step list 85               # its steps
+planar plan descendants 85             # child plans and their tasks
 planar task list --plan 85             # tasks linked to the plan
 planar artifact list --plan 85         # tech specs, ADRs, etc.
 planar decision list --plan 85         # accepted/proposed decisions
 planar question list --plan 85         # open questions
 ```
 
-`plan show` returns the plan's own row plus its `plan_steps` and child plans — the structural counterpart to `plan next`. The per-kind `list --plan <id>` filters drill into entities linked to the plan via `entity_links` (relationship `derives-from`). `planar tree` (no `--scope` flag) renders the cwd-derived read set; at a workspace root that means the workspace org plus member repos, while inside a member repo it means that repo only. Pass `--scope <association-slug>` to root at a different scope. `tree` is scope-rooted, not plan-rooted — use `plan show` + the filtered list verbs when the question is "what does this one feature look like".
+`plan show` returns the plan's own row; `plan step list` and `plan descendants` return its `plan_steps` and its child plans and tasks — the structural counterpart to `plan next`. The per-kind `list --plan <id>` filters drill into entities linked to the plan via `entity_links` (relationship `derives-from`). `planar tree` (no `--scope` flag) renders the cwd-derived read set; at a workspace root that means the workspace org plus member repos, while inside a member repo it means that repo only. Pass `--scope <association-slug>` to root at a different scope. `tree` is scope-rooted, not plan-rooted — use `plan show` + the filtered list verbs when the question is "what does this one feature look like".
 
 ### Step 4 — Inspect the audit trail for one entity
 
@@ -1809,7 +1803,7 @@ The full operator-side observation loop is exactly these five verbs. None of the
 planar dashboard --agents              # who is doing what, right now
 planar plan next <plan> --include-claimed --include-stale
                                         # one plan's queue, every bucket
-planar plan show <plan>                # plan + steps + child plans
+planar plan show <plan>                # the plan's own row
 planar task list --plan <plan>         # tasks under the plan
 planar audit trail --kind <kind> <id> # one entity's history
 planar health                          # is the database itself OK
@@ -1832,7 +1826,7 @@ Claude Code emits a JSON hook event for each session-lifecycle and message-level
 
 ### Prerequisites
 
-- `planar init` has been run against the database the agent should write to. The agent and operator binaries must agree on `$PLANAR_DB` (default `~/.planar/state.db`).
+- `planar init` has been run against the database the agent should write to. The agent and operator binaries must agree on `$PLANAR_DB` (default `~/.planar/planar.db`).
 - The Planar binaries are on `$PATH`; `which planar-agent` should print a real path.
 
 ### Step 1 — Configure the Claude Code hook
@@ -1845,24 +1839,24 @@ Edit `~/.claude/settings.json` (the per-user Claude Code settings) and add a hoo
     "session_start": [
       {
         "command": "planar-agent ingest --vendor claude --event @-",
-        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" }
+        "env": { "PLANAR_DB": "/Users/you/.planar/planar.db" }
       }
     ],
     "session_end": [
       { "command": "planar-agent ingest --vendor claude --event @-",
-        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" } }
+        "env": { "PLANAR_DB": "/Users/you/.planar/planar.db" } }
     ],
     "user_message": [
       { "command": "planar-agent ingest --vendor claude --event @-",
-        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" } }
+        "env": { "PLANAR_DB": "/Users/you/.planar/planar.db" } }
     ],
     "assistant_message": [
       { "command": "planar-agent ingest --vendor claude --event @-",
-        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" } }
+        "env": { "PLANAR_DB": "/Users/you/.planar/planar.db" } }
     ],
     "tool_call": [
       { "command": "planar-agent ingest --vendor claude --event @-",
-        "env": { "PLANAR_DB": "/Users/you/.planar/state.db" } }
+        "env": { "PLANAR_DB": "/Users/you/.planar/planar.db" } }
     ]
   }
 }
@@ -1917,7 +1911,7 @@ The M6 second-vendor adapter ships Copilot support behind `--vendor copilot`. Gi
 
 ### Prerequisites
 
-- `planar init` has been run against the database Copilot should write to. Copilot's hook subprocess and the operator binaries must agree on `$PLANAR_DB` (default `~/.planar/state.db`).
+- `planar init` has been run against the database Copilot should write to. Copilot's hook subprocess and the operator binaries must agree on `$PLANAR_DB` (default `~/.planar/planar.db`).
 - The Planar binaries are on `$PATH`; `which planar-agent` should print a real path.
 - A Copilot deployment that supports outbound event webhooks or shell-hook commands. Both the GitHub Copilot Coding Agent (server-side) and a self-hosted Copilot-style runner (e.g. a CI bot wired to the Copilot Chat API) can be configured to fire one shell command per event.
 
@@ -1933,23 +1927,23 @@ The exact configuration surface depends on which Copilot product you're wiring:
       session.started:
         - command: "planar-agent ingest --vendor copilot --event @-"
           env:
-            PLANAR_DB: "/Users/you/.planar/state.db"
+            PLANAR_DB: "/Users/you/.planar/planar.db"
       session.completed:
         - command: "planar-agent ingest --vendor copilot --event @-"
           env:
-            PLANAR_DB: "/Users/you/.planar/state.db"
+            PLANAR_DB: "/Users/you/.planar/planar.db"
       turn.user:
         - command: "planar-agent ingest --vendor copilot --event @-"
           env:
-            PLANAR_DB: "/Users/you/.planar/state.db"
+            PLANAR_DB: "/Users/you/.planar/planar.db"
       turn.assistant:
         - command: "planar-agent ingest --vendor copilot --event @-"
           env:
-            PLANAR_DB: "/Users/you/.planar/state.db"
+            PLANAR_DB: "/Users/you/.planar/planar.db"
       tool.invocation:
         - command: "planar-agent ingest --vendor copilot --event @-"
           env:
-            PLANAR_DB: "/Users/you/.planar/state.db"
+            PLANAR_DB: "/Users/you/.planar/planar.db"
   ```
 
 - **Self-hosted Copilot Chat runner**: register a webhook target that POSTs each event as JSON to a small forwarder, then `curl --data-binary @-` it into `planar-agent ingest --vendor copilot --event @-`. The forwarder is a one-liner; the payload shape is the same.
@@ -2011,7 +2005,7 @@ Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction ro
 
 ## Recipe 19 — Live agent cockpit with `planar-watch`
 
-`planar-watch` is the third binary in the four-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly seven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree` — plus the conventional `version` and `completion` helpers, and zero anything that mutates state.
+`planar-watch` is the third binary in the five-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly nine read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events` — plus the conventional `version`, `completion` and `schema` helpers, and zero anything that mutates state.
 
 This recipe walks the streaming-cockpit workflow. The companion recipe for the operator's read-fold-ins on the `planar` binary lives in Recipe 16.
 
@@ -2028,7 +2022,7 @@ planar-watch feed --since 2026-05-27T00:00:00Z   # only newer events
 
 `feed` is the lowest-friction view: every claim transition, action transition, and (where applicable) task status change ordered by occurrence time. With `--follow` the loop polls every `--interval` (default `1s`; e.g. `100ms` for tests). The JSON event shape is stable across the transport-tier ladder — see `docs/architecture.md` § "Live tail / follow implementation".
 
-**M3 addition — `--tail N` (plan 467):** emits the most-recent N events on the initial render, then with `--follow` streams only events that arrived after the tail — no re-emit. Equivalent to `journalctl -f -n N`. N must be a positive integer; N ≤ 0 exits with `InvalidValue`. See [CLI reference: planar-watch feed](cli-reference.md#binary-planar-watch).
+**M3 addition — `--tail N` (plan 467):** emits the most-recent N events on the initial render, then with `--follow` streams only events that arrived after the tail — no re-emit. Equivalent to `journalctl -f -n N`. N must be a positive integer; N ≤ 0 exits 2 with `error: feed: --tail must be a positive integer`. See [CLI reference: planar-watch feed](cli-reference.md#binary-planar-watch).
 
 ### Step 2 — Snapshot the active claims (`ps`)
 
@@ -2487,14 +2481,14 @@ A coder dispatched into a worktree (under sequential worktree isolation or `para
 planar-watch claims --plan 297 --json
 ```
 
-Look for a row with `status: "expired"` (or `"active"` past its TTL — the reconcile pass below converts them to `expired`):
+Look for a row with `status: "stale"` (or `"active"` past its TTL — the reconcile pass below converts them to `stale`):
 
 ```json
 {
   "claim_token": "9f2c1e44b8a7c3d6...",
   "entity_kind": "task",
   "entity_id": 2931,
-  "status": "expired",
+  "status": "stale",
   "expires_at": "2026-05-29T14:23:00Z",
   "worktree_path": "/repo/.worktrees/cycle/worktree-management/m2-handlers-a",
   "branch": "cycle/worktree-management/m2-handlers-a",
@@ -2543,7 +2537,7 @@ Two paths. Pick based on what you found in Step 3.
 When the coder made meaningful progress (committed work on the cycle branch) and you want a new coder to continue from where it left off.
 
 ```
-# 1. Reconcile to mark the stale claim expired.
+# 1. Reconcile to mark the lease-expired claim stale.
 planar-agent reconcile
 
 # 2. Claim the task again, reusing the existing worktree path.

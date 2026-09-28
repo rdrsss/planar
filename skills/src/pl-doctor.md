@@ -125,7 +125,7 @@ planar task update <task-id> --scope <task-assoc-slug> --status todo
 planar task cancel <task-id>   # no --scope needed; works by id from any cwd
 ```
 
-**`task update` does not accept `--editor`** — it applies field changes directly from flags. Only `task add` opens an editor. Pass `--status`, `--next-action`, etc. as flags.
+**`task update` never opens an editor** — it declares `--editor` but ignores it and applies field changes directly from flags. Only `task add` has an editor path. Pass `--status`, `--next-action`, etc. as flags.
 
 Always confirm with the operator before each write.
 

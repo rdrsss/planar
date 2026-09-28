@@ -46,22 +46,21 @@ finding, comparison, or reference write-up.
 
 ```
 planar artifact add "Survey of Zig CLI argument-parsing libraries" \
-  --kind tech_spec \
+  --kind research \
   --plan <anchor-id> \
   --body @notes.md
 ```
 
-Use `--kind tech_spec` as a stand-in for research findings until the
-dedicated `research` artifact kind ships (see plan 96). Future-you will
-be able to filter `planar artifact list --kind research` once the kind
-exists; in the meantime, tech_spec is the closest fit.
+Use `--kind research` for research findings. Future-you can filter them
+with `planar artifact list --kind research`.
 
 ### `planar decision add`
 
 For capturing **calls you made**. One decision per concrete choice —
 "I picked X over Y because Z." Decisions are write-once; if you change
-your mind later, `planar decision supersede <id>` creates a new
-decision that points back to the old one. This is the right shape:
+your mind later, record the new decision and run
+`planar decision supersede <old-id> --by <new-id>` to mark the old one
+superseded by it. This is the right shape:
 you don't lose the original reasoning, you add the new one alongside.
 
 ```
@@ -81,7 +80,7 @@ planar question add "How do we handle SIGINT cleanup across coroutines in Zig?" 
   --body "Cobra gives us graceful shutdown automatically; Zig needs manual signal handling."
 ```
 
-When you figure out the answer, `planar question answer <id> "<resolution>"`
+When you figure out the answer, `planar question answer <id> --answer "<resolution>"`
 closes it and records the resolution.
 
 ### `planar task add`
@@ -120,19 +119,20 @@ planar artifact add "Survey of Zig CLI libs" --plan 5 --body "Stub — expanding
 planar workbench push 5
 
 # 3. Edit the .md file directly in your editor
-$EDITOR ~/.planar/workbench/<assoc>/p5-<slug>/artifacts/<id>-<slug>.md
+$EDITOR ~/.planar/workbench/<assoc>/p5-<slug>/<id>-<slug>.md
 
 # 4. Sync edits back to the DB
 planar workbench pull 5
 ```
 
-The workbench writes one `.md` per entity under a per-plan directory,
-organized by kind:
+The workbench writes one `.md` per entity under a per-plan directory.
+Artifacts sit at the top level beside the plan's `README.md`; the other
+kinds are organized by directory:
 
 ```
 ~/.planar/workbench/<assoc>/p<plan-id>-<plan-slug>/
-├── artifacts/
-│   └── 12-survey-of-zig-cli-libs.md
+├── README.md
+├── 12-survey-of-zig-cli-libs.md
 ├── decisions/
 │   └── 4-use-zig-stdlib-argv-parsing.md
 ├── questions/
@@ -223,7 +223,7 @@ slugs that read naturally — they show up everywhere.
 ### Capture an insight from the last hour
 
 ```
-planar artifact add "<one-line summary>" --kind tech_spec --plan <id> \
+planar artifact add "<one-line summary>" --kind research --plan <id> \
   --body "<prose summary; what you tried, what worked, what didn't>"
 ```
 
@@ -336,15 +336,15 @@ planar plan create "<topic>" --status active --slug <slug>
 
 # Capture as you go (artifact for what, decision for why, question for ?, task for next)
 # --body writes directly to the DB. No file is created automatically.
-planar artifact add "<title>" --kind tech_spec --plan <id> --body "<inline>"
-planar artifact add "<title>" --kind tech_spec --plan <id> --body @<file>
+planar artifact add "<title>" --kind research --plan <id> --body "<inline>"
+planar artifact add "<title>" --kind research --plan <id> --body @<file>
 planar decision add "<choice>" --plan <id> --body "<reasoning>"
 planar question add "<question>" --plan <id> --body "<context>"
 planar task add "<experiment>" --plan <id> --priority 50
 
 # Materialize the workbench tree when you want to edit on disk
 planar workbench push <plan-id>
-$EDITOR ~/.planar/workbench/<assoc>/p<plan-id>-<slug>/artifacts/<id>-<slug>.md
+$EDITOR ~/.planar/workbench/<assoc>/p<plan-id>-<slug>/<id>-<slug>.md
 planar workbench pull <plan-id>
 
 # Move task states
@@ -353,7 +353,7 @@ planar task done <id>
 planar task cancel <id>
 
 # Resolve questions
-planar question answer <id> "<resolution>"
+planar question answer <id> --answer "<resolution>"
 planar question wontfix <id>
 
 # Browse

@@ -24,12 +24,12 @@ Takes an existing local entity (plan, task, question, etc.), creates a counterpa
 
 Wraps [`ext`](../../docs/cli-reference.md#domain-ext), [`link`, and `unlink`](../../docs/cli-reference.md#domain-link--unlink):
 
-> **Cross-scope guard.** This verb refuses with exit 5 when the
-> operator's resolved write scope disagrees with the target entity's
-> stored scope. Run from inside the entity's owning repo, pass
-> `--scope <slug>` explicitly, or `cd` into that repo — there is no
-> flag that downgrades the refusal to a warning; a genuine mismatch fails
-> outright. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
+> **Cross-scope guard.** `ext create`, `link`, and `unlink` are not
+> guarded: `external_links` carries no scope column, so these verbs write
+> without comparing the operator's scope to the entity's. The guarded
+> operational-plane verbs are `planar-ext sync push`, `sync pull`, and
+> `sync resolve`, which refuse a genuine mismatch at exit 5 with no bypass
+> flag. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
 planar-ext ext register jira <slug> --base-url <url> --project <key> --auth-env <var>

@@ -16,10 +16,10 @@ assumption baked silently into a spec or a diff.
 
 Research is dispatched the same way `coder`/`reviewer` are — a spawned
 subagent with a brief, blank context, its own claim token — but unlike
-them it is also directly operator-invocable via the `research` skill,
+them it is also directly operator-invocable via the `pl-research` skill,
 independent of any orchestrator lifecycle phase. It never decides what
 happens next; it recommends and hands the decision back to whoever
-dispatched it. Full decision record: `docs/research-role.md`.
+dispatched it.
 
 ## What research MUST do
 
@@ -118,7 +118,7 @@ not a role-tier decision.
   `--scope` override) — defines which repo(s)/paths are in-bounds for
   filesystem investigation.
 - **The dispatch brief.** Composed by the orchestrator, or by the operator
-  when invoking the `research` skill directly. Cites any spec/roadmap/code
+  when invoking the `pl-research` skill directly. Cites any spec/roadmap/code
   paths already known to be relevant, states a source/depth budget if one
   applies, and states what decision or downstream dispatch the findings
   are expected to feed — this is what makes "Recommended next action"
@@ -129,8 +129,9 @@ not a role-tier decision.
   re-walk already-covered ground.
 - **Claim token.** Acquired by the dispatcher (orchestrator via
   `planar-agent pull`/`claim`, or the operator directly under skill
-  invocation) against whatever entity the brief targets (a `question` row,
-  a task, or a plan) — same claim surface coder/reviewer use.
+  invocation) against whatever entity the brief targets (a task, a plan,
+  or a plan step — the only kinds `planar-agent claim --entity` accepts) —
+  same claim surface coder/reviewer use.
 
 ## Behavior
 
@@ -237,7 +238,7 @@ cue's "same-scope writes MUST NOT emit any cue" rule.
 
 Research has no fixed phase number in
 [`agents/methodology.md`](methodology.md#phases)'s Phases table
-(1 / 2 / 3 / 3.5 / 3.7 / 4 / 5) — it is an out-of-band dispatch available
+(1 / 1.5 / 2 / 3 / 3.5 / 3.7 / 4 / 5 / 6) — it is an out-of-band dispatch available
 at any point, not a lifecycle gate like Phase 3.7's finalization. Two
 dispatch shapes:
 
@@ -251,13 +252,13 @@ dispatch shapes:
    operator, and the returned brief either answers the question outright
    or gives the operator's eventual answer a documented starting point.
 
-Independent of both: the operator invokes the `research` skill directly
+Independent of both: the operator invokes the `pl-research` skill directly
 at any time, outside any orchestrator lifecycle.
 
 ## Operator feedback envelope
 
 The findings brief remains authoritative. When invoked directly via the
-`research` skill (not orchestrator-dispatched), wrap it in the shared
+`pl-research` skill (not orchestrator-dispatched), wrap it in the shared
 feedback contract from [`doctrine.md`](doctrine.md#operator-feedback-contract):
 context names the resolved scope and the question; intent restates the
 question in one sentence; actions counts sources consulted; result is the

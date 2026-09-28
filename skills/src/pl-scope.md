@@ -36,17 +36,17 @@ planar scope suggest [--json]
 
 ## Override pattern
 
-Every write verb accepts `--scope <slug>` to override the cwd-derived value for that invocation. Use it when:
+The create/add verbs and the guarded write verbs accept `--scope <slug>` to override the cwd-derived value for that invocation; check `planar <verb> --help`, because not every write verb has the flag. On `plan update`, `artifact update`, and `annotate update`, `--scope` is instead a patch field that reassigns the entity's stored scope. Use the override when:
 
 - working from outside the target repo's cwd (e.g. drafting a plan for `service-a` while sitting in `service-b`),
 - standing at a workspace root where the resolver refuses because membership is ambiguous,
 - scripting or batching across multiple scopes from a neutral cwd.
 
-The cross-scope guard (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)) compares the resolved write scope against the target entity's stored scope and refuses with exit 5 on mismatch.
+The cross-scope guard (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)) runs on a fixed set of verbs — `spec ingest --apply`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw`, `task update`, `closure compute`, and `planar-ext sync push/pull/resolve`. On those it compares the resolved write scope against the target entity's stored scope and refuses with exit 5 on mismatch; an `assoc:<org>` write scope covers entities stored at its member repos. Other mutation verbs write without comparing scopes.
 
 ## What Was Removed
 
-`planar scope use`, `planar scope pop`, and `planar scope clear` were removed alongside the `active_scope` table. The active stack had become a footgun: it persisted across sessions and silently re-routed writes to whatever was last pushed, even from unrelated cwds. The current model is "your cwd is your scope; `--scope` is the explicit override." The deleted verbs now exit 1 with a redirect message pointing at `scope show`.
+`planar scope use`, `planar scope pop`, and `planar scope clear` were removed alongside the `active_scope` table. The active stack had become a footgun: it persisted across sessions and silently re-routed writes to whatever was last pushed, even from unrelated cwds. The current model is "your cwd is your scope; `--scope` is the explicit override." The deleted verbs now exit 2 with a redirect message pointing at `scope show`.
 
 ## When To Invoke
 

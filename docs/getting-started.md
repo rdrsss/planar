@@ -26,9 +26,11 @@ about 30 minutes the first time and 5 minutes the second.
 
 ## 1. Install
 
-Planar is a single Zig binary (plus the read-only `planar-watch` and
-the agent-callable `planar-agent` companions) backed by SQLite. Build
-from source and stage the workflow surfaces:
+Planar is five C++26 binaries — the operator CLI `planar`, the
+agent-callable `planar-agent`, the read-only `planar-watch`, the
+workflow runner `planar-execute`, and the external-system binary
+`planar-ext` — backed by SQLite. Build from source and stage the
+workflow surfaces:
 
 ```sh
 git clone https://github.com/rdrsss/planar.git
@@ -36,9 +38,9 @@ cd planar
 ./install.sh
 ```
 
-`install.sh` builds the binary, copies it to `~/.planar/bin/planar`,
-and stages every vendor workflow surface (Claude commands, Codex
-skills, Copilot skills/instructions, Planar agents) into their
+`install.sh` builds the binaries, installs them under `~/.planar/bin/`,
+and stages every vendor workflow surface (Claude commands, Codex,
+Copilot, and Gemini skills, Planar agents) into their
 per-user install paths. Add `~/.planar/bin` to `$PATH` if it is not
 already there.
 
@@ -62,18 +64,26 @@ git remote add origin git@github.com:you/example-app.git
 planar init
 ```
 
-`init` does three things:
+`init` does two things:
 
 1. Applies every migration embedded in the binary (sourced from
    `migrations/` at configure time via `cmake/generate_migrations.cmake`) against
    the new database. The public schema-version contract is the
    `schema_migrations` table — query it any time with
    `sqlite3 ~/.planar/planar.db "select * from schema_migrations;"`.
-2. Resolves the current directory's git remote to a `projects`
-   row and creates an `associations` row of kind `project`, then
-   wires the two together via `project_associations`.
-3. Pushes the new association onto the active-scope stack so
-   subsequent write verbs route here by default.
+2. Registers the current directory as a `projects` row, named after
+   the directory.
+
+`init` does not create the project's planning scope. Its output names
+the two commands that do — run them next:
+
+```sh
+planar assoc create project:example-app --kind project
+planar assoc add project:example-app ~/work/example-app
+```
+
+Scope is derived from your current working directory, so write verbs
+run from inside the repo now route to `project:example-app` by default.
 
 Inspect the result:
 
@@ -82,8 +92,8 @@ planar scope show
 planar health
 ```
 
-`scope show` should print one row (your project association at the
-top of the stack); `health` should print `OK` everywhere.
+`scope show` should print `project:example-app` as the scope resolved
+from cwd; `health` should end with `overall: ok`.
 
 ## 3. Your first plan
 
@@ -95,17 +105,18 @@ under one slug. Create one:
 planar plan create "Add login flow" --slug login-flow
 ```
 
-The CLI prints the new plan id. Show it:
+The CLI prints the new plan id. Verbs take that numeric id, not the
+slug. Show it:
 
 ```sh
-planar plan show login-flow
+planar plan show <plan-id>
 ```
 
 Plans nest. To carve out a milestone:
 
 ```sh
 planar plan create "M1 — landing page" --slug login-flow-m1 \
-    --parent login-flow
+    --parent <plan-id>
 ```
 
 ## 4. Your first task
@@ -114,18 +125,18 @@ Tasks are the unit of execution[^founding_tech_spec]. Create one
 under the plan you just made:
 
 ```sh
-planar task add "Wire OAuth callback" --plan login-flow --priority 100
+planar task add "Wire OAuth callback" --plan <plan-id> --priority 100
 ```
 
 Move it through its status states:
 
 ```sh
-planar task list --plan login-flow
-planar task start <task-id>      # -> in_progress
-planar task done  <task-id>      # -> done
+planar task list --plan <plan-id>
+planar task update <task-id> --status doing   # todo -> doing
+planar task done <task-id>                    # -> done
 ```
 
-`task start` is just a status transition; it does not run any
+`task update --status` is just a status transition; it does not run any
 code. The actual work happens in your editor; Planar tracks the
 intent and the outcome.
 
@@ -133,29 +144,16 @@ intent and the outcome.
 
 The *workbench* is a bidirectionally synced filesystem under
 `~/.planar/workbench/`. Every plan with the workbench enabled gets
-a directory there; you author specs, ADRs, and design notes as
-plain markdown files, and `planar workbench sync` round-trips them
-into the `artifacts` table[^founding_tech_spec].
+a directory there; specs, ADRs, and design notes are plain markdown
+files, and `planar workbench sync` round-trips them with the
+`artifacts` table[^founding_tech_spec].
 
-Open the workbench for your plan:
-
-```sh
-planar workbench open login-flow
-ls ~/.planar/workbench/<your-org>/p<id>-login-flow/
-```
-
-You will see one file per artifact (initially empty). Drop in a
-product spec:
+Workbench files carry Planar-generated frontmatter (entity kind and
+id), so create the artifact through the CLI and let the workbench
+materialize its file:
 
 ```sh
-cat > ~/.planar/workbench/<your-org>/p<id>-login-flow/product-spec.md <<'EOF'
----
-artifact_kind: product_spec
-status: draft
-title: Login flow — product spec
----
-# Login flow — product spec
-
+cat > /tmp/product-spec.md <<'EOF'
 ## Intent
 
 Allow first-time users to authenticate via OAuth and land on the
@@ -165,35 +163,38 @@ right onboarding step.
 
 - Email/password fallback (deferred).
 EOF
+planar artifact add "Login flow — product spec" --kind product_spec \
+    --plan <plan-id> --from-file /tmp/product-spec.md
+planar workbench sync <plan-id>
+ls ~/.planar/workbench/<your-org>/p<plan-id>-login-flow/
 ```
 
-Sync it back to the database:
+You will see a `README.md` for the plan, `plans/` and `tasks/`
+directories, and one `<artifact-id>-<slug>.md` file per artifact.
+Edit the product spec on disk, then sync it back to the database:
 
 ```sh
-planar workbench sync login-flow
-planar artifact list --plan login-flow
+planar workbench sync <plan-id>
+planar artifact show <artifact-id>
 ```
 
-The new `product_spec` artifact is now in the DB. Editing it on
-disk and re-running `workbench sync` round-trips the change.
+Editing the file on disk and re-running `workbench sync` round-trips
+the change. A hand-dropped file without the generated frontmatter is
+reported as malformed and is not imported.
 
 ## 6. Spec ingestion
 
 `planar spec ingest` decomposes a workbench planning document into
-a structured task graph. The decomposer reads your product/tech
-spec, identifies milestones, and proposes tasks under each.
+a structured task graph. It reads the plan's `tech_spec` and `roadmap`
+artifacts from the workbench (both are required), identifies
+milestones, and proposes tasks under each.
 
-Author a roadmap:
+Author a tech spec and a roadmap:
 
 ```sh
-cat > ~/.planar/workbench/<your-org>/p<id>-login-flow/roadmap.md <<'EOF'
----
-artifact_kind: roadmap
-status: draft
-title: Login flow — roadmap
----
-# Login flow — roadmap
-
+planar artifact add "Login flow — tech spec" --kind tech_spec \
+    --plan <plan-id> --body "OAuth callback handler and onboarding router."
+cat > /tmp/roadmap.md <<'EOF'
 ## M1 — landing page
 
 - Wire OAuth callback.
@@ -204,12 +205,17 @@ title: Login flow — roadmap
 - Read the new-user flag.
 - Route first-timers to /welcome.
 EOF
-planar workbench sync login-flow
-planar spec ingest login-flow
+planar artifact add "Login flow — roadmap" --kind roadmap \
+    --plan <plan-id> --from-file /tmp/roadmap.md
+planar workbench push <plan-id>
+planar spec ingest <plan-id>            # preview only
+planar spec ingest <plan-id> --apply    # write the task graph
 ```
 
-The ingestor creates one sub-plan per `## ` heading and one task
-per bullet. Inspect the result hierarchically (`planar plan show`
+Without `--apply`, `spec ingest` prints the proposed changes and
+writes nothing. With it, the ingestor creates (or reuses, when the
+title matches an existing child plan) one sub-plan per `## ` heading
+and one task per bullet. Inspect the result hierarchically (`planar plan show`
 only returns the parent plan's own row, so use `tree` to see the
 new sub-plans and tasks):
 
@@ -220,19 +226,21 @@ planar tree
 ## 7. External-system sync
 
 Planar's operational plane integrates with Jira and GitHub Issues
-via adapters. `ext`/`sync` live on the `planar-ext` binary. To create
-a GitHub Issues counterpart for your plan:
+via adapters. `ext`/`sync` live on the `planar-ext` binary. Register
+the external system once, then create counterparts for your plan:
 
 ```sh
+planar-ext ext register github github --project you/example-app \
+    --auth-env GITHUB_TOKEN
 planar-ext ext list                            # check registered systems
-planar-ext ext create github --from plan:<login-flow-id> --type Epic
-planar-ext ext propagate-one github --from plan:<login-flow-id>
+planar-ext ext propagate-one github --from plan:<plan-id> --dry-run
+planar-ext ext propagate <plan-id> --system github --dry-run
 ```
 
-`ext propagate-one` creates a single external counterpart per call. The
-whole-tree walk (`ext propagate <plan>`, one issue per task, linked via
-`external_links`) is not yet implemented on either binary — see
-`docs/cli-reference.md`. Local changes flow out with `planar-ext sync push`.
+`ext propagate-one` creates a single external counterpart per call.
+`ext propagate <plan-id>` walks the whole tree — the plan, its
+sub-plans, and their tasks — and records each counterpart in
+`external_links`. Drop `--dry-run` to create the issues. Local changes flow out with `planar-ext sync push`.
 `planar-ext sync pull` fetches remote state and reports it — it does not
 write local fields (decision 996); use it to see whether the remote drifted,
 then update the local entity yourself if warranted.
@@ -277,10 +285,10 @@ regenerate-candidate on the next `tabularium diff`[^doc_tech_spec].
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | `planar: command not found` | `~/.planar/bin` not on `$PATH` | Add it to your shell rc |
-| `init`: "git remote not found" | No `origin` remote | `git remote add origin <url>` and re-run |
-| `task add`: scope-mismatch error | cwd not equal to stack top | Pass `--scope` or `cd` into the right repo |
-| Workbench files reappear after deletion | Sync round-tripped from DB | Delete the artifact with `planar artifact rm` |
-| `ext propagate-one`: no adapter registered | Adapter not yet created | `planar-ext ext create <kind>` first |
+| `plan create`: "project has no association" | `init` registered the project but no association exists yet | Run the `planar assoc create` / `planar assoc add` commands `init` printed |
+| `plan show`: "plan id must be an integer" | A slug was passed where an id is required | Pass the numeric plan id |
+| `workbench sync`: `MALFORMED … (MissingRequiredField)` | A hand-created file lacks the generated frontmatter | Create the entity with `planar artifact add`, then sync |
+| `ext propagate-one`: "external system '<slug>' not found" | System not yet registered | `planar-ext ext register github <slug> --project <owner/repo>` first |
 
 [^founding_tech_spec]:
 [^doc_tech_spec]:

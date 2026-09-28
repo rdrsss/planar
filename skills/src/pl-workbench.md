@@ -26,7 +26,7 @@ Manages the bidirectional sync between the workbench filesystem (`~/.planar/work
 
 ## What It Does
 
-The workbench is the drafting surface for agents and users. Each active feature has a directory tree under `$PLANAR_WORKBENCH_ROOT/<association>/<plan-key>-<plan-slug>/` containing Markdown files for plans, tasks, scenarios, decisions, artifacts, and questions. This skill exposes all nine workbench verbs so an agent can read from or write to the DB-backed workbench without touching the database directly.
+The workbench is the drafting surface for agents and users. Each active feature has a directory tree under `$PLANAR_WORKBENCH_ROOT/<association>/<plan-key>-<plan-slug>/` containing Markdown files for plans, tasks, scenarios, decisions, artifacts, and questions. This skill exposes nine workbench verbs so an agent can read from or write to the DB-backed workbench without touching the database directly.
 
 ## CLI Commands
 
@@ -64,14 +64,14 @@ planar workbench publish <plan-id> --system <slug>
 planar workbench publish <plan-id> --system <slug>
 ```
 
-Renders the workbench files for `<plan-id>` and pushes the rendered content to the named external operational system. The system slug must already be registered (`planar-ext ext list` / `planar-ext ext create`).
+Renders the workbench files for `<plan-id>` and pushes the rendered content to the named external operational system. The system slug must already be registered (`planar-ext ext list` / `planar-ext ext register`).
 
 | Flag | Description |
 |------|-------------|
 | `--system <slug>` | External system slug (required). |
 | `--json` | Emit a JSON result envelope. |
 
-For full plan-subtree counterpart creation (one external entity per plan / task / artifact, with parent / child links), use `planar-ext ext propagate <plan-id> --system <slug>` once it lands — `publish` pushes the rendered Markdown body; `propagate` walks the plan tree. As of this writing `ext propagate` (the whole-feature walk) is not yet implemented on either binary; use `planar-ext ext propagate-one <system> --from <kind:id>` for a single entity today.
+For full plan-subtree counterpart creation (one external entity per plan / task / artifact, with parent / child links), use `planar-ext ext propagate <plan-id> --system <slug>` — `publish` pushes the rendered Markdown body; `propagate` walks the plan tree. Use `planar-ext ext propagate-one <system> --from <kind:id>` for a single entity.
 
 See [`docs/cli-reference.md#planar-workbench-publish-plan-id`](../../docs/cli-reference.md#planar-workbench-publish-plan-id) for the full specification.
 

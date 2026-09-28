@@ -50,14 +50,14 @@ Do **not** invoke this skill to create tasks. Task creation belongs to `pl-spec-
 
 The skill composes these commands in this order. The artifact rows are created with an empty body first so the returned `<artifact-id>` is known before the file is written, which lets the file carry correct YAML front matter from the start.
 
-> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
+> **Scope.** Reads and writes use the cwd-derived scope. Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
 
-> **Cross-scope guard.** This verb refuses with exit 5 when the
-> operator's resolved write scope disagrees with the target entity's
-> stored scope. Run from inside the entity's owning repo, pass
-> `--scope <slug>` explicitly, or `cd` into that repo — there is no
-> flag that downgrades the refusal to a warning; a genuine mismatch fails
-> outright. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
+> **Cross-scope guard.** None of the verbs below is guarded: `plan create`,
+> `artifact add`, `artifact update`, and `workbench push` do not compare the
+> operator's scope with a stored entity scope, and on `artifact update`
+> `--scope` reassigns the artifact's stored scope rather than authorizing a
+> write. Run from inside the owning repo so the cwd-derived scope is the
+> intended one. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
 planar scope show
@@ -77,7 +77,7 @@ planar workbench push <plan-id>
 
 ## Front matter contract
 
-Every `.md` file written by this skill carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/engine/workbench/parse.cppm`](../../src/engine/workbench/parse.cppm). Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync.
+Every `.md` file written by this skill carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `front_matter` struct in [`src/engine/workbench/parse.cppm`](../../src/engine/workbench/parse.cppm). Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync.
 
 Required fields for planner-written artifact files:
 

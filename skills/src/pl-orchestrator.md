@@ -78,8 +78,8 @@ draft but do not replace the user gate.
 ## Phase 1.5 — Adversarial spec review
 
 After the user's initial artifact review, invoke `pl-spec-review <plan>`.
-Only `ready-for-ingest` advances. `needs-answer` or `needs-revision` stops the
-lifecycle. Surface findings, apply only operator-approved edits through the
+Only `ready-for-ingest` advances. `needs-answers`, `needs-spec-work`, or
+`abort-replan` stops the lifecycle. Surface findings, apply only operator-approved edits through the
 skill's write path, and rerun review.
 
 ## Phase 2 — Ingestion
@@ -342,7 +342,8 @@ isolation. `parallel-fanout` requires worktrees. Planar's installed
 
 - `cycle_plan` — one sequential lane;
 - `plan` / `waves` — dependency-respecting fan-out;
-- `barrier_check` / `reconcile_plan` — fan-in and recovery;
+- `barrier_check` / `fan_in` / `conflict_escalation` / `reconcile_plan` /
+  `capacity_reconcile` — fan-in and recovery;
 - `teardown` — owned cleanup targets.
 
 The model orchestrator, a host-native workflow, or a background agent performs
@@ -402,7 +403,7 @@ model_choice: {"<task-id>":{"tier":"<tier>","candidate":"<id>","work_type":"<typ
 ## Phase 3.7 — Finalization
 
 Finalization requires explicit `--finalize` or interactive confirmation,
-approval or explicit bypass, complete validation evidence, and a confirmed Git
+approval or explicit bypass, complete validation evidence, and a confirmed
 Git delivery profile. The profile mode is `github-pr`, `external-pr`, `local-ref`,
 or `already-integrated` and names exact source/target refs, verification and
 integration commands, and owned cleanup targets.

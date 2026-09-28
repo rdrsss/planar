@@ -27,7 +27,7 @@ Three mechanisms, in layers, decide whether a status write lands:
    which is why re-answering an answered question or re-retiring a retired
    scenario is a silent no-op rather than a refusal.
 2. **Verb-level guards** layered on top by the handler: the claim-atomic
-   guard on task verbs, the cross-scope guard on eight verbs, required
+   guard on task verbs, the cross-scope guard on ten verbs, required
    flags such as `--reason`.
 3. **Engine roll-ups** that run *after* a write inside the same transaction
    and can move a *different* entity: plan auto-promotion, dependency
@@ -539,7 +539,7 @@ flowchart TD
     B2 -->|ready-for-ingest| G2{{operator confirms preview}}
     G2 --> P2
     subgraph P2["Phase 2 · Ingestion (pl-spec-ingest)"]
-        C1[spec ingest --preview] --> C2[spec ingest --apply<br/>anchor draft → active]
+        C1[spec ingest, preview] --> C2[spec ingest --apply<br/>anchor draft → active]
     end
     C2 --> G3{{strategy + isolation gate<br/>then dispatch-shape gate}}
     G3 --> P3
@@ -773,7 +773,7 @@ sequenceDiagram
     Note over P: 1 snapshot next_action → context_snapshots<br/>2 handoffs row pending (worktree from live claim)<br/>3 handoff validate → validated<br/>4 session note<br/>5 resumability check (advisory only)
     A2->>P: resume validate TASK_ID --json
     P-->>A2: resumable + failures[] with remediation commands
-    A2->>P: resume packet TASK_ID
+    A2->>P: planar resume TASK_ID
     P-->>A2: 8-section packet (identity, state, plan position,<br/>operational plane, activity, decisions, questions, artifacts)
     A2->>P: handoff consume ID --session NEW
     A2->>P: planar-agent claim --entity task:ID --no-transition (task already doing)
@@ -860,7 +860,7 @@ flowchart TD
     N -->|0| UNSET[unset: project_unassociated]
     N -->|1| ONE[that association]
     N -->|2+| UNSET2[unset: project_multiple_associations]
-    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply, feedback triage set,<br/>audit publish-decision, task update,<br/>closure compute, sync push/pull/resolve}
+    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply, feedback triage set,<br/>audit publish-decision, decision accept/withdraw,<br/>task update, closure compute, sync push/pull/resolve}
     G -->|no| WRITE[write]
     G -->|yes| CMP{operator scope covers entity scope?<br/>assoc:org covers repo:member since decision 1121}
     CMP -->|yes| WRITE
@@ -880,9 +880,9 @@ bug, unless noted.
 
 | Claim | Where | What the code does |
 |---|---|---|
-| Plan status flips write a `session_entries` note beginning `plan_status: <id>`, recoverable with `audit trail --grep "^plan_status:"` | `docs/concepts.md` § Plan (**fixed at task 6825** — now describes the `audit_log` row), `agents/methodology.md` § Plan-status invariant (still open) | The C++ roll-up writes an `audit_log` `status_change` row with a free-text summary; no `plan_status:` sentinel is produced anywhere in `src/` |
-| `planar health` `overall` is one of `ok`, `degraded`, `critical` | `skills/src/pl-health.md` | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
-| Whole-tree `ext propagate <plan>` is not yet implemented | `skills/src/pl-ext-propagate.md` (still open); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
+| Plan status flips write a `session_entries` note beginning `plan_status: <id>`, recoverable with `audit trail --grep "^plan_status:"` | `docs/concepts.md` § Plan (**fixed at task 6825** — now describes the `audit_log` row), `agents/methodology.md` § Plan-status invariant (since fixed) | The C++ roll-up writes an `audit_log` `status_change` row with a free-text summary; no `plan_status:` sentinel is produced anywhere in `src/` |
+| `planar health` `overall` is one of `ok`, `degraded`, `critical` | `skills/src/pl-health.md` (since fixed — now names `ok` and `degraded`) | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
+| Whole-tree `ext propagate <plan>` is not yet implemented | `skills/src/pl-ext-propagate.md` (since fixed); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
 | `planar models list\|refresh\|routing\|apply\|candidates` exist, and `models evals` takes only `--json` | `docs/cli-reference.md` § Domain `models`, `docs/concepts.md` § Model routing, `docs/workflows.md` Recipe 25, `docs/skill-reference.md` § `/pl-models-config` (**all fixed at task 6825**) | The `models` group's subcommands are exactly `evals`, `resolve`, `experiments`, `outcomes`, `registry`; `evals` declares ten cohort flags (`src/cmd/planar/handlers/models/evals.cppm`). The binary's own `planar models --help` group description still narrates the removed family — a binary-side drift, not fixed here |
 | Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench (**fixed at task 6926** — now cites `src/engine/workbench/terminal.cppm`) | `src/engine/workbench/terminal.cppm` |
 | `closure compute` is deferred with its dependencies | header comment in `src/engine/closure/store.cppm` | `compute.cpp` implements the tree-sitter extraction and is wired to `planar closure compute` |

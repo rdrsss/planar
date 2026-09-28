@@ -92,27 +92,20 @@ source/vendor pairs separately.
 
 ### Template language
 
-The authored body language becomes Inja syntax. Convert the current
-`{{.VendorTitle}}` actions to `{{ VendorTitle }}` in `skills/src/` and
-`agents/` in the implementation change. Reject leftover Go-style actions
-at source validation; do not silently reinterpret them. Inja receives the
-documented context (`Slug`, `VendorName`, `VendorTitle`, `Invoke`,
-`InstallPath`, `Description`, `Model`, `Vendor` and profile-added context
+The authored body language is `{{ Name }}` substitution actions, as in
+`{{ VendorTitle }}`. Reject leftover Go-style `{{.Name}}` actions
+at source validation; do not silently reinterpret them. The substitution
+pass receives a flat string context (`Slug`, `VendorName`, `VendorTitle`,
+`Invoke`, `InstallPath`, `Description`, `Model`, and the dotted `Vendor.*`
 fields). A `doc` receives only `Slug` and `Description`; vendor fields in
-a doc are errors. Map Inja parse/render errors to diagnostics containing
-the source path and vendor. Missing variables fail the render.
-Build the nlohmann context directly from validated C++ fields; do not use
-it to parse config/source files or serialize CLI reports.
+a doc are errors. Map render errors to diagnostics containing
+the source path and vendor. Unknown names, malformed actions and
+unterminated actions fail the render.
 
-Disable HTML autoescaping and filesystem template search. Keep Inja's
-default whitespace settings unless a byte comparison requires an explicit
-setting. Includes, if later authored, must use a controlled loader rooted
-under the source tree; an include may not read an arbitrary filesystem path.
+There is no autoescaping, no include mechanism and no control flow.
 Preserve the authored body's internal whitespace and Scriptorium's
 single-blank-line join rule. Test missing keys, malformed expressions,
-literal delimiters, whitespace and a rejected leftover Go action. The
-current corpus has no control-flow actions; future Inja constructs need
-focused tests when introduced.
+literal delimiters, whitespace and a rejected leftover Go action.
 
 ### Structured formats
 
@@ -134,7 +127,7 @@ and structured-data layer.
 src/tools/scriptorium/
   CMakeLists.txt
   main.cpp                 # process entry
-  core.cppm core.cpp       # parser, profiles, Inja rendering and inspection
+  core.cppm core.cpp       # parser, profiles, body substitution and inspection
   core.test.py             # adjacent process tests
   planar-golden.sha256     # complete projection byte pins
   README.md                # usage and authoring syntax
@@ -142,16 +135,11 @@ src/tools/scriptorium/
 
 Use a private module and a small executable entry point, registered from
 `src/tools/CMakeLists.txt`.
-The tool uses Glaze for YAML and JSON. Only the Scriptorium target includes
-Inja and nlohmann; no exported module
-interface exposes their types. It must not link a `src/cmd/*` binary or
+The tool uses Glaze for YAML and JSON; it is the tool's only third-party
+dependency, and no exported module
+interface exposes its types. It must not link a `src/cmd/*` binary or
 acquire a Planar SQLite handle. Keep third-party headers in the global
-module fragment or implementation units. Add Inja and nlohmann as separate
-pinned release-archive CPM entries, cached under committed `vendor/`.
-Disable their upstream tests and install rules. Avoid an upstream
-`find_package(nlohmann_json)` dependency by wiring the two pinned source
-trees explicitly if Inja's CMake options require it. Do not enable
-nlohmann on any `src/engine/`, `src/lib/` or `src/cmd/` target.
+module fragment or implementation units.
 
 `cmake --build` must build the tool, and `cmake --install` must place it at
 `$PLANAR_HOME/bin/scriptorium` beside the five Planar binaries. It is a
@@ -207,12 +195,11 @@ manifest; local personal skills remain under `planar local`.
    Scriptorium into a temporary directory; record its 232 relative paths,
    bytes and expected skip set. Keep focused malformed-source fixtures from
    the local Scriptorium tests as independent negative cases.
-2. **Pin dependencies and migrate syntax:** vendor release archives for
-   Inja and nlohmann, keep their include paths private to the tool, and
-   convert the 52 current Go-style actions to Inja syntax. Keep the source
+2. **Migrate syntax:** convert the 52 current Go-style actions to
+   `{{ Name }}` syntax. Keep the source
    edit limited to template actions and document the new authoring syntax.
-3. **Implement the compiler:** source/config parsing, profile merge, Inja
-   rendering and all three projections. Require byte-for-byte corpus parity
+3. **Implement the compiler:** source/config parsing, profile merge, body
+   substitution and all three projections. Require byte-for-byte corpus parity
    against the pre-migration baseline, plus stable diagnostics for validation
    classes, before installer changes.
 4. **Implement inspection and CLI:** verify `render`, dry run, `check`,
@@ -235,8 +222,6 @@ manifest; local personal skills remain under `planar local`.
 The cutover gate is a clean debug build and CTest run, byte parity for all
 current projections, the installer dependency/manifest tests, a sandboxed
 full install and `scripts/check-self-installed.sh` against that install.
-Inspect the CMake link and include graph to confirm nlohmann is confined
-to `src/tools/scriptorium/`.
 Remove the external prerequisite only after those checks pass. The source
-template syntax changes to Inja; the generated vendor layout and bytes do
-not change.
+template syntax changes to `{{ Name }}` actions; the generated vendor layout
+and bytes do not change.

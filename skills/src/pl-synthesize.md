@@ -59,7 +59,7 @@ See [`docs/concepts.md#transcription-vs-synthesis`](../../docs/concepts.md#trans
 
   `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`
 
-On a cache miss the CLI exits 0 with this five-line notice:
+On a cache miss the CLI exits 0 with this notice:
 
 ```
 Awaiting LLM synthesis. The vendor skill should:
@@ -67,7 +67,7 @@ Awaiting LLM synthesis. The vendor skill should:
   2. run the LLM at temperature 0
   3. write the Result to <cache-path>
   4. re-invoke `planar synthesize <repo-root>`
-See the generated vendor surface for the full contract.
+See `commands/claude/pl-synthesize.md` for the full contract.
 ```
 
 The vendor skill (this skill body) consumes the Request and produces a Result by:
@@ -133,7 +133,7 @@ What this means concretely:
 - If the workspace has a decision "all member projects use SQLite", the synthesizer should respect that constraint in its tech-spec.
 - BUT: code-evidence on the target repo still wins. If sibling-project context suggests a feature is done, but the target repo's code-evidence shows no implementation, the task lands `status=todo`.
 
-The workspace context is optional in the Request — repos that aren't workspace members get `workspace_context: null` and the synthesizer falls back to repo-only synthesis. The Go validator does NOT consult workspace context when enforcing the code-evidence invariant; it exists purely to inform the LLM's framing.
+The workspace context is optional in the Request — repos that aren't workspace members get `workspace_context: null` and the synthesizer falls back to repo-only synthesis. The validator does NOT consult workspace context when enforcing the code-evidence invariant; it exists purely to inform the LLM's framing.
 
 ## Result JSON Schema (load-bearing)
 
@@ -223,17 +223,14 @@ The canonical result types and validation live in [`src/engine/synthesize/synthe
 
 ## Confidence Floor
 
-There is NO confidence floor in this binary. The Go-era 0.7 default, its
-`--threshold` control and the refusals built on it were never ported, and
-`--threshold` itself was removed at task 6802 after the task-6788 spike
-found it declared-but-never-read here and in the Zig oracle. LLM-only
-tasks land with `confidence=0` and nothing refuses them on that basis.
+There is NO confidence floor in this binary and no `--threshold` flag.
+Nothing refuses a synthesized task on a confidence basis.
 
 ## CLI Commands
 
 Wraps `planar synthesize`. See [`docs/cli-reference.md`](../../docs/cli-reference.md) for the full flag table.
 
-> **Cross-scope guard.** This verb refuses to write across scope mismatches. Run from inside the target repo's cwd or pass `--scope <slug>` explicitly. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard).
+> **Cross-scope guard.** `planar synthesize` is not one of the guarded verbs; it does not refuse a cross-scope write. Run from inside the target repo's cwd or pass `--scope <slug>` explicitly. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard).
 
 ```
 planar synthesize <repo-root>                          # preview
@@ -258,7 +255,7 @@ Apply the structured-authoring rules: quoted titles, literal headings, no nested
 
 Report the resolved scope, repository root, detected or overridden code layout,
 greenfield decision, synthesis or literal mode, preview or apply mode,
-confidence threshold, removal policy, and forward-spec selection.
+removal policy, and forward-spec selection.
 
 ## Intent
 
@@ -283,7 +280,7 @@ informative `outcome=ok` with zero applied.
 
 ## Warnings
 
-Name greenfield or layout assumptions, confidence-floor findings, missing code
+Name greenfield or layout assumptions, missing code
 evidence, cache/schema validation failures, unavailable post-state reads, and
 partial per-target results. Never imply that independently completed plans or
 files were rolled back because another target failed.
@@ -298,7 +295,7 @@ their separate apply gate.
 ## Recovery
 
 For every failed target, give its exact inspect command and an idempotent retry
-with the original layout, greenfield, threshold, removal, scope, and
+with the original layout, greenfield, removal, scope, and
 forward-spec flags, such as `planar synthesize <repo-root> --apply ...` and
 `planar plan show <plan-id> --json`. When synthesis output is pending, preserve
 the request fingerprint and rerun after writing the matching cache result.

@@ -16,27 +16,41 @@
 #                                     # Issues adapters; read-only on planning
 #                                     # tables, read-write on external_links /
 #                                     # external_systems / sync_events)
+#     bin/scriptorium                 # in-tree skill + agent renderer
+#     bin/centuriond                  # stock Centurion workflow daemon
+#     share/centurion/                # centuriond migrations + build identity
+#     install-manifest.json           # managed vendor projections
 #     planar.db                       # created on first `planar init`
-#     migrations/0001_foundation.up.sql  # canonical migration sources (also
-#                                     # embedded into the binary at compile
-#                                     # via build-time codegen)
-#     agents/                         # vendor-neutral agent role specs
-#     commands/claude/pl-*.md         # Claude slash-command sources
-#     skills/codex/pl-*.md            # Codex skill sources
+#     migrations/00001_foundation.up.sql  # canonical migration sources (also
+#                                     # embedded into the binary at configure
+#                                     # time via CMake codegen)
+#     agents/                         # vendor-neutral agent role specs, plus
+#                                     # rendered agents/{claude,codex,copilot,gemini}/
+#     skills/src/pl-*.md              # unified authored skill sources
+#     commands/claude/pl-*.md         # rendered Claude slash commands
+#     skills/codex/pl-*/SKILL.md      # rendered Codex skills
 #     codex-skills/pl-*/SKILL.md      # Codex runtime skill directories
-#     skills/copilot/pl-*.md          # Copilot skill sources
-#     copilot/                        # Copilot instructions/prompts (if any)
+#     skills/copilot/pl-*.md          # rendered Copilot skills
+#     copilot-skills/pl-*/SKILL.md    # Copilot runtime skill directories
+#     skills/gemini/pl-*.md           # rendered Gemini skills
+#     gemini-skills/pl-*/SKILL.md     # Gemini runtime skill directories
+#     copilot/                        # Copilot instructions/prompts (only when
+#                                     # the checkout has a copilot/ directory)
+#     templates/                      # operator-editable defaults
+#     workflows/                      # Lua workflows
 #     scripts/validate-{barrel-modes,plan-status}-acceptance
 #
-# Then installs into the vendor harness dirs (only when --vendor flags select
-# them; default is all three):
+# Then installs into the vendor harness dirs (only when --vendors selects
+# them; default is all four):
 #
 #   ~/.claude/commands/pl-*.md   ->   ~/.planar/commands/claude/pl-*.md
 #   ~/.codex/skills/pl-*         # real Codex skill dirs copied from ~/.planar/codex-skills/pl-*
 #   ~/.copilot/skills/pl-*       # real Copilot skill dirs copied from ~/.planar/copilot-skills/pl-*
+#   ~/.gemini/antigravity-cli/skills/pl-*  # real Gemini skill dirs copied from ~/.planar/gemini-skills/pl-*
 #   ~/.claude/agents/<name>.md   ->   ~/.planar/agents/claude/<name>.md
 #   ~/.codex/agents/<name>.toml  ->   ~/.planar/agents/codex/<name>.toml
 #   ~/.copilot/agents/<name>.agent.md -> ~/.planar/agents/copilot/<name>.agent.md
+#   ~/.gemini/antigravity-cli/agents/<name>  ->  ~/.planar/agents/gemini/<name>
 #
 # The binary lives at ~/.planar/bin/planar. Add ~/.planar/bin to your PATH:
 #
@@ -47,7 +61,7 @@
 #   fish_add_path ~/.planar/bin
 #
 # Usage:
-#   ./install.sh                      # full install with all three vendors
+#   ./install.sh                      # full install with all four vendors
 #   ./install.sh --no-vendor          # install Planar core only; skip vendor symlinks
 #   ./install.sh --vendors claude     # install + symlink Claude only
 #   ./install.sh --vendors claude,codex
@@ -57,6 +71,7 @@
 #   ./install.sh --force              # overwrite existing symlinks
 #   ./install.sh --uninstall          # tear down everything install.sh created
 #   ./install.sh --preset debug       # CMake preset (default release)
+#   ./install.sh --with-solver        # link the Mt-KaHyPar solver (needs tbb)
 #   ./install.sh --dry-run            # preview planned actions without changing anything
 #   ./install.sh --verbose            # per-file detail (default prints a summary)
 #   ./install.sh --version            # print installer version and exit

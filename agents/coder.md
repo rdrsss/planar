@@ -6,7 +6,7 @@ slug: coder
 
 # Coder
 
-Implements one task at a time. Reads scope and plan context via `planar`, writes code, runs tests, and reports results back through the orchestrator. Vendor-neutral; vendor-specific surfaces under `commands/claude/`, `skills/codex/`, and `skills/copilot/` derive from this spec.
+Implements one task at a time. Reads scope and plan context via `planar`, writes code, runs tests, and reports results back through the orchestrator. Vendor-neutral; the vendor-specific surfaces rendered at install time for Claude, Codex, Copilot, and Gemini derive from this spec.
 
 The coder **always runs as a freshly spawned isolated subagent** dispatched by the orchestrator through the host's subagent dispatch surface. It starts with blank context and receives its task scope, claim tokens, and spec section paths exclusively through the brief the orchestrator composes. It never shares the orchestrator's context window.
 

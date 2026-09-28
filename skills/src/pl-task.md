@@ -26,14 +26,16 @@ Creates, lists, updates, blocks, reopens, completes, and cancels tasks. Supports
 
 Wraps [`task`](../../docs/cli-reference.md#domain-task):
 
-> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
+> **Scope.** Reads use the cwd-derived scope. Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
 
-> **Cross-scope guard.** This verb refuses with exit 5 when the
-> operator's resolved write scope disagrees with the target entity's
-> stored scope. Run from inside the entity's owning repo, pass
-> `--scope <slug>` explicitly, or `cd` into that repo — there is no
-> flag that downgrades the refusal to a warning; a genuine mismatch fails
-> outright. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
+> **Cross-scope guard.** Of the task verbs, only `task update` runs the
+> guard. It refuses with exit 5 when the operator's resolved write scope
+> disagrees with the task's stored scope; an `assoc:<org>` operator scope
+> covers tasks stored at its member repos. Run from inside the task's
+> owning repo or pass `--scope <slug>` explicitly — there is no flag that
+> downgrades the refusal to a warning. `task done`, `reopen`, `block`,
+> `cancel`, `link`, and `touches add/remove` write without comparing
+> scopes, so confirm the target's stored scope first. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
 planar task add <title> [--plan <plan-id>] [--parent <task-id>] [--scope <scope>] [--priority <n>] [--body <text>] [--due <date>] [--next-action <text>]
@@ -53,7 +55,7 @@ planar task touches remove <task-id> <repo-slug>
 ## Lifecycle Workflow
 
 1. Resolve the scope from cwd, or require an explicit `--scope <slug>` before a write when cwd is outside the owning project. Use `planar task show <task-id> --json` to confirm an existing target and its stored scope.
-2. Apply the requested mutation with the narrowest supported verb: `add`, `update`, `block`, `reopen`, `done`, `cancel`, `link`, or `touches add/remove`. There is no `--no-scope-check` flag to reach for — a genuine cross-scope mismatch fails outright; resolve it with `--scope <slug>` or by running from the owning repo.
+2. Apply the requested mutation with the narrowest supported verb: `add`, `update`, `block`, `reopen`, `done`, `cancel`, `link`, or `touches add/remove`. There is no `--no-scope-check` flag to reach for — on `task update` a genuine cross-scope mismatch fails outright; resolve it with `--scope <slug>` or by running from the owning repo.
 3. After every mutation, read back `planar task show <task-id> --json`. Also read `planar task touches list <task-id> --json` after a touches mutation. Do not infer success from exit code or mutation output alone.
 4. Verify and report the task identifier, status, owning plan and parent relationships, blocker or linked/touched relationships affected by the request, and `next_action`. Update `next_action` only when the operator explicitly requested that field, then verify again. Otherwise, if executable work remains and `next_action` is empty or stale, report that condition and recommend the exact command `planar task update <task-id> --next-action <text>` without running it.
 5. For a terminal task, report the next executable command for the containing plan, normally `planar plan next <plan-id> --json` or `planar plan closeout <plan-id> --dry-run --json`. For a blocked task, report the blocker and an executable inspection command such as `planar task show <blocker-id> --json`.

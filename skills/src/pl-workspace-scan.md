@@ -125,7 +125,7 @@ Give at most three executable recommendations. Prefer:
 ```text
 planar workspace routing show [<workspace>] --json
 planar workspace doctor --json
-planar assoc tree --json
+planar assoc list --json
 ```
 
 Also point existing `/pl-workspace-scan` users to the lifecycle operation names

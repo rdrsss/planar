@@ -27,10 +27,10 @@ kind with zero backlinks), and `planar doc coverage` (done plans
 with no published doc).
 
 > **Port status.** These `planar doc promote/regenerate/backlinks/orphans/coverage`
-> CLI verbs are from the Go implementation and are **not yet wired into the
-> Zig port**. Published-documentation drift and coverage are now delegated to
-> the standalone `tabularium` tool. The historical synthesis/query verbs remain
-> unavailable in Planar's Zig CLI.
+> CLI verbs are from the Go implementation and were **never ported**: the
+> current C++ `planar` binary has no `doc` domain at all (this includes the
+> `planar doc lint` verb named in the M1–M2 entry below). Published-documentation
+> drift and coverage are delegated to the standalone `tabularium` tool.
 
 ### Plan 135: workspace AGENTS.md generation
 

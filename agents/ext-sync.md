@@ -8,9 +8,9 @@ slug: ext-sync
 
 Given a feature anchor plan id, pushes the feature tree to a registered external operational system by creating external counterparts (Epic/Story/Sub-task on Jira; parent issue/sub-issues on GitHub Issues) and recording `external_links` rows for each created entity.
 
-**Current implementation status (plan 996):** the `ext`/`sync` verb family lives on the `planar-ext` binary (moved from `planar` at task 6419). The whole-feature walk this role describes — `ext propagate <plan>` — is **not yet implemented on either binary**; it is tracked separately (task 6421, in progress at time of writing). The entity-level equivalent that IS live today is `planar-ext ext propagate-one <system> --from <kind:id>`, which creates one external counterpart per call and is not tree-aware. Treat the `ext propagate <plan>` command forms below as the intended future surface on `planar-ext`, not a currently invokable command.
+**Current implementation status:** the `ext`/`sync` verb family lives on the `planar-ext` binary, not on `planar`. `planar-ext ext propagate <plan>` is the whole-feature walk this role describes. A GitHub feature that touches two or more repos is refused (the `projects-v2` strategy is cut), and `--verify-counterparts` is supported only under the `github-parent-issue` strategy. The entity-level equivalent is `planar-ext ext propagate-one <system> --from <kind:id>`, which creates one external counterpart per call and is not tree-aware.
 
-Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-ext-propagate.md`, `skills/codex/pl-ext-propagate.md`, and `skills/copilot/pl-ext-propagate.md`.
+Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini from `skills/src/pl-ext-propagate.md`.
 
 ## Tier
 
@@ -27,7 +27,7 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-ext-propa
 
 - A feature anchor plan id (or slug). Required.
 - The system slug to push to (defaults to the association's primary registered system, i.e. the first registered system in the database).
-- The strategy override (defaults to ADR-0006 per-feature detection: GitHub Issues → `parent-issue` + sub-issues; Jira → always epic-hierarchy. The multi-repo `projects-v2` strategy is permanently cut — decision 1001 — and is never selected).
+- The strategy override, `--github-strategy <parent-issue|tracking-issue>` on GitHub Issues systems only (defaults to ADR-0006 per-feature detection: a GitHub Issues feature touching one repo → `parent-issue` + sub-issues; Jira → always epic-hierarchy. The multi-repo `projects-v2` strategy is permanently cut — decision 1001 — and a feature that resolves to it is refused).
 
 ## Outputs
 
@@ -54,12 +54,14 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-ext-propa
 
 ## Strategy selection (ADR-0006)
 
-| System | Strategy |
-|--------|---------|
-| Jira | `jira-epic` (always) |
-| GitHub Issues | `parent-issue` (always) |
+| System | Feature shape | Strategy |
+|--------|---------------|---------|
+| Jira | any | `jira-epic` (always) |
+| GitHub Issues | touches zero repos | `github-zero-repo` |
+| GitHub Issues | touches one repo | `github-parent-issue` |
+| GitHub Issues | touches two or more repos | refused — `github-projects-v2` is permanently cut (decision 1001) |
 
-There is no repo-count-based selection today: the multi-repo `projects-v2` strategy and the zero-repo `github-zero-repo` strategy are not wired to any strategy-selection path (`projects-v2` is permanently cut per decision 1001). Detection is read-only against the local DB; no remote calls are made to determine strategy.
+`--github-strategy` overrides the repo-count detection on a GitHub Issues system and is mutually exclusive with `--restrategize`; it accepts `parent-issue` and `tracking-issue`, and `projects-v2` is refused with the same multi-repo message. Detection is read-only against the local DB; no remote calls are made to determine strategy.
 
 ## Behavior
 
@@ -109,13 +111,13 @@ Test scenarios that derive from tasks are propagated as Stories with a `test-sce
 ## CLI commands composed
 
 ```
-planar-ext ext propagate <plan>              # NOT YET IMPLEMENTED — see status note above
+planar-ext ext propagate <plan>
 planar-ext ext propagate <plan> --system <slug>
 planar-ext ext propagate <plan> --dry-run
 planar-ext ext propagate <plan> --restrategize [--yes]
 planar-ext ext propagate <plan> --sync <read-only|write-back|two-way>
 planar-ext ext propagate <plan> --verify-counterparts [--unlink | --recreate]
-planar-ext ext propagate-one <system> --from <kind:id>   # live today
+planar-ext ext propagate-one <system> --from <kind:id>
 planar link <kind:id> --to <system-slug>:<external-id> --propagate
 planar unlink <link-id>
 planar link <kind:id> --to <system-slug>:<external-id> --role <role> --sync <read-only|write-back|two-way>
