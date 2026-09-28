@@ -9,7 +9,7 @@ walk are in [lifecycles.md](lifecycles.md).
 
 | Command | What it proves |
 |---------|----------------|
-| `make test` | Configures and builds the `debug` preset, then runs every Catch2 case under `ctest`. |
+| `make test` | Builds the `debug` preset, then runs every Catch2 case under `ctest` in parallel. `TEST_JOBS=1` runs them serially. |
 | `make test-cpp-report` | The same suite, plus its skip tally. The expected tally is zero. |
 | `make ctest-registry-check` | ctest runs exactly the cases the test binaries contain. Needs `build/debug` built. |
 | `make coverage` | The `(verb, subcommand)` leaf-coverage ratio has not dropped below `scripts/coverage-baseline.txt`. |
@@ -25,6 +25,29 @@ walk are in [lifecycles.md](lifecycles.md).
 `clang-tidy` is advisory. The recipe runs it without `--warnings-as-errors`
 and `.clang-tidy` declares no `WarningsAsErrors` key, so its warnings never
 fail a run. It enables one check, `readability-identifier-naming`.
+
+## When every build is a full rebuild
+
+A build with no source change should run zero steps. If it recompiles
+thousands of objects, ninja's dependency log, `build/<preset>/.ninja_deps`,
+is probably damaged. Two builds running in the same build directory at once
+can interleave their records. Ninja then stops reading at the first bad
+record on every run and discards everything recorded after it. The only sign
+is one line in the build output:
+
+```
+ninja: warning: premature end of file; recovering
+```
+
+`scripts/ninja-deps-check.py <build-dir>` reports a damaged log, and
+`--repair` removes it. The Makefile runs the repair before each debug build.
+The build that follows recompiles everything once. To see why ninja
+considers an object stale, run `ninja -C build/debug -d explain`.
+
+The Makefile configures the debug tree only when it has never been
+configured. Ninja re-runs CMake itself when a CMake input or a globbed
+directory changes. After changing a preset or a `-D` option, run `cmake
+--preset debug` by hand.
 
 ## Two tiers
 

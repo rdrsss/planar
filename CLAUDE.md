@@ -212,6 +212,9 @@ ctest --test-dir build/debug --output-on-failure
   ctest-registry-check` does. A `ctest -R` filter that matches nothing is
   also green, so check the matched count.
 - The expected skip tally is zero.
+- A no-change build runs zero steps. A full rebuild every time means a
+  damaged `.ninja_deps`; see [docs/testing.md](docs/testing.md).
+- Do not run two builds in the same build directory at once.
 - `clang-tidy` is advisory. `clang-format --Werror` and the Doxygen pass
   gate.
 - A bug fix lands as a failing "Red test: ..." commit, then the fix. Never
