@@ -3,8 +3,8 @@
 Each binary has its own entry point and command tree. The `handlers/` directory
 under a binary groups one root command family per directory; related child
 commands sit in that family. `main.cppm` assembles the CLI11 `CLI::App` tree
-where the binary uses one. `planar-execute` has a manual parser in `cli.cppm`
-and dispatches from `main.cpp`. Handlers translate CLI requests into calls to
+where the binary uses one. `planar-execute` has a manual parser in
+`handlers/shared/cli.cppm` and dispatches from `main.cpp`. Handlers translate CLI requests into calls to
 [`src/engine/`](../engine/README.md).
 
 | Directory | Binary and capability |

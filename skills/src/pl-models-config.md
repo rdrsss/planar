@@ -121,7 +121,7 @@ to ask whether to edit the `agents/models.md` preset — never to apply it unpro
 
 ## Recovery
 
-Provide `planar models registry list --json`, `planar models resolve --json`,
+Provide `planar models registry list --json`, `planar models resolve --role <role> --json`,
 or `planar models outcomes --json` to re-read current state. These verbs write
 nothing, so there is no rollback to claim; if a ranking was blocked by a gate,
 say which gate and that more evidence is the remedy.

@@ -29,7 +29,7 @@ errors.
 ## Workflow
 
 1. Run `planar health --json` and read the verdict from the `overall` FIELD,
-   never from the exit code. `overall` is one of `ok`, `degraded`, `critical`.
+   never from the exit code. `overall` is one of `ok` or `degraded`.
 
    **Do not map the exit code to a health state.** `planar` returns exit 2 for
    every usage error — unknown flag, missing argument, bad value — so a

@@ -43,7 +43,7 @@ This prints a tree-shaped diff of proposed additions, updates, and removals and 
 | `pl-spec-ingest <plan> --apply --apply-removals` | Commit additions, updates, and proposed removals (cancel tasks whose bullet was removed). |
 | `pl-spec-ingest <plan> --format json` | Preview as JSON (for orchestrator consumption). |
 
-`--apply-removals` without `--apply` is rejected as a user error (exit 1).
+`--apply-removals` without `--apply` is rejected as a user error (exit 2).
 
 Apply mode is atomic per anchor plan. One anchor plan's derived graph writes,
 optional removals, anchor status flip, and successful action audit commit or

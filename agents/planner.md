@@ -8,7 +8,7 @@ slug: planner
 
 Given a goal statement and the cwd-derived scope (or an explicit `--scope` override), produces the initial planning artifacts for a new feature: a top-level plan row, a workbench directory, and four spec documents registered as artifacts in the database (product-spec, tech-spec, roadmap, test-spec).
 
-Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draft.md`, `skills/codex/pl-spec-draft.md`, and `skills/copilot/pl-spec-draft.md`.
+Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini from `skills/src/pl-spec-draft.md`.
 
 ## Tier
 
@@ -29,14 +29,14 @@ Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-draf
 ## Outputs
 
 - **One top-level plan row** with `status='draft'` and a filesystem-safe `slug`, created via `planar plan create --slug <slug> --status draft`.
-- **Workbench tree** at `$PLANAR_WORKBENCH_ROOT/<assoc-slug>/p<id>-<slug>/` — the planner creates the directory and writes the artifact files there. The on-disk path is computed from the association slug and plan key; every `:` in the association slug is replaced with `_`, and the feature directory name is `p<plan-id>-<plan-slug>`. To push the rendered workbench content to a registered external operational system (Jira, GitHub Issues), use `planar workbench publish <plan-id> --system <slug>` — or `planar-ext ext propagate <plan-id> --system <slug>` for full plan-subtree counterpart creation once implemented (not yet available; use `planar-ext ext propagate-one <system> --from <kind:id>` for a single entity today).
+- **Workbench tree** at `$PLANAR_WORKBENCH_ROOT/<assoc-slug>/p<id>-<slug>/` — the planner creates the directory and writes the artifact files there. The on-disk path is computed from the association slug and plan key; every `:` in the association slug is replaced with `_`, and the feature directory name is `p<plan-id>-<plan-slug>`. To push the rendered workbench content to a registered external operational system (Jira, GitHub Issues), use `planar workbench publish <plan-id> --system <slug>` — or `planar-ext ext propagate <plan-id> --system <slug>` for full plan-subtree counterpart creation (`planar-ext ext propagate-one <system> --from <kind:id>` creates a single entity's counterpart).
 - **Four artifact files**, each registered as a DB artifact row first (to obtain an `artifact_id`), then written to disk with canonical YAML front matter, then persisted via `planar artifact update --body @<filename>`:
   - `product-spec.md` — `kind=product_spec` (product intent, user stories, non-goals, acceptance signal)
   - `tech-spec.md` — `kind=tech_spec` (architecture, components, schema changes, decisions)
   - `roadmap.md` — `kind=roadmap` (flat milestone list with bulleted work items and `[touches: ...]` annotations)
   - `test-spec.md` — `kind=test_spec` (test strategy with flat `### Scenario: <title>` H3 scenarios — the canonical grammar — plus a coverage-gap checklist and test-surface-allocation table). Each scenario title names the coverage lens it exercises (happy / empty-null / error / edge); the four buckets are a reasoning tool, not document structure. Frontmatter carries `verifies: [artifact:<product-spec-id>]` so cross-references track which user stories the test plan covers.
 
-  Every produced `.md` file carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/engine/workbench/parse.cppm`](../src/engine/workbench/parse.cppm). Required fields for planner-written artifact files:
+  Every produced `.md` file carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `front_matter` struct in [`src/engine/workbench/parse.cppm`](../src/engine/workbench/parse.cppm). Required fields for planner-written artifact files:
 
   ```yaml
   ---
@@ -215,7 +215,7 @@ artifact_kind: tech_spec
 
 The `## Decisions` H2 is the **only** section the ingestor reads to extract decisions. Each H3 heading becomes one `decisions` row linked to the anchor plan via `entity_links(relationship='derives-from')`. The planner must not embed decision text elsewhere in the document.
 
-The `## Open Questions` H2 is parsed by `parseTechSpecOpenQuestions` in [`src/engine/ingest/parse.cppm`](../src/engine/ingest/parse.cppm). Each H3 heading becomes one `questions` row. When an H3's body begins with a `Resolution:` marker (case-sensitive; must be the first non-blank token after the heading), the ingestor also creates a `decisions` row carrying the resolution text and flips the question to `answered`. Two forms are supported:
+The `## Open Questions` H2 is parsed by `parse_tech_spec_open_questions` in [`src/engine/ingest/parse.cppm`](../src/engine/ingest/parse.cppm). Each H3 heading becomes one `questions` row. When an H3's body begins with a `Resolution:` marker (case-sensitive; must be the first non-blank token after the heading), the ingestor also creates a `decisions` row carrying the resolution text and flips the question to `answered`. Two forms are supported:
 
 ```markdown
 ## Open Questions
@@ -264,7 +264,7 @@ Each H2 becomes a child plan (one per milestone). Each bullet becomes a task. Th
 
 ### `product-spec.md` front matter
 
-All workbench files carry YAML front matter between `---` delimiters. The canonical schema is `FrontMatter` in [`src/engine/workbench/parse.cppm`](../src/engine/workbench/parse.cppm). Required fields for `product-spec.md`:
+All workbench files carry YAML front matter between `---` delimiters. The canonical schema is `front_matter` in [`src/engine/workbench/parse.cppm`](../src/engine/workbench/parse.cppm). Required fields for `product-spec.md`:
 
 ```yaml
 ---

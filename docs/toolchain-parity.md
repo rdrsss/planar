@@ -34,8 +34,9 @@ ships **23.1.0 stable** (`brew info llvm` reports `stable 23.1.0
 (bottled)`, no `HEAD`/RC qualifier), and `/opt/homebrew/opt/llvm` resolves
 to it. The pin moves to **LLVM 23.1.0** accordingly — this is the first
 stable major matching D10's "latest LLVM (23+)" target. `CMakePresets.json`
-pins the compiler by **path**, not by version string
-(`/opt/homebrew/opt/llvm/bin/clang++`), so the keg swap from 22.1.8 to
+then pinned the compiler by **path**, not by version string
+(`/opt/homebrew/opt/llvm/bin/clang++`; it now names a toolchain file, see
+"How the prefix is found" below), so the keg swap from 22.1.8 to
 23.1.0 required no preset change; the debug/release builds configure and
 build clean against it. Every probe in `scripts/toolchain-probes/` was
 re-run against 23.1.0 and reproduced identical behavior to the 22.1.8
@@ -337,7 +338,7 @@ pre-commit/format-check script must reference this path explicitly (e.g. via
 
 `make cpp-lint` implements exactly that derivation (plan 996, task 6054).
 It resolves the prefix from `build/debug`'s `CMakeCache.txt`
-(`CMAKE_CXX_COMPILER`, up two directories), so the formatter is by
+(`PLANAR_LLVM_PREFIX`, else `CMAKE_CXX_COMPILER` up two directories), so the formatter is by
 construction the same LLVM that built the tree; falls back to
 `brew --prefix llvm` when no build directory exists; honours an explicit
 `LLVM_PREFIX=` / `CLANG_FORMAT_BIN=` / `CLANG_TIDY_BIN=` override; and

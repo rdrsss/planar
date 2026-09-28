@@ -89,7 +89,7 @@ Phase 2.
 workbench artifacts.
 
 Invoke `pl-spec-review <plan>`. Only `ready-for-ingest` advances.
-`needs-answer` or `needs-revision` stops the lifecycle. Surface findings, apply
+`needs-answers`, `needs-spec-work`, or `abort-replan` stops the lifecycle. Surface findings, apply
 only operator-approved edits through the skill's write path, and rerun review.
 Unreviewed artifacts never enter ingestion.
 
@@ -152,12 +152,12 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    Phase 3 dispatch preview for plan <p> (<n> open tasks):
 
      wave 1
-       #12  add-parity-gate       blocks: 14         tier: large   model: claude-opus-4-8-thinking  (schema)
+       #12  add-parity-gate       blocks: 14         tier: large   model: claude-opus-5            (schema)
        #13  polish-cli-help       —                  tier: medium  model: claude-sonnet-5          (feature)
      wave 2 — unblocks when #12 is done
        #14  wire-handler          blocked_by: 12     tier: medium  model: claude-sonnet-5          (feature)
      serialized — never waved
-       #15  backfill-migration    migration guard    tier: large   model: claude-opus-4-8            (engine)
+       #15  backfill-migration    migration guard    tier: large   model: claude-opus-5            (engine)
        #16  rework-claim-lease    —                  tier: ?       model: —                        (engine? feature? — touches a core subsystem but follows an existing pattern)
 
      Tiers resolve per agents/models.md §Tier Table; medium is the coder
@@ -201,7 +201,7 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
     task <id> → <candidate> ...]
    ```
 
-   **Host-aware model preflight.** Before rendering any row, resolve the candidate from [`agents/models.md`](models.md) §Candidate Presets, which is hand-maintained there. Do not ask Planar for a model: Planar no longer derives a tier from a role or a model from a tier, it records the vendor and model you report when you claim work, and it does not decide what is supported. Read the row for `(active host vendor, proposed tier)`. The active host vendor is a hard capability boundary for host-native subagents: Codex dispatches Codex candidates and Claude dispatches Claude candidates even when global configuration names another provider — and because the preset table is per-vendor, that boundary holds by construction rather than by correcting a cross-host answer. Within a tier, `Use when` selects among candidates and the first row is the tier default. Task-title vocabulary is never sufficient escalation evidence; `config`, `module`, `composition root`, `engine`, and `refactor` stay `medium` when the acceptance criteria already lock the design. Every `large` row cites a concrete unresolved high-judgment decision from the task body, acceptance criteria, or spec; without that citation it remains `medium`. The selected candidate must have a concrete binding in the active host dispatch surface; otherwise render `model: unsupported` and stop rather than substituting another vendor, tier, model, or agent type. When you claim the task, report what you used: `planar-agent claim --entity task:<id> --role <role> --vendor <host> --model <candidate>` — a record, stored verbatim, never validated against a supported list.
+   **Host-aware model preflight.** Before rendering any row, resolve the candidate from [`agents/models.md`](models.md) §Candidate Presets, which is hand-maintained there. Do not ask Planar for a model: Planar does not derive a model from a tier, it records the vendor and model you report when you claim work, and it does not decide what is supported. Read the row for `(active host vendor, proposed tier)`. The active host vendor is a hard capability boundary for host-native subagents: Codex dispatches Codex candidates and Claude dispatches Claude candidates even when global configuration names another provider — and because the preset table is per-vendor, that boundary holds by construction rather than by correcting a cross-host answer. Within a tier, `Use when` selects among candidates and the first row is the tier default. Task-title vocabulary is never sufficient escalation evidence; `config`, `module`, `composition root`, `engine`, and `refactor` stay `medium` when the acceptance criteria already lock the design. Every `large` row cites a concrete unresolved high-judgment decision from the task body, acceptance criteria, or spec; without that citation it remains `medium`. The selected candidate must have a concrete binding in the active host dispatch surface; otherwise render `model: unsupported` and stop rather than substituting another vendor, tier, model, or agent type. When you claim the task, report what you used: `planar-agent claim --entity task:<id> --role <role> --vendor <host> --model <candidate>` — a record, stored verbatim, never validated against a supported list.
 
    **Planar routing contracts.** Planar owns readiness, profile derivation, dispatch authorization, and evidence — consume those answers rather than re-deriving them. Before dispatching, read `planar task packet <task-id> --json`: a packet whose `ready` is false is a STOP, not a warning, so render its named `reasons` and hold, because dispatching an unready packet sends an agent out with no definition of done and the run it produces is unjudgeable — exactly the evidence that must never reach the routing plane. The envelope's `policy_version` says which rules produced the verdict; two packets are comparable only under the same one. Planning roles (planner, spec-reviewer, ingestor, orchestrator) run before a task exists and resolve from a pre-task packet; when none exists or it is not ready, render the configured static fallback AND its reason (`no_packet`, `packet_not_ready`, `policy_not_ready`) and never present a fallback as a derived classification, since a tier shown without provenance looks identical whether it came from the task's own evidence or from nothing at all. Authorization is two-step: `planar-agent dispatch preview`, show the operator the bound values, then `planar-agent dispatch confirm`, which revalidates every bound value and writes the immutable snapshot atomically. A `stale_preview` response is a hard stop naming which binding moved (`packet_changed`, `capability_changed`, `claim_changed`, …) — re-preview and look again, NEVER retry the confirm: the token is single-use and expiry-bound, and retrying it is how one operator decision becomes two spawns. An operator may raise the tier above the profile's floor and never lower it, because the floor is derived from the task's own evidence; render the refusal rather than silently honouring a below-floor request. A bypassed review keeps full telemetry but is excluded from recommendations — quality success requires an independent approval and a bypass is precisely its absence — so say so in the audit record rather than letting a bypassed success read as a win. Recommendations from `planar models evals` (with cohort flags) are advisory: they rank by the 95% Wilson lower bound over declared-experiment evidence in that exact cohort, under-sampled candidates report `insufficient_data`, candidates below the quality floor are excluded, and NO recommendation is a valid outcome meaning keep the configured default. Inspect the basis with `planar models experiments` and `planar models outcomes`; the latter lists excluded runs with their reason, so a thin cohort is distinguishable from a filtered one.
 
@@ -277,7 +277,7 @@ succeeds may the orchestrator fire `planar-agent complete`. Under
 `barrel-deferred`, Phase 3.5 still runs per cycle, lanes may accumulate on the
 epic branch, and claims remain live until the boundary union review approves.
 A merge conflict leaves the task nonterminal.
-8. Pick the reviewer disposition for this cycle. The decision branches on the dispatch shape chosen in step 3:
+8. Pick the reviewer disposition for this cycle. The decision branches on the dispatch shape confirmed at the dispatch-shape gate:
 
    - **`strict` / `grouped` / `single` / `barrel-grouped`** — reviewer-on for
      every repository mutation. Only a non-mutation cycle, such as recording an
@@ -488,7 +488,7 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
   return evidence without changing task status.
 - **Does not split a terminal transition.** Never `planar task done` plus
   `planar-agent release` as two steps — the atomic terminal verb
-  (`complete` / `fail` / `block`) is the only correct path.
+  (`complete` / `fail` / `release` / `block`) is the only correct path.
 - **Does not finalize silently.** Phase 3.7 is gated on explicit operator opt-in (`--finalize` flag or interactive confirm). A plan is never closed automatically on cycle completion.
 - Does not bypass the iteration cap. Five iterations is hard.
 - Does not silently make decisions on the user's behalf for open questions, ingestion, dispatch granularity, or finalization; always surfaces them.

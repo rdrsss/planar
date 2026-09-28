@@ -3,24 +3,28 @@
 This guide covers three install paths, ordered from simplest to most flexible:
 
 1. [Quick install (`make install`)](#quick-install-make-install) — just the executables, no vendor surfaces.
-2. [Full install (`install.sh`)](#full-install-installsh) — binary + agent specs + vendor surfaces (Claude / Codex / Copilot).
+2. [Full install (`install.sh`)](#full-install-installsh) — binary + agent specs + vendor surfaces (Claude / Codex / Copilot / Gemini).
 3. [Build from source](#build-from-source) — for contributors.
 
 Plus [uninstall](#uninstall), [troubleshooting](#troubleshooting), and the [install layout reference](#install-layout-reference).
 
 ## Prerequisites
 
-- **CMake >= 4.3, Ninja, and the pinned LLVM toolchain.** Required for all install paths — these configure and build the C++26 binaries. `install.sh` preflights the exact preset compilers (`/opt/homebrew/opt/llvm/bin/clang` / `clang++` on macOS/Homebrew) before invoking CMake. See [docs/toolchain-parity.md](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
+- **CMake >= 4.3, Ninja, and the pinned LLVM toolchain.** Required for all install paths — these configure and build the C++26 binaries. The presets discover the LLVM prefix through `cmake/llvm-toolchain.cmake` (an explicit `-DPLANAR_LLVM_PREFIX` always wins); `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` / `clang++` before invoking CMake. See [docs/toolchain-parity.md](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
+- **`tbb` and `python3`.** Required to configure: the vendored Mt-KaHyPar `find_package(TBB)`s the system library, and Centurion's configure runs Botan's `configure.py`.
+- **Network access and a GitHub token on the first configure.** Centurion is fetched into the gitignored `external/` directory: `GITHUB_TOKEN=$(gh auth token) cmake --preset debug`. Later configures reuse it offline.
 - **Git, >= 2.31.** Required for the full install (clones the source repo) and at runtime for repo discovery; see `docs/toolchain-parity.md`'s git row for why the 2.31 floor is load-bearing.
-- *Optional:* **`gh` CLI** — only if you plan to authenticate against GitHub Issues via `--auth gh-cli` (instead of an env-var token).
+- *Optional:* **`gh` CLI** — only if you plan to authenticate against GitHub Issues through `gh auth token` (the default when `--auth-env` is omitted) instead of an env-var token.
 - *Optional:* **`sqlx-cli`** — only if you want to author new migration pairs ad-hoc. `cargo install sqlx-cli --no-default-features --features sqlite`.
+
+[README.md § Prerequisites](README.md#prerequisites) is the full inventory, including the runtime tools the bundled skills use (`jq`, `ripgrep`).
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
 
 ## Quick install (`make install`)
 
-The shortest path. Builds and installs Planar's five executables into
-`~/.local/bin` and nothing else.
+The shortest path. Builds and installs Planar's five executables and the
+in-tree `scriptorium` renderer into `~/.local/bin` and nothing else.
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
@@ -58,7 +62,7 @@ cmake --install build/debug --prefix ~/.local
 
 ## Full install (`install.sh`)
 
-The recommended path. Installs the binary plus the canonical agent specs, vendor surfaces, workflow validation scripts, and migration sources into `~/.planar/`, then installs or symlinks the vendor surfaces into your harness directories (`~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`). Codex source files are kept flat under `~/.planar/skills/codex/`; the installer materializes `~/.planar/codex-skills/<skill>/SKILL.md` runtime directories, then installs real Codex skill directories at `~/.codex/skills/<skill>`. Planar-owned agent role specs stay under `~/.planar/agents/`.
+The recommended path. Installs the binary plus the canonical agent specs, vendor surfaces, workflow validation scripts, and migration sources into `~/.planar/`, then installs or symlinks the vendor surfaces into your harness directories (`~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/`). Codex skills are rendered as `~/.planar/skills/codex/<skill>/SKILL.md`; the installer materializes `~/.planar/codex-skills/<skill>/SKILL.md` runtime directories, then installs real Codex skill directories at `~/.codex/skills/<skill>`. Planar-owned agent role specs stay under `~/.planar/agents/`, with rendered per-vendor copies under `~/.planar/agents/<vendor>/` linked into each vendor's agents directory.
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
@@ -70,10 +74,10 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 
 That's it. The script:
 
-- Builds all five binaries from source by running `cmake --preset release -DPLANAR_VERSION_META=ON`, `cmake --build build/release`, and `cmake --install build/release --prefix "$HOME/.planar"` from the repo root, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`.
+- Builds all five binaries and `scriptorium` from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON -DPLANAR_WITH_MTKAHYPAR=OFF`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext,scriptorium}`.
 - Installs a stock `centuriond` (plan 1033) through `scripts/install-centuriond.sh`: built from the same pinned Centurion archive as a separate CMake project into `build/centuriond-release/` (or a checksum-verified Centurion release binary when the pinned tag publishes one), written to `~/.planar/bin/centuriond` with its migrations and `build-identity.json` under `~/.planar/share/centurion/`. The first build compiles Centurion's gRPC stack and takes several minutes; later installs are incremental. The first configure of a checkout also needs `GITHUB_TOKEN` for the private Centurion archive — the installer borrows `gh auth token` when none is exported.
-- Copies `agents/`, `commands/`, `skills/`, `migrations/`, `scripts/`, and (if present) `copilot/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen).
-- Symlinks 31 surfaces per vendor into the vendor harness dirs.
+- Stages `agents/`, `skills/src/`, `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen), then renders the per-vendor outputs there with `scriptorium render`.
+- Installs the 40 rendered skills, and the rendered agents, into each selected vendor's harness dirs.
 - Atomically writes `~/.planar/install-manifest.json` after the selected vendor
   wiring succeeds. The versioned file records selected Planar-managed skill
   and agent projections plus explicitly selected installer extras;
@@ -97,7 +101,7 @@ planar health
 
 And in Claude Code, the slash commands should now resolve:
 
-- `/pl-orchestrator <task-id> [<task-id>...]` — drive a task list end-to-end through the 5-phase coder/reviewer lifecycle (planning / ingestion / execution / propagation / archive).
+- `/pl-orchestrator <task-id> [<task-id>...]` — drive a goal, plan, or task list end-to-end through the phased lifecycle (planning / spec review / ingestion / execution / finalization / propagation / archive / documentation).
 - `/pl-coder <task-id>` — implement one task.
 - `/pl-reviewer <task-id> <iteration>` — review coder output.
 - `/pl-init`, `/pl-scope`, `/pl-plan`, `/pl-task`, `/pl-question`, `/pl-scenario`, `/pl-promote`, `/pl-workbench`, `/pl-sync`, `/pl-ext-create`, `/pl-audit-trail`, `/pl-resume`, `/pl-handoff`, `/pl-help`, `/pl-health` — the core reference workflows wrapping `planar` subcommands.
@@ -105,7 +109,7 @@ And in Claude Code, the slash commands should now resolve:
 - `/pl-spec-ingest` — decompose workbench Markdown into a fleshed-out task graph (preview by default; `--apply` commits).
 - `/pl-workbench-sync` — bidirectional workbench sync (pull, push, status, resolve).
 - `/pl-workbench-archive` — archive the workbench tree for a completed feature.
-- `/pl-ext-propagate` — propagate a feature plan to a registered operational system (Jira or GitHub Issues/Projects).
+- `/pl-ext-propagate` — propagate a feature plan to a registered operational system (Jira or GitHub Issues).
 - `/pl-templates` — list, show, render, and validate operational-plane templates.
 
 In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` or `$pl-orchestrator`. Slash syntax is for Claude commands.
@@ -115,12 +119,17 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | Flag | Purpose |
 |------|---------|
 | `--prefix DIR` | Install root (default `~/.planar`). |
-| `--vendors LIST` | Comma-separated subset (e.g. `claude,codex` or just `claude`). Default `claude,codex,copilot`. |
+| `--vendors LIST` | Comma-separated subset (e.g. `claude,codex` or just `claude`). Default `claude,codex,copilot,gemini`. |
 | `--no-vendor` | Skip vendor symlinks entirely; install Planar core only. |
 | `--link` | Symlink artifacts from the source repo into `~/.planar/` instead of copying. **Dev mode** — edits to the repo propagate immediately. |
 | `--force` | Overwrite existing symlinks at the destinations. |
+| `--no-prune` | Skip removal of stale vendor files. |
 | `--preset NAME` | CMake build preset: `debug`\|`release` (default `release`). |
-| `--with-mtkahypar` | Install the optional hash-locked native Mt-KaHyPar wheel and Planar CLI adapter under the selected prefix. |
+| `--build-dir DIR` | Where to configure and build (default `build/install-<preset>`). |
+| `--with-solver` | Link the Mt-KaHyPar solver (needs `tbb`). Off by default; without it `groups recommend --solver mtkahypar` degrades to greedy. |
+| `--dry-run`, `-n` | Show the planned actions without changing anything. |
+| `--verbose`, `-v` | Per-file detail (default prints a summary). |
+| `--version` | Print the installer version and exit. |
 | `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db` unless `--force` is also given. |
 
 ### Copy mode vs link mode
@@ -130,8 +139,8 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 
 The global mode describes how source artifacts are staged. The install
 manifest also records each projection's actual install kind: Claude skills and
-all vendor agent files are links, while Codex and Copilot directory-shaped
-skills are copied from their staged `SKILL.md` files so runtimes that do not
+all vendor agent files are links, while Codex, Copilot, and Gemini
+directory-shaped skills are copied from their staged `SKILL.md` files so runtimes that do not
 follow directory links can discover them.
 
 ### Initialize the database
@@ -161,10 +170,9 @@ ctest --test-dir build/debug --output-on-failure         # Catch2 unit tests
 The repo also ships a `Makefile` with the common targets:
 
 ```bash
-make build              # cmake --preset release; copies all 5 binaries into ./bin/
+make build              # cmake --preset release; copies the 5 binaries, scriptorium, and centuriond into ./bin/
 make test               # cmake --preset debug; cmake --build; ctest
-make test-integration   # runs the Zig-oracle's black-box suite (integration_tests/)
-make test-all           # unit (ctest) + integration + coverage + cli-usage-check
+make test-all           # unit (ctest) + registry check + coverage + cli-usage-check + surface/exit-code/eval contracts + cpp-lint-gate
 make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
 ```
 
@@ -196,11 +204,11 @@ sqlite3 /tmp/scratch.db < migrations/00001_foundation.up.sql
 cd /path/to/planar     # the source repo, where install.sh lives
 ./install.sh --uninstall
 # or:
-make uninstall
+make uninstall-full
 ```
 
 This removes:
-- All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/` that point into `~/.planar/`.
+- All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
 - Everything in `~/.planar/` *except* `planar.db` — your data is preserved.
 
 To remove the database too:
@@ -208,6 +216,8 @@ To remove the database too:
 ```bash
 ./install.sh --uninstall --force
 ```
+
+`make uninstall` is the counterpart of `make install`: it removes only the five Planar executables from `PREFIX/bin` (default `~/.local/bin`).
 
 To remove only the database and keep the install:
 
@@ -237,14 +247,14 @@ fish_add_path ~/.planar/bin
 
 **A pinned LLVM tool is not found, or CMake fails to configure.**
 
-`install.sh` (and the CMake presets) pin an exact LLVM toolchain path — see [docs/toolchain-parity.md](docs/toolchain-parity.md) for the pinned versions and prefixes. On macOS: `brew install cmake ninja llvm`. Verify the pinned compilers resolve:
+`install.sh` preflights an exact LLVM toolchain path, and the CMake presets discover and validate one — see [docs/toolchain-parity.md](docs/toolchain-parity.md) for the pinned versions and prefixes. On macOS: `brew install cmake ninja llvm`. Verify the pinned compilers resolve:
 
 ```bash
 /opt/homebrew/opt/llvm/bin/clang++ --version
 cmake --version   # must be >= 4.3
 ```
 
-On a non-Homebrew-ARM-macOS host, see `docs/toolchain-parity.md`'s "Platform prefixes" table for the equivalent path and override the preset's compiler variables accordingly.
+On a non-Homebrew-ARM-macOS host, see `docs/toolchain-parity.md`'s "Platform prefixes" table for the equivalent path and pass it as `-DPLANAR_LLVM_PREFIX=<path>`.
 
 **Slash commands not appearing in Claude Code.**
 
@@ -289,9 +299,11 @@ planar init --name "my-project"
 By design — Planar never resolves operational-plane conflicts silently. Inspect the event and pick a side:
 
 ```bash
-planar sync status                   # see which links are in conflict
-planar audit trail <link-id>         # see the sync_events log
-planar sync resolve <event-id> --keep local    # or --keep remote
+planar-ext sync status                      # see which links are in conflict
+planar audit trail --link <link-id>         # see the sync_events log
+planar-ext sync resolve <event-id> --keep local \
+    --evidence-token <token> \
+    --expected-local-updated-at <timestamp>  # or --keep remote
 ```
 
 ## Install layout reference
@@ -306,8 +318,9 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-watch                    # human-facing read-only viewer
 │   ├── planar-execute                  # deterministic spawn-free Lua workflow engine
 │   ├── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
-│   └── mtkahypar                       # optional prefix-relative wheel adapter
-├── opt/mtkahypar/1.6.1/venv/          # optional native wheel environment
+│   ├── scriptorium                     # in-tree skill and agent renderer
+│   └── centuriond                      # stock Centurion workflow daemon
+├── share/centurion/                    # centuriond migrations + build-identity.json
 ├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`)
 ├── migrations/
@@ -315,7 +328,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── 00001_foundation.down.sql
 │   ├── 00002_planning.up.sql
 │   ├── 00002_planning.down.sql
-│   └── … (through 00033_rename_blocks_to_depends_on)
+│   └── … (through 00039_workflow_runs_lease)
 ├── agents/                             # vendor-neutral agent role specs
 │   ├── methodology.md
 │   ├── models.md
@@ -324,7 +337,9 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── reviewer.md
 │   ├── planner.md
 │   ├── ingestor.md
-│   └── ext-sync.md
+│   ├── ext-sync.md
+│   ├── … (the remaining role specs and shared docs)
+│   └── claude/ codex/ copilot/ gemini/ # rendered per-vendor agent files
 ├── commands/claude/                    # Claude slash-command sources
 │   ├── pl-orchestrator.md
 │   ├── pl-coder.md
@@ -333,25 +348,29 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── pl-scope.md
 │   ├── pl-plan.md
 │   ├── pl-task.md
-│   └── … (31 total per vendor)
-├── skills/codex/                       # Codex skill sources (same 31 file names)
+│   └── … (40 total per vendor)
+├── skills/src/                         # unified authored skill sources
+├── skills/codex/                       # rendered Codex skills (pl-*/SKILL.md, same 40 names)
 ├── codex-skills/                       # Codex runtime skill directories
 │   ├── pl-orchestrator/
 │   │   └── SKILL.md
-│   └── … (31 total)
-├── skills/copilot/                     # Copilot skill sources (same 31 file names)
+│   └── … (40 total)
+├── skills/copilot/                     # rendered Copilot skills (same 40 file names)
 ├── copilot-skills/                     # Copilot runtime skill directories
-├── copilot/                            # Copilot instructions/prompts (if any)
+├── skills/gemini/                      # rendered Gemini skills (same 40 file names)
+├── gemini-skills/                      # Gemini runtime skill directories
 ├── templates/                          # Operator-editable defaults
+├── workflows/                          # Lua workflows staged from the repo
 └── scripts/                            # Bash tooling staged from the repo
 ```
 
 Symlinks the installer creates out of `~/.planar/`:
 
 ```
-~/.claude/commands/pl-*.md       →  ~/.planar/commands/claude/pl-*.md      (31 links)
-~/.codex/skills/pl-*/SKILL.md    real files copied from ~/.planar/codex-skills/pl-*/SKILL.md (31 skills)
-~/.copilot/skills/pl-*/SKILL.md  real files copied from ~/.planar/copilot-skills/pl-*/SKILL.md (31 skills)
+~/.claude/commands/pl-*.md       →  ~/.planar/commands/claude/pl-*.md      (40 links)
+~/.codex/skills/pl-*/SKILL.md    real files copied from ~/.planar/codex-skills/pl-*/SKILL.md (40 skills)
+~/.copilot/skills/pl-*/SKILL.md  real files copied from ~/.planar/copilot-skills/pl-*/SKILL.md (40 skills)
+~/.gemini/antigravity-cli/skills/pl-*/SKILL.md  real files copied from ~/.planar/gemini-skills/pl-*/SKILL.md (40 skills)
 ```
 
 The binary is **not** symlinked anywhere. Add `~/.planar/bin` to your `$PATH` (see [above](#full-install-installsh)).
@@ -368,8 +387,9 @@ Planar respects these env vars when set:
 | `PLANAR_VENDOR_SESSION_ID` | Vendor's session id, recorded alongside the vendor name. Falls back to NULL if unset. |
 | `PLANAR_WORKBENCH_ROOT` | Override the workbench drafting filesystem root (default `~/.planar/workbench/`). Useful for pointing multiple Planar instances at the same workbench directory. |
 | `PLANAR_CONFIG_PATH` | Override the config file location (default `~/.planar/config.toml`). |
-| `PLANAR_BIN` | Used by the integration test harness to point at a pre-built binary (set automatically by `make test-integration`). |
-| `JIRA_USER`, `JIRA_TOKEN`, etc. | Whatever you point `planar ext register --auth-env VAR_NAME` at. Comma-separated `USER,TOKEN` form uses HTTP Basic auth. |
+| `PLANAR_DB` | Override the database path (default `~/.planar/planar.db`). |
+| `PLANAR_BIN` | Used by `scripts/coverage-check.sh` (`make coverage`) to point at a pre-built `planar` binary (default `./bin/planar`). |
+| `JIRA_USER`, `JIRA_TOKEN`, etc. | Whatever you point `planar-ext ext register … --auth-env VAR_NAME` at. Comma-separated `USER,TOKEN` form uses HTTP Basic auth. |
 
 Set them in your shell rc or per-command:
 
@@ -383,4 +403,4 @@ PLANAR_VENDOR=claude-code planar capture session --task 1
 - [docs/cli-reference.md](docs/cli-reference.md) — every command, flag, and exit code.
 - [docs/architecture.md](docs/architecture.md) — system design: storage model, three operational context planes, schema contract, workbench, and configuration.
 - [docs/workflows.md](docs/workflows.md) — end-to-end recipes: planning pipeline, bidirectional workbench, ext-sync propagation.
-- [agents/methodology.md](agents/methodology.md) — how all eight agent roles collaborate; the 5-phase orchestrator flow.
+- [agents/methodology.md](agents/methodology.md) — how the agent roles collaborate; the phased orchestrator flow.

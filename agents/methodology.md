@@ -44,8 +44,8 @@ completed work. Full phase documentation lives in
 **Key invariants:**
 - The orchestrator never auto-applies ingestion. The ingestor always runs in preview mode first; `--apply` is gated on explicit user confirmation.
 - The orchestrator never ingests unreviewed planning artifacts. Phase 1.5 runs
-  `pl-spec-review` after the user's initial artifact review. `needs-answer` or
-  `needs-revision` stops the lifecycle; operator-approved edits are applied
+  `pl-spec-review` after the user's initial artifact review. `needs-answers`,
+  `needs-spec-work`, or `abort-replan` stops the lifecycle; operator-approved edits are applied
   through that skill's write path and the adversarial review is rerun.
 - The orchestrator never auto-archives. Archive is always an explicit user action.
 - The orchestrator never finalizes silently. Phase 3.7 is gated on explicit operator opt-in (`--finalize` flag or interactive confirm). Coders never close plans; the janitor is the only agent role that runs `planar plan closeout`.
@@ -62,7 +62,7 @@ completed work. Full phase documentation lives in
 
 Plan status is a function of task status, enforced at task-write time. This is the plan-status auto-promotion invariant; the orchestrator does NOT need to explicitly walk child plans through `draft → active → done` after a barrel cycle.
 
-The rule fires inside the transaction of every `task.Add`, `task.Update`, `task.Done`, `task.Reopen`, `task.Cancel`, and `task.Block`, and of every `planar-agent` terminal verb (`agent.Complete`, `agent.Fail`, `agent.Release`, `agent.Block`):
+The rule fires inside the transaction of every `planar task add`, `update`, `done`, `reopen`, `cancel`, and `block`, and of every `planar-agent` terminal verb (`complete`, `fail`, `release`, `block`):
 
 | Plan status | Task aggregate | Child plan flips to |
 |-------------|----------------|---------------------|
@@ -79,27 +79,19 @@ The rule fires inside the transaction of every `task.Add`, `task.Update`, `task.
 
 **Opt-out.** Each task verb accepts `--no-auto-promote` to skip the recompute for that single operation. Used by migrations and scripted bulk edits that don't intend the plan-level transition. For example, `--apply-removals` may cancel tasks and then explicitly abandon the parent plan; the cancellation must NOT auto-promote (cancel→done would forbid the subsequent abandon).
 
-**Audit trail.** Every transition emits a `session_entries` row with `prefix='note'` and a structured body that begins with the sentinel line `plan_status: <id>`. The `session_entries.prefix` CHECK constraint does not include a dedicated `status` prefix, so the sentinel-body convention is the grep-recoverable alternative. The same sentinel-body pattern applies to dispatch audit entries.
+**Audit trail.** Every transition writes one `audit_log` row on the plan with `verb='status_change'` and this summary (the arrow is U+2192):
+
+```
+recompute plan <plan id>: <from> → <to>; tasks todo=N doing=N blocked=N done=N cancelled=N
+```
 
 Recover the per-transition record with:
 
 ```
-planar audit trail --kind plan <plan-id> --grep "^plan_status:"
+planar audit trail --kind plan <plan-id> --grep "recompute plan"
 ```
 
-The full body schema:
-
-```
-plan_status: <plan id>
-plan_title: <title>
-from_status: <draft|active|paused|done>
-to_status: <active|done>
-trigger: <task_add|task_update|task_done|task_reopen|task_cancel>
-trigger_task_id: <id>
-task_aggregate: todo=N doing=N blocked=N done=N cancelled=N
-```
-
-Session-entry emission is best-effort: if no active session exists or the sessions table is absent (test fixtures), the helper silently no-ops the entry while still completing the status UPDATE. The invariant prefers transactional correctness over forensic completeness.
+`--grep` is a case-insensitive substring match over the `audit_log` summary, not a regular expression: `^` and `$` are literal characters, and `%` and `_` are wildcards. No `session_entries` row is written for a plan-status transition.
 
 ## Coordination claims
 
@@ -138,7 +130,7 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
    - `planar-agent release --claim <token> [--reason <text>]` — graceful give-up without attempting; task back to `todo`, claim → `released`. **The one exception (task 6890): `release` also succeeds on a plan/plan_step claim** — the orchestrator's own coordination claim (see the `plan:$PLAN_ID` example above) is released this way rather than only by lease expiry. It performs no entity-status transition for a non-task claim; only the claim itself flips to `released`.
    - `planar-agent block --claim <token> --blocker <task-id> [--reason <text>]` — hit an external blocker; task → `blocked`, blocker edge created, claim → `released`. Refuses `ClaimNotOnTask` on a plan/plan_step claim, same as `complete`/`fail`.
 
-   If the process dies without invoking any of these, `planar-agent reconcile` (operator-side, separate binary) later marks the lease stale. The task stays in `doing` until the operator revives it or another agent's `pull` finds it available again (a stale claim no longer blocks pull's exclusivity). For a plan/plan_step claim with no task to revive, prefer an explicit `release` over waiting out the lease.
+   If the process dies without invoking any of these, an operator-run `planar-agent reconcile` later marks the lease stale. The task stays in `doing` until the operator revives it or another agent's `pull` finds it available again (a stale claim no longer blocks pull's exclusivity). For a plan/plan_step claim with no task to revive, prefer an explicit `release` over waiting out the lease.
 6. **Operator recovery.** Stuck claims and the human cleanup path live on `planar-agent`, not `planar`: `planar-agent reconcile [--dry-run] [--stale-after <secs>]` for batch stale-claim sweeps, and `planar-agent abort --claim <token> --reason <text>` to force-release a specific claim regardless of the owning session.
 7. **Live observability.** The read-only `planar-watch` binary carries `ps`, `feed --follow`, `log`, `claims`, `actions`, and `plans` for streaming human observation. For non-streaming reads through the `planar` binary, use `planar dashboard --agents`, `planar plan next`, `planar tree`, `planar audit trail`, and `planar health`.
 
@@ -479,7 +471,7 @@ Invalid-combination guards still hold. `fan-out` requires `worktree` + `epic-chi
 
 ### Recommendation algorithm
 
-The orchestrator proposes a strategy per plan based on plan shape, with status-quo bias. The algorithm runs in the orchestrator skill, sourcing the inputs it needs from existing CLI reads (`planar plan show --json`, `planar task list --json`, `planar audit trail`). If the in-skill implementation drifts, an engine-side `planar plan recommend-strategy --json` flag becomes the parallel of the deferred `--parallel-eligible` flag.
+The orchestrator proposes a strategy per plan based on plan shape, with status-quo bias. The algorithm runs in the orchestrator skill, sourcing the inputs it needs from existing CLI reads (`planar plan show --json`, `planar task list --json`, `planar audit trail`) and from the engine's `planar plan recommend-strategy <plan> --json`, which owns the parallel-eligibility result.
 
 1. `barrel-bypass` is excluded from recommendation. It may be selected only by
    an explicit operator choice at the strategy gate or invocation flag.
@@ -557,26 +549,26 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 1. **The parent repo always dictates the scope.** A worktree at `<repo>/.worktrees/{epic,cycle}/...` resolves to the same association as `<repo>`. Worktrees are not separately scoped entities; they inherit. Reads (`planar plan list`, `planar task show`, `planar-watch *`) work transparently from inside a worktree and see the parent's data.
 2. **Planning verbs are refused from inside worktrees.** The runtime entry point refuses the planning-class verb set with a distinct exit code and a message pointing at the parent repo's cwd.
 
-**Planning-class verbs (refused in worktree):** `init`, `plan {add,update,done}`, `task {add,update,done,touches}`, `question {add,answer,wontfix}`, `decision {add,accept,reject}`, `artifact {add,update}`, `scenario {add,update}`, `spec {draft,ingest}`, `link`, `unlink`, `links {add,remove}`, `assoc {add,update}`, `promote`, `demote`.
+**Planning-class verbs (refused in worktree):** `init`, `promote`, `demote`, `link`, `unlink`, every `links` subverb (including `links list`), every `annotate` subverb, `spec ingest`, every `workbench` subverb other than the five listed below, `feedback triage set`, and every non-read subverb of `plan`, `task`, `question`, `scenario`, `decision`, `artifact`, and `assoc` — for example `plan {create,update,closeout,step}`, `task {add,update,done,cancel,block,reopen}`, `task touches {add,remove,infer}`, `question {add,answer,wontfix}`, `decision {add,accept,withdraw,supersede}`, `artifact {add,update}`, `scenario {add,verify,retire}`, `assoc {create,add,remove}`. A verb the classifier does not recognize is refused.
 
-**Execution / read (allowed in worktree):** every `planar-agent *`, every `planar-watch *`, `planar resume`, `planar dashboard`, `planar handoff *`, `planar capture *`, `planar audit *`, `planar health`, every `* show` / `* list` read, `planar workbench {pull,push,status,sync,resolve}`, `planar workspace *`.
+**Execution / read (allowed in worktree):** every `planar-agent *`, every `planar-watch *`, `planar resume`, `planar dashboard`, `planar handoff *`, `planar capture *`, `planar audit *`, `planar health`, `planar tree`, `planar search`, `planar report`, `planar import`, `planar synthesize`, `planar bench *`, the read leaves of the entity groups (`show`, `list`, `packet`, `view`, `diff`, `next`, `recommend-strategy`, `divergence`, `review`), `planar task touches list`, `planar feedback triage {list,show}`, `planar workbench {pull,push,status,sync,resolve}`, and every `planar workspace`, `config`, `models`, `templates`, `scope`, `local`, `test-spec`, and `workflow` subverb.
 
 **`task done` is refused on purpose.** Outside the explicitly selected in-pwd
 `barrel-bypass` exception, coders return evidence and the orchestrator advances
 task state with `planar-agent complete --claim <token>`, the atomic terminal
 verb that flips claim status and task status in one transaction. This
-reinforces the four-binary boundary and the canonical claim ritual in
+reinforces the five-binary boundary and the canonical claim ritual in
 [Coordination claims](#coordination-claims).
 
 **`--scope <slug>` does NOT override the refusal.** The rule is about *where the verb runs*, not which scope it targets. To plan against a member repo from elsewhere, cd to the parent repo (or workspace root with `--scope <member>`); do not try to plan from inside a worktree.
 
 Planar's runtime classifies the verb and refuses planning verbs from inside a
-worktree with its documented distinct exit code. Worktree detection resolves
-the parent repo from the managed worktree layout and Git metadata, so the
-parent-dictates-scope rule holds whether or not the worktree lives physically
-under the repo. Scope resolution is cwd-first: the literal cwd's registered
-project wins if one exists; otherwise it falls back to the Git-derived parent
-repo's scope.
+worktree with exit code 8, before argument parsing. The refusal detects a
+worktree from Git metadata, so it fires wherever the worktree lives. Scope
+resolution is separate and resolves the literal cwd by longest-prefix match
+against registered projects: a worktree under `<repo>/.worktrees/` lies inside
+the project root and inherits the parent's scope, while a linked worktree
+created outside the project root resolves to no project.
 
 ## Dispatch mode selection
 
@@ -1184,7 +1176,7 @@ reviewer treats the coder's diff.
 ## Concurrency
 
 - Parallel coder dispatch is **model-driven under `parallel-fanout`** (plan 760): the model spawns N coders concurrently through the host's subagent dispatch surface, each in its own worktree, against the parallel-eligible subset. The codified eligibility test (six parallelizability rules) is the engine's, consumed via `recommend-strategy` and never re-derived.
-- **Eligibility is not independence.** Rule 2 proves the lanes touch disjoint files; it cannot prove they are unordered. Two tasks routinely have disjoint touch sets *and* a real dependency — one creates a module the other imports, so the file sets never overlap because only the author edits the new file. Rule 1 catches ordering only from a declared `depends-on` edge, and nothing infers those edges: touch inference improves rule 2 alone. As touch coverage rises, more plans will *look* parallelizable while undeclared ordering stays invisible, so the orchestrator's pre-dispatch ordering check (Phase 3 step 3) is what stands between eligibility and a correct fan-out. Record any ordering the operator names with `planar task block <task> --on <blocker>` so rule 1 enforces it thereafter. Sequential strategies (`classic` and the barrel modes) run one coder at a time in the confirmed isolation mode: `pwd` or `worktree`.
+- **Eligibility is not independence.** Rule 2 proves the lanes touch disjoint files; it cannot prove they are unordered. Two tasks routinely have disjoint touch sets *and* a real dependency — one creates a module the other imports, so the file sets never overlap because only the author edits the new file. Rule 1 catches ordering only from a declared `depends-on` edge, and nothing infers those edges: touch inference improves rule 2 alone. As touch coverage rises, more plans will *look* parallelizable while undeclared ordering stays invisible, so the orchestrator's pre-dispatch ordering check (the Phase 3 gate step) is what stands between eligibility and a correct fan-out. Record any ordering the operator names with `planar task block <task> --on <blocker>` so rule 1 enforces it thereafter. Sequential strategies (`classic` and the barrel modes) run one coder at a time in the confirmed isolation mode: `pwd` or `worktree`.
 - The substrate that lets worktree-isolated coders run without clobbering the operator checkout — per-task worktrees on epic-child branches, staged waves with a fan-in barrier for `parallel-fanout`, and the fan-in merge — is computed by the spawn-free `workflows/parallel-dispatch.lua` seam, an optional deterministic helper, and executed by the model orchestrator, a host-native workflow, or a background agent (decision 1007). See [Worktrees](#worktrees) for the ownership boundary.
 - Reviewers may run in parallel against independent coder outputs. Under `parallel-fanout` a single reviewer cycle runs against the integrated diff on the epic, not per child.
 - A single task is always coder→reviewer sequential — never two coders on the same task simultaneously.
@@ -1238,7 +1230,7 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 ### 256-byte cap on `--status` payload
 
-`planar-agent heartbeat --status` enforces a 256-byte upper bound on the status string. Strings longer than 256 bytes are rejected with `error.InvalidInput`. Keep status strings concise: a short phrase is enough for the feed to be readable.
+`planar-agent heartbeat --status` enforces a 256-byte upper bound on the status string. Strings longer than 256 bytes are refused at exit 2 and the heartbeat rolls back, so the lease is not refreshed. Keep status strings concise: a short phrase is enough for the feed to be readable.
 
 ### Cross-references
 

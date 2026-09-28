@@ -6,7 +6,7 @@ shared_notes:
 slug: pl-import
 vendor:
     claude:
-        argument_hint: <repo-root> [--apply] [--apply-removals] [--interpret|--no-interpret] [--accept-spec <slug>|all] [--no-forward-specs] [--strict] [--roadmap <path>] [--scope <slug>] [--no-status-inference] [--trust-status-inference]
+        argument_hint: <repo-root> [--apply] [--apply-removals] [--interpret|--no-interpret] [--accept-spec <slug>|all] [--no-forward-specs] [--strict] [--roadmap <path>] [--scope <slug>] [--no-status-inference]
         invocation_examples: |
             /pl-import .                                # preview the current repo
             /pl-import . --apply                        # commit the import
@@ -68,18 +68,13 @@ pl-import walks `docs/`, `planning/`, `specs/`, and the repo root for `*roadmap*
 
 ## Confidence Floor — NOT IMPLEMENTED
 
-There is no confidence floor in this binary, and no `--threshold` to tune
-it. The Go implementation refused (exit 1) when more than 50% of extracted
-tasks scored below `--threshold` (default 0.7), listed the low-confidence
-tasks, and offered `--threshold 0.0` to relax or `--strict` to require
-every task clear it. None of that was ported: the C++ tree has no
-confidence scoring at all, and `--threshold` itself was removed at task
-6802 after the task-6788 spike found it declared-but-never-read here AND
-in the Zig oracle.
+There is no confidence floor in this binary, no confidence scoring, and no
+`--threshold` flag. Nothing refuses an import because extracted items look
+low-confidence.
 
 **Do not wait for a floor refusal, and do not tell an operator one is
-coming.** What survives is `--strict`, which refuses ambiguous items
-outright.
+coming.** `--strict` is accepted by the parser, but the import handler does
+not read it, so it refuses nothing today.
 
 ## Status-Inference Safety (Greenfield + Docs-Only Repos)
 
@@ -89,9 +84,8 @@ commits but no implementation. The literal example: a docs-only repo with
 `add v2 technical roadmap` in the log will match task titles inside that
 roadmap and auto-mark them as `status=done`.
 
-**The >25% auto-done refusal described by the Go implementation is also
-absent**, along with its `--trust-status-inference` bypass. One knob
-covers this today:
+**There is no automatic refusal of an import that marks too many tasks
+done**, and no `--trust-status-inference` flag. The documented knob is:
 
 - `--no-status-inference` defaults every task to `status=todo`,
   `signal=no-inference`, `confidence=0`. It skips layers 2-3 entirely;
@@ -186,7 +180,7 @@ Hard contract rules (Validate enforces; the skill MUST produce conformant output
 
 ## Merge Rules
 
-When Go re-reads the Result and merges with the deterministic Corpus:
+When the CLI re-reads the Result and merges with the deterministic Corpus:
 
 1. **Deterministic kind classification wins.** If the classifier said a file is `product_spec`, the LLM cannot reclassify it.
 2. **LLM fills the qualitative output.** Phase decomposition, statuses, rich task bodies, decisions, deferred items, and forward specs all come from the LLM Result when present; otherwise deterministic-only.
@@ -197,8 +191,8 @@ When Go re-reads the Result and merges with the deterministic Corpus:
 
 The LLM proposes 3–5 forward specs. The operator picks the subset to materialize:
 
-- Default (interactive). pl-import prompts "Accept forward spec `<slug>`? [y/N/q]" per proposal. `y` accepts, Enter or `n` skips, `q` skips all remaining.
-- `--accept-spec <slug>` (repeatable). Accept by slug non-interactively.
+- Default. The CLI does not prompt: without `--accept-spec`, no forward spec is materialized. Present the proposals to the operator and pass the chosen slugs with `--accept-spec`.
+- `--accept-spec <slug>[,<slug>...]`. Accept by slug (comma-separated for several) non-interactively.
 - `--accept-spec all`. Accept every proposal.
 - `--no-forward-specs`. Skip the phase entirely.
 
@@ -227,9 +221,9 @@ Removal semantics are soft — status transitions only, no row deletes:
 
 Wraps [`planar import`](../../docs/cli-reference.md#domain-import).
 
-> **Scope.** Reads use the caller's cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). `<repo-root>` is the import target, not the scope source. When invoking against a repo that is not the caller's cwd, pass `--scope <slug>` explicitly or `cd` into the target first. There is no active scope stack and no `scope use` to push.
+> **Scope.** Reads and writes use the caller's cwd-derived scope unless `--scope` is passed. `<repo-root>` is the import target, not the scope source. When invoking against a repo that is not the caller's cwd, pass `--scope <slug>` explicitly or `cd` into the target first. There is no active scope stack and no `scope use` to push.
 
-> **Cross-scope guard.** This verb refuses with exit 5 when the operator's resolved write scope disagrees with the target entity's stored scope. Run from inside the entity's owning repo, pass `--scope <slug>` explicitly, or `cd` into that repo — there is no flag that downgrades the refusal to a warning; a genuine mismatch fails outright. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
+> **Cross-scope guard.** `planar import` is not one of the guarded verbs: it does not compare the operator's scope with a stored entity scope before writing, so nothing refuses a misdirected import at exit 5. Choosing the right cwd or `--scope <slug>` is the only protection. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
 planar import <path>                              # preview, deterministic only
@@ -288,7 +282,7 @@ Apply the structured-authoring rules: quoted titles, literal headings, no nested
 ## Context
 
 Report the resolved scope, repository root, selected roadmap, deterministic or
-interpret mode, preview or apply mode, removal policy, confidence threshold,
+interpret mode, preview or apply mode, removal policy,
 status-inference policy, and forward-spec selection.
 
 ## Intent

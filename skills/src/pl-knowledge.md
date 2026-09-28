@@ -9,7 +9,7 @@ vendor:
         argument_hint: <capture|artifact|annotate|link|show> [args]
         invocation_examples: |
             /pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17
-            /pl-knowledge annotate --anchor-path src/db/db.zig --line-start 88 "Explain the retry boundary"
+            /pl-knowledge annotate --anchor-path src/lib/db/db.cpp --line-start 88 "Explain the retry boundary"
             /pl-knowledge link decision:9 artifact:17 --relationship cites
 ---
 
@@ -73,10 +73,12 @@ Entity-targeted updates and lifecycle transitions are outside this skill's
 supported surface in this cycle. This includes `artifact update`, `annotate
 update`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate
 archive`, and the decision lifecycle verbs (`decision accept`, `decision
-withdraw`, and `decision supersede`). Their current handlers do not compare the
-existing entity's scope with the operator's resolved write scope. Do not call
-them or simulate their state changes with other verbs; they remain excluded
-until the handlers enforce operator-vs-entity scope agreement.
+withdraw`, and `decision supersede`). Of these, only `decision accept` and
+`decision withdraw` compare the existing entity's scope with the operator's
+resolved write scope; the others write without that comparison, and on
+`artifact update` and `annotate update` `--scope` reassigns the entity's
+stored scope. Do not call any of them or simulate their state changes with
+other verbs.
 
 Although `annotate add` resolves the scope of the new annotation before
 insertion, this workflow does not pass its `--plan` or `--task` association
@@ -125,8 +127,8 @@ the first mutating command:
 
 The supported create verbs resolve the scope for the new entity. Run from the
 owning repository or pass the intended `--scope <slug>`. Existing-entity
-mutations are not supported by this skill because their handlers do not yet
-enforce the cross-scope guard. Never bypass the scope check in this workflow.
+mutations are not supported by this skill because most of their handlers do
+not run the cross-scope guard. Never bypass the scope check in this workflow.
 
 ## Knowledge Workflows
 
@@ -154,8 +156,8 @@ For a decision tied to a plan and supporting artifact:
 
 ### Manage one knowledge entity
 
-- Decisions: add and inspect. Lifecycle transitions are not supported until
-  their handlers enforce the scope-safe contract described above. An explicit
+- Decisions: add and inspect. Lifecycle transitions are not supported by this
+  skill. An explicit
   `supersedes` entity-link records a relationship only; it does not transition
   either decision's status and must not be reported as though it did.
 - Artifacts: add and inspect. Prefer `--from-file` for an existing durable

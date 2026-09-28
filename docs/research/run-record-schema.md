@@ -1,6 +1,6 @@
 # Run records & the measurement-rig separation boundary
 
-**Status:** design · companion to `migrations/00020_runs.{up,down}.sql`
+**Status:** design · companion to `migrations/00025_runs.{up,down}.sql`
 **Serves:** the vertical-slice decomposition experiment (strict / eligibility / grouped) and Planar spec v0.1 §5 step 5 ("measurement rig — must survive the §1 excision, not be swept out with it").
 
 This document does two things: specifies the run-record schema, and pins
@@ -34,7 +34,7 @@ verb group, never in the Lua layer:**
 ```
 src/engine/runs/                  -- run lifecycle + harvest logic (DB-side)
 src/cmd/planar/handlers/run/      -- `planar run *` verbs (record/event/harvest/show)
-migrations/00020_runs.*.sql       -- the schema
+migrations/00025_runs.*.sql       -- the schema
 ```
 
 The harness — Lua workflow, bare instrumented loop, or a future
@@ -169,7 +169,7 @@ primary-metric path.
 
 ## 4. Build order
 
-1. `00020_runs` migration (this) + the `planar run *` verb group in the
+1. `00025_runs` migration (this) + the `planar run *` verb group in the
    engine. Small; unblocks everything; survives the excision by construction.
 2. The `git diff` harvest (`planar run harvest`) — path-level first
    (cheap, ships now). Symbol-level harvest is a later refinement gated on

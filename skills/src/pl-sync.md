@@ -28,13 +28,14 @@ it never opens SQLite, reads credentials, or invokes Jira or GitHub directly.
 title or status onto a task, plan, question, or artifact. When a pulled
 field differs from the local value, the result row for that link carries it
 as `remote_title` / `remote_status` — evidence for this skill (the agent) to
-read, not a change already made. Only two paths ever change local field
-values: `sync resolve --keep remote` on a recorded conflict (Workflow §5,
-below — an explicit, evidence-gated write against a specific event), or the
+read, not a change already made. `sync resolve --keep remote` does not write
+the local entity either: it clears the conflict and resets the link baseline
+to the current local values, so the next `sync pull` emits the remote values
+as ordinary drift. The only path that changes local field values is the
 agent itself calling a `planar <kind> update` command after presenting the
 emitted diff and getting the operator's confirmation. Never tell an operator
-that pulling "updated" or "synced" their task — report what was emitted and,
-outside conflict resolution, what write (if any) was separately made.
+that pulling or resolving "updated" or "synced" their task — report what was
+emitted and what write (if any) was separately made.
 
 ## Context
 
@@ -197,7 +198,7 @@ one approval to the remaining set.
 | Confirmed disposition | Allowed effect |
 |---|---|
 | `keep-local` | Run only `planar-ext sync resolve <event-id> --keep local ... --json`; this pushes the complete current local entity. |
-| `keep-remote` | Run only `planar-ext sync resolve <event-id> --keep remote ... --json`; this pulls the complete observed remote entity into local state. |
+| `keep-remote` | Run only `planar-ext sync resolve <event-id> --keep remote ... --json`; this clears the conflict in favour of the remote, sends nothing to the provider, and leaves the local entity unchanged; a following `sync pull` emits the remote values for a separately confirmed `planar <kind> update`. |
 | `manual-merge` | Run no resolve command yet; follow the separate two-gate recipe below. |
 | `defer`, decline, or postpone | Write nothing and retain the evidence plus recovery command. |
 
@@ -251,7 +252,8 @@ planar <kind> show <id> --json
 Success requires the link status to be `ok`, the new audit event to exist with
 the expected push/pull direction, successful outcome, and
 `resolved=<side>; from sync_event=<id>` detail, and local post-state to match
-the whole-entity effect. A successful command exit without those reads is
+the whole-entity effect (unchanged local values for either side; `keep-remote`
+never rewrites them). A successful command exit without those reads is
 `outcome=error` for a single target or `outcome=partial` after earlier
 independent resolutions succeeded.
 
@@ -324,7 +326,7 @@ blanket database or working-tree reset.
 ## Source and render rules
 
 This file under `skills/src/` is the only authored source. Do not edit generated
-Claude, Codex, or Copilot projections directly. Rendering and drift
+Claude, Codex, Copilot, or Gemini projections directly. Rendering and drift
 verification of vendor projections is owned by scriptorium (the stack's
 render tool, driven by `scriptorium.yaml`), not by a planar CLI verb.
 

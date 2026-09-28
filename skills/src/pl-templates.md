@@ -30,7 +30,7 @@ Use this skill to:
 
 - Inspect which templates are currently available and where they resolve from.
 - Show the raw JSON of a specific template to understand its structure.
-- Validate a template file for JSON syntax and `text/template` expression errors
+- Validate a template file for JSON syntax and template directive errors
   before deploying a custom set.
 - Render a template against a real DB entity in dry-run mode to preview the
   payload that the ext-sync agent will send to the external system.
@@ -47,7 +47,7 @@ Templates resolve via three fallback levels (highest priority first):
 2. `<root>/default/<system>/<kind>.json` — the baseline set on disk.
 3. Embedded defaults shipped in the binary — always present.
 
-The root is `Config.Templates.Dir` (default: `~/.planar/templates/`). The
+The root is `[templates] dir` in `config.toml` (default: `~/.planar/templates/`). The
 active set is determined by `[templates] default_set` in `config.toml`, or
 overridden per-association via `[associations."<slug>"] default_template_set`.
 
@@ -82,9 +82,12 @@ planar templates path default github-issues issue
 1. Run `planar templates init` to extract the baseline to `~/.planar/templates/default/`.
 2. Copy the directory (or individual files) to a new set directory, e.g.
    `~/.planar/templates/acme-internal/`.
-3. Edit the JSON files. String values support `text/template` directives that
-   reference the rendering context (`.Task.Title`, `.Feature.Title`,
-   `.Plan.Body`, `.Touches`, `.Assoc.Slug`, `.ExternalKey`, `.Children`, etc.).
+3. Edit the JSON files. String values support a strict subset of
+   `text/template` syntax over the rendering context (`.Task.Title`,
+   `.Feature.Title`, `.Plan.Body`, `.Touches`, `.Assoc.Slug`, `.ExternalKey`,
+   `.Children`, etc.): field references, `range` over `.Touches` or
+   `.Children`, and `if` / `end` on a field. `else`, `with`,
+   pipelines, and functions are not supported.
 4. Update `config.toml` to point to the new set:
    ```toml
    [templates]

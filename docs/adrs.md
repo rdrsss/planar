@@ -39,7 +39,7 @@ sandboxing — these are explicit non-goals.
 
 ## ADR-0002 — sqlx-cli for migrations *(superseded)*
 
-*Superseded in full by ADR-0009, latest revision 2026-05-28.* The original decision adopted Rust's `sqlx-cli` as the migration tool, with `sqlx::query!` and `sqlx::migrate!()` as the runtime contract. That decision lapsed when Go replaced Rust (ADR-0005) and again when the Zig rewrite landed (ADR-0009). The sqlx-cli file format (`-r` reversible pairs, no in-file BEGIN/COMMIT, PRAGMAs handled per-connection) survived all three runtimes and is now the durable authoring contract — `sqlx migrate add -r <name> --source migrations` is still the way to scaffold a migration, but the runtime migrator is `tools/gen_migrations.zig` + `src/db/migrate.zig`, not the sqlx-cli tool itself. The ADR remains in the index as historical record.
+*Superseded in full by ADR-0009, latest revision 2026-05-28.* The original decision adopted Rust's `sqlx-cli` as the migration tool, with `sqlx::query!` and `sqlx::migrate!()` as the runtime contract. That decision lapsed when Go replaced Rust (ADR-0005) and again when the Zig rewrite landed (ADR-0009). The sqlx-cli file format (`-r` reversible pairs, no in-file BEGIN/COMMIT, PRAGMAs handled per-connection) survived all three runtimes and is now the durable authoring contract — `sqlx migrate add -r <name> --source migrations` is still the way to scaffold a migration, but the runtime migrator is Planar's own (today `cmake/generate_migrations.cmake` + `src/lib/db/migrate.cpp`), not the sqlx-cli tool itself. The ADR remains in the index as historical record.
 
 ## ADR-0003 — Scope reset: removing the retrieval substrate
 
@@ -72,8 +72,8 @@ in `docs/lessons-learned-rust-to-go.md` (Planar artifact 34).
 ## ADR-0006 — GitHub operational-plane feature mapping
 
 *Active, 2026-05-12; the multi-repo arm below is cut by decision 1001
-(2026-09-03) — see that decision for rationale. `parent_issue` survives and
-is the only strategy the C++ rewrite implements.* Jira maps cleanly: feature
+(2026-09-03) — see that decision for rationale. the single-repo parent-issue,
+zero-repo, and tracking-issue arms survive in the C++ rewrite.* Jira maps cleanly: feature
 → epic, child plans → stories, tasks → sub-tasks. GitHub Issues has no epic
 concept and is repo-scoped, so the adapter chooses a strategy per feature at
 first propagation time based on the number of distinct repos the
@@ -94,7 +94,8 @@ only import paths shift from `internal/X` to `internal/<bucket>/X`.
 Migration is mechanical and reviewable one bucket at a time. The
 internal-package navigability problem this fixed has a counterpart
 in `cmd/planar/`, addressed by ADR-0008. *Carried forward into the
-Zig rewrite as the bucket layout under `src/engine/`.*
+Zig rewrite, and from there into the C++26 tree, as the bucket layout
+under `src/engine/`.*
 
 ## ADR-0008 — `cmd/planar` subpackage buckets
 
@@ -106,10 +107,12 @@ pattern from ADR-0007 to `cmd/planar/`. The flat top-level directory
 `cli/`. Each bucket exports a single `AddCommands(*cobra.Command)`
 constructor; `main.go` calls one constructor per bucket. Go's
 `internal/` path restriction prevents accidental import by any
-other binary. *The Zig rewrite preserves the per-bucket grouping
-under `src/cmd/planar/handlers/` and `src/engine/`; the cobra-specific
-`AddCommands` constructor is replaced by hand-rolled `cli.Cmd`
-registration in `src/cmd/planar/main.zig`.*
+other binary. *The Zig rewrite preserved the per-bucket grouping
+under `src/cmd/planar/handlers/` and `src/engine/`, replacing the
+cobra-specific `AddCommands` constructor with hand-rolled `cli.Cmd`
+registration; the C++26 tree keeps one directory per command family
+under `src/cmd/<binary>/handlers/<family>/`, assembled in each binary's
+`main.cppm`.*
 
 ## ADR-0009 — Zig as runtime
 

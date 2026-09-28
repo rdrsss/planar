@@ -48,7 +48,8 @@ by missing provider credentials or rate limits; a blocked run exits `75` and is
 not a behavioral pass or failure.
 
 Live runs print the retained transcript path before invoking the host and are
-bounded by the case's `live.timeout_seconds` (300 seconds by default). Follow
+bounded by the case's `live.timeout_seconds` (300 seconds by default;
+`lifecycle.timeout_seconds` defaults to 600). Follow
 that JSONL file to observe model progress without mixing host events into the
 grader's own output.
 

@@ -40,13 +40,13 @@ Wraps [`handoff`](../../docs/cli-reference.md#domain-handoff) and [`capture`](..
 
 ```
 planar handoff [<task-id>] [--vendor <to-vendor>] [--note <text>]
-planar handoff validate <snapshot-id>
+planar handoff validate <handoff-id>
 planar handoff list [--status <status>]
 planar handoff consume <handoff-id>
 planar capture session [--task <task-id>] [--vendor <vendor>]
 planar capture end [<session-id>] [--summary <text>]
 planar capture note <body>
-planar capture snapshot [<task-id>] [--note <text>]
+planar capture snapshot [--task <task-id>] [--note <text>]
 ```
 
 ## When To Invoke
@@ -87,13 +87,13 @@ unless it prevents the requested resume path.
 ## Next actions
 
 Give zero to three executable recommendations, normally `planar handoff
-validate <snapshot-id>`, `planar resume validate <task-id>`, or the precise
+validate <handoff-id>`, `planar resume validate <task-id>`, or the precise
 capture remediation reported by validation.
 
 ## Recovery
 
 For each failed target, give its exact inspection and idempotent retry:
-`planar handoff validate <snapshot-id>`, `planar handoff [<task-id>] --vendor
+`planar handoff validate <handoff-id>`, `planar handoff [<task-id>] --vendor
 <vendor> --note <text>`, or `planar handoff consume <handoff-id>`. A persisted
 snapshot or handoff remains persisted; never claim the other targets rolled it
 back.

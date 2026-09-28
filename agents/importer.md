@@ -8,7 +8,7 @@ slug: importer
 
 Given a repository root, reads the filesystem and git history to produce an ImportPlan: an anchor plan, child plans (phases / milestones), tasks, artifacts, decisions, and deferred items derived from the repo's existing planning documents. Optionally augments the output with an LLM interpretation pass that synthesizes phase decomposition, status inference, rich task bodies, ADR-style decisions, deferred-item catalogs, and forward-spec proposals.
 
-Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-import.md`, `skills/codex/pl-import.md`, and `skills/copilot/pl-import.md`.
+Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini from `skills/src/pl-import.md`.
 
 See also [`agents/synthesizer.md`](synthesizer.md) for the sibling synthesis path; reach for the synthesizer when the repo is docs-only, mid-evolution, or its docs are contradicted by the source tree.
 
@@ -28,7 +28,7 @@ Do **not** invoke this agent to draft new planning documents. New features belon
 ## Inputs
 
 - **Repository root path** (required). The directory the importer walks.
-- **Optional flags.** `--apply`, `--apply-removals`, `--interpret`, `--no-interpret`, `--strict`, `--roadmap <path>`, `--accept-spec <slug|all>`, `--no-forward-specs`, `--scope <slug>`, `--no-status-inference`, `--trust-status-inference`.
+- **Optional flags.** `--apply`, `--apply-removals`, `--interpret`, `--no-interpret`, `--strict`, `--roadmap <path>`, `--accept-spec <slug|all>`, `--no-forward-specs`, `--scope <slug>`, `--no-status-inference`.
 - **Filesystem.** Markdown under `docs/`, `planning/`, `specs/`, and the repo root; classified by frontmatter, filename pattern, then path heuristic.
 - **Git history.** Commit log used to correlate task status (todo / doing / done).
 - **Resolved scope** from `planar scope show` (cwd-derived), or an explicit `--scope` override. `<repo-root>` is the import target, not the scope source.
@@ -51,20 +51,16 @@ Re-runs against an existing ImportPlan emit a diff (additions / updates / propos
 
 1. **Resolve scope** via `planar scope show`. Refuse on cross-scope mismatch unless `--scope <slug>` is passed.
 2. **Deterministic classifier.** Walk the repo, classify each `.md` (frontmatter → filename → path), parse the roadmap, extract decisions and deferred items, infer task status from git log.
-3. **Confidence floor — NOT IMPLEMENTED in this binary.** The Go
-   implementation refused with exit 1 when more than 50% of extracted tasks
-   scored below `--threshold` (default 0.7), with `--strict` raising the
-   floor to 100% and `--threshold 0.0` disabling it. None of that was
-   ported: there is no confidence scoring in the C++ tree, and
-   `--threshold` was removed at task 6802 after the task-6788 spike found
-   it declared-but-never-read here AND in the Zig oracle. Do not wait for
-   a floor refusal — it cannot fire. `--strict` still exists and still
-   refuses ambiguous items; it is the only part of this that survived.
+3. **Confidence floor — NOT IMPLEMENTED in this binary.** There is no
+   confidence scoring and no `--threshold` flag. Do not wait for a floor
+   refusal — it cannot fire. `--strict` is accepted by the parser, but the
+   import handler never reads it, so it refuses nothing.
 
-3a. **Status-inference safety — NOT IMPLEMENTED either.** The >25%
-   auto-done refusal and `--trust-status-inference` went the same way. To
-   avoid over-confident statuses today use `--no-status-inference`, which
-   IS implemented and defaults every task to `status=todo`.
+3a. **Status-inference safety — NOT IMPLEMENTED either.** There is no >25%
+   auto-done refusal and no `--trust-status-inference` flag.
+   `--no-status-inference` is accepted by the parser, but the import handler
+   never reads it; review every imported status in the preview instead of
+   relying on the flag.
 
 4. **Optional LLM interpretation pass** (`--interpret` only). The `planar` binary writes a fingerprinted Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json`, prints an "Awaiting LLM interpretation" notice, and exits 0. The vendor skill reads the Request, runs the LLM at temperature 0, and writes a Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar import <repo> --interpret`; the CLI finds the cached Result, validates it, and merges it with the deterministic Corpus.
 5. **Merge.** Four rules: (1) deterministic kind classification wins; (2) LLM fills the qualitative output (phase decomposition, statuses, rich bodies, decisions, deferred, forward specs); (3) LLM cannot override a git-log-confirmed status with confidence ≥ 0.9; (4) LLM cannot lower a deterministic confidence-floor refusal.
@@ -113,11 +109,10 @@ for the full convention and 256-byte cap.
 - **One verb, not two.** `planar import` (slash command `/pl-import`) collapses what was originally framed as `pl-adopt` plus `pl-import`. The LLM interpretation pass is an opt-in flag (`--interpret`) rather than a separate verb. The slash command keeps its `pl-` prefix to namespace it inside the vendor command tree.
 - **Cache by sha256 fingerprint, not file mtime.** mtime is wrong across `git clone`, container builds, and sync tools that touch timestamps. Content sha256 is stable; the operator can `rm -rf` to evict.
 - **Soft cancellations, never deletes.** `--apply-removals` transitions status (cancelled / abandoned / retired / superseded) rather than dropping rows so the audit trail survives.
-- **There is no deterministic floor to outrank the LLM.** The Go-era 50%
+- **There is no deterministic floor to outrank the LLM.** The 50%
   threshold refusal and the >25% auto-done refusal are both absent from
-  this binary (task 6802). What remains is `--strict`, which refuses
-  ambiguous items outright, and `--no-status-inference`, which declines to
-  guess statuses at all. Neither is tunable.
+  this binary. `--strict` and `--no-status-inference` are still accepted
+  by the parser, but the import handler reads neither.
 
 - **3–5 forward specs.** Fewer than 3 means the LLM did not try; more than 5 means it is pattern-completing on roadmap headings. Validate enforces the range.
 
@@ -132,7 +127,6 @@ planar import <repo-root> --interpret
 planar import <repo-root> --interpret --apply
 planar import <repo-root> --no-interpret          # cli-lint-ignore: etcli-zig implicit bool negation, valid at runtime
 planar import <repo-root> --strict --apply
-planar import <repo-root> --no-status-inference --apply
 planar import <repo-root> --no-status-inference --apply
 planar import <repo-root> --roadmap docs/ROADMAP.md
 planar import <repo-root> --accept-spec <slug>

@@ -47,7 +47,7 @@ and emit a worklist for the operator to gate.
     "docs/architecture.md": {
       "doc_hash": "<xxh64 of doc body>",
       "sources": {
-        "src/db/": "<merkle hash of subtree>",
+        "src/lib/db/": "<merkle hash of subtree>",
         "migrations/": "<merkle hash of subtree>"
       },
       "sources_hash": "<xxh64 of sorted sources map>",
@@ -128,5 +128,5 @@ tracks the manifest contract.
 
 - [Concepts: artifacts and the workbench](../concepts.md)
 - [Workflows: synthesising and refreshing docs](../workflows.md)
-- [Architecture: the four-binary boundary](../architecture.md)
+- [Architecture: the five-binary boundary](../architecture.md)
 - [Features: scope resolution](scope-resolution.md)

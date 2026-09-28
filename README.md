@@ -22,7 +22,7 @@ without a remote system silently overwriting local intent.
 
 Planar is local-first and Jira-shaped, but it lives next to the developer
 rather than inside the org's stack, and it is **vendor-agnostic by design**:
-Claude, Codex, and Copilot are first-class today, with additional agent
+Claude, Codex, Copilot, and Gemini are first-class today, with additional agent
 runtimes expected.
 
 ## Status
@@ -77,7 +77,7 @@ brew install cmake ninja llvm python git gh jq ripgrep tbb
 - Network access plus a GitHub token on the **first** configure of a checkout — `cmake/dependencies.cmake` fetches first-party dependencies (currently Centurion, a private repository) into the gitignored `external/` directory rather than committing them under `vendor/`. Run `GITHUB_TOKEN=$(gh auth token) cmake --preset debug` once; later configures reuse `external/` offline. Third-party dependencies remain committed under `vendor/` and never need the network.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
-- `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
+- `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`, `pl-orchestrator`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session below (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
 - `tabularium` — required only by the bundled documentation-maintenance
   workflows. It is a separate project and is not built or installed by Planar;
@@ -91,7 +91,7 @@ the installer preflights them before making changes.
 
 ### Optional / research tools
 
-- `mtkahypar` — the external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. As of decision 1006 (tasks 6459/6460) it is **vendored from source** via `cmake/dependencies.cmake` and linked directly into the C++ tree (`libmtkahypar`) — the earlier `--with-mtkahypar` Python-wheel adapter (`bin/mtkahypar`, `opt/mtkahypar/<version>/venv/`) is retired and no `python3` step is needed for this feature any more. The linkage is **off by default**: `mtkahypar` is an `EXCLUDE_FROM_ALL` CMake target and its debug build is ~330MB, so a plain `cmake --build` never compiles it. Configure with `-DPLANAR_WITH_MTKAHYPAR=ON` to build and link the real seam (requires `tbb`, see above); without that flag — including every `install.sh` build today — `groups recommend --solver mtkahypar` degrades gracefully to greedy and reports `optimal_available:false`. This fallback is a deliberate, permanent contract, not a placeholder for missing Mt-KaHyPar support.
+- `mtkahypar` — the external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. As of decision 1006 (tasks 6459/6460) it is **vendored from source** via `cmake/dependencies.cmake` and linked directly into the C++ tree (`libmtkahypar`) — the earlier `--with-mtkahypar` Python-wheel adapter (`bin/mtkahypar`, `opt/mtkahypar/<version>/venv/`) is retired and no `python3` step is needed for this feature any more. The linkage is **off by default**: `mtkahypar` is an `EXCLUDE_FROM_ALL` CMake target, so a plain `cmake --build` never compiles it. Configure with `-DPLANAR_WITH_MTKAHYPAR=ON` to build and link the real seam (requires `tbb`, see above), or pass `--with-solver` to `install.sh`; without it `groups recommend --solver mtkahypar` degrades gracefully to greedy and reports `optimal_available:false`. This fallback is a deliberate, permanent contract, not a placeholder for missing Mt-KaHyPar support.
 
 `sqlx-cli` and `sqlite3` are only needed for ad-hoc developer workflows against a scratch database (see [Build from source](#build-from-source)); the runtime embeds migrations via build-time codegen and uses the vendored SQLite amalgamation, so neither CLI is a runtime dependency. Install the optional `sqlx-cli` for authoring new migration pairs:
 
@@ -120,7 +120,7 @@ export PATH="$HOME/.planar/bin:$PATH"
 planar health
 ```
 
-Migrations and propagation templates are *embedded* at build time, so the CLI works standalone against a local database. Agent specs, slash commands, and skills are **not** embedded — they are separate source files rendered and staged by `install.sh` — so none of the vendor surfaces (Claude `/pl-*` slash commands, Codex skills, Copilot skills) are wired up by a `cmake --install` alone; for those, use the [full install](INSTALL.md#full-install-installsh).
+Migrations and propagation templates are *embedded* at build time, so the CLI works standalone against a local database. Agent specs, slash commands, and skills are **not** embedded — they are separate source files rendered and staged by `install.sh` — so none of the vendor surfaces (Claude `/pl-*` slash commands, Codex, Copilot, and Gemini skills) are wired up by a `cmake --install` alone; for those, use the [full install](INSTALL.md#full-install-installsh).
 
 The full install also puts a stock `centuriond` — the Centurion workflow daemon `planar-execute` is becoming a client of (plan 1033) — at `~/.planar/bin/centuriond`, with its migrations and a `build-identity.json` under `~/.planar/share/centurion/`. It is built from the same pinned Centurion archive as a separate CMake project (or taken from a checksum-verified Centurion release binary once the pinned tag publishes one) by `scripts/install-centuriond.sh`; the first build compiles Centurion's gRPC stack and takes several minutes. A bare `cmake --install` does not install it.
 
@@ -153,7 +153,6 @@ planar init --name "my-project"
 # Group the project under an association you can scope work to.
 planar assoc create org:my-org --kind org --name "My Org"
 planar assoc add org:my-org "$(pwd)"
-planar scope use org:my-org
 
 # Plan, task, and capture work.
 planar plan create "Migrate to v2" --summary "Cut the v1 endpoints"
@@ -171,7 +170,7 @@ planar capture command "rg -l 'v1.client'"
 planar capture snapshot "halfway through the inventory" --task 1 --next-action "audit services/payments"
 
 # Record a decision tied to the active session.
-planar decision add "Deprecate v1 over two releases" --body "@notes/deprecation-policy.md"
+planar decision add "Deprecate v1 over two releases" --body "Warn in release N, remove in N+2"
 
 # Hand off — captures a snapshot, opens a handoff record, validates it,
 # all atomically.
@@ -228,10 +227,12 @@ planar-ext sync push 1
 
 # Conflicts surface explicitly; never resolved silently.
 planar-ext sync status                            # last_sync_status per link
-planar-ext sync resolve 7 --keep local            # resolves sync_event id 7
+planar-ext sync resolve 7 --keep local \
+    --evidence-token <token> \
+    --expected-local-updated-at <timestamp>       # resolves sync_event id 7
 
 # Audit trail from either direction.
-planar audit trail 1                          # everything for link 1
+planar audit trail --link 1                   # everything for link 1
 planar audit publish-decision 5               # post decision 5 to all linked remotes
 planar audit handoff-readiness --threshold 90 # CI gate
 ```
@@ -245,21 +246,21 @@ For whole-feature propagation (create all operational counterparts for a plan tr
 The workbench is a bidirectionally synced drafting filesystem under `$PLANAR_WORKBENCH_ROOT` (default `~/.planar/workbench/`). Each active feature plan gets its own directory; Markdown files there are the drafting surface for specs, roadmaps, and task scaffolding.
 
 ```bash
-# Pull the current feature tree from the DB into the workbench.
-planar workbench pull plan:7
+# Push the current feature tree from the DB into the workbench (DB→FS).
+planar workbench push 7
 
-# Edit the Markdown files in ~/.planar/workbench/ as needed, then push changes back.
-planar workbench push plan:7
+# Edit the Markdown files in ~/.planar/workbench/ as needed, then pull changes back (FS→DB).
+planar workbench pull 7
 
 # Check for FS↔DB divergence; conflicts require explicit resolve.
-planar workbench status plan:7
+planar workbench status 7
 planar workbench resolve <event-id> --prefer fs
 
 # Archive the FS tree when work is done (DB retains all entities).
-planar workbench archive plan:7
+planar workbench archive 7
 
 # Restore the FS tree byte-identically from the DB.
-planar workbench restore plan:7
+planar workbench restore 7
 ```
 
 See `docs/architecture.md` for the full workbench design and conflict semantics, and `docs/workflows.md` for end-to-end recipes.
@@ -273,19 +274,19 @@ The planning loop goes from goal-statement through spec drafting, task decomposi
 /pl-spec-draft "migrate billing service to v2 API"
 
 # 2. Review the Markdown files under ~/.planar/workbench/, edit as needed, then ingest.
-/pl-spec-ingest --apply plan:7   # decomposes roadmap bullets into tasks + scenarios
+/pl-spec-ingest 7 --apply        # decomposes roadmap bullets into tasks + scenarios
 
 # 3. Execute through the standard coder/reviewer loop.
-/pl-orchestrator plan:7
+/pl-orchestrator 7
 
-# 4. Propagate the feature to the operational plane (Jira or GitHub Issues/Projects).
-/pl-ext-propagate plan:7         # per-feature strategy per ADR-0006
+# 4. Propagate the feature to the operational plane (Jira or GitHub Issues).
+/pl-ext-propagate 7
 
 # 5. Archive the workbench tree when done (DB retains all entities).
-/pl-workbench-archive plan:7
+/pl-workbench-archive archive plan:7
 ```
 
-Each step corresponds to a vendor skill. Claude uses `/pl-*` slash commands; Codex uses `$pl-*` skills such as `$pl-spec-draft`. The `pl-orchestrator` runs 5 explicit phases (planning / ingestion / execution / propagation / archive) with user gates between Phase 1→2 and before `--apply`.
+Each step corresponds to a vendor skill. Claude uses `/pl-*` slash commands; Codex uses `$pl-*` skills such as `$pl-spec-draft`. The `pl-orchestrator` runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive / documentation) with user gates after drafting, before ingestion `--apply`, and before dispatch.
 
 ## Configuration
 
@@ -304,13 +305,13 @@ default_template_set = "my-custom-set"
 
 ## Templates
 
-JSON template files under `~/.planar/templates/<set>/<system>/<kind>.json` control the payloads sent to Jira and GitHub when `planar-ext ext propagate` creates or updates external counterparts. Ten defaults ship with the binary (5 github-issues + 1 github-projects + 4 jira) and are extracted to `~/.planar/templates/default/` on `planar init`. Inspect them with `planar templates list` and render a preview with `planar templates render --entity task:42`. Override per association via the `default_template_set` config key. See `docs/architecture.md` for the full template shape and rendering context.
+JSON template files under `~/.planar/templates/<set>/<system>/<kind>.json` control the payloads sent to Jira and GitHub when `planar-ext ext propagate` creates or updates external counterparts. Ten defaults ship with the binary (5 github-issues + 1 github-projects + 4 jira) and are extracted to `~/.planar/templates/default/` by `planar templates init`. Inspect them with `planar templates list` and render a preview with `planar templates render default github-issues issue --entity task:42`. Override per association via the `default_template_set` config key. See `docs/architecture.md` for the full template shape and rendering context.
 
 ## Concepts
 
 Three threads run through everything:
 
-- **Three orthogonal axes.** *Storage scope* (one SQLite DB per user; the workbench is a bidirectionally synced drafting filesystem at `$PLANAR_WORKBENCH_ROOT`). *Entity scope* (every entity carries `(scope_kind, scope_id)` ∈ `{repo, association, global}`). *Active scope* (a stack of associations that drives default query filters). See [docs/concepts.md](docs/concepts.md).
+- **Three orthogonal axes.** *Storage scope* (one SQLite DB per user; the workbench is a bidirectionally synced drafting filesystem at `$PLANAR_WORKBENCH_ROOT`). *Entity scope* (every entity carries `(scope_kind, scope_id)` ∈ `{repo, association, global}`). *Active scope* (derived from the current working directory, or passed per verb with `--scope`; there is no scope stack). See [docs/concepts.md](docs/concepts.md).
 - **Three operational context planes.** *Local* (the SQLite store; working memory). *Workbench* (bidirectionally synced Markdown filesystem under `~/.planar/workbench/`; the drafting surface for active features). *Operational* (Jira / GitHub Issues; the org's system of record). Each plane has its own audience and its own source-of-truth rules. See [docs/concepts.md](docs/concepts.md).
 - **From-zero handoff.** A new agent process — different vendor, no prior session memory — must be able to resume an in-flight task with one command. The combined `handoff <task-id>` ritual creates and validates the resume packet atomically. `resume validate` is the CI gate. See [docs/concepts.md](docs/concepts.md).
 
@@ -336,8 +337,7 @@ Claude consumes flat command files, while Codex consumes skill directories
 directly. Copilot and Gemini also consume skill directories; the installer
 converts their flat rendered files into `SKILL.md` directories. Installed Codex,
 Copilot, and Gemini skills are real copies so their loaders can discover them
-without following directory symlinks. Copilot also installs authored prompts
-and instructions from `copilot/`. Planar agent sources live in `agents/` and
+without following directory symlinks. Planar agent sources live in `agents/` and
 have separate vendor-specific outputs and install targets.
 
 Fifteen agent roles cover orchestration and review, planning and ingestion,
@@ -372,7 +372,7 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `src/cmd/` | One directory per binary — `planar/`, `planar-agent/`, `planar-watch/`, `planar-execute/`, `planar-ext/` — each its own CMake target |
 | `src/engine/` | Domain logic and state transitions, bucketed as `identity/`, `planning/`, `external/`, `runtime/`, plus subsystem dirs (`extsync/`, `workbench/`, `templates/`, `routing/`, `config/`) |
 | `src/lib/` | Shared base modules: `db/` (connection + migrations), `cliapp/` (CLI11-backed parser wrapper), `adapter/`, `http/`, `git/`, `process/`, `log/`, and the other leaf libraries |
-| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `surface_lint/`, `scriptorium/`) |
+| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `cli_docs_coverage/`, `surface_lint/`, `scriptorium/`, `centurion_client_proof/`) |
 | `cmake/dependencies.cmake` | Every third-party dependency as a pinned `CPMAddPackage(...)` (release archive + SHA256, cached under `vendor/`) |
 | `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/` and `templates/defaults/` into generated modules the runtime embeds |
 | `vendor/` | CPM's committed source cache for third-party dependencies — pinned release archives only, no `git clone`/submodule vendoring |
@@ -384,7 +384,7 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `skills/src/` | Unified authored skill sources (`pl-*.md`) |
 | `$PLANAR_HOME/commands/claude/` | Generated Claude staging tree (install output, not checked in) |
 | `$PLANAR_HOME/codex-skills/` | Generated Codex staging tree (install output, not checked in) |
-| `$PLANAR_HOME/copilot-skills/`, `copilot/` | Generated Copilot staging tree + checked-in authored instructions/prompts |
+| `$PLANAR_HOME/copilot-skills/`, `$PLANAR_HOME/gemini-skills/` | Generated Copilot and Gemini staging trees (install output, not checked in) |
 | `agents/` | Vendor-neutral Planar agent role specs |
 | `docs/` | User-facing reference docs (architecture, CLI, skills, concepts, workflows) |
 | `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of the build |
@@ -399,9 +399,10 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 - **[docs/concepts.md](docs/concepts.md)** — mental model: scope, association, plan, task, handoff, and the three operational context planes.
 - **[docs/workflows.md](docs/workflows.md)** — end-to-end recipes (feature planning, sync, handoff, propagation).
 - **[docs/lifecycles.md](docs/lifecycles.md)** — every state machine and workflow as a diagram: transition matrices, verb-to-edge maps, engine roll-ups, the claim ritual, sync and propagation flows.
+- **[docs/testing.md](docs/testing.md)** — test layers, the gates and what each proves, the black-box harness, and the rules for adding tests.
 - **[examples/](examples/)** — copy-paste oriented examples for drafting specs, reviewing them, ingesting them, launching the orchestrator, authoring workflows, and propagating to external systems.
 - **[agents/methodology.md](agents/methodology.md)** — how the orchestrator / coder / reviewer agents collaborate; the 5-phase orchestrator flow.
-- **[CLAUDE.md](CLAUDE.md)** — agent guide for working in this repo (symlinked to `AGENTS.md`).
+- **[CLAUDE.md](CLAUDE.md)** — agent guide for working in this repo (`AGENTS.md` is a symlink to it).
 
 **Historical context.** Founding tech spec, roadmap, ADRs, and feature specs are preserved as Planar's own artifacts under `~/.planar/workbench/project_planar/p44-planar-founding-archive/` (accessible via `planar artifact list --plan 44` or `planar artifact show <id>`).
 

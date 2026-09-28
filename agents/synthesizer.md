@@ -8,7 +8,7 @@ slug: synthesizer
 
 The **synthesizer** is the LLM-driven role that produces fresh planning artifacts for a repo from its existing material plus a deterministic code-evidence map. It is the sibling role of the `importer` (transcription); both land in the same `pl-spec-ingest` pipeline downstream.
 
-Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-synthesize.md`, `skills/codex/pl-synthesize.md`, and `skills/copilot/pl-synthesize.md`.
+Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini from `skills/src/pl-synthesize.md`.
 
 ## Tier
 
@@ -40,7 +40,7 @@ See [`docs/concepts.md#transcription-vs-synthesis`](../docs/concepts.md#transcri
 - **Existing planning docs** — READMEs, product specs, tech specs, roadmaps, ADRs, design notes. Consumed as CONTEXT, not as source-of-truth.
 - **Git log** — commit history (title, date, SHA) used as orientation, not as a status oracle.
 - **Source tree via codeprobe.EvidenceMap** — per-FeatureArea source / test / CI / commit signals with `SignalStrength` scores. This is the load-bearing input: status claims must cite paths the deterministic probe saw.
-- **Guide files** (`CLAUDE.md`, `AGENTS.md`, `copilot/*.md`) — CONTEXT only; never mined for backlog.
+- **Guide files** (`CLAUDE.md`, `AGENTS.md`) — CONTEXT only; never mined for backlog.
 - **Workspace context** — set when the repo is a member of an org workspace (orientation only, not source-of-truth).
 - **Greenfield flag** — set when codeprobe reports zero source-file evidence.
 

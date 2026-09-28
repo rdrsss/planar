@@ -26,14 +26,13 @@ Creates and updates plans, decomposes them into ordered steps, tracks step progr
 
 Wraps [`plan`](../../docs/cli-reference.md#domain-plan):
 
-> **Scope.** Reads use the cwd-derived scope; writes refuse on cross-scope mismatch (see [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard)). Pass `--scope <slug>` explicitly when working from outside the target repo's cwd. There is no active scope stack and no `scope use` to push.
+> **Scope.** Reads use the cwd-derived scope. On `plan create`, `plan step add/done/skip/link`, and `plan link`, pass `--scope <slug>` explicitly when working from outside the target repo's cwd. On `plan update`, `--scope` is a patch field that reassigns the plan's stored scope; it does not authorize a write from another cwd. There is no active scope stack and no `scope use` to push.
 
-> **Cross-scope guard.** This verb refuses with exit 5 when the
-> operator's resolved write scope disagrees with the target entity's
-> stored scope. Run from inside the entity's owning repo, pass
-> `--scope <slug>` explicitly, or `cd` into that repo — there is no
-> flag that downgrades the refusal to a warning; a genuine mismatch fails
-> outright. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
+> **Cross-scope guard.** No `plan` verb runs the cross-scope guard:
+> `plan update` and `plan step add/done/skip` write without comparing the
+> operator's resolved write scope with the plan's stored scope, so a
+> mismatch is not refused. Confirm the target's stored scope with
+> `planar plan show <plan-id> --json` before mutating. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
 planar plan create <title> [--scope <scope>] [--parent <plan-id>] [--summary <text>] [--status <status>]
@@ -53,7 +52,7 @@ planar plan closeout <plan-id> [--dry-run] --json
 
 ## Lifecycle Workflow
 
-1. Resolve the scope from cwd, or require `--scope <slug>` when writing from outside the owning project. For an existing plan, inspect `planar plan show <plan-id> --json` before mutation and confirm its stored scope and relationships.
+1. Resolve the scope from cwd, or require `--scope <slug>` when writing from outside the owning project (never on `plan update`, where `--scope` reassigns the plan's scope). For an existing plan, inspect `planar plan show <plan-id> --json` before mutation and confirm its stored scope and relationships.
 2. Apply the narrowest supported mutation: `create`, `update`, `step add/done/skip/link`, or `link`. Use `recompute-status --plan` only to repair a plan status that disagrees with its task aggregate; do not substitute it for normal task lifecycle transitions.
 3. After every mutation, read back `planar plan show <plan-id> --json`. Verify the plan identifier, status, parent/child and entity relationships, steps and linked tasks affected by the request. Do not infer success from exit code or mutation output alone.
 4. Run `planar plan next <plan-id> --json` to identify the next executable work and distinguish ready, claimed, blocked, and stale work. Run `planar plan recommend-strategy <plan-id> --json` when the operator asks how to execute the plan; report the recommendation and its evidence, not a guessed strategy.

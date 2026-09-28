@@ -71,8 +71,8 @@ The coder emits a status string at each meaningful phase boundary using `planar-
 | Reading brief and spec sections | `"reading brief"` |
 | Editing files (one status per area of work) | `"editing <module-or-area>"` |
 | Running one validation-profile command | `"validating: <gate-id>"` |
-| Committing (non-barrel-deferred strategies) | `"committing"` |
-| Producing the work-complete report (barrel-deferred; no commit) | `"reporting"` |
+| Committing (all worktree cycles and non-deferred in-pwd cycles) | `"committing"` |
+| Producing the work-complete report (in-pwd barrel-deferred; no commit) | `"reporting"` |
 
 Under in-pwd barrel-deferred the coder does not commit. Every worktree cycle
 commits to its orchestrator-created lane. Under in-pwd barrel-bypass the coder

@@ -13,7 +13,7 @@ existing whole-entity `planar-ext sync resolve` operation after the operator
 explicitly confirms the exact event and side.
 
 Vendor-neutral. Scriptorium projects this canonical role into the
-Claude, Codex, and Copilot agent formats.
+Claude, Codex, Copilot, and Gemini agent formats.
 
 ## Tier
 
@@ -79,7 +79,7 @@ state:
 | Disposition | Meaning | Allowed next operation |
 |-------------|---------|------------------------|
 | `keep-local` | The complete current local entity is authoritative. | After confirmation, `planar-ext sync resolve <event-id> --keep local` pushes the whole local entity. |
-| `keep-remote` | The complete observed remote entity is authoritative. | After confirmation, `planar-ext sync resolve <event-id> --keep remote` overwrites the local entity. |
+| `keep-remote` | The complete observed remote entity is authoritative. | After confirmation, `planar-ext sync resolve <event-id> --keep remote` clears the conflict and sends nothing to the provider. It does not write the local entity: the next `planar-ext sync pull` emits the remote values for a separately confirmed `planar <kind> update`. |
 | `manual-merge` | The desired value combines evidence from both sides and does not yet exist as reviewed local post-state. | No resolve call. Use the two-gate recipe below. |
 | `defer` | Evidence is insufficient, remote state is unavailable, or the operator declines or postpones resolution. | No mutation; recover with `planar-ext sync pull <kind:id>` and inspect status again. |
 
@@ -119,9 +119,10 @@ planar <kind> show <id> --json
 Success requires the targeted conflict to be closed, the command's
 `new_event_id` to identify a new audit event whose direction, outcome, and
 detail match the approved side, and entity post-state to match the whole-entity
-effect. Exit code alone is insufficient. The CLI owns both local planning
-mutation and adapter-backed remote mutation. The reconciler performs neither
-directly.
+effect. Exit code alone is insufficient. `planar-ext sync resolve`
+owns the adapter-backed remote mutation and makes no local planning write; a
+local change goes through `planar <kind> update`. The reconciler performs
+neither directly.
 
 The local version and evidence-token checks do not eliminate the unavoidable
 provider GET→write race when the provider offers no conditional write

@@ -82,10 +82,12 @@ manifest update is required.
 sqlx migrate run --source migrations --database-url sqlite://./planar.db
 ```
 
-**Inside the binary** (`src/lib/db/migrate.cppm`) — `planar init` owns
-migration; the other binaries consume an already-migrated database and
-deliberately do NOT call `apply_all` (see `src/cmd/planar-agent/context.cpp`
-and `src/cmd/planar-ext/context.cpp`):
+**Inside the binary** (`src/lib/db/migrate.cppm`) — `planar` owns
+migration: it applies every pending migration whenever it opens the
+database (`src/cmd/planar/database.cpp`), not only on `planar init`. The
+other binaries consume an already-migrated database and deliberately do NOT
+call `apply_all` (see `src/cmd/planar-agent/database.cpp` and
+`src/cmd/planar-ext/database.cpp`):
 
 ```cpp
 import planar.db;

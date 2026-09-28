@@ -27,7 +27,8 @@ Table below without consulting Planar configuration.
 > with the `[models.<vendor>]` catalog, the `[routing.*]` map, and the `[roles]`
 > role→tier map — no longer exist. They were removed on the plan-950 epic, which
 > landed on planar `master` (planar tasks 5613, 5640). The `models` domain is
-> now `registry` + `evals` only.
+> now `evals`, `resolve`, `experiments`, `outcomes`, and `registry`; `resolve`
+> answers which tier a role runs at, never which model.
 >
 > **Planar cannot regenerate this file.** `planar models sync-doc` — which used
 > to rewrite the Tier Table *from* Planar config — was deleted (planar task
@@ -239,18 +240,15 @@ in the current dispatch surface are valid bindings.
 
 ## Agent Assignments
 
-Every installable agent under `agents/`, its authored `tier:` (the source of
-truth — see §Conventions), its `capability:` (which drives the Codex
-`sandbox_mode` and the Claude tool grant), and its primary work. Rows marked †
-are the six **runtime-resolvable roles** whose tier is *also* carried in
-`[roles]` of `src/engine/config/defaults.toml` for the plan-540 model resolver;
-those two copies MUST agree. Every other agent resolves its model straight from
-this frontmatter via the render path.
-
-Note this duplication is role→**tier**, not tier→model, and its fate is an
-open question on planar task 5613: tier is a work-shape judgement rather than a
-claim about provider support, so it may legitimately stay Planar-side even after
-the model catalog goes. Until that is answered, keep the two copies in sync.
+Every agent role, its tier, its capability, and its primary work. Agent
+frontmatter carries no `tier:` or `capability:` key: an agent that has a
+`## Tier` section states its tier there (the source of truth — see
+§Conventions) and this table MUST agree with it; for an agent without that
+section this table is the record. `documenter` and `doc-author` have no source
+file under `agents/`. Rows marked † are the six built-in roles whose
+`roles.<name>` and `role_vendors.<name>` keys `planar config show --effective`
+resolves from the operator's config file. `src/engine/config/defaults.toml`
+ships no `[roles]` section, so there is no embedded second copy of these tiers.
 
 **Spelling.** This table hyphenates (`spec-reviewer`, `test-coder`), and
 `--role` accepts that — `roles.cpp`'s parser normalises `-` to `_` before the
@@ -368,7 +366,7 @@ ad-hoc labels (the orchestrator's classifier and `planar models evals`'
 scorecard both key on `schema | engine | architectural | cli | feature |
 mechanical`). The shipped priors:
 
-- **`claude-fable-5` vs `claude-opus-4-8`** (Claude `large`): opus is the tier
+- **`claude-fable-5` vs `claude-opus-5`** (Claude `large`): opus is the tier
   default — reviewers, escalated coders, and every bare large resolution get
   opus. Fable is Mythos-class (above opus) and is routed only where a wrong
   early judgment cascades hardest: §Work-type routes routes `architectural` →
@@ -390,7 +388,7 @@ mechanical`). The shipped priors:
   - **No date suffixes.** `claude-sonnet-4-6-20251114`-style strings are not the identifiers on this host.
   - **Bare aliases are not spawn-stable.** The host documents `opus`, `sonnet`, `haiku`, and `fable` as aliases for *the latest* model, so what they resolve to changes as models ship. Accept them as operator input if useful, but record and pin full identifiers.
   - This verification is host- and version-specific. Re-probe when the installed CLI changes rather than treating the list as permanent.
-  - `claude-opus-5` is spawn-safe but is **not** currently a tier default — the Tier Table predates its verification. Promoting it is a routing-policy decision, not a bookkeeping fix.
+  - `claude-opus-5` is the `large` tier default in the Tier Table; `claude-opus-4-8` stays listed as a routable fallback.
 - The GPT-6 identifiers and workload descriptions above are documented in the
   [official OpenAI model catalog](https://developers.openai.com/api/docs/models).
   The Codex host lists all three as available, but Planar's opaque registry

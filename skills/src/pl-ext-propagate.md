@@ -17,14 +17,10 @@ vendor:
 
 {{ VendorTitle }} skill surface for the vendor-neutral `ext-sync` agent. See [`agents/ext-sync.md`](../../agents/ext-sync.md) for the full role spec, strategy-selection contract, and idempotency invariant.
 
-> **Implementation status (plan 996).** The whole-feature walk this skill
-> describes — `ext propagate <plan>` — is **not yet implemented on either
-> binary**. `ext`/`sync` moved from `planar` to `planar-ext` at task 6419;
-> the tree-walking `propagate` verb itself is tracked separately (task 6421,
-> in progress). What IS live today is the entity-level
-> `planar-ext ext propagate-one <system> --from <kind:id>` — one counterpart
-> per call, no tree walk, no strategy cache. Use it directly for a single
-> plan or task until whole-feature propagation lands.
+> **Where the verbs live.** `ext` and `sync` are on `planar-ext`, not
+> `planar`. `planar-ext ext propagate <plan>` is the whole-feature walk;
+> `planar-ext ext propagate-one <system> --from <kind:id>` creates one
+> counterpart per call with no tree walk.
 
 ## What propagation does
 
@@ -49,12 +45,13 @@ The strategy is selected once at first propagation and cached on `external_links
 | System | Strategy |
 |--------|---------|
 | Jira | `jira-epic` (always) |
-| GitHub Issues | `parent-issue` (always) |
+| GitHub Issues, feature touches no repo | `github-zero-repo` (posts through the system's registered project) |
+| GitHub Issues, feature touches one repo | `github-parent-issue` |
+| GitHub Issues, feature touches two or more repos | refused at exit 2 — the `projects-v2` strategy it would select was cut |
 
-There is no repo-count-based strategy selection: GitHub systems always use
-the single-repo `parent-issue` strategy. The multi-repo `projects-v2`
-strategy named in earlier revisions of this skill does not exist — see the
-status note above.
+`--github-strategy <parent-issue|tracking-issue>` overrides the automatic
+GitHub selection; `--github-strategy projects-v2` is accepted by the parser
+and always refused. It cannot be combined with `--restrategize`.
 
 See `docs/architecture.md` for the strategy-selection contract.
 
@@ -118,21 +115,18 @@ with an explicit sync direction. This creates a new remote counterpart and new
 state; it does not restore the deleted row. See the complete recovery sequence in
 [`docs/cli-reference.md`](../../docs/cli-reference.md#planar-links-update-link-id).
 
-> **Cross-scope guard.** This verb refuses with exit 5 when the
-> operator's resolved write scope disagrees with the target entity's
-> stored scope. Run from inside the entity's owning repo, pass
-> `--scope <slug>` explicitly, or `cd` into that repo — there is no
-> flag that downgrades the refusal to a warning; a genuine mismatch fails
-> outright. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
+> **Cross-scope guard.** `ext propagate` is not guarded: `external_links`
+> carries no scope column, and the verb accepts `--scope` but discards it.
+> `link` and `unlink` are unguarded too. See [`docs/concepts.md#cross-scope-guard`](../../docs/concepts.md#cross-scope-guard) for the full guarded/unguarded matrix.
 
 ```
-planar-ext ext propagate <plan>              # NOT YET IMPLEMENTED — see status note above
+planar-ext ext propagate <plan>
 planar-ext ext propagate <plan> --system <slug>
 planar-ext ext propagate <plan> --dry-run
 planar-ext ext propagate <plan> --restrategize [--yes]
 planar-ext ext propagate <plan> --sync read-only|write-back|two-way
 planar-ext ext propagate <plan> --verify-counterparts [--unlink | --recreate]
-planar-ext ext propagate-one <system> --from <kind:id>   # live today
+planar-ext ext propagate-one <system> --from <kind:id>
 planar link <kind:id> --to <system-slug>:<external-id> --propagate
 planar unlink <link-id>
 planar link <kind:id> --to <system-slug>:<external-id> --role <role> --sync read-only|write-back|two-way

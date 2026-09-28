@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00033_rename_blocks_to_depends_on.up.sql`. Every "schema effects" section below cites real columns from those migrations. The CLI surface is served by C++26 binaries built via CMake (see [docs/architecture.md](architecture.md) and [docs/toolchain-parity.md](toolchain-parity.md)); the Zig implementation under `zig/`, retained through the port as its parity oracle, was deleted at the M10 cutover. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00039_workflow_runs_lease.up.sql`. Every "schema effects" section below cites real columns from those migrations. The CLI surface is served by C++26 binaries built via CMake (see [docs/architecture.md](architecture.md) and [docs/toolchain-parity.md](toolchain-parity.md)); the Zig implementation under `zig/`, retained through the port as its parity oracle, was deleted at the M10 cutover. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -38,7 +38,7 @@ Use the `repo:` prefix for project rows. A bare slug is always parsed as an
 association for compatibility with existing workspace and project-association
 flows.
 
-**Mutating commands** (`task add`, `plan create`, `question add`, `scenario add`, `decision add`, `artifact add`, `link`, `unlink`, `ext create`, `ext propagate`) resolve scope through `resolve_for_write`: explicit flag (threaded through verbatim, not validated) → meta-workspace arm → cwd derivation with most-specific-wins, using the same specificity ranking as reads (task 6746, so a member repo outranks an org containing it) → otherwise **global scope, exit 0**. Cwd is the only default; there is no ambient stack. Note the last step: an unregistered cwd does NOT refuse on the write path, though it does on the read path. See [Write resolution in `docs/concepts.md`](./concepts.md#write-resolution) for the measured behaviour, including the `project_unassociated` exception.
+**Mutating commands** (`task add`, `plan create`, `question add`, `scenario add`, `decision add`, `artifact add`) resolve scope through `resolve_for_write`: explicit flag (threaded through verbatim, not validated) → meta-workspace arm → cwd derivation with most-specific-wins, using the same specificity ranking as reads (task 6746, so a member repo outranks an org containing it) → otherwise **global scope, exit 0**. Cwd is the only default; there is no ambient stack. Note the last step: an unregistered cwd does NOT refuse on the write path, though it does on the read path. See [Write resolution in `docs/concepts.md`](./concepts.md#write-resolution) for the measured behaviour, including the `project_unassociated` exception. `link`, `unlink` and `planar-ext ext create` declare `--scope` and never read it, and `planar-ext ext propagate` reads and discards it; none of the four resolves a write scope.
 
 > **Stale claim (task 6140, 2026-09-09).** The "workspace root with member
 > projects" refusal named above is FABRICATED against the current C++
@@ -441,12 +441,10 @@ cd into a registered scope or pass --scope <slug> to any verb.
 
 ### `planar scope use|pop|clear`
 
-Removed in plan 153 M5. Invoking any of these verbs prints a corrective message and exits 1:
+Removed in plan 153 M5. Invoking any of these verbs prints a one-line corrective message on stderr and exits 2:
 
 ```
-`planar scope use` was removed in plan 153 M5; the active scope stack is gone.
-Pass --scope <slug> to individual verbs, or cd into a registered scope.
-Run `planar scope show` to inspect the cwd-derived scope.
+error: `planar scope use` was removed in plan 153 M5; the active scope stack is gone. Pass --scope <slug> to individual verbs, or cd into a registered scope. Run `planar scope show` to inspect the cwd-derived scope.
 ```
 
 To switch scope: `cd` into the target project / workspace root, or pass `--scope <slug>` to the verb in question. To inspect: `planar scope show`.
@@ -604,7 +602,7 @@ added ~/work/billing to org:acme
 
 **Synopsis:**
 ```
-planar assoc remove <slug> <repo-path>
+planar assoc remove <slug> <repo-path> [--json]
 ```
 
 **Description:** Remove a repo from an association.
@@ -648,7 +646,7 @@ members of org:acme (3):
 
 **Synopsis:**
 ```
-planar assoc detect [--apply]
+planar assoc detect [--apply] [--json]
 ```
 
 **Description:** Inspect the current working directory's git remote host/org and parent path, then propose new association slugs using the conventional auto-tag rules (`host:`, `org:`, `path:`, `lang:`). Without `--apply`, prints proposals only. With `--apply`, creates proposed associations that do not already exist and adds the current project to them.
@@ -686,7 +684,7 @@ Plans are the top-level structured intent for a body of work. They may be hierar
 
 **Synopsis:**
 ```
-planar plan create <title> [--scope <scope>] [--parent <plan-id>] [--summary <text>]
+planar plan create <title> [--scope <scope>] [--parent <plan-id>] [--summary <text>] [--slug <slug>] [--status <status>]
 ```
 
 **Description:** Create a new plan with the given title under the cwd-derived write scope, or the explicitly specified scope. When cwd resolves to a registered project with no association, implicit creation is refused instead of silently falling back to global scope. Create and add an association as directed by `planar init`, or pass `--scope global` when global ownership is intentional.
@@ -704,6 +702,8 @@ planar plan create <title> [--scope <scope>] [--parent <plan-id>] [--summary <te
 | `--scope <scope>` | Override scope for this entity. See [scope shorthand](#scope-shorthand). | cwd-derived write scope |
 | `--parent <plan-id>` | Parent plan id for hierarchical plans. | none |
 | `--summary <text>` | One-paragraph summary. May be a file path prefixed with `@`. | none |
+| `--slug <slug>` | Explicit slug for the new plan. | none |
+| `--status <status>` | Initial status. An unknown value fails with `unknown status '<value>'`, exit 1. | `draft` |
 
 **Output (human):**
 ```
@@ -802,7 +802,7 @@ The `scope` column shows where the plan lives: `global`, `repo:<slug>`, or `asso
 
 **Synopsis:**
 ```
-planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>] [--status <status>]
+planar plan update <plan-id> [--title <text>] [--slug <slug>] [--summary <text>] [--status <status>] [--parent <plan-id>]
 ```
 
 **Description:** Update mutable fields on a plan. Status changes are validated against the plan transition matrix: `draft → active`, `active → {paused, done, abandoned}`, `paused → active`; `done` and `abandoned` are terminal. Illegal moves exit non-zero and leave the plan unchanged. There is no `--force` flag for plans — terminal plans have no operator escape path via this verb.
@@ -819,6 +819,7 @@ Note: `plan recompute-status` deliberately bypasses this matrix (it is an engine
 | `--slug <slug>` | New slug. Must remain unique within the plan's slug namespace. | unchanged |
 | `--summary <text>` | New summary. May be `@<file>`. | unchanged |
 | `--status <status>` | New status. Must be a legal transition from the current status per the matrix: `draft → active`, `active → {paused, done, abandoned}`, `paused → active`. | unchanged |
+| `--parent <plan-id>` | Reparent the plan. `--parent 0` clears the parent. | none |
 
 **Schema effects:** Updates `plans(title, slug, summary, status, updated_at)`.
 
@@ -834,7 +835,7 @@ Note: `plan recompute-status` deliberately bypasses this matrix (it is an engine
 
 **Synopsis:**
 ```
-planar plan recompute-status (--plan <plan-id> | --all)
+planar plan recompute-status (--plan <plan-id> | --all) [--json]
 ```
 
 **Description:** Re-fire the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) against a stored plan, applying the same transition matrix that runs inside `task.Add` / `task.Update` / `task.Done` / `task.Reopen` / `task.Cancel` / `task.Block`. Each plan is processed in its own transaction; the matrix is idempotent so re-running against an already-correct DB is a no-op.
@@ -1029,7 +1030,7 @@ Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (t
 
 **Synopsis:**
 ```
-planar plan recommend-strategy <plan-id> [--json]
+planar plan recommend-strategy <plan-id> [--json] [--closure-source declared|derived]
 ```
 
 **Description:** Read-only execution-strategy recommender. Computes the parallel-eligible subset of a plan's open (`todo`) tasks by applying the six parallel-eligibility rules and reports the eligible subset plus the serialized remainder with per-task exclusion reasons. This is the single source of truth for parallelizability (decision 370) consumed by the orchestrator and the parallel-fan-out gate; the rules are not re-derived elsewhere. Writes nothing.
@@ -1052,6 +1053,7 @@ A task may be excluded by multiple rules; every rule it trips is listed in `excl
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--json` | Emit JSON instead of text. | off |
+| `--closure-source declared\|derived` | Rule-2 overlap signal: `declared` (default, `task_touches`) or `derived` (computed closure). | `declared` |
 
 **JSON shape:**
 
@@ -1139,7 +1141,7 @@ plan:7 "Add Checkout RPC" [active]
 
 **Synopsis:**
 ```
-planar plan step add <plan-id> <body> [--after <ordinal>]
+planar plan step add <plan-id> <body> [--after <ordinal>] [--scope <scope>]
 ```
 
 **Description:** Append a new step to a plan. By default inserts at the end. `--after <ordinal>` inserts after the specified ordinal, renumbering subsequent steps.
@@ -1158,6 +1160,7 @@ planar plan step add <plan-id> <body> [--after <ordinal>]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--after <ordinal>` | Insert after this step ordinal. | appends at end |
+| `--scope <scope>` | Declared and never read by the handler. | none |
 
 **Output (human):**
 ```
@@ -1183,8 +1186,14 @@ The `ok` sentinel matches every other mutation verb; `status` is one of `pending
 
 **Synopsis:**
 ```
-planar plan step done <step-id>
+planar plan step done <step-id> [--scope <scope>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope <scope>` | Declared and never read by the handler. |
 
 **Description:** Mark a plan step as done.
 
@@ -1209,8 +1218,14 @@ The `ok` sentinel matches every other mutation verb; `status` is one of `pending
 
 **Synopsis:**
 ```
-planar plan step skip <step-id>
+planar plan step skip <step-id> [--scope <scope>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope <scope>` | Declared and never read by the handler. |
 
 **Description:** Mark a plan step as skipped.
 
@@ -1235,8 +1250,14 @@ The `ok` sentinel matches every other mutation verb; `status` is one of `pending
 
 **Synopsis:**
 ```
-planar plan step link <step-id> <task-id>
+planar plan step link <step-id> <task-id> [--scope <scope>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope <scope>` | Declared and never read by the handler. |
 
 **Description:** Associate a plan step with the task that materializes it. Sets `plan_steps.task_id`. Use `entity_links` (via `plan link`) for richer relationships.
 
@@ -1257,7 +1278,7 @@ The `ok` sentinel matches every other mutation verb; `status` is one of `pending
 
 **Synopsis:**
 ```
-planar plan link <plan-id> <to-kind:to-id> --relationship <kind>
+planar plan link <plan-id> <to-kind:to-id> --relationship <kind> [--json] [--scope <scope>]
 ```
 
 **Description:** Create an `entity_links` row linking the plan to another entity.
@@ -1274,6 +1295,7 @@ planar plan link <plan-id> <to-kind:to-id> --relationship <kind>
 | Flag | Description | Required |
 |------|-------------|----------|
 | `--relationship <kind>` | One of `derives-from`, `depends-on`, `addresses`, `verifies`, `cites`, `supersedes`. | yes |
+| `--scope <scope>` | Declared and never read by the handler. | no |
 
 **Schema effects:** Inserts into `entity_links(from_kind='plan', from_id, to_kind, to_id, relationship)`.
 
@@ -1296,7 +1318,7 @@ Tasks are the discrete units of work. They may belong to a plan (`plan_id`) or a
 
 **Synopsis:**
 ```
-planar task add <title> [--plan <plan-id>] [--parent <task-id>] [--scope <scope>] [--priority <n>] [--body <text>] [--due <date>] [--next-action <text>]
+planar task add <title> [--plan <plan-id>] [--parent <task-id>] [--scope <scope>] [--priority <n>] [--body <text>] [--due <date>] [--next-action <text>] [--editor] [--slug <slug>]
 ```
 
 **Description:** Create a new task.
@@ -1319,6 +1341,8 @@ planar task add <title> [--plan <plan-id>] [--parent <task-id>] [--scope <scope>
 | `--due <date>` | Due date in ISO 8601 format (e.g. `2026-05-15`). | none |
 | `--next-action <text>` | The immediate next concrete action. Required for `resume validate` to pass. | none |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
+| `--editor` | Declared default-true. The `$EDITOR` body flow is not implemented: with no `--body` and stdout on a TTY the verb refuses (exit 1) and asks for `--body <text>` or `--editor=false`. | on |
+| `--slug <slug>` | Explicit slug for the new task. `tasks.slug` is globally unique. | none |
 
 **Output (human):**
 ```
@@ -1421,7 +1445,7 @@ The `scope` column shows where the task lives: `global`, `repo:<slug>`, or `asso
 
 **Synopsis:**
 ```
-planar task update <task-id> [--title <text>] [--body <text>] [--status <status>] [--priority <n>] [--next-action <text>] [--due <date>] [--plan <plan-id>] [--force] [--reason <text>] [--editor]
+planar task update <task-id> [--title <text>] [--body <text>] [--status <status>] [--priority <n>] [--next-action <text>] [--due <date>] [--plan <plan-id>] [--force] [--reason <text>] [--editor] [--slug <slug>]
 ```
 
 **Description:** Update mutable fields on a task. Status changes are validated against the per-entity transition matrix in `policy.status.check`; illegal moves exit non-zero and leave the task unchanged. Legal status moves: `todo → {doing, blocked, cancelled}`, `doing → {todo, blocked, done, cancelled}`, `blocked → {todo, doing, done, cancelled}` (`blocked → todo` added at task 6441, to requeue an unblocked task without claiming work started). The terminal statuses `done` and `cancelled` block bare `--status` updates; use `task reopen --reason` (the preferred verb-gated path) or `--force` (operator override, records audit row).
@@ -1443,6 +1467,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row when `--force` triggers a terminal → non-terminal transition. | empty |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
 | `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
+| `--slug <slug>` | Replace the task's slug. `tasks.slug` is globally unique. | none |
 
 **Claim-atomic guard:** When `--status` is supplied and the task has an active work claim (`agent_work_claims.status='active'` and lease not yet expired), the status flip is refused with exit code `1` and a message identifying the active claim. This prevents an operator `task update --status done` from stranding a live agent lease. Pass `--force` to override and flip the status anyway — use this only when you know the agent is no longer working the task (e.g. it crashed without releasing the claim).
 
@@ -1462,7 +1487,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 
 **Synopsis:**
 ```
-planar task done <task-id> [--force]
+planar task done <task-id> [--force] [--json]
 ```
 
 **Description:** Mark a task as done. Legal from `doing` or `blocked` — not from `todo` (the matrix requires `todo → doing` first) or from a terminal status (`done`/`cancelled`). Equivalent to `task update --status done` but spelled explicitly for the common case.
@@ -1492,7 +1517,7 @@ planar task done <task-id> [--force]
 
 **Synopsis:**
 ```
-planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>] [--force]
+planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>] [--force] [--json]
 ```
 
 **Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks — see [`import`](#planar-import-repo-root) for the producer of the most common false-done case. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
@@ -1527,7 +1552,7 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 
 **Synopsis:**
 ```
-planar task block <task-id> --on <task-id> [--force]
+planar task block <task-id> --on <task-id> [--force] [--json] [--reason <text>]
 ```
 
 **Description:** Mark a task as blocked and record the blocking relationship in `entity_links`. Sets the blocked task's status to `blocked`.
@@ -1542,6 +1567,7 @@ planar task block <task-id> --on <task-id> [--force]
 |------|-------------|----------|
 | `--on <task-id>` | The task that is blocking. | yes |
 | `--force` | Override the active-claim guard. | no |
+| `--reason <text>` | Optional reason for the block. | no |
 
 **Schema effects:**
 - Updates `tasks(status='blocked', updated_at)` for the blocked task.
@@ -1559,7 +1585,7 @@ planar task block <task-id> --on <task-id> [--force]
 
 **Synopsis:**
 ```
-planar task link <task-id> <to-kind:to-id> --relationship <kind>
+planar task link <task-id> <to-kind:to-id> --relationship <kind> [--json] [--scope <scope>]
 ```
 
 **Description:** Create an `entity_links` row from a task to another entity.
@@ -1571,6 +1597,7 @@ planar task link <task-id> <to-kind:to-id> --relationship <kind>
 | Flag | Description | Required |
 |------|-------------|----------|
 | `--relationship <kind>` | One of `derives-from`, `depends-on`, `addresses`, `verifies`, `cites`, `supersedes`. | yes |
+| `--scope <scope>` | Declared and never read by the handler. | no |
 
 **Schema effects:** Inserts into `entity_links(from_kind='task', from_id, to_kind, to_id, relationship)`.
 
@@ -1624,7 +1651,7 @@ Facts are derived through the **same predicates** the plan-wide pass uses, so an
 
 **Synopsis:**
 ```
-planar task touches add <task-id> <repo-slug> [--path <p>]
+planar task touches add <task-id> <repo-slug> [--path <p>] [--scope <scope>]
 ```
 
 **Description:** Record that a task touches the given repo (and, with `--path`, a specific file). The repo slug must be registered via `planar init` (present in `projects`).
@@ -1644,6 +1671,7 @@ planar task touches add <task-id> <repo-slug> [--path <p>]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--path <p>` | Repo-relative file path the task touches; writes a path-level `task_touch_paths` row (plus the coarse repo edge). | none (repo-level only) |
+| `--scope <scope>` | Declared and never read by the handler. | none |
 
 **Output (`--json`):**
 ```json
@@ -1769,7 +1797,7 @@ planar task touches list <task-id> [--json]
 
 **Synopsis:**
 ```
-planar task touches remove <task-id> <repo-slug> [--path <p>] [--json]
+planar task touches remove <task-id> <repo-slug> [--path <p>] [--json] [--scope <scope>]
 ```
 
 **Description:** Withdraw a touch declaration.
@@ -1795,6 +1823,7 @@ This is deliberately not symmetric with `touches add --path`, where a path-touch
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--path <p>` | Withdraw this path-level declaration only; the repo edge is preserved. | none (repo-level removal) |
+| `--scope <scope>` | Declared and never read by the handler. | none |
 
 **Output (`--json`):**
 ```json
@@ -1825,7 +1854,7 @@ Questions represent open uncertainties surfaced during work. They carry a lifecy
 
 **Synopsis:**
 ```
-planar question add <title> [--body <text>] [--scope <scope>]
+planar question add <title> [--body <text>] [--scope <scope>] [--editor] [--plan <plan-id>]
 ```
 
 **Description:** Record an open question.
@@ -1842,6 +1871,8 @@ planar question add <title> [--body <text>] [--scope <scope>]
 |------|-------------|---------|
 | `--body <text>` | Expanded question body. May be `@<file>`. | none |
 | `--scope <scope>` | Override scope. | cwd-derived write scope |
+| `--editor` | Accepted, but not implemented: prints `warning: --editor not yet implemented; falling back to inline create` on stderr and the create proceeds. | off |
+| `--plan <plan-id>` | Attach the question to this plan. | none |
 
 **Output (human):**
 ```
@@ -1900,8 +1931,14 @@ planar question answer <question-id> --answer <text> [--json]
 
 **Synopsis:**
 ```
-planar question wontfix <question-id>
+planar question wontfix <question-id> [--reason <text>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--reason <text>` | Optional reason for the transition. |
 
 **Description:** Mark a question as not going to be answered (wontfix). Use for questions that are no longer relevant or explicitly deferred.
 
@@ -1952,7 +1989,7 @@ The `scope` column shows where the question lives: `global`, `repo:<slug>`, or `
 
 **Synopsis:**
 ```
-planar question show <question-id>
+planar question show <question-id> [--json]
 ```
 
 **Description:** Show a question with its body and (if answered) the answer.
@@ -1970,8 +2007,14 @@ planar question show <question-id>
 
 **Synopsis:**
 ```
-planar question link <question-id> <to-kind:to-id> --relationship <kind>
+planar question link <question-id> <to-kind:to-id> --relationship <kind> [--json] [--scope <scope>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope <scope>` | Declared and never read by the handler. |
 
 **Description:** Create an `entity_links` row from a question to another entity.
 
@@ -1991,7 +2034,7 @@ Test scenarios are verification artifacts tied to specs, plans, or tasks. Planar
 
 **Synopsis:**
 ```
-planar scenario add <title> [--body <text>] [--related <artifact-id>] [--scope <scope>]
+planar scenario add <title> [--body <text>] [--related <artifact-id>] [--scope <scope>] [--editor] [--plan <plan-id>]
 ```
 
 **Description:** Create a new test scenario.
@@ -2009,6 +2052,8 @@ planar scenario add <title> [--body <text>] [--related <artifact-id>] [--scope <
 | `--body <text>` | Full scenario description. May be `@<file>`. | none |
 | `--related <artifact-id>` | Associate with a specific artifact (spec or ADR). Sets `test_scenarios.related_artifact_id`. | none |
 | `--scope <scope>` | Override scope. | cwd-derived write scope |
+| `--editor` | Accepted, but not implemented: prints `warning: --editor not yet implemented; falling back to inline create` on stderr and the create proceeds. | off |
+| `--plan <plan-id>` | Attach the scenario to this plan. | none |
 
 **Output (human):**
 ```
@@ -2108,7 +2153,7 @@ The `scope` column shows where the scenario lives: `global`, `repo:<slug>`, or `
 
 **Synopsis:**
 ```
-planar scenario show <scenario-id>
+planar scenario show <scenario-id> [--json]
 ```
 
 **Description:** Show a scenario's full details including last run outcome.
@@ -2152,7 +2197,7 @@ Decisions record rationale for choices made during work. They are scope-aware an
 
 **Synopsis:**
 ```
-planar decision add <title> --body <text> [--rationale <text>] [--scope <scope>]
+planar decision add <title> --body <text> [--rationale <text>] [--scope <scope>] [--editor] [--plan <plan-id>]
 ```
 
 **Description:** Record a decision with its body and optional rationale.
@@ -2170,6 +2215,8 @@ planar decision add <title> --body <text> [--rationale <text>] [--scope <scope>]
 | `--body <text>` | Decision statement. May be `@<file>`. Required. | — |
 | `--rationale <text>` | Rationale text. May be `@<file>`. | none |
 | `--scope <scope>` | Override scope. | cwd-derived write scope |
+| `--editor` | Accepted, but the interactive editor flow is not implemented: without `--body` it prints a warning on stderr and the verb still refuses with `--body is required` (exit 2). | off |
+| `--plan <plan-id>` | Attach the decision to this plan. | none |
 
 **Output (human):**
 ```
@@ -2191,7 +2238,7 @@ decision 5: "Use Stripe as payment processor"  [proposed]  (scope: association:3
 
 **Synopsis:**
 ```
-planar decision accept <decision-id> [--scope <scope>]
+planar decision accept <decision-id> [--scope <scope>] [--json]
 ```
 
 **Description:** Mark a decision as accepted.
@@ -2221,7 +2268,7 @@ decision's scope explicitly with `--scope` when invoking from elsewhere. See
 
 **Synopsis:**
 ```
-planar decision supersede <decision-id> --by <decision-id>
+planar decision supersede <decision-id> --by <decision-id> [--json] [--scope <scope>]
 ```
 
 **Description:** Mark a decision as superseded by a newer decision.
@@ -2233,6 +2280,7 @@ planar decision supersede <decision-id> --by <decision-id>
 | Flag | Description | Required |
 |------|-------------|----------|
 | `--by <decision-id>` | The newer decision that supersedes this one. | yes |
+| `--scope <scope>` | Declared and never read by the handler. | no |
 
 **Schema effects:**
 - Updates `decisions(status='superseded', updated_at)` on the old decision.
@@ -2249,7 +2297,7 @@ planar decision supersede <decision-id> --by <decision-id>
 
 **Synopsis:**
 ```
-planar decision withdraw <decision-id> [--scope <scope>]
+planar decision withdraw <decision-id> [--scope <scope>] [--json]
 ```
 
 **Description:** Mark a decision as withdrawn.
@@ -2279,7 +2327,7 @@ decision's scope explicitly with `--scope` when invoking from elsewhere. See
 
 **Synopsis:**
 ```
-planar decision list [--scope <scope>] [--status <status>]
+planar decision list [--scope <scope>] [--status <status>] [--plan <plan-id>]
 ```
 
 **Description:** List decisions. Without `--scope`, uses the cwd-derived read set and refuses outside registered scope unless `--scope global` is explicit.
@@ -2290,6 +2338,7 @@ planar decision list [--scope <scope>] [--status <status>]
 |------|-------------|---------|
 | `--scope <scope>` | Filter by scope. | cwd-derived read set |
 | `--status <status>` | Filter: `proposed`, `accepted`, `superseded`, `withdrawn`. Repeatable. | `proposed,accepted` |
+| `--plan <plan-id>` | Filter to decisions attached to this plan. | none |
 
 **Output (human):**
 ```
@@ -2312,7 +2361,7 @@ The `scope` column shows where the decision lives: `global`, `repo:<slug>`, or `
 
 **Synopsis:**
 ```
-planar decision show <decision-id>
+planar decision show <decision-id> [--json]
 ```
 
 **Description:** Show a decision with body, rationale, status, and linked session.
@@ -2336,7 +2385,7 @@ Artifacts are durable documents: tech specs, ADRs, design notes, summaries, and 
 
 **Synopsis:**
 ```
-planar artifact add <title> --kind <kind> [--body <text>] [--from-file <path>] [--source-path <path>] [--scope <scope>] [--plan <plan-id>]
+planar artifact add <title> --kind <kind> [--body <text>] [--from-file <path>] [--source-path <path>] [--scope <scope>] [--plan <plan-id>] [--editor]
 ```
 
 **Description:** Register a new artifact. The body may be specified inline via `--body`, read from a file via `--from-file`, or left empty. `--from-file` and `--body` are mutually exclusive. `--plan` attaches the artifact to the given plan via a `derives-from` entity link in the same transaction, for use by the planner agent when registering spec files against their anchor plan.
@@ -2358,6 +2407,7 @@ planar artifact add <title> --kind <kind> [--body <text>] [--from-file <path>] [
 | `--scope <scope>` | Override scope. | cwd-derived write scope |
 | `--status <status>` | Initial status: `draft`, `active`. | `draft` |
 | `--plan <plan-id>` | Attach the artifact to this plan via a `derives-from` entity link. Applied atomically in the same transaction as the artifact insert. | none |
+| `--editor` | Declared and never read by the handler. | off |
 
 **Output (human):**
 ```
@@ -2382,7 +2432,7 @@ artifact 3: "Billing Tech Spec"  [tech_spec, draft]  (scope: association:3 [from
 
 **Synopsis:**
 ```
-planar artifact show <artifact-id>
+planar artifact show <artifact-id> [--json]
 ```
 
 **Description:** Show an artifact's metadata and (if present) body.
@@ -2400,7 +2450,7 @@ planar artifact show <artifact-id>
 
 **Synopsis:**
 ```
-planar artifact list [--scope <scope>] [--kind <kind>] [--status <status>]
+planar artifact list [--scope <scope>] [--kind <kind>] [--status <status>] [--plan <plan-id>]
 ```
 
 **Description:** List artifacts. Without `--scope`, uses the cwd-derived read set and refuses outside registered scope unless `--scope global` is explicit.
@@ -2412,6 +2462,7 @@ planar artifact list [--scope <scope>] [--kind <kind>] [--status <status>]
 | `--scope <scope>` | Filter by scope. | cwd-derived read set |
 | `--kind <kind>` | Filter by kind. Repeatable. | all |
 | `--status <status>` | Filter: `draft`, `active`, `superseded`, `retired`. Repeatable. | `draft,active` |
+| `--plan <plan-id>` | Filter to artifacts attached to this plan. | none |
 
 **Output (human):** One sentence per artifact, with kind, status, and scope:
 ```
@@ -2433,7 +2484,7 @@ The trailing `scope:<label>` is `global`, `repo:<slug>`, or `assoc:<slug>`.
 
 **Synopsis:**
 ```
-planar artifact update <artifact-id> [--title <text>] [--body <text>] [--status <status>] [--source-path <path>]
+planar artifact update <artifact-id> [--title <text>] [--body <text>] [--status <status>] [--source-path <path>] [--json]
 ```
 
 **Description:** Update mutable fields on an artifact.
@@ -2454,8 +2505,14 @@ planar artifact update <artifact-id> [--title <text>] [--body <text>] [--status 
 
 **Synopsis:**
 ```
-planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind>
+planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind> [--json] [--scope <scope>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope <scope>` | Declared and never read by the handler. |
 
 **Description:** Create an `entity_links` row from an artifact to another entity.
 
@@ -2489,6 +2546,8 @@ planar annotate add --text <note> [--anchor-path <path>] [--line-start <n>] [--l
 ### `planar annotate show <annotation-id>` / `planar annotate remove <annotation-id>`
 
 `show` prints one annotation (add `--json`). `remove` hard-deletes it (and its `annotation_tags`).
+
+`planar annotate remove <annotation-id> --expected-revision <n> [--json]` requires `--expected-revision`: omitting it refuses with `error: --expected-revision is required` (exit 2), and a value that differs from the annotation's stored `revision` refuses as a revision conflict without deleting.
 
 `show --json` and `list --json` emit the stable consumer representation described in [Annotation consumer contract](features/annotation-consumer-contract.md). In particular, `anchor.kind` distinguishes `file` and `entity`, `target` is either `null` or an object with a `kind` and numeric `id`, and `revision` is the optimistic-concurrency value. Reads do not resolve, process, or otherwise mutate an annotation.
 
@@ -2529,7 +2588,7 @@ planar annotate update <annotation-id> [--title <t>] [--slug <s>] [--body <text>
 
 ### `planar annotate tag <annotation-id> <tag> [--remove]`
 
-Add a tag to an annotation, or remove it with `--remove`. Writes/deletes an `annotation_tags` row.
+Add a tag to an annotation, or remove it with `--remove`. Writes/deletes an `annotation_tags` row. Accepts `--json`.
 
 ---
 
@@ -2543,8 +2602,14 @@ Lifecycle transitions on a single annotation: `resolve` marks it handled, `dismi
 
 **Synopsis:**
 ```
-planar annotate bulk-resolve [--anchor-path <path>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json]
+planar annotate bulk-resolve [--anchor-path <path>] [--plan <id>] [--task <id>] [--vendor <v>] [--tag <tag>] [--scope <scope>] [--json] [--operation-id <uuid>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--operation-id <uuid>` | Operation UUID. When supplied, the bulk transition runs as a receipt-backed command and records a durable aggregate receipt (see `annotate receipt`); omitted, the one-shot behaviour is unchanged. |
 
 **Description:** Apply the lifecycle transition to **every** annotation matching the filter. `bulk-resolve` and `bulk-dismiss` act on `active` annotations only. `bulk-archive` includes `active`, `resolved`, and `dismissed` annotations (under the retention-tier model, resolved→archived and dismissed→archived are legal; already-`archived` rows are skipped as idempotent). The filter flags mirror `annotate list`. Use these to clear a whole review pass at once.
 
@@ -2618,7 +2683,7 @@ task:42 promoted to association org:acme  (was: global)
 
 **Synopsis:**
 ```
-planar demote <kind:id> [--from <association-slug>]
+planar demote <kind:id> [--from <association-slug>] [--json]
 ```
 
 **Description:** Reverse a promotion — move an entity back to global personal scope. Allowed before workbench export; after export, the exported file is left for the user to remove manually.
@@ -2698,8 +2763,14 @@ suitable for pre-commit hooks and CI.
 
 **Synopsis:**
 ```
-planar workbench push <plan> [--filter-mode failures|all] [--apply-cleanup]
+planar workbench push <plan> [--filter-mode failures|all] [--apply-cleanup] [--verbose]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--verbose` | Verbose text rendering of the sync result. |
 
 **Description:** Apply DB→FS changes for the named anchor plan. Each entity linked to the
 plan is rendered as a Markdown file with YAML front matter. Files that match the last-synced
@@ -2756,8 +2827,14 @@ workbench push: project_checkout-app/p1-checkout-revamp
 
 **Synopsis:**
 ```
-planar workbench pull <plan>
+planar workbench pull <plan> [--verbose]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--verbose` | Verbose text rendering of the sync result. |
 
 **Description:** Apply FS→DB changes for the named anchor plan. Each Markdown file in the
 feature directory is parsed; if its content hash differs from the manifest the entity is
@@ -2819,8 +2896,14 @@ workbench pull: project_checkout-app/p1-checkout-revamp
 
 **Synopsis:**
 ```
-planar workbench status [<plan>]
+planar workbench status [<plan>] [--json] [--verbose]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--verbose` | Verbose text rendering of the status report. |
 
 **Description:** Classify all (file, entity) pairs for one plan (or all plans with FS trees
 if no plan argument is given) without applying any changes. Reports each file as one of:
@@ -2860,7 +2943,7 @@ workbench status: project_checkout-app/p1-checkout-revamp
 
 **Synopsis:**
 ```
-planar workbench resolve <event-id> [--prefer fs|db]
+planar workbench resolve <event-id> [--prefer fs|db] [--json]
 ```
 
 **Description:** Settle a conflict surfaced by `workbench status` or `workbench sync`. The
@@ -2907,8 +2990,14 @@ resolved conflict event 7  (prefer db)
 
 **Synopsis:**
 ```
-planar workbench sync <plan>
+planar workbench sync <plan> [--json] [--verbose]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--verbose` | Verbose text rendering of the sync result. |
 
 **Description:** Full bidirectional reconciliation for the named anchor plan. Applies
 non-conflicting FS→DB and DB→FS changes in a single pass. Conflicts are surfaced (exit 3)
@@ -2947,7 +3036,7 @@ workbench sync: project_checkout-app/p1-checkout-revamp
 
 **Synopsis:**
 ```
-planar workbench archive <plan> [--filter-mode failures|all]
+planar workbench archive <plan> [--filter-mode failures|all] [--json]
 ```
 
 **Description:** Remove the FS tree for the named anchor plan's feature directory. The
@@ -2986,7 +3075,7 @@ archived: project_checkout-app/p1-checkout-revamp  (directory removed)
 
 **Synopsis:**
 ```
-planar workbench restore <plan> [--filter-mode failures|all]
+planar workbench restore <plan> [--filter-mode failures|all] [--json]
 ```
 
 **Description:** Recreate the FS tree from the DB for the named anchor plan. Idempotent
@@ -3070,7 +3159,7 @@ workbench gc: removed 3, kept 7, drifted-skipped 0, errors 0 (mode=failures)
 
 **Synopsis:**
 ```
-planar workbench list
+planar workbench list [--json]
 ```
 
 **Description:** List all top-level plans that have a workbench directory under
@@ -3442,7 +3531,7 @@ planar-ext ext register jira <slug> --base-url <url> --project <key> --auth-env 
 
 **Synopsis:**
 ```
-planar-ext ext register github <slug> --project <owner/repo> [--auth-env <var>]
+planar-ext ext register github <slug> --project <owner/repo> [--auth-env <var>] [--json]
 ```
 
 **Description:** Register a GitHub Issues instance as an external system.
@@ -3517,7 +3606,7 @@ acme-jira: ok  (Jira 9.4.2, project PROJ found, auth valid)
 
 **Synopsis:**
 ```
-planar-ext ext create <system-slug> --from <kind:id> [--type <issue-type>] [--role <link-role>] [--sync <direction>]
+planar-ext ext create <system-slug> --from <kind:id> [--type <issue-type>] [--role <link-role>] [--sync <direction>] [--scope <scope>]
 ```
 
 **Description:** Create a counterpart for an existing local entity on the named external system, then record the link. This is the automation entry point for surfacing local work to the operational plane.
@@ -3532,6 +3621,7 @@ planar-ext ext create <system-slug> --from <kind:id> [--type <issue-type>] [--ro
 | `--type <issue-type>` | External issue type (e.g. `Epic`, `Story` for Jira). | System default. |
 | `--role <link-role>` | Link role: `mirror`, `parent`, `child`, `reference`. | `mirror` |
 | `--sync <direction>` | Sync direction: `read-only`, `write-back`, `two-way`. | `two-way` |
+| `--scope <scope>` | Declared and never read by the handler. | none |
 
 **Output (human):**
 ```
@@ -3710,7 +3800,7 @@ Links record relationships between local entities and external tickets. These ar
 
 **Synopsis:**
 ```
-planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--sync <direction>]
+planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--sync <direction>] [--scope <scope>]
 ```
 
 **Description:** Manually record an `external_links` row linking a local entity to an already-existing external ticket. Use this when the external ticket was created outside of `ext create`. Does not push any data to the external system.
@@ -3731,6 +3821,7 @@ planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--s
 | `--role <link-role>` | One of `mirror`, `parent`, `child`, `reference`. | `reference` |
 | `--sync <direction>` | One of `read-only`, `write-back`, `two-way`. | `read-only` |
 | `--propagate` | After creating the link, propagate the anchor plan of the linked entity to its registered external system. Runs the equivalent of `planar-ext ext propagate` against the top-level plan and shares its one refusal (`github-projects-v2`, decision 1001). | `false` |
+| `--scope <scope>` | Declared and never read by the handler. | none |
 
 **Output (`--json`):**
 ```json
@@ -3752,8 +3843,14 @@ planar link <kind:id> --to <system-slug>:<external-id> [--role <link-role>] [--s
 
 **Synopsis:**
 ```
-planar unlink <link-id>
+planar unlink <link-id> [--scope <scope>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope <scope>` | Scope for the cross-scope guard (currently informational). |
 
 **Description:** Remove an `external_links` row by link id. Associated
 `sync_events` rows are retained with `link_id=null` by the foreign key's `ON
@@ -3842,7 +3939,7 @@ pulled 3 links
 
 **Synopsis:**
 ```
-planar-ext sync push <link-id | kind:id | --all> [--system <slug>] [--scope <slug>]
+planar-ext sync push <link-id | kind:id | --all> [--system <slug>] [--scope <slug>] [--json]
 ```
 
 **Description:** Push selected local fields to the remote system for one or more links. For comment and decision posts, appends rather than replaces. Includes the correlation footer on every push.
@@ -4099,8 +4196,15 @@ handoff captured for task:42
 
 **Synopsis:**
 ```
-planar handoff validate <handoff-id> [--json]
+planar handoff validate <handoff-id> [--json] [--note <text>] [--vendor <v>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--note <text>` | Declared and never read by the handler. |
+| `--vendor <v>` | Declared and never read by the handler. |
 
 **Description:** Transition the `pending` handoff with the given id to `validated`, making it eligible for `handoff consume`. Checks the same readiness criteria as `resume validate` plus snapshot presence and handoff status. On success, writes the `validated` state to the handoff row.
 
@@ -4124,7 +4228,7 @@ planar handoff validate <handoff-id> [--json]
 
 **Synopsis:**
 ```
-planar handoff list [--status <status>]
+planar handoff list [--status <status>] [--json] [--note <text>] [--vendor <v>]
 ```
 
 **Description:** List handoffs by status.
@@ -4134,6 +4238,8 @@ planar handoff list [--status <status>]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--status <status>` | Filter: `pending`, `validated`, `consumed`, `abandoned`. Repeatable. | `pending` |
+| `--note <text>` | Declared and never read by the handler. | none |
+| `--vendor <v>` | Declared and never read by the handler. | none |
 
 There is no `--task` filter on `handoff list` (passing it exits 2); filter the output by the `task` column instead.
 
@@ -4159,7 +4265,7 @@ id  snapshot  task  from-vendor  to-vendor  status   created-at
 
 ### `planar handoff show <handoff-id> [--json]`
 
-**Description:** Show one handoff's details — its status, anchoring snapshot, note, and timestamps.
+**Description:** Show one handoff's details — its status, anchoring snapshot, note, and timestamps. `--vendor <v>` and `--note <text>` are declared on this leaf and never read by the handler.
 
 ---
 
@@ -4178,7 +4284,7 @@ id  snapshot  task  from-vendor  to-vendor  status   created-at
 
 **Synopsis:**
 ```
-planar handoff consume <handoff-id> [--session <session-id>]
+planar handoff consume <handoff-id> [--session <session-id>] [--json] [--note <text>] [--vendor <v>]
 ```
 
 **Description:** Mark a handoff as consumed by the resuming session. Transitions `handoffs.status` from `pending` (or `validated`) to `consumed`. Typically called automatically by `resume` when it picks up a pending handoff, but exposed as an explicit command for agent scripts.
@@ -4188,6 +4294,8 @@ planar handoff consume <handoff-id> [--session <session-id>]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--session <session-id>` | The session id of the resuming session. | Current session. |
+| `--note <text>` | Declared and never read by the handler. | none |
+| `--vendor <v>` | Declared and never read by the handler. | none |
 
 **Schema effects:** Updates `handoffs(status='consumed', to_session_id=<session-id>, consumed_at=now())`.
 
@@ -4210,7 +4318,7 @@ The `context-history` term is vestigial from an earlier framing and is dropped. 
 
 **Synopsis:**
 ```
-planar capture session [--task <task-id>] [--vendor <vendor>] [--vendor-session-id <id>] [--model <model>]
+planar capture session [--task <task-id>] [--vendor <vendor>] [--vendor-session-id <id>] [--model <model>] [--json]
 ```
 
 **Description:** Explicitly open a new session row and make it the current active session for subsequent commands. Useful when automatic session creation behavior needs to be overridden (e.g. when starting a new agent process mid-task). When cwd is inside a git repo, the first successful open for that session also records `sessions.repo_root` and `sessions.head_sha_at_start`; reused opens are first-open-wins for those columns.
@@ -4239,7 +4347,7 @@ session 101 opened (vendor: claude, task: 42)
 
 **Synopsis:**
 ```
-planar capture end [<session-id>] [--summary <text>]
+planar capture end [<session-id>] [--summary <text>] [--json] [--session <session-id>]
 ```
 
 **Description:** Close the current (or specified) session by setting `sessions.ended_at`. Before the end timestamp is written, Planar attempts a fail-soft git walk over the operator session window `sessions.head_sha_at_start..HEAD` in `sessions.repo_root` and records any discovered commits into `session_commits`. Does not capture a snapshot; use `handoff` for end-of-session snapshot capture. If `--summary` is supplied, also writes a human-readable summary of the session to `sessions.summary`.
@@ -4249,6 +4357,7 @@ planar capture end [<session-id>] [--summary <text>]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--summary <text>` | Human-readable session summary. May be `@<file>`. | none |
+| `--session <session-id>` | Session id to end. The `<session-id>` positional wins when both are given; with neither, the vendor tuple's active session is ended. | none |
 
 **Schema effects:** Inserts zero or more rows into `session_commits(session_id, sha, repo_root, branch, subject, author, committed_at, recorded_at)` from the session's git window, then updates `sessions(ended_at=now())`. If `--summary` is given, also updates `sessions(summary=<text>)`.
 
@@ -4310,7 +4419,7 @@ session 101: processed 3 commits (2 new)
 
 **Synopsis:**
 ```
-planar capture note <body> [--session <session-id>]
+planar capture note <body> [--session <session-id>] [--json]
 ```
 
 **Description:** Append a `note` entry to the current session. Use for narrative observations, reasoning, or context the agent wants to preserve verbatim.
@@ -4332,7 +4441,7 @@ planar capture note <body> [--session <session-id>]
 
 **Synopsis:**
 ```
-planar capture command <command> [--outcome <text>] [--session <session-id>]
+planar capture command <command> [--outcome <text>] [--session <session-id>] [--json]
 ```
 
 **Description:** Record a command that was run and (optionally) its outcome, as a structured `command` entry in the session timeline. Agents use this to preserve the record of shell commands and their results.
@@ -4351,7 +4460,7 @@ planar capture command <command> [--outcome <text>] [--session <session-id>]
 
 **Synopsis:**
 ```
-planar capture file <path> [--role <description>] [--session <session-id>]
+planar capture file <path> [--role <description>] [--session <session-id>] [--json]
 ```
 
 **Description:** Record that a file was read, written, or otherwise touched during the session, with an optional role description (e.g. "implementation target", "read for context", "avoided — too large").
@@ -4360,12 +4469,22 @@ planar capture file <path> [--role <description>] [--session <session-id>]
 
 ---
 
-### `planar capture snapshot [<task-id>]`
+### `planar capture snapshot [<body>]`
 
 **Synopsis:**
 ```
-planar capture snapshot [<task-id>] [--note <text>]
+planar capture snapshot [<body>] [--note <text>] [--next-action <text>] [--session <session-id>] [--task <task-id>] [--json]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--session <session-id>` | Session id to snapshot against; otherwise the vendor tuple's active session (created when absent). |
+| `--task <task-id>` | Task id for the snapshot; otherwise the session's own bound task. |
+| `--note <text>` | Snapshot body. Takes precedence over the `<body>` positional. |
+
+The positional is the snapshot **body**, not a task id; name the task with `--task`.
 
 **Description:** Produce a context snapshot for the current or named task mid-session, without creating a full handoff record. Useful for checkpointing state at meaningful points during long sessions.
 
@@ -4390,7 +4509,7 @@ planar audit trail --link <link-id> [--json]
 
 **Description:** Show every local session, decision, sync event, and attributed commit tied to the given external link, with timestamps and vendor identity. This is the inverse view: starting from an external ticket's link id, reconstruct the full history of local work that produced changes to it. The commits leg is sourced from `session_commits` through the link's local entity sessions and is omitted entirely when no commits were recorded.
 
-The positional form, `planar audit trail [--kind <kind>] <entity-id>`, is entity-scoped; use `--link <link-id>` for the external-link trail shown here.
+The positional form, `planar audit trail [--kind <kind>] [--grep <pattern>] <entity-id>`, is entity-scoped; use `--link <link-id>` for the external-link trail shown here. `--kind` defaults to `task`. `--grep` applies to the positional form only, and switches to a separate query that does not widen through `entity_links` rather than filtering the default result. When `--link` is given the positional is ignored.
 
 **Options:**
 
@@ -4446,7 +4565,7 @@ commits:
 
 **Synopsis:**
 ```
-planar audit session <session-id>
+planar audit session <session-id> [--json]
 ```
 
 **Description:** Show the full timeline of a session: all `session_entries` in ordinal order, with the task context and vendor identity.
@@ -5132,8 +5251,8 @@ See also: `spec ingest` (decompose workbench planning docs), `ext propagate` (pu
 planar import <repo-root> [--from-github] [--dry-run] [--strict]
                             [--roadmap <path>]
                             [--apply] [--apply-removals] [--scope <slug>]
-                            [--no-status-inference] [--interpret] [--no-interpret]
-                            [--accept-spec] [--no-forward-specs]
+                            [--no-status-inference] [--interpret]
+                            [--accept-spec <slugs>] [--no-forward-specs] [--json]
 ```
 
 **Description:** Walk the repository at `<repo-root>`, parse planning artefacts from the filesystem and git history, infer task completion status, build an ImportPlan, and (optionally) commit it to the database.
@@ -5161,18 +5280,16 @@ Idempotency: items already present in the database (matched by title and source-
 | `--apply` | off | Commit the import to the database. Without this flag, preview only. |
 | `--apply-removals` | off | When applying, also remove entities that are gone from the source. |
 | `--scope <slug>` | cwd-derived | Scope for all created entities. Overrides cwd derivation for this invocation. |
-| `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of `adopter.Infer`; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
+| `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of status inference; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
 | `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `pl-import` skill). |
-| `--no-interpret` | off | Force the deterministic-only path, skipping the LLM interpretation pass. |
-| `--accept-spec` / `--no-forward-specs` | off | Spec-forwarding controls for imported planning specs. |
+| `--accept-spec <slugs>` | none | Non-interactive forward-spec selection — slug, comma-separated slugs, or `all`. |
+| `--no-forward-specs` | off | Skip forward-spec processing entirely. |
 
-**>25% auto-done refusal (never ported):** The Go implementation refused an
-import when `--threshold 0.0` disabled the confidence floor and more than
-25% of inferred tasks would land as `status=done`, offering
-`--trust-status-inference` as the explicit bypass. None of that survives:
-the refusal, the `--trust-status-inference` flag and `--threshold` itself
-are all absent from this binary (`--threshold` was removed at task 6802 —
-it had been declared but never read, here or in the Zig oracle). For an unreliable correlation today, reach for
+**No >25% auto-done refusal.** This binary does not refuse an import in
+which a large share of inferred tasks would land as `status=done`, and
+neither `--trust-status-inference`, `--threshold` nor `--no-interpret`
+exists on it; passing any of them fails at parse time with exit 2. For an
+unreliable correlation, reach for
 `--no-status-inference` (which IS implemented) to default every task to
 `status=todo`, and `task reopen <id>` to recover any individually
 wrongly-marked tasks from an earlier import.
@@ -5506,10 +5623,10 @@ then `vi`). If the file does not exist, a starter file is written first
 
 **Synopsis:**
 ```
-planar config validate [<path>]
+planar config validate
 ```
 
-**Description:** Parse the config file (or `<path>` if supplied) and check:
+**Description:** Parse the resolved config file and check:
 
 - TOML syntax.
 - Sensitive-data invariant: keys matching the secret-name denylist must not carry literal values.
@@ -5518,11 +5635,7 @@ planar config validate [<path>]
 
 Each issue is printed with its line number and key path.
 
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<path>` | Optional path to validate instead of the resolved config path. |
+The verb takes no positional: a path argument is refused at parse time (exit 2). Validate a different file by pointing `PLANAR_CONFIG_PATH` at it.
 
 **Output (human):**
 ```
@@ -5537,8 +5650,8 @@ config validate: ok
 
 **Exit codes:**
 - `0` — no errors (warnings are printed but do not change the exit code).
-- `1` — one or more errors found.
-- `2` — file not found or unreadable.
+- `1` — one or more errors found, or the config file was not found (`error: config file not found: <path>`).
+- `2` — parse failure (unexpected argument or flag).
 
 ---
 
@@ -5663,7 +5776,7 @@ default              jira                 epic                 embedded
 
 **Synopsis:**
 ```
-planar templates show <set> <system> <kind>
+planar templates show <set> <system> <kind> [--json]
 ```
 
 **Description:** Print the raw JSON of the resolved template to stdout. Honors
@@ -5692,7 +5805,7 @@ the fallback chain: user-set → default-set → embedded.
 
 **Synopsis:**
 ```
-planar templates render <set> <system> <kind> --entity <kind>:<id>
+planar templates render <set> <system> <kind> --entity <kind>:<id> [--json]
 ```
 
 **Description:** Build a rendering `Context` from the named entity, execute the
@@ -5730,22 +5843,26 @@ writes, no external API calls.
 
 **Synopsis:**
 ```
-planar templates validate [<path>]
+planar templates validate <set> <system> <kind> [--json]
 ```
 
-**Description:** Validate a single template file (if `<path>` is given) or all
-templates under the resolved templates root (including embedded defaults). Checks
-`text/template` compilability of every string field. Reports each issue with
-the JSON path of the offending field.
+**Description:** Validate one template, named by the same `<set> <system> <kind>`
+triple `templates show` takes and resolved through the same fallback chain
+(including embedded defaults). All three positionals are required; there is no
+path form and no validate-everything form.
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `<path>` | Optional. Filesystem path to a single template file. |
+| `<set>` | Template set name. |
+| `<system>` | System name. |
+| `<kind>` | Template kind. |
 
-**Output:** One line per issue in the form `ISSUE: <path> [<json-path>]: <error>`.
-Prints `templates validate: ok` on success.
+**Output:** `ok: <set>/<system>/<kind>` on success; under `--json`,
+`{"ok":true,"set":"<set>","system":"<system>","kind":"<kind>","issues":[]}`.
+When issues are found the detail is written to stdout and a summary line to
+stderr.
 
 **Schema effects:** None.
 
@@ -5753,8 +5870,8 @@ Prints `templates validate: ok` on success.
 
 **Exit codes:**
 - `0` — no issues found.
-- `1` — one or more validation issues found.
-- `2` — cannot read templates root or individual file.
+- `1` — template not found (`error: template <set>/<system>/<kind> not found`).
+- `2` — one or more validation issues found, or a missing positional (`error: set is required`).
 
 ---
 
@@ -5793,20 +5910,19 @@ automatically by `planar init` (after `config init`, before `migrate apply`).
 
 **Synopsis:**
 ```
-planar templates path [<set> <system> <kind>]
+planar templates path [--json] [--set <set>] [--system <system>]
 ```
 
-**Description:** With no arguments, print the resolved templates root directory.
-With three arguments, print the resolved path of the specific template
-(indicating which level of the fallback chain would serve it).
+**Options:**
 
-**Arguments:**
+| Flag | Description |
+|------|-------------|
+| `--set <set>` | Declared and never read by the handler. |
+| `--system <system>` | Declared and never read by the handler. |
 
-| Argument | Description |
-|----------|-------------|
-| `<set>` | Template set name (optional; requires all three or none). |
-| `<system>` | System name. |
-| `<kind>` | Template kind. |
+**Description:** Print the resolved templates root directory. The verb takes
+no positionals — a `<set> <system> <kind>` triple is refused at parse time
+(exit 2) — and the output is the same path with or without `--json`.
 
 **Output:**
 ```
@@ -5819,8 +5935,7 @@ With three arguments, print the resolved path of the specific template
 
 **Exit codes:**
 - `0` — success.
-- `1` — template not found (three-argument form).
-- `2` — cannot resolve templates root.
+- `2` — cannot resolve templates root, or a parse failure (unexpected argument).
 
 ---
 
@@ -5836,13 +5951,15 @@ Walk `~/.planar/local/{skills,agents}/`, parse each source file's YAML frontmatt
 |---|---|
 | `--dry-run` | Preview the planned installs without touching the filesystem. |
 | `--vendor <v>` | Restrict to one or more vendors (`claude`, `codex`, `copilot`). Repeatable; can be combined with the per-file `vendors:` frontmatter list (intersection). |
+| `--reconcile` | Run the reconcile pass instead of linking. Takes no `<name>`; combining the two is refused as invalid input. Honours `--dry-run` and `--json`. |
+| `--json` | Emit JSON instead of human text. |
 
 **Behavior:**
 - Without `<name>`, links every source file under both `skills/` and `agents/`.
 - With `<name>`, links only the matching source (errors if not found).
 - Idempotent: a re-link of an unchanged source produces `unchanged` actions.
 - Atomic: writes via temp-path + rename so the install file is never observed missing.
-- Copy fallback fires automatically when `os.Symlink` errors (e.g. Windows without developer mode); a warning calls out that future edits require re-linking.
+- Copy fallback fires automatically when creating the symlink fails (e.g. Windows without developer mode); a warning calls out that future edits require re-linking.
 
 ### `planar local migrate [--dry-run]`
 
@@ -5851,6 +5968,7 @@ Convert legacy flat sandbox skills (`~/.planar/local/skills/<name>.md`) into the
 | Flag | Description |
 |---|---|
 | `--dry-run` | Preview without renaming on disk. |
+| `--json` | Emit JSON instead of human text. |
 
 **Behavior:**
 - Idempotent. Skills already in dir-shape are skipped silently.
@@ -5867,6 +5985,7 @@ Import operator-authored skill or agent files from an external location into the
 | `--force` | Overwrite an existing sandbox file of the same name. Without this, name collisions are skipped — the operator's prior work is never silently lost. |
 | `--dry-run` | Preview the planned imports and links without writing. |
 | `--no-link` | Import only; skip the link step. Useful when the operator wants to inspect the sandbox copy before linking. |
+| `--json` | Emit JSON instead of human text. |
 
 **Behavior:**
 - A single flat `.md` file source imports that file (wrapped into `<name>/SKILL.md` for skills). A single dir-shape source (a directory whose top-level contains `SKILL.md`) imports that whole tree. A directory source containing a mix of `*.md` files and `<name>/SKILL.md` subdirs imports each top-level entry — other subdirectories and non-`.md` files are ignored.
@@ -5876,7 +5995,7 @@ Import operator-authored skill or agent files from an external location into the
 
 ### `planar local unlink <name> [--purge]`
 
-Remove every per-vendor install recorded for `<name>` in the per-kind `.link-manifest.json`. With `--purge`, also delete the source file from `~/.planar/local/`.
+Remove every per-vendor install recorded for `<name>` in the per-kind `.link-manifest.json`. With `--purge`, also delete the source file from `~/.planar/local/`. Accepts `--json`.
 
 ### `planar local list [--vendor <v>] [--json]`
 
@@ -6176,6 +6295,21 @@ compares, never parses or normalises.
 | `planar models registry verify-identity` | Compare requested and actual spawn identity without aliasing. |
 | `planar models registry export` | Export the versioned registry compatibility document. |
 
+**Arguments and flags.** Bracketed entries are optional; every other flag is required.
+
+| leaf | arguments and flags |
+|------|---------------------|
+| `planar models registry list` | `[--json]` |
+| `planar models registry add` | `--vendor <text> --id <text> --order <n> [--disabled]` |
+| `planar models registry update` | `--candidate <n> --order <n> [--disabled]` |
+| `planar models registry remove` | `--candidate <n>` |
+| `planar models registry bind` | `--candidate <n> --role <text> --tier <text>` |
+| `planar models registry unbind` | `--candidate <n> --role <text> --tier <text>` |
+| `planar models registry observe` | `--candidate <n> --host <text> --version <n> --availability <text> --spawn-verification <text> --evidence-ref <text> --captured-at <text> --expires-at <text>` |
+| `planar models registry eligibility` | `--candidate <n> --host <text> --role <text> --tier <text> --now <text> [--override-supported] [--policy-permits]` |
+| `planar models registry verify-identity` | `--candidate <n> --actual-vendor <text> --actual-id <text>` |
+| `planar models registry export` | `[--json]` |
+
 **Three properties worth knowing before using these:**
 
 - **`remove` refuses while evidence references the candidate.** Recorded
@@ -6212,12 +6346,23 @@ a terminal status. Nothing here changes planning state.
 | `planar bench finish` | Set the terminal status on a run. |
 | `planar bench show` | Show a run's full state (header + events + touches). |
 
+**Arguments and flags.** Bracketed entries are optional; every other flag is required. `bench start --task` is repeatable and limits the declared-touch snapshot to the given task ids; omitted, every plan task is snapshotted.
+
+| leaf | arguments and flags |
+|------|---------------------|
+| `planar bench start` | `<run-uid> --plan <n> --arm <text> --base-sha <text> --config-hash <text> [--config-json <text>] [--corpus-repo <text>] [--task <text>...]` |
+| `planar bench event` | `<run-uid> --kind <text> --seq <n> [--payload <text>]` |
+| `planar bench touch` | `<run-uid> --task <n> --path <text> --kind <text>` |
+| `planar bench harvest` | `<run-uid> --task <n> --worktree <text> [--base <text>] [--head <text>]` |
+| `planar bench finish` | `<run-uid> --status <text>` |
+| `planar bench show` | `<run-uid> [--json]` |
+
 **The declared-vs-actual distinction is the point.** `touch` records what a
 run SAID it would change; `harvest` records what it actually changed, read
 out of `git diff`. Comparing the two is why both exist — a run that touched
 files it never declared is the finding the rig is built to surface.
 
-`start` prints the `run_uid` every other verb takes, so a session is
+`start` takes the `run_uid` as its required positional and prints it back; every other verb takes the same `run_uid`, so a session is
 normally `start` → repeated `event`/`touch` → `harvest` → `finish`.
 
 **Schema effects:** `show` reads; the other five write the benchmark run
@@ -6284,8 +6429,14 @@ went rather than a bare unknown-command error.
 
 **Synopsis:**
 ```
-planar task cancel <task-id>
+planar task cancel <task-id> [--json] [--scope <scope>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope <scope>` | Declared and never read by the handler. |
 
 **Description:** Cancel a task. `cancelled` is a terminal status, reachable
 from `todo` or `doing`; see the status lifecycle under `planar task`.
@@ -6301,7 +6452,7 @@ Single-argument form only.
 
 **Synopsis:**
 ```
-planar plan step list <plan-id>
+planar plan step list <plan-id> [--json]
 ```
 
 **Description:** List a plan's steps with their status and any linked task.
@@ -6337,8 +6488,15 @@ than silently reconciling them.
 
 **Synopsis:**
 ```
-planar groups recommend <plan-id> [--json]
+planar groups recommend <plan-id> [--json] [--budget <n>] [--solver <name>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--budget <n>` | Per-slice window budget, an unsigned 32-bit integer (default `128000`). An unparseable or out-of-range value is refused as invalid input. |
+| `--solver <name>` | Requested solver (`greedy` default, or `mtkahypar`). The recommendation's `solver` field reports the one that actually ran; `mtkahypar` degrades to `greedy` with `optimal_available:false` when the build lacks it. An unknown value is refused. |
 
 **Description:** Recommend closure-minimizing task slices for a plan —
 groupings that keep each slice's touched surface as small as possible.
@@ -6354,9 +6512,15 @@ Advisory: it proposes slices, it does not create or reorder anything.
 
 **Synopsis:**
 ```
-planar decision link <decision-id> <kind>:<id> [--relationship <rel>]
-planar scenario link <scenario-id> <kind>:<id> [--relationship <rel>]
+planar decision link <decision-id> <kind>:<id> [--relationship <rel>] [--json] [--scope <scope>]
+planar scenario link <scenario-id> <kind>:<id> [--relationship <rel>] [--json] [--scope <scope>]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--scope <scope>` | Declared and never read by the handler. |
 
 **Description:** Create an entity link from a decision (or scenario) to
 another entity. Two arms of the same seven-arm entity-link surface `planar
@@ -6374,8 +6538,14 @@ guard, because `entity_links` edges legitimately cross scopes.
 
 **Synopsis:**
 ```
-planar workflow run <workflow> [--args <json>]
+planar workflow run <workflow> [--args <json>] [--local]
 ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--local` | Restrict resolution to sandbox (local) workflows only. |
 
 **Description:** Run an installed workflow. See the `workflow` domain above
 for discovery and the workflow contract.
@@ -6398,6 +6568,17 @@ These six complete it.
 | `planar annotate bulk-archive` | Archive every annotation matching the filter, **including non-active rows**. |
 | `planar annotate command` | Apply a receipt-backed annotation JSON request from stdin (`--request @-`). |
 | `planar annotate receipt` | Look up a durable annotation command receipt. |
+
+**Arguments and flags.** Bracketed entries are optional.
+
+| leaf | arguments and flags |
+|------|---------------------|
+| `planar annotate dismiss` | `<annotation-id> [--json]` |
+| `planar annotate archive` | `<annotation-id> [--json]` |
+| `planar annotate bulk-dismiss` | `[--operation-id <text>] [--anchor-path <text>] [--plan <n>] [--task <n>] [--vendor <text>] [--tag <text>] [--scope <text>] [--json]` |
+| `planar annotate bulk-archive` | `[--operation-id <text>] [--anchor-path <text>] [--plan <n>] [--task <n>] [--vendor <text>] [--tag <text>] [--scope <text>] [--json]` |
+| `planar annotate command` | `[--request <text>] [--json]` |
+| `planar annotate receipt` | `[--source-uuid <text>] [--operation-id <text>] [--json]` |
 
 **The two bulk verbs do not have the same reach**, and the asymmetry is
 easy to miss: `bulk-dismiss` acts only on ACTIVE rows, while
@@ -6653,6 +6834,8 @@ planar-agent dispatch preview --work-item <id> --project <id> --validation-polic
 planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now <rfc3339> --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --vendor <s> --role <s> --tier <t> --work-type <t> --complexity <c> --validation-policy <v> --routing-policy <v> [--claim <token>] [--claim-status <s>] [--reviewer <disposition>] [--decision confirmed|overridden] [--json]
 
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
+planar-agent version
+planar-agent schema
 ```
 
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
@@ -6803,8 +6986,8 @@ Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no beh
 | Code | Meaning |
 |------|---------|
 | `0`  | Success. |
-| `1`  | Operational failure (atomic op rolled back, invalid state, missing claim token). |
-| `2`  | User-input failure (unknown flag, missing required, invalid value). |
+| `1`  | Operational failure (atomic op rolled back, invalid state, missing claim token), and every **parse failure** — unknown flag, missing required flag or argument, a non-integer where an integer is declared. |
+| `2`  | Invalid input raised by a handler (e.g. an `--entity` value that is not a valid entity ref). |
 | `7`  | Schema version mismatch — DB older than this binary's embedded minimum, or newer than its embedded max. Remediation: run `planar init`. |
 | `64` | Not implemented yet (reserved for future verbs). |
 
@@ -7084,9 +7267,9 @@ latest_action: { kind: string, summary: string, started_at: ISO8601 } | null
 | Code | Meaning |
 |------|---------|
 | 0 | Success (and the `--follow` graceful-SIGINT exit). |
-| 1 | Generic failure (DB I/O error, malformed argument). |
-| 2 | User-input failure (unknown flag, missing required filter on `log`). |
-| 7 | Schema version mismatch (DB older than binary's embedded minimum, OR newer than its embedded max). Same code `planar` and `planar-agent` use. |
+| 1 | Generic failure (DB I/O error), and every parse failure — unknown flag, a flag value outside its accepted set. |
+| 2 | Invalid input raised by a handler (missing required filter on `log`, an `--entity` value that is not `kind:id`). |
+| 7 | Schema version mismatch (DB older than binary's embedded minimum, OR newer than its embedded max). `planar-agent` and `planar-ext` fold both directions into `7` the same way; `planar` returns `7` only for a newer schema and `1` for an older one. |
 
 ### `--follow` and SIGINT
 
@@ -7113,6 +7296,11 @@ planar-watch schema
 planar-ext schema
 planar-execute schema
 ```
+
+`planar`, `planar-agent`, `planar-watch` and `planar-ext` each also expose a
+`version` verb (`planar version`, `planar-agent version`, `planar-watch version`,
+`planar-ext version`) that prints the binary's version, commit, and compiler;
+`planar-execute` has none.
 
 <!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ source cli_usage_lint was ported from, for history -->
 The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig tree's `tools/cli_usage_lint.zig` at task 6402). All five binaries are passed to that pass. The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone.
@@ -7143,23 +7331,23 @@ asserts the observed exit-code set is exactly `{0, 1, 2}`.
 daemon, because for an inspection verb a daemon that is not running is the
 answer rather than a reason to start one.
 
-- `submit <bundle> [--input <json>] [--profile <name>]` — start a bundle run,
+- `planar-execute submit <bundle> [--input <json>] [--profile <name>]` — start a bundle run,
   follow it to a terminal state, and print its result JSON on stdout. Exit `0`
   when the run completes, `1` when it ends badly or is durably refused, and
   **`75`** when the daemon refused in a way that stays replayable (a draining
   host, a transient refusal) — "come back later" is not "the work failed", and
   a caller that cannot tell them apart records a failure that never happened.
-- `status [<run-id>] [--profile <name>] [--json]` — one run's durable
+- `planar-execute status [<run-id>] [--profile <name>] [--json]` — one run's durable
   projection, or the profile itself (state directory, socket, whether a daemon
   is serving) when no run is named. A daemon that is down is a normal answer
   here, exit `0`.
-- `follow <run-id> [--from <cursor>] [--profile <name>]` — stream the run's
+- `planar-execute follow <run-id> [--from <cursor>] [--profile <name>]` — stream the run's
   committed events, one JSON object per line, resuming after the last event
   this client accepted. `--from` overrides that remembered cursor; `--from 0`
   replays from the beginning.
-- `cancel <run-id> [--profile <name>] [--json]` — stop a run this profile
+- `planar-execute cancel <run-id> [--profile <name>] [--json]` — stop a run this profile
   admitted. It needs no console session (Centurion ADR-0057).
-- `host status|drain|stop [--profile <name>] [--json]` — report who is serving
+- `planar-execute host status|drain|stop [--profile <name>]` (`--json` on `host status` only) — report who is serving
   the profile; refuse new submissions while letting running work finish; or ask
   the daemon to stop, which it does by draining under Centurion's bounded
   shutdown. `drain` is a Planar-side admission gate: Centurion exposes no "stop

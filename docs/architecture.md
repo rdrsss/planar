@@ -25,7 +25,7 @@ flowchart TD
         B5["<b>planar-ext</b><br/>operational-plane RW<br/>external_links/systems/sync_events only"]
     end
 
-    DB[("SQLite database<br/>~/.planar/planar.db<br/>33 migrations · embedded at build time")]
+    DB[("SQLite database<br/>~/.planar/planar.db<br/>39 migrations · embedded at build time")]
 
     Surface -->|invoke| Binaries
     B1 -->|read / write| DB
@@ -40,7 +40,7 @@ flowchart TD
 Two layers are touched by users and agents:
 
 1. **The Planar binaries** — five C++26 executables. Four share the SQLite engine/runtime graph: `planar` is the operator surface, `planar-agent` owns coordination writes, `planar-watch` is a driver-enforced read-only viewer, and `planar-ext` (decisions 995–1001) owns the operational-plane adapters (Jira, GitHub Issues) with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, enforced by a `sqlite3_set_authorizer` allowlist. `planar-execute` links the vendored Lua runtime and reaches state only through an exact allowlist of sibling Planar commands — it holds no SQLite handle at all. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Five-binary architecture](#five-binary-architecture) below. The Zig implementation these binaries were ported from was retained under `zig/` as the port's parity oracle and DELETED at the M10 cutover (decisions 963/982) once its state-differential evidence came back clean; C++26 is now the only implementation.
-2. **The skill and agent layer** — vendor-specific command surfaces (Claude slash commands, Codex skills, Copilot skills) generated from a single source tree under `skills/src/` at install time. Skills invoke binary verbs; binary verbs operate on SQLite.
+2. **The skill and agent layer** — vendor-specific command surfaces (Claude slash commands, Codex skills, Copilot skills, Gemini skills) generated from a single source tree under `skills/src/` at install time. Skills invoke binary verbs; binary verbs operate on SQLite.
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
 
@@ -71,9 +71,9 @@ Authoring rules (file naming, the `schema_migrations` insert/delete contract, th
 | 0007 workbench | `workbench_sync_state` |
 | 0008 doc artifact kinds | extends `artifacts.kind` CHECK with `research`, `getting_started`, `changelog_entry`, `glossary_term` |
 | 0009 drop active scope | drops `active_scope` (replaced by cwd-derived resolution) |
-| 0010 task reopens | adds reopen accounting columns to `tasks` |
-| 0011 slug refs FTS | slug-reference index + FTS5 virtual table for search |
-| 0012 annotations | `annotations` |
+| 0010 task reopens | `task_reopens` — one audit row per reopen of a terminal (`done`/`cancelled`) task, with `from_status`, `to_status`, `source`, and optional `reason` |
+| 0011 slug refs FTS | slug-reference index + per-entity FTS5 virtual tables for search (`plans_fts`, `tasks_fts`, `questions_fts`, `test_scenarios_fts`, `decisions_fts`, `artifacts_fts`) |
+| 0012 annotations | `annotations`, `annotation_tags`, and the `search_annotations` FTS5 virtual table |
 | 0013 test_spec artifact kind | extends `artifacts.kind` CHECK with `test_spec` |
 | 0014 audit log | `audit_log` |
 | 0015 agent activity | `agent_work_claims`, `agent_actions` (claims carry `repo_root` / `branch` / `head_sha_at_claim` / `dirty_at_claim` + optional worktree id/path; actions carry `head_sha` / `dirty`) |
@@ -95,8 +95,8 @@ Authoring rules (file naming, the `schema_migrations` insert/delete contract, th
 | 0032 routing sample cost metrics | adds nullable `latency_ms`, `cost_micros`, and `total_tokens` to `routing_terminal_samples`, plus a partial index over measured rows. All three are nullable ON PURPOSE: a sample from a host that cannot report them genuinely has no value, and a zero would rank an unmeasured candidate as instant and free — the exact ordering error the quality floor exists to prevent. Ranking compares them only when both candidates carry them. `total_tokens` is kept separate from `cost_micros` so a price change cannot silently re-scale historical samples |
 | 0031 dispatch confirmation tokens | `routing_dispatch_previews` — freezes every value a dispatch preview showed the operator (packet/profile/policy/capability digests, cohort, candidate, host, claim target, exclusions, evidence state) behind a single-use, expiry-bound `preview_token`. Confirm revalidates each bound value before writing a snapshot; a trigger makes a consumed token immutable so the preview→dispatch audit link cannot be rewritten |
 | 0033 rename blocks to depends_on | renames the `entity_links` relationship `blocks` to `depends-on` |
-| 0034 annotation anchors and receipts | `annotations`: entity anchors, revisions, source identity, and operation receipts |
-| 0035 annotation bulk receipts | durable affected-row count on bulk annotation receipts |
+| 0034 annotation anchors and receipts | rebuilds `annotations` and `annotation_tags` (entity anchors, revisions) and adds `annotation_source_identity` and `annotation_operation_receipts` |
+| 0035 annotation bulk receipts | adds `annotation_operation_receipts.affected_count`, the durable affected-row count on bulk annotation receipts |
 | 0036 cli_invocations busy category | widens `cli_invocations.error_category` with `busy` (a competing Planar writer is retryable) |
 | 0037 drop dormant slug columns | drops `artifacts.slug`, `questions.slug`, `test_scenarios.slug`, `decisions.slug` and their partial unique indexes. Migration 0011 added `slug` to five tables; only `tasks.slug` was ever read or written, and the other four never held a value (task 6808, measured 2026-09-17). `plans.slug`, `tasks.slug` and `annotations.slug` are live. No new `--slug` flag is to be added for the four domains |
 | 0038 execution supervision | plan 1033 (decision 1007): adds `agent_work_claims.supervisor` (`caller`/`engine`, default `caller`) and `agent_work_claims.attempt_id` (the supervising Centurion attempt, partial index where not null), adds `workflow_runs.engine` (`embedded`/`centurion`, default `embedded`), makes `workflow_runs.plan_id` nullable (a run need not be bound to a plan), and widens `agent_actions.action_kind` with `claim_associate`, `claim_terminal`, `supervisor_override`, `run_submitted`, `run_reconciled`. Pre-existing rows read `caller` / null / `embedded`. The NOT NULL and CHECK relaxations are made by editing the stored `CREATE TABLE` text under `writable_schema` rather than by table rebuild, because both tables are foreign-key parents and a rebuild inside the foreign-keys-on migration transaction cascades into `context_records` and nulls claims' `run_id` (measured; see the migration's header). Its down refuses by name while a plan-less run or a new-kind action exists. |
@@ -124,7 +124,7 @@ The `handoffs.worktree_path` / `repo_root` / `branch` columns (migration 00017) 
 
 The `task_touch_paths` table (migration 00019) is the path-level touch surface for the parallelizability rules behind `planar plan recommend-strategy` (decision 370, plan 492 M5). Each row declares that a task is expected to modify a specific repo-relative file path: `(task_id → tasks.id, repo_id → projects.id, path)` with a `unique(task_id, repo_id, path)` guard and cascade-delete on both FKs. It is ADDITIVE to — and coexists with — the coarse `entity_links(from_kind='task', to_kind='repo', relationship='touches')` repo-level edge; the two are written together by `planar task touches add <task> <repo> --path <p>` (a path-touch implies the repo-touch). The strategy engine (`src/engine/planning/strategy.cpp`) reads path-level rows where a repo has them and falls back to the coarse repo slug only for repos with no path declaration, so two tasks editing different files in the same repo are parallel-eligible while an under-declared (empty) touch set is treated as "touches everything" → never eligible. Rules 3/4 (migration touched, singleton authoritative file touched) match on the raw repo-relative path. `planar task touches list <task> --json` surfaces both granularities (`repos` + `paths`).
 
-The `cli_invocations` table (migration 00020) is the opt-in local log of operator CLI usage. It is written by the capture hook in `src/cmd/planar/cli_log.cpp` when `[introspection].cli_log = true` in `~/.planar/config.toml`. Privacy is enforced at the write site: `args_shape` carries flag names and positional arity only — argument and flag values are never written to this table. The hook runs synchronously on the `planar` exit path and is fail-open: any write failure is swallowed and leaves the command's stdout, stderr, and exit code unchanged. Retention pruning piggybacks on each capture write: SQLite date arithmetic (`date('now', '-N days')`) compares `recorded_at` to the configured `retention_days` (default 90) and deletes expired rows in the same write; no last-prune timestamp is stored anywhere. The table is indexed on `recorded_at`, `verb_path`, and `exit_code` for the aggregate queries that will power `planar report` (M2). The `error_category` column is gated by a dual CHECK: the set of valid enum values (`usage`, `scope`, `not_found`, `conflict`, `validation`, `io`, `db`, `internal`) and the consistency invariant `(exit_code = 0) = (error_category is null)`.
+The `cli_invocations` table (migration 00020) is the opt-in local log of operator CLI usage. It is written by the capture hook in `src/cmd/planar/cli_log.cpp` when `[introspection].cli_log = true` in `~/.planar/config.toml`. Privacy is enforced at the write site: `args_shape` carries flag names and positional arity only — argument and flag values are never written to this table. The hook runs synchronously on the `planar` exit path and is fail-open: any write failure is swallowed and leaves the command's stdout, stderr, and exit code unchanged. Retention pruning piggybacks on each capture write: SQLite date arithmetic (`date('now', '-N days')`) compares `recorded_at` to the configured `retention_days` (default 90) and deletes expired rows in the same write; no last-prune timestamp is stored anywhere. The table is indexed on `recorded_at`, `verb_path`, and `exit_code` for the aggregate queries that will power `planar report` (M2). The `error_category` column is gated by a dual CHECK: the set of valid enum values (`usage`, `scope`, `not_found`, `conflict`, `validation`, `io`, `db`, `busy`, `internal`; `busy` was added by migration 00036) and the consistency invariant `(exit_code = 0) = (error_category is null)`.
 
 The `session_commits` table (migration 00021) is the durable commit-attribution surface for sessions. Each row links a commit SHA to a `sessions.id` and, when the commit came from an agent claim window, optionally to `agent_work_claims.id`. Commit metadata (`subject`, `author`, `committed_at`, `branch`, `repo_root`) is denormalized into the row so audit queries still work after a worktree is deleted or history is rewritten. A `unique(session_id, sha)` constraint makes re-recording idempotent within a session, while still allowing the same commit to appear in multiple sessions. The operator-session side of the feature extends `sessions` with nullable `repo_root` and `head_sha_at_start` columns: `planar capture session` records the first-open repo and starting HEAD, `planar capture end` walks `head_sha_at_start..HEAD` in that repo before marking the session ended, and `planar capture commits` is the explicit recovery path for ended sessions, multi-repo work, or any missed automatic window. On the agent path, `planar-agent complete|fail|release|block` record commits from `head_sha_at_claim..HEAD` after the atomic terminal transaction succeeds, so claim outcome and commit attribution remain independent facts.
 
@@ -132,7 +132,7 @@ Migration 00022 lands the **workflow context plane** (plan 585): two tables that
 
 Migration 00025 lands the **measurement-rig substrate** (plan 635, experiment anchor 634): three tables that record one benchmark run of the vertical-slice decomposition experiment. The subsystem is reached only through the `planar run *` verb group in the engine — it holds no coupling to any execution mechanism, so the same recording surface measures a Lua-harness run, a bare-loop run, and a host-native run, and it survives the Lua-layer excision by construction (`docs/research/run-record-schema.md §1`). `runs` is the experimental unit: one row per `(plan, arm, repetition)`, comparison paired per plan (two runs are comparable iff their `config_hash` matches except for `arm`). `run_uid` is the stable harness-minted external id (`unique`) that keys the archived transcript tree, decoupled from the autoincrement `id` so artifacts survive a DB rebuild; `config_hash` is the GROUP BY key and `config_json` the opaque audit blob it is taken over (same opaque-text philosophy as `agent_actions.metadata`). `arm`, `status`, and `corpus_repo` are deliberately plain `TEXT` with their enum sets enforced at the CLI parse layer rather than a schema CHECK, so pilot/probe runs introduce no migration (run-record-schema.md §2). `run_events` is an append-only, `seq`-ordered journal (`unique(run_id, seq)`) standalone from `agent_activity` (decision D3) so operational or excision-driven changes cannot corrupt a recorded measurement; token samples, reviewer decisions, conflict events, and budget marks land here. `run_touches` is the declared-vs-actual harvest for RQ1: each `(task, path)` touch is tagged `kind in ('declared','actual')` — a schema CHECK, since the two-value set is closed and central to the precision/recall self-join. `declared` rows are the predicted closure snapshotted into the run at start (not a live FK to `task_touch_paths`, so improving the extractor cannot rewrite a recorded prediction); `actual` rows are ground truth from `git diff --name-only` at fan-in. `run_touches.task_id` is a **plain integer, not an FK-cascade** (decision D2): a run is immutable historical evidence, so deleting a task later must not erase the record of what it once touched — the `run_id` cascade is the only intended deletion path. No `run_metrics` table exists by design (run-record-schema.md §3): primary metrics are computed by checked-in SQL over these raw tables, never materialized, to keep every reported number reproducible and the pre-registration honest.
 
-Migration 00026 lands the **derived-closure snapshot** (plan 636 M2; `docs/research/closure-measurement-build-spec.md §3`): the `closures` table records, per task, the symbol-level closure the task must hold resident — *computed* by static analysis from its declared seed paths rather than asserted via `task_touch_paths`. This is the experiment's contribution (the derived closure the declared-touch baseline must be beaten by). One row is one `(task, symbol unit)` in the closure. Both `path` (the repo-relative file the symbol is defined in) and `symbol` (the qualified name) are stored: the qualified-name scheme is **stem-only** (`<file-stem>.<decl>`), so without `path` two same-stem files in different directories would collide once their modify-sets coexist in one table (the M2.2 reviewer caveat). `role` partitions the closure with a schema CHECK (`modify` = the seed's own edited symbols, `reference` = the interfaces it depends on, `transitive` = deeper hops); `transitive` rows are stored — so the extractor's decisions stay auditable and promotion experiments need no re-extraction — but are **excluded from the effective closure by default** (`modify ∪ interfaces(reference)`). `token_weight` is the unit's raw Zig-token count (a bounded C++ port of Zig's `std.zig.Tokenizer` algorithm, `tokens()` in `src/engine/closure/compute.cpp`; deterministic); `extractor_version` records which extractor produced the row so a re-extraction is comparable rather than silently overwritten, and `unique(task_id, repo_id, path, symbol, role, extractor_version)` lets a recompute at the same version replace cleanly. `task_id` and `repo_id` both cascade-delete. The pipeline lives in `src/engine/closure/` (`symbols` → `walk` → `weight` → `store`); `planar closure compute <task>` runs it and persists the rows (the only write verb in the group; standard write-scope guard), `planar closure show <task> [--json]` reads them back.
+Migration 00026 lands the **derived-closure snapshot** (plan 636 M2; `docs/research/closure-measurement-build-spec.md §3`): the `closures` table records, per task, the symbol-level closure the task must hold resident — *computed* by static analysis from its declared seed paths rather than asserted via `task_touch_paths`. This is the experiment's contribution (the derived closure the declared-touch baseline must be beaten by). One row is one `(task, symbol unit)` in the closure. Both `path` (the repo-relative file the symbol is defined in) and `symbol` (the qualified name) are stored: the qualified-name scheme is **stem-only** (`<file-stem>.<decl>`), so without `path` two same-stem files in different directories would collide once their modify-sets coexist in one table (the M2.2 reviewer caveat). `role` partitions the closure with a schema CHECK (`modify` = the seed's own edited symbols, `reference` = the interfaces it depends on, `transitive` = deeper hops); `transitive` rows are stored — so the extractor's decisions stay auditable and promotion experiments need no re-extraction — but are **excluded from the effective closure by default** (`modify ∪ interfaces(reference)`). `token_weight` is the unit's raw Zig-token count (a bounded C++ port of Zig's `std.zig.Tokenizer` algorithm, `tokens()` in `src/engine/closure/compute.cpp`; deterministic); `extractor_version` records which extractor produced the row so a re-extraction is comparable rather than silently overwritten, and `unique(task_id, repo_id, path, symbol, role, extractor_version)` lets a recompute at the same version replace cleanly. `task_id` and `repo_id` both cascade-delete. The pipeline lives in `src/engine/closure/` (`compute` → `store`); `planar closure compute <task>` runs it and persists the rows (the only write verb in the group; standard write-scope guard), `planar closure show <task> [--json]` reads them back.
 
 The `agent_actions.metadata` JSON column (migration 00016) is the durable home for caller-attached per-action context. It is a nullable `TEXT` column; the engine and CLI store it opaquely, only parsing happens at the consuming surface. The first consumer is the orchestrator strategy-persistence model (see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy) and `agents/methodology.md` § Strategy gate): when the orchestrator confirms a strategy for a cycle it writes `{"strategy":"<name>","axes":{...},"dispatch_shape":"<shape>","rationale":"<text>"}` to the dispatch action row via `planar-agent pull --metadata '...'` (for plan-pull dispatch) or `planar-agent action start --metadata '...' --claim <token>` (for hand-picked task dispatch). The next cycle's strategy gate reads the most recent dispatch entry's metadata via `planar-watch actions --plan <id> --json` and applies the recommendation algorithm's rule-6 stickiness. Both write verbs validate `--metadata` as well-formed JSON at the CLI parse layer; the read-side surfaces (`planar-watch actions | log | feed`) include the field in their `ActionRow` JSON shape as a nullable string.
 
@@ -239,7 +239,7 @@ See [docs/concepts.md § Interactive cockpit](concepts.md#interactive-cockpit) f
 
 Revived in plan 633, `planar-execute` is a deterministic, spawn-free Lua workflow engine. A caller invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`), runs the named phase, and prints `flow.result(table)` as JSON. The CLI boundary is an exact `(binary, command path)` allowlist, and each Planar binary is resolved beside the running `planar-execute` rather than through `PATH`. `git.*` is confined with `-C <worktree>` plus validated refs. `fs.*` walks from an opened sandbox-root handle, opens every parent and final entry with no-follow semantics, and rejects absolute paths, dot segments, alternate separators, and symlink components. The sandbox exposes no model-spawning primitive and nils `os`/`io`/`load`/`loadfile`/`loadstring`/`require`/`dofile`/`math.random`. The engine holds no SQLite handle and does not participate in the claim ritual; the caller owns transitions between deterministic phases and any LLM work.
 
-Its source tree lives under `src/cmd/planar-execute/` (separate `addExecutable` entry in `build.zig`); it links the Lua 5.5 C library (vendored) but does not link `src/db/` or `vendor/sqlite/`. See [`docs/concepts.md` § Deterministic workflow engine](concepts.md#deterministic-workflow-engine) for the concept overview and host-surface reference.
+Its source tree lives under `src/cmd/planar-execute/` (its own `planar_binary()` target in `src/cmd/planar-execute/CMakeLists.txt`); it links the Lua 5.5 C library (vendored) and the Centurion client, but does not link `src/lib/db/` or `vendor/sqlite/`. See [`docs/concepts.md` § Deterministic workflow engine](concepts.md#deterministic-workflow-engine) for the concept overview and host-surface reference.
 
 > **Being reversed deliberately — decision 1007, plan 1033.** Centurion becomes Planar's workflow engine and harness, and `planar-execute` becomes its configuration, bootstrap and client entry point: it stops executing workflows locally and never opens Centurion's database. The spawn-free property is not dropped — supervision, leases, cancellation fencing and budgets move to Centurion as designed responsibilities, with exactly one supervisor per Planar claim. Planar itself still does not shell out to provider CLIs. Until plan 1033's cutover milestone lands, this section describes the shipped binary: the embedded runner is preserved and the guards and boundary tests that pin it are unchanged.
 
@@ -278,12 +278,12 @@ fall back to a plain timed sleep with a one-shot stderr warning.
 WAL rotation (`PRAGMA wal_checkpoint(TRUNCATE)`, crash recovery) is
 detected via `NOTE_DELETE`/`NOTE_RENAME` (kqueue) and
 `IN_DELETE_SELF`/`IN_IGNORED` (inotify); the wake source re-opens
-the watch transparently on the next `waitNext` call. Operators
+the watch transparently on the next `wait_next` call. Operators
 never have to restart `planar-watch` after a checkpoint.
 
 The wake transport is NOT part of the public contract — future
 tiers (Tier 3 writer-side hook + sidecar; alternative IPC mechanisms)
-can swap behind the same `Wake` interface without breaking
+can swap behind the same `wake_source` interface without breaking
 consumers.
 
 ### SQLite driver
@@ -357,7 +357,7 @@ Subsystem modules at the engine root include `workbench/` (bidirectional filesys
 
 ### CLI wrapper (`src/lib/cliapp/`, over vendored CLI11)
 
-CLI11 (vendored, `vendor/cli11/`) owns tokenization and value coercion only — decision 948, a mid-port plan change from the originally-intended `etcli` C++ library (which was never adopted; `import cli11;` in `args.cppm` is ground truth, though decision 948's own status is still recorded as `proposed`, an open reconciliation question). Planar's own `src/lib/cliapp/` wraps it with the help renderer, the deterministic `schema` JSON catalog emitter, exit-code mapping, and completion generation — the parts that carry the oracle-pinned parity surface (help text, parse-error wording, exit codes) and that CLI11 itself does not provide in that shape. Each binary's entry point builds a command tree over this wrapper and dispatches to its handlers.
+CLI11 (vendored, `vendor/cli11/`) owns tokenization and value coercion only — decision 948, a mid-port plan change from the originally-intended `etcli` C++ library (which was never adopted; `import cli11;` in `args.cppm` is ground truth). Planar's own `src/lib/cliapp/` wraps it with the help renderer, the deterministic `schema` JSON catalog emitter, exit-code mapping, and completion generation — the parts that carry the oracle-pinned parity surface (help text, parse-error wording, exit codes) and that CLI11 itself does not provide in that shape. Each binary's entry point builds a command tree over this wrapper and dispatches to its handlers.
 
 ### Database layer (`src/lib/db/`)
 
@@ -497,7 +497,7 @@ guidance.
 
 When a feature is complete, `planar workbench archive <plan>` removes the on-disk tree. The database retains every entity row. `planar workbench restore <plan>` recreates the tree byte-identically from the DB.
 
-`planar workbench publish <plan> --system <slug>` renders the workbench files for a plan and pushes the rendered content to a registered external operational system via the adapter layer. For full plan-subtree counterpart creation in an external system, `planar-ext ext propagate <plan> --system <slug>` is the intended verb of record (not yet implemented — see `docs/cli-reference.md`); `planar-ext ext propagate-one <system> --from <kind:id>` is the live single-entity equivalent today.
+`planar workbench publish <plan> --system <slug>` renders the workbench files for a plan and pushes the rendered content to a registered external operational system via the adapter layer. For full plan-subtree counterpart creation in an external system, `planar-ext ext propagate <plan> --system <slug>` is the verb of record (every strategy except the cut `github-projects-v2` — see `docs/cli-reference.md`); `planar-ext ext propagate-one <system> --from <kind:id>` is the single-entity equivalent.
 
 ---
 
@@ -542,7 +542,7 @@ Configuration lives in `~/.planar/config.toml`. The `planar config` domain manag
 ### Resolution order (highest wins)
 
 1. Environment variables (`PLANAR_*` prefix).
-2. Per-association overrides in `config.toml` under `[assoc.<slug>]`.
+2. Per-association overrides in `config.toml` under `[associations."<slug>"]`.
 3. Top-level keys in `config.toml`.
 4. Embedded defaults compiled into the binary.
 
@@ -556,7 +556,7 @@ Configuration lives in `~/.planar/config.toml`. The `planar config` domain manag
 | `planar config init` | Write a starter `config.toml` with documented defaults. |
 | `planar config path` | Print the path to the active config file. |
 
-Notable config keys: `github_lead_repo` (used by the GitHub zero-repo propagation strategy), `jira_base_url`, `jira_project_key`, freshness windows for sync, template set selection.
+Notable config keys: the per-association `github_lead_repo` (used by the GitHub zero-repo propagation strategy), `external.jira.base_url`, the `external.jira.status.*` and `external.github-issues.status.*` status maps, and template set selection (`templates.default_set`).
 
 ---
 
@@ -572,7 +572,7 @@ The resolution chain for any template file:
 
 Templates are JSON files; string values may contain a Go-template-compatible placeholder mini-language (`{{.Plan.Title}}`, `{{range .Touches}}…{{end}}`, `{{if .ExternalKey}}…{{end}}`) which `src/engine/templates/render.cpp` substitutes against a rendering context exposing `.Task`, `.Plan`, `.Feature`, `.Scenario`, `.Touches`, `.Assoc`, `.ExternalKey`, and `.Children`. Non-string JSON values pass through unchanged. The placeholder syntax was preserved from the original Go implementation so existing template authors did not need to relearn the surface — but the renderer itself is first-party C++ with no Go dependency.
 
-`planar templates list` shows all available templates and their source level. `planar templates validate` checks them for syntax errors. `planar templates render <entity>` renders a template against a live entity for inspection.
+`planar templates list` shows all available templates and their source level. `planar templates validate` checks them for syntax errors. `planar templates render <set> <system> <kind> --entity <ref>` renders a template against a live entity for inspection.
 
 ---
 
@@ -588,18 +588,18 @@ Both adapters together are one binary, deliberately — decision 997: splitting 
 
 | Adapter | Location | Transport |
 |---------|----------|-----------|
-| Jira | `src/engine/extsync/jira.cppm`/`.cpp` (~464 lines) | libcurl (30s client timeout) |
-| GitHub Issues | `src/engine/extsync/github.cppm`/`.cpp` (~531 lines) | libcurl (30s client timeout) |
+| Jira | `src/engine/extsync/jira.cppm`/`.cpp` (~460 lines) | libcurl (30s client timeout) |
+| GitHub Issues | `src/engine/extsync/github.cppm`/`.cpp` (~725 lines) | libcurl (30s client timeout) |
 
 Per-vendor logic stays behind the interface boundary; the sync engine and `planar-ext`'s handlers never branch on adapter kind except to select a propagation strategy (below).
 
 ### Strategy selection
 
-For GitHub Issues, the propagation strategy is selected once at first propagation per feature (`src/cmd/planar-ext/handlers/ext/ext_strategy.cpp`'s `select_strategy`) and cached on `external_links.config_json` of the anchor plan. Today the whole-tree `ext propagate` verb executes a single GitHub strategy — `github-parent-issue` — used when the feature's descendant tasks touch exactly one repo (task 6421 scoped the C++ port to this arm only; see the caveat on [`planar-ext ext propagate`](cli-reference.md#planar-ext-ext-propagate-plan)). The multi-repo `github-projects-v2` strategy (a GitHub Projects board mirroring the feature tree) is permanently cut — decision 1001 — and will not be built; `select_strategy` still reports that bucket by name so `ext propagate` can refuse it with a message naming the real reason (a multi-repo feature) rather than a generic "not implemented."
+For GitHub Issues, the propagation strategy is selected once at first propagation per feature (`src/cmd/planar-ext/handlers/ext/ext_strategy.cpp`'s `select_strategy`) and cached on `external_links.config_json` of the anchor plan. The whole-tree `ext propagate` verb executes `github-parent-issue` when the feature's descendant tasks touch exactly one repo, and runs `github-zero-repo` and `github-tracking-issue` through the generic per-entity tree walk (see [`planar-ext ext propagate`](cli-reference.md#planar-ext-ext-propagate-plan)). The multi-repo `github-projects-v2` strategy (a GitHub Projects board mirroring the feature tree) is permanently cut — decision 1001 — and will not be built; `select_strategy` still reports that bucket by name so `ext propagate` can refuse it with a message naming the real reason (a multi-repo feature) rather than a generic "not implemented."
 
 The strategy is sticky: subsequent re-propagations use the cached value. `--restrategize` forces fresh detection.
 
-For Jira, `strategy_for_system`/`strategy_for_repo_count` always resolve the epic hierarchy (anchor plan → Epic, child plans → Stories, tasks → Sub-tasks) — but the whole-tree `ext propagate` verb does not yet execute it (see the caveat above); `ext propagate-one`, the entity-level primitive, does not branch on strategy for Jira and works today.
+For Jira, `strategy_for_system`/`strategy_for_repo_count` always resolve the epic hierarchy (anchor plan → Epic, child plans → Stories, tasks → Sub-tasks) ; the whole-tree `ext propagate` verb executes it as `jira-epic` through the same per-entity tree walk. `ext propagate-one`, the entity-level primitive, does not branch on strategy for Jira.
 
 ### The operational-plane binary (`planar-ext`)
 
@@ -666,7 +666,7 @@ See [docs/concepts.md § Transcription vs Synthesis](concepts.md#transcription-v
 
 ## The Agent Methodology
 
-Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command surfaces (Claude, Codex, Copilot) inherit the role spec and add vendor-specific invocation details.
+Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command surfaces (Claude, Codex, Copilot, Gemini) inherit the role spec and add vendor-specific invocation details.
 
 ### Roles
 
@@ -709,7 +709,7 @@ The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion n
 Unified skill sources live only in `skills/src/`; vendor-neutral agent role
 sources live in `agents/`. `install.sh` builds and shells the in-tree C++ `src/tools/scriptorium/` renderer
 to create the vendor projections at install time, so `commands/claude/`, `skills/codex/`,
-and `skills/copilot/` are generated output trees rather than authored source
+`skills/copilot/`, and `skills/gemini/` are generated output trees rather than authored source
 directories.
 
 This is a source-of-truth boundary, not merely a directory convention. Review
@@ -726,6 +726,7 @@ do not invent work and no guidance or manifest file is changed automatically.
 | Claude | `$PLANAR_HOME/commands/claude/` | `~/.claude/commands/` |
 | Codex | `$PLANAR_HOME/codex-skills/` | `$CODEX_HOME/skills/` (normally `~/.codex/skills/`) |
 | Copilot | `$PLANAR_HOME/copilot-skills/` | `~/.copilot/skills/` |
+| Gemini | `$PLANAR_HOME/gemini-skills/` | `~/.gemini/antigravity-cli/skills/` |
 
 Agent role specs (vendor-neutral) live under `agents/`. The planning-lifecycle files are `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, `agents/feedback-triager.md`, and `agents/introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here (raised to armarium, the stack's meta repo, at plan 918/929 and returned at the armarium reintegration). The documenter and doc-author roles (and their `pl-documenter` / `pl-doc-maintain` skills) live in tabularium, which owns the doc-system tool they drive (moved at the doc-cluster transfer, planar plan 933); Phase 6 still dispatches them (see the §Roles table above, which lists the conceptual lifecycle roles regardless of which repo ships each surface).
 
@@ -841,15 +842,17 @@ The CMake project root IS the repo root: `CMakeLists.txt` and `CMakePresets.json
 
 ```bash
 # Makefile wrappers
-make build              # cmake --preset release; copies planar/planar-agent/
-                        # planar-watch/planar-execute into ./bin/ (task 6431:
-                        # does not yet also copy planar-ext)
+make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copies
+                        # the five Planar binaries, scriptorium, and the pinned
+                        # centuriond into ./bin/
 make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
                         # cmake --install into PREFIX/bin (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build; ctest
 make test-cpp-report    # the same ctest suite plus its SKIP TALLY (expected: 0)
 make test-cpp-solver    # ctest against a -DPLANAR_WITH_MTKAHYPAR=ON build
-make test-all           # unit (ctest) + coverage + cli-usage-check
+make test-all           # unit (ctest) + ctest-registry-check + coverage +
+                        # cli-usage-check + surface-check + exit-code-contract +
+                        # eval-contracts + cpp-lint-gate
 
 # Direct CMake/ctest from the repo root
 cmake --preset debug                          # or --preset release
@@ -864,8 +867,8 @@ Planar runs a two-tier test model:
 - **Unit tests** — Catch2 `TEST_CASE`s in `*.t.cpp` files colocated with the code under test throughout `src/lib/` and `src/cmd/`. They exercise the module directly (plus the `db` module when they need one) and run under `ctest` (`make test`).
 - **CLI black-box tests** — the cross-process lane, in-tree since the M10 cutover. `src/cmd/parity_harness.hpp`'s `make_arena()` builds a scratch environment (its own `PLANAR_DB`, `HOME`, `PLANAR_WORKBENCH_ROOT`) and `run_pinned()` execs a built binary inside it over fixed argv, capturing stdout, stderr, and the exit code. The cases live in `src/cmd/*/parity.t.cpp`, `src/cmd/planar/cross_process.t.cpp`, and the `*_leaves.t.cpp` / `*_leaf.t.cpp` files, and run under the same `ctest` invocation as the unit tests. They grade the SHIPPED binary — argv in, stdout/stderr/exit-code/on-disk-state out — so an internal refactor cannot silently change the user-visible contract. This lane replaced the Zig `integration_tests/` suite in three steps taken BEFORE the deletion, not with it (decision 1035): task 6546 gave eight uncovered CLI leaves black-box coverage, task 6547 ported the irreplaceable cross-process cases onto `run_pinned()`, and task 6548 deleted 108 Zig blocks the C++ port had already superseded.
 - **Cross-implementation differential lanes (ALL RETIRED)** — two existed. `make parity-check` diffed the Zig binary against the archived Go reference and was retired once the port outgrew it (the archive's last migration is `00030`, so the two binaries could no longer open the same database, and the audit's premise was that both operate on identical state). The C++/Zig state-differential lane — `statediff.t.cpp`, `scripts/oracle-retirement-gate.sh`, `src/cmd/parity_strict.hpp`, and the `PLANAR_REQUIRE_ORACLE` / `PLANAR_PARITY_STRICT` machinery — was retired with its subject at the M10 cutover. **What remains under the `parity` name is not a differential.** The `src/cmd/*/parity.t.cpp` cases pin bytes TRANSCRIBED from those references against the current binary alone; they are still the strongest grading this repo has on help text, exit codes, error wording, and the `schema` catalog, but they cannot be re-derived. `scripts/parity-data/parity-triage.md` is retained as their rationale.
-- **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator (`cli_usage_lint`) followed by the semantic authored-surface validator (`surface_lint`), both C++ tools under `src/tools/` (decision 1000, ported from the Zig tree at task 6402 — no `zig build-exe` remains in this gate). `cli_usage_lint` dumps all **four** planning-state binaries' `schema` catalogs, `planar`/`planar-agent`/`planar-watch`/`planar-ext` (decision 998 adds `planar-ext`'s). `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
-- **C++ format/tidy/doc-comment lint** — `make cpp-lint` (pinned `clang-format`/`clang-tidy`/Doxygen; see [docs/toolchain-parity.md](toolchain-parity.md)). Still not composed into `make test-all`: it requires the build already configured and built (clang-tidy needs the module BMIs materialized) and clang-tidy is advisory only, with 105 residual findings (task 6439). `make fmt-check` runs the cheap format half with no build precondition.
+- **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator (`cli_usage_lint`) followed by the semantic authored-surface validator (`surface_lint`), both C++ tools under `src/tools/` (decision 1000, ported from the Zig tree at task 6402 — no `zig build-exe` remains in this gate). `cli_usage_lint` dumps all **five** binaries' `schema` catalogs, `planar`/`planar-agent`/`planar-watch`/`planar-ext`/`planar-execute` (decision 998 adds `planar-ext`'s). `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
+- **C++ format/tidy/doc-comment lint** — `make cpp-lint` (pinned `clang-format`/`clang-tidy`/Doxygen; see [docs/toolchain-parity.md](toolchain-parity.md)). The full target is not composed into `make test-all`: it requires the build already configured and built (clang-tidy needs the module BMIs materialized) and clang-tidy is advisory only, with 105 residual findings (task 6439). Its gating half — `clang-format --Werror` plus the Doxygen pass — runs in `make test-all` as `make cpp-lint-gate`. `make fmt-check` runs the cheap format half with no build precondition.
 
 The binaries produced by `make build` land under `./bin/`. `make install`
 installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
@@ -873,7 +876,7 @@ installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
 stages skills, agents, workflows, and vendor wiring under `~/.planar`, by
 shelling the `scriptorium` binary after the CMake build.
 
-The black-box lane follows two stylistic conventions documented in [`CLAUDE.md` § Black-box CLI test methodology](../CLAUDE.md#black-box-cli-test-methodology): focused per-leaf tests live beside their command family under `src/cmd/planar/handlers/<family>/` and pin that verb's contract; multi-command lifecycle scenarios and their inventory live in [`src/cmd/integration_tests/`](../src/cmd/integration_tests/README.md). `planar`-only scenarios share an injected in-memory SQLite connection across handler invocations; cross-binary tests use a scratch database file and real processes, as in `src/cmd/planar/cross_process.t.cpp`. The `src/cmd/*/parity.t.cpp` cases pin process-level output. `planar_binary()` discovers nested `*.t.cpp` files so colocated tests remain in the binary's test target; `src/cmd/integration_tests/CMakeLists.txt` adds its scenarios to that target explicitly.
+The black-box lane follows two stylistic conventions documented in [Testing § Black-box harness](testing.md#black-box-harness): focused per-leaf tests live beside their command family under `src/cmd/planar/handlers/<family>/` and pin that verb's contract; multi-command lifecycle scenarios and their inventory live in [`src/cmd/integration_tests/`](../src/cmd/integration_tests/README.md). `planar`-only scenarios share an injected in-memory SQLite connection across handler invocations; cross-binary tests use a scratch database file and real processes, as in `src/cmd/planar/cross_process.t.cpp`. The `src/cmd/*/parity.t.cpp` cases pin process-level output. `planar_binary()` discovers nested `*.t.cpp` files so colocated tests remain in the binary's test target; `src/cmd/integration_tests/CMakeLists.txt` adds its scenarios to that target explicitly.
 
 ---
 
@@ -882,7 +885,7 @@ The black-box lane follows two stylistic conventions documented in [`CLAUDE.md` 
 - **One connection per process.** Passed through explicit context/handler parameters; no global mutable state.
 - **Migrations are append-only.** Never edit a released migration. Add a new file with the next sequence number via `sqlx migrate add -r <name> --source migrations`.
 - **The adapter boundary is interface-typed.** The sync engine and propagation modules dispatch through the `external_adapter` interface; they never branch on adapter kind.
-- **No external (system) C dependencies — only vendored, CPM-cached C/C++ source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, `planar-watch`, `planar-ext`) and `vendor/lua/` (linked into `planar-execute`) are the C the build touches; `vendor/curl/`, `vendor/glaze/`, `vendor/spdlog/`, `vendor/cli11/`, `vendor/catch2/` round out the C++ dependency set.
+- **No external (system) C dependencies — only vendored, CPM-cached C/C++ source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, `planar-watch`, `planar-ext`) and `vendor/lua/` (linked into `planar-execute`) are the C the build touches; `vendor/curl/`, `vendor/glaze/`, `vendor/spdlog/`, `vendor/cli11/`, `vendor/catch2/`, `vendor/xxhash/`, `vendor/tree_sitter/`, `vendor/tree_sitter_zig/`, and the optional solver's `vendor/mtkahypar/`, `vendor/kahypar_shared_resources/`, `vendor/whfc/` round out the dependency set.
   - **First-party sources live in `external/`, not `vendor/`** (decision 1143, plan 1033 M1). Centurion is pinned by URL + SHA-256 like everything in `vendor/`, but cached in the gitignored `external/` and never committed; `cmake/centurion.cmake` adds it as an `EXCLUDE_FROM_ALL` subdirectory so that `centurion::client` exists as a target. Packages both trees declare resolve to Planar's single pin (CPM is first-wins by name): spdlog 1.17.0, SQLite 3.53.3, Lua 5.5.0 (exposed to Centurion as `Lua::Lua`), and curl 8.7.1. Curl is the one version Centurion asks to be newer; Planar keeps 8.7.1 because curl 8.15 removed its macOS SecureTransport backend. Centurion's remaining stack (gRPC, protobuf, abseil, BoringSSL, c-ares, re2, zlib, botan, libuv, simdjson, uuidv7, etc) has no Planar counterpart and comes from the `vendor/` tree inside Centurion's own archive.
   - **`centuriond` is installed, never linked** (tech-spec D8/D13, task 6709). `install.sh` runs `scripts/install-centuriond.sh`, which builds the stock daemon from the same pinned tree as a separate CMake project (CLI and terminal UI off, tests off, Planar's pinned LLVM), or takes a Centurion release binary verified against its published SHA-256 when the pinned tag has one. It installs `$PLANAR_HOME/bin/centuriond`, `$PLANAR_HOME/share/centurion/migrations/` and `$PLANAR_HOME/share/centurion/build-identity.json` (tag, commit, archive hash, `source-build` or `release-binary`, binary hash, migrations directory). That identity is the `centuriond build identity` element of the client's compatibility tuple (D7). A source build compiles the installed migrations directory in as the daemon's default, and `make centuriond-dist-test` proves the installed daemon migrates a fresh state directory after its source tree has been deleted.
   - **The toolchain proof is a test** (tech-spec D9, task 6497, decision 1144). `make centurion-client-proof` builds `src/tools/centurion_client_proof/`, which links `centurion::client` into a C++26 target under the pinned LLVM, starts the installed `centuriond` under a scratch HOME, and completes readiness (`probe_bundle_capability`) over its Unix socket. Centurion's C++23 module graph builds at Planar's C++26 with no accommodation. Opt-in until `planar-execute` links the client in M2, since building it compiles Centurion's gRPC stack.
@@ -934,7 +937,7 @@ TOML model and therefore require a visible matching agent type.
 
 ### Routing evidence plane
 
-Migrations 00030–00031 carry the evidence pipeline. Each stage refuses rather
+Migrations 00030–00032 carry the evidence pipeline. Each stage refuses rather
 than guesses, and the refusal is always named:
 
 1. **Packet** — the authoritative current state of a task, with a canonical

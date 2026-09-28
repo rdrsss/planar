@@ -8,7 +8,7 @@ slug: ingestor
 
 Given a feature anchor plan id, reads `tech-spec.md` and `roadmap.md` from the workbench and decomposes them into child plans, tasks, decisions, test scenarios, and entity links in the database.
 
-Vendor-neutral. Vendor-specific surfaces are under `commands/claude/pl-spec-ingest.md`, `skills/codex/pl-spec-ingest.md`, and `skills/copilot/pl-spec-ingest.md`.
+Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini from `skills/src/pl-spec-ingest.md`.
 
 ## Tier
 
@@ -65,7 +65,7 @@ To also commit proposed removals (cancel tasks whose source bullet was removed f
 planar spec ingest <plan> --apply --apply-removals
 ```
 
-`--apply-removals` without `--apply` is a user error (exit 1).
+`--apply-removals` without `--apply` is a user error (exit 2).
 
 For orchestrator / machine consumption:
 
@@ -90,11 +90,11 @@ Re-running the ingestor on an unchanged workbench tree is a no-op: preview repor
 - FS writes through `planar workbench push` only (after decomposition, the new entities can be pushed to the workbench tree for user inspection).
 - Does **not** contact external systems. No adapter calls.
 - Does **not** modify the scope, associations, or project registrations.
-- Preview is strictly read-only; a session entry with `prefix='read'` is appended for audit only. The `'read'` prefix value was added in migration 0005 specifically for read-only verb invocations such as the ingestor preview.
+- Preview is strictly read-only; a session entry with `prefix='read'` is appended for audit only. The `'read'` prefix value was added in migration `00005_sessions` specifically for read-only verb invocations such as the ingestor preview.
 
 ## Behavior
 
-1. Resolve the anchor plan via `planar spec ingest <plan>` (or the library `ingestor.Compute` function).
+1. Resolve the anchor plan via `planar spec ingest <plan>`.
 2. Read `tech-spec.md` and `roadmap.md` from the feature's workbench directory.
 3. Strip YAML front matter from each file.
 4. Parse `tech-spec.md` for decisions (H3 headings in `## Decisions` section only).

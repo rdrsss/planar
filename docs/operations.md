@@ -1,7 +1,7 @@
 # Planar Operations
 
 How a unit of work moves from a goal to merged code through Planar's agents
-and the four-binary boundary. This is the operational spine: the moving parts
+and the five-binary boundary. This is the operational spine: the moving parts
 that the reference docs describe statically, drawn as the flows they actually
 run.
 
