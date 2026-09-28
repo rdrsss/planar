@@ -1080,7 +1080,7 @@ Planar's template plane is the **external-system propagation** templates: JSON d
 
 Which model an agent role spawns is **config-driven and unified** (plan 540, extended plan 899). The Planar config (`~/.planar/config.toml`, embedded defaults in `src/engine/config/defaults.toml`) carries:
 
-- `[models.<vendor>]` — per-vendor **tier maps**: the canonical `small` / `medium` / `large` tiers → a **scalar-or-list** candidate value (e.g. `[models.claude] medium = "claude-sonnet-5"`). A scalar is one candidate; an ordered list (`large = ["gpt-5.6-sol", "gpt-5.5"]`) names several — `list[0]` is always the **tier default**, the model any caller gets when it resolves a bare `(vendor, tier)`/`(vendor, role)` pair with no work type in hand. Every existing scalar config resolves unchanged.
+- `[models.<vendor>]` — per-vendor **tier maps**: the canonical `small` / `medium` / `large` tiers → a **scalar-or-list** candidate value (e.g. `[models.claude] medium = "claude-sonnet-5-5"`). A scalar is one candidate; an ordered list (`large = ["gpt-5.6-sol", "gpt-5.5"]`) names several — `list[0]` is always the **tier default**, the model any caller gets when it resolves a bare `(vendor, tier)`/`(vendor, role)` pair with no work type in hand. Every existing scalar config resolves unchanged.
 - `[routing.<vendor>.<tier>]` — a **work-type → candidate** map (plan 899 D4/D9/D10/D11): each key is one of `schema | engine | architectural | cli | feature | mechanical` and its value is a candidate **model id string** naming one member of that tier's candidate list (never a list index — index values silently re-route when the list is reordered). Ships as an embedded default (only `mechanical` is routed by default, to the tier default) and is fully operator-overridable. `planar config validate` rejects a routing entry naming a model id absent from the matching tier's candidate list.
 - `[roles]` — **role → tier** (e.g. `coder = "medium"`, `reviewer = "large"` — the "sonnet coder, opus reviewer" default).
 - `[role_vendors]` — optional **role → vendor** override; unset roles use `[defaults].vendor`.
@@ -1185,7 +1185,7 @@ keys are `shadow:` and `vendors:`; vendors ignore them.
 description: "Rebuild and re-import protobuf bindings in the current repo"
 argument-hint: "<optional usage hint>"
 tier: medium                    # small | medium | large; maps to model
-model: claude-opus-4-7          # optional explicit model override
+model: claude-opus-5-5          # optional explicit model override
 shadow: false                   # true → link without the local- prefix (shadows canonical)
 vendors:                        # subset of {claude, codex, copilot};
   - claude                      #   defaults to all three if omitted

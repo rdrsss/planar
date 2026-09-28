@@ -96,7 +96,7 @@
     "prompt": "Use the installed orchestrator workflow for active plan {{PLAN_ID}}. Stop at its required Phase 3 strategy, isolation, tier, and routed-model preview gate and wait for operator confirmation. Do not claim or dispatch a task.",
     "expected_models": {
       "codex": "gpt-5.6-terra",
-      "claude": "claude-sonnet-5"
+      "claude": "claude-sonnet-5-5"
     },
     "timeout_seconds": 300
   },

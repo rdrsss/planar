@@ -198,7 +198,7 @@ The canonical result types and validation live in [`src/engine/synthesize/synthe
     {"path": "docs/old_product_spec.md", "kind": "research", "title": "Original Product Spec (pre-synthesis)"}
   ],
   "code_evidence_summary": "Repository has Sources/Core (12 files, 8 tests, SignalStrength=1.0; foundation complete), Sources/Reader (4 files, 1 test, SignalStrength=0.5; reader work in flight), no Sources/Polyglot yet.",
-  "provenance": "claude-opus-4-7 temperature=0",
+  "provenance": "claude-opus-5-5 temperature=0",
   "generated_at": "<RFC3339 UTC>"
 }
 ```

@@ -128,12 +128,12 @@ Plan 42 "billing-export-csv" — 5 todo tasks
 Phase 3 dispatch preview:
 
   wave 1
-    #43  add-export-jobs-table     blocks: 45        tier: large   model: claude-opus-4-8  (schema)
-    #44  add-billing-exports-table —                 tier: large   model: claude-opus-4-8  (schema)
+    #43  add-export-jobs-table     blocks: 45        tier: large   model: claude-opus-5-5    (schema)
+    #44  add-billing-exports-table —                 tier: large   model: claude-opus-5-5    (schema)
   wave 2 — unblocks when #43 is done
-    #45  write-migration-0008      blocked_by: 43    tier: large   model: claude-opus-4-8  (schema)
-    #46  implement-csv-serialiser  —                 tier: medium  model: claude-sonnet-5  (feature)
-    #47  wire-up-export-endpoint   —                 tier: medium  model: claude-sonnet-5  (feature)
+    #45  write-migration-0008      blocked_by: 43    tier: large   model: claude-opus-5-5    (schema)
+    #46  implement-csv-serialiser  —                 tier: medium  model: claude-sonnet-5-5  (feature)
+    #47  wire-up-export-endpoint   —                 tier: medium  model: claude-sonnet-5-5  (feature)
 
 Recommended strategy: classic  pwd
 Rationale: 5-task plan, sequential migration dependencies across 2 waves
@@ -1874,7 +1874,7 @@ Notes on the invocation:
 Before letting Claude Code drive it, confirm the binary round-trips a payload locally:
 
 ```sh
-echo '{"event_type":"session_start","session_id":"smoke","model":"claude-opus-4-7"}' \
+echo '{"event_type":"session_start","session_id":"smoke","model":"claude-opus-5-5"}' \
   | planar-agent ingest --vendor claude --event @- --json
 ```
 

@@ -152,12 +152,12 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    Phase 3 dispatch preview for plan <p> (<n> open tasks):
 
      wave 1
-       #12  add-parity-gate       blocks: 14         tier: large   model: claude-opus-5            (schema)
-       #13  polish-cli-help       —                  tier: medium  model: claude-sonnet-5          (feature)
+       #12  add-parity-gate       blocks: 14         tier: large   model: claude-opus-5-5          (schema)
+       #13  polish-cli-help       —                  tier: medium  model: claude-sonnet-5-5        (feature)
      wave 2 — unblocks when #12 is done
-       #14  wire-handler          blocked_by: 12     tier: medium  model: claude-sonnet-5          (feature)
+       #14  wire-handler          blocked_by: 12     tier: medium  model: claude-sonnet-5-5        (feature)
      serialized — never waved
-       #15  backfill-migration    migration guard    tier: large   model: claude-opus-5            (engine)
+       #15  backfill-migration    migration guard    tier: large   model: claude-opus-5-5          (engine)
        #16  rework-claim-lease    —                  tier: ?       model: —                        (engine? feature? — touches a core subsystem but follows an existing pattern)
 
      Tiers resolve per agents/models.md §Tier Table; medium is the coder

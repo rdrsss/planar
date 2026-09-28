@@ -160,7 +160,7 @@ The skill writes a JSON Result matching this schema. The canonical result types 
     {"slug": "v2-multi-lang", "title": "v2 — Multi-language support", "goal": "Add Spanish + French."},
     {"slug": "research-mcp", "title": "Research — MCP integrations", "goal": "Evaluate MCP server surface."}
   ],
-  "provenance": "claude-opus-4-7 temperature=0",
+  "provenance": "claude-opus-5-5 temperature=0",
   "generated_at": "<RFC3339 UTC>"
 }
 ```
