@@ -35,10 +35,9 @@ shipped through `/pl-sync` and its gated `sync-reconciler` specialist.
 ## Source And Render Model
 
 Planar authors each shared skill once at `skills/src/<name>.md`. `install.sh`
-shells the external scriptorium binary to render vendor outputs (discovered by
-`scripts/discover-scriptorium.sh`: PATH lookup + a `$SCRIPTORIUM_BIN`
-override, gated on a version floor) — `scriptorium render --config
-scriptorium.yaml` (plan 918):
+builds and runs the in-tree `src/tools/scriptorium/` C++ renderer to stage
+vendor outputs — `scriptorium render --config scriptorium.yaml`.
+Inja expressions in authored bodies use `{{ VendorTitle }}` syntax.
 
 - Claude projections are staged under `$PLANAR_HOME/commands/claude/`, installed
   to `~/.claude/commands/`, and invoked as `/<name>`.
@@ -58,7 +57,7 @@ the selected vendors.
 Vendor profile data lives in scriptorium's built-in per-vendor profiles
 (claude/codex/copilot/gemini), with the repo-root `scriptorium.yaml`
 supplying overrides/additions; model-tier resolution stays Planar-side in the
-shared resolver (`src/lib/engine/models/`) and is regenerated into
+shared resolver (`src/engine/models/`) and is regenerated into
 the Tier Table lives in `agents/models.md`, hand-maintained; Planar no longer generates it.
 Static render paths show each tier's default model (`list[0]` when the config
 uses candidate lists); runtime orchestration may further select a
@@ -70,10 +69,10 @@ Planar neither generates nor validates it.
 
 Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
 frontmatter metadata retired along with the in-tree renderer (plan 918 D5) —
-scriptorium-rendered projections carry neither header. Scriptorium tracks
-render/install freshness out-of-band in its own machine-local merkle+xxhash
-manifest: `scriptorium check` reports drift (read-only, non-zero exit on any
-finding) and `scriptorium status` gives the registry-vs-installed view.
+scriptorium-rendered projections carry neither header. The in-tree
+`scriptorium check --output-root <planar-home>` compares staged bytes with
+current sources; `scriptorium status` reports per-source rendering freshness.
+`install-manifest.json` remains the installed projection authority.
 `planar skills status`/`planar skills repair`, which used to read the in-band
 digests, retired alongside them; `planar skills` itself is now a placeholder
 verb with no subcommands.
@@ -284,7 +283,7 @@ Source: `skills/src/pl-import.md` · `agents/importer.md`
 
 Synthesize fresh planning artifacts for a repo from its existing docs + git log + source code via an LLM pass. Sibling of `/pl-import` (which transcribes). Reach for `/pl-synthesize` when docs are messy, docs-only, or mid-evolution; reach for `/pl-import` when docs are clean and current.
 
-The LLM runs in the vendor skill, not in the Planar binary. `src/lib/engine/synthesize/synthesize.cpp` builds the deterministic `codeprobe.EvidenceMap` floor, writes a fingerprinted `synthesis.Request` to a cache file for the skill to consume, then on the follow-up invocation validates the skill's `Result` and merges it with the deterministic baseline.
+The LLM runs in the vendor skill, not in the Planar binary. `src/engine/synthesize/synthesize.cpp` builds the deterministic `codeprobe.EvidenceMap` floor, writes a fingerprinted `synthesis.Request` to a cache file for the skill to consume, then on the follow-up invocation validates the skill's `Result` and merges it with the deterministic baseline.
 
 **Example:**
 ```

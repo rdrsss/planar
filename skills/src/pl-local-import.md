@@ -13,7 +13,7 @@ vendor:
             /pl-local-import ~/my-agents/ --kind agent
 ---
 
-# Pl-Local-Import Compatibility Wrapper ({{.VendorTitle}})
+# Pl-Local-Import Compatibility Wrapper ({{ VendorTitle }})
 
 Preserve the existing `pl-local-import <path> [options]` invocation while
 routing it to the canonical `pl-local import` operation. Use `pl-local` for

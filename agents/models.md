@@ -43,9 +43,9 @@ Table below without consulting Planar configuration.
 
 | Tier | Claude | Codex | Copilot | Gemini |
 | ------ | ------ | ----- | ------- | ------ |
-| small | claude-haiku-4-5 | gpt-5.6-luna | gpt-5-mini | gemini-3.1-flash |
-| medium | claude-sonnet-5 | gpt-5.6-terra | gpt-5 | gemini-3.1-pro |
-| large | claude-opus-5 | gpt-5.6-sol | claude-opus-4 | gemini-3.1-pro |
+| small | claude-haiku-4-5 | gpt-6-luna | gpt-5-mini | gemini-3.1-flash |
+| medium | claude-sonnet-5 | gpt-6-sol | gpt-5 | gemini-3.1-pro |
+| large | claude-opus-5 | gpt-6-astra | claude-opus-4 | gemini-3.1-pro |
 
 At-a-glance defaults: the model a caller gets resolving a bare `(vendor, tier)`
 with no work type in hand. The full preset data is §Candidate Presets below.
@@ -127,16 +127,20 @@ Identifiers).
 
 ### codex
 
-`Use when` migrated verbatim from the labels Planar carried, which are being
-removed with the rest of that surface (planar task 5613).
+The GPT-6 defaults are the operator's 2026-09-26 routing decision. Their
+workload descriptions follow the official OpenAI model catalog; the older
+models remain explicit legacy fallbacks rather than silently disappearing.
 
 | Candidate | Tier | Use when |
 | --------- | ---- | -------- |
-| `gpt-5.6-sol` | large | **Tier default.** Frontier coding and research. |
+| `gpt-6-astra` | large | **Tier default.** Highest-capability model for complex reasoning and coding. |
+| `gpt-5.6-sol` | large | Legacy large-tier fallback. |
 | `gpt-5.5` | large | Prior frontier; routable fallback. |
-| `gpt-5.6-terra` | medium | **Tier default.** Strong everyday coding. |
+| `gpt-6-sol` | medium | **Tier default.** Balances intelligence and cost for demanding coding and agentic work. |
+| `gpt-5.6-terra` | medium | Legacy medium-tier fallback. |
 | `gpt-5.4` | medium | Prior everyday coding. |
-| `gpt-5.6-luna` | small | **Tier default.** Fast, cost-efficient. |
+| `gpt-6-luna` | small | **Tier default.** Efficient model for focused, high-volume work. |
+| `gpt-5.6-luna` | small | Legacy small-tier fallback. |
 | `gpt-5.4-mini` | small | Prior fast tier. |
 | `gpt-5.3-codex-spark` | small | Ultra-fast. |
 
@@ -175,9 +179,9 @@ the tier default — and are listed for completeness; the one substantive route 
 | claude | medium | mechanical | `claude-sonnet-5` |
 | claude | large | mechanical | `claude-opus-5` |
 | claude | large | architectural | `claude-fable-5` |
-| codex | small | mechanical | `gpt-5.6-luna` |
-| codex | medium | mechanical | `gpt-5.6-terra` |
-| codex | large | mechanical | `gpt-5.6-sol` |
+| codex | small | mechanical | `gpt-6-luna` |
+| codex | medium | mechanical | `gpt-6-sol` |
+| codex | large | mechanical | `gpt-6-astra` |
 | copilot | small | mechanical | `gpt-5-mini` |
 | copilot | medium | mechanical | `gpt-5` |
 | copilot | large | mechanical | `claude-opus-4` |
@@ -239,7 +243,7 @@ Every installable agent under `agents/`, its authored `tier:` (the source of
 truth — see §Conventions), its `capability:` (which drives the Codex
 `sandbox_mode` and the Claude tool grant), and its primary work. Rows marked †
 are the six **runtime-resolvable roles** whose tier is *also* carried in
-`[roles]` of `src/lib/engine/config/defaults.toml` for the plan-540 model resolver;
+`[roles]` of `src/engine/config/defaults.toml` for the plan-540 model resolver;
 those two copies MUST agree. Every other agent resolves its model straight from
 this frontmatter via the render path.
 
@@ -371,8 +375,9 @@ mechanical`). The shipped priors:
   fable. Widen (e.g. add a `schema` → fable row) or retract by editing that
   table here — it is the override path now that Planar's `[routing.*]` map is
   gone.
-- **`gpt-5.6-sol` vs `gpt-5.5`** (Codex `large`): sol is the current frontier
-  default; gpt-5.5 stays listed as a routable fallback candidate.
+- **GPT-6 Codex tiers:** the operator selected `gpt-6-astra` for `large`,
+  `gpt-6-sol` for `medium`, and `gpt-6-luna` for `small` on 2026-09-26.
+  `gpt-5.6-terra` and the other GPT-5.x rows remain legacy fallbacks.
 - These are **priors, not conclusions**. `planar models evals` aggregates
   completed dispatches into a per-(work-type, candidate) scorecard and emits
   preview-only routing recommendations — let accumulated dispatch history,
@@ -386,5 +391,10 @@ mechanical`). The shipped priors:
   - **Bare aliases are not spawn-stable.** The host documents `opus`, `sonnet`, `haiku`, and `fable` as aliases for *the latest* model, so what they resolve to changes as models ship. Accept them as operator input if useful, but record and pin full identifiers.
   - This verification is host- and version-specific. Re-probe when the installed CLI changes rather than treating the list as permanent.
   - `claude-opus-5` is spawn-safe but is **not** currently a tier default — the Tier Table predates its verification. Promoting it is a routing-policy decision, not a bookkeeping fix.
+- The GPT-6 identifiers and workload descriptions above are documented in the
+  [official OpenAI model catalog](https://developers.openai.com/api/docs/models).
+  The Codex host lists all three as available, but Planar's opaque registry
+  requires separate registration, role/tier binding, and spawn observation
+  before these presets are eligible for Planar dispatch.
 - Codex and Copilot identifiers must be verified against each vendor's current model list periodically. Treat the values above as defaults, not guarantees.
 - Vendors that expose Anthropic models (e.g. Copilot routing to `claude-opus-4`) should resolve to the closest available identifier on that vendor, not the Anthropic-native one.

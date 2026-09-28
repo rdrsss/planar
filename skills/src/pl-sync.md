@@ -16,7 +16,7 @@ vendor:
             /pl-sync resolve <event-id>
 ---
 
-# Planar Sync ({{.VendorTitle}})
+# Planar Sync ({{ VendorTitle }})
 
 Pulls and pushes local entities through registered external systems, reports
 sync state, and coordinates evidence-based conflict reconciliation. Sync is

@@ -11,9 +11,9 @@ vendor:
             /pl-reviewer <task-id> <iteration>
 ---
 
-# Reviewer ({{.VendorTitle}})
+# Reviewer ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `reviewer` agent. See [`agents/reviewer.md`](../../agents/reviewer.md) for the role spec and [`agents/methodology.md`](../../agents/methodology.md) for decision semantics and the iteration-5 rule.
+{{ VendorTitle }} skill surface for the vendor-neutral `reviewer` agent. See [`agents/reviewer.md`](../../agents/reviewer.md) for the role spec and [`agents/methodology.md`](../../agents/methodology.md) for decision semantics and the iteration-5 rule.
 
 ## What the reviewer does
 
@@ -134,7 +134,7 @@ On an incomplete review, provide the exact inspect or resume command, such as
 ## Vendor Differences
 
 - Model resolves to the concrete large-tier model per [`agents/models.md`](../../agents/models.md).
-- Treats the coder's session id and vendor as the prior session; the review runs in a fresh `{{.VendorTitle}}` session.
+- Treats the coder's session id and vendor as the prior session; the review runs in a fresh `{{ VendorTitle }}` session.
 - Returns one of `approve`, `request-changes`, `open-question`, `abort` to the orchestrator. On iteration 5, `request-changes` is rejected; the reviewer chooses `approve` (with caveats) or `abort`.
 
 ## Vendor Notes

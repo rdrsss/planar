@@ -16,7 +16,7 @@ vendor:
             /pl-report-issue
 ---
 
-# Planar Report Issue ({{.VendorTitle}})
+# Planar Report Issue ({{ VendorTitle }})
 
 Assemble a GitHub issue from a selected feedback-plan finding plus the
 `planar report --json` diagnostic bundle, render the complete body for

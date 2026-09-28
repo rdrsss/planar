@@ -11,7 +11,7 @@
 # measured warnings (96.5%) — a config/codebase disagreement inherited
 # wholesale from tabula rather than a real defect. Public members now fall
 # back to VariableCase (lower_case), matching what the codebase already
-# does almost everywhere (see e.g. src/lib/engine/identity/scope.cppm).
+# does almost everywhere (see e.g. src/engine/identity/scope.cppm).
 ---
 Checks: >
   -*,

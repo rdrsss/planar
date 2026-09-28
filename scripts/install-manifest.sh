@@ -46,17 +46,16 @@ install_manifest_digest() {
 # absent, rather than treating that as fatal. Scriptorium's rendered output
 # does not embed the legacy x-planar-source-digest/x-planar-projection-digest
 # headers (plan 918 tech-spec.md § Architecture "installedsurface.zig" — that
-# in-band digest scheme retires with skillrender at a later milestone;
-# scriptorium tracks install drift out-of-band in its own merkle+xxhash
-# manifest). Absence is expected now, not an install-time error.
+# in-band digest scheme has retired). The in-tree scriptorium checks staged
+# rendering; this manifest tracks installed paths. Absence is expected now,
+# not an install-time error.
 #
 # Brackets install.sh's ERR trap (`trap - ERR` / restore) rather than an
 # `if`/`||` guard: install.sh runs under `set -eE`, and -E (errtrace)
 # propagates the ERR trap into the command-substitution subshell below, where
 # install_manifest_digest's expected non-zero return (header absent) fires
 # the inherited trap immediately — independent of any if/|| wrapping in THIS
-# shell (verified empirically; see scripts/discover-scriptorium.sh's
-# scriptorium_check_floor for the same pattern and the same rationale).
+# shell (verified empirically by the install-manifest tests).
 install_manifest_digest_or_empty() {
   local key="$1" path="$2" value rc=0
   trap - ERR

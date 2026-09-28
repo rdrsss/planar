@@ -49,7 +49,7 @@ import planar.cmd.planar_agent.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.dispatch;
 import planar.cmd.planar_agent.policy;
-import planar.cmd.planar_agent.tree;
+import planar.cmd.planar_agent.main;
 
 namespace {
 
@@ -97,8 +97,9 @@ auto run_verb(const scratch_dir& scratch, std::vector<std::string> argv) -> invo
 
   std::ostringstream out;
   std::ostringstream err;
-  agent::context     ctx{argv, agent::map_env({}), scratch.path_, scratch.db_path(), out, err};
-  auto const         code = agent::run(ctx, *root, table);
+  agent::context     ctx{
+      argv, agent::map_env({}), scratch.path_, std::make_shared<planar::cmd::agent::database>(scratch.db_path(), err), out, err};
+  auto const code = agent::run(ctx, *root, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
 

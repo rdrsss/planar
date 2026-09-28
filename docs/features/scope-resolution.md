@@ -159,7 +159,7 @@ planar scope suggest
 ## Implementation notes
 
 The resolver is `planar::engine::identity::resolve_for_write` in
-`src/lib/engine/identity/scope.cpp`, called from each binary's `cmd` layer
+`src/engine/identity/scope.cpp`, called from each binary's `cmd` layer
 through `resolve_write_scope`. `derive_write_scope_ranked` performs step 3 and
 shares its ranking with `resolve_read_scope_set`, which backs `scope show`.
 Doc comments on those functions are the authoritative specification.

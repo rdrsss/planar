@@ -96,8 +96,12 @@ auto make_fixture(std::string_view tag) -> fixture {
 /// @return The context.
 auto make_context(const fixture& fx, const std::filesystem::path& db_path, std::ostream& out, std::ostream& err)
     -> planar::cmd::watch::context {
-  return planar::cmd::watch::context{
-      std::vector<std::string>{"planar-watch"}, planar::cmd::watch::map_env(fx.vars), fx.root / "proj", db_path, out, err};
+  return planar::cmd::watch::context{std::vector<std::string>{"planar-watch"},
+                                     planar::cmd::watch::map_env(fx.vars),
+                                     fx.root / "proj",
+                                     std::make_shared<planar::cmd::watch::database>(db_path, err),
+                                     out,
+                                     err};
 }
 
 /// @brief Create a fully-migrated database at `path`, the way `planar init`
@@ -120,7 +124,7 @@ TEST_CASE("planar-watch: a write through the handle is REFUSED BY SQLITE", "[cmd
   std::ostringstream err;
   auto               ctx = make_context(fx, fx.db_path, out, err);
 
-  auto const opened = ctx.ensure_db();
+  auto const opened = ctx.db().ensure_db();
   REQUIRE(opened.has_value());
   auto* conn = *opened;
 
@@ -169,9 +173,9 @@ TEST_CASE("planar-watch: a missing database FILE is not created", "[cmd][watch][
   std::ostringstream err;
   auto               ctx = make_context(fx, missing, out, err);
 
-  auto const opened = ctx.ensure_db();
+  auto const opened = ctx.db().ensure_db();
   CHECK_FALSE(opened.has_value());
-  CHECK_FALSE(ctx.db_opened());
+  CHECK_FALSE(ctx.db().opened());
   CHECK_FALSE(std::filesystem::exists(missing));
 }
 
@@ -188,9 +192,9 @@ TEST_CASE("planar-watch: a missing parent DIRECTORY is not created", "[cmd][watc
   // zig/src/runtime/runtime.zig: "A read-only viewer running before
   // `planar init` should fail loudly with a schema-handshake error, not
   // silently create empty state."
-  auto const opened = ctx.ensure_db();
+  auto const opened = ctx.db().ensure_db();
   CHECK_FALSE(opened.has_value());
-  CHECK_FALSE(ctx.db_opened());
+  CHECK_FALSE(ctx.db().opened());
   CHECK_FALSE(std::filesystem::exists(missing.parent_path()));
 }
 
@@ -206,14 +210,14 @@ TEST_CASE("planar-watch: an unmigrated database is refused with exit 7 and a rem
   std::ostringstream err;
   auto               ctx = make_context(fx, fx.db_path, out, err);
 
-  auto const opened = ctx.ensure_db();
+  auto const opened = ctx.db().ensure_db();
   REQUIRE_FALSE(opened.has_value());
   CHECK(opened.error().kind == planar::cmd::watch::domain_error_kind::schema_version_behind);
   // 7 here, where the OPERATOR binary maps the same kind to 1 (it has no
   // SchemaVersionBehind arm at all) — plan 996 task 6066's finding.
   CHECK(planar::cmd::watch::exit_code(opened.error()) == 7);
   CHECK(err.str().contains("run `planar init` to apply migrations"));
-  CHECK_FALSE(ctx.db_opened());
+  CHECK_FALSE(ctx.db().opened());
 }
 
 TEST_CASE("planar-watch: ensure_db caches the SAME read-only handle", "[cmd][watch][context][readonly]") {
@@ -224,9 +228,9 @@ TEST_CASE("planar-watch: ensure_db caches the SAME read-only handle", "[cmd][wat
   std::ostringstream err;
   auto               ctx = make_context(fx, fx.db_path, out, err);
 
-  auto const first = ctx.ensure_db();
+  auto const first = ctx.db().ensure_db();
   REQUIRE(first.has_value());
-  auto const second = ctx.ensure_db();
+  auto const second = ctx.db().ensure_db();
   REQUIRE(second.has_value());
   // Same handle, so a second caller cannot end up with a writable one —
   // the Zig original's "The cached handle IS the strict read-only one; any
@@ -243,7 +247,7 @@ TEST_CASE("planar-watch: no WAL pragma warning is emitted on a healthy open", "[
   std::ostringstream out;
   std::ostringstream err;
   auto               ctx = make_context(fx, fx.db_path, out, err);
-  REQUIRE(ctx.ensure_db().has_value());
+  REQUIRE(ctx.db().ensure_db().has_value());
 
   // `journal_mode = WAL` is writer-side configuration a read-only handle
   // cannot set. Copying the agent context's PRAGMA pair verbatim would
@@ -280,7 +284,7 @@ TEST_CASE("planar-watch refuses a database migrated past its embedded chain", "[
   std::ostringstream out;
   std::ostringstream err;
   auto               ctx    = make_context(fx, fx.db_path, out, err);
-  auto const         opened = ctx.ensure_db();
+  auto const         opened = ctx.db().ensure_db();
   REQUIRE_FALSE(opened.has_value());
   CHECK(opened.error().kind == planar::cmd::watch::domain_error_kind::schema_version_ahead);
   CHECK(planar::cmd::watch::exit_code(opened.error()) == 7);

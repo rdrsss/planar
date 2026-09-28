@@ -13,7 +13,7 @@ vendor:
             /pl-doctor --json
 ---
 
-# Planar Doctor ({{.VendorTitle}})
+# Planar Doctor ({{ VendorTitle }})
 
 Guided diagnose-then-reconcile flow for a degraded Planar installation. Companion to `pl-health` (which reports; this one acts). Works entirely through `planar` and `planar-agent` CLI verbs — no direct database writes.
 

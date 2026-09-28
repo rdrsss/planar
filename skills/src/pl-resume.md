@@ -15,7 +15,7 @@ vendor:
             /pl-resume
 ---
 
-# Planar Resume ({{.VendorTitle}})
+# Planar Resume ({{ VendorTitle }})
 
 Implements the from-zero resumption contract: a new agent process with no prior conversation history can resume any captured task using a single command.
 

@@ -11,9 +11,9 @@ vendor:
             /pl-coder <task-id>
 ---
 
-# Coder ({{.VendorTitle}})
+# Coder ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `coder` agent. See [`agents/coder.md`](../../agents/coder.md) for the role spec and [`agents/methodology.md`](../../agents/methodology.md) for the iteration loop.
+{{ VendorTitle }} skill surface for the vendor-neutral `coder` agent. See [`agents/coder.md`](../../agents/coder.md) for the role spec and [`agents/methodology.md`](../../agents/methodology.md) for the iteration loop.
 
 ## What the coder MUST do
 
@@ -149,7 +149,7 @@ actually performed it; the orchestrator still owns the terminal claim verb.
 ## Vendor Differences
 
 - Model resolves to the concrete medium-tier model per [`agents/models.md`](../../agents/models.md).
-- On return to the orchestrator, the `{{.VendorTitle}}` session id and vendor are recorded on the snapshot.
+- On return to the orchestrator, the `{{ VendorTitle }}` session id and vendor are recorded on the snapshot.
 
 ## Vendor Notes
 

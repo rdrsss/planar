@@ -17,7 +17,7 @@ vendor:
             /pl-orchestrator <plan-id> --finalize --archive
 ---
 
-# Orchestrator ({{.VendorTitle}})
+# Orchestrator ({{ VendorTitle }})
 
 Software-delivery orchestration for Planar-managed Git repositories. This skill
 is self-contained for execution. Companion agent documents provide rationale,

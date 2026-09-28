@@ -20,7 +20,7 @@ vendor:
             /pl-workbench publish plan:<plan-id> --system github
 ---
 
-# Planar Workbench ({{.VendorTitle}})
+# Planar Workbench ({{ VendorTitle }})
 
 Manages the bidirectional sync between the workbench filesystem (`~/.planar/workbench/`) and the Planar database for active features.
 

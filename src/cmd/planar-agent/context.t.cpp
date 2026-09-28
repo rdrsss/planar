@@ -33,7 +33,7 @@ import planar.db.migrations;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.dispatch;
-import planar.cmd.planar_agent.tree;
+import planar.cmd.planar_agent.main;
 
 namespace {
 
@@ -68,8 +68,12 @@ auto make_fixture(std::string_view tag) -> fixture {
 /// @param err The stderr sink.
 /// @return The context.
 auto make_context(const fixture& fx, std::ostream& out, std::ostream& err) -> planar::cmd::agent::context {
-  return planar::cmd::agent::context{
-      std::vector<std::string>{"planar-agent"}, planar::cmd::agent::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  return planar::cmd::agent::context{std::vector<std::string>{"planar-agent"},
+                                     planar::cmd::agent::map_env(fx.vars),
+                                     fx.root / "proj",
+                                     std::make_shared<planar::cmd::agent::database>(fx.db_path, err),
+                                     out,
+                                     err};
 }
 
 /// @brief Create a fully-migrated database at `path`, the way `planar init`
@@ -101,11 +105,15 @@ TEST_CASE("planar-agent context leaves stamp, filter, capsule, and resolve", "[c
       "seconds'),1,'code');"));
   auto invoke = [&](std::vector<std::string> argv) {
     std::ostringstream          out, err;
-    planar::cmd::agent::context ctx{
-        std::move(argv), planar::cmd::agent::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto root  = planar::cmd::agent::root_app();
-    auto table = planar::cmd::agent::handlers(*root);
-    auto code  = planar::cmd::agent::run(ctx, *root, table);
+    planar::cmd::agent::context ctx{std::move(argv),
+                                    planar::cmd::agent::map_env(fx.vars),
+                                    fx.root / "proj",
+                                    std::make_shared<planar::cmd::agent::database>(fx.db_path, err),
+                                    out,
+                                    err};
+    auto                        root  = planar::cmd::agent::root_app();
+    auto                        table = planar::cmd::agent::handlers(*root);
+    auto                        code  = planar::cmd::agent::run(ctx, *root, table);
     return std::tuple{code, out.str(), err.str()};
   };
   auto [add_code, add_out, add_err] =
@@ -155,11 +163,15 @@ TEST_CASE("planar-agent context keeps record lifecycle boundaries and filters ob
       "seconds'),'plan');"));
   auto invoke = [&](std::vector<std::string> argv) {
     std::ostringstream          out, err;
-    planar::cmd::agent::context ctx{
-        std::move(argv), planar::cmd::agent::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto root  = planar::cmd::agent::root_app();
-    auto table = planar::cmd::agent::handlers(*root);
-    auto code  = planar::cmd::agent::run(ctx, *root, table);
+    planar::cmd::agent::context ctx{std::move(argv),
+                                    planar::cmd::agent::map_env(fx.vars),
+                                    fx.root / "proj",
+                                    std::make_shared<planar::cmd::agent::database>(fx.db_path, err),
+                                    out,
+                                    err};
+    auto                        root  = planar::cmd::agent::root_app();
+    auto                        table = planar::cmd::agent::handlers(*root);
+    auto                        code  = planar::cmd::agent::run(ctx, *root, table);
     return std::tuple{code, out.str(), err.str()};
   };
 
@@ -245,7 +257,7 @@ TEST_CASE("planar-agent refuses a database it would have to migrate", "[cmd][age
   // A nonexistent path opens as a brand-new, EMPTY database — schema
   // version 0 — which is exactly the "fresh DB never touched by `planar
   // init`" case zig/src/runtime/runtime.zig calls out.
-  auto const opened = ctx.ensure_db();
+  auto const opened = ctx.db().ensure_db();
   REQUIRE_FALSE(opened.has_value());
   CHECK(opened.error().kind == planar::cmd::agent::domain_error_kind::schema_version_behind);
 
@@ -258,7 +270,7 @@ TEST_CASE("planar-agent refuses a database it would have to migrate", "[cmd][age
   CHECK(err.str().contains("is older than this binary's minimum of"));
 
   // The handle was released rather than left open in a refused state.
-  CHECK_FALSE(ctx.db_opened());
+  CHECK_FALSE(ctx.db().opened());
 
   // AND THE DECISIVE PART: it did not migrate on the way out. The file it
   // opened is still at version 0.
@@ -276,9 +288,9 @@ TEST_CASE("planar-agent accepts a database already at the embedded version", "[c
   std::ostringstream err;
   auto               ctx = make_context(fx, out, err);
 
-  auto const opened = ctx.ensure_db();
+  auto const opened = ctx.db().ensure_db();
   REQUIRE(opened.has_value());
-  CHECK(ctx.db_opened());
+  CHECK(ctx.db().opened());
   CHECK(err.str().empty());
 
   // Read/write at the driver level — this binary DOES write
@@ -297,9 +309,9 @@ TEST_CASE("planar-agent's ensure_db is idempotent and caches", "[cmd][agent][con
   std::ostringstream err;
   auto               ctx = make_context(fx, out, err);
 
-  auto const first = ctx.ensure_db();
+  auto const first = ctx.db().ensure_db();
   REQUIRE(first.has_value());
-  auto const second = ctx.ensure_db();
+  auto const second = ctx.db().ensure_db();
   REQUIRE(second.has_value());
   CHECK(*first == *second);
 }
@@ -359,7 +371,7 @@ TEST_CASE("planar-agent refuses a database migrated past its embedded chain", "[
   std::ostringstream out;
   std::ostringstream err;
   auto               ctx    = make_context(fx, out, err);
-  auto const         opened = ctx.ensure_db();
+  auto const         opened = ctx.db().ensure_db();
   REQUIRE_FALSE(opened.has_value());
   CHECK(opened.error().kind == planar::cmd::agent::domain_error_kind::schema_version_ahead);
   CHECK(planar::cmd::agent::exit_code(opened.error()) == 7);

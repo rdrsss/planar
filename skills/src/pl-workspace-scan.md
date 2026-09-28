@@ -15,7 +15,7 @@ vendor:
             /pl-workspace-scan repair --workspace org:work
 ---
 
-# Planar Workspace Lifecycle ({{.VendorTitle}})
+# Planar Workspace Lifecycle ({{ VendorTitle }})
 
 Use the existing `pl-workspace-scan` entry point for the complete workspace
 lifecycle: initialize, diagnose, inspect or rebuild routing, regenerate the

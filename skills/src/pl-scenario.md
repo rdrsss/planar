@@ -13,7 +13,7 @@ vendor:
             /pl-scenario list --status failing
 ---
 
-# Planar Scenario ({{.VendorTitle}})
+# Planar Scenario ({{ VendorTitle }})
 
 Manages test scenarios — verification artifacts tied to specs, plans, or tasks.
 

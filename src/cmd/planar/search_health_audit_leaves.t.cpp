@@ -95,7 +95,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 
 #include "json_envelope_test_support.hpp"
 
@@ -143,10 +143,11 @@ auto dispatch_at(const fixture& fx, const std::filesystem::path& cwd, std::vecto
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(vars), cwd, fx.db_path, out, err};
-  auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
-  int const          code  = planar::cmd::run(ctx, *tree, table);
+  context            ctx{
+      std::move(argv), planar::cmd::map_env(vars), cwd, std::make_shared<planar::cmd::database>(fx.db_path, err), out, err};
+  auto const tree  = planar::cmd::root_app();
+  auto const table = planar::cmd::make_handler_table(*tree);
+  int const  code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
 
@@ -524,11 +525,15 @@ TEST_CASE("planar health refuses when HOME is unset, without ever opening a real
   std::vector<std::string> argv{"planar", "health"};
   std::ostringstream       out;
   std::ostringstream       err;
-  planar::cmd::context ctx{argv, planar::cmd::map_env({{"PLANAR_DB", fx.db_path.string()}}), fx.root / "proj", fx.db_path, out,
-                           err};
-  auto const           tree  = planar::cmd::root_app();
-  auto const           table = planar::cmd::handlers(*tree);
-  int const            code  = planar::cmd::run(ctx, *tree, table);
+  planar::cmd::context     ctx{argv,
+                               planar::cmd::map_env({{"PLANAR_DB", fx.db_path.string()}}),
+                               fx.root / "proj",
+                               std::make_shared<planar::cmd::database>(fx.db_path, err),
+                               out,
+                               err};
+  auto const               tree  = planar::cmd::root_app();
+  auto const               table = planar::cmd::make_handler_table(*tree);
+  int const                code  = planar::cmd::run(ctx, *tree, table);
   CHECK(code == 1);
   CHECK(err.str() == "error: health check failed: resolving install homes: HomeNotSet\n");
   CHECK(out.str().empty());
@@ -545,11 +550,15 @@ TEST_CASE("planar health refuses when HOME is set but empty, distinct from HOME 
   std::vector<std::string> argv{"planar", "health"};
   std::ostringstream       out;
   std::ostringstream       err;
-  planar::cmd::context     ctx{
-      argv, planar::cmd::map_env({{"PLANAR_DB", fx.db_path.string()}, {"HOME", ""}}), fx.root / "proj", fx.db_path, out, err};
-  auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers(*tree);
-  int const  code  = planar::cmd::run(ctx, *tree, table);
+  planar::cmd::context     ctx{argv,
+                               planar::cmd::map_env({{"PLANAR_DB", fx.db_path.string()}, {"HOME", ""}}),
+                               fx.root / "proj",
+                               std::make_shared<planar::cmd::database>(fx.db_path, err),
+                               out,
+                               err};
+  auto const               tree  = planar::cmd::root_app();
+  auto const               table = planar::cmd::make_handler_table(*tree);
+  int const                code  = planar::cmd::run(ctx, *tree, table);
   CHECK(code == 1);
   CHECK(err.str() == "error: health check failed: resolving install homes: HomeNotSet\n");
   CHECK(out.str().empty());

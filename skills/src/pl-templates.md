@@ -18,9 +18,9 @@ vendor:
             /pl-templates path default jira epic
 ---
 
-# Templates ({{.VendorTitle}})
+# Templates ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the `planar templates` CLI domain. See
+{{ VendorTitle }} skill surface for the `planar templates` CLI domain. See
 [`docs/cli-reference.md`](../../docs/cli-reference.md) for the full specification of
 every verb and its flags.
 

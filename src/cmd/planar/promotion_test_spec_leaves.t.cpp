@@ -3,8 +3,8 @@
 // `planar promote`, `planar demote` and `planar test-spec status`.
 //
 // The engines' own byte-for-byte cases live in
-// `src/lib/engine/promotion/promotion.t.cpp` and
-// `src/lib/engine/planning/test_spec_status.t.cpp` — both buckets were
+// `src/engine/promotion/promotion.t.cpp` and
+// `src/engine/planning/test_spec_status.t.cpp` — both buckets were
 // ported complete, renderers included, before any handler existed to call
 // them. What this file pins is the half those cannot see: ref DECODING,
 // the pre-read that runs before the engine, and the exit-code mapping.
@@ -52,7 +52,7 @@ import planar.cliapp.args;
 import planar.db;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 
 using planar::cmd::context;
 
@@ -94,9 +94,14 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }

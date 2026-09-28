@@ -71,7 +71,7 @@
 # answer if faked).
 #
 # Task 6042 closed it. `cmake/dependencies.cmake` pins Lua 5.5.0 and
-# `src/lib/engine/execute/` holds the sandbox, the frozen twenty-five-entry
+# `src/engine/execute/` holds the sandbox, the frozen twenty-five-entry
 # host surface and the run loop. Exit code 64 is gone from this binary.
 #
 # The DEPENDS below is what that closure looks like, and it is also the
@@ -87,31 +87,42 @@
 # One host function's BODY is still unported and reports so at the point of
 # call: `ctx.brief` (3,600 lines of brief/schema/state rendering in the Zig
 # original). It is REGISTERED, not omitted — see
-# src/lib/engine/execute/CMakeLists.txt for why an absent registration would
+# src/engine/execute/CMakeLists.txt for why an absent registration would
 # have been the worse choice.
 
 planar_binary(planar_execute
   MAIN
     main.cpp
   INTERFACE
-    cli.cppm
-    catalog.cppm
-    engine.cppm
-    selector.cppm
-    profile.cppm
-    host.cppm
-    compat.cppm
-    runflow.cppm
+    handlers/shared/cli.cppm
+    handlers/schema/catalog.cppm
+    handlers/run/engine.cppm
+    handlers/shared/selector.cppm
+    handlers/profile/profile.cppm
+    handlers/shared/engine_env.cppm
+    handlers/run/command.cppm
+    handlers/profile/command.cppm
+    handlers/schema/command.cppm
+    handlers/host/host.cppm
+    handlers/submit/compat.cppm
+    handlers/submit/runflow.cppm
+    handlers/shared/client.cppm
+    handlers/submit/command.cppm
+    handlers/status/command.cppm
+    handlers/cancel/command.cppm
+    handlers/follow/command.cppm
+    handlers/host/command.cppm
   SOURCES
-    cli.cpp
-    catalog.cpp
-    engine.cpp
-    selector.cpp
-    profile.cpp
-    host.cpp
-    compat.cpp
-    runflow.cpp
-    client_bridge.cpp
+    handlers/shared/cli.cpp
+    handlers/schema/catalog.cpp
+    handlers/run/engine.cpp
+    handlers/shared/selector.cpp
+    handlers/profile/profile.cpp
+    handlers/host/host.cpp
+    handlers/submit/compat.cpp
+    handlers/submit/runflow.cpp
+    handlers/shared/client.cpp
+    handlers/shared/client_bridge.cpp
   DEPENDS
     cliapp
     engine_execute

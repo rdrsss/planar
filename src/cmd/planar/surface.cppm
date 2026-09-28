@@ -21,8 +21,8 @@
 /// then `scope`/`audit`/`config`/`local`/`links`/`run`/`feedback` (6635),
 /// and finally the thirty-three remaining singletons (6636). That last
 /// wave deleted `surface.cpp` and the `apply_surface` call with it, which
-/// is why `tree.cpp`'s call order is now the root's AUTHORITATIVE child
-/// order — see `root_app`'s header for what that changed.
+/// is why `main.cppm`'s call order is now the root's authoritative child
+/// order.
 ///
 /// ## One deliberate asymmetry the fold leaves standing (task 6667)
 ///
@@ -57,8 +57,8 @@
 ///   * The whole `ext` group (`register` and its `jira`/`github` leaves,
 ///     `list`, `test`, `create`, `propagate-one`) and the whole `sync`
 ///     group (`pull`, `push`, `status`, `resolve`) MOVED to `planar-ext`
-///     at task 6419 — see `src/cmd/planar-ext/tree.cpp`'s `add_ext` /
-///     `add_sync`. They are not missing; they are on the other binary.
+///     at task 6419 — see `src/cmd/planar-ext/handlers/ext/command.cppm` and
+///     `handlers/sync/command.cppm`. They are not missing; they are on the other binary.
 ///   * `ext propagate`, the family's one remaining UNPORTED leaf, moved
 ///     with them conceptually but is declared on NEITHER binary yet. It
 ///     stays blocked on the surfaces `unported_paths`'s own comment always
@@ -72,7 +72,7 @@
 ///     this binary — `audit publish-decision` and `workbench publish` are
 ///     its other two callers and neither moved, and D18 forbids a
 ///     `cmd_planar -> cmd_planar_ext` edge — so
-///     `src/cmd/planar-ext/handlers/ext_adapter_factory.cppm` is a
+///     `src/cmd/planar-ext/handlers/shared/ext_adapter_factory.cppm` is a
 ///     deliberate duplicate, not a shared import. Same shape for the
 ///     cross-scope guard, which `feedback triage set` still needs:
 ///     `src/cmd/planar-ext/scope.cppm` duplicates it.
@@ -486,8 +486,8 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // (`sessioncommits.zig`), not to `harvest.zig`, which shells exactly
       // two git subcommands (`diff --name-only`, `ls-files --others`) and
       // writes through the already-ported `touch_idempotent`. See
-      // `src/lib/engine/runs/harvest.cppm` for the port and
-      // `src/lib/engine/runs/CMakeLists.txt` for the closing account.
+      // `src/engine/runs/harvest.cppm` for the port and
+      // `src/engine/runs/CMakeLists.txt` for the closing account.
       // The five `config` leaves -- `show`, `edit`, `validate`, `init`,
       // `path` -- left this inventory at task 6259. Their engine half
       // (`planar.engine.config`) had been complete since commit 82820b7;
@@ -515,8 +515,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // ported by then) moved to `planar-ext`. `ext propagate` moved with
       // them conceptually but is not yet wired on EITHER binary — it
       // leaves THIS inventory not because it landed, but because `ext` no
-      // longer has a home on `planar` at all. See tree.cpp's note where
-      // `add_ext` used to be.
+      // longer has a home on `planar` at all.
       //
       // `ext propagate-one` left this inventory at task 6335, and it is the
       // SIXTH over-stated blocker of this milestone. It was carried under the
@@ -598,7 +597,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // was ported straight to layer 1 as `planar.installed_surface`
       // (src/lib/installed_surface) — it holds no `db` edge, so there was
       // nothing pulling it toward `engine_health` in the first place. See
-      // handlers/health.cppm and src/lib/engine/health/health.cppm.
+      // handlers/health.cppm and src/engine/health/health.cppm.
       // `import` is wired at task 6106: its filesystem-only request/cache
       // engine stays below the handler, while this layer composes the
       // deterministic plan write without a D15 peer dependency.
@@ -681,7 +680,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       //
       // It is also the ONE leaf in this tree with a deliberate behavioural
       // divergence from the oracle, confined to advisory fields. See
-      // `src/lib/engine/planning/closeout.cppm`'s DIVERGENCE section and the
+      // `src/engine/planning/closeout.cppm`'s DIVERGENCE section and the
       // note in that bucket's CMakeLists before assuming a git-evidence
       // difference is a bug.
       //
@@ -756,7 +755,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // resolve` note above). It landed in `engine_ingest` rather than a new
       // `engine_routing` bucket because its freshness computation is defined
       // in terms of `materialize`'s digests and D15/D18 FATAL on a
-      // layer-2-to-layer-2 edge — see src/lib/engine/ingest/CMakeLists.txt.
+      // layer-2-to-layer-2 edge — see src/engine/ingest/CMakeLists.txt.
       // `task touches infer` left this inventory at task 6330, completing
       // the `task touches` family. Its deferral note called it "773 lines
       // of git-diff and language-aware path inference"; running the oracle
@@ -776,7 +775,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // GLOBAL (exit 0) — three different meanings for the same empty
       // value. `--sort` is accepted and INERT in the oracle, and is
       // reproduced that way deliberately; see
-      // `src/lib/engine/tree/CMakeLists.txt`.
+      // `src/engine/tree/CMakeLists.txt`.
       // `workbench edit` and `workbench extract-questions` LEFT this
       // inventory at task 6302. Neither was ever architecturally blocked:
       // `edit` is push -> spawn `$EDITOR` on the feature directory -> pull

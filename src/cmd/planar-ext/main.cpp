@@ -9,7 +9,7 @@ import std;
 import planar.cmd.planar_ext.context;
 import planar.cmd.planar_ext.dispatch;
 import planar.cmd.planar_ext.exit;
-import planar.cmd.planar_ext.tree;
+import planar.cmd.planar_ext.main;
 
 /// @brief Process entry point.
 /// @param argc Argument count.
@@ -30,7 +30,8 @@ auto main(int argc, char** argv) -> int {
     return planar::cmd::ext::exit_code(db_path.error());
   }
 
-  planar::cmd::ext::context ctx{std::move(args), env, planar::cmd::ext::operator_cwd(env), *db_path, std::cout, std::cerr};
+  auto                      database = std::make_shared<planar::cmd::ext::database>(*db_path, std::cerr);
+  planar::cmd::ext::context ctx{std::move(args), env, planar::cmd::ext::operator_cwd(env), database, std::cout, std::cerr};
   auto const                root  = planar::cmd::ext::root_app();
   auto const                table = planar::cmd::ext::handlers(*root);
   int const                 code  = planar::cmd::ext::run(ctx, *root, table);

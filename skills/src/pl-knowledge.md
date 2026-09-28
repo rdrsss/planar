@@ -13,7 +13,7 @@ vendor:
             /pl-knowledge link decision:9 artifact:17 --relationship cites
 ---
 
-# Planar Knowledge ({{.VendorTitle}})
+# Planar Knowledge ({{ VendorTitle }})
 
 Manages durable project knowledge through decisions, artifacts, anchored
 annotations, and typed entity relationships.

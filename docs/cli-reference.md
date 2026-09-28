@@ -136,7 +136,7 @@ tag spelling on both binaries** — the busy-source case is the sharpest
 example: a lock held past the timeout emits `Busy` from `planar-agent
 heartbeat --json` and `busy_source` from `planar task update --json` for
 the same underlying SQLite busy condition (see
-`src/cmd/planar/task_busy_leaf.t.cpp` and the `Busy`/`QueryFailed`
+`src/cmd/planar/handlers/task/task_busy_leaf.t.cpp` and the `Busy`/`QueryFailed`
 scenario in this feature's test spec).
 
 ### Capture Behavior
@@ -205,7 +205,7 @@ The exit code is `5` (`domain_error_kind::scope_mismatch`) — the same code as 
 
 ### No escape hatch
 
-There is no flag that downgrades a cross-scope-guard refusal to a warning. `--no-scope-check` does not exist on this binary — it is absent from every command's flag set in `planar schema`, and passing it fails at parse time with exit 2 (`error: <cmd>: The following argument was not expected: --no-scope-check`), not with the scope guard's own exit code. (An engine-layer `guard_write` bypass parameter of the same shape exists at `src/lib/engine/identity/scope.cppm` and is unit-tested, but no `cmd/` handler ever calls it with `true` — no verb can reach it from the CLI.)
+There is no flag that downgrades a cross-scope-guard refusal to a warning. `--no-scope-check` does not exist on this binary — it is absent from every command's flag set in `planar schema`, and passing it fails at parse time with exit 2 (`error: <cmd>: The following argument was not expected: --no-scope-check`), not with the scope guard's own exit code. (An engine-layer `guard_write` bypass parameter of the same shape exists at `src/engine/identity/scope.cppm` and is unit-tested, but no `cmd/` handler ever calls it with `true` — no verb can reach it from the CLI.)
 
 The only remedies are:
 
@@ -244,16 +244,16 @@ table claimed for years — performs **no** scope comparison.
 
 | Verb | Guards against | Comparison | Call site |
 |------|---------------|-----------|-----------|
-| `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec_ingest.cpp` |
-| `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback.cpp` |
-| `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit.cpp` |
-| `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision.cpp` |
-| `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision.cpp` |
-| `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task.cpp` |
-| `closure compute` | resolved write scope | membership-aware | `src/cmd/planar/handlers/closure.cpp` |
-| `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
-| `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
-| `planar-ext sync resolve <event-id>` | the event's target entity | membership-aware | `src/cmd/planar-ext/handlers/sync.cpp` |
+| `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec/command.cpp` |
+| `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback/command.cpp` |
+| `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit/command.cpp` |
+| `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
+| `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
+| `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task/command.cpp` |
+| `closure compute` | resolved write scope | membership-aware | `src/cmd/planar/handlers/closure/command.cpp` |
+| `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
+| `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
+| `planar-ext sync resolve <event-id>` | the event's target entity | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
 
 `--all` forms of `sync push` / `sync pull` are unguarded; the bulk fan-out is
 an explicit opt-in.
@@ -5337,7 +5337,7 @@ Writes (only with `--apply`):
 - `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
 - `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
 
-**Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/lib/engine/importer/importer.cpp`). Both verbs converge on the same downstream pipeline.
+**Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/importer/importer.cpp`). Both verbs converge on the same downstream pipeline.
 
 **Exit codes:**
 - `0` — success (preview, dry-run, apply, or cache-miss "awaiting synthesis").
@@ -6894,7 +6894,7 @@ planar-watch completion <bash|zsh|fish>
 
 Full text column order (M3): `<entity>:<id>  scope:<label>  activity:"<summary>"  vendor:<v>  branch:<b>  worktree:<basename>  sha:<8-char>  last_hb:<rel>  [category:<value>]  token:<tok>`. `planar-watch claims` uses the same categorized-only addition before its `token:` column. JSON claim rows always carry nullable `failure_category` additively.
 
-Implementation: `ps()` in `src/cmd/planar-watch/handlers/live.cpp` (tasks 3053–3058).
+Implementation: `ps()` in `src/cmd/planar-watch/handlers/shared/live.cpp` (tasks 3053–3058).
 
 ### `planar-watch feed` — M3 flag addition (plan 467)
 
@@ -6933,7 +6933,7 @@ Each row shows the same columns as `ps`: `scope`, `vendor`, `activity`, `worktre
 
 **Choosing `tree` vs `ps --group-by`:** `ps --group-by role` is the flat-by-role view — use it when each claim's identity (role, vendor, heartbeat recency) is the question. `tree` is the topology view — use it when the orchestrator→coder dispatch fanout is the question (e.g. "which sub-agents did orchestrator A dispatch?"). When fanout density exceeds what `--group-by` makes readable (≥ 3 orchestrators each with multiple coders), prefer `tree`.
 
-**Implementation:** `tree()` in `src/cmd/planar-watch/handlers/live.cpp` (plan 467 M4, tasks 3064–3067).
+**Implementation:** `tree()` in `src/cmd/planar-watch/handlers/shared/live.cpp` (plan 467 M4, tasks 3064–3067).
 
 ### `planar-watch run` — workflow run observability (plan 585)
 
@@ -6962,7 +6962,7 @@ Shows the full `workflow_runs` row for `<id>` (wf-arm only) plus all `context_re
 
 Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, `engine:<e>`, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
 
-**Implementation:** `src/cmd/planar-watch/handlers/run.cpp` (plan 585, task 3906; op-arm inclusion added task 4349; engine and nullable plan task 6493).
+**Implementation:** `src/cmd/planar-watch/handlers/run/run.cpp` (plan 585, task 3906; op-arm inclusion added task 4349; engine and nullable plan task 6493).
 
 **Engine supervision in `claims` and `feed` (plan 1033 task 6493).** Every claim object `claims --json` and `feed --json` emit carries `"supervisor":"caller"|"engine"` and `"attempt_id"` immediately after `stage` — a claim never handed to the engine reads `"supervisor":"caller","attempt_id":null`, the keys are never omitted. `ps`, `log` and `planar-agent`'s payloads keep the lean claim object. In text, an engine claim's `claims` line gains `supervisor:engine  attempt:<id>` before `token:` (a caller claim's line is unchanged), an expired engine claim reads `status:lapsed (engine)`, and a `feed` line for one of the supervision action kinds (`claim_associate`, `claim_terminal`, `supervisor_override`, `run_submitted`, `run_reconciled`) appends the kind.
 
@@ -7077,7 +7077,7 @@ planar-watch run show <id> --json:
 latest_action: { kind: string, summary: string, started_at: ISO8601 } | null
 ```
 
-`null` when no `agent_actions` row exists for the claim. The field is sourced from `latest_action_for_claim()` (implementation: `src/lib/engine/runtime/agentactivity.cpp`). The `feed` and `log` verbs do **not** embed `latest_action` on their claim payloads — they are time-ordered event streams where the action rows are already present as first-class events.
+`null` when no `agent_actions` row exists for the claim. The field is sourced from `latest_action_for_claim()` (implementation: `src/engine/runtime/agentactivity.cpp`). The `feed` and `log` verbs do **not** embed `latest_action` on their claim payloads — they are time-ordered event streams where the action rows are already present as first-class events.
 
 ### Exit codes
 
@@ -7262,7 +7262,7 @@ registered lane workspace), and `used_by`, the workflows that call it.
 `planned_workflows` names workflows not shipped yet (the M4
 claim-supervision workflow); their entries must become used once they are.
 
-Two gates keep it honest. `src/cmd/planar-execute/policy.t.cpp` extracts
+Two gates keep it honest. `src/cmd/planar-execute/handlers/shared/policy.t.cpp` extracts
 every host call from the shipped workflows (`cli.*`, the `ctx.*` reads, and
 `git.*`) and fails if one resolves to no entry, if an entry is unused, or if
 an entry's `used_by` is not exactly the workflows that use it; it also
@@ -7506,7 +7506,7 @@ events:
 
 When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `claim_failure_categories`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
 
-**Privacy:** All queries are structurally redacted by construction in `src/lib/engine/introspect/introspect.cpp`. The bundle selects only counts, closed categories, provider identities, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never release reasons or action summaries, never scope slugs, and never path-bearing columns. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
+**Privacy:** All queries are structurally redacted by construction in `src/engine/introspect/introspect.cpp`. The bundle selects only counts, closed categories, provider identities, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never release reasons or action summaries, never scope slugs, and never path-bearing columns. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
 
 **Flags:**
 

@@ -12,7 +12,7 @@ vendor:
             /pl-audit-trail --json --link 7
 ---
 
-# Planar Audit Trail ({{.VendorTitle}})
+# Planar Audit Trail ({{ VendorTitle }})
 
 Produces the cross-plane audit trail for an external link — every local session, decision, and attributed commit that produced changes to an external ticket.
 

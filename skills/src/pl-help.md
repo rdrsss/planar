@@ -17,7 +17,7 @@ vendor:
             /pl-help sync resolve
 ---
 
-# Planar Help ({{.VendorTitle}})
+# Planar Help ({{ VendorTitle }})
 
 Routes an operator's intent to an available Planar workflow, or shows the
 command reference for a named CLI verb.

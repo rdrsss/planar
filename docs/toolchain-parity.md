@@ -126,7 +126,7 @@ undocumented namespace-scope variable declaration instead. Renaming
 semantics) makes the identical declaration parse clean with zero warnings.
 
 This exact defect and repro were hit for real in
-`src/lib/engine/workspace/routing.cppm`'s `manual_edits` type (see the
+`src/engine/workspace/routing.cppm`'s `manual_edits` type (see the
 `## Why this type is NOT called \`overrides\`` comment on that struct for the
 full investigation, including two wrong hypotheses ruled out along the way);
 that is the only occurrence in the current tree, and it already carries the
@@ -362,9 +362,9 @@ meaningless:
 
 ```
 scripts/break-probe.sh \
-  --file src/cmd/planar-watch/tree.cpp \
+  --file src/cmd/planar-watch/handlers/ps/command.cppm \
   --label "drop --json from the 'ps' node" \
-  --mutate "sed -i '' 's|^  add_json(\*ps);$||' src/cmd/planar-watch/tree.cpp" \
+  --mutate "sed -i '' 's|^  shared::add_json(\*ps);$||' src/cmd/planar-watch/handlers/ps/command.cppm" \
   --test 'planar-watch parity: every command declares what the oracle declares'
 ```
 

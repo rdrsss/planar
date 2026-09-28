@@ -18,7 +18,7 @@ vendor:
 > the entry-point shape; use the CLI directly if you don't need the skill
 > envelope.
 
-# Planar Workbench Archive ({{.VendorTitle}})
+# Planar Workbench Archive ({{ VendorTitle }})
 
 Manages the feature-lifecycle end of the workbench: removes the on-disk tree when a feature is complete, and recreates it on demand from the DB.
 

@@ -17,9 +17,9 @@ vendor:
             /pl-import . --scope assoc:project:my-app --apply
 ---
 
-# Planar Import ({{.VendorTitle}})
+# Planar Import ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `importer` agent. See [`agents/importer.md`](../../agents/importer.md) for the full role spec, input/output contract, and workflow steps.
+{{ VendorTitle }} skill surface for the vendor-neutral `importer` agent. See [`agents/importer.md`](../../agents/importer.md) for the full role spec, input/output contract, and workflow steps.
 
 Vendor-neutral skill that imports an existing repo's planning content into Planar. Combines the CLI's deterministic classifier with an opt-in LLM interpretation pass.
 
@@ -115,7 +115,7 @@ The Request payload carries: README + each `docs/*` body + git log (last ~500 co
 
 ## LLM Result Contract
 
-The skill writes a JSON Result matching this schema. The canonical result types and validation live in [`src/lib/engine/importer/importer.cppm`](../../src/lib/engine/importer/importer.cppm); the schema below mirrors the field set.
+The skill writes a JSON Result matching this schema. The canonical result types and validation live in [`src/engine/importer/importer.cppm`](../../src/engine/importer/importer.cppm); the schema below mirrors the field set.
 
 ```json
 {

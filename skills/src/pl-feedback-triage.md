@@ -15,7 +15,7 @@ vendor:
             /pl-feedback-triage --finding task:17 --apply
 ---
 
-# Planar Feedback Triage ({{.VendorTitle}})
+# Planar Feedback Triage ({{ VendorTitle }})
 
 Review redacted findings on a feedback plan, coordinate the feedback-triager's
 deterministic assessment, preview every proposed local change, and apply only

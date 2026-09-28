@@ -14,7 +14,7 @@ vendor:
             /pl-task block 43 --on 42
 ---
 
-# Planar Task ({{.VendorTitle}})
+# Planar Task ({{ VendorTitle }})
 
 Manages tasks — the discrete units of work within a plan or scope.
 

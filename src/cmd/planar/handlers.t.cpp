@@ -95,7 +95,7 @@ import planar.engine.workbench.fsutil;
 import planar.cliapp.args;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 
 #include "json_envelope_test_support.hpp"
 
@@ -147,11 +147,16 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
 /// @brief Write a shipped workflow file into the fixture's PLANAR_HOME.
@@ -508,8 +513,13 @@ TEST_CASE("annotate add stores the cwd-derived association scope", "[cmd][handle
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     auto const created =
         planar::engine::identity::create(**conn, {.slug = "alpha", .kind = planar::engine::identity::association_kind::project});
@@ -659,8 +669,13 @@ TEST_CASE("unlink composes engine_external and engine_runtime end to end", "[cmd
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
 
     // `external_systems` has no engine entry point in this tree — the
@@ -707,8 +722,13 @@ TEST_CASE("unlink composes engine_external and engine_runtime end to end", "[cmd
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     auto stmt = (*conn)->prepare("select prefix, body from session_entries order by session_id, ordinal");
     REQUIRE(stmt.has_value());
@@ -747,8 +767,13 @@ TEST_CASE("unlink attributes the audit row to $PLANAR_VENDOR", "[cmd][handlers][
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     auto sys = (*conn)->prepare("insert into external_systems (kind, slug, default_project, auth_method, auth_ref) "
                                 "values ('github-issues', 'gh', 'owner/repo', 'gh-cli', '') returning id");
@@ -768,8 +793,13 @@ TEST_CASE("unlink attributes the audit row to $PLANAR_VENDOR", "[cmd][handlers][
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     auto stmt = (*conn)->prepare("select vendor, vendor_session_id from sessions");
     REQUIRE(stmt.has_value());
@@ -856,8 +886,13 @@ TEST_CASE("workspace doctor diagnoses and repairs a registered org", "[cmd][hand
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     auto const created =
         planar::engine::identity::create(**conn, {.slug        = "acme",
@@ -913,8 +948,13 @@ TEST_CASE("workspace doctor reports an unreadable config without repairing the r
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     REQUIRE(planar::engine::identity::create(
                 **conn,
@@ -959,8 +999,10 @@ TEST_CASE("workspace init creates durable org membership routing and root guidan
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto               conn = ctx.ensure_db();
+  context            ctx{
+      {"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out,
+      err};
+  auto conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
   auto org_count = (*conn)->prepare("select count(*) from associations where slug='acme' and kind='org'");
   REQUIRE(org_count.has_value());
@@ -1010,8 +1052,10 @@ TEST_CASE("workspace init meta-repo refuses a reused org recorded at another roo
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto               conn = ctx.ensure_db();
+  context            ctx{
+      {"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out,
+      err};
+  auto conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
   auto const other_root = (fx.root / "elsewhere").string();
   REQUIRE(planar::engine::identity::create(
@@ -1080,8 +1124,10 @@ TEST_CASE("workspace init meta repo layout failure commits registration and repo
   // org and its two project memberships (meta root + nested) are durable.
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto               conn = ctx.ensure_db();
+  context            ctx{
+      {"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out,
+      err};
+  auto conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
   auto org_count = (*conn)->prepare("select count(*) from associations where slug='recover-ws' and kind='org'");
   REQUIRE(org_count.has_value());
@@ -1104,7 +1150,7 @@ TEST_CASE("workspace init meta repo layout failure commits registration and repo
 // task 6110 — `workspace routing show`.
 //
 // The decoder and both renderers are unit-tested in
-// src/lib/engine/workspace/routing.t.cpp. What only THIS layer can cover is
+// src/engine/workspace/routing.t.cpp. What only THIS layer can cover is
 // the path resolution, the file read, and the mapping of four failures onto
 // three exit codes — including the two decode failures that share one
 // message template and differ only in exit code.
@@ -1146,8 +1192,10 @@ namespace {
 auto seed_org(const fixture& fx) -> std::filesystem::path {
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto               conn = ctx.ensure_db();
+  context            ctx{
+      {"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out,
+      err};
+  auto conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
   auto const created = planar::engine::identity::create(
       **conn, {.slug        = "acme",
@@ -1316,8 +1364,10 @@ namespace {
 auto seed_second_org(const fixture& fx) -> void {
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-  auto               conn = ctx.ensure_db();
+  context            ctx{
+      {"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", std::make_shared<planar::cmd::database>(fx.db_path, err), out,
+      err};
+  auto conn = ctx.db().ensure_db();
   REQUIRE(conn.has_value());
   REQUIRE(planar::engine::identity::create(**conn, {.slug = "other", .kind = planar::engine::identity::association_kind::org})
               .has_value());
@@ -1575,8 +1625,13 @@ TEST_CASE("build then show is a round trip through the CLI", "[cmd][handlers][pa
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     auto stmt = (*conn)->prepare("insert into projects (slug, name, root_path) values ('alpha', 'alpha', ?)");
     REQUIRE(stmt.has_value());
@@ -3713,8 +3768,13 @@ TEST_CASE("plan create stores the cwd-derived association scope in the ROW", "[c
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     REQUIRE(planar::engine::identity::create(**conn, {.slug = "alpha"}).has_value());
     REQUIRE(planar::engine::identity::add_member(**conn, "alpha", (fx.root / "proj").string()).has_value());
@@ -3776,8 +3836,13 @@ TEST_CASE("plan create --scope wins over the cwd and reaches the row", "[cmd][ha
   {
     std::ostringstream out;
     std::ostringstream err;
-    context            ctx{{"planar"}, planar::cmd::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
-    auto               conn = ctx.ensure_db();
+    context            ctx{{"planar"},
+                           planar::cmd::map_env(fx.vars),
+                           fx.root / "proj",
+                           std::make_shared<planar::cmd::database>(fx.db_path, err),
+                           out,
+                           err};
+    auto               conn = ctx.db().ensure_db();
     REQUIRE(conn.has_value());
     REQUIRE(planar::engine::identity::create(**conn, {.slug = "alpha"}).has_value());
     REQUIRE(planar::engine::identity::add_member(**conn, "alpha", (fx.root / "proj").string()).has_value());
@@ -4634,9 +4699,14 @@ TEST_CASE("plan list refuses when the cwd pins no scope", "[cmd][handlers][plan]
 
   std::ostringstream out;
   std::ostringstream err;
-  context    ctx{{"planar", "plan", "list"}, planar::cmd::map_env(outside.vars), fx.root / "elsewhere", fx.db_path, out, err};
-  auto const tree  = planar::cmd::root_app();
-  auto const table = planar::cmd::handlers(*tree);
+  context            ctx{{"planar", "plan", "list"},
+                         planar::cmd::map_env(outside.vars),
+                         fx.root / "elsewhere",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
+  auto const         tree  = planar::cmd::root_app();
+  auto const         table = planar::cmd::make_handler_table(*tree);
   CHECK(planar::cmd::run(ctx, *tree, table) == 1);
   CHECK(err.str() == "error: cwd is not inside any registered Planar scope; cd into a registered scope or pass "
                      "--scope global\n");
@@ -5241,11 +5311,16 @@ auto dispatch_outside_scope(const fixture& fx, std::vector<std::string> args) ->
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::map_env(outside.vars), fx.root / "elsewhere", fx.db_path, out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::map_env(outside.vars),
+                         fx.root / "elsewhere",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::root_app();
-  auto const         table = planar::cmd::handlers(*tree);
+  auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
 constexpr std::string_view k_scope_err = "error: cwd is not inside any registered Planar scope; cd into a registered "

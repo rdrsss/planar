@@ -1,16 +1,66 @@
 # Planar
 
-> AI coding agents lose context constantly: at compaction, at session end, at vendor switch, at every interruption. The user pays for that loss in re-explanation, lost decisions, and forgotten constraints. Planar is local infrastructure that keeps the user's accumulated context durable across agents, vendors, and sessions.
+Planar is a durable context plane and synchronization mechanism for
+long-running agent orchestrations. It holds the state an orchestration
+accumulates — tech specs, plans, tasks, decisions, questions, test scenarios,
+and the sessions and handoff snapshots that record how the work happened — in a
+local SQLite database whose schema, versioned through ordered migrations, is the
+contract every participant writes against. That state is addressed by scope
+(repository, association, global) rather than by process, so it survives
+compaction, session end, and vendor switch, and is readable by any agent that
+joins the orchestration later.
 
-Planar is a local-first task tracker — Jira-shaped, but living next to the developer instead of inside the org's stack — for the structured intent and outputs of agent work: **tech specs, plans, tasks, decisions, questions, and test scenarios**, plus the **sessions** and **snapshots** that capture how the work happened. It scopes that state across repositories and organizations via associations, exports reviewable Markdown for team workbenches, and integrates with operational issue trackers (Jira, GitHub Issues) so org-level visibility and audit trails come for free.
+Synchronization operates on three planes. **Coordination:** leases and claims
+serialize concurrent agents against the same task — exactly one holds a work
+claim at a time, and an abandoned claim expires on its TTL instead of
+deadlocking the task. **Drafting:** a bidirectionally synced workbench
+filesystem projects planning state to reviewable Markdown and ingests operator
+edits back into the database. **Operational:** adapters reconcile with issue
+trackers (Jira, GitHub Issues) through explicit link records and
+proposal-shaped pulls, so org-level visibility and audit trails come for free
+without a remote system silently overwriting local intent.
 
-It is **vendor-agnostic by design**: Claude, Codex, and Copilot are first-class today, with additional agent runtimes expected. The user's accumulated context — plans, ADRs, sessions, audit trails — outlives any particular agent.
+Planar is local-first and Jira-shaped, but it lives next to the developer
+rather than inside the org's stack, and it is **vendor-agnostic by design**:
+Claude, Codex, and Copilot are first-class today, with additional agent
+runtimes expected.
 
 ## Status
 
-Planar is a local-first tool built as five binaries: `planar` (operator surface), `planar-agent` (agent-coordination writes), `planar-watch` (read-only viewer), `planar-execute` (the deterministic Lua workflow engine, which holds no DB handle and reaches state only through a constrained CLI host surface), and `planar-ext` (the operational-plane binary — Jira and GitHub Issues adapters; opens SQLite directly, read-only on planning tables and read-write on exactly `external_links` / `external_systems` / `sync_events`). The schema has thirty-three migrations, through `migrations/00033_rename_blocks_to_depends_on.up.sql`; the C++ runtime embeds and applies them at startup. Vendored SQLite is compiled from its pinned amalgamation; no system SQLite library is required.
+Planar ships as five binaries over one shared SQLite database, each with a
+disjoint write surface. The capability boundary is each binary's verb set, not a
+runtime ACL, and three of the five have capability-boundary tests that pin it.
+The schema has thirty-nine migrations, through
+`migrations/00039_workflow_runs_lease.up.sql`; the C++ runtime embeds and
+applies them at startup. Vendored SQLite is compiled from its pinned
+amalgamation, so no system SQLite library is required.
 
-**History.** Repo split — the original Go implementation (M1–M19) is preserved at `github.com/rdrsss/planar-go-archive.git`. Planar then ported from Go to Zig, and from Zig to C++26 (branch `rewrite/cpp26`). **The M10 cutover has landed:** the Zig tree under `zig/`, kept buildable as the port's parity oracle, was deleted once its state-differential evidence came back clean, and C++26 is now the only implementation (see [docs/architecture.md](docs/architecture.md)).
+- **`planar`** — the operator surface. Writes planning entities (plans, tasks,
+  questions, scenarios, decisions, artifacts, annotations) and manual
+  `tasks.status` transitions. This is the only supported access layer for
+  workflows: skills and agents compose its verbs rather than writing to the
+  database directly.
+- **`planar-agent`** — the agent-callable coordination surface. Atomic writes to
+  `agent_actions`, `agent_work_claims`, the routing-dispatch authorization
+  tables, and `tasks.status` only as part of a coordinated operation. Its
+  terminal verbs (`complete` / `fail` / `release` / `block`) flip the claim and
+  the task status in a single transaction, which is why the claim ritual must
+  not be split across two commands.
+- **`planar-watch`** — the read-only viewer. Opens SQLite via `file:?mode=ro`
+  and performs no writes at all. Agent observability — action topology, live
+  claims, feeds — lives here.
+- **`planar-execute`** — the deterministic Lua workflow engine. Runs a workflow
+  over allowlisted host functions (`cli` / `git` / `fs` / `flow` / `ctx`),
+  holds no SQLite handle at all, and reaches Planar state only by shelling
+  `planar` / `planar-agent`. It exposes no model-spawning host function: it is
+  a workflow engine a caller invokes, not a harness.
+- **`planar-ext`** — the operational plane. Owns both external adapters, Jira
+  and GitHub Issues, behind one `external_adapter` interface. Opens SQLite
+  directly: read-only on planning tables, read-write on exactly
+  `external_links` / `external_systems` / `sync_events`, enforced by a
+  `sqlite3_set_authorizer` allowlist on the parsed table name. `sync pull`
+  emits `remote_title` / `remote_status` proposals for an agent to verify
+  rather than applying remote values to planning entities itself.
 
 ## Prerequisites
 
@@ -20,9 +70,10 @@ Planar shells out to a small set of external tools. On macOS, install them via H
 brew install cmake ninja llvm python git gh jq ripgrep tbb
 ```
 
-- `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries. `install.sh` preflights the exact preset compilers, `/opt/homebrew/opt/llvm/bin/clang` and `/opt/homebrew/opt/llvm/bin/clang++`, before it invokes CMake. Use the repository's `debug` and `release` presets; see [toolchain parity](docs/toolchain-parity.md).
+- `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md).
 - `tbb` (>= 2021.5) — **required to build**, since `cmake/dependencies.cmake` vendors Mt-KaHyPar (decision 1006, task 6459) as a pinned CPM source block and Mt-KaHyPar's own CMake `find_package(TBB)`s it. Unlike every other third-party dependency this tree takes, TBB is **not** vendored as source: upstream states TBB does not support static linking, so this is a deliberately accepted dynamic system dependency rather than a hermetic one. `install.sh` preflights `brew --prefix tbb` and fails fast if it is missing, matching CMake's own `find_package(TBB)` failure.
 - `python3` — **required to configure**. Centurion (added as a CMake subdirectory by `cmake/centurion.cmake`, plan 1033) generates a minimized Botan amalgamation at configure time by running Botan's `configure.py`. It is the only host program Centurion's stack adds: `protoc` and the gRPC C++ plugin are built in-tree from Centurion's own vendored protobuf and gRPC, not taken from the host.
+- Scriptorium is built from `src/tools/scriptorium/` and installed by CMake; no external Scriptorium executable is required. It needs no dependency beyond Glaze, which the rest of the tree already vendors.
 - Network access plus a GitHub token on the **first** configure of a checkout — `cmake/dependencies.cmake` fetches first-party dependencies (currently Centurion, a private repository) into the gitignored `external/` directory rather than committing them under `vendor/`. Run `GITHUB_TOKEN=$(gh auth token) cmake --preset debug` once; later configures reuse `external/` offline. Third-party dependencies remain committed under `vendor/` and never need the network.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
@@ -60,7 +111,7 @@ cmake --build build/release
 cmake --install build/release --prefix "$HOME/.planar"
 ```
 
-This puts all five binaries at `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`. The four that open a database (all but `planar-execute`, which holds no SQLite handle at all) statically link the vendored SQLite amalgamation — no system library dependency.
+This puts the five Planar binaries and the in-tree `scriptorium` renderer in `~/.planar/bin/`. The four that open a database (all but `planar-execute`, which holds no SQLite handle at all) statically link the vendored SQLite amalgamation — no system library dependency.
 
 Add `~/.planar/bin` to your `$PATH`, then verify:
 
@@ -69,7 +120,7 @@ export PATH="$HOME/.planar/bin:$PATH"
 planar health
 ```
 
-This installs only the five binaries. Migrations and propagation templates are *embedded* at build time, so the CLI works standalone against a local database. Agent specs, slash commands, and skills are **not** embedded — they are separate source files rendered and staged by `install.sh` — so none of the vendor surfaces (Claude `/pl-*` slash commands, Codex skills, Copilot skills) are wired up by a `cmake --install` alone; for those, use the [full install](INSTALL.md#full-install-installsh).
+Migrations and propagation templates are *embedded* at build time, so the CLI works standalone against a local database. Agent specs, slash commands, and skills are **not** embedded — they are separate source files rendered and staged by `install.sh` — so none of the vendor surfaces (Claude `/pl-*` slash commands, Codex skills, Copilot skills) are wired up by a `cmake --install` alone; for those, use the [full install](INSTALL.md#full-install-installsh).
 
 The full install also puts a stock `centuriond` — the Centurion workflow daemon `planar-execute` is becoming a client of (plan 1033) — at `~/.planar/bin/centuriond`, with its migrations and a `build-identity.json` under `~/.planar/share/centurion/`. It is built from the same pinned Centurion archive as a separate CMake project (or taken from a checksum-verified Centurion release binary once the pinned tag publishes one) by `scripts/install-centuriond.sh`; the first build compiles Centurion's gRPC stack and takes several minutes. A bare `cmake --install` does not install it.
 
@@ -265,7 +316,7 @@ Three threads run through everything:
 
 ## The schema is the contract
 
-Thirty-three migration files (`migrations/00001_foundation.up.sql` through `migrations/00033_rename_blocks_to_depends_on.up.sql`) define Planar's schema. The runtime applies them from a generated `planar.db.migrations` module, `#embed`-produced at CMake configure time (`cmake/generate_migrations.cmake`); the public schema-version tracker is `schema_migrations`.
+Thirty-nine migration files (`migrations/00001_foundation.up.sql` through `migrations/00039_workflow_runs_lease.up.sql`) define Planar's schema. The runtime applies them from a generated `planar.db.migrations` module, `#embed`-produced at CMake configure time (`cmake/generate_migrations.cmake`); the public schema-version tracker is `schema_migrations`.
 
 Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries — opens `~/.planar/planar.db` with `PRAGMA query_only = 1`, reads `schema_migrations` to verify version compatibility, and operates without going through the binary. The contract is the schema, not the codebase. See [docs/architecture.md](docs/architecture.md) for the schema overview.
 
@@ -273,25 +324,34 @@ Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries —
 
 The bundled agent specs and reference workflows use unified source + generated vendor outputs:
 
-| Surface | Canonical or staged path | Install destination |
-|--------|-------------|---------------------|
-| Unified skill source | `skills/src/` | Rendered by `scriptorium` at install time (`planar skills` is a retirement notice with no subcommands); never installed directly |
-| Claude | `$PLANAR_HOME/commands/claude/` (generated stage) | `~/.claude/commands/` |
-| Codex | `$PLANAR_HOME/codex-skills/` (generated stage) | `$CODEX_HOME/skills/` (normally `~/.codex/skills/`) |
-| Copilot | `$PLANAR_HOME/copilot-skills/` (generated stage), `copilot/` (authored prompts/instructions) | `~/.copilot/skills/`, `~/.copilot/` |
-| Planar agents | `agents/` | `~/.planar/agents/` |
+| Surface | Source or output | Installed skill target |
+|--------|------------------|------------------------|
+| Unified skill source | `skills/src/` in this repository | Never installed directly (`planar skills` is a retirement notice with no subcommands) |
+| Claude | `$PLANAR_HOME/commands/claude/pl-*.md` | Symlinked as flat slash commands in `~/.claude/commands/` |
+| Codex | `$PLANAR_HOME/skills/codex/pl-*/SKILL.md` | Copied into `$CODEX_HOME/skills/pl-*/SKILL.md` (normally `~/.codex/skills/`); also staged under `$PLANAR_HOME/codex-skills/` |
+| Copilot | `$PLANAR_HOME/skills/copilot/pl-*.md` | Materialized as `~/.copilot/skills/pl-*/SKILL.md`, via `$PLANAR_HOME/copilot-skills/` |
+| Gemini | `$PLANAR_HOME/skills/gemini/pl-*.md` | Materialized as `~/.gemini/antigravity-cli/skills/pl-*/SKILL.md`, via `$PLANAR_HOME/gemini-skills/` |
 
-Sixteen agent roles cover orchestration and review, planning and ingestion,
+Claude consumes flat command files, while Codex consumes skill directories
+directly. Copilot and Gemini also consume skill directories; the installer
+converts their flat rendered files into `SKILL.md` directories. Installed Codex,
+Copilot, and Gemini skills are real copies so their loaders can discover them
+without following directory symlinks. Copilot also installs authored prompts
+and instructions from `copilot/`. Planar agent sources live in `agents/` and
+have separate vendor-specific outputs and install targets.
+
+Fifteen agent roles cover orchestration and review, planning and ingestion,
 external propagation, repo adoption, introspection and feedback triage,
-documentation classification/authoring, guarded sync reconciliation, testing,
-and closeout. The specialist boundaries are deliberate: `documenter` is
-read-only, `doc-author` writes only approved prose, `feedback-triager` and
-`sync-reconciler` coordinate preview-gated changes, and planning-state writes
-still go through the owning CLI binary. See
+guarded sync reconciliation, research, testing, and closeout. The
+documentation roles — `documenter` and `doc-author` — live in tabularium,
+which owns the doc-system tool they drive. The specialist boundaries are
+deliberate: `feedback-triager` and `sync-reconciler` coordinate preview-gated
+changes, `research` is read-only, and planning-state writes still go through
+the owning CLI binary. See
 [`agents/methodology.md`](agents/methodology.md) for orchestration and
 [`docs/skill-reference.md`](docs/skill-reference.md) for the role inventory.
 
-Forty-one unified `pl-*` skill sources render for each selected vendor. In
+Forty unified `pl-*` skill sources render for each selected vendor. In
 addition to the planning, workbench, external, onboarding, and entity
 workflows, the inventory includes intent-oriented status/help, durable
 knowledge, operational observation, the complete local lifecycle (with
@@ -299,7 +359,7 @@ knowledge, operational observation, the complete local lifecycle (with
 introspection and feedback triage, guarded sync reconciliation, and gated
 documentation maintenance. Repo-relative vendor trees are not checked in;
 canonical edits belong in `skills/src/`, and drift is gated by semantic lint
-plus scriptorium's own `scriptorium check` / `scriptorium status` against an
+plus the in-tree `scriptorium check` / `scriptorium status` against an
 out-of-tree staging directory (`planar skills render` no longer exists).
 
 ## Repository layout
@@ -310,11 +370,13 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 |------|------|
 | `CMakeLists.txt`, `CMakePresets.json` | Top-level CMake project (C++26, modules) and the pinned `debug`/`release` presets |
 | `src/cmd/` | One directory per binary — `planar/`, `planar-agent/`, `planar-watch/`, `planar-execute/`, `planar-ext/` — each its own CMake target |
-| `src/lib/` | Shared C++ modules: `db/` (connection + migrations), `cliapp/` (CLI11-backed parser wrapper), `engine/` (domain logic, bucketed as `identity/`, `planning/`, `external/`, `runtime/` plus subsystem dirs), `adapter/`, `http/`, and other leaf libraries |
-| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `surface_lint/`) |
+| `src/engine/` | Domain logic and state transitions, bucketed as `identity/`, `planning/`, `external/`, `runtime/`, plus subsystem dirs (`extsync/`, `workbench/`, `templates/`, `routing/`, `config/`) |
+| `src/lib/` | Shared base modules: `db/` (connection + migrations), `cliapp/` (CLI11-backed parser wrapper), `adapter/`, `http/`, `git/`, `process/`, `log/`, and the other leaf libraries |
+| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `surface_lint/`, `scriptorium/`) |
 | `cmake/dependencies.cmake` | Every third-party dependency as a pinned `CPMAddPackage(...)` (release archive + SHA256, cached under `vendor/`) |
 | `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/` and `templates/defaults/` into generated modules the runtime embeds |
-| `vendor/` | CPM's committed source cache — pinned release archives only, no `git clone`/submodule vendoring |
+| `vendor/` | CPM's committed source cache for third-party dependencies — pinned release archives only, no `git clone`/submodule vendoring |
+| `external/` | CPM's source cache for first-party dependencies (Centurion) — pinned the same way but gitignored, populated by the first configure |
 | `src/cmd/parity_harness.hpp` | The cross-process (black-box) test harness — `run_pinned()` execs a built binary over fixed argv in a scratch environment with its own `PLANAR_DB` and `HOME`. Cases live in `src/cmd/*/parity.t.cpp` and `src/cmd/planar/cross_process.t.cpp` |
 | `migrations/` | SQLite migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`) — single authoritative source |
 | `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `jira/`); embedded at build time |
@@ -345,4 +407,4 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 
 ## License
 
-To be determined. License selection is part of the first formal release.
+MIT — see [LICENSE](LICENSE).

@@ -30,7 +30,7 @@ import std;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.dispatch;
 import planar.cmd.planar_agent.exit;
-import planar.cmd.planar_agent.tree;
+import planar.cmd.planar_agent.main;
 
 /// @brief Process entry point.
 /// @param argc Argument count.
@@ -51,7 +51,8 @@ auto main(int argc, char** argv) -> int {
     return planar::cmd::agent::exit_code(db_path.error());
   }
 
-  planar::cmd::agent::context ctx{std::move(args), env, planar::cmd::agent::operator_cwd(env), *db_path, std::cout, std::cerr};
+  auto                        database = std::make_shared<planar::cmd::agent::database>(*db_path, std::cerr);
+  planar::cmd::agent::context ctx{std::move(args), env, planar::cmd::agent::operator_cwd(env), database, std::cout, std::cerr};
   auto const                  root  = planar::cmd::agent::root_app();
   auto const                  table = planar::cmd::agent::handlers(*root);
   int const                   code  = planar::cmd::agent::run(ctx, *root, table);

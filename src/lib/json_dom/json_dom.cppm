@@ -243,7 +243,7 @@ export auto parse_json_reason(std::string_view text) -> std::expected<json_value
 /// wrong — an EMPTY object or array collapses to `{}` / `[]` with no
 /// newline and no inner indent, while a non-empty one always breaks. The
 /// result carries NO trailing newline; the caller appends one (see the
-/// stdout-terminator contract in `src/lib/engine/local/CMakeLists.txt`).
+/// stdout-terminator contract in `src/engine/local/CMakeLists.txt`).
 /// @param value The value to encode.
 /// @return The encoded document, without a trailing newline.
 export auto stringify_indent2(const json_value& value) -> std::string;

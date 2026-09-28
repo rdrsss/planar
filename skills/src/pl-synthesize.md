@@ -16,9 +16,9 @@ vendor:
             /pl-synthesize . --literal                # delegate to pl-import
 ---
 
-# Planar Synthesize ({{.VendorTitle}})
+# Planar Synthesize ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `synthesizer` agent. See [`agents/synthesizer.md`](../../agents/synthesizer.md) for the full role spec, input/output contract, and sequencing.
+{{ VendorTitle }} skill surface for the vendor-neutral `synthesizer` agent. See [`agents/synthesizer.md`](../../agents/synthesizer.md) for the full role spec, input/output contract, and sequencing.
 
 Vendor-neutral skill that imports an existing repo by SYNTHESIZING fresh planning artifacts from the repo's docs + git log + source code, rather than transcribing the existing docs verbatim.
 
@@ -85,7 +85,7 @@ The vendor skill (this skill body) consumes the Request and produces a Result by
    - "Ground every `status=done` claim in a file path from `code_evidence.areas[].path`. You cannot mark a task done without citing a code path. In greenfield mode (no code), you cannot mark anything done."
    - "Existing planning docs are CONTEXT. Don't transcribe them verbatim. Use them to understand intent, then synthesize fresh artifacts."
 
-3. **Writing a synthesis Result JSON** to the cache path printed in the awaiting notice (`$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/<fingerprint>.json`). The schema is load-bearing; validation in [`src/lib/engine/synthesize/synthesize.cppm`](../../src/lib/engine/synthesize/synthesize.cppm) rejects any Result that violates it.
+3. **Writing a synthesis Result JSON** to the cache path printed in the awaiting notice (`$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/<fingerprint>.json`). The schema is load-bearing; validation in [`src/engine/synthesize/synthesize.cppm`](../../src/engine/synthesize/synthesize.cppm) rejects any Result that violates it.
 
 4. **The operator re-invokes** `planar synthesize <repo-root>`. The CLI reads and validates the cached Result, merges it with the deterministic baseline, and lands the preview or apply.
 
@@ -137,7 +137,7 @@ The workspace context is optional in the Request — repos that aren't workspace
 
 ## Result JSON Schema (load-bearing)
 
-The canonical result types and validation live in [`src/lib/engine/synthesize/synthesize.cppm`](../../src/lib/engine/synthesize/synthesize.cppm); the schema below mirrors the field set.
+The canonical result types and validation live in [`src/engine/synthesize/synthesize.cppm`](../../src/engine/synthesize/synthesize.cppm); the schema below mirrors the field set.
 
 ```json
 {

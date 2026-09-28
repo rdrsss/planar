@@ -13,7 +13,7 @@ vendor:
             /pl-question list --status open
 ---
 
-# Planar Question ({{.VendorTitle}})
+# Planar Question ({{ VendorTitle }})
 
 Manages questions — open uncertainties surfaced during work.
 

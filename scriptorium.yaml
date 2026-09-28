@@ -1,41 +1,14 @@
-# scriptorium.yaml — content-repo config for scriptorium
-# (scriptorium docs/format.md § 3 "Content-repo config").
-#
-# Declares Planar's skill/agent source roots and the vendor set scriptorium
-# renders on Planar's behalf. Read by install.sh's scriptorium invocation,
-# which replaces the retired in-tree `planar skills render` step (plan 918
-# tech-spec § Architecture "How Planar shells scriptorium", decision D2).
-# `sources.skills`/`sources.agents` resolve relative to this file's own
-# directory (the repo root), per scriptorium's `selectRoots`
-# (internal/cli/render_cmd.go) and format.md § 4.1.
-
+# Unified source roots and staging profiles for src/tools/scriptorium/.
+# Source paths resolve relative to this file. install.sh invokes the built
+# renderer with PLANAR_HOME as the staging root and then wires vendor installs.
 sources:
-  skills: skills/src   # kind:skill sources (40 after the armarium orchestration-layer return)
-  agents: agents        # kind:agent + kind:doc sources (15 + 4)
+  skills: skills/src
+  agents: agents
 
-# The exact vendor set install.sh renders and wires today — its VENDORS
-# default and its four `claude|codex|copilot|gemini` cases (install.sh
-# "Symlinking vendor surfaces"). No more, no fewer.
 vendors: [claude, codex, copilot, gemini]
 
-# install.sh's own install_copilot_vendor/install_gemini_vendor functions
-# read scriptorium's rendered skill output as FLAT `pl-*.md` files staged
-# under `$PLANAR_HOME/skills/<vendor>/` (they build the per-vendor runtime
-# SKILL.md directories themselves — that mechanical step is unchanged by
-# this switch). Scriptorium's built-in Copilot/Gemini profiles
-# (internal/profile/builtin.go in the scriptorium repo) default that
-# staging output_dir to "prompts/copilot" / "commands/gemini" — documented
-# there as a self-consistent placeholder for a locked-spec-unspecified
-# detail, not Planar's actual layout. Override only `output_dir` so
-# scriptorium stages skill output exactly where install.sh already looks
-# for it; `layout` stays the builtin "file" default (flat `<slug>.md`,
-# required for install.sh's `find ... -name 'pl-*.md'` discovery — do not
-# change to "dir"). Claude's and Codex's built-in `output_dir`
-# (commands/claude, skills/codex) already match install.sh and need no
-# override. `install_path` is left at the builtin default: this cycle only
-# shells scriptorium's `render` (staging), not `install`; wiring an
-# accurate `install_path`/`layout` for scriptorium's `install` verb is a
-# later milestone's concern (tech-spec D6/Q3), not this one's.
+# The installer consumes flat Copilot and Gemini skill files before creating
+# their vendor-specific SKILL.md directories.
 vendor_overrides:
   copilot:
     output_dir: skills/copilot

@@ -164,7 +164,7 @@ class ThreadLambdaCatch2LintTests(unittest.TestCase):
         # stay clean under this lint. If someone reverts the fix, this
         # test -- run against the real file, not a synthetic fixture --
         # fails alongside the synthetic one above.
-        real_file = ROOT / "src" / "lib" / "engine" / "runtime" / "agentatomic.t.cpp"
+        real_file = ROOT / "src" / "engine" / "runtime" / "agentatomic.t.cpp"
         self.assertTrue(real_file.is_file())
         violations = lint.scan_file(real_file)
         self.assertEqual(violations, [])

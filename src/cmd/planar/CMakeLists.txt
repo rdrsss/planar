@@ -50,7 +50,7 @@
 #
 #   unlink             Blocked TWICE. Layer 3 was missing AND so was its
 #                      layer-2 bucket -- there was no engine_external in
-#                      the tree at all. src/lib/engine/external/ was stood
+#                      the tree at all. src/engine/external/ was stood
 #                      up here (create/show/delete only; see that
 #                      directory's CMakeLists for what is deferred and with
 #                      which verb). The leaf then composes engine_external
@@ -126,7 +126,7 @@
 #                              to report). The scan follows $HOME, which
 #                              run_pinned() already redirects, so the leaf
 #                              was testable here exactly like every other
-#                              one all along. See handlers/report.cppm.
+#                              one all along. See handlers/report/command.cppm.
 #   spec ingest --apply        needs engine.ingestor.apply (1,616 lines)
 #                              and engine.workbench (unported entirely).
 #                              engine_ingest here is the READ side only.
@@ -203,8 +203,8 @@
 #
 #   resume (the packet)  Blocked at LAYER 2 on four unported surfaces; the
 #                        inventory and the captured payload are in
-#                        src/cmd/planar/handlers/resume.cppm and
-#                        src/lib/engine/runtime/CMakeLists.txt. Registered
+#                        src/cmd/planar/handlers/resume/command.cppm and
+#                        src/engine/runtime/CMakeLists.txt. Registered
 #                        as a `not_implemented` placeholder (exit 64) rather
 #                        than left unwired, because an unwired DUAL node
 #                        would fall to the help path and exit 0 — a silent
@@ -321,7 +321,7 @@
 # --- task 6258: the adapter factory, and ONE leaf ------------------------
 #
 # `ext test`, plus the auth-resolution unit it was deferred on
-# (handlers/ext_adapter_factory.cppm). Four DEPENDS are new — `adapter`,
+# (handlers/shared/ext_adapter_factory.cppm). Four DEPENDS are new — `adapter`,
 # `http`, `engine_extsync` and the already-present `engine_external` — and
 # the factory is the reason: it composes the bucket that IMPLEMENTS adapters
 # with the bucket that stores the ROW an adapter is built from, and D18
@@ -358,18 +358,13 @@
 # TASK 6278 added `tree` -- the hierarchical drill-down verb, and the
 # largest single unblocked leaf left in the inventory (1284 non-test Zig
 # lines). Its engine is the new layer-2 `engine_tree`; see
-# src/lib/engine/tree/CMakeLists.txt for what was ported, what was
+# src/engine/tree/CMakeLists.txt for what was ported, what was
 # deliberately not, and why the agent-activity rollup is duplicated there
 # rather than reached sideways into `engine_runtime`.
 #
-# TWO NAMING HAZARDS IN THIS DIRECTORY, both live:
-#   - `tree.cppm` here is the binary's CLI11 COMMAND TREE builder. The verb
-#     is `handlers/tree.cppm`. They are neighbours with nearly the same
-#     name and are not related.
-#   - `tree` needed NO change to `tree.cpp`: the node was already declared
-#     in the generated surface catalog (k_path_30), and `apply_surface`
-#     builds it. Wiring the leaf was the dispatch entry plus removing it
-#     from `unported_paths()`.
+# Root command assembly now lives in `main.cppm`; `handlers/tree/` owns only
+# the `planar tree` verb. The declaration was moved there from the old root
+# builder without changing the CLI surface.
 #
 # WHAT THE ORACLE RUN FOUND, and none of it transfers from a sibling verb:
 #   - `--sort` is DECLARED AND INERT. tree.zig stores `Filter.sort` and
@@ -391,7 +386,7 @@
 #     for all four rather than generalised from one.
 #
 # `tree --help` is NOT oracle-comparable and no test claims it is -- CLI11
-# renders help here (see tree.cppm). The declaration is compared instead,
+# renders help here (see main.cppm). The declaration is compared instead,
 # via parity.t.cpp's `schema` catalog case, which already covered this leaf.
 #
 # TASK 6299 added `promote`, `demote` and `test-spec status` (handlers/
@@ -433,7 +428,7 @@
 #     are free" is HALF TRUE. `workbench edit` and `extract-questions` need
 #     nothing missing; `workbench publish` calls
 #     `engine.extsync.parent_issue.recordLink`, and that module is listed
-#     unported in src/lib/engine/extsync/CMakeLists.txt.
+#     unported in src/engine/extsync/CMakeLists.txt.
 #   - `link` is NOT engine-blocked -- `external::link::create` and
 #     `external::system::show_by_slug` are both here. It is blocked on one
 #     FLAG: `--propagate` runs `ext propagate`. The oracle's own
@@ -449,118 +444,333 @@ planar_binary(planar
   INTERFACE
     exit.cppm
     context.cppm
+    database.cppm
     handler.cppm
     scope.cppm
-    tree.cppm
+    main.cppm
+    handlers/explore/command.cppm
     declare.cppm
     surface.cppm
-    handlers/version.cppm
-    handlers/catalog.cppm
-    handlers/workflow.cppm
-    handlers/annotate.cppm
-    handlers/ext_adapter_factory.cppm
+    handlers/version/command.cppm
+    handlers/shared/catalog.cppm
+    handlers/schema/command.cppm
+    handlers/completion/command.cppm
+    handlers/workflow/command.cppm
+    handlers/workflow/run.cppm
+    handlers/workflow/show.cppm
+    handlers/workflow/list.cppm
+    handlers/annotate/command.cppm
+    handlers/annotate/receipt.cppm
+    handlers/annotate/request_command.cppm
+    handlers/annotate/sweep.cppm
+    handlers/annotate/verify.cppm
+    handlers/annotate/bulk_archive.cppm
+    handlers/annotate/bulk_dismiss.cppm
+    handlers/annotate/bulk_resolve.cppm
+    handlers/annotate/archive.cppm
+    handlers/annotate/dismiss.cppm
+    handlers/annotate/resolve.cppm
+    handlers/annotate/tag.cppm
+    handlers/annotate/remove.cppm
+    handlers/annotate/update.cppm
+    handlers/annotate/capabilities.cppm
+    handlers/annotate/list.cppm
+    handlers/annotate/show.cppm
+    handlers/annotate/add.cppm
+    handlers/shared/ext_adapter_factory.cppm
     # `link` (singular) writes `external_links` and is `unlink`'s exact
     # counterpart; `links` (plural, above) writes `entity_links`. The two
     # spellings mirror the CLI's own `planar link` vs `planar links add`.
-    handlers/link.cppm
-    handlers/unlink.cppm
-    handlers/skills.cppm
-    handlers/workspace.cppm
-    handlers/workbench.cppm
-    handlers/capture.cppm
-    handlers/init.cppm
-    handlers/models.cppm
-    handlers/plan.cppm
-    handlers/assoc.cppm
-    handlers/scope.cppm
-    handlers/search.cppm
-    handlers/tree.cppm
-    handlers/promotion.cppm
-    handlers/test_spec.cppm
-    handlers/health.cppm
-    handlers/audit.cppm
-    handlers/dashboard.cppm
-    handlers/report.cppm
-    handlers/task.cppm
-    handlers/feedback.cppm
-    handlers/question.cppm
-    handlers/decision.cppm
-    handlers/scenario.cppm
-    handlers/artifact.cppm
+    handlers/link/command.cppm
+    handlers/unlink/command.cppm
+    handlers/skills/command.cppm
+    handlers/workspace/command.cppm
+    handlers/workspace/routing.cppm
+    handlers/workspace/regenerate.cppm
+    handlers/workspace/doctor.cppm
+    handlers/workspace/init.cppm
+    handlers/workspace/routing_show.cppm
+    handlers/workspace/routing_build.cppm
+    handlers/workbench/command.cppm
+    handlers/workbench/edit.cppm
+    handlers/workbench/extract_questions.cppm
+    handlers/workbench/publish.cppm
+    handlers/workbench/list.cppm
+    handlers/workbench/gc.cppm
+    handlers/workbench/restore.cppm
+    handlers/workbench/archive.cppm
+    handlers/workbench/sync.cppm
+    handlers/workbench/resolve.cppm
+    handlers/workbench/status.cppm
+    handlers/workbench/push.cppm
+    handlers/workbench/pull.cppm
+    handlers/workbench/lint.cppm
+    handlers/capture/command.cppm
+    handlers/capture/snapshot.cppm
+    handlers/capture/file.cppm
+    handlers/capture/request_command.cppm
+    handlers/capture/note.cppm
+    handlers/capture/end.cppm
+    handlers/capture/commits.cppm
+    handlers/capture/session.cppm
+    handlers/init/command.cppm
+    handlers/models/command.cppm
+    handlers/models/registry.cppm
+    handlers/models/outcomes.cppm
+    handlers/models/experiments.cppm
+    handlers/models/resolve.cppm
+    handlers/models/evals.cppm
+    handlers/models/registry_export.cppm
+    handlers/models/registry_verify_identity.cppm
+    handlers/models/registry_eligibility.cppm
+    handlers/models/registry_observe.cppm
+    handlers/models/registry_unbind.cppm
+    handlers/models/registry_bind.cppm
+    handlers/models/registry_remove.cppm
+    handlers/models/registry_update.cppm
+    handlers/models/registry_add.cppm
+    handlers/models/registry_list.cppm
+    handlers/plan/command.cppm
+    handlers/plan/descendants.cppm
+    handlers/plan/step.cppm
+    handlers/plan/closeout.cppm
+    handlers/plan/recompute_status.cppm
+    handlers/plan/divergence.cppm
+    handlers/plan/recommend_strategy.cppm
+    handlers/plan/next.cppm
+    handlers/plan/link.cppm
+    handlers/plan/review.cppm
+    handlers/plan/diff.cppm
+    handlers/plan/view.cppm
+    handlers/plan/edit.cppm
+    handlers/plan/update.cppm
+    handlers/plan/list.cppm
+    handlers/plan/show.cppm
+    handlers/plan/create.cppm
+    handlers/plan/step_link.cppm
+    handlers/plan/step_skip.cppm
+    handlers/plan/step_done.cppm
+    handlers/plan/step_list.cppm
+    handlers/plan/step_add.cppm
+    handlers/assoc/command.cppm
+    handlers/assoc/detect.cppm
+    handlers/assoc/members.cppm
+    handlers/assoc/remove.cppm
+    handlers/assoc/add.cppm
+    handlers/assoc/create.cppm
+    handlers/assoc/list.cppm
+    handlers/scope/command.cppm
+    handlers/scope/clear.cppm
+    handlers/scope/pop.cppm
+    handlers/scope/use.cppm
+    handlers/scope/suggest.cppm
+    handlers/scope/show.cppm
+    handlers/search/command.cppm
+    handlers/tree/command.cppm
+    handlers/shared/promotion.cppm
+    handlers/demote/command.cppm
+    handlers/promote/command.cppm
+    handlers/test_spec/command.cppm
+    handlers/test_spec/status.cppm
+    handlers/health/command.cppm
+    handlers/health/hygiene.cppm
+    handlers/audit/command.cppm
+    handlers/audit/handoff_readiness.cppm
+    handlers/audit/publish_decision.cppm
+    handlers/audit/session.cppm
+    handlers/audit/commits.cppm
+    handlers/audit/trail.cppm
+    handlers/dashboard/command.cppm
+    handlers/report/command.cppm
+    handlers/task/command.cppm
+    handlers/task/facts_stage.cppm
+    handlers/task/facts.cppm
+    handlers/task/touches.cppm
+    handlers/task/reopen.cppm
+    handlers/task/link.cppm
+    handlers/task/block.cppm
+    handlers/task/cancel.cppm
+    handlers/task/done.cppm
+    handlers/task/review.cppm
+    handlers/task/diff.cppm
+    handlers/task/view.cppm
+    handlers/task/edit.cppm
+    handlers/task/update.cppm
+    handlers/task/list.cppm
+    handlers/task/packet.cppm
+    handlers/task/show.cppm
+    handlers/task/add.cppm
+    handlers/task/touches_remove.cppm
+    handlers/task/touches_list.cppm
+    handlers/task/touches_infer.cppm
+    handlers/task/touches_add.cppm
+    handlers/feedback/command.cppm
+    handlers/feedback/triage_set.cppm
+    handlers/feedback/triage_show.cppm
+    handlers/feedback/triage_list.cppm
+    handlers/feedback/triage.cppm
+    handlers/question/command.cppm
+    handlers/question/link.cppm
+    handlers/question/show.cppm
+    handlers/question/list.cppm
+    handlers/question/wontfix.cppm
+    handlers/question/answer.cppm
+    handlers/question/review.cppm
+    handlers/question/diff.cppm
+    handlers/question/view.cppm
+    handlers/question/edit.cppm
+    handlers/question/add.cppm
+    handlers/decision/command.cppm
+    handlers/decision/link.cppm
+    handlers/decision/review.cppm
+    handlers/decision/diff.cppm
+    handlers/decision/view.cppm
+    handlers/decision/edit.cppm
+    handlers/decision/withdraw.cppm
+    handlers/decision/supersede.cppm
+    handlers/decision/accept.cppm
+    handlers/decision/list.cppm
+    handlers/decision/show.cppm
+    handlers/decision/add.cppm
+    handlers/scenario/command.cppm
+    handlers/scenario/link.cppm
+    handlers/scenario/show.cppm
+    handlers/scenario/list.cppm
+    handlers/scenario/retire.cppm
+    handlers/scenario/verify.cppm
+    handlers/scenario/review.cppm
+    handlers/scenario/diff.cppm
+    handlers/scenario/view.cppm
+    handlers/scenario/edit.cppm
+    handlers/scenario/add.cppm
+    handlers/artifact/command.cppm
+    handlers/artifact/link.cppm
+    handlers/artifact/review.cppm
+    handlers/artifact/diff.cppm
+    handlers/artifact/view.cppm
+    handlers/artifact/edit.cppm
+    handlers/artifact/update.cppm
+    handlers/artifact/list.cppm
+    handlers/artifact/show.cppm
+    handlers/artifact/add.cppm
     editor.cppm
     editflow.cppm
-    handlers/drafting.cppm
-    handlers/links.cppm
-    handlers/handoff.cppm
-    handlers/resume.cppm
-    handlers/runs.cppm
-    handlers/local.cppm
-    handlers/templates.cppm
-    handlers/config.cppm
-    handlers/closure.cppm
-    handlers/groups.cppm
-    handlers/spec_ingest.cppm
-    handlers/import.cppm
-    handlers/synthesize.cppm
+    handlers/shared/drafting.cppm
+    handlers/links/command.cppm
+    handlers/links/trail.cppm
+    handlers/links/remove.cppm
+    handlers/links/list.cppm
+    handlers/links/add.cppm
+    handlers/handoff/command.cppm
+    handlers/handoff/show.cppm
+    handlers/handoff/list.cppm
+    handlers/handoff/abandon.cppm
+    handlers/handoff/consume.cppm
+    handlers/handoff/validate.cppm
+    handlers/handoff/create.cppm
+    handlers/resume/command.cppm
+    handlers/resume/validate.cppm
+    handlers/shared/runs.cppm
+    handlers/run/command.cppm
+    handlers/run/show.cppm
+    handlers/run/finish.cppm
+    handlers/run/event.cppm
+    handlers/run/start.cppm
+    handlers/bench/command.cppm
+    handlers/bench/show.cppm
+    handlers/bench/finish.cppm
+    handlers/bench/harvest.cppm
+    handlers/bench/touch.cppm
+    handlers/bench/event.cppm
+    handlers/bench/start.cppm
+    handlers/local/command.cppm
+    handlers/local/migrate.cppm
+    handlers/local/import.cppm
+    handlers/local/unlink.cppm
+    handlers/local/link.cppm
+    handlers/local/list.cppm
+    handlers/templates/command.cppm
+    handlers/templates/path.cppm
+    handlers/templates/init.cppm
+    handlers/templates/validate.cppm
+    handlers/templates/render.cppm
+    handlers/templates/show.cppm
+    handlers/templates/list.cppm
+    handlers/config/command.cppm
+    handlers/config/path.cppm
+    handlers/config/init.cppm
+    handlers/config/validate.cppm
+    handlers/config/edit.cppm
+    handlers/config/show.cppm
+    handlers/closure/command.cppm
+    handlers/closure/show.cppm
+    handlers/closure/compute.cppm
+    handlers/groups/command.cppm
+    handlers/groups/recommend.cppm
+    handlers/spec/command.cppm
+    handlers/spec/ingest.cppm
+    handlers/import/command.cppm
+    handlers/synthesize/command.cppm
     verb_classification.cppm
     worktree_gate.cppm
     cli_log.cppm
     dispatch.cppm
   SOURCES
     context.cpp
+    database.cpp
     cli_log.cpp
     scope.cpp
     verb_classification.cpp
     worktree_gate.cpp
-    tree.cpp
     declare.cpp
-    handlers/version.cpp
-    handlers/catalog.cpp
-    handlers/workflow.cpp
-    handlers/annotate.cpp
-    handlers/ext_adapter_factory.cpp
-    handlers/link.cpp
-    handlers/unlink.cpp
-    handlers/skills.cpp
-    handlers/workspace.cpp
-    handlers/workbench.cpp
-    handlers/capture.cpp
-    handlers/init.cpp
-    handlers/models.cpp
-    handlers/plan.cpp
-    handlers/assoc.cpp
-    handlers/scope.cpp
-    handlers/search.cpp
-    handlers/tree.cpp
-    handlers/promotion.cpp
-    handlers/test_spec.cpp
-    handlers/health.cpp
-    handlers/audit.cpp
-    handlers/dashboard.cpp
-    handlers/report.cpp
-    handlers/task.cpp
-    handlers/feedback.cpp
-    handlers/question.cpp
-    handlers/decision.cpp
-    handlers/scenario.cpp
-    handlers/artifact.cpp
+    handlers/version/command.cpp
+    handlers/shared/catalog.cpp
+    handlers/workflow/command.cpp
+    handlers/annotate/command.cpp
+    handlers/shared/ext_adapter_factory.cpp
+    handlers/link/command.cpp
+    handlers/unlink/command.cpp
+    handlers/skills/command.cpp
+    handlers/workspace/command.cpp
+    handlers/workbench/command.cpp
+    handlers/capture/command.cpp
+    handlers/init/command.cpp
+    handlers/models/command.cpp
+    handlers/plan/command.cpp
+    handlers/assoc/command.cpp
+    handlers/scope/command.cpp
+    handlers/search/command.cpp
+    handlers/tree/command.cpp
+    handlers/shared/promotion.cpp
+    handlers/test_spec/command.cpp
+    handlers/health/command.cpp
+    handlers/audit/command.cpp
+    handlers/dashboard/command.cpp
+    handlers/report/command.cpp
+    handlers/task/command.cpp
+    handlers/feedback/command.cpp
+    handlers/question/command.cpp
+    handlers/decision/command.cpp
+    handlers/scenario/command.cpp
+    handlers/artifact/command.cpp
     editor.cpp
     editflow.cpp
-    handlers/drafting.cpp
-    handlers/links.cpp
-    handlers/handoff.cpp
-    handlers/resume.cpp
-    handlers/runs.cpp
-    handlers/local.cpp
-    handlers/templates.cpp
-    handlers/config.cpp
-    handlers/closure.cpp
-    handlers/groups.cpp
-    handlers/spec_ingest.cpp
-    handlers/import.cpp
-    handlers/synthesize.cpp
+    handlers/shared/drafting.cpp
+    handlers/links/command.cpp
+    handlers/handoff/command.cpp
+    handlers/resume/command.cpp
+    handlers/shared/runs.cpp
+    handlers/local/command.cpp
+    handlers/templates/command.cpp
+    handlers/config/command.cpp
+    handlers/closure/command.cpp
+    handlers/groups/command.cpp
+    handlers/spec/command.cpp
+    handlers/import/command.cpp
+    handlers/synthesize/command.cpp
     dispatch.cpp
   DEPENDS
+    cmd_internal
     adapter
     cliapp
     db
@@ -568,7 +778,7 @@ planar_binary(planar
     process
     http
     json_text
-    # New at task 6357, for `planar health` (handlers/health.cpp): the
+    # New at task 6357, for `planar health` (handlers/health/command.cpp): the
     # `resolve_homes`/`is_::status` composition folds the layer-1 classifier
     # in directly, the same shape `report` composes its two engine buckets
     # with (see the `engine_introspect`/`engine_introspection_adapters`
@@ -581,17 +791,17 @@ planar_binary(planar
     engine_extsync
     engine_grouping
     engine_identity
-    # New at task 6352, for `report` (handlers/report.cpp): the DB-aggregate
+    # New at task 6352, for `report` (handlers/report/command.cpp): the DB-aggregate
     # half (`engine_introspect`) and the filesystem-discovery half
     # (`engine_introspection_adapters`) it composes. Both were already
     # ported (tasks 6121, 6102) and are D15-forbidden from depending on
     # each other; this binary is where they are legally allowed to meet.
     engine_introspect
     engine_introspection_adapters
-    # New at task 6324, for `task packet` (handlers/task.cpp). The leaf uses
+    # New at task 6324, for `task packet` (handlers/task/command.cpp). The leaf uses
     # exactly one entry point — `packet::assemble_task` plus its two
     # renderers. It does NOT reach the spec-ingest read pipeline; see
-    # src/lib/engine/ingest/CMakeLists.txt for why the routing packet shares
+    # src/engine/ingest/CMakeLists.txt for why the routing packet shares
     # that bucket instead of getting an `engine_routing` one of its own.
     engine_ingest
     engine_importer
@@ -600,7 +810,7 @@ planar_binary(planar
     engine_health
     engine_models
     engine_planning
-    # New at task 6299, for handlers/promotion.cpp. `promote` and `demote`
+    # New at task 6299, for handlers/shared/promotion.cpp. `promote` and `demote`
     # are the binary's only consumers of this bucket, and it carries their
     # output renderers as well as the two mutations — see its own header for
     # why those renderers live in the engine rather than here.
@@ -671,6 +881,10 @@ if(TARGET planar_cmd_planar_tests)
   # own header gives: D18 forbids a `cmd_* -> cmd_*` edge and a shared
   # layer-1 library for test scaffolding would be worse. It parses JSON with
   # Glaze, hence the link.
-  target_include_directories(planar_cmd_planar_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  # Family tests moved under handlers/<family>/ still share the root's
+  # test-only JSON envelope helper.
+  target_include_directories(planar_cmd_planar_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/..")
   target_link_libraries(planar_cmd_planar_tests PRIVATE glaze::glaze)
 endif()

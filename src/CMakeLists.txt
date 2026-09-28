@@ -5,8 +5,9 @@
 # at which a C++ binary runs a verb end to end. `planar-agent`,
 # `planar-watch` and `planar-execute` follow in task 6107.
 #
-# Order matters: `lib/` must configure first so every planar_module() target
-# a cmd binary names in DEPENDS already exists when planar_binary() links it.
+# Order matters: `lib/` configures before the engine, and both configure
+# before command binaries that name their targets in DEPENDS.
 
 add_subdirectory(lib)
+add_subdirectory(engine)
 add_subdirectory(cmd)

@@ -8,12 +8,13 @@
 # this M0 scaffold task (only `core` exists; the tech-spec's file-level tree
 # names dozens more that land over the following milestones), so this walk
 # classifies a module's layer from its *name*, which already encodes its
-# position in the file tree (src/cmd/<bin>/, src/lib/engine/<bucket>/,
+# position in the file tree (src/cmd/<bin>/, src/engine/<bucket>/,
 # src/lib/<name>/) rather than maintaining a hand-written per-module
 # allow-list that would need editing on every future planar_module() call:
 #
 #   layer 3: `cmd_*`     — src/cmd/<binary>/ handler libraries
-#   layer 2: `engine_*`  — src/lib/engine/<bucket>/ (identity, planning, ...)
+#   layer 2: `engine_*` and the explicit `cmd_internal` command-support
+#            target — shared invocation and database injection below binaries
 #   layer 1: everything else — src/lib/<name>/ base libraries (db, cli,
 #            core, ...) that engine.* and cmd/* depend on
 #   layer 0: vendored/third-party targets (CPM packages) — not planar_*
@@ -230,7 +231,11 @@
 #        "engine_identity", "cmd_planar").
 # @param out_var Variable name (in the caller's scope) to receive the layer.
 function(_planar_module_layer name out_var)
-  if(name MATCHES "^cmd_")
+  if(name STREQUAL "cmd_internal")
+    # Application infrastructure shared by command binaries, below their
+    # handler layer and above the reusable db/cli libraries.
+    set(${out_var} 2 PARENT_SCOPE)
+  elseif(name MATCHES "^cmd_")
     set(${out_var} 3 PARENT_SCOPE)
   elseif(name MATCHES "^engine_")
     set(${out_var} 2 PARENT_SCOPE)

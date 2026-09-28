@@ -17,7 +17,7 @@ vendor:
             /pl-introspect --days 14 --scope assoc:my-org --apply
 ---
 
-# Planar Introspect ({{.VendorTitle}})
+# Planar Introspect ({{ VendorTitle }})
 
 Run a usage-introspection pass: read the diagnostic bundle and available local
 vendor signal, identify friction patterns, and preview structured findings.

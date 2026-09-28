@@ -9,8 +9,9 @@ import std;
 import planar.db;
 import planar.engine.config.effective;
 import planar.cmd.planar.context;
+import planar.cmd.internal.config_path;
 import planar.cmd.planar.exit;
-import planar.cmd.planar.tree;
+import planar.cmd.planar.main;
 import planar.cliapp.walk;
 
 namespace planar::cmd {
@@ -274,28 +275,7 @@ auto write_invocation(db::connection& conn, const parsed_args_shape& shape, int 
 }
 
 auto resolve_config_path(const env_lookup& env) -> std::optional<std::filesystem::path> {
-  auto const home = env("HOME");
-
-  if (auto const raw = env("PLANAR_CONFIG_PATH"); raw.has_value() && !raw->empty()) {
-    if (*raw == "~") {
-      if (!home.has_value()) {
-        return std::nullopt;
-      }
-      return std::filesystem::path{*home};
-    }
-    if (raw->starts_with("~/")) {
-      if (!home.has_value()) {
-        return std::nullopt;
-      }
-      return std::filesystem::path{*home} / std::string_view{*raw}.substr(2);
-    }
-    return std::filesystem::path{*raw};
-  }
-
-  if (!home.has_value()) {
-    return std::nullopt;
-  }
-  return std::filesystem::path{*home} / ".planar" / "config.toml";
+  return internal::resolve_config_path(env);
 }
 
 auto record(context& ctx, int exit_code, std::optional<domain_error_kind> kind, std::optional<std::chrono::milliseconds> duration)
@@ -343,7 +323,7 @@ auto record(context& ctx, int exit_code, std::optional<domain_error_kind> kind, 
   }
 
   // NEVER MIGRATE either, which is why this opens its own connection rather
-  // than calling ctx.ensure_db(). The Zig header records the cost of the
+  // than calling ctx.db().ensure_db(). The Zig header records the cost of the
   // other choice: because telemetry runs on EVERY invocation, `--help`
   // included, migrating from here silently advanced an operator's live
   // database to a dev build's schema TWICE, breaking every other installed

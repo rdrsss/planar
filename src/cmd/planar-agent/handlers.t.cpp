@@ -49,7 +49,7 @@ import planar.db;
 import planar.db.migrate;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.dispatch;
-import planar.cmd.planar_agent.tree;
+import planar.cmd.planar_agent.main;
 
 namespace {
 
@@ -98,11 +98,16 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
   std::ostringstream out;
   std::ostringstream err;
-  context            ctx{std::move(argv), planar::cmd::agent::map_env(fx.vars), fx.root / "proj", fx.db_path, out, err};
+  context            ctx{std::move(argv),
+                         planar::cmd::agent::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::agent::database>(fx.db_path, err),
+                         out,
+                         err};
   auto const         tree  = planar::cmd::agent::root_app();
   auto const         table = planar::cmd::agent::handlers(*tree);
   int const          code  = planar::cmd::agent::run(ctx, *tree, table);
-  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db_opened()};
+  return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
 auto migrate_fixture(const fixture& fx) -> void {

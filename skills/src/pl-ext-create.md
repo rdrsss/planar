@@ -12,7 +12,7 @@ vendor:
             /pl-ext-create side-gh --from task:<task-id>
 ---
 
-# Planar Ext Create ({{.VendorTitle}})
+# Planar Ext Create ({{ VendorTitle }})
 
 Creates an operational plane counterpart for a local entity and records the external link.
 

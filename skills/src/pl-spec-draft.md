@@ -12,9 +12,9 @@ vendor:
             /pl-spec-draft "add real-time notifications to the dashboard"
 ---
 
-# Spec Draft ({{.VendorTitle}})
+# Spec Draft ({{ VendorTitle }})
 
-{{.VendorTitle}} skill surface for the vendor-neutral `planner` agent. See [`agents/planner.md`](../../agents/planner.md) for the full role spec, input/output contract, doc shape conventions, and the **four-phase authoring discipline** (product → tech → roadmap → test). The phase-specific "do NOT" lists are load-bearing: they keep product-spec out of implementation, keep test-spec out of code, and ensure the four return-path buckets (happy / empty-null / error / edge) are reasoned through explicitly as a coverage lens — not collapsed into document structure.
+{{ VendorTitle }} skill surface for the vendor-neutral `planner` agent. See [`agents/planner.md`](../../agents/planner.md) for the full role spec, input/output contract, doc shape conventions, and the **four-phase authoring discipline** (product → tech → roadmap → test). The phase-specific "do NOT" lists are load-bearing: they keep product-spec out of implementation, keep test-spec out of code, and ensure the four return-path buckets (happy / empty-null / error / edge) are reasoned through explicitly as a coverage lens — not collapsed into document structure.
 
 Phase 4 has a self-check before final emission (see [`agents/planner.md` §Phase 4 self-check](../../agents/planner.md#phase-4-self-check-before-final-emission)): every scenario has a non-empty `**Verifies:**`, every cited slug exists as a `[slug: …]` annotation on a roadmap bullet, and every testable bullet carries a `[slug: …]`. Run the read-only strict JSON preview, `planar spec ingest <plan> --strict --json`, before handoff. Its workbench-derived `coverage` object is authoritative while the plan is still a draft; `planar test-spec status` is reserved for post-ingest live rows.
 
@@ -77,7 +77,7 @@ planar workbench push <plan-id>
 
 ## Front matter contract
 
-Every `.md` file written by this skill carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/lib/engine/workbench/parse.cppm`](../../src/lib/engine/workbench/parse.cppm). Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync.
+Every `.md` file written by this skill carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `FrontMatter` struct in [`src/engine/workbench/parse.cppm`](../../src/engine/workbench/parse.cppm). Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync.
 
 Required fields for planner-written artifact files:
 
